@@ -1,0 +1,10 @@
+{
+  "name": "quirq",
+  "version": "1.0.0",
+  "description": "Find and talk to the local Quirq (xo-space) control plane: check-only discovery, guided install and start. Every state-changing action requires your explicit yes.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Quirq",
+    "shortDescription": "Local Quirq control plane: discovery, status, install, start"
+  }
+}
