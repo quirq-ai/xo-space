@@ -1,0 +1,15 @@
+{
+  "name": "quirq-ai",
+  "owner": {
+    "name": "Quirq",
+    "url": "https://github.com/quirq-ai"
+  },
+  "plugins": [
+    {
+      "name": "quirq",
+      "source": "./plugin",
+      "description": "Find and talk to the local Quirq (xo-space) control plane: check-only discovery, guided install and start.",
+      "version": "1.0.0"
+    }
+  ]
+}

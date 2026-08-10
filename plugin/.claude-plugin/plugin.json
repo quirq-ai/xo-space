@@ -1,0 +1,14 @@
+{
+  "name": "quirq",
+  "displayName": "Quirq",
+  "version": "1.0.0",
+  "description": "Find and talk to the local Quirq (xo-space) control plane: check-only discovery, guided install and start. Every state-changing action requires your explicit yes.",
+  "author": {
+    "name": "Quirq",
+    "url": "https://github.com/quirq-ai"
+  },
+  "homepage": "https://xo.builders",
+  "repository": "https://github.com/quirq-ai/xo-space",
+  "license": "MIT",
+  "keywords": ["quirq", "xo-space", "control-plane", "coding-agents"]
+}
