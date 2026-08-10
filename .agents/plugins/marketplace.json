@@ -1,0 +1,19 @@
+{
+  "name": "quirq-ai",
+  "interface": {
+    "displayName": "Quirq"
+  },
+  "plugins": [
+    {
+      "name": "quirq",
+      "source": {
+        "source": "local",
+        "path": "./.agents/plugins/quirq"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

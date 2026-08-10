@@ -537,9 +537,45 @@ def _install_shared_deps() -> None:
         print(f"⚠️ Shared dep install failed (non-fatal): {e}")
 
 
+def _write_install_pointer() -> None:
+    """Record where this install lives so local clients (the Claude Code
+    plugin, support tooling) can find it without scanning the filesystem.
+
+    One fixed path, dynamic contents: ~/.config/quirq/install.json (XDG
+    honoured), rewritten on every boot because it is a last-known-location
+    hint, not configuration — port fallbacks and relocated roots must show
+    up here. Consumers verify the recorded paths still exist before
+    trusting them, so a stale file after an uninstall is harmless.
+    """
+    try:
+        from services.cowork_agent.local_state import quirq_state_dir
+
+        config_home = Path(
+            os.getenv("XDG_CONFIG_HOME", "").strip() or Path.home() / ".config"
+        )
+        pointer_dir = config_home / "quirq"
+        pointer_dir.mkdir(parents=True, exist_ok=True)
+        pointer = {
+            "repo_dir": str(Path(__file__).resolve().parent),
+            "projects_root": os.getenv("XO_PROJECTS_ROOT", "").strip()
+            or str(Path("~/xo-projects").expanduser()),
+            "state_root": str(quirq_state_dir()),
+            "host": os.getenv("HOST", "127.0.0.1"),
+            "port": int(os.getenv("PORT", "5002")),
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        (pointer_dir / "install.json").write_text(json.dumps(pointer, indent=2) + "\n")
+    except Exception as e:
+        print(f"⚠️ Could not write install pointer (non-fatal): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    # Written first: the pointer must exist even if a later boot step fails,
+    # so a half-started install is still discoverable.
+    _write_install_pointer()
+
     # Bootstrap the agent runtime (OpenClaw, etc.) before serving traffic.
     # Done synchronously so the API doesn't accept requests until the
     # agent it's meant to drive is installed and configured.
