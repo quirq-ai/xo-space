@@ -70,11 +70,31 @@ class RuntimeConfigTests(unittest.TestCase):
         invalid = (
             {"xo_projects_root": "relative", "quirq_state_root": "/tmp/state"},
             {"xo_projects_root": "/", "quirq_state_root": "/tmp/state"},
-            {"xo_projects_root": "/tmp/xo", "quirq_state_root": "/tmp/xo/.quirq"},
+            # equal roots
+            {"xo_projects_root": "/tmp/xo", "quirq_state_root": "/tmp/xo"},
+            # nested deeper than one level
+            {"xo_projects_root": "/tmp/xo", "quirq_state_root": "/tmp/xo/deep/.quirq"},
+            # nested one level but not hidden
+            {"xo_projects_root": "/tmp/xo", "quirq_state_root": "/tmp/xo/quirq"},
+            # projects root inside the state root
+            {
+                "xo_projects_root": "/tmp/xo/.quirq/projects",
+                "quirq_state_root": "/tmp/xo/.quirq",
+            },
         )
         for payload in invalid:
             with self.assertRaises(ValueError):
                 runtime_config.validate_root_settings(payload)
+
+    def test_state_root_may_be_hidden_directly_inside_projects_root(self) -> None:
+        # The default layout install.sh itself creates: ./ and ./.quirq. The
+        # API validator must accept what the installer's validator accepts,
+        # or Setup rejects the configuration the server is running with.
+        clean = runtime_config.validate_root_settings(
+            {"xo_projects_root": "/tmp/xo", "quirq_state_root": "/tmp/xo/.quirq"}
+        )
+        self.assertEqual(clean["xo_projects_root"], "/tmp/xo")
+        self.assertEqual(clean["quirq_state_root"], "/tmp/xo/.quirq")
 
     def test_save_is_private_validated_and_restart_aware(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

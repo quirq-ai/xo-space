@@ -70,7 +70,7 @@ function renderShell(){
           +'</div>'
           +'<div class="setup-form-error" id="roots-error" role="alert" hidden></div>'
           +'<div class="setup-root-apply" id="roots-apply" hidden>'
-            +'<div><b>Container recreation required</b><p>Docker bind mounts cannot change in place. Run this same one-command installer to apply both roots.</p></div>'
+            +'<div><b>Server restart required</b><p>Storage roots are applied when the server starts. Run this same one-command installer to restart with both roots.</p></div>'
             +'<pre id="roots-command"></pre>'
           +'</div>'
           +'<div class="setup-actions">'
@@ -220,7 +220,7 @@ function renderRuntime(){
   if(rootPending){
     alert.className='setup-alert is-pending';
     alert.innerHTML='<span aria-hidden="true">◆</span><div><b>New storage roots are saved but not mounted yet.</b>'
-      +'<p>Run the installer command shown below. It will recreate the managed container and also apply any pending runtime or credential changes.</p></div>';
+      +'<p>Run the installer command shown below. It restarts the server with the new roots and also applies any pending runtime or credential changes.</p></div>';
   }else if(runtimeData.restart_required){
     const reasons=runtimeData.restart_reasons||[];
     const runtimePending=reasons.includes('runtime');

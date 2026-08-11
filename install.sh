@@ -30,8 +30,9 @@
 # Re-run to update and restart.
 #
 # Root directory precedence:
-#     XO_PROJECTS_ROOT / QUIRQ_STATE_ROOT env vars
+#     XO_PROJECTS_ROOT / QUIRQ_STATE_ROOT exported in the caller's shell
 #         → roots.env saved by the Setup tab
+#         → the checkout's .env from the first install
 #         → the launch directory, and ./.quirq inside it
 #
 # Every environment value below is overridable from the caller's
@@ -50,6 +51,12 @@ SOURCE_REF="${QUIRQ_SOURCE_REF:-main}"
 # Captured before anything cd's. Everything Quirq creates hangs off this, so
 # a run is self-contained in the directory you launched it from.
 LAUNCH_DIR="$PWD"
+# Captured before .env is loaded into the environment, so the resolution
+# below can tell a root the caller exported (beats everything) apart from
+# one that merely came out of the checkout's .env (loses to roots.env —
+# the Setup tab's saved roots must actually apply on the next run).
+SHELL_XO_PROJECTS_ROOT="${XO_PROJECTS_ROOT:-}"
+SHELL_QUIRQ_STATE_ROOT="${QUIRQ_STATE_ROOT:-}"
 # Named after the repository, the way a plain `git clone` would name it, so
 # the directory follows QUIRQ_SOURCE_REPO instead of hardcoding one name.
 REPO_NAME="${SOURCE_REPO##*/}"
@@ -515,9 +522,9 @@ start_server() {
     # during it should be reported here, not discovered later.
     while [ "$waited" -lt 90 ]; do
         if curl -fsS -m 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-            printf '\nQuirq is running: http://localhost:%s/space/\n' "$PORT"
-            printf 'Logs:  %s\n' "$log_file"
-            printf 'Stop:  kill "$(cat %s)"\n' "$pid_file"
+            printf '\n▶️  Quirq is running: http://localhost:%s/space/\n\n' "$PORT"
+            printf '    Logs:  %s\n' "$log_file"
+            printf '    Stop:  kill "$(cat %s)"\n' "$pid_file"
             return 0
         fi
         if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -568,8 +575,8 @@ main() {
     anchor_dir="${QUIRQ_STATE_ROOT:-${LAUNCH_DIR}/.quirq}"
     saved_projects_root="$(saved_root_from_file "$anchor_dir" "XO_PROJECTS_ROOT")"
     saved_state_root="$(saved_root_from_file "$anchor_dir" "QUIRQ_STATE_ROOT")"
-    projects_root="${XO_PROJECTS_ROOT:-${saved_projects_root:-${LAUNCH_DIR}}}"
-    state_root="${QUIRQ_STATE_ROOT:-${saved_state_root:-${LAUNCH_DIR}/.quirq}}"
+    projects_root="${SHELL_XO_PROJECTS_ROOT:-${saved_projects_root:-${XO_PROJECTS_ROOT:-${LAUNCH_DIR}}}}"
+    state_root="${SHELL_QUIRQ_STATE_ROOT:-${saved_state_root:-${QUIRQ_STATE_ROOT:-${LAUNCH_DIR}/.quirq}}}"
     validate_host_root "XO root" "$projects_root"
     validate_host_root "Quirq root" "$state_root"
     validate_separate_roots "$projects_root" "$state_root"

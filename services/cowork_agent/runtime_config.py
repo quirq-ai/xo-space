@@ -34,11 +34,10 @@ RUNTIME_CONFIG_KEYS = frozenset(
     }
 )
 ROOT_CONFIG_KEYS = frozenset({"XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT"})
-INSTALL_COMMAND = (
-    "curl -fsSL "
-    "https://raw.githubusercontent.com/sharmasuraj0123/"
-    "xo-cowork-api/main/install.sh | bash"
-)
+# The canonical one-liner from the website, not a raw GitHub URL: the site
+# bootstrapper follows repo renames and branch selection, so this string
+# cannot rot the way a hardcoded raw.githubusercontent.com path did.
+INSTALL_COMMAND = "curl -fsSL https://www.quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000
@@ -305,10 +304,26 @@ def validate_root_settings(payload: dict[str, Any]) -> dict[str, str]:
         common = os.path.commonpath([projects_root, state_root])
     except ValueError as exc:
         raise ValueError("XO root and Quirq root must be on compatible paths") from exc
-    if common in {projects_root, state_root}:
+    if common == state_root:
         raise ValueError(
             "XO root and Quirq root must be separate, non-nested directories"
         )
+    if common == projects_root:
+        # Mirror install.sh's validate_separate_roots: the one allowed nesting
+        # is the state root as a hidden directory directly inside the projects
+        # root — the default ./ and ./.quirq layout the installer itself
+        # creates. quirq_catalog skips dot-prefixed entries when enumerating
+        # projects, so ".quirq" there can never be mistaken for one. Anything
+        # deeper, not hidden, or equal stays forbidden.
+        relative = os.path.relpath(state_root, projects_root)
+        if (
+            relative == os.curdir
+            or os.sep in relative
+            or not relative.startswith(".")
+        ):
+            raise ValueError(
+                "XO root and Quirq root must be separate, non-nested directories"
+            )
     return {
         "xo_projects_root": projects_root,
         "quirq_state_root": state_root,
@@ -327,13 +342,20 @@ def save_root_settings(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def root_settings() -> dict[str, Any]:
+    # QUIRQ_HOST_* are the Docker installer's container→host translations and
+    # win when set. Native runs never set them, so fall back to the roots the
+    # process is actually using — otherwise Setup shows empty fields and
+    # "not reported" for an install that is running fine.
     current = {
         "xo_projects_root": (
-            os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or ""
-        ).strip(),
+            (os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or "").strip()
+            or (os.getenv("XO_PROJECTS_ROOT", "") or "").strip()
+            or str(Path("~/xo-projects").expanduser())
+        ),
         "quirq_state_root": (
-            os.getenv("QUIRQ_HOST_STATE_ROOT", "") or ""
-        ).strip(),
+            (os.getenv("QUIRQ_HOST_STATE_ROOT", "") or "").strip()
+            or str(quirq_state_dir())
+        ),
     }
     saved = _parse_env_file(root_config_file(), ROOT_CONFIG_KEYS)
     configured = {

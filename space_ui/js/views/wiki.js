@@ -471,13 +471,13 @@ const TAB_GUIDES={
       ['POST /api/runtime-config/restart','Restarts only an installer-managed local container.','Managed process control']
     ],
     steps:[
-      ['Confirm paths','Compare host paths with their fixed container mount points.'],
-      ['Save roots','If roots differ, copy and run the one-command installer because Docker bind mounts cannot change in place.'],
+      ['Confirm paths','Compare the configured roots with what the running server reports.'],
+      ['Save roots','If roots differ, copy and run the one-command installer — roots are applied when the server starts.'],
       ['Save runtime','Review the pending-restart banner before applying process-time changes.'],
       ['Add credentials','Choose a manifest-recommended key, save it, then restart when requested.']
     ],
     checks:[
-      ['Root not applied','Saving queues it; rerun the displayed installer to recreate the bind mounts.'],
+      ['Root not applied','Saving queues it; rerun the displayed installer to restart with the new roots.'],
       ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first.'],
       ['Sessions missing','Confirm the native runtime directory is mounted and watcher coverage includes it.'],
       ['Secret value hidden','That is intentional; replace the value or remove the variable.']
@@ -679,15 +679,17 @@ function installationArticle(){
       <section class="wiki-section">
         <h2>First installation</h2>
         <ol class="wiki-steps">
-          <li><b>Start Docker.</b>
-          <p>No Git clone, Python environment, or repository checkout is
-          required.</p></li>
+          <li><b>Pick a workspace directory.</b>
+          <p>Run the installer from the directory you want as your
+          workspace — the checkout lands beside your projects. Git is the
+          only prerequisite.</p></li>
           <li><b>Run the installer.</b>
-          <code>curl -fsSL https://raw.githubusercontent.com/sharmasuraj0123/xo-cowork-api/main/install.sh | bash</code>
-          <p>The command downloads the published image, starts the container
-          in the background, waits for health, and prints the browser URL.</p></li>
+          <code>curl -fsSL https://www.quirq.ai/install | sh</code>
+          <p>The command clones the server, prepares a Python environment,
+          starts the server in the background, waits for health, and prints
+          the browser URL.</p></li>
           <li><b>Open the workspace.</b>
-          <code>http://localhost:5003/space/</code>
+          <code>http://localhost:5002/space/</code>
           <p>The same address is used every time. Re-run the same installer
           command whenever you want to update or restart.</p></li>
         </ol>
@@ -1100,13 +1102,13 @@ function quirqDataArticle(){
           </article>
 
           <article class="wiki-file">
-            <header><code>roots.env</code><span>installer bind-mount configuration</span></header>
+            <header><code>roots.env</code><span>installer root configuration</span></header>
             <p>Stores the absolute host paths selected for the XO projects
             root and machine-local Quirq state root. These values are
-            intentionally separate from process runtime settings: Docker
-            cannot replace a running container's bind mounts, so Setup marks
-            them pending until the one-command installer recreates the managed
-            container.</p>
+            intentionally separate from process runtime settings: the running
+            server cannot change its own roots, so Setup marks them pending
+            until the one-command installer restarts it with the new
+            values.</p>
             <dl><div><dt>Writer</dt><dd>typed root configuration API</dd></div><div><dt>Migration</dt><dd>empty state targets receive a copy; project roots are selected, never moved</dd></div></dl>
           </article>
 
