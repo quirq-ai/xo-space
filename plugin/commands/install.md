@@ -27,21 +27,23 @@ Install Quirq (xo-space) on this machine. The workspace directory is
    the server (the directory becomes your workspace root)." Proceed only on
    an explicit yes.
 
-4. Run the official installer with a generous timeout (~10 minutes — the
-   first install builds a Python env). `QUIRQ_DAEMON=1` is required: it
-   makes the installer start the server **in the background** and return
-   on its own once `/health` answers (without it, the server runs in the
-   foreground and this command never returns):
+4. Run the official installer **as a background task of this session** —
+   it runs the server in its foreground and never returns, and the
+   server's output goes to `<dir>/.quirq/quirq.log`, so the task itself
+   stays quiet:
 
    ```bash
-   cd <dir> && curl -fsSL https://www.quirq.ai/install | QUIRQ_DAEMON=1 sh
+   cd <dir> && curl -fsSL https://www.quirq.ai/install | sh
    ```
 
-5. Relay the installer's closing output faithfully. On success it prints
-   the UI URL, the log file (`<dir>/.quirq/quirq.log`), and the stop
-   command (`"<dir>/xo-space/install.sh" stop`). Report those, note
-   the config file at `<dir>/xo-space/.env`, and that the server keeps
-   running after this session ends.
+5. Poll `http://127.0.0.1:5002/health` (then 5003) every ~5 s, up to
+   ~5 minutes — the first install builds a Python env and can be slow.
 
-6. On failure the installer prints the last log lines itself — show them
+6. On success: report the UI at `http://127.0.0.1:<port>/space/`, the log
+   file at `<dir>/.quirq/quirq.log`, and the config file at
+   `<dir>/xo-space/.env` — and say clearly that the server runs only as
+   long as this session (or until the background task is killed);
+   `/quirq:start` brings it back in a later session.
+
+7. On timeout or failure: show the tail of `<dir>/.quirq/quirq.log`
    verbatim and stop. Do not retry on your own.

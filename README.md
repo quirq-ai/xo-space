@@ -82,19 +82,11 @@ curl -fsSL https://raw.githubusercontent.com/quirq-ai/xo-space/development/insta
 
 Run it from the directory you want as your workspace: the checkout lands
 beside your projects, machine-local state goes to `./.quirq`, and the server
-runs **in your terminal** — Ctrl-C stops it, and re-running the same command
-updates and restarts it.
-
-To run it in the background instead (the mode agents and scripts use), set
-`QUIRQ_DAEMON=1`:
-
-```bash
-curl -fsSL https://www.quirq.ai/install | QUIRQ_DAEMON=1 sh
-```
-
-The command then returns once the API is healthy, logs append to
-`./.quirq/quirq.log`, and the server keeps running after the terminal
-closes.
+runs **in your terminal** with a quiet screen — its output appends to
+`./.quirq/quirq.log`, Ctrl-C stops it, and re-running the same command
+updates and restarts it. Closing the terminal takes the server down with
+it; for an always-on server, run the same command under `tmux` or a
+supervisor of your choice.
 
 See the [Docker installation guide](INSTALLATION.md) for the container
 alternative.
@@ -117,17 +109,12 @@ curl http://localhost:5002/health
 
 ### Process management
 
-Ctrl-C stops a server running in your terminal. A `QUIRQ_DAEMON=1` install
-is stopped with:
+Ctrl-C stops the server; watch it with `tail -f .quirq/quirq.log`. If a
+stray server is holding the port and you can't find its terminal:
 
 ```bash
-./xo-space/install.sh stop   # from the directory you installed in
+lsof -i :5002   # find the PID, then kill it
 ```
-
-which verifies the recorded PID is really a Quirq server before signalling
-it (a recycled PID can never kill an unrelated process), escalates to
-SIGKILL if a graceful shutdown hangs, and cleans up the PID file. The raw
-`kill "$(cat .quirq/quirq.pid)"` still works too.
 
 (For the Docker install, `docker stop quirq`.)
 
