@@ -23,11 +23,12 @@
 # The directory you launch from becomes the workspace: the checkout
 # lands beside your projects, and machine state goes in ./.quirq
 #
-# The server starts in the background: the command returns once /health
-# answers, logs append to <state root>/quirq.log, and the PID is written
-# to <state root>/quirq.pid (stop with `kill "$(cat .quirq/quirq.pid)"`).
-# QUIRQ_FOREGROUND=1 keeps it in the foreground instead (Ctrl-C stops it).
-# Re-run to update and restart.
+# The server runs in the foreground: Ctrl-C stops it, re-run to update
+# and restart. Set QUIRQ_DAEMON=1 to run it detached instead — the
+# command then returns once /health answers, logs append to
+# <state root>/quirq.log, and the PID is written to <state root>/quirq.pid.
+# Stop a detached server with `./xo-space/install.sh stop` (verifies the
+# PID is really Quirq before signalling, escalates TERM → KILL, cleans up).
 #
 # Root directory precedence:
 #     XO_PROJECTS_ROOT / QUIRQ_STATE_ROOT exported in the caller's shell
@@ -322,7 +323,7 @@ PY
 
     case "$status" in
         0) return 0 ;;
-        1) fail "Port ${port} is already in use — Quirq may already be running here. Stop it with kill \"\$(cat <state root>/quirq.pid)\" (or Ctrl-C if it is running in a terminal), or set PORT=<port> to start a second one." ;;
+        1) fail "Port ${port} is already in use — Quirq may already be running here. Stop it with Ctrl-C in its terminal (or './install.sh stop' if it runs in the background), or set PORT=<port> to start a second one." ;;
         *) printf 'Could not verify that port %s is free; starting anyway.\n' "$port" ;;
     esac
 }
@@ -495,18 +496,19 @@ start_server() {
     # configuration this install actually ran with.
     write_env_file
 
-    # Foreground mode, for development: the server owns the terminal and
-    # Ctrl-C stops it. exec replaces this shell so no wrapper lingers.
-    if [ "${QUIRQ_FOREGROUND:-0}" = "1" ]; then
-        printf '\nStarting Quirq: http://localhost:%s/space/\n' "$PORT"
-        printf 'Press Ctrl-C to stop.\n\n'
+    # Default: the server owns the terminal and Ctrl-C stops it. exec
+    # replaces this shell so no wrapper lingers. Agents and scripts opt
+    # into the detached mode below with QUIRQ_DAEMON=1.
+    if [ "${QUIRQ_DAEMON:-0}" != "1" ]; then
+        printf '\n▶️  Starting Quirq: http://localhost:%s/space/\n' "$PORT"
+        printf '    Press Ctrl-C to stop.\n\n'
         exec "$VENV_PYTHON" server.py
     fi
 
-    # Default: run detached, hand the terminal back. The server survives the
-    # terminal closing (nohup, stdin from /dev/null), logs append to the
-    # state root beside the rest of the machine-local files, and the PID is
-    # recorded for a clean stop. QUIRQ_FOREGROUND=1 restores the old mode.
+    # QUIRQ_DAEMON=1: run detached, hand the terminal back. The server
+    # survives the terminal closing (nohup, stdin from /dev/null), logs
+    # append to the state root beside the rest of the machine-local files,
+    # and the PID is recorded for a clean stop.
     local log_file="${state_root}/quirq.log"
     local pid_file="${state_root}/quirq.pid"
     local server_pid
@@ -524,7 +526,7 @@ start_server() {
         if curl -fsS -m 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
             printf '\n▶️  Quirq is running: http://localhost:%s/space/\n\n' "$PORT"
             printf '    Logs:  %s\n' "$log_file"
-            printf '    Stop:  kill "$(cat %s)"\n' "$pid_file"
+            printf '    Stop:  "%s/install.sh" stop\n' "$REPO_DIR"
             return 0
         fi
         if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -541,8 +543,81 @@ start_server() {
     printf '    tail -f %s\n' "$log_file"
 }
 
+# ==============================================================
+# `install.sh stop` — stop the background server tracked by the PID
+# file, with the checks a raw `kill "$(cat quirq.pid)"` cannot do:
+#
+#   * verify the PID still belongs to a Quirq server before signalling,
+#     so a recycled PID can never kill an unrelated process;
+#   * escalate TERM → KILL when a graceful shutdown hangs;
+#   * remove the PID file afterwards, and clean up a stale one;
+#   * say honestly when there is nothing tracked to stop.
+# ==============================================================
+cmd_stop() {
+    local state_root="$1"
+    local pid_file="${state_root}/quirq.pid"
+    local pid
+    local args
+    local waited=0
+
+    if [ ! -f "$pid_file" ]; then
+        printf 'Nothing tracked to stop: no PID file at %s\n' "$pid_file"
+        if curl -fsS -m 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+            printf 'But a server does answer on port %s — it was started without a PID file\n' "$PORT"
+            printf '(foreground mode, or another install). Find it with: lsof -i :%s\n' "$PORT"
+            exit 1
+        fi
+        exit 0
+    fi
+
+    pid="$(cat "$pid_file" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*)
+            rm -f "$pid_file"
+            fail "The PID file was corrupt and has been removed: ${pid_file}" ;;
+    esac
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$pid_file"
+        printf 'Quirq was not running (stale PID file removed: %s)\n' "$pid_file"
+        exit 0
+    fi
+
+    # The PID-reuse guard: a long-dead server's PID can be recycled by the
+    # OS for an unrelated process. Only signal it if it is really Quirq.
+    args="$(ps -p "$pid" -o args= 2>/dev/null)"
+    case "$args" in
+        *server.py*) ;;
+        *) fail "PID ${pid} is not a Quirq server (running: ${args:-unknown}). Refusing to kill it. If the PID file is stale, remove it yourself: ${pid_file}" ;;
+    esac
+
+    printf 'Stopping Quirq (pid %s)...\n' "$pid"
+    kill "$pid" 2>/dev/null
+
+    while [ "$waited" -lt 10 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$pid_file"
+            printf 'Quirq stopped.\n'
+            exit 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    printf 'Still running after %ss — sending SIGKILL.\n' "$waited"
+    kill -9 "$pid" 2>/dev/null
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        fail "Could not stop pid ${pid}. Inspect it with: ps -p ${pid} -o pid,ppid,args"
+    fi
+    rm -f "$pid_file"
+    printf 'Quirq stopped (forced).\n'
+    exit 0
+}
+
 main() {
     local user_home="${HOME:-}"
+    local action="${1:-}"
     local anchor_dir
     local saved_projects_root
     local saved_state_root
@@ -552,10 +627,32 @@ main() {
 
     [ -n "$user_home" ] || fail "HOME must be set."
 
+    case "$action" in
+        ''|stop) ;;
+        *) fail "Unknown command: ${action}. Run with no arguments to install/start, or 'stop' to stop the background server." ;;
+    esac
+
+    resolve_repo_dir
+
+    # `stop` must never clone, update, or build anything — resolve just
+    # enough (the .env and roots.env the install would read) to find the
+    # same state root, then act on its PID file.
+    if [ "$action" = "stop" ]; then
+        if [ -d "$REPO_DIR" ]; then
+            cd "$REPO_DIR"
+            load_env_file
+        fi
+        HOST="${HOST:-127.0.0.1}"
+        PORT="${PORT:-5002}"
+        anchor_dir="${QUIRQ_STATE_ROOT:-${LAUNCH_DIR}/.quirq}"
+        saved_state_root="$(saved_root_from_file "$anchor_dir" "QUIRQ_STATE_ROOT")"
+        state_root="${SHELL_QUIRQ_STATE_ROOT:-${saved_state_root:-${QUIRQ_STATE_ROOT:-${LAUNCH_DIR}/.quirq}}}"
+        cmd_stop "$state_root"
+    fi
+
     require_command git \
         "git is not installed. Quirq needs it to download itself, and uses it at runtime for project sync and history. Install git and run this script again."
 
-    resolve_repo_dir
     if [ "$MANAGED_CHECKOUT" -eq 1 ]; then
         source_label="managed"
         fetch_repo
