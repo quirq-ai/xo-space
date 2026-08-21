@@ -49,6 +49,14 @@ def fill_identity(xo_dir: Path, project_id: str) -> bool:
 
     Returns ``True`` iff ``project.json`` was rewritten.
     """
+    if not xo_dir.parent.is_dir():
+        # The folder *is* the project (see
+        # ``project_layout.resolve_project_dirname``). If the id doesn't
+        # point at a directory that exists, writing project.json here would
+        # mkdir -p a ghost project rather than describe a real one — an
+        # empty folder that then shows up in the UI as its own project.
+        return False
+
     path = xo_dir / "project.json"
     current = read_json(path) or {}
 

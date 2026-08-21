@@ -82,6 +82,91 @@ class ProjectIdentityTests(unittest.TestCase):
                 self.assertTrue((resolved / "marker.md").is_file())
 
 
+class MixedCaseFolderTests(unittest.TestCase):
+    """A folder whose name isn't already in normalize_agent_id form.
+
+    ``Agno-RAG-Tester`` normalises to ``agno-rag-tester``. Discovery yields
+    the literal folder name as the id, so a path helper that normalised it
+    unconditionally sent every write to a sibling that did not exist — the
+    watcher then mkdir -p'd an empty ghost folder holding only ``.xo/``,
+    which listed in the UI as a second, empty project while the real one
+    never got its ``.xo/`` at all.
+    """
+
+    def test_a_mixed_case_folder_resolves_to_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Agno-RAG-Tester").mkdir()
+            (root / "Agno-RAG-Tester" / "marker.md").write_text("x", encoding="utf-8")
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+                resolved = project_layout.project_dir("Agno-RAG-Tester")
+                self.assertEqual(resolved.name, "Agno-RAG-Tester")
+                self.assertTrue((resolved / "marker.md").is_file())
+                # No sibling conjured by the lookup itself. Checked via the
+                # listing, not exists(): on a case-insensitive filesystem
+                # exists("agno-rag-tester") is true for the real folder too.
+                self.assertEqual(
+                    [p.name for p in root.iterdir()], ["Agno-RAG-Tester"]
+                )
+
+    def test_a_normalised_id_finds_the_real_folder(self) -> None:
+        """Callers holding an already-normalised id still land on disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Agno-RAG-Tester").mkdir()
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+                self.assertEqual(
+                    project_layout.project_dir("agno-rag-tester").name,
+                    "Agno-RAG-Tester",
+                )
+
+    def test_a_new_project_still_gets_a_normalised_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+                self.assertEqual(
+                    project_layout.project_dir("My New Project").name,
+                    "my-new-project",
+                )
+
+    def test_traversal_still_collapses_to_a_safe_leaf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+                for hostile in ("../etc", "..", ".", "", "a/b", ".hidden"):
+                    resolved = project_layout.project_dir(hostile)
+                    self.assertEqual(resolved.parent, root, hostile)
+                    self.assertFalse(resolved.name.startswith("."), hostile)
+
+    def test_the_watcher_never_conjures_an_empty_project(self) -> None:
+        from services.cowork_agent.visualizer.sinks import project_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Agno-RAG-Tester").mkdir()
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+                self.assertTrue(
+                    project_json.fill_identity(
+                        project_layout.xo_dir("Agno-RAG-Tester"), "Agno-RAG-Tester"
+                    )
+                )
+                # Identity landed in the real folder...
+                self.assertTrue(
+                    (root / "Agno-RAG-Tester" / ".xo" / "project.json").is_file()
+                )
+                # ...and no ghost sibling appeared (listing, not exists() —
+                # see test_a_mixed_case_folder_resolves_to_itself).
+                self.assertEqual(
+                    [p.name for p in root.iterdir()], ["Agno-RAG-Tester"]
+                )
+                # ...and an id pointing at nothing writes nothing at all.
+                gone = root / "deleted-project"
+                self.assertFalse(
+                    project_json.fill_identity(gone / ".xo", "deleted-project")
+                )
+                self.assertFalse(gone.exists())
+
+
 class StorageRootBootTests(unittest.TestCase):
     """server.py's roots.env loader — the seam that makes the Setup tab's XO
     root take effect for every tab after a restart."""

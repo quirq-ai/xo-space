@@ -99,8 +99,75 @@ def workspace_xo_dir() -> Path:
 # ── Per-project paths ─────────────────────────────────────────────────────────
 
 
+def _is_safe_segment(value: str) -> bool:
+    """True iff ``value`` is a single, non-hidden path component that can
+    be joined onto the root without escaping it."""
+    if not value or value in (".", ".."):
+        return False
+    if value.startswith("."):
+        return False
+    if "\x00" in value or "/" in value or "\\" in value:
+        return False
+    return Path(value).name == value
+
+
+def resolve_project_dirname(name: str) -> str:
+    """Map a caller-supplied project name onto the **actual** directory
+    name under ``xo_projects_root()``.
+
+    The directory name is the project id (see :func:`list_projects`), and
+    discovery hands that literal name to every other helper here. But not
+    every folder a user drops into the root is already in
+    ``normalize_agent_id`` form: ``Agno-RAG-Tester`` normalises to
+    ``agno-rag-tester``. Normalising unconditionally therefore pointed
+    every write at a *different* path than the one discovery found, and
+    the first write conjured an empty ghost folder holding nothing but
+    ``.xo/`` next to the real project — which then registered as a second,
+    empty project of its own.
+
+    Resolution order:
+
+    1. the literal name, when it is a safe segment exactly matching an
+       existing dir
+    2. an existing dir that normalises to the same id (the reverse lookup,
+       for callers holding an already-normalised id)
+    3. the normalised name — the canonical id for a project that does not
+       exist yet (new-project creation keeps its old behaviour)
+
+    Existence is checked against the directory *listing*, never with a
+    bare ``is_dir()`` probe: on a case-insensitive filesystem
+    (macOS/Windows) probing ``agno-rag-tester`` succeeds when only
+    ``Agno-RAG-Tester`` exists, which would hand back an id that names no
+    on-disk entry. Matching listed names keeps the returned id identical
+    to what discovery reports on every platform.
+
+    Cases 1-2 only ever return the name of a directory that exists in the
+    root, and case 3 is sanitised, so the result is always a safe leaf:
+    callers get the traversal defence ``normalize_agent_id`` gave them.
+    """
+    root = xo_projects_root()
+    normalized = normalize_agent_id(name)
+
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        entries = []
+    dirnames = [
+        e.name for e in entries if e.is_dir() and not e.name.startswith(".")
+    ]
+
+    if _is_safe_segment(name) and name in dirnames:
+        return name
+
+    for dirname in dirnames:
+        if normalize_agent_id(dirname) == normalized:
+            return dirname
+
+    return normalized
+
+
 def project_dir(name: str) -> Path:
-    return xo_projects_root() / normalize_agent_id(name)
+    return xo_projects_root() / resolve_project_dirname(name)
 
 
 def xo_dir(name: str) -> Path:
@@ -156,7 +223,7 @@ def scaffold_project(
 
     Returns the project metadata dict (created or already present).
     """
-    pid = normalize_agent_id(name)
+    pid = resolve_project_dirname(name)
     pdir = project_dir(pid)
     xdir = xo_dir(pid)
 
@@ -233,7 +300,7 @@ def _upsert_metadata(
 
 def load_project(name: str) -> dict | None:
     """Read .xo/project.json for an existing project, or None if absent."""
-    path = project_metadata_path(normalize_agent_id(name))
+    path = project_metadata_path(resolve_project_dirname(name))
     if not path.exists():
         return None
     try:
@@ -245,7 +312,7 @@ def load_project(name: str) -> dict | None:
 
 def project_exists(name: str) -> bool:
     """True iff the project folder has a .xo/project.json record."""
-    return project_metadata_path(normalize_agent_id(name)).exists()
+    return project_metadata_path(resolve_project_dirname(name)).exists()
 
 
 def list_projects() -> list[dict]:
@@ -313,7 +380,7 @@ def list_project_tree(name: str, relative_path: str = "") -> dict | None:
     (hidden entries, agent files at root). This helper only enforces
     path safety.
     """
-    project_id = normalize_agent_id(name)
+    project_id = resolve_project_dirname(name)
     root = project_dir(project_id)
     if not root.is_dir():
         return None
@@ -394,7 +461,7 @@ def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict 
     streaming a 200 MB file into a browser. Decoding is non-strict: a preview
     of a file with one bad byte is more useful than an error.
     """
-    project_id = normalize_agent_id(name)
+    project_id = resolve_project_dirname(name)
     root = project_dir(project_id)
     if not root.is_dir():
         return None
