@@ -124,14 +124,16 @@
   .tv-filter{width:190px;background:var(--bg-3);border:1px solid var(--line);border-radius:7px;
     padding:5px 9px;font-size:12px;color:var(--ink)}
   .tv-filter:focus{outline:none;border-color:#39404d}
-  /* The surface can be wider than the column, so the pane stays full width
-     and scrolls; its left gutter matches the centred header so the root chip
-     starts on the same line as everything else. */
-  .tv-scroll{flex:1;min-height:0;overflow:auto;
-    padding-left:max(26px,calc((100% - 1180px)/2 + 26px));padding-right:26px;
+  /* Not a scroller: the pane clips a surface the camera pans (drag) and
+     zooms (wheel, cursor-anchored) via a transform — the same read as the
+     Graph lens. The left gutter is the camera's initial x (tree.js), so the
+     root chip starts on the header's line. */
+  .tv-canvas{flex:1;min-height:0;overflow:hidden;position:relative;
+    cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;
     /* a faint vignette so the canvas reads as a surface you pan around */
     background:radial-gradient(120% 90% at 8% 40%,rgba(168,217,79,.035),transparent 62%)}
-  .tv-surface{position:relative}
+  .tv-canvas.is-panning{cursor:grabbing}
+  .tv-surface{position:absolute;left:0;top:0;transform-origin:0 0}
 
   /* ---- branches ---- */
   .tv-links{position:absolute;inset:0;pointer-events:none;overflow:visible}
