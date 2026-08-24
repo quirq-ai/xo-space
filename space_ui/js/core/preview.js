@@ -44,6 +44,10 @@ export function initPreview(){
   body=el.querySelector('#preview-body');
   el.addEventListener('click',onClick);
   addEventListener('space:preview-file',e=>open(e.detail||{}));
+  /* Files lenses share a project tab; any other tab leaves preview context behind. */
+  addEventListener('space:view',e=>{
+    if(e.detail?.tab!=='projects'&&el.classList.contains('is-open'))close();
+  });
   addEventListener('keydown',e=>{
     /* Escape closes the preview first; the graph's own Escape handling only
        gets it once nothing is being previewed. */
