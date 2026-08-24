@@ -462,6 +462,7 @@ async function saveRuntime(event){
     return;
   }
   button.disabled=true;
+  button.classList.add('is-busy');
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config',{
     method:'PUT',
@@ -473,6 +474,7 @@ async function saveRuntime(event){
     }
   });
   button.disabled=false;
+  button.classList.remove('is-busy');
   button.textContent='Save runtime';
   if(!res.ok){
     showRuntimeError(res.error);
@@ -490,6 +492,7 @@ async function saveRoots(event){
   error.textContent='';
   const button=root.querySelector('#roots-save');
   button.disabled=true;
+  button.classList.add('is-busy');
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config/roots',{
     method:'PUT',
@@ -499,6 +502,7 @@ async function saveRoots(event){
     }
   });
   button.disabled=false;
+  button.classList.remove('is-busy');
   button.textContent='Save roots';
   if(!res.ok){
     error.textContent=res.error||'The roots could not be saved.';
@@ -534,10 +538,12 @@ async function restartRuntime(){
   if(!confirm('Restart Quirq now? The page will reconnect automatically.'))return;
   const button=root.querySelector('#runtime-restart');
   button.disabled=true;
+  button.classList.add('is-busy');
   button.textContent='Restarting…';
   const res=await apiFetch('/api/runtime-config/restart',{method:'POST'});
   if(!res.ok){
     button.disabled=false;
+    button.classList.remove('is-busy');
     button.textContent='Apply & restart';
     showRuntimeError(res.error);
     return;
@@ -555,6 +561,7 @@ async function restartRuntime(){
     }
   }
   button.disabled=false;
+  button.classList.remove('is-busy');
   button.textContent='Retry restart';
   showRuntimeError('The restart is taking longer than expected. Refresh status after the container becomes healthy.');
 }
