@@ -70,13 +70,18 @@ function onPointerDown(e){
   if(!c||e.button!==0||!cam)return;
   panning=true;panMoved=false;
   downX=px=e.clientX;downY=py=e.clientY;
-  c.classList.add('is-panning');
-  c.setPointerCapture(e.pointerId);
 }
 function onPointerMove(e){
   if(!panning)return;
-  /* 4px of slack so a click on a chip is a click, not a 0px pan */
-  if(Math.hypot(e.clientX-downX,e.clientY-downY)>4)panMoved=true;
+  /* 4px of slack so a click on a chip is a click, not a 0px pan. Capture
+     only once the pan is real: a captured pointer retargets the synthesized
+     click at the canvas, which would eat every chip's expand click. */
+  if(!panMoved){
+    if(Math.hypot(e.clientX-downX,e.clientY-downY)<=4)return;
+    panMoved=true;
+    const c=canvasEl();
+    if(c){c.classList.add('is-panning');c.setPointerCapture(e.pointerId);}
+  }
   cam.x+=e.clientX-px;cam.y+=e.clientY-py;
   px=e.clientX;py=e.clientY;
   applyCam();

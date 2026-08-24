@@ -8,7 +8,7 @@ import {initPreview} from './core/preview.js?v=20260816-preview1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260817-lens1';
 import sessionsView from './views/sessions.js?v=20260817-xodata1';
 import projectsView from './views/projects.js?v=20260817-plural1';
-import treeView from './views/tree.js?v=20260824-treecam1';
+import treeView from './views/tree.js?v=20260824-treecam2';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260817-wikifix1';
