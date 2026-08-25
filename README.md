@@ -15,7 +15,7 @@ One workspace, many runtimes — Claude Code, OpenClaw, Hermes, Antigravity, and
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-Keep the badge, but add a top-level `LICENSE` file with the MIT text so the badge and the #license anchor point at something real. Until it exists, the anchor text should not link the word LICENSE.
+[![License](https://img.shields.io/github/license/quirq-ai/xo-space?style=flat-square)](LICENSE)
 [![Wiki](https://img.shields.io/badge/docs-wiki-2C2C2C?style=flat-square&logo=github)](https://github.com/quirq-ai/xo-space/wiki)
 
 </div>
@@ -576,9 +576,7 @@ Conventions:
 
 ## License
 
-MIT is the intended licence, but no `LICENSE` file has landed in the repository
-yet, so GitHub still reports this repo as unlicensed. Add the MIT text with the
-correct copyright holder and this section becomes one line.
+Licensed under the [MIT License](LICENSE).
 
 ---
 
