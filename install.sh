@@ -222,6 +222,20 @@ check_optional_tools() {
 }
 
 # ==============================================================
+# Transparency — what this install sends anywhere, printed on
+# every run so it is never a surprise. Keep in step with the
+# README section "What leaves your machine".
+# ==============================================================
+print_reporting_notice() {
+    printf '\nUsage reporting:\n'
+    printf '  While signed in to XO (XO_API_KEY set, or the in-app sign-in), Quirq sends\n'
+    printf '  one summary a day to xo-swarm-api: token counts, estimated cost, and\n'
+    printf '  message / session / tool-call counts per day, tagged with the workspace id.\n'
+    printf '  Never prompts, responses, file contents, or paths. Signed out: nothing is sent.\n'
+    printf '  Details: README, "What leaves your machine".\n'
+}
+
+# ==============================================================
 # Root directories — copied from install.sh so the two scripts
 # resolve, validate and relocate roots identically.
 # ==============================================================
@@ -462,6 +476,10 @@ QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 # server's own default with an empty string.
 # ANTHROPIC_API_KEY=
 # CLAUDE_CODE_OAUTH_TOKEN=
+# Signing in (XO_API_KEY here, or the in-app sign-in) turns on the daily
+# usage report to xo-swarm-api — token counts, costs and session/tool counts,
+# never prompts or file contents. Unset, nothing is sent. See the README
+# section "What leaves your machine".
 # XO_API_KEY=
 # CHAT_API_BASE_URL=https://api-swarm-beta.xo.builders
 ENVEOF
@@ -572,6 +590,7 @@ main() {
     printf '\nQuirq source: %s (%s)\nXO projects: %s\nQuirq state: %s\n' \
         "$REPO_DIR" "$source_label" "$projects_root" "$state_root"
     check_optional_tools
+    print_reporting_notice
 
     ensure_port_available "$HOST" "$PORT"
     start_server "$projects_root" "$state_root"

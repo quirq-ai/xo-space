@@ -129,7 +129,10 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
     from routers.auth.auth import get_auth_token
 
     token = get_auth_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if not token:
+        print(f"{_timestamp_prefix()} usage_sync: not authenticated — skipping report (nothing sent)")
+        return
+    headers = {"Authorization": f"Bearer {token}"}
     url = f"{CHAT_API_BASE_URL.rstrip('/')}{USAGE_REPORT_PATH}"
 
     try:

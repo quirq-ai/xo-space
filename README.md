@@ -129,7 +129,7 @@ Every coding agent ships with its own session store, its own auth, its own todo 
 - 🔌 **Connector hub** — Google Drive, OneDrive, GitHub (PAT + `gh` device flow), Vercel (OAuth 2.1 PKCE + Dynamic Client Registration), Manus. Each is dropped into `mcp-tokens.json` or `rclone.conf` and survives restarts.
 - 🔐 **Clerk-backed identity** — browser poll-token flow with cowork-api as the trusted intermediary; tokens never reach the frontend.
 - 📈 **Unified usage** — `/api/usage` reads JSONL from every runtime, returns one normalised shape with tokens, cost, model breakdowns, and response-time percentiles.
-- 🛰️ **Local-first** — runs entirely on your machine. The only *unprompted* cloud call is to `xo-swarm-api` for identity verification and a daily usage sync (`services/usage_sync.py` → `POST ${CHAT_API_BASE_URL}/usage/report`). Everything else happens because you asked: a `git fetch` when Setup checks for an update, GitHub when you back a project up, whichever provider you connect. No telemetry, no exfiltration.
+- 🛰️ **Local-first** — runs entirely on your machine. The one *unprompted* cloud call is a daily usage summary to `xo-swarm-api`, sent only when you are signed in (`XO_API_KEY`, or the in-app sign-in) and never containing prompts, responses, file contents, or paths; signed out, nothing is sent. Everything else happens because you asked: a `git fetch` when Setup checks for an update, GitHub when you back a project up, whichever provider you connect. The complete inventory is in [What leaves your machine](#what-leaves-your-machine).
 
 ---
 
@@ -401,6 +401,41 @@ curl -sX POST http://localhost:5002/api/files/mkdir \
 The bundled template at `services/cowork_agent/project_template/` (override with `XO_PROJECT_TEMPLATE`) materialises every file above. The path must be a direct child of the XO root — anything else is a 400 — and an existing path is a 409, so the route creates only new projects. The scaffolder itself is idempotent: re-running it over an existing folder fills in missing files and never overwrites one.
 
 ---
+
+## What leaves your machine
+
+`xo-space` is local-first. This is the complete list of what it sends anywhere,
+so the decision to run it is made with the facts.
+
+**A usage report to `xo-swarm-api` — only while you are signed in.** Once a day
+(`USAGE_SYNC_HOUR_UTC`, default 02:00 UTC — plus a one-time backfill the first
+time an authenticated run happens), `services/usage_sync.py` POSTs a per-day
+summary to `${CHAT_API_BASE_URL}/usage/report`: token counts (input, output,
+cache read, cache write), the estimated cost, counts of messages, sessions and
+tool calls, a per-model and per-tool breakdown — tagged with the workspace id
+and name and the project id from the environment. It never contains prompts,
+responses, file contents, or file paths. It is sent only when a token exists
+(`XO_API_KEY` set, or the in-app sign-in), because that is the account the
+report is filed under; with no token, nothing is sent at all — not even the
+zero-valued placeholder. Leaving `XO_API_KEY` unset is the off switch.
+
+**Calls that happen because you asked.** A `git fetch` when Setup checks for an
+update; GitHub when you back a project up or restore one; whichever provider
+you connect (Google Drive, OneDrive, Vercel, Manus). None of these run
+unprompted.
+
+**Stays on disk.** The watcher's `.xo/` state, everything under `.quirq/`, and
+the session telemetry the Sessions tab shows: `xo-space` reads those files
+locally and does not upload them.
+
+**The installer.** `install.sh` clones this repository, downloads
+[uv](https://docs.astral.sh/uv/) from astral.sh if it is missing, and installs
+the Python dependencies — nothing else. Fetching the bootstrap at
+`https://quirq.ai/install` is counted once, anonymously (user-agent only, no
+IP geolocation), by the website that serves it.
+
+`install.sh` prints this summary and the current reporting status on every
+run, so it is never a surprise.
 
 ## Configuration
 
