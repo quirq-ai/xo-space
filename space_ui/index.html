@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
 <link rel="stylesheet" href="css/graph.css?v=20260817-lens1">
 <link rel="stylesheet" href="css/sessions.css?v=20260725-sessions2">
-<link rel="stylesheet" href="css/timeline.css?v=20260813-timeline2">
+<link rel="stylesheet" href="css/timeline.css?v=20260825-timeline1">
 <link rel="stylesheet" href="css/chrome.css?v=20260813-timeline2">
 <link rel="stylesheet" href="css/projects.css?v=20260824-treecam1">
 <link rel="stylesheet" href="css/wiki.css?v=20260725-collaboration1">
@@ -82,6 +82,8 @@
         <div class="sub" id="tsub">Scrub through the workspace as it grew. Open any cluster from the graph to watch its run unfold here.</div>
       </div>
       <div class="grow"></div>
+      <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…"
+        autocomplete="off" spellcheck="false" aria-label="Filter timeline lanes by project name">
       <div class="atlas-lens-switch tmode" id="tmode" aria-label="Timeline mode" hidden>
         <button class="is-on" type="button" data-tmode="file">By file</button>
         <button type="button" data-tmode="project">By project</button>
@@ -93,6 +95,10 @@
     <div class="scrubrow">
       <input id="tscrub" type="range" min="0" max="1000" value="1000">
       <div class="ticks"><span>JUN 2025</span><span>SEP</span><span>DEC</span><span>MAR 2026</span><span>JUL 2026</span></div>
+    </div>
+    <div class="trange">
+      <div class="tyears" id="tyears" aria-label="Jump to a year"></div>
+      <div class="thint">wheel to zoom the axis · drag to pan · shift+wheel for lanes</div>
     </div>
     <div id="tmilestone"></div>
     <div id="tplot"></div>
