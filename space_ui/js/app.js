@@ -5,7 +5,7 @@ import {registerView,startRegistry} from './core/registry.js?v=20260813-timeline
 import {initServerWidget} from './core/server-widget.js';
 import {initLensSwitch} from './core/lens-switch.js?v=20260817-lens1';
 import {initPreview} from './core/preview.js?v=20260825-previewscope1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-timeline1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-timeline2';
 import sessionsView from './views/sessions.js?v=20260817-xodata1';
 import projectsView from './views/projects.js?v=20260817-plural1';
 import treeView from './views/tree.js?v=20260824-treecam2';
