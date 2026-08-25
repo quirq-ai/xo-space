@@ -21,7 +21,7 @@ function rel(iso){
 }
 function panelFail(res){
   if(res.notImplemented)return'<div class="prj-note">not available for the active agent</div>';
-  if(res.offline)return'<div class="prj-note">xo-cowork-api is unreachable</div>';
+  if(res.offline)return'<div class="prj-note">xo-space is unreachable</div>';
   return'<div class="prj-note">'+esc(res.error)+'</div>';
 }
 
@@ -288,7 +288,7 @@ function rowsHTML(rows){
         +(items.length?'<b>No project matches “'+esc(filter)+'”</b>'
             +'<p>Clear the filter to see all '+items.length+'.</p>'
           :'<b>No projects in this workspace yet</b>'
-            +'<p>Create one through the xo-cowork-api; it appears here as soon as the '
+            +'<p>Create one through the xo-space; it appears here as soon as the '
             +'folder exists under the XO root.</p>')
       +'</div>');
 }

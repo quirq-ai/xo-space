@@ -70,7 +70,7 @@ async function open({project,path,name}){
   if(mine!==token)return; /* a newer file is on screen */
   if(!res.ok){
     render('<div class="pv-note">'+esc(
-      res.offline?'xo-cowork-api is unreachable'
+      res.offline?'xo-space is unreachable'
       :res.status===415?'No text preview for this file type.'
       :res.error||'Could not read this file.')+'</div>');
     return;

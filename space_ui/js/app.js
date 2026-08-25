@@ -2,13 +2,13 @@
    contract (see core/registry.js), then import + register it here — no
    bundler, so no file globbing; this import list is the one manual step. */
 import {registerView,startRegistry} from './core/registry.js?v=20260813-timeline2';
-import {initServerWidget} from './core/server-widget.js';
+import {initServerWidget} from './core/server-widget.js?v=20260825-rename1';
 import {initLensSwitch} from './core/lens-switch.js?v=20260817-lens1';
-import {initPreview} from './core/preview.js?v=20260825-previewscope1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-timeline4';
-import sessionsView from './views/sessions.js?v=20260817-xodata1';
-import projectsView from './views/projects.js?v=20260817-plural1';
-import treeView from './views/tree.js?v=20260824-treecam2';
+import {initPreview} from './core/preview.js?v=20260825-rename1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-rename1';
+import sessionsView from './views/sessions.js?v=20260825-rename1';
+import projectsView from './views/projects.js?v=20260825-rename1';
+import treeView from './views/tree.js?v=20260825-rename1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260825-install1';

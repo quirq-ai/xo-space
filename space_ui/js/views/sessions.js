@@ -160,7 +160,7 @@ function render(){
   if(failed){
     const off=failed==='\x00offline';
     wrap.innerHTML='<div class="sess-err">'+(off
-      ?'<b>xo-cowork-api is unreachable</b> — the request never reached the server '
+      ?'<b>xo-space is unreachable</b> — the request never reached the server '
         +'(stopped or restarting; the footer pill tracks it). Not a telemetry-source problem. '
       :'<b>Could not load .xo/sessions.json</b> ('+esc(failed)+'). '
         +'The API reads local telemetry for each runtime (Claude Code: <b>ARGUS_DB</b>; Codex: <b>CODEX_HOME</b>; Cursor: <b>CURSOR_HOME</b>). ')
@@ -367,7 +367,7 @@ function renderPrompts(s){
       host.innerHTML='<div class="sess-note">'+(res.status===404&&res.error!=='Not Found'
         ?'No transcript found for this session (its log may have been cleaned up).'
         :res.status===404
-          ?'This server does not have the prompts endpoint yet — restart xo-cowork-api to pick it up.'
+          ?'This server does not have the prompts endpoint yet — restart xo-space to pick it up.'
           :'Could not load prompts ('+esc(res.error||'error')+').')+'</div>';
       return;
     }

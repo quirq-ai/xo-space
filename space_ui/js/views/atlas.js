@@ -73,7 +73,7 @@ function renderNoData(el,dataset){
   box.innerHTML='<div class="eyebrow">No data source</div>'+
     '<h1>Space reads its map from a local file.</h1>'+
     '<p>This page loads <b>'+source.url+'</b> — a file in the workspace <b>.xo</b> directory — from this local server, so the data stays on this machine. Start the workspace server:</p>'+
-    '<pre>cd xo-cowork-api && ./cowork-api.sh start</pre>'+
+    '<pre>cd xo-space && ./cowork-api.sh start</pre>'+
     '<p>then open <b>http://localhost:5002/space/</b></p>'+
     '<button id="nodata-retry">Retry</button>';
   el.appendChild(box);
@@ -959,7 +959,7 @@ function shapeTodos(res){
   if(!res.ok){
     return{rows:[],state:'error',
       note:res.notImplemented?'todos are not available for the active agent'
-        :res.offline?'xo-cowork-api is unreachable':String(res.error||'could not read todos')};
+        :res.offline?'xo-space is unreachable':String(res.error||'could not read todos')};
   }
   const rows=[];
   for(const [sid,sess] of Object.entries(res.data.sessions||{})){

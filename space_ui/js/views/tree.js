@@ -179,7 +179,7 @@ async function load(){
   loading=false;
   if(!res.ok){
     root.querySelector('.tv').innerHTML=
-      '<div class="prj-note">'+esc(res.offline?'xo-cowork-api is unreachable':res.error)+'</div>';
+      '<div class="prj-note">'+esc(res.offline?'xo-space is unreachable':res.error)+'</div>';
     return;
   }
   model=build(res.data);

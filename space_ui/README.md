@@ -7,7 +7,7 @@ has no tab of its own and opens from Setup's header.
 
 This folder is a bundled snapshot of the xo-atlas UI (originally a standalone
 folder with no remote), trimmed to the single endpoint-driven page and served
-by this API — so every workspace that runs xo-cowork-api gets the graph with
+by this API — so every workspace that runs xo-space gets the graph with
 zero configuration.
 
 ## Files
