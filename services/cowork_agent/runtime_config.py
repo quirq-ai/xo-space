@@ -38,7 +38,7 @@ ROOT_CONFIG_KEYS = frozenset({"XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT"})
 # The canonical one-liner from the website, not a raw GitHub URL: the site
 # bootstrapper follows repo renames and branch selection, so this string
 # cannot rot the way a hardcoded raw.githubusercontent.com path did.
-INSTALL_COMMAND = "curl -fsSL https://www.quirq.ai/install | sh"
+INSTALL_COMMAND = "curl -fsSL quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000

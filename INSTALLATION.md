@@ -3,7 +3,7 @@
 Pick a directory to keep Quirq in, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/quirq-ai/xo-space/main/install.sh | bash
+curl -fsSL quirq.ai/install | sh
 ```
 
 Open <http://localhost:5002/space/>.
@@ -109,7 +109,7 @@ Every value is overridable from the environment:
 For example:
 
 ```bash
-curl -fsSL <url>/install.sh | PORT=8080 XO_PROJECTS_ROOT=/absolute/path bash
+curl -fsSL quirq.ai/install | PORT=8080 XO_PROJECTS_ROOT=/absolute/path sh
 ```
 
 On first run the installer writes `quirq/.env` recording exactly what it used,

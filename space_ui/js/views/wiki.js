@@ -676,7 +676,7 @@ function installationArticle(){
           workspace: the checkout lands beside your projects, and the
           directory itself becomes your projects root.</p></li>
           <li><b>Run the installer.</b>
-          <code>curl -fsSL https://www.quirq.ai/install | sh</code>
+          <code>curl -fsSL quirq.ai/install | sh</code>
           <p>The short URL serves a small POSIX-sh bootstrap: it checks for
           <code>curl</code> and <code>bash</code>, downloads
           <code>install.sh</code> to a temporary file rather than piping it
@@ -753,7 +753,7 @@ function installationArticle(){
           <div><b>Changing the port</b><p>Every value is overridable from the
           environment, but with a piped command the assignment belongs to the
           shell that runs the installer, not to <code>curl</code>:
-          <code>curl -fsSL https://www.quirq.ai/install | PORT=8080 sh</code>.
+          <code>curl -fsSL quirq.ai/install | PORT=8080 sh</code>.
           First-run choices are recorded in the checkout's <code>.env</code>,
           written once and never rewritten.</p></div>
           <div><b>Port 5002 is already busy</b><p>The installer fails clearly

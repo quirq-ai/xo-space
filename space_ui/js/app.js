@@ -11,7 +11,7 @@ import projectsView from './views/projects.js?v=20260817-plural1';
 import treeView from './views/tree.js?v=20260824-treecam2';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260817-wikifix1';
+import wikiView from './views/wiki.js?v=20260825-install1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260825-busycursor1';
 
