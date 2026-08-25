@@ -421,11 +421,6 @@ nothing else is sent. With the key empty, missing, or invalid, nothing is
 tracked — not even the zero-valued placeholder. Leaving `XO_API_KEY` unset is
 the off switch.
 
-**Calls that happen because you asked.** A `git fetch` when Setup checks for an
-update; GitHub when you back a project up or restore one; whichever provider
-you connect (Google Drive, OneDrive, Vercel, Manus). None of these run
-unprompted.
-
 **Stays on disk.** The watcher's `.xo/` state, everything under `.quirq/`, and
 the session telemetry the Sessions tab shows: `xo-space` reads those files
 locally and does not upload them.
