@@ -1461,6 +1461,22 @@ function buildTimeline(){
      columns rotate their headers, which needs a taller top margin. */
   const rotated=colW<64;
   const M={t:rotated?76:34,r:16,b:18,l:64};
+  /* Three layers, bottom to top: bands and grid, then the data clipped to
+     the plot band (a dot on the first row cannot spill into the headers,
+     one on the last cannot bury the commit counts), then the labels with
+     a dark halo. Zoom changes what the data does; the label zones stay
+     reserved regardless. */
+  const defs=document.createElementNS(SVGNS,'defs');
+  const clip=document.createElementNS(SVGNS,'clipPath');
+  clip.setAttribute('id','tclip');
+  const clipRect=document.createElementNS(SVGNS,'rect');
+  clipRect.setAttribute('x',0);clipRect.setAttribute('y',M.t-6);
+  clipRect.setAttribute('width',SW);clipRect.setAttribute('height',H-M.t-M.b+12);
+  clip.appendChild(clipRect);defs.appendChild(clip);tsvg.appendChild(defs);
+  const plotG=document.createElementNS(SVGNS,'g');
+  plotG.setAttribute('clip-path','url(#tclip)');
+  const labelsG=document.createElementNS(SVGNS,'g');
+  labelsG.setAttribute('style','paint-order:stroke;stroke:rgba(11,13,16,.9);stroke-width:3px;stroke-linejoin:round');
   const yOf=t=>M.t+(T1-t)/(T1-T0)*(H-M.t-M.b);
   /* column bands + headers */
   lanes.forEach((cat,i)=>{
@@ -1479,8 +1495,13 @@ function buildTimeline(){
     }
     tsvg.appendChild(band);
     const name=CAT[cat].name;
-    const label=name.length>18?name.slice(0,17)+'…':name;
+    /* fit the label to the lane, not to a fixed count: an 18-character
+       name is ~125px upright and collided with its neighbours */
+    const maxChars=rotated?18:Math.max(4,Math.floor((colW-8)/7.2));
+    const label=name.length>maxChars?name.slice(0,Math.max(1,maxChars-1))+'…':name;
     const lb=document.createElementNS(SVGNS,'text');
+    const full=document.createElementNS(SVGNS,'title');
+    full.textContent=name;lb.appendChild(full);
     if(rotated){
       const ax=x+colW/2+4,ay=M.t-10;
       lb.setAttribute('x',ax);lb.setAttribute('y',ay);
@@ -1492,8 +1513,8 @@ function buildTimeline(){
       lb.setAttribute('text-anchor','middle');
       lb.setAttribute('style',`font:italic 500 13px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
     }
-    lb.textContent=label;
-    tsvg.appendChild(lb);
+    lb.appendChild(document.createTextNode(label));
+    labelsG.appendChild(lb);
     if(!live){
       /* one line, centred in the empty column, saying why it is empty */
       const why=document.createElementNS(SVGNS,'text');
@@ -1501,7 +1522,7 @@ function buildTimeline(){
       why.setAttribute('text-anchor','middle');
       why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
       why.textContent=colW>=104?'NO GIT HISTORY':colW>=64?'NO HISTORY':'—';
-      tsvg.appendChild(why);
+      labelsG.appendChild(why);
     }
     if(tMode==='project'&&live){
       const total=(GITHIST[cat]||[]).reduce((sum,day)=>sum+day.n,0);
@@ -1510,7 +1531,7 @@ function buildTimeline(){
       sub.setAttribute('text-anchor','middle');
       sub.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.06em;fill:#56534b`);
       sub.textContent=colW>=70?`${total} COMMIT${total===1?'':'S'}`:String(total);
-      tsvg.appendChild(sub);
+      labelsG.appendChild(sub);
     }
   });
   /* month grid: horizontal rules, labeled in the left margin */
@@ -1549,6 +1570,7 @@ function buildTimeline(){
     c.setAttribute('fill','#3a4136');c.dataset.milestone='1';c.dataset.t=+new Date(m.d+'T00:00:00');
     tsvg.appendChild(c);
   });
+  tsvg.appendChild(plotG);
   if(tMode==='file'){
   /* beeswarm: the date sets the row (y); collisions fan sideways inside the
      column, spilling downward (older) when a column is packed */
@@ -1571,7 +1593,7 @@ function buildTimeline(){
   });
   const dotsG=document.createElementNS(SVGNS,'g');
   dotsG.setAttribute('id','tdots');
-  tsvg.appendChild(dotsG);
+  plotG.appendChild(dotsG);
   LEAVES.forEach(n=>{
     if(!n.date){n.tEl=null;return;} /* git-dated artifacts only */
     const col=CAT[n.cat].color;
@@ -1601,7 +1623,7 @@ function buildTimeline(){
   /* trace layer */
   const traceG=document.createElementNS(SVGNS,'g');
   traceG.setAttribute('id','ttrace');
-  tsvg.insertBefore(traceG,dotsG);
+  plotG.insertBefore(traceG,dotsG);
   }else{
   /* parallel git histories: one column per project, one dot per commit-day.
      Radius grows with the square root of that day's commit count, capped so
@@ -1613,7 +1635,7 @@ function buildTimeline(){
     base.setAttribute('x1',baseX);base.setAttribute('x2',baseX);
     base.setAttribute('y1',M.t-6);base.setAttribute('y2',H-M.b+6);
     base.setAttribute('stroke',hexA(col,.18));base.setAttribute('stroke-width',1);
-    tsvg.appendChild(base);
+    plotG.appendChild(base);
     (GITHIST[cat]||[]).forEach(day=>{
       const t=+new Date(day.d+'T00:00:00');
       const dot=document.createElementNS(SVGNS,'circle');
@@ -1622,7 +1644,7 @@ function buildTimeline(){
       dot.setAttribute('r',r);dot.setAttribute('fill',col);
       dot.dataset.hist=String(histDots.length);
       dot.style.cursor='pointer';
-      tsvg.appendChild(dot);
+      plotG.appendChild(dot);
       histDots.push({el:dot,t,cat,day});
     });
   });
@@ -1634,6 +1656,7 @@ function buildTimeline(){
   sweep.setAttribute('stroke',ACCENT);sweep.setAttribute('stroke-width',1.2);
   sweep.setAttribute('stroke-dasharray','2 4');sweep.setAttribute('opacity',.55);
   tsvg.appendChild(sweep);
+  tsvg.appendChild(labelsG);
   tsvg._yOf=yOf;
   renderTimelineState();
 }
