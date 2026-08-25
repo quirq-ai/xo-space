@@ -204,10 +204,10 @@ function commitLine(info){
 
 async function checkForUpdate(){
   const button=root.querySelector('#update-check');
-  button.disabled=true;
+  setBusy(button,true);
   renderUpdateState('<div class="setup-empty">Asking the git remote…</div>','Checking');
   const res=await apiFetch('/space/update/status');
-  button.disabled=false;
+  setBusy(button,false);
   if(!res.ok){
     renderUpdateState(`<div class="setup-empty">${esc(res.error||'The version check failed.')}</div>`,'Error');
     return;
@@ -241,10 +241,10 @@ async function checkForUpdate(){
 
 async function applyUpdate(){
   const applyButton=root.querySelector('#update-apply');
-  applyButton.disabled=true;
+  setBusy(applyButton,true);
   renderUpdateState('<div class="setup-empty">Fast-forwarding the checkout…</div>','Updating');
   const res=await apiFetch('/space/update/apply',{method:'POST'});
-  applyButton.disabled=false;
+  setBusy(applyButton,false);
   applyButton.hidden=true;
   if(!res.ok){
     renderUpdateState(`<div class="setup-empty">${esc(res.error||'The update failed.')}</div>`,'Error');
@@ -312,7 +312,14 @@ function renderRuntime(){
   const restartButton=root.querySelector('#runtime-restart');
   restartButton.hidden=!runtimeData.restart_required;
   restartButton.disabled=!runtimeData.restart_supported;
+  /* a re-render after a restart lands on the same element: nothing is in
+     flight any more, whatever the previous pass left on it */
+  restartButton.classList.remove('is-busy');
   restartButton.textContent=runtimeData.restart_supported?'Apply & restart':'Restart from terminal';
+  /* the disabled state is the instruction; say so on hover instead of
+     letting a dead button look like a stuck one */
+  restartButton.title=runtimeData.restart_supported?''
+    :'This process is not installer-managed — restart it from the terminal where you launched it.';
 
   const alert=root.querySelector('#setup-alert');
   const rootPending=Boolean(runtimeData.roots?.change_required);
@@ -461,7 +468,7 @@ async function saveRuntime(event){
     showRuntimeError('Watcher interval must be between 0.25 and 60 seconds.');
     return;
   }
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config',{
     method:'PUT',
@@ -472,7 +479,7 @@ async function saveRuntime(event){
       watcher_source_mode:root.querySelector('#runtime-source-mode').value
     }
   });
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Save runtime';
   if(!res.ok){
     showRuntimeError(res.error);
@@ -489,7 +496,7 @@ async function saveRoots(event){
   error.hidden=true;
   error.textContent='';
   const button=root.querySelector('#roots-save');
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config/roots',{
     method:'PUT',
@@ -498,7 +505,7 @@ async function saveRoots(event){
       quirq_state_root:root.querySelector('#quirq-root-input').value.trim()
     }
   });
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Save roots';
   if(!res.ok){
     error.textContent=res.error||'The roots could not be saved.';
@@ -533,11 +540,11 @@ async function restartRuntime(){
   }
   if(!confirm('Restart Quirq now? The page will reconnect automatically.'))return;
   const button=root.querySelector('#runtime-restart');
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Restarting…';
   const res=await apiFetch('/api/runtime-config/restart',{method:'POST'});
   if(!res.ok){
-    button.disabled=false;
+    setBusy(button,false);
     button.textContent='Apply & restart';
     showRuntimeError(res.error);
     return;
@@ -554,7 +561,7 @@ async function restartRuntime(){
       return;
     }
   }
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Retry restart';
   showRuntimeError('The restart is taking longer than expected. Refresh status after the container becomes healthy.');
 }
@@ -657,10 +664,10 @@ async function saveSecret(event){
 
 async function removeSecret(key,button){
   if(!confirm('Remove '+key+'? The saved value cannot be recovered.'))return;
-  button.disabled=true;
+  setBusy(button,true);
   const res=await apiFetch('/api/secrets/'+encodeURIComponent(key),{method:'DELETE'});
   if(!res.ok){
-    button.disabled=false;
+    setBusy(button,false);
     showSecretError(res.error);
     return;
   }
@@ -670,11 +677,21 @@ async function removeSecret(key,button){
 }
 
 function setSecretBusy(busy){
-  secretSaveButton.disabled=busy;
-  secretCancelButton.disabled=busy;
+  setBusy(secretSaveButton,busy);
+  setBusy(secretCancelButton,busy);
   keyInput.disabled=busy;
   valueInput.disabled=busy;
   secretSaveButton.textContent=busy?'Saving…':(editingKey?'Replace value':'Save credential');
+}
+
+/* Disabled is not busy. A button that cannot act here (the restart on a
+   process the installer does not manage) and one that is mid-request look
+   identical to :disabled, but only the second has anything to wait for —
+   the first is an instruction. Every in-flight path goes through here so
+   the wait cursor means exactly one thing. */
+function setBusy(button,busy){
+  button.disabled=busy;
+  button.classList.toggle('is-busy',busy);
 }
 
 function showRuntimeError(message){
