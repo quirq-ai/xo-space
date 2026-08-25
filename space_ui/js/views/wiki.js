@@ -431,7 +431,7 @@ const TAB_GUIDES={
     ],
     checks:[
       ['Root not applied','Saving only queues it. Restart the server (or rerun the displayed installer) to boot on the new roots; every tab then reads the same XO root.'],
-      ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first.'],
+      ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first. When a runtime or its CLI is missing, the card links to that runtime’s own install docs.'],
       ['Sessions missing','Confirm the native runtime directory is mounted and watcher coverage includes it.'],
       ['Secret value hidden','That is intentional; replace the value or remove the variable.']
     ],

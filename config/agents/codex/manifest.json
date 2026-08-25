@@ -1,6 +1,7 @@
 {
   "name": "codex",
   "binary": "codex",
+  "install_url": "https://github.com/openai/codex#readme",
   "home_dir": "~/.codex",
   "env_file": "~/.codex/.env",
   "config_file": "~/.codex/config.toml",

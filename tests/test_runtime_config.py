@@ -18,6 +18,7 @@ def _manifest(name: str, home: Path) -> SimpleNamespace:
         binary=f"{name}-bin",
         home_dir=home,
         raw={
+            "install_url": "https://example.test/install",
             "runtime_setup": {
                 "session_globs": ["sessions/**/*.jsonl"],
                 "secrets": [
@@ -210,6 +211,24 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertTrue(rows[0]["watched"])
             self.assertTrue(rows[0]["secrets"][0]["configured"])
             self.assertNotIn("redacted", repr(rows))
+            # the manifest's own install docs ride along for the Setup card
+            self.assertEqual(rows[0]["install_url"], "https://example.test/install")
+
+    def test_source_without_install_url_reports_none(self) -> None:
+        """No manifest field → no link; the card must not invent one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = _manifest("bare", Path(tmp) / "runtime")
+            del manifest.raw["install_url"]
+            with (
+                patch.object(runtime_config, "all_agents", return_value=[manifest]),
+                patch.object(runtime_config, "get_active_agent", return_value=manifest),
+                patch.object(runtime_config, "load_env_entries", return_value=[]),
+                patch.object(runtime_config.shutil, "which", return_value=None),
+            ):
+                rows = runtime_config.runtime_sources()
+
+            self.assertIsNone(rows[0]["install_url"])
+            self.assertFalse(rows[0]["binary_available"])
 
     def test_applied_roots_come_from_the_shared_project_layout_helper(self) -> None:
         """Setup must report the root the rest of the app resolves, not a

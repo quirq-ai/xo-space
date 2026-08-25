@@ -438,6 +438,13 @@ function renderSources(){
             source.binary_available?'good':'muted'
           )
           +fact(source.session_files+' session file'+(source.session_files===1?'':'s'),source.session_files?'good':'muted')
+          /* a Missing / CLI unavailable badge is a dead end without a way
+             forward: link the runtime's own install docs when the manifest
+             names them, only while something is actually absent */
+          +((!source.home?.exists||!source.binary_available)&&source.install_url
+            ?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">'
+              +'Install '+esc(prettyName(source.name))+' &#8599;</a>'
+            :'')
         +'</div>'
         +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'not reported')+'</code></div>'
         +'<div class="source-path"><span>Container</span><code>'+esc(source.home?.container_path||'not reported')+'</code></div>'

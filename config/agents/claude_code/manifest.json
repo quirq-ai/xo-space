@@ -1,6 +1,7 @@
 {
   "name": "claude_code",
   "binary": "claude",
+  "install_url": "https://docs.claude.com/en/docs/claude-code/setup",
   "home_dir": "~/.claude",
   "env_file": "~/.claude/.env",
   "config_file": "~/.claude/settings.json",

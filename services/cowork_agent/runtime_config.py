@@ -541,6 +541,9 @@ def runtime_sources() -> list[dict[str, Any]]:
                 "binary": manifest.binary,
                 "binary_available": shutil.which(manifest.binary) is not None,
                 "bootstrap_available": bool(setup.get("installs_cli")),
+                # Where to get the runtime, from its own manifest (core never
+                # knows an agent's URL). Absent → no link, nothing else changes.
+                "install_url": str(manifest.raw.get("install_url") or "").strip() or None,
                 "home": _path_status(manifest.home_dir, host_dir),
                 "session_files": session_files,
                 "latest_session_file": latest_session_file,
