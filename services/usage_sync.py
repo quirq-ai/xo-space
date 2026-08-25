@@ -125,6 +125,30 @@ def _empty_record(workspace_id: str, workspace_name, project_id, note: str,
     }
 
 
+async def _key_accepted(client: httpx.AsyncClient, url: str, headers: dict) -> bool:
+    """Verify the token before any usage data leaves the machine.
+
+    Same endpoint, empty record list: the request carries only the token,
+    passes through exactly the auth dependency the real report passes
+    through, and stores nothing on success. Anything but 200 fails closed —
+    a token the swarm has not accepted sends no usage data, so "reported
+    only when the key is valid" is literally true, not just "stored only
+    when the key is valid".
+    """
+    try:
+        probe = await client.post(url, json={"records": []}, headers=headers)
+    except Exception as e:
+        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({e}) — nothing sent, will retry next cycle")
+        return False
+    if probe.status_code == 200:
+        return True
+    if probe.status_code in (401, 403):
+        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status_code}) — nothing sent. Fix or remove the key in .env.")
+    else:
+        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status_code} — nothing sent, will retry next cycle")
+    return False
+
+
 async def _post_records(records: list, daily: dict | None, state: dict) -> None:
     from routers.auth.auth import get_auth_token
 
@@ -137,6 +161,8 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            if not await _key_accepted(client, url, headers):
+                return
             response = await client.post(url, json={"records": records}, headers=headers)
 
         if response.status_code == 200:

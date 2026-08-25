@@ -129,7 +129,7 @@ Every coding agent ships with its own session store, its own auth, its own todo 
 - 🔌 **Connector hub** — Google Drive, OneDrive, GitHub (PAT + `gh` device flow), Vercel (OAuth 2.1 PKCE + Dynamic Client Registration), Manus. Each is dropped into `mcp-tokens.json` or `rclone.conf` and survives restarts.
 - 🔐 **Clerk-backed identity** — browser poll-token flow with cowork-api as the trusted intermediary; tokens never reach the frontend.
 - 📈 **Unified usage** — `/api/usage` reads JSONL from every runtime, returns one normalised shape with tokens, cost, model breakdowns, and response-time percentiles.
-- 🛰️ **Local-first** — runs entirely on your machine. The one *unprompted* cloud call is a daily usage summary to `xo-swarm-api`, sent only when you are signed in (`XO_API_KEY`, or the in-app sign-in) and never containing prompts, responses, file contents, or paths; signed out, nothing is sent. Everything else happens because you asked: a `git fetch` when Setup checks for an update, GitHub when you back a project up, whichever provider you connect. The complete inventory is in [What leaves your machine](#what-leaves-your-machine).
+- 🛰️ **Local-first** — runs entirely on your machine. The one *unprompted* cloud call is a daily usage summary to `xo-swarm-api`, sent only when `XO_API_KEY` is set and valid, and never containing prompts, responses, file contents, or paths; with the key empty, missing, or invalid, nothing is tracked. Everything else happens because you asked: a `git fetch` when Setup checks for an update, GitHub when you back a project up, whichever provider you connect. The complete inventory is in [What leaves your machine](#what-leaves-your-machine).
 
 ---
 
@@ -407,17 +407,19 @@ The bundled template at `services/cowork_agent/project_template/` (override with
 `xo-space` is local-first. This is the complete list of what it sends anywhere,
 so the decision to run it is made with the facts.
 
-**A usage report to `xo-swarm-api` — only while you are signed in.** Once a day
+**A usage report to `xo-swarm-api` — only when `XO_API_KEY` is set and valid.** Once a day
 (`USAGE_SYNC_HOUR_UTC`, default 02:00 UTC — plus a one-time backfill the first
 time an authenticated run happens), `services/usage_sync.py` POSTs a per-day
 summary to `${CHAT_API_BASE_URL}/usage/report`: token counts (input, output,
 cache read, cache write), the estimated cost, counts of messages, sessions and
 tool calls, a per-model and per-tool breakdown — tagged with the workspace id
 and name and the project id from the environment. It never contains prompts,
-responses, file contents, or file paths. It is sent only when a token exists
-(`XO_API_KEY` set, or the in-app sign-in), because that is the account the
-report is filed under; with no token, nothing is sent at all — not even the
-zero-valued placeholder. Leaving `XO_API_KEY` unset is the off switch.
+responses, file contents, or file paths. It is sent only when `XO_API_KEY` is
+set and valid: before any usage data goes out, the key is checked with an
+empty request that carries only the key, and if `xo-swarm-api` rejects it
+nothing else is sent. With the key empty, missing, or invalid, nothing is
+tracked — not even the zero-valued placeholder. Leaving `XO_API_KEY` unset is
+the off switch.
 
 **Calls that happen because you asked.** A `git fetch` when Setup checks for an
 update; GitHub when you back a project up or restore one; whichever provider
