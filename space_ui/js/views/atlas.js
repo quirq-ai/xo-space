@@ -1443,7 +1443,7 @@ function buildTimeline(){
      so the column headers stay legible whatever the project count. */
   const q=laneFilter.trim().toLowerCase();
   const lanes=q?allLanes.filter(cat=>CAT[cat].name.toLowerCase().includes(q)):allLanes;
-  const MIN_COL=44;
+  const MIN_COL=100;
   const colW=Math.max(MIN_COL,(W-64-16)/Math.max(1,lanes.length));
   const SW=Math.max(W,Math.round(64+16+colW*lanes.length));
   tsvg.setAttribute('viewBox',`0 0 ${SW} ${H}`);
