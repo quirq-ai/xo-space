@@ -227,6 +227,7 @@ check_optional_tools() {
 # README section "What leaves your machine".
 # ==============================================================
 print_reporting_notice() {
+    local log_file="$1"
     cat <<'NOTICE'
 
 ┌─ Usage reporting ───────────────────────────────────────────────────────┐
@@ -243,6 +244,9 @@ print_reporting_notice() {
 │ Details: README → "What leaves your machine".                           │
 └─────────────────────────────────────────────────────────────────────────┘
 NOTICE
+    # The server logs every decision it makes about reporting; this is the
+    # one-liner that shows them, since the terminal itself stays quiet.
+    printf '  See what it decided:  grep usage_sync %s\n' "$log_file"
 }
 
 # ==============================================================
@@ -600,7 +604,7 @@ main() {
     printf '\nQuirq source: %s (%s)\nXO projects: %s\nQuirq state: %s\n' \
         "$REPO_DIR" "$source_label" "$projects_root" "$state_root"
     check_optional_tools
-    print_reporting_notice
+    print_reporting_notice "${state_root}/quirq.log"
 
     ensure_port_available "$HOST" "$PORT"
     start_server "$projects_root" "$state_root"
