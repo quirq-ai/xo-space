@@ -1306,7 +1306,14 @@ function resetView(){tZoomed=false;T0=TF0;T1=TF1;scheduleBuild();}
 function renderYears(){
   const el=document.getElementById('tyears');if(!el)return;
   const y0=new Date(TF0).getFullYear(),y1=new Date(TF1).getFullYear();
-  const years=[];for(let y=y0;y<=y1;y++)years.push(y);
+  /* a year earns a chip only if the axis spends at least MIN_SPAN in it:
+     the 7-day pad alone must not grow a chip whose window then has to be
+     re-widened across the boundary and can never light up */
+  const years=[];
+  for(let y=y0;y<=y1;y++){
+    const overlap=Math.min(TF1,+new Date(y+1,0,1))-Math.max(TF0,+new Date(y,0,1));
+    if(overlap>=MIN_SPAN)years.push(y);
+  }
   const inYear=y=>tZoomed&&T0>=+new Date(y,0,1)-DAY&&T1<=+new Date(y+1,0,1)+DAY;
   const many=years.length>1;
   el.innerHTML=(many||tZoomed
@@ -1389,7 +1396,6 @@ function setTMode(mode){
   if(mode==='project'&&tTrace)clearTrace(); /* traces are a By-file tool */
   syncTModeUI();
   buildTimeline();
-  if(tMode==='file'&&tTrace)drawTrace();
 }
 syncTModeUI();
 /* Each mode gets its own axis, spanning only what it actually plots: the
@@ -1443,6 +1449,7 @@ function buildTimeline(){
      so the column headers stay legible whatever the project count. */
   const q=laneFilter.trim().toLowerCase();
   const lanes=q?allLanes.filter(cat=>CAT[cat].name.toLowerCase().includes(q)):allLanes;
+  const laneSet=new Set(lanes);
   const MIN_COL=100;
   const colW=Math.max(MIN_COL,(W-64-16)/Math.max(1,lanes.length));
   const SW=Math.max(W,Math.round(64+16+colW*lanes.length));
@@ -1461,6 +1468,9 @@ function buildTimeline(){
      columns rotate their headers, which needs a taller top margin. */
   const rotated=colW<64;
   const M={t:rotated?76:34,r:16,b:18,l:64};
+  /* no plot band, no plot: with the margins eating the whole height yOf
+     divides by zero and a wheel tick would turn the window into NaN */
+  if(H<M.t+M.b+20){tsvg._yOf=null;return;}
   /* Three layers, bottom to top: bands and grid, then the data clipped to
      the plot band (a dot on the first row cannot spill into the headers,
      one on the last cannot bury the commit counts), then the labels with
@@ -1595,7 +1605,9 @@ function buildTimeline(){
   dotsG.setAttribute('id','tdots');
   plotG.appendChild(dotsG);
   LEAVES.forEach(n=>{
-    if(!n.date){n.tEl=null;return;} /* git-dated artifacts only */
+    /* git-dated artifacts only, and only in lanes that are on the plot: a
+       filtered-out leaf has no position and would land on stale coordinates */
+    if(!n.date||!laneSet.has(n.cat)){n.tEl=null;return;}
     const col=CAT[n.cat].color;
     const r=3.2+Math.min(2.6,(n.degree-1)*.5);
     let el;
@@ -1658,7 +1670,9 @@ function buildTimeline(){
   tsvg.appendChild(sweep);
   tsvg.appendChild(labelsG);
   tsvg._yOf=yOf;
-  renderTimelineState();
+  /* "after a rebuild, the trace is back" is the rebuild's invariant, not
+     the callers' — zoom, pan, chips, filter and resize all rebuild */
+  if(tTrace&&tMode==='file')drawTrace();else renderTimelineState();
 }
 function renderTimelineState(){
   const yOf=tsvg._yOf;if(!yOf)return;
@@ -1694,6 +1708,9 @@ function traceOnTimeline(n){
     ?LEAVES.filter(l=>belongsToCategory(l,n.cat)):[n];
   const list=ids.filter(l=>l.date).sort((a,b)=>a.date<b.date?-1:1);
   tTrace={ids:new Set(list.map(x=>x.id)),list,label:n.label};
+  /* a trace plays from its first date; a zoomed window that excludes it
+     would show nothing until the user found the All chip */
+  if(tZoomed)resetView();
   go('time');
   requestAnimationFrame(()=>{
     if(!list.length){
@@ -1716,8 +1733,10 @@ function drawTrace(){
   const g=tsvg.querySelector('#ttrace');
   if(!g)return;
   g.innerHTML='';
-  if(!tTrace||tTrace.list.length<2){renderTimelineState();return;}
-  const pts=tTrace.list.map(n=>[n.tx,n.ty]);
+  /* only the leaves that made it onto the plot — the lane filter may hide some */
+  const shown=tTrace?tTrace.list.filter(n=>n.tEl):[];
+  if(shown.length<2){renderTimelineState();return;}
+  const pts=shown.map(n=>[n.tx,n.ty]);
   let path=`M ${pts[0][0]} ${pts[0][1]}`;
   for(let i=1;i<pts.length;i++){
     const [x0,y0]=pts[i-1],[x1,y1]=pts[i];
@@ -1730,7 +1749,7 @@ function drawTrace(){
   g.appendChild(p);
   /* labels: alternate left/right, and step outward when several share a y window */
   const win=[];
-  tTrace.list.forEach((n,i)=>{
+  shown.forEach((n,i)=>{
     const near=win.filter(w=>Math.abs(w-n.ty)<24).length;
     win.push(n.ty);
     const left=i%2===0;
@@ -1813,11 +1832,14 @@ tplot.addEventListener('wheel',e=>{
 },{passive:false});
 let tDrag=null,tDragMoved=false;
 tplot.addEventListener('pointerdown',e=>{
-  if(e.button!==0)return;
-  tDrag={x:e.clientX,y:e.clientY,x0:e.clientX,y0:e.clientY};tDragMoved=false;
+  if(e.button!==0||tDrag)return;
+  tDrag={id:e.pointerId,x:e.clientX,y:e.clientY,x0:e.clientX,y0:e.clientY};tDragMoved=false;
 });
 tplot.addEventListener('pointermove',e=>{
-  if(!tDrag)return;
+  if(!tDrag||e.pointerId!==tDrag.id)return;
+  /* a release the pane never saw (before capture, outside it) must not
+     leave a phantom drag that pans on the next un-pressed hover */
+  if(e.buttons===0){endDrag();return;}
   if(!tDragMoved){
     /* 4px of slack keeps a click on a dot a click; capture only once the
        drag is real, or the captured pointer would retarget that click */
@@ -1838,9 +1860,14 @@ tplot.addEventListener('pointermove',e=>{
     scheduleBuild();
   }
 });
-const endDrag=()=>{if(!tDrag)return;tDrag=null;tplot.classList.remove('is-panning');};
-tplot.addEventListener('pointerup',endDrag);
-tplot.addEventListener('pointercancel',endDrag);
+function endDrag(e){
+  if(!tDrag||(e&&e.pointerId!==undefined&&e.pointerId!==tDrag.id))return;
+  tDrag=null;tplot.classList.remove('is-panning');
+}
+/* on window, not the pane: an uncaptured release lands wherever the
+   pointer is, and the pane only captures once a drag is real */
+addEventListener('pointerup',endDrag);
+addEventListener('pointercancel',endDrag);
 tsvg.addEventListener('pointermove',e=>{
   if(tDrag&&tDragMoved)return;
   const t=e.target;

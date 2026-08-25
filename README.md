@@ -136,7 +136,7 @@ Every coding agent ships with its own session store, its own auth, its own todo 
 ## Quick start
 
 ```bash
-curl -fsSL quirq.ai/install | sh
+curl -fsSL https://quirq.ai/install | sh
 ```
 
 Run it from the directory you want as your workspace: the checkout lands

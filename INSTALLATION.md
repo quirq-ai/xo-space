@@ -3,7 +3,7 @@
 Pick a directory to keep Quirq in, then run:
 
 ```bash
-curl -fsSL quirq.ai/install | sh
+curl -fsSL https://quirq.ai/install | sh
 ```
 
 Open <http://localhost:5002/space/>.
@@ -20,8 +20,10 @@ Docker is not required. The command:
 
 Press Ctrl-C to stop it. Run the same command again to update and restart.
 
-It must be piped to `bash`, not `sh` — the script uses `BASH_SOURCE` and
-`set -o pipefail`, neither of which exists in POSIX `sh`.
+The short URL serves a small POSIX-sh bootstrap that downloads `install.sh`
+to a temporary file and runs it under `bash`, which is why `| sh` works. If
+you fetch `install.sh` itself, pipe it to `bash`, not `sh` — the script uses
+`BASH_SOURCE` and `set -o pipefail`, neither of which exists in POSIX `sh`.
 
 ## Prerequisites
 
@@ -109,7 +111,7 @@ Every value is overridable from the environment:
 For example:
 
 ```bash
-curl -fsSL quirq.ai/install | PORT=8080 XO_PROJECTS_ROOT=/absolute/path sh
+curl -fsSL https://quirq.ai/install | PORT=8080 XO_PROJECTS_ROOT=/absolute/path sh
 ```
 
 On first run the installer writes `quirq/.env` recording exactly what it used,
