@@ -1414,10 +1414,7 @@ function computeRange(){
     if(T1-T0<MIN_SPAN)tZoomed=false;
   }
   if(!tZoomed){T0=TF0;T1=TF1;}
-  /* the scrubbed moment is state, the window is view: zooming or panning
-     may leave it off screen but never moves it. Only the full axis (a mode
-     switch) can push it. */
-  tNow=Math.min(Math.max(tNow,TF0),TF1);
+  tNow=Math.min(Math.max(tNow,T0),T1);
   renderYears();
   const ticks=document.querySelector('#view-time .ticks');
   if(ticks){
@@ -1462,14 +1459,8 @@ function buildTimeline(){
   }
   /* Time runs vertically: newest at the top, oldest at the bottom. Narrow
      columns rotate their headers, which needs a taller top margin. */
-  /* Upright labels need ~7px a character, so below 120px they collide with
-     their neighbours; rotated ones lean into the top margin and only need
-     the column's width as spacing, which MIN_COL guarantees. */
-  const rotated=colW<120;
+  const rotated=colW<64;
   const M={t:rotated?76:34,r:16,b:18,l:64};
-  /* labels live in their own layer, appended after the dots, so a busy
-     column can never paint over its own header or commit count */
-  const labelsG=document.createElementNS(SVGNS,'g');
   const yOf=t=>M.t+(T1-t)/(T1-T0)*(H-M.t-M.b);
   /* column bands + headers */
   lanes.forEach((cat,i)=>{
@@ -1488,12 +1479,8 @@ function buildTimeline(){
     }
     tsvg.appendChild(band);
     const name=CAT[cat].name;
-    /* fit the label to the column rather than to a fixed count */
-    const maxChars=rotated?18:Math.max(4,Math.floor((colW-10)/7.2));
-    const label=name.length>maxChars?name.slice(0,Math.max(1,maxChars-1))+'…':name;
+    const label=name.length>18?name.slice(0,17)+'…':name;
     const lb=document.createElementNS(SVGNS,'text');
-    const full=document.createElementNS(SVGNS,'title');
-    full.textContent=name;lb.appendChild(full);
     if(rotated){
       const ax=x+colW/2+4,ay=M.t-10;
       lb.setAttribute('x',ax);lb.setAttribute('y',ay);
@@ -1505,8 +1492,8 @@ function buildTimeline(){
       lb.setAttribute('text-anchor','middle');
       lb.setAttribute('style',`font:italic 500 13px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
     }
-    lb.appendChild(document.createTextNode(label));
-    labelsG.appendChild(lb);
+    lb.textContent=label;
+    tsvg.appendChild(lb);
     if(!live){
       /* one line, centred in the empty column, saying why it is empty */
       const why=document.createElementNS(SVGNS,'text');
@@ -1514,7 +1501,7 @@ function buildTimeline(){
       why.setAttribute('text-anchor','middle');
       why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
       why.textContent=colW>=104?'NO GIT HISTORY':colW>=64?'NO HISTORY':'—';
-      labelsG.appendChild(why);
+      tsvg.appendChild(why);
     }
     if(tMode==='project'&&live){
       const total=(GITHIST[cat]||[]).reduce((sum,day)=>sum+day.n,0);
@@ -1523,7 +1510,7 @@ function buildTimeline(){
       sub.setAttribute('text-anchor','middle');
       sub.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.06em;fill:#56534b`);
       sub.textContent=colW>=70?`${total} COMMIT${total===1?'':'S'}`:String(total);
-      labelsG.appendChild(sub);
+      tsvg.appendChild(sub);
     }
   });
   /* month grid: horizontal rules, labeled in the left margin */
@@ -1630,9 +1617,7 @@ function buildTimeline(){
     (GITHIST[cat]||[]).forEach(day=>{
       const t=+new Date(day.d+'T00:00:00');
       const dot=document.createElementNS(SVGNS,'circle');
-      /* hard cap at 10px: wide lanes would otherwise let a daily-commit
-         project fuse into a solid strip that buries its own labels */
-      const r=Math.max(2,Math.min(colW*.42,10,2+Math.sqrt(day.n)*1.6));
+      const r=Math.max(2,Math.min(colW*.42,2+Math.sqrt(day.n)*1.6));
       dot.setAttribute('cx',baseX);dot.setAttribute('cy',yOf(t));
       dot.setAttribute('r',r);dot.setAttribute('fill',col);
       dot.dataset.hist=String(histDots.length);
@@ -1642,7 +1627,6 @@ function buildTimeline(){
     });
   });
   }
-  tsvg.appendChild(labelsG);
   /* sweep: a horizontal rule at the scrubbed moment */
   const sweep=document.createElementNS(SVGNS,'line');
   sweep.setAttribute('id','tsweep');
@@ -1655,12 +1639,8 @@ function buildTimeline(){
 }
 function renderTimelineState(){
   const yOf=tsvg._yOf;if(!yOf)return;
-  const sweep=document.getElementById('tsweep');
-  if(sweep){
-    sweep.setAttribute('y1',yOf(tNow));sweep.setAttribute('y2',yOf(tNow));
-    /* off-window moments have no line to draw; the thumb parks at the edge */
-    sweep.setAttribute('opacity',tNow>=T0&&tNow<=T1?.55:0);
-  }
+  document.getElementById('tsweep')?.setAttribute('y1',yOf(tNow));
+  document.getElementById('tsweep')?.setAttribute('y2',yOf(tNow));
   if(tMode==='project'){
     histDots.forEach(d=>d.el.setAttribute('opacity',d.t<=tNow?.85:.08));
   }else LEAVES.forEach(n=>{
@@ -1683,8 +1663,7 @@ function renderTimelineState(){
   /* labelled as what it is: a bare project name here read as a stray file */
   mEl.textContent=m?'◆ milestone · '+m.t:'';
   mEl.style.opacity=m?1:0;
-  document.getElementById('tscrub').value=
-    Math.round(Math.min(1000,Math.max(0,(tNow-T0)/(T1-T0)*1000)));
+  document.getElementById('tscrub').value=Math.round((tNow-T0)/(T1-T0)*1000);
 }
 function traceOnTimeline(n){
   if(tMode!=='file')setTMode('file'); /* traces live on the By-file plot */
@@ -1774,9 +1753,7 @@ function stopPlay(){
 }
 document.getElementById('tplay').addEventListener('click',()=>{
   if(tPlaying){stopPlay();return;}
-  /* start from the window's beginning when the playhead is past its end
-     or somewhere off screen — playing through invisible months is no show */
-  if(tNow<T0||tNow>=T1-3600000)tNow=T0;
+  if(tNow>=T1-3600000)tNow=T0;
   startPlay();
 });
 function showHistHC(d,mx,my){
@@ -1806,11 +1783,8 @@ tplot.addEventListener('wheel',e=>{
   e.preventDefault();
   if(e.shiftKey||(e.deltaX&&!e.deltaY)){tplot.scrollLeft+=e.deltaX||e.deltaY;return;}
   stopPlay();
-  /* zoom around the playhead while it is on screen — the video-editor
-     convention — so the scrub thumb never moves under a wheel; fall back
-     to the cursor once the playhead is out of the window */
   const r=tplot.getBoundingClientRect();
-  const t=tNow>T0&&tNow<T1?tNow:tOfY(e.clientY-r.top);
+  const t=tOfY(e.clientY-r.top);
   const f=Math.exp(e.deltaY*.0016);
   setView(t-(t-T0)*f,t+(T1-t)*f);
 },{passive:false});
