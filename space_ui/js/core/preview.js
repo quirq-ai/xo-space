@@ -44,6 +44,13 @@ export function initPreview(){
   body=el.querySelector('#preview-body');
   el.addEventListener('click',onClick);
   addEventListener('space:preview-file',e=>open(e.detail||{}));
+  /* The drawer belongs to the Files context. The three lenses (List, Graph,
+     Tree) all report tab 'projects' — see registry.js — so switching between
+     them keeps the file open; landing on any other tab leaves it behind, a
+     file preview having nothing to say about Sessions or Secrets. */
+  addEventListener('space:view',e=>{
+    if(e.detail?.tab!=='projects'&&el.classList.contains('is-open'))close();
+  });
   addEventListener('keydown',e=>{
     /* Escape closes the preview first; the graph's own Escape handling only
        gets it once nothing is being previewed. */
