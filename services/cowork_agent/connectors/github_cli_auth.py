@@ -127,6 +127,29 @@ async def _read_until_code(proc: asyncio.subprocess.Process) -> str:
             return m.group(1)
 
 
+async def _finalize_session(proc: asyncio.subprocess.Process, sid: str) -> None:
+    """Record the outcome of `gh auth login` on the session, if still pending."""
+    async with _lock:
+        session = _active.get(sid)
+        if not session:
+            return
+        if session.status not in ("pending",):
+            return  # already finalized (e.g. cancelled)
+        if proc.returncode == 0:
+            token = await _read_gh_token()
+            if token:
+                session.status = "completed"
+                session.token = token
+            else:
+                session.status = "failed"
+                session.error = "Login succeeded but `gh auth token` returned no token."
+        else:
+            session.status = "failed"
+            session.error = (
+                f"`gh auth login` exited with status {proc.returncode}."
+            )
+
+
 async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
     """Background task: drain stdout and update session status on exit."""
     try:
@@ -141,25 +164,11 @@ async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
 
         await proc.wait()
     finally:
-        async with _lock:
-            session = _active.get(sid)
-            if not session:
-                return
-            if session.status not in ("pending",):
-                return  # already finalized (e.g. cancelled)
-            if proc.returncode == 0:
-                token = await _read_gh_token()
-                if token:
-                    session.status = "completed"
-                    session.token = token
-                else:
-                    session.status = "failed"
-                    session.error = "Login succeeded but `gh auth token` returned no token."
-            else:
-                session.status = "failed"
-                session.error = (
-                    f"`gh auth login` exited with status {proc.returncode}."
-                )
+        # No `return` here on purpose: a return inside `finally` discards the
+        # in-flight exception — including the CancelledError that
+        # cancel_session() delivers — so the task would report success after
+        # being cancelled. Python 3.14 warns about exactly this (PEP 765).
+        await _finalize_session(proc, sid)
 
 
 async def _read_gh_token() -> str | None:
