@@ -548,6 +548,20 @@ Conventions:
 
 ---
 
+## Contributors
+
+<div align="center">
+
+<a href="https://github.com/quirq-ai/xo-space/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=quirq-ai/xo-space" alt="Everyone who has committed to xo-space" />
+</a>
+
+<sub>Made with [contrib.rocks](https://contrib.rocks). Refreshes on its own as commits land.</sub>
+
+</div>
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE).
