@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-LABEL org.opencontainers.image.source="https://github.com/sharmasuraj0123/xo-cowork-api" \
+LABEL org.opencontainers.image.source="https://github.com/quirq-ai/xo-space" \
       org.opencontainers.image.description="Quirq local cowork API and Space UI"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

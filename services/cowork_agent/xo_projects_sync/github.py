@@ -6,7 +6,7 @@ Auth model — `resolve_auth()`:
      completed the GitHub flow in the cowork UI (whether they pasted a
      PAT or did `gh auth login` through the connector).
   2. Fall back to `os.environ["GITHUB_PAT"]` (loaded from
-     `xo-cowork-api/.env` via dotenv at process start, kept fresh by
+     the xo-space checkout's `.env` via dotenv at process start, kept fresh by
      `config.upsert_env`).
   3. Raise AuthMissingError if neither path produces a token. Callers
      turn this into a 401 with explicit setup instructions for the user.
@@ -77,8 +77,8 @@ async def resolve_auth() -> GitHubAuth:
         return GitHubAuth(token=env_token, source="env")
     raise AuthMissingError(
         "No GitHub token available. Either complete the GitHub connector "
-        f"flow in xo-cowork UI or set {ENV_GITHUB_PAT}=<your_token> in "
-        "xo-cowork-api/.env."
+        f"flow in the XO Cowork UI or set {ENV_GITHUB_PAT}=<your_token> in "
+        "the xo-space checkout's .env."
     )
 
 
@@ -132,7 +132,7 @@ async def create_repo(owner: str, name: str, *, auth: GitHubAuth) -> str:
             "gh", "repo", "create", f"{owner}/{name}",
             "--private",
             "--add-readme",
-            "--description", "Encrypted xo-project backup (auto-managed by xo-cowork-api).",
+            "--description", "Encrypted xo-project backup (auto-managed by xo-space).",
             "--confirm",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -152,7 +152,7 @@ async def create_repo(owner: str, name: str, *, auth: GitHubAuth) -> str:
         "name": name,
         "private": True,
         "auto_init": True,
-        "description": "Encrypted xo-project backup (auto-managed by xo-cowork-api).",
+        "description": "Encrypted xo-project backup (auto-managed by xo-space).",
     })
     clone_url = data.get("clone_url")
     if not isinstance(clone_url, str):
@@ -209,8 +209,8 @@ async def shallow_clone(repo_url: str, dest: Path, *, auth: GitHubAuth) -> None:
         cwd=dest.parent,
         auth=auth,
     )
-    await _git(["config", "user.email", "xo-cowork-api@xo.local"], cwd=dest, auth=None)
-    await _git(["config", "user.name", "xo-cowork-api"], cwd=dest, auth=None)
+    await _git(["config", "user.email", "xo-space@xo.local"], cwd=dest, auth=None)
+    await _git(["config", "user.name", "xo-space"], cwd=dest, auth=None)
 
 
 async def commit_and_push_in(path: Path, message: str, *, auth: GitHubAuth) -> bool:

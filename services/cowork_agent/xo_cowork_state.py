@@ -8,7 +8,7 @@ OpenClaw's own data). This is for state that:
 - needs to persist across browsers/incognito/devtools-clear, so cannot
   live in localStorage
 - is per-machine, not per-tenant (single-tenant assumption — revisit if
-  xo-cowork-api ever serves multiple users from one process)
+  xo-space ever serves multiple users from one process)
 
 Schema is a flat dict; callers patch it via `update_state`. First fields:
 

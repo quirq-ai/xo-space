@@ -1,5 +1,5 @@
 """
-XO Cowork API Server
+XO Space API Server
 FastAPI server that interfaces with local Claude Code CLI.
 """
 
@@ -622,7 +622,7 @@ async def lifespan(app: FastAPI):
     # running once it is down.
     _session_telemetry_daemons("start")
 
-    print("🚀 Starting XO Cowork API Server...")
+    print("🚀 Starting XO Space API Server...")
     print(f"   Chat API: {CHAT_API_BASE_URL}")
     _tok = get_auth_token()
     _src = get_auth_state().get("token_source", "none")
@@ -778,12 +778,12 @@ async def lifespan(app: FastAPI):
             await _xo_status_task
         except asyncio.CancelledError:
             pass
-    print("👋 Shutting down XO Cowork API Server...")
+    print("👋 Shutting down XO Space API Server...")
 
 
 app = FastAPI(
-    title="XO Cowork API",
-    description="XO Cowork API - Claude Code Interface",
+    title="XO Space API",
+    description="XO Space API - local control plane brokering chat to coding-agent runtimes",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -837,7 +837,7 @@ async def root(request: Request):
     """
     if "text/html" in request.headers.get("accept", ""):
         return RedirectResponse(url="/space/", status_code=307)
-    return {"status": "XO Cowork API running"}
+    return {"status": "XO Space API running"}
 
 
 @app.get("/health")
@@ -923,7 +923,7 @@ async def gateway_restart():
 
 @app.post("/app/restart")
 async def app_restart():
-    """Restart the XO Cowork API app process via cowork-api.sh."""
+    """Restart the XO Space API app process via cowork-api.sh."""
     import subprocess
     # Timestamped marker: a restart kills every in-flight subprocess (e.g. a
     # pending auth login) — correlate this line with mid-flow failures.

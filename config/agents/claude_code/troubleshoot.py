@@ -8,7 +8,7 @@ Reads:
 
 Reports OK / WARN / FAIL per check. WARN and FAIL rows are also echoed as a
 timestamped line in the usage_sync format so they're greppable when stdout is
-captured to /tmp/xo-cowork-api.log.
+captured to /tmp/xo-space.log.
 
 Exit codes: 0 all-ok, 1 any FAIL, 2 only WARNs.
 """

@@ -3,9 +3,9 @@
 # config/agents/claude_code/setup.sh — install + configure the
 # claude_code agent.
 #
-# Invoked by xo-cowork-api's FastAPI lifespan (server.py's
+# Invoked by xo-space's FastAPI lifespan (server.py's
 # _run_agent_setup) when AGENT_NAME=claude_code. Runs every time
-# the xo-cowork-api server starts; each step is idempotent so
+# the xo-space server starts; each step is idempotent so
 # repeat invocations are cheap (≈ seconds) once the first run is
 # done.
 #
@@ -16,7 +16,7 @@
 #
 # Unlike hermes / openclaw, claude_code has no separate gateway
 # lifecycle script (no `claude.sh`), no channels, and no shims —
-# the Claude CLI is invoked directly by xo-cowork-api's
+# the Claude CLI is invoked directly by xo-space's
 # ClaudeCodeClient via subprocess. So this setup is intentionally
 # shorter than its siblings.
 #
@@ -56,7 +56,7 @@ fi
 # ==============================================================
 # Step 1 — apt prereqs (jq, unzip).
 # `jq` and `unzip` are not strictly required by the Claude CLI itself,
-# but several xo-cowork-api routes (and the Claude installer for some
+# but several xo-space routes (and the Claude installer for some
 # distros) lean on them. Keep this list lean: anything that's needed
 # *before* cowork-api can boot already lives in the template.
 # ==============================================================
@@ -131,7 +131,7 @@ EOF
 
 # ==============================================================
 # Step 3 — Materialise $REPO_ROOT/.env from environment vars.
-# xo-cowork-api's load_dotenv() reads this on import; the Claude CLI is
+# xo-space's load_dotenv() reads this on import; the Claude CLI is
 # then invoked with the resulting process env. Hosted workspace edits are
 # preserved. Managed local Quirq refreshes the file on every boot so values
 # saved by the Setup tab in ~/.quirq/secrets.env take effect.
@@ -207,7 +207,7 @@ ensure_claude_cli() {
 # the same precedence.
 #
 # ~/.bashrc lives on the PVC so the guard survives workspace restarts even
-# though /opt/xo-cowork-api is reset from the image; this script re-runs on
+# though /opt/xo-space is reset from the image; this script re-runs on
 # every boot and rewrites the managed block, so image updates ship guard
 # updates too. Details: docs/connect-claude-login-issues-investigation.md (S1).
 # ==============================================================
@@ -233,7 +233,7 @@ install_login_guard() {
     cat >> "$rc" <<'GUARD'
 # >>> xo-cowork claude_code login guard >>>
 # Managed by config/agents/claude_code/setup.sh — rewritten on every
-# xo-cowork-api boot; edits inside this block will be lost.
+# xo-space boot; edits inside this block will be lost.
 # When a native Claude login exists (~/.claude/.credentials.json, written by
 # "Connect Claude"), strip the pod-injected token env vars for `claude`
 # invocations — the CLI would otherwise prefer them over the fresh login.

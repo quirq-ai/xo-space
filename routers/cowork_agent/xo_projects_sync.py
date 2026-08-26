@@ -97,8 +97,8 @@ async def _require_config_and_auth() -> tuple[cfg_mod.SyncConfig, github.GitHubA
             "error": "github_auth_missing",
             "detail": str(exc),
             "suggestion": (
-                "Either complete the GitHub connector flow in xo-cowork UI, "
-                f"or add {cfg_mod.ENV_GITHUB_PAT}=<your_token> to xo-cowork-api/.env."
+                "Either complete the GitHub connector flow in the XO Cowork UI, "
+                f"or add {cfg_mod.ENV_GITHUB_PAT}=<your_token> to the xo-space checkout's .env."
             ),
         })
 
@@ -124,7 +124,7 @@ async def setup(body: SetupBody) -> JSONResponse:
       1. Verify GPG is installed (we'd fail at first backup otherwise).
       2. Resolve a GitHub token; fail 401 with a clear message if missing.
       3. Discover the owner (lets the response confirm which account we're configured against).
-      4. Persist passphrase into xo-cowork-api/.env and os.environ.
+      4. Persist passphrase into the xo-space checkout's .env and os.environ.
     """
     try:
         crypto.check_gpg_available()
@@ -165,8 +165,8 @@ async def setup(body: SetupBody) -> JSONResponse:
             "error": "github_auth_missing",
             "detail": str(exc),
             "suggestion": (
-                "Either complete the GitHub connector flow in xo-cowork UI, "
-                f"or add {cfg_mod.ENV_GITHUB_PAT}=<your_token> to xo-cowork-api/.env."
+                "Either complete the GitHub connector flow in the XO Cowork UI, "
+                f"or add {cfg_mod.ENV_GITHUB_PAT}=<your_token> to the xo-space checkout's .env."
             ),
         })
 

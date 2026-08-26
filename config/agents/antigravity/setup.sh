@@ -3,7 +3,7 @@
 # config/agents/antigravity/setup.sh — install + configure the
 # antigravity (agy) agent.
 #
-# Invoked by xo-cowork-api's FastAPI lifespan (server.py's
+# Invoked by xo-space's FastAPI lifespan (server.py's
 # _run_agent_setup) when AGENT_NAME=antigravity. Runs on every
 # server boot; each step is idempotent so repeat invocations are
 # cheap once the first run is done.

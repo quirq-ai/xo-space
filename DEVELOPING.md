@@ -1,4 +1,4 @@
-# Developing xo-cowork-api
+# Developing xo-space
 
 A practical guide to working in this codebase: how it's wired, where things
 live, how to run and validate it, and how to add a new agent backend without
@@ -11,7 +11,7 @@ touching core code.
 
 ## 1. The mental model: a dumb broker + pluggable agents
 
-`xo-cowork-api` is a **broker**. Core code knows how to chat, list sessions,
+`xo-space` is a **broker**. Core code knows how to chat, list sessions,
 report usage, and serve status — but it never knows *which* agent backend it is
 talking to. Everything agent-specific is resolved at runtime from a single env
 var, **`AGENT_NAME`**, and lives in two predictable places per agent.

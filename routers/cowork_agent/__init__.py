@@ -4,7 +4,7 @@ Each route module exposes a single `router: APIRouter`. `all_routers` is the
 ordered list `server.py` uses to mount them onto the FastAPI app.
 
 Migrated from bridge/routes/__init__.py on 2026-04-20. Bridge's health route
-is intentionally not migrated (xo-cowork-api's existing /health stays).
+is intentionally not migrated (xo-space's existing /health stays).
 """
 
 from fastapi import APIRouter

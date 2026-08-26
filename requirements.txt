@@ -1,4 +1,4 @@
-# XO Cowork API Dependencies
+# XO Space API Dependencies
 
 # Web Framework
 fastapi>=0.109.0
