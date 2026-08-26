@@ -199,14 +199,12 @@ const TAB_GUIDES={
       ['See overlap','A project with several purposes remains one node and sits between the applicable environments; every applicable enclosure includes it.'],
       ['Read project form','Node glyphs describe project form independently of purpose: app, one-pager, docs, slides, or unknown.'],
       ['Trace an environment','Select its labeled anchor or a project and carry that focused set into Timeline.'],
-      ['Read a project’s open work','Select a project node: its todos orbit it as satellites — in-progress items keep a spoke back to the node — and list in the detail panel in status order. Dashboard only: in Graph a leaf is a file, not a project, so the feature stays off.'],
       ['Read a project’s open work','Select a project node: its todos orbit it as satellites — in-progress items keep a spoke back to the node — and list in the detail panel in status order. Dashboard only: in Graph a leaf is a file, not a project, so the feature stays off.']
     ],
     sources:[
       ['GET /xo/dashboard.json','Serves &lt;XO root&gt;/.xo/dashboard.json — the graph collapsed into five environments, materialised by the watcher from the same single scan as space.json.','Workspace .xo file'],
       ['<XO root>/<project>/.xo/project.json','An optional manual category or saved multi-category classification takes precedence over inferred filename signals.','Portable project metadata'],
       ['Project paths and filenames','App manifests, infrastructure files, writing, research formats, decks, contracts, and asset ratios infer environment memberships and node form.','Derived heuristics'],
-      ['GET /api/xo-projects/{id}/todos','Fetched when a project node is selected; feeds the todo satellites and the panel list. Held in the browser for 20 seconds per project, so re-selecting is instant.','Live project todos'],
       ['GET /api/xo-projects/{id}/todos','Fetched when a project node is selected; feeds the todo satellites and the panel list. Held in the browser for 20 seconds per project, so re-selecting is instant.','Live project todos']
     ],
     steps:[
@@ -232,11 +230,11 @@ const TAB_GUIDES={
     kicker:'Tab guide · Workspace map and project state',
     title:'Files: one home, three lenses',
     intro:'Files is one top-level tab with three lenses behind a List | Graph | Tree pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, and recent events. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy — folders as columns, files stacked beside their parent. All three lenses are read-only.',
-    facts:['lands on List','List | Graph | Tree lens switch','map from .xo/space.json','drawer file explorer','file previewer','portable .xo history','live .quirq presence','read-only'],
+    facts:['lands on List','List | Graph | Tree lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','portable .xo history','live .quirq presence','read-only'],
     jobs:[
       ['Find an artifact','In Graph, search by title, tag, project, or cluster and fly to the matching node. In Tree, expand folders and filter by name; click a file to open it in the previewer, then use the previewer’s Graph button if you want that leaf focused on the map.'],
       ['Understand relationships','Select a Graph node to inspect its neighborhood and follow parent, cluster, and cross-project ties.'],
-      ['Read the hierarchy','Use Tree when the question is “what is in there”: workspace root on the left, one column per depth, files stacked beside their folder (not one column per file).'],
+      ['Read the hierarchy','Use Tree when the question is “what is in there”: workspace root on the left, one column per depth, files stacked beside their folder (not one column per file). The pane is a canvas, not a scroller: drag to pan, wheel to zoom around the cursor, Reset view to return.'],
       ['Change perspective','Use Graph root to temporarily reorganize the layout around any node without changing the XO filesystem.'],
       ['Browse project files','In List, open a project drawer: the Files panel lists one folder at a time via GET /api/xo-projects/{id}/tree, with breadcrumbs and separate folder/file panes.'],
       ['Review active work','In the same drawer, inspect todos, current sessions, and the latest normalized timeline events.'],
@@ -253,8 +251,8 @@ const TAB_GUIDES={
     ],
     steps:[
       ['Pick a lens','Files opens in List; switch with the List | Graph | Tree pill. #/projects, #/graph, and #/tree deep-link each lens.'],
-      ['Search','Press / or use Graph’s top-right search; Tree has its own name filter in the header.'],
-      ['Focus','Click a Graph node; double-click clusters to expand or collapse. In Tree, click folders to expand columns; click a file to preview it — the tree keeps its scroll and its expansion state, and the previewer’s Graph button is the explicit way to move.'],
+      ['Search','Press / for the top-bar search (it is global, on every tab). List has its own “Filter projects…” box and sorts by Activity, Name, Files or Created; Tree has a name filter in its header.'],
+      ['Focus','Click a Graph node; double-click clusters to expand or collapse. In Tree, click folders to expand columns; click a file to preview it — the tree keeps its camera and its expansion state, and the previewer’s Graph button is the explicit way to move.'],
       ['Expand one row','In List each drawer panel loads independently, so one failed data source does not hide the others.'],
       ['Browse files','In the Files panel, use breadcrumbs and folder rows to change cwd; browsing state is remembered per project for the session.'],
       ['Follow time','Choose “Show on timeline” to carry the selected run into Timeline.']
@@ -277,11 +275,12 @@ const TAB_GUIDES={
     kicker:'Tab guide · Time and relationships',
     title:'Timeline: when work happened',
     intro:'Timeline always plots the workspace dataset (space.json); opening it from Dashboard reloads once to switch datasets. It arranges dated work into vertical columns with time flowing upward: newest at the top, oldest at the bottom. Two modes: By file plots every dated artifact, and By project plots each project’s git commit history in parallel columns.',
-    facts:['same graph dataset','By file / By project modes','parallel git histories','newest at the top','date scrubber','playback mode'],
+    facts:['same graph dataset','By file / By project modes','parallel git histories','every project gets a lane','newest at the top','wheel zoom + drag pan','year chips','lane filter','date scrubber','playback mode'],
     jobs:[
       ['Replay growth','Scrub or play through the workspace to see artifacts appear in chronological order.'],
-      ['Compare project momentum','Switch to By project to read every project’s git history in parallel: one column per project, one dot per commit day, sized by commits.'],
-      ['Trace one cluster','Open a cluster from Graph and carry its related artifacts into a focused timeline trace (a By-file tool; starting one switches the mode back).']
+      ['Compare project momentum','Switch to By project to read every project’s git history in parallel: one column per project, one dot per commit day, sized by commits. Projects without a repository keep a lane, drawn dark and captioned, so the count never disagrees with Files.'],
+      ['Narrow the window','Wheel to zoom the time axis, drag to pan it, or click a year chip to jump; “Filter projects…” hides lanes by name. Shift+wheel pans sideways once the lanes outgrow the pane.'],
+      ['Trace one cluster','Open a cluster from Graph and carry its related artifacts into a focused timeline trace (a By-file tool; starting one switches the mode back and resets any zoomed window).']
     ],
     sources:[
       ['GET /xo/space.json','Serves &lt;XO root&gt;/.xo/space.json: dated leaves, categories, milestones, relationship edges, and per-project git history (gitHistory).','Workspace .xo file'],
@@ -291,11 +290,13 @@ const TAB_GUIDES={
       ['Choose Timeline','Use the top navigation tab.'],
       ['Pick a mode','By file shows every dated artifact; By project shows each project’s daily commits in parallel columns. The choice is remembered.'],
       ['Set a date','Drag the scrubber or press Play; the sweep line moves up the page as time advances.'],
+      ['Zoom and pan','Wheel over the plot to zoom the time window around the cursor and drag to slide it; year chips above the plot jump straight to a year. Shift+wheel (or a horizontal wheel) pans across lanes when there are more than fit.'],
+      ['Filter lanes','Type in “Filter projects…” to keep only matching lanes; clear it to restore all of them.'],
       ['Inspect a point','Hover an artifact or commit dot for details; click a commit dot to open its project on Graph.']
     ],
     checks:[
       ['No dots','Dates come from git only: a dot is a file’s first-commit day. Files never committed, and projects without a repo, sit out the By file plot.'],
-      ['Fewer projects than Files lists','Expected, and stated in the subtitle: Files lists every folder under the XO root, while both Timeline modes can only plot projects that have their own git repository. A project whose repo sits in a subfolder counts as having none.'],
+      ['Dark, empty lanes','Expected, and counted in the subtitle: every folder under the XO root gets a lane, and one with no git history of its own is drawn dark with a “no git history” caption rather than dropped. A project whose repo sits in a subfolder counts as having none.'],
       ['No By project toggle','The current dataset carries no git history; the toggle appears only when at least one project has git commits of its own (a repo with no commits yet does not count, and the Dashboard projection never has history).'],
       ['Trace missing','Open the cluster from Graph first or clear the existing trace and try again.']
     ],
@@ -321,7 +322,7 @@ const TAB_GUIDES={
       ['<project>/.xo and .quirq','Per-project watcher output and machine-local control state; neither is a source for this tab. The aggregate it does read, &lt;XO root&gt;/.xo/sessions.json, is a workspace file written by the same watcher.','Separate watcher stores']
     ],
     steps:[
-      ['Choose sources','Toggle available runtimes. An unavailable badge means the native store could not be read, not that it contains zero sessions.'],
+      ['Choose sources','Toggle available runtimes. An “offline” badge means the native store could not be read, not that it contains zero sessions.'],
       ['Choose a window','Select Today, 7 days, 30 days, or All.'],
       ['Choose a lens','Use Overview, Sessions, Tools, Models, or Trends.'],
       ['Sort and select','Sort and page through session rows, then open the one that needs diagnosis.'],
@@ -479,9 +480,10 @@ function tabGuideArticle(id){
         <h2>The file previewer</h2>
         <p>Three surfaces open the same side drawer: a file row in Tree, a file
         row in the List drawer’s Files panel, and “Preview file” in Graph’s
-        detail panel. Opening a file does not navigate — the view underneath
-        keeps its lens, its scroll and its expansion state, and the drawer’s
-        Graph button is the one control that moves you.</p>
+        detail panel. Opening a file does not navigate — the lens underneath
+        keeps its camera and its expansion state, and the drawer’s Graph
+        button is the one control that moves you. The drawer belongs to Files:
+        switching to any other tab closes it.</p>
         <p>How a file renders is a security contract, not a display
         preference. Markdown goes through the escape-first renderer, which
         escapes the source before it transforms it and emits only fixed,
@@ -536,9 +538,9 @@ function storageArticle(){
       <section class="wiki-section">
         <h2>The full data path</h2>
         <div class="wiki-flow wiki-flow-five" aria-label="End-to-end data path">
-          <div><small>01</small><b>Native runtime</b><span>Full messages, runtime session records, and tool payloads stay in the runtime's own storage — Claude Code, OpenClaw, Hermes, Antigravity, Codex, or Cursor.</span></div>
+          <div><small>01</small><b>Native runtime</b><span>Full messages, runtime session records, and tool payloads stay in the runtime's own storage — Claude Code, Codex, OpenClaw, Hermes, Antigravity, or Cursor.</span></div>
           <i aria-hidden="true">→</i>
-          <div><small>02</small><b>Source adapter</b><span>Reads only new records, assigns a project, and normalizes supported observations.</span></div>
+          <div><small>02</small><b>Source adapter</b><span>Reads only new records, assigns a project, and normalizes supported observations. Cursor has no source adapter: it is telemetry-only and reaches sessions.json directly, skipping steps 02–04.</span></div>
           <i aria-hidden="true">→</i>
           <div><small>03</small><b>Watcher sinks</b><span>Reduce events into indexes, counters, todos, timelines, and live presence, and rebuild the three workspace view files.</span></div>
           <i aria-hidden="true">→</i>
@@ -658,8 +660,8 @@ function installationArticle(){
           <div><b>curl</b><p>Streams the installer into your shell, and the
           installer uses it again to fetch uv if uv is not already
           installed.</p></div>
-          <div><b>A coding runtime</b><p>Claude Code, OpenClaw, Hermes, or
-          Antigravity is needed only for chat. The API, Wiki, and project
+          <div><b>A coding runtime</b><p>Claude Code, Codex, OpenClaw, Hermes,
+          or Antigravity is needed only for chat. The API, Wiki, and project
           views start without one.</p></div>
           <div><b>Optional tools</b><p><code>node</code>/<code>npm</code>,
           <code>gh</code>, <code>rclone</code>, and <code>gpg</code> each
@@ -729,8 +731,7 @@ function installationArticle(){
             <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
             <tbody>
               <tr><td>.</td><td>Your projects root; each project is a subdirectory with its own portable .xo metadata</td></tr>
-              <tr><td>./.xo</td><td>The workspace tier the watcher materialises: space.json, dashboard.json and sessions.json — the three payloads the UI reads over /xo/*.json — plus workspace.json, stats, activity and the workspace timeline</td></tr>
-              <tr><td>./.xo</td><td>The workspace tier the watcher materialises: space.json, dashboard.json and sessions.json — the three payloads the UI reads over /xo/*.json — plus workspace.json, stats, activity and the workspace timeline</td></tr>
+              <tr><td>./.xo</td><td>The workspace tier the watcher materialises: space.json, dashboard.json and sessions.json — the three payloads the UI reads over /xo/*.json — plus workspace.json, stats, the sessions/ unions and the workspace timeline. Live presence is not here: it lives under ./.quirq/watcher/activity/</td></tr>
               <tr><td>./xo-space</td><td>The Quirq source checkout the installer owns and updates</td></tr>
               <tr><td>./xo-space/venv</td><td>The Python environment</td></tr>
               <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, and watcher/ with its offsets, locks and live-presence snapshots</td></tr>
@@ -894,8 +895,8 @@ function watcherArticle(){
           <table class="wiki-table">
             <thead><tr><th>Observation</th><th>Retained data</th><th>Destinations</th></tr></thead>
             <tbody>
-              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project</td><td>session augment, todos session bucket, stats timing, timeline</td></tr>
-              <tr><td>MessageObserved</td><td>role and time; no message text</td><td>message counters, daily message buckets, activity timing</td></tr>
+              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project, the runtime-reported working directory</td><td>session augment, todos session bucket, stats timing, timeline</td></tr>
+              <tr><td>MessageObserved</td><td>role, time and (for assistant turns) the model; no message text</td><td>message counters, daily message buckets, per-role session counters</td></tr>
               <tr><td>UsageObserved</td><td>input/output/cache tokens, model, optional response latency</td><td>stats, per-model rollups, in-memory presence model cache</td></tr>
               <tr><td>ToolUseObserved</td><td>tool name only; no arguments</td><td>tool call counters and per-tool analytics</td></tr>
               <tr><td>TaskCreated / changed</td><td>id, content, description, active form, status</td><td>todos, task counters, added/completed timeline events</td></tr>
@@ -912,6 +913,7 @@ function watcherArticle(){
             <thead><tr><th>Runtime</th><th>Messages</th><th>Tokens</th><th>Tools</th><th>Files</th><th>Tasks</th><th>Presence</th></tr></thead>
             <tbody>
               <tr><td>Claude Code</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>native task pairing</td><td>PID session files</td></tr>
+              <tr><td>Codex</td><td>yes</td><td>yes</td><td>name only</td><td>applied patches</td><td>not yet</td><td>not yet</td></tr>
               <tr><td>OpenClaw</td><td>yes</td><td>yes</td><td>yes</td><td>not yet</td><td>todo API</td><td>not yet</td></tr>
               <tr><td>Hermes</td><td>yes</td><td>not exposed</td><td>yes</td><td>not yet</td><td>todo API</td><td>not available</td></tr>
               <tr><td>Antigravity</td><td>yes</td><td>separate usage capability</td><td>yes</td><td>supported write tools</td><td>todo API</td><td>short-lived process</td></tr>
@@ -993,7 +995,7 @@ function xoDataArticle(){
             overwrites <code>name</code> with the directory name and drops a
             <code>display_name</code> that only echoes a stale stored name, so
             a renamed folder cannot point readers at the wrong project.</p>
-            <dl><div><dt>Used for</dt><dd>project discovery, ownership, description, and an optional <code>category</code>/<code>classification</code> override for the Dashboard</dd></div><div><dt>Lifecycle</dt><dd>one-time identity fill; <code>display_name</code> and <code>description</code> can be updated later, but the directory name is always the id</dd></div></dl>
+            <dl><div><dt>Used for</dt><dd>project discovery, ownership, and an optional <code>category</code>/<code>classification</code> override for the Dashboard. The description readers see is derived server-side from README.md, PROJECT.md or OBJECTIVES.md, not stored here</dd></div><div><dt>Lifecycle</dt><dd>one-time identity fill by the watcher, which rewrites the file to exactly the five keys above; the directory name is always the id</dd></div></dl>
           </article>
 
           <article class="wiki-file">
@@ -1161,7 +1163,7 @@ function quirqDataArticle(){
 ├── runtime.env                 # mode 0600; typed restart-time controls
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
-├── secrets.env                 # mode 0600; write-only credentials from Setup
+├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
 └── watcher/
     ├── offsets.json
     ├── hermes-offsets.json       # only when the Hermes source is watched
@@ -1217,7 +1219,11 @@ function quirqDataArticle(){
             never reads saved plaintext back; plaintext is reachable only
             through the single-key reveal endpoint and the legacy
             /api/secrets/env route. The file is written atomically with
-            owner-only permissions and loaded when Quirq starts.</p>
+            owner-only permissions and loaded when Quirq starts. It lives
+            here only when <code>QUIRQ_SECRETS_FILE</code> says so — the
+            installer sets it to <code>&lt;state root&gt;/secrets.env</code>;
+            without that variable the store is the active runtime's own
+            <code>.env</code> in its home directory.</p>
             <dl><div><dt>Writer</dt><dd>curated secrets API</dd></div><div><dt>Delete effect</dt><dd>removes the value from disk and from new child-process environments</dd></div></dl>
           </article>
 
@@ -1830,9 +1836,10 @@ function flowsArticle(){
           <i>→</i>
           <div class="wiki-recipe-step"><small>3</small><b>The telemetry</b><code>GET /xo/sessions.json</code><p>Session totals merged across every runtime that reports them, with unavailable sources named rather than hidden.</p></div>
         </div>
-        <p>These three are files, not computations: they live at
+        <p>These three are files first: they live at
         <code>&lt;XO root&gt;/.xo/{space,dashboard,sessions}.json</code> and the
-        route hands over what the watcher wrote. Read them for anything
+        route hands over what the watcher wrote, rebuilding only when a file
+        is missing or older than <code>XO_VIEW_MAX_AGE_S</code> (120 s). Read them for anything
         workspace-wide; reach for the per-project <code>/api/*</code> endpoints
         below when you need one project’s live detail, which these files
         deliberately do not carry.</p>
@@ -1843,7 +1850,7 @@ function flowsArticle(){
         <div class="wiki-recipe">
           <div class="wiki-recipe-step"><small>1</small><b>Workspace presence</b><code>GET /api/xo-projects/activity</code><p>Get all observably open sessions with project ids.</p></div>
           <i>→</i>
-          <div class="wiki-recipe-step"><small>2</small><b>Group and label</b><p>Group by project, show runtime/model, and display the response’s update timestamp.</p></div>
+          <div class="wiki-recipe-step"><small>2</small><b>Group and label</b><p>Group by project, show the runtime and agent, and display the response’s update timestamp. Model is not on this endpoint — read it from the session detail.</p></div>
           <i>→</i>
           <div class="wiki-recipe-step"><small>3</small><b>Drill into project</b><code>GET /api/xo-projects/{id}/activity</code><p>Use the project endpoint when the selected scope changes.</p></div>
         </div>
@@ -1866,7 +1873,7 @@ function flowsArticle(){
       <section class="wiki-section">
         <h2>Flow 3 · “Which session should I inspect?”</h2>
         <div class="wiki-recipe">
-          <div class="wiki-recipe-step"><small>1</small><b>Start from the index</b><code>GET /api/xo-projects/{id}/usage/sessions</code><p>Sort by last activity and show token totals and message counts; derive the runtime from the composite key. Sort by last activity and show token totals and message counts; derive the runtime from the composite key. Task counters are on neither the index nor the session detail — the watcher's <code>taskCount</code> stops at the disk row. Fetch <code>GET /api/xo-projects/{id}/todos</code> for task state.</p></div>
+          <div class="wiki-recipe-step"><small>1</small><b>Start from the index</b><code>GET /api/xo-projects/{id}/usage/sessions</code><p>Sort by last activity and show token totals and message counts; derive the runtime from the composite key. Task counters are on neither the index nor the session detail — the watcher's <code>taskCount</code> stops at the disk row. Fetch <code>GET /api/xo-projects/{id}/todos</code> for task state.</p></div>
           <i>→</i>
           <div class="wiki-recipe-step"><small>2</small><b>Select one identity</b><p>Keep the composite key as the stable list identity; native session id is also accepted for lookup.</p></div>
           <i>→</i>

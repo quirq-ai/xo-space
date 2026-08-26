@@ -349,7 +349,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("const weight=", tree)
         self.assertIn("pathLength=", tree)
         self.assertIn("is-growing", tree)
-        self.assertIn("function restoreScroll", tree)
+        self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
         # Wiki Files guide must stay aligned with the three-lens UI (drift here
         # is how "two lenses" docs survive after Tree ships).
@@ -516,9 +516,12 @@ class SpaceWikiTests(unittest.TestCase):
 
         self.assertIn("curl -fsSL", guide)
         self.assertIn("localhost:5002", guide)
-        # Piping to `sh` fails: the installer uses BASH_SOURCE and pipefail.
-        self.assertIn("| bash", guide)
-        self.assertNotIn("| sh\n", guide)
+        # The canonical one-liner pipes to `sh`: the short URL serves a POSIX
+        # bootstrap that runs install.sh under bash. Fetching install.sh
+        # directly still needs bash (BASH_SOURCE, pipefail), and the guide
+        # must keep saying so.
+        self.assertIn("https://quirq.ai/install | sh", guide)
+        self.assertIn("pipe it to `bash`, not `sh`", guide)
         # git went from "you do not need it" to a hard prerequisite.
         self.assertNotIn("You do not need Git", guide)
 
