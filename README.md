@@ -103,7 +103,7 @@ The checkout lands beside your projects, machine-local state goes to `./.quirq`,
 ```bash
 ./cowork-api.sh dev        # venv + reload, STAGE=local; port 5002, or 5003 if busy
 ./cowork-api.sh install    # dependencies only (venv + requirements.txt)
-./cowork-api.sh start      # daemon; PID /tmp/xo-cowork-api.pid
+./cowork-api.sh start      # daemon; PID /tmp/xo-space.pid
 ./cowork-api.sh status | logs | restart | stop
 ```
 
@@ -141,7 +141,7 @@ curl http://localhost:5002/health
 
 ### Process management
 
-Watch the installer-run server with `tail -f .quirq/quirq.log` (or `<state root>/quirq.log` if you moved the state root from Setup). The `cowork-api.sh` daemon logs to `/tmp/xo-cowork-api.log` instead. If a stray server is holding the port:
+Watch the installer-run server with `tail -f .quirq/quirq.log` (or `<state root>/quirq.log` if you moved the state root from Setup). The `cowork-api.sh` daemon logs to `/tmp/xo-space.log` instead. If a stray server is holding the port:
 
 ```bash
 lsof -i :5002   # find the PID, then kill it
