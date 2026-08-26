@@ -114,7 +114,7 @@ For example:
 curl -fsSL https://quirq.ai/install | PORT=8080 XO_PROJECTS_ROOT=/absolute/path sh
 ```
 
-On first run the installer writes `quirq/.env` recording exactly what it used,
+On first run the installer writes `./xo-space/.env` (the checkout's `.env`) recording exactly what it used,
 then never rewrites it — it is yours to edit. Change a value there and re-run
 `./install.sh` to apply it. Credentials are written commented out; uncomment
 the ones you need, or configure them through the Setup tab instead.
@@ -122,7 +122,7 @@ the ones you need, or configure them through the Setup tab instead.
 Precedence, highest first:
 
 1. variables exported in your shell — `PORT=8080 ./install.sh`
-2. `quirq/.env`
+2. `./xo-space/.env`
 3. the defaults above
 
 The Setup tab's `runtime.env` and `secrets.env` are loaded with `override=True`
