@@ -18,6 +18,12 @@ const PAGES=[
     summary:'Prerequisites, the one-command native install, configuration, verification, and updates.'
   },
   {
+    id:'first-run',
+    section:'Start here',
+    title:'Your first run',
+    summary:'Why the workspace starts empty, what a project is, three ways to get one, and which tabs light up when.'
+  },
+  {
     id:'watcher',
     section:'Runtime systems',
     title:'How the watcher works',
@@ -100,6 +106,7 @@ const PAGES=[
 const ARTICLES={
   storage:storageArticle,
   installation:installationArticle,
+  'first-run':firstRunArticle,
   watcher:watcherArticle,
   'xo-data':xoDataArticle,
   'quirq-data':quirqDataArticle,
@@ -153,7 +160,10 @@ function renderShell(){
   });
   root.querySelector('#wiki-main').addEventListener('click',event=>{
     const button=event.target.closest('[data-open-tab]');
-    if(button)go(button.dataset.openTab);
+    if(button){go(button.dataset.openTab);return;}
+    /* in-article cross-links between wiki pages */
+    const link=event.target.closest('[data-wiki-link]');
+    if(link)selectPage(link.dataset.wikiLink);
   });
   selectPage(activePage);
 }
@@ -634,6 +644,150 @@ function storageArticle(){
     </article>`;
 }
 
+function firstRunArticle(){
+  return`
+    <article class="wiki-article">
+      <header class="wiki-hero">
+        <div class="wiki-kicker">Start here · Your first run</div>
+        <h1>What you see first depends on where you ran the installer.</h1>
+        <p>Quirq does not create work for you: it watches one directory — the
+        one you ran the installer in, your <b>workspace</b> — and shows what
+        is in it. Run it in an empty directory and the Files tab is empty.
+        Run it in a directory that already holds folders and every one of
+        them is listed as a project on the spot. Both are correct; this page
+        explains what you are looking at either way and how to get a real
+        project in.</p>
+        <div class="wiki-facts">
+          <span>a project is a folder</span>
+          <span>the watcher picks it up</span>
+          <span>three ways to add one</span>
+          <span>tabs fill in stages</span>
+        </div>
+      </header>
+
+      <section class="wiki-section">
+        <h2>What you are looking at</h2>
+        <div class="wiki-decision-list">
+          <div><b>An empty directory</b><p>Files says <i>No projects in this
+          workspace yet</i>. Dashboard, Graph, Tree and Timeline draw the
+          same empty map. Setup and Wiki are fully alive; Sessions lists the
+          runtimes it can read and shows <i>no data</i> until one of them has
+          run a session on this machine.</p></div>
+          <div><b>A directory with things in it</b><p>Every non-hidden folder
+          is listed — your existing repos, scratch folders, and the
+          <code>xo-space</code> checkout the installer just made — each with
+          an <i>unscaffolded</i> badge, browsable but without project
+          metadata. Big repos among them count toward the map's file cap
+          (400 per project, 1,500 across the workspace), so a very full
+          directory shows a trimmed picture. If that is not the collection
+          you meant, point the XO root at a narrower directory from
+          <button class="wiki-link" data-open-tab="secrets">Setup</button>
+          — it changes which folders are listed and never moves files.</p></div>
+        </div>
+        <p class="wiki-note">Either way the tabs read one map: the List, Graph
+        and Tree lenses of Files, the Dashboard and the Timeline all show the
+        same set of folders, and all update within a watcher tick.</p>
+      </section>
+
+      <section class="wiki-section">
+        <h2>What a project is</h2>
+        <p>A project is a <b>direct child folder of the workspace</b>. That is
+        the whole rule: the folder name is the project id, and the watcher
+        lists every non-hidden folder it finds there on its next tick — a few
+        seconds. Two flavours:</p>
+        <div class="wiki-decision-list">
+          <div><b>Unscaffolded</b><p>Any plain folder — one you cloned, copied
+          or <code>mkdir</code>-ed. It appears with an <i>unscaffolded</i>
+          badge: the files are browsable, but there is no
+          <code>.xo/</code> metadata yet, so no todos, timeline or identity.
+          The installer's own <code>xo-space</code> checkout shows up this way
+          too, because it is a folder in your workspace like any other.</p></div>
+          <div><b>Scaffolded</b><p>A folder created through the API. It gets
+          <code>.xo/project.json</code> (owned by the watcher, never edited by
+          hand) and the template docs an agent works from —
+          <code>AGENTS.md</code>, <code>PROJECT.md</code>,
+          <code>OBJECTIVES.md</code>, <code>PLAN.md</code>,
+          <code>PROGRESS.md</code>, <code>memory/</code>. This is the shape
+          the Dashboard, todos and sync features expect.</p></div>
+        </div>
+      </section>
+
+      <section class="wiki-section">
+        <h2>Three ways to get one</h2>
+        <div class="wiki-recipe">
+          <div class="wiki-recipe-step"><small>1</small><b>Drop a folder in</b>
+          <code>git clone &lt;repo&gt; &lt;workspace&gt;/my-app</code>
+          <p>Or <code>mkdir</code>, or copy an existing project. It shows up
+          unscaffolded within a tick. Right for "I already have code and want
+          to see it here".</p></div>
+          <i>→</i>
+          <div class="wiki-recipe-step"><small>2</small><b>Ask your coding agent</b>
+          <code>"create an xo-project called my-app"</code>
+          <p>Claude Code or Codex running in the workspace carries the
+          <code>xo-projects</code> skill (shipped in the checkout under
+          <code>.agents/skills/</code>, and in the Claude Code plugin). It
+          asks the API to scaffold the folder and then fills in the template
+          docs with you. Right for starting something new.</p></div>
+          <i>→</i>
+          <div class="wiki-recipe-step"><small>3</small><b>Call the API yourself</b>
+          <code>POST /api/files/mkdir</code>
+          <p>Body: <code>{"path": "&lt;XO root&gt;/my-app", "scaffold": true,
+          "display_name": "My App"}</code>. The path must be a direct child
+          of the XO root (400 otherwise, 409 if it exists). Same result as
+          the skill, no agent needed.</p></div>
+        </div>
+        <p class="wiki-note">The XO root is printed by the installer
+        (<i>XO projects:</i>) and shown in <button class="wiki-link"
+        data-open-tab="secrets">Setup</button> under storage roots. Never
+        guess it; <code>GET /api/config/workspace</code> returns it too.</p>
+      </section>
+
+      <section class="wiki-section">
+        <h2>Which tabs light up when</h2>
+        <div class="wiki-table-wrap">
+          <table class="wiki-table">
+            <thead><tr><th>Once you have…</th><th>…this appears</th></tr></thead>
+            <tbody>
+              <tr><td>any folder in the workspace</td><td>Files (List, Graph, Tree), the project drawer's file browser, Dashboard node</td></tr>
+              <tr><td>a scaffolded project</td><td>identity and description from <code>.xo/project.json</code>, todos in the drawer and orbiting on Dashboard</td></tr>
+              <tr><td>a <code>.git</code> inside the project</td><td>Timeline lane with commit history; file dates in Graph and Tree (folders without git are drawn as dark lanes, not dropped)</td></tr>
+              <tr><td>an agent session in the project</td><td>live badge and last activity in Files, events in the drawer, entries in Sessions</td></tr>
+              <tr><td>credentials in Setup or <code>.env</code></td><td>chat through the API, connectors, backup and restore</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="wiki-section">
+        <h2>Before the first chat: a Setup checklist</h2>
+        <ol class="wiki-steps">
+          <li><b>Roots.</b><p>Confirm the XO root is the directory you meant.
+          Changing it selects a different collection of projects; it never
+          moves files.</p></li>
+          <li><b>Runtime.</b><p>The agent CLI must be on the server's PATH —
+          <code>claude</code> or <code>codex</code>. The installer does not
+          install it: <code>npm install -g @anthropic-ai/claude-code</code>.
+          Setup's runtime card says whether it was found.</p></li>
+          <li><b>Credentials.</b><p>Add the runtime's key in Setup (write-only;
+          previews never show the value) or in the checkout's
+          <code>.env</code>. A saved Setup value outranks <code>.env</code>
+          on the next start.</p></li>
+        </ol>
+        <p class="wiki-note">Nothing here is required to browse. A workspace
+        with plain folders and no credentials is already a working file map;
+        the checklist is for the day you want an agent in the loop.</p>
+      </section>
+
+      <aside class="wiki-callout">
+        <b>Why nothing is invented</b>
+        <p>The watcher only ever reads. It materialises what your folders and
+        your runtimes' own logs contain — it does not create projects,
+        sessions or history. An empty workspace is an honest one, and a full
+        one shows exactly what was already there.</p>
+      </aside>
+    </article>`;
+}
+
 function installationArticle(){
   return`
     <article class="wiki-article">
@@ -692,6 +846,11 @@ function installationArticle(){
           and piping that to <code>bash</code> yourself does the same thing.</p></li>
           <li><b>Open the workspace.</b>
           <code>http://localhost:5002/space/</code>
+          <p>It opens on the Files tab: empty if the directory was empty,
+          otherwise listing every folder that was already there as a
+          project. Both are expected — <button class="wiki-link"
+          data-wiki-link="first-run">Your first run</button> explains what
+          you are looking at and how to get a real project in.</p>
           <p>Press Ctrl-C to stop the server. To start it again without
           updating, run <code>./xo-space/install.sh</code> from the same
           directory; re-run the installer command whenever you want to update
@@ -747,6 +906,12 @@ function installationArticle(){
         state root later; it saves them to <code>roots.env</code> in the state
         root and the server reads that file at startup, so the change lands on
         the next start and shows as a restart reason until then.</p>
+        <p class="wiki-note">The environment is made by <code>uv</code> and has
+        no <code>pip</code>. To add packages (the test suite, say), use uv
+        against it: <code>~/.local/bin/uv pip install --python
+        ./xo-space/venv/bin/python -r &lt;file&gt;</code>. The installer put uv in
+        <code>~/.local/bin</code>, which is not on your shell's PATH unless you
+        add it.</p>
       </section>
 
       <section class="wiki-section">

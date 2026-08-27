@@ -165,8 +165,11 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("Liveblocks + Yjs", wiki)
         self.assertIn("docs.yjs.dev/api/document-updates", wiki)
         self.assertIn("support.google.com/docs/answer/190843", wiki)
+        # The stylesheet must be cache-busted, but pinning the literal stamp
+        # turns every legitimate bump into a red test (see the app.js stamp
+        # test above for the same reasoning): assert the shape, not the value.
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("css/wiki.css?v=20260725-collaboration1", index)
+        self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
 
     def test_wiki_documents_space_walk_session_replay(self) -> None:
         wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
@@ -549,6 +552,43 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("prepare_state_root", code)
         # Nothing may be installed beyond requirements.txt.
         self.assertIn("QUIRQ_SKIP_BOOT_INSTALL", code)
+
+    def test_first_run_is_explained_in_wiki_docs_and_the_empty_state(self) -> None:
+        """A fresh install opens on an empty Files tab. The wiki page, the two
+        docs and the empty state itself must all say what a project is and
+        the three ways to get one — and agree on the API call."""
+
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(encoding="utf-8")
+        self.assertIn("id:'first-run'", wiki)
+        self.assertIn("'first-run':firstRunArticle", wiki)
+        self.assertIn("Your first run", wiki)
+        self.assertIn("direct child folder of the workspace", wiki)
+        self.assertIn("POST /api/files/mkdir", wiki)
+        self.assertIn("xo-projects", wiki)
+        # In-article cross-link from the install guide to the first-run page.
+        self.assertIn('data-wiki-link="first-run"', wiki)
+        self.assertIn("data-wiki-link", wiki.split("function pageButton")[0])
+
+        projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
+        self.assertIn("data-first-run", projects)
+        self.assertIn("'first-run'", projects)
+        self.assertIn("scaffold:true", projects)
+        self.assertNotIn("Create one through the xo-space", projects)
+
+        guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for doc in (guide, readme, wiki):
+            self.assertIn("Your first run", doc)
+            self.assertIn("/api/files/mkdir", doc)
+            # The first run is only empty if the directory was: a busy
+            # directory lists every folder as an unscaffolded project, and
+            # all three tellings must say so.
+            self.assertIn("unscaffolded", doc)
+        self.assertIn("## Your first run", guide)
+        self.assertIn("uv pip install --python", guide)
+        # The cross-link buttons need a rule, or they render as stock buttons.
+        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(encoding="utf-8")
+        self.assertIn(".wiki-link{", css)
 
     def test_installer_tells_you_how_to_come_back_and_never_nests(self) -> None:
         """Ctrl-C hands back a bare prompt; the banner must have said how to

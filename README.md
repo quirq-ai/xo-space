@@ -115,6 +115,20 @@ Then open the workspace — the installer prints this URL as it starts:
 http://localhost:5002/space/
 ```
 
+### Your first run
+
+It opens on Files. In an empty directory it says **No projects in this
+workspace yet**; in a directory that already has folders, every one of them
+is listed as an *unscaffolded* project on the spot — the checkout included.
+Both are expected: a project is any direct child folder of the directory you
+installed in (the *XO root*). Clone or `mkdir` one there, ask your coding
+agent to "create an xo-project" (the `xo-projects` skill calls the API), or
+`POST /api/files/mkdir` with `scaffold:true`. Tabs fill in stages from there
+— folders light up Files and Dashboard, git history lights up Timeline, agent
+sessions light up Sessions. The in-app Wiki page **Your first run** and
+[INSTALLATION.md](INSTALLATION.md#your-first-run) walk through it, including
+how to narrow the XO root from Setup if the installer landed somewhere busy.
+
 ### Check the API directly
 
 ```bash

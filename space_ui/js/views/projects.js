@@ -288,8 +288,13 @@ function rowsHTML(rows){
         +(items.length?'<b>No project matches “'+esc(filter)+'”</b>'
             +'<p>Clear the filter to see all '+items.length+'.</p>'
           :'<b>No projects in this workspace yet</b>'
-            +'<p>Create one through the xo-space; it appears here as soon as the '
-            +'folder exists under the XO root.</p>')
+            +'<p>A project is any folder directly under your workspace (the XO '
+            +'root — see Setup). Clone or <code>mkdir</code> one there, ask your '
+            +'coding agent to “create an xo-project”, or '
+            +'<code>POST /api/files/mkdir</code> with <code>scaffold:true</code>; '
+            +'it appears here on the watcher’s next tick.</p>'
+            +'<p><button class="sess-refresh" data-first-run>Read: Your first run</button> '
+            +'<button class="sess-refresh" data-open-setup>Open Setup</button></p>')
       +'</div>');
 }
 function bindRows(){
@@ -299,6 +304,15 @@ function bindRows(){
     switchTo('graph');
     dispatchEvent(new CustomEvent('space:focus-project',{detail:b.dataset.map}));
   }));
+  /* empty-state hand-offs: the wiki listens for space:wiki-page once mounted,
+     so switch first and select the page after (same order quirq.js uses) */
+  const fr=root.querySelector('[data-first-run]');
+  if(fr)fr.addEventListener('click',async()=>{
+    await switchTo('wiki');
+    dispatchEvent(new CustomEvent('space:wiki-page',{detail:'first-run'}));
+  });
+  const st=root.querySelector('[data-open-setup]');
+  if(st)st.addEventListener('click',()=>switchTo('secrets'));
 }
 function syncSortUI(){
   root.querySelectorAll('[data-sort]').forEach(b=>{
