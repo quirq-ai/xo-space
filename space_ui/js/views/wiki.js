@@ -423,6 +423,7 @@ const TAB_GUIDES={
     jobs:[
       ['Choose storage','View and configure the host XO projects root and machine-local .quirq root.'],
       ['Choose runtime behavior','Select the active agent, enable the watcher, set source coverage, and tune the tick interval.'],
+      ['See what is reported','The Process card states whether usage reporting is off (no XO_API_KEY — nothing is sent), on (key accepted; shows the last reported day), blocked (key rejected — nothing is sent), or pending (key set, not verified yet) — the same decision usage_sync logs.'],
       ['Connect credentials','Set, replace, or remove environment values without reading saved plaintext back.'],
       ['Stay current','Check the git remote for a newer xo-space and fast-forward the checkout; the new version runs after a restart.']
     ],
@@ -444,7 +445,8 @@ const TAB_GUIDES={
       ['Root not applied','Saving only queues it. Restart the server (or rerun the displayed installer) to boot on the new roots; every tab then reads the same XO root.'],
       ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first. When a runtime or its CLI is missing, the card links to that runtime’s own install docs.'],
       ['Sessions missing','Confirm the native runtime directory is mounted and watcher coverage includes it.'],
-      ['Secret value hidden','That is intentional; replace the value or remove the variable.']
+      ['Secret value hidden','That is intentional; replace the value or remove the variable.'],
+      ['Usage reporting: blocked','xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
     ],
     note:'XO root changes select a project collection and never move project files. An empty new .quirq root receives a safe state copy; a non-empty root is never merged.'
   }
