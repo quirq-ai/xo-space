@@ -143,14 +143,26 @@ async def build_tarball(project_dir: Path, output_path: Path) -> int:
 def extract_tarball(tarball_path: Path, target_dir: Path) -> None:
     """Extract ``tarball_path`` into ``target_dir``.
 
-    Refuses any member whose resolved destination escapes ``target_dir``
-    (tar-slip defence). Member permissions are preserved; ownership is
+    Refuses any member with an absolute name or a ``..`` path component,
+    and any member whose resolved destination escapes ``target_dir``
+    (tar-slip defence). A ``..`` that still resolves inside the target
+    (``a/../b.txt``) is refused too: our own archives never contain one
+    (build_tarball feeds ``git ls-files`` / walk output), and CPython
+    3.12.14+ refuses to materialise the ``a/..`` intermediate anyway, so
+    such an archive would otherwise die mid-extract with a confusing
+    ``FileExistsError``. Member permissions are preserved (modulo the
+    ``data`` filter clamping setuid/setgid/sticky bits); ownership is
     not (running process owns everything).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     target_resolved = target_dir.resolve()
     with tarfile.open(tarball_path, "r:gz") as tar:
         for member in tar.getmembers():
+            parts = member.name.split("/")
+            if member.name.startswith("/") or ".." in parts:
+                raise RuntimeError(
+                    f"tarball member {member.name!r} has an absolute or '..' path — refusing"
+                )
             dest = (target_dir / member.name).resolve()
             try:
                 dest.relative_to(target_resolved)
@@ -158,4 +170,6 @@ def extract_tarball(tarball_path: Path, target_dir: Path) -> None:
                 raise RuntimeError(
                     f"tarball member {member.name!r} would extract outside {target_dir} — refusing"
                 )
-        tar.extractall(target_dir)
+        # Explicit filter: the default flipped to "data" in 3.14 and warns on
+        # 3.12/3.13 — pinning it keeps extraction identical across versions.
+        tar.extractall(target_dir, filter="data")
