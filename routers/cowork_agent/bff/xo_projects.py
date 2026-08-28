@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -31,6 +30,7 @@ from services.cowork_agent.project_layout import (
     list_unscaffolded_dirs,
     project_dir_exists,
     read_project_file,
+    relative_path_suffix,
 )
 
 router = APIRouter()
@@ -338,7 +338,7 @@ def project_file(project_id: str, relative_path: str) -> FilePreviewResponse:
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},
         )
-    suffix = PurePosixPath(relative_path or "").suffix.lower()
+    suffix = relative_path_suffix(relative_path)
     if suffix not in PREVIEW_SUFFIXES:
         raise HTTPException(
             status_code=415,

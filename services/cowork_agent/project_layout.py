@@ -510,6 +510,23 @@ def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict 
     }
 
 
+def relative_path_suffix(relative_path: str) -> str:
+    """Lower-cased extension of ``relative_path``'s final segment (``".md"``).
+
+    Empty when there is none. Pure string work, but it is path work all the
+    same, and path work belongs in this module — BFF route modules compare
+    the result against their allowlists instead of importing ``pathlib``
+    themselves (design rule P2).
+    """
+    name = (relative_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    dot = name.rfind(".")
+    # No dot, a dotfile like ".env" (its name is not a suffix), or a bare
+    # trailing dot — the same cases pathlib's ``suffix`` treats as none.
+    if not 0 < dot < len(name) - 1:
+        return ""
+    return name[dot:].lower()
+
+
 def list_unscaffolded_dirs() -> list[dict]:
     """Directories under xo-projects/ that lack ``.xo/project.json``.
 
