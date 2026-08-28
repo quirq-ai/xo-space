@@ -19,7 +19,10 @@
   backend is resolved from `AGENT_NAME` through one seam — the capability loader
   `services/cowork_agent/adapters/loader.py` (`load_capability` /
   `try_load_capability`). A capability is a module `adapters/<name>/<cap>.py`; a
-  missing one means the router returns its empty/501 shape, never a crash.
+  missing one means the router returns its empty/501 shape, never a crash. A
+  *broken* one — present, but failing to import because a dependency of its own
+  is missing — fails loud at startup instead: a real implementation error must
+  not be disguised as "unsupported" (see `try_load_capability`).
 - **Agent-specific code lives in exactly three trees:**
   `services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
   `config/models/<name>/` (legacy Plane-A model clients). Nowhere else may name

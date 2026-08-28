@@ -174,7 +174,9 @@ review, and some by tests.
    overwritten on the next tick.
 5. **Backward compatibility.** Endpoint paths, request schemas, and response
    shapes are contracts. A missing capability degrades to an empty/501 shape,
-   never a crash.
+   never a crash — but a capability that exists and fails to import (a missing
+   dependency inside it) fails loud at startup rather than silently dropping
+   routes.
 6. **Never log secrets.** No tokens, keys, cookies, or prompt text in logs or
    error messages. `/health` reports whether a credential is present, never
    its value; keep it that way.
