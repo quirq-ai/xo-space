@@ -131,7 +131,10 @@ class MixedCaseFolderTests(unittest.TestCase):
 
     def test_traversal_still_collapses_to_a_safe_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            # Resolved: xo_projects_root() resolves what it returns, and on
+            # macOS $TMPDIR sits behind the /var -> /private/var symlink, so
+            # comparing against the unresolved tmp path can never succeed.
+            root = Path(tmp).resolve()
             with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
                 for hostile in ("../etc", "..", ".", "", "a/b", ".hidden"):
                     resolved = project_layout.project_dir(hostile)
