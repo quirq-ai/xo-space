@@ -1002,6 +1002,21 @@ function installationArticle(){
         and the CLI, start with <code>QUIRQ_SKIP_BOOT_INSTALL=0</code>.</p>
       </section>
 
+      <section class="wiki-section">
+        <h2>Uninstalling</h2>
+        <code>./xo-space/uninstall.sh</code>
+        <p>Removes everything the installer created — the running server is
+        stopped first, then the managed checkout with its venv, .env and
+        connector credentials, the .quirq state root (a root moved from
+        Setup is read from roots.env and found), the workspace .xo the
+        watcher wrote, the ~/.argus telemetry DB, and the local Docker
+        compose project when it was used. Your project folders always stay;
+        <code>--purge-projects</code> deletes them too, behind a typed
+        confirmation. <code>--dry-run</code> previews, <code>--yes</code>
+        skips the prompt, and a summary of what was removed and kept is
+        printed at the end. INSTALLATION.md documents it in full.</p>
+      </section>
+
       <aside class="wiki-callout">
         <b>Versioned source document</b>
         <p>The complete installation and troubleshooting guide is maintained

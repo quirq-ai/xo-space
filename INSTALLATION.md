@@ -99,6 +99,41 @@ to a temporary file and runs it under `bash`, which is why `| sh` works. If
 you fetch `install.sh` itself, pipe it to `bash`, not `sh` — the script uses
 `BASH_SOURCE` and `set -o pipefail`, neither of which exists in POSIX `sh`.
 
+## Uninstalling
+
+`uninstall.sh` removes everything the installer created and keeps your
+projects. Run it the way you run the installer — from the workspace:
+
+```bash
+./xo-space/uninstall.sh
+```
+
+It stops the running server first (the `cowork-api.sh` daemon included),
+brings down the local Docker compose project when the compose launcher was
+used, and then removes the managed checkout (venv, `.env`, and the
+`rclone.conf` / `mcp-tokens.json` connector credentials with it), the
+`.quirq` state root — `roots.env` is read first, so a root moved from the
+Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the
+derived telemetry DB in `~/.argus`, and a legacy `~/.xo-cowork` migration
+source. It ends with a summary of exactly what was removed and what was
+kept, and running it again when nothing is installed exits cleanly.
+
+Three deliberate protections:
+
+- **Your project folders under the XO root always stay.** `--purge-projects`
+  (or `--all`) deletes them too, but only after you type the XO root path
+  back at an interactive prompt — there is no non-interactive purge.
+- **A checkout with local changes is kept** (its venv is still removed);
+  `--force` overrides. An in-place install — you cloned the repo yourself
+  and it doubles as the XO root — is never deleted wholesale: only what the
+  installer created inside it is.
+- `--dry-run` prints the full plan and removes nothing; `--yes` skips the
+  confirmation for scripted use.
+
+The installer adds no PATH entries, cron jobs, or launchd/systemd units, so
+there are none to remove. uv (`~/.local/bin/uv`) is a general-purpose tool
+the installer may have fetched; it is left in place.
+
 ## Prerequisites
 
 `git` is required: Quirq uses it to download itself, and at runtime for project

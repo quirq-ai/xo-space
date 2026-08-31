@@ -79,7 +79,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Then open **http://localhost:5002/space/**.
 
-What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — the whole install is one folder you can move or delete.
+What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
 
 **Requirements:** `git`. Everything else is optional and only disables its own feature — `node`/`npm` for installing an agent CLI, `gh` for project backup, `rclone` for Drive/OneDrive. Windows runs under WSL ([details](INSTALLATION.md#windows)).
 
