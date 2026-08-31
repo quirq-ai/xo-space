@@ -30,6 +30,40 @@ HEARTBEAT_S = 15.0
 broadcaster = EventsBroadcaster(sections=default_sections(), interval=POLL_INTERVAL_S)
 
 
+# Prefixes whose successful mutations can change a feed section: connectors
+# (data), provider API keys and agent login setup (models). Legacy aliases of
+# the /connect/ routes are listed explicitly.
+_REFRESH_PREFIXES = (
+    "/api/connectors/",
+    "/api/config/providers/",
+    "/connect/",
+    "/claude/setup-token",
+    "/codex/setup",
+)
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def should_trigger_refresh(method: str, path: str, status_code: int) -> bool:
+    """True iff a request plausibly changed a status the feed reports."""
+    return (
+        method in _MUTATING_METHODS
+        and status_code < 400
+        and path.startswith(_REFRESH_PREFIXES)
+    )
+
+
+async def refresh_trigger_middleware(request, call_next):
+    """Nudge the broadcaster after any successful auth/connector mutation.
+
+    Registered app-wide in server.py so individual connector handlers never
+    need to know the feed exists (and future connectors get this for free).
+    """
+    response = await call_next(request)
+    if should_trigger_refresh(request.method, request.url.path, response.status_code):
+        broadcaster.request_refresh()
+    return response
+
+
 def _sse_frame(snapshot: dict[str, Any]) -> str:
     return f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
 

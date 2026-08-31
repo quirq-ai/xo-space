@@ -186,6 +186,111 @@ class SectionMappingTests(unittest.TestCase):
         self.assertEqual(rclone_remote_status(False, []), {"status": "unavailable"})
 
 
+class RequestRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_pushes_change_without_waiting_for_interval(self) -> None:
+        state = {"models": {"claude_code": {"connected": False}}}
+
+        async def fetch_models() -> dict:
+            return state["models"]
+
+        # Huge interval: only an explicit refresh can produce the second push.
+        broadcaster = EventsBroadcaster(
+            sections={"models": fetch_models}, interval=3600
+        )
+        queue = broadcaster.subscribe()
+        await broadcaster.poll_once()
+        queue.get_nowait()  # initial snapshot
+
+        state["models"] = {"claude_code": {"connected": True}}
+        broadcaster.request_refresh(delay=0.01)
+        pushed = await asyncio.wait_for(queue.get(), timeout=2)
+
+        self.assertEqual(pushed, {"models": {"claude_code": {"connected": True}}})
+
+    async def test_refresh_without_subscribers_is_a_noop(self) -> None:
+        calls = {"n": 0}
+
+        async def fetch_models() -> dict:
+            calls["n"] += 1
+            return {}
+
+        broadcaster = EventsBroadcaster(sections={"models": fetch_models})
+        broadcaster.request_refresh(delay=0.01)
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(calls["n"], 0)
+
+    async def test_rapid_refreshes_collapse_into_one_probe_round(self) -> None:
+        calls = {"n": 0}
+
+        async def fetch_models() -> dict:
+            calls["n"] += 1
+            return {}
+
+        broadcaster = EventsBroadcaster(
+            sections={"models": fetch_models}, interval=3600
+        )
+        broadcaster.subscribe()
+        await asyncio.sleep(0.05)  # let the loop's immediate startup tick land
+        calls["n"] = 0
+
+        for _ in range(5):
+            broadcaster.request_refresh(delay=0.03)
+        await asyncio.sleep(0.15)
+
+        self.assertEqual(calls["n"], 1)
+
+
+class RefreshTriggerTests(unittest.TestCase):
+    def test_mutating_connector_and_auth_requests_trigger(self) -> None:
+        from routers.cowork_agent.events import should_trigger_refresh
+
+        for method, path in [
+            ("POST", "/api/connectors/github/disconnect"),
+            ("DELETE", "/api/connectors/vercel/token"),
+            ("POST", "/api/config/providers/anthropic/key"),
+            ("DELETE", "/api/config/providers/openai/key"),
+            ("POST", "/connect/claude-code"),
+            ("POST", "/claude/setup-token/callback"),
+            ("POST", "/codex/setup"),
+        ]:
+            self.assertTrue(should_trigger_refresh(method, path, 200), path)
+
+    def test_reads_failures_and_other_paths_do_not_trigger(self) -> None:
+        from routers.cowork_agent.events import should_trigger_refresh
+
+        self.assertFalse(should_trigger_refresh("GET", "/api/connectors/github/status", 200))
+        self.assertFalse(should_trigger_refresh("POST", "/api/connectors/github/token", 400))
+        self.assertFalse(should_trigger_refresh("POST", "/api/chat", 200))
+        self.assertFalse(should_trigger_refresh("POST", "/api/events", 200))
+
+
+class RefreshMiddlewareTests(unittest.TestCase):
+    def test_successful_connector_post_nudges_broadcaster(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from routers.cowork_agent import events as events_module
+
+        app = FastAPI()
+        app.middleware("http")(events_module.refresh_trigger_middleware)
+
+        @app.post("/api/connectors/github/disconnect")
+        async def fake_disconnect() -> dict:
+            return {"status": "needs_auth"}
+
+        @app.get("/api/connectors/github/status")
+        async def fake_status() -> dict:
+            return {"status": "needs_auth"}
+
+        with mock.patch.object(events_module.broadcaster, "request_refresh") as nudge:
+            client = TestClient(app)
+            client.post("/api/connectors/github/disconnect")
+            self.assertEqual(nudge.call_count, 1)
+            client.get("/api/connectors/github/status")
+            self.assertEqual(nudge.call_count, 1)  # reads never nudge
+
+
 class EventsRouteTests(unittest.IsolatedAsyncioTestCase):
     """Drives the SSE generator directly: Starlette's TestClient buffers the
     entire response body, so an endless stream can never be consumed through

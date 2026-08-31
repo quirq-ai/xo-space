@@ -126,6 +126,7 @@ class EventsBroadcaster:
         # data the frontend already has, it just goes stale until recovery.
         self._last: dict[str, dict[str, Any]] = {}
         self._subscribers: set[asyncio.Queue] = set()
+        self._refresh_pending = False
         # Last snapshot pushed to subscribers; poll_once() only publishes
         # when the fresh snapshot differs from this.
         self._published: dict[str, Any] | None = None
@@ -155,6 +156,30 @@ class EventsBroadcaster:
             # Force a fresh initial push for the next subscriber even if the
             # snapshot hasn't changed by then.
             self._published = None
+
+    def request_refresh(self, delay: float = 0.5) -> None:
+        """Ask for an out-of-cycle probe round soon (e.g. after an auth
+        mutation), so UI-driven changes reflect in ~1s instead of waiting
+        for the next interval tick.
+
+        No-op when nobody is subscribed. Rapid successive calls collapse
+        into one round: `delay` doubles as the debounce window and lets the
+        mutation that triggered us finish settling before we probe.
+        """
+        if not self._subscribers or self._refresh_pending:
+            return
+        self._refresh_pending = True
+
+        async def _refresh() -> None:
+            try:
+                await asyncio.sleep(delay)
+                await self.poll_once()
+            except Exception:
+                logger.exception("events refresh probe failed")
+            finally:
+                self._refresh_pending = False
+
+        asyncio.create_task(_refresh())
 
     async def _poll_loop(self) -> None:
         while True:

@@ -801,6 +801,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# After any successful auth/connector mutation, nudge the /api/events feed to
+# re-probe (~1s) instead of waiting for its next poll tick.
+from routers.cowork_agent.events import refresh_trigger_middleware
+
+app.middleware("http")(refresh_trigger_middleware)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
