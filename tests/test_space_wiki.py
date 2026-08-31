@@ -583,13 +583,19 @@ class SpaceWikiTests(unittest.TestCase):
 
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for doc in (guide, readme, wiki):
+        for doc in (guide, wiki):
             self.assertIn("Your first run", doc)
             self.assertIn("/api/files/mkdir", doc)
             # The first run is only empty if the directory was: a busy
             # directory lists every folder as an unscaffolded project, and
-            # all three tellings must say so.
+            # both full tellings must say so.
             self.assertIn("unscaffolded", doc)
+        # The 2026-08-29 README rewrite tells the short version on purpose
+        # and hands off to the guide: pin the empty state, the "First run"
+        # paragraph, and the hand-off link instead of the full walkthrough.
+        self.assertIn("First run", readme)
+        self.assertIn("No projects in this workspace yet", readme)
+        self.assertIn("INSTALLATION.md", readme)
         self.assertIn("## Your first run", guide)
         self.assertIn("uv pip install --python", guide)
         # The cross-link buttons need a rule, or they render as stock buttons.
