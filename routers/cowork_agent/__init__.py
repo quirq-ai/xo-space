@@ -15,6 +15,7 @@ from .agents import router as agents_router
 from .channels import router as channels_router
 from .chat import router as chat_router
 from .config import router as config_router
+from .events import router as events_router
 from .files import router as files_router
 from .fts import router as fts_router
 from .connectors.gdrive import router as gdrive_router
@@ -63,6 +64,7 @@ all_routers: list[APIRouter] = [
     fts_router,
     skills_router,
     misc_router,
+    events_router,
     onboarding_router,
     quirq_state_router,
     runtime_config_router,
