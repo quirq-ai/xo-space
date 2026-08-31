@@ -18,9 +18,10 @@ must not cost the graph its refresh, and a failed rebuild leaves the previous
 file in place rather than truncating it. Stale beats absent — a route can say
 how old a file is, it cannot invent one.
 
-The two projections come from ONE scan. ``build_categorized_graph`` used to
-call ``build_space_data`` itself, so a client that opened Dashboard and Graph
-paid for two full workspace walks.
+The two projections come from ONE scan. The dashboard builder used to call
+``build_space_data`` itself, so a client that opened Dashboard and Graph paid
+for two full workspace walks; ``build_dashboard_regions(source=space)`` hands
+it the graph the space view already built.
 """
 
 from __future__ import annotations
@@ -78,8 +79,8 @@ def build(name: str) -> Optional[dict]:
 
 
 def _build_all(only: Optional[str] = None) -> dict:
-    from services.cowork_agent.visualizer.categorized_graph import (
-        build_categorized_graph,
+    from services.cowork_agent.visualizer.dashboard_regions import (
+        build_dashboard_regions,
     )
     from services.cowork_agent.visualizer.session_telemetry import (
         build_session_telemetry,
@@ -102,7 +103,7 @@ def _build_all(only: Optional[str] = None) -> dict:
 
     if only in (None, "dashboard"):
         try:
-            dashboard = build_categorized_graph(source=space)
+            dashboard = build_dashboard_regions(source=space)
             _write("dashboard", dashboard)
             out["dashboard"] = dashboard
         except Exception:

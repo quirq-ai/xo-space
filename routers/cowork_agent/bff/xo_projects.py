@@ -25,11 +25,13 @@ from routers.cowork_agent.bff.filters import (
     is_root_only_hidden,
 )
 from services.cowork_agent import scopes
+from services.cowork_agent import git_snapshot
 from services.cowork_agent.file_history import file_git_history, read_file_at_commit
 from services.cowork_agent.project_layout import (
     list_project_tree,
     list_projects,
     list_unscaffolded_dirs,
+    project_dir,
     project_dir_exists,
     read_project_file,
 )
@@ -392,13 +394,20 @@ def project_file(
     relative_path: str,
     commit: Optional[str] = None,
     commit_path: Optional[str] = None,
+    ref: Optional[str] = None,
 ) -> FilePreviewResponse:
     """Return one previewable text file's content.
 
-    With ``commit`` (and, across renames, ``commit_path`` — the ``path``
-    field of the matching /file-history item) the content comes from
-    that commit instead of the working tree, so the previewer's version
-    picker can show the document as it was.
+    Two ways to pin the content to a commit, for two callers with
+    different constraints:
+
+    - ``commit`` (and, across renames, ``commit_path`` — the ``path``
+      field of the matching /file-history item): the version picker's
+      route. Anchored to a file that exists in the working tree today.
+    - ``ref`` (a commit sha): the snapshot view's route, served straight
+      from that commit's tree — a file clicked in a snapshot may not
+      exist on disk any more, so this path never consults the working
+      tree.
     """
     if not project_dir_exists(project_id):
         raise HTTPException(
@@ -418,6 +427,8 @@ def project_file(
             },
         )
 
+    if ref is not None:
+        return _project_file_at_ref(project_id, relative_path, ref)
     if commit is not None:
         return _version_response(project_id, relative_path, commit, commit_path)
 
@@ -474,8 +485,8 @@ class FileHistoryCommit(BaseModel):
     ``additions``/``deletions`` are ``None`` when git has no counts to
     give: a binary file, or a commit that only renamed it. ``path`` is
     the file's name at that commit — echo it back as ``commit_path``
-    back as ``commit_path`` when asking /file for that version, so
-    renamed files resolve under the name the commit knew.
+    when asking /file for that version, so renamed files resolve under
+    the name the commit knew.
     """
 
     hash: str
@@ -540,4 +551,47 @@ def project_file_history(
         is_repo=raw["is_repo"],
         items=[FileHistoryCommit(**item) for item in raw["items"]],
         total=len(raw["items"]),
+    )
+
+
+def _project_file_at_ref(
+    project_id: str, relative_path: str, ref: str
+) -> FilePreviewResponse:
+    """The snapshot-pinned branch of project_file; same shape, git-backed."""
+    sha = git_snapshot.normalize_sha(ref)
+    if sha is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_sha", "message": "ref is not a commit id."},
+        )
+    try:
+        raw = git_snapshot.file_at_commit(
+            project_dir(project_id), sha, relative_path,
+            max_bytes=PREVIEW_MAX_BYTES,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_relative_path",
+                "message": "relative_path is malformed or escapes the project root.",
+            },
+        ) from exc
+    if raw is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "file_not_found",
+                "message": "File not found at that commit.",
+            },
+        )
+    return FilePreviewResponse(
+        project_id=project_id,
+        relative_path=relative_path,
+        name=raw["name"],
+        kind=_preview_kind(raw["name"]),
+        size_bytes=raw["size_bytes"],
+        modified_at=None,
+        truncated=raw["truncated"],
+        content=raw["content"],
     )

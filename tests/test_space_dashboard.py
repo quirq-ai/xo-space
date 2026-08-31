@@ -138,12 +138,13 @@ class CategorizedGraphTests(unittest.TestCase):
 
 
 class DashboardUiTests(unittest.TestCase):
-    def test_dashboard_is_first_default_tab_and_shares_the_graph_canvas(
-        self,
-    ) -> None:
+    def test_dashboard_is_first_default_tab_with_its_own_canvas(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         atlas = (
             ROOT / "space_ui" / "js" / "views" / "atlas.js"
+        ).read_text(encoding="utf-8")
+        dashboard = (
+            ROOT / "space_ui" / "js" / "views" / "dashboard.js"
         ).read_text(encoding="utf-8")
         registry = (
             ROOT / "space_ui" / "js" / "core" / "registry.js"
@@ -155,17 +156,29 @@ class DashboardUiTests(unittest.TestCase):
             app.index("registerView(graphView);"),
         )
         self.assertIn("startRegistry({defaultView:'dashboard'})", app)
-        self.assertIn(
-            "atlasView('dashboard','Dashboard',0,'graph','dashboard')", atlas
+        self.assertIn("from './views/dashboard.js", app)
+        # the Dashboard is its own eight-region canvas, not an atlas lens
+        self.assertNotIn("/xo/dashboard.json", atlas)
+        self.assertIn("/xo/dashboard.json", dashboard)
+        self.assertIn("schema!==2", dashboard)
+        self.assertIn("id:'dashboard'", dashboard)
+        # one renderer module per card, wired through the static import list
+        cards_dir = ROOT / "space_ui" / "js" / "views" / "dashboard" / "cards"
+        for kind in (
+            "vault",
+            "orbits",
+            "pulsar",
+            "branches",
+            "watcher",
+            "forks",
+            "galaxy",
+            "treemap",
+        ):
+            self.assertIn(f"from './dashboard/cards/{kind}.js'", dashboard)
+            self.assertTrue((cards_dir / f"{kind}.js").is_file())
+        self.assertTrue(
+            (ROOT / "space_ui" / "js" / "views" / "dashboard" / "lib.js").is_file()
         )
-        self.assertIn("section:'graph'", atlas)
-        self.assertIn("/xo/dashboard.json", atlas)
-        self.assertIn("clusters:l.clusters||[]", atlas)
-        self.assertIn("function drawEnclosures(k)", atlas)
-        self.assertIn("if(DATA.meta.enclose)drawEnclosures(k)", atlas)
-        self.assertIn("x:DATA.meta.tieSpring||", atlas)
-        self.assertIn("belongsToCategory", atlas)
-        self.assertIn("DATA.meta.shapeLegend", atlas)
         self.assertIn("const activeSection=v.section||v.id", registry)
 
     def test_dashboard_route_is_registered_before_the_static_mount(self) -> None:
@@ -180,9 +193,9 @@ class DashboardUiTests(unittest.TestCase):
             ROOT / "services" / "cowork_agent" / "visualizer" / "workspace"
             / "views.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("build_categorized_graph", document)
+        self.assertIn("build_dashboard_regions", document)
         # one scan feeds both projections
-        self.assertIn("build_categorized_graph(source=space)", document)
+        self.assertIn("build_dashboard_regions(source=space)", document)
 
 
 if __name__ == "__main__":

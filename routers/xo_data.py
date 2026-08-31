@@ -31,7 +31,7 @@ VIEW_MAX_AGE_S = float(os.getenv("XO_VIEW_MAX_AGE_S", "120"))
 
 _UNAVAILABLE = {
     "space": ("space_unavailable", "Could not build the workspace graph."),
-    "dashboard": ("dashboard_unavailable", "Could not build the categorized project graph."),
+    "dashboard": ("dashboard_unavailable", "Could not build the workspace region graph."),
     "sessions": ("sessions_unavailable", "No session telemetry source is currently available."),
 }
 
@@ -64,8 +64,8 @@ async def space_json():
 
 @router.get("/dashboard.json")
 async def dashboard_json():
-    """The graph collapsed into five purpose environments. Same schema as
-    space.json, so the browser reuses one renderer."""
+    """The workspace as eight data regions (q1-q8), each carrying data for
+    its own visualization (schema 2 — not the space.json node/edge shape)."""
     return await _serve("dashboard")
 
 

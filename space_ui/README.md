@@ -26,13 +26,18 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/ui.js` | Shared UI helpers (toast). |
 | `js/core/server-widget.js` | Footer server pill (status poll + stop). |
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
-| `js/views/atlas.js` | Dashboard + Graph + Timeline — three lenses over one dataset, one shared closure, three exported views. |
+| `js/views/dashboard.js` | The Dashboard shell: eight data regions (q1–q8) as a bento grid of luminous canvas cards, one generative visualization per card — vault embers, session rings, tool-call pulsar, commit heat lanes, watcher core, workspace filaments, the project cluster, and .xo glass treemaps. Clicking a card expands it to a full-stage detail view with hover tooltips; deep-link with `#/dashboard?focus=q4`. Reads `/xo/dashboard.json` (schema 2, region-keyed data — not the space.json node/edge shape). |
+| `js/views/dashboard/lib.js` | The card renderers' shared vocabulary: ink/font tokens, the validated accent math (`tint`/`shade`/`hexA`), cached radial glow sprites, additive-blend helpers (`ember`, `glint`, `softLine`, `softRing`), deterministic `fnv` jitter, recency→brightness `freshness`, and offscreen `layer()` bases so animation stays cheap. |
+| `js/views/dashboard/cards/*.js` | One module per card, all speaking the contract documented in `dashboard.js`'s header: `init(data, env)` lays out once (deterministic), `draw(gc, state, env, t, mouse)` paints each frame over a baked static base, `hits()` feeds expanded-mode tooltips. |
+| `js/views/atlas.js` | Graph + Timeline — two lenses over the workspace dataset (space.json), one shared closure, two exported views. |
 | `js/views/sessions.js` | The Sessions (Argus telemetry) view. |
 | `js/views/projects.js` | The Files List lens: project list with per-project drawers (folder browser via `/tree`, todos, open sessions, recent events). Owns the `Files` tab; Graph and Tree are sibling lenses (`nav:false`, `parent:'projects'`). |
 | `js/views/tree.js` | The Files Tree lens: horizontal hierarchy over the same `space.json` dataset as Graph — folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered — no tab. |
 | `js/views/wiki.js` | The Wiki view: bundled, version-matched operating documentation. It includes storage architecture, watcher internals, complete `.xo` / `.quirq` data catalogs, and flow-building recipes. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` watcher state beside portable project `.xo` output. No tab of its own — `nav:false, parent:'secrets'`, opened from Setup's header button (`#/quirq`). |
+| `js/views/snapshot.js` | The Snapshot view: one commit as a 3D citymap, ported from Space Walk (120-unit squarified world, 0.08 inset streets, plate depth-shading, FNV tile jitter, constant-screen-size label LOD, the edit/hit/read touch lattice). **Terrain height is the commit's churn** — lines added+deleted, log-scaled — so a rewrite towers over a one-line fix; a Size mode swaps in Space Walk's locHeights ramp. Reached from the Timeline's By-project commit dots via `space:show-commit` (`nav:false, parent:'time'`); every file clicks through to the previewer pinned to that commit. |
+| `vendor/` | three.js r182 (`three.module.min.js` + its `three.core.min.js` chunk) and `OrbitControls.js`, whose bare `'three'` specifier is rewritten to the vendored path. Imported dynamically by the Snapshot view only — still no bundler, still no CDN, and the ~760 KB never loads unless you open a snapshot. |
 | `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, managed restart. |
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
@@ -105,8 +110,14 @@ the registry keeps the tabs switchable regardless.
 
 `gitHistory` feeds the Timeline's **By project** mode: one lane per project,
 one dot per commit day (`n` commits, up to 3 sampled subjects in `s`). The
-mode toggle only renders when at least one project carries history; the
-Dashboard projection and non-git projects have none.
+mode toggle only renders when at least one project carries history; non-git
+projects have none.
+
+The Dashboard does **not** use this schema: `/xo/dashboard.json` is schema 2 —
+`{"schema": 2, "meta", "regions": [{ "id": "q1".."q8", "kind", "label",
+"color", "blurb", "stat", "count", "data" }]}` — where each region's `data`
+is shaped for its own renderer (see `visualizer/dashboard_regions.py` and
+`js/views/dashboard.js`).
 
 Shapes are semantic: `disc` = code, `ring` = document, `diamond` = everything
 else. Leaf `date` is the git first-added date, or `null` when git does not

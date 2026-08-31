@@ -200,39 +200,36 @@ const TAB_GUIDES={
   dashboard:{
     tab:'dashboard',
     name:'Dashboard',
-    kicker:'Tab guide · Project environments',
-    title:'Dashboard: projects inside purpose environments',
-    intro:'Dashboard follows main’s Inbox graph model. Each discovered XO project is one visible node. Engineering, Ops, Documentation, Research, and Marketing are not project nodes: each is a softly filled, dashed enclosure around the projects that belong to that environment.',
-    facts:['one node per project','five enclosing environments','overlapping membership','read-only'],
+    kicker:'Tab guide · Eight cards, eight visualizations',
+    title:'Dashboard: the whole workspace in eight luminous cards',
+    intro:'The Dashboard is a bento grid of eight canvas cards — q1 to q8, left to right, two rows of four — each one an animated, generative visualization of real workspace data, sharing one visual system (single accent hue per card, white-hot additive glow, ink-gray text). q1 Security &amp; Setup (vault of secret/env/setup file embers), q2 Agent Sessions (luminous session rings per runtime), q3 Tools &amp; Logs (tool-call pulsar with a log equalizer), q4 Git History (one constellation per repo — branches ray out as radial timelines, hub to rim is 16 weeks, tags as date-pinned diamonds), q5 Quirq (breathing watcher core with file fireflies), q6 Agent Workspaces (repo filaments and task capsules), q7 Projects (the purpose-environment cluster), q8 XO Data (glass treemaps of .xo files).',
+    facts:['one card per region','eight bespoke renderers','names and sizes only — never secret contents','read-only'],
     jobs:[
-      ['Survey the workspace','Read each colored boundary as a collection of projects with a shared purpose, not as one aggregate node.'],
-      ['See overlap','A project with several purposes remains one node and sits between the applicable environments; every applicable enclosure includes it.'],
-      ['Read project form','Node glyphs describe project form independently of purpose: app, one-pager, docs, slides, or unknown.'],
-      ['Trace an environment','Select its labeled anchor or a project and carry that focused set into Timeline.'],
-      ['Read a project’s open work','Select a project node: its todos orbit it as satellites — in-progress items keep a spoke back to the node — and list in the detail panel in status order. Dashboard only: in Graph a leaf is a file, not a project, so the feature stays off.']
+      ['Survey the machine','Every card reads at a glance: its caption bar carries the region name and a headline stat — how many secret-like files, tool calls, branches and tags, worktrees, session archives.'],
+      ['Open a card','Click a card to expand it to the full stage — labels, hero figures, and hover tooltips appear at that size. Esc (or the ✕) returns to the grid. Deep-link one with #/dashboard?focus=q4.'],
+      ['Inspect an artifact','In an expanded card, hover any ember, bead, ray, cell, star, or tile for its hover card; secret-adjacent entries show the name and path only — contents are never read.'],
+      ['Read the motion','Brightness is recency and glow is magnitude; the animation is ambient, not data (and stills completely under prefers-reduced-motion).']
     ],
     sources:[
-      ['GET /xo/dashboard.json','Serves &lt;XO root&gt;/.xo/dashboard.json — the graph collapsed into five environments, materialised by the watcher from the same single scan as space.json.','Workspace .xo file'],
-      ['<XO root>/<project>/.xo/project.json','An optional manual category or saved multi-category classification takes precedence over inferred filename signals.','Portable project metadata'],
-      ['Project paths and filenames','App manifests, infrastructure files, writing, research formats, decks, contracts, and asset ratios infer environment memberships and node form.','Derived heuristics'],
-      ['GET /api/xo-projects/{id}/todos','Fetched when a project node is selected; feeds the todo satellites and the panel list. Held in the browser for 20 seconds per project, so re-selecting is instant.','Live project todos']
+      ['GET /xo/dashboard.json','Serves &lt;XO root&gt;/.xo/dashboard.json — schema 2: a regions array, each with kind-specific data, built by the watcher from one workspace scan (visualizer/dashboard_regions.py).','Workspace .xo file'],
+      ['Filesystem scans','q1 scans project trees (bounded, prune-aware) for env/secret/setup names; q2 lists ~/.claude and ~/.cursor session archives; q5 lists ~/.quirq; q6 finds .git-file worktree markers and ~/.claude/tasks; q8 lists .xo directories.','Names, sizes, dates only'],
+      ['Session telemetry','q3 aggregates daily tool-call counts from the sessions view payload; q4 asks each repository’s own git for branches, tags, HEAD and per-branch commit days — read-only and bounded.','Derived, no prompt text'],
+      ['<XO root>/<project>/.xo/project.json','q7 keeps the classic classifier: a saved category takes precedence over filename heuristics.','Portable project metadata']
     ],
     steps:[
       ['Enter Dashboard','It is the first top-level tab and the default Space route.'],
-      ['Read the map','The map renders immediately: project nodes, five labeled anchors, and the dashed environment boundaries around their members.'],
-      ['Read a boundary','The tinted area is the environment. Its small internal group point is only a layout/focus anchor; it is not the environment’s data representation.'],
-      ['Focus','Click a project or environment anchor; double-click an anchor to expand or collapse its primary project set. Selecting a project also loads its todos: up to 28 orbit the node as satellites, and the panel lists them in status order.'],
-      ['Search','Press / and search projects by name.'],
-      ['Compare Graph','Open Graph for the detailed project, folder, and artifact map. The atlas reloads once because each mode runs a separate simulation dataset.']
+      ['Read the grid','q1–q4 across the top, q5–q8 across the bottom; each caption bar carries the accent dot, the region name, and its headline stat.'],
+      ['Hover a card','The card lifts and its centerpiece reacts; the art is live, not a thumbnail.'],
+      ['Expand','Click the card. At full stage the same visualization gains labels, hero figures, and per-element tooltips.'],
+      ['Close','Esc or ✕ returns to the grid; the URL tracks the open card so a link reproduces the view.']
     ],
     checks:[
-      ['Project missing','Confirm the XO root in Setup and verify GET /xo/dashboard.json. The file is rebuilt by the watcher at most every 30 seconds, and on demand when a request finds it stale.'],
-      ['Unexpected environment','The classifier uses saved metadata first and filename signals second; ambiguous projects may need a manual category.'],
-      ['Project sits between boundaries','That is intentional multi-environment membership. Strong secondary springs place the one shared node between its collections.'],
-      ['Environment has no boundary','An empty environment keeps its label but has no project area to enclose.'],
-      ['Graph switches with a reload','That reset is intentional so Dashboard and Graph never share stale physics or selection state.']
+      ['A region is empty','That is honest: nothing matched its scan (no worktrees, no .cursor projects). The label and stat stay so absence is visible.'],
+      ['Dashboard shows the no-data panel','The server is answering an older dashboard.json schema; restart xo-cowork-api so the watcher rebuilds it as schema 2.'],
+      ['Secrets on screen','Only names ever render. The builder never opens the files it classifies as secret-like.'],
+      ['Counts look stale','The watcher rebuilds the file at most every 30 seconds, and on demand when a request finds it stale.']
     ],
-    note:'Dashboard environments are collections of project nodes. The dashed hull is the collection; the anchor only gives the physics, label, and focus a stable target. Dashboard and the Files graph are read-only and write neither project files, .xo, nor .quirq.'
+    note:'The Dashboard is read-only and writes neither project files, .xo, nor .quirq. q7 is the old five-environment dashboard, preserved as one region among eight; its project nodes click through to the Files graph.'
   },
   files:{
     tab:'projects',

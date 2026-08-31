@@ -1,0 +1,66 @@
+/* ============================== DASHBOARD (eight luminous cards) ==============================
+   Bento grid of uniform cards on near-black; each card = one canvas
+   centerpiece + a caption bar. --accent is set per card from the region's
+   validated color. The expanded overlay reuses the same vocabulary. */
+  #view-dashboard{background:
+    radial-gradient(90% 70% at 50% -10%, #0b0d13 0%, transparent 60%),
+    #060709}
+  #view-dashboard .dgrid{position:absolute;inset:16px 18px;display:grid;
+    grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);
+    gap:14px}
+  @media (max-width:1180px){
+    #view-dashboard .dgrid{position:relative;inset:auto;margin:16px 18px;
+      grid-template-columns:repeat(2,1fr);grid-template-rows:none;
+      grid-auto-rows:300px}
+    #view-dashboard{overflow-y:auto}
+  }
+  @media (max-width:620px){
+    #view-dashboard .dgrid{grid-template-columns:1fr}
+  }
+
+  #view-dashboard .dcard{position:relative;margin:0;display:flex;
+    flex-direction:column;min-height:0;border-radius:14px;overflow:hidden;
+    background:
+      radial-gradient(130% 100% at 50% 0%, color-mix(in srgb, var(--accent) 7%, #0b0c10) 0%, #0a0b0e 55%, #08090c 100%);
+    border:1px solid rgba(255,255,255,.06);
+    transition:border-color .35s var(--ease), transform .35s var(--ease), box-shadow .35s var(--ease);
+    cursor:pointer}
+  #view-dashboard .dcard:hover{transform:translateY(-2px);
+    border-color:color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow:0 14px 44px -18px color-mix(in srgb, var(--accent) 35%, transparent)}
+  #view-dashboard .dframe{position:relative;flex:1;min-height:0}
+  #view-dashboard .dframe canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  #view-dashboard figcaption{display:flex;align-items:center;gap:9px;
+    padding:10px 14px 11px;border-top:1px solid rgba(255,255,255,.055);
+    background:rgba(255,255,255,.014)}
+  #view-dashboard .ddot{width:7px;height:7px;border-radius:50%;flex:none;
+    background:var(--accent);
+    box-shadow:0 0 8px color-mix(in srgb, var(--accent) 80%, transparent)}
+  #view-dashboard .dname{font:500 13.5px/1 var(--serif);color:var(--ink);
+    letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #view-dashboard .dstat{margin-left:auto;font:400 8.5px var(--mono);
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+
+  /* ---- expanded overlay ---- */
+  #view-dashboard .dxp{position:absolute;inset:14px 16px;z-index:30;
+    display:flex;flex-direction:column;border-radius:16px;overflow:hidden;
+    background:
+      radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--accent) 8%, #0b0c10) 0%, #090a0d 60%),
+      #090a0d;
+    border:1px solid color-mix(in srgb, var(--accent) 30%, rgba(255,255,255,.08));
+    box-shadow:0 30px 90px -30px rgba(0,0,0,.8)}
+  #view-dashboard .dxp header{display:flex;align-items:center;gap:10px;
+    padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+  #view-dashboard .dxp header b{font:500 16px/1 var(--serif);color:var(--ink)}
+  #view-dashboard .dxp-stat{font:400 9px var(--mono);letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-3)}
+  #view-dashboard .dxp-close{margin-left:auto;border:0;background:none;
+    color:var(--ink-3);font-size:13px;cursor:pointer;padding:4px 6px;
+    border-radius:6px}
+  #view-dashboard .dxp-close:hover{color:var(--ink);background:rgba(255,255,255,.06)}
+  #view-dashboard .dxp-body{position:relative;flex:1;min-height:0}
+  #view-dashboard .dxp-body canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #view-dashboard .dxp-blurb{padding:9px 16px 11px;font-size:11.5px;
+    line-height:1.5;color:var(--ink-3);border-top:1px solid rgba(255,255,255,.05)}

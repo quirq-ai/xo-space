@@ -1,11 +1,12 @@
-/* The atlas views (Dashboard, Graph, Timeline): lenses over one selected
-   graph dataset. Dashboard uses dashboard.json while Graph uses space.json.
-   They share the model, camera, selection state and cross-view actions
-   inside one boot() closure, so they live in one module exporting three
-   views (splitting them would force cross-imports, which the view contract
-   forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
-   content comes from the workspace's .xo/space.json, served at /xo/space.json;
-   nothing is embedded here. */
+/* The atlas views (Graph, Timeline): lenses over the workspace graph
+   dataset (space.json). They share the model, camera, selection state and
+   cross-view actions inside one boot() closure, so they live in one module
+   exporting both views (splitting them would force cross-imports, which the
+   view contract forbids). Cross-view jumps go through ctx.switchTo (`go`).
+   All graph content comes from the workspace's .xo/space.json, served at
+   /xo/space.json; nothing is embedded here. (The Dashboard is no longer an
+   atlas lens — it is its own eight-region canvas in views/dashboard.js with
+   its own schema-2 data file.) */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 
@@ -25,7 +26,6 @@ addEventListener('space:focus-project',e=>{
 });
 
 const DATASETS={
-  dashboard:{url:API_BASE+'/xo/dashboard.json',label:'Dashboard'},
   graph:{url:API_BASE+'/xo/space.json',label:'Graph'}
 };
 const DATASET_KEY='space.atlasDataset';
@@ -95,10 +95,6 @@ function atlasView(id,label,order,lens,dataset=null){
     hide(){if(hooks.setActiveView)hooks.setActiveView(null);}
   };
 }
-export const dashboardView={
-  ...atlasView('dashboard','Dashboard',0,'graph','dashboard'),
-  section:'graph'
-};
 /* Files lands on the List lens (the projects view owns the nav tab); the
    Graph is its second lens, reachable from the pill or #/graph. */
 export const graphView={
@@ -351,9 +347,15 @@ function convexHull(points){
 }
 function drawEnclosures(k){
   const PAD=42;
+  /* One hull per category, not per group: with several clusters in a region
+     (the eight-region dashboard) a per-group loop would restroke the same
+     region hull once per cluster and the fills would stack. */
+  const seen=new Set();
   for(const group of GROUPS){
+    if(seen.has(group.cat))continue;
+    seen.add(group.cat);
     if(deptFilter&&group.cat!==deptFilter)continue;
-    const points=[[group.x,group.y]];
+    const points=GROUPS.filter(g=>g.cat===group.cat).map(g=>[g.x,g.y]);
     for(const leaf of LEAVES){
       if(isShown(leaf)&&belongsToCategory(leaf,group.cat)){
         points.push([leaf.x,leaf.y]);
@@ -535,7 +537,7 @@ function drawGraph(now){
       if(!(on||k>.8))continue;
       const closed=!expanded.get(n.id);
       gc.font='400 9px '+MONO;
-      const t=n.label.toUpperCase()+(closed?` +${LEAVES.filter(l=>belongsToCategory(l,n.cat)).length}`:'');
+      const t=n.label.toUpperCase()+(closed?` +${LEAVES.filter(l=>l.group===n.id).length}`:'');
       halo(t,sx,sy-n.r*k-7,`rgba(179,173,160,${.72*a})`,.1);
     }else if(n.type==='leaf'){
       const on=n.id===hoverId||n.id===selId||n.id===rootId||(focusSet&&focusSet.has(n.id))||(pathIds&&pathIds.includes(n.id));
@@ -802,7 +804,7 @@ function showHC(n,mx,my){
       <dt>Ties</dt><dd>${n.degree-1} connection${n.degree-1===1?'':'s'} · ${esc(byId.get(n.group).label)}</dd>
     </dl>`;
   }else if(n.type==='group'){
-    const kids=LEAVES.filter(l=>belongsToCategory(l,n.cat));
+    const kids=LEAVES.filter(l=>l.group===n.id);
     const dates=kids.map(x=>x.date).filter(Boolean).sort();
     const span=dates.length
       ?`<dt>Span</dt><dd>${fmtMY(+new Date(dates[0]))} to ${fmtMY(+new Date(dates.at(-1)))}</dd>`
@@ -837,7 +839,7 @@ const panel=document.getElementById('panel');
 function openPanel(n){
   const col=n.type==='root'?ACCENT_DEEP:CAT[n.cat].color;
   const kick=n.type==='hub'?`${hubLabel} · ${LEAVES.filter(l=>belongsToCategory(l,n.cat)).length} ${noun}`
-    :n.type==='group'?`${CAT[n.cat].name} · environment`
+    :n.type==='group'?`${CAT[n.cat].name} · ${collectionLabel.replace(/s$/,'')}`
     :n.type==='root'?'The center'
     :`${CAT[n.cat].name} · ${n.tag}`;
   const conns=n.adj
@@ -952,8 +954,11 @@ let satHover=null;   /* key of the hovered dot */
 let satPulse=null;   /* {key,t0} — panel row clicked, flash its dot */
 const satCache=new Map();
 
-/* The one gate. Everything else early-returns on a null host. */
-const todoProjectId=n=>bootDataset==='dashboard'&&n&&n.type==='leaf'?n.id:null;
+/* The one gate. Everything else early-returns on a null host. Only project
+   leaves (xotype 'output', plain project-id ids) have todos — the other
+   dashboard regions hold files, sessions and tools, and asking the todos API
+   about those would just paint an error note in every panel. */
+const todoProjectId=n=>bootDataset==='dashboard'&&n&&n.type==='leaf'&&n.xotype==='output'?n.id:null;
 
 function shapeTodos(res){
   if(!res.ok){
@@ -1887,14 +1892,90 @@ tsvg.addEventListener('click',e=>{
     select(n.id,1);
     pulseN={id:n.id,t0:performance.now()};
   }else if(t.dataset&&t.dataset.hist){
-    /* a commit dot names its project: jump to that hub on the graph */
+    /* a commit dot names a day of commits: resolve it to shas and open the
+       snapshot — directly for a one-commit day, via the chooser otherwise */
     const d=histDots[+t.dataset.hist];
-    if(!d||!byId.get(d.cat))return;
-    go(graphRoute);
-    select(d.cat,1);
-    pulseN={id:d.cat,t0:performance.now()};
+    if(d)openCommitDay(d,e.clientX,e.clientY);
   }
 });
+
+/* ---- commit-day chooser: the bridge from a timeline dot to a snapshot.
+   gitHistory carries day rollups, never shas; /commits?day= resolves the
+   day to real commits. One commit opens straight away; several get a
+   popover at the click point. The popover is shared chrome like #hc,
+   created once, dismissed by outside click, Esc, or opening a commit. */
+let chooserEl=null,chooserToken=0;
+const dayCache=new Map(); /* "pid|day" -> commits[] */
+function chooser(){
+  if(chooserEl)return chooserEl;
+  chooserEl=document.createElement('div');
+  chooserEl.id='tchooser';
+  document.body.appendChild(chooserEl);
+  addEventListener('pointerdown',e=>{
+    if(!chooserEl.contains(e.target))closeChooser();
+  },true);
+  addEventListener('keydown',e=>{if(e.key==='Escape')closeChooser();});
+  chooserEl.addEventListener('click',e=>{
+    const row=e.target.closest('[data-sha]');
+    if(!row)return;
+    openSnapshot(chooserEl.dataset.pid,row.dataset.sha);
+  });
+  return chooserEl;
+}
+function closeChooser(){chooserEl?.classList.remove('is-on');chooserToken++;}
+function placeChooser(el,x,y){
+  el.classList.add('is-on');
+  const r=el.getBoundingClientRect();
+  let px=x+14,py=y-10;
+  if(px+r.width>innerWidth-10)px=x-r.width-14;
+  py=Math.max(64,Math.min(py,innerHeight-r.height-10));
+  el.style.left=px+'px';el.style.top=py+'px';
+}
+function openSnapshot(pid,sha){
+  closeChooser();
+  hideHC();
+  dispatchEvent(new CustomEvent('space:show-commit',{detail:{project:pid,sha}}));
+  go('snapshot');
+}
+async function openCommitDay(d,x,y){
+  const pid=d.cat.replace(/^p_/,'');
+  const el=chooser();
+  el.dataset.pid=pid;
+  const mine=++chooserToken;
+  const key=pid+'|'+d.day.d;
+  let commits=dayCache.get(key);
+  if(!commits){
+    el.innerHTML='<div class="tch-note">reading '+esc(d.day.d)+'&hellip;</div>';
+    placeChooser(el,x,y);
+    const res=await apiFetch(API_BASE+'/api/xo-projects/'+encodeURIComponent(pid)
+      +'/commits?day='+encodeURIComponent(d.day.d));
+    if(mine!==chooserToken)return; /* dismissed or a newer dot clicked */
+    if(!res.ok){
+      el.innerHTML='<div class="tch-note">'+esc(res.offline
+        ?'xo-cowork-api is unreachable':String(res.error||'could not read commits'))+'</div>';
+      placeChooser(el,x,y);
+      return;
+    }
+    commits=res.data.commits||[];
+    dayCache.set(key,commits);
+  }
+  if(commits.length===1){openSnapshot(pid,commits[0].sha);return;}
+  if(!commits.length){
+    /* the dot promised commits the log no longer shows (rebase, shallow
+       clone): say so rather than opening nothing */
+    el.innerHTML='<div class="tch-note">no commits found for '+esc(d.day.d)+'</div>';
+    placeChooser(el,x,y);
+    return;
+  }
+  el.innerHTML='<div class="tch-head">'+esc(CAT[d.cat]?.name||pid)+' &middot; '+esc(d.day.d)
+    +' &middot; '+commits.length+' commits</div>'
+    +commits.map(c=>'<button data-sha="'+esc(c.sha)+'">'
+      +'<span class="tch-time">'+esc((c.date||'').slice(11,16))+'</span>'
+      +'<code>'+esc(c.short)+'</code>'
+      +'<span class="tch-subj">'+esc(c.subject)+'</span>'
+    +'</button>').join('');
+  placeChooser(el,x,y);
+}
 
 /* ============================== BOOT ============================== */
 function resize(){

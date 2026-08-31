@@ -108,16 +108,20 @@ function initDrag(){
   });
 }
 
-async function open({project,path,name}){
+async function open({project,path,name,ref}){
   if(!el||!project||!path)return;
-  current={project,path,name:name||path.split('/').pop()};
+  /* ref pins the preview to one commit: the snapshot view passes the sha it
+     is rendering, so the content shown is the file AT that commit. A pinned
+     preview never grows the version picker — the snapshot chose the version. */
+  current={project,path,name:name||path.split('/').pop(),ref:ref||null};
   data=headData=versions=null;cache=new Map();source=false;
   picker.hidden=true;picker.innerHTML='';
   const mine=++token;
   el.classList.add('is-open');
   render('<div class="pv-note">loading…</div>');
   const res=await apiFetch(API_BASE+'/api/xo-projects/'+encodeURIComponent(project)
-    +'/file?relative_path='+encodeURIComponent(path));
+    +'/file?relative_path='+encodeURIComponent(path)
+    +(current.ref?'&ref='+encodeURIComponent(current.ref):''));
   if(mine!==token)return; /* a newer file is on screen */
   if(!res.ok){
     render('<div class="pv-note">'+esc(
@@ -128,7 +132,7 @@ async function open({project,path,name}){
   }
   data=headData=res.data;
   render();
-  loadVersions(mine);
+  if(!current.ref)loadVersions(mine);
 }
 function close(){
   el.classList.remove('is-open');
@@ -204,7 +208,8 @@ function render(placeholder){
     return;
   }
   meta.textContent=[...(picker.value!==''?versionMeta():[]),
-    data.kind,bytes(data.size_bytes),rel(data.modified_at),
+    data.kind,bytes(data.size_bytes),
+    current.ref?'@ '+current.ref.slice(0,7):rel(data.modified_at),
     data.truncated?'truncated':''].filter(Boolean).join(' · ');
   toggle.hidden=false;
   toggle.textContent=source?'Rendered':'Source';

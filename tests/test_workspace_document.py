@@ -124,7 +124,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
             ROOT / "services" / "cowork_agent" / "visualizer" / "workspace"
             / "views.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("build_categorized_graph(source=space)", source)
+        self.assertIn("build_dashboard_regions(source=space)", source)
 
 
 class XoDataRouteTests(unittest.TestCase):
