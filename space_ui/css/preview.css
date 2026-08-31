@@ -1,21 +1,40 @@
 /* ============================== FILE PREVIEWER ==============================
-   A right-side drawer, wider than the graph's detail panel because it shows
-   documents rather than metadata. Slides over the stage; the view underneath
-   keeps its state, which is the point — previewing a file must not navigate. */
+   A floating window, wider than the graph's detail panel because it shows
+   documents rather than metadata. Floats over the stage — draggable by its
+   header, resizable from its corner — and the view underneath keeps its
+   state, which is the point: previewing a file must not navigate. It opens
+   anchored to the top-right; the first drag hands positioning over to
+   preview.js, which then owns left/top for the rest of the session. */
   #preview{
-    position:fixed;top:var(--topbar-h);right:0;bottom:var(--footer-h);
-    width:min(620px,52vw);z-index:60;display:flex;flex-direction:column;
+    position:fixed;top:calc(var(--topbar-h) + 16px);right:20px;
+    width:min(620px,52vw);
+    height:min(78vh,calc(100vh - var(--topbar-h) - var(--footer-h) - 32px));
+    min-width:340px;min-height:240px;max-width:96vw;max-height:92vh;
+    z-index:60;display:flex;flex-direction:column;
     background:rgba(13,16,20,.975);backdrop-filter:blur(18px);
-    border-left:1px solid var(--line);
-    transform:translateX(102%);transition:transform .30s var(--ease);
+    border:1px solid var(--line);border-radius:13px;
+    box-shadow:0 18px 60px rgba(0,0,0,.55),0 4px 14px rgba(0,0,0,.35);
+    overflow:hidden;resize:both;
+    visibility:hidden;opacity:0;transform:translateY(10px) scale(.985);
+    transition:opacity .22s var(--ease),transform .22s var(--ease),
+      visibility 0s .22s;
   }
-  #preview.is-open{transform:translateX(0)}
-  @media (max-width:760px){#preview{width:100vw}}
+  #preview.is-open{
+    visibility:visible;opacity:1;transform:none;
+    transition:opacity .22s var(--ease),transform .22s var(--ease);
+  }
+  #preview.is-dragging{transition:none;user-select:none}
+  @media (max-width:760px){
+    #preview{left:0!important;right:0!important;top:var(--topbar-h)!important;
+      width:100vw;max-width:100vw;height:calc(100vh - var(--topbar-h) - var(--footer-h));
+      border-radius:0;resize:none}
+  }
 
   #preview>header{
     display:flex;align-items:flex-start;gap:14px;padding:15px 18px 13px;
-    border-bottom:1px solid var(--line-soft);flex:none;
+    border-bottom:1px solid var(--line-soft);flex:none;cursor:grab;
   }
+  #preview.is-dragging>header{cursor:grabbing}
   .pv-title{min-width:0;flex:1}
   .pv-title b{display:block;font:500 15px/1.25 var(--serif);color:var(--ink);
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -38,12 +57,31 @@
     font:400 12px/1.65 var(--mono);color:var(--ink-2);white-space:pre-wrap;
     word-break:break-word;tab-size:2;
   }
-  /* The sandboxed document paints its own background, so give it a surface
-     that reads as "another document", not as part of this page. */
+  /* An HTML document owns the whole pane: no padding, no pane scrollbar —
+     the document scrolls itself, edge to edge, like the page it is. The
+     window's own rounded corners clip the frame. */
+  .pv-body.is-frame{padding:0;overflow:hidden}
   .pv-frame{
-    width:100%;height:calc(100% - 4px);min-height:420px;border:1px solid var(--line-soft);
-    border-radius:9px;background:#fff;
+    display:block;width:100%;height:100%;border:0;
+    /* the sandboxed document paints its own background; white reads as
+       "another document" while it loads */
+    background:#fff;
   }
+
+  /* the version picker — the file's git history as a dropdown; hidden
+     until /file-history proves there is one. Styled like the pill buttons
+     beside it; the native popup does the listing. */
+  #preview-version{
+    max-width:200px;appearance:none;-webkit-appearance:none;cursor:pointer;
+    font:400 10px var(--mono);letter-spacing:.06em;
+    color:var(--ink-2);background:var(--bg-3);border:1px solid var(--line);
+    border-radius:999px;padding:5px 24px 5px 11px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23b3ada0'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 9px center;
+    transition:all .16s var(--ease);
+  }
+  #preview-version:hover{color:var(--ink);border-color:#39404d}
+  #preview-version option{background:#14171c;color:var(--ink-2)}
 
   /* rendered markdown — same restrained typography as the wiki articles */
   .pv-md{font-size:13.5px;line-height:1.68;color:var(--ink-2)}

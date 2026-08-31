@@ -394,14 +394,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("st_mtime", layout)
 
     def test_previewer_renders_untrusted_files_safely(self) -> None:
-        """Opening a file shows it in the side drawer without navigating, and
-        without giving a file on disk the run of this document.
+        """Opening a file shows it in the floating window without navigating,
+        and without giving a file on disk the run of this document.
 
         Workspace files are agent output, not trusted content, and this page
         holds the user's session. Markdown goes through the escape-first
-        renderer; HTML renders in an iframe with an EMPTY sandbox attribute
-        (no allow-scripts, no allow-same-origin) so it cannot reach the page,
-        its storage, or the API it is served from.
+        renderer; HTML renders in a sandboxed iframe WITHOUT
+        allow-same-origin — an opaque origin: no cookies, no storage, no
+        parent access, and the API's CORS allowlist refuses it. allow-scripts
+        is deliberately granted (scroll-reveal reports and app index pages
+        are blank without it); the origin line, not the script line, is the
+        one that protects the session, and this test pins exactly that.
         """
         preview = (
             ROOT / "space_ui" / "js" / "core" / "preview.js"
@@ -414,11 +417,14 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('href="css/preview.css?v=', index)
         # markdown through the escape-first renderer, never raw
         self.assertIn("mdToHtml", preview)
-        # HTML only ever inside an empty sandbox
-        self.assertIn('sandbox=""', preview)
+        # HTML only ever inside a sandbox that withholds the origin: scripts
+        # may run, but never as this app. The attribute is pinned whole so a
+        # grant can only be added by rewriting this contract.
+        self.assertIn(
+            'sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"',
+            preview,
+        )
         self.assertIn("srcdoc=", preview)
-        self.assertNotIn("allow-scripts", preview)
-        self.assertNotIn("allow-same-origin", preview)
         # every surface opens it through the event, so no view imports another
         for view in ("tree", "projects", "atlas"):
             source = (

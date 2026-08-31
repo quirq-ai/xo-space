@@ -25,6 +25,7 @@ from routers.cowork_agent.bff.filters import (
     is_root_only_hidden,
 )
 from services.cowork_agent import scopes
+from services.cowork_agent.file_history import file_git_history, read_file_at_commit
 from services.cowork_agent.project_layout import (
     list_project_tree,
     list_projects,
@@ -327,18 +328,87 @@ class FilePreviewResponse(BaseModel):
     content: str
 
 
+def _version_response(
+    project_id: str,
+    relative_path: str,
+    commit: str,
+    commit_path: Optional[str],
+) -> FilePreviewResponse:
+    """The /file response for a historical version of the file."""
+    try:
+        raw = read_file_at_commit(
+            project_id, relative_path, commit, commit_path=commit_path
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_version_request",
+                "message": "commit or commit_path is malformed.",
+            },
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "scope_unavailable", "message": "File is not readable."},
+        ) from exc
+
+    if raw is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "file_not_found", "message": "File not found in project."},
+        )
+    if raw["content"] is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "version_not_found",
+                "message": (
+                    "No repository owns this file."
+                    if not raw["is_repo"]
+                    else "This commit has no version of the file."
+                ),
+            },
+        )
+
+    return FilePreviewResponse(
+        project_id=raw["project_id"],
+        relative_path=raw["relative_path"],
+        name=raw["name"],
+        kind=_preview_kind(raw["name"]),
+        size_bytes=len(raw["content"].encode("utf-8")),
+        modified_at=None,
+        truncated=raw["truncated"],
+        content=raw["content"],
+    )
+
+
 @router.get(
     "/api/xo-projects/{project_id}/file",
     response_model=FilePreviewResponse,
 )
-def project_file(project_id: str, relative_path: str) -> FilePreviewResponse:
-    """Return one previewable text file's content."""
+def project_file(
+    project_id: str,
+    relative_path: str,
+    commit: Optional[str] = None,
+    commit_path: Optional[str] = None,
+) -> FilePreviewResponse:
+    """Return one previewable text file's content.
+
+    With ``commit`` (and, across renames, ``commit_path`` — the ``path``
+    field of the matching /file-history item) the content comes from
+    that commit instead of the working tree, so the previewer's version
+    picker can show the document as it was.
+    """
     if not project_dir_exists(project_id):
         raise HTTPException(
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},
         )
-    suffix = PurePosixPath(relative_path or "").suffix.lower()
+    # The gate judges the name the content will carry: the historical
+    # name when a version is asked for, today's name otherwise.
+    gate_name = commit_path if (commit and commit_path) else relative_path
+    suffix = PurePosixPath(gate_name or "").suffix.lower()
     if suffix not in PREVIEW_SUFFIXES:
         raise HTTPException(
             status_code=415,
@@ -347,6 +417,9 @@ def project_file(project_id: str, relative_path: str) -> FilePreviewResponse:
                 "message": f"No text preview for {suffix or 'this file type'}.",
             },
         )
+
+    if commit is not None:
+        return _version_response(project_id, relative_path, commit, commit_path)
 
     try:
         raw = read_project_file(
@@ -381,4 +454,90 @@ def project_file(project_id: str, relative_path: str) -> FilePreviewResponse:
         modified_at=_to_iso_utc(raw["modified_at"]),
         truncated=raw["truncated"],
         content=raw["content"],
+    )
+
+
+# ── /api/xo-projects/{id}/file-history ────────────────────────────────────────
+#
+# The previewer's History pane: commits that touched one file, newest first.
+# Same address space as /file — project id + project-relative path — with the
+# git specifics (repo discovery, --follow, numstat) in
+# services/cowork_agent/file_history.
+
+HISTORY_MAX_COMMITS = 200
+HISTORY_DEFAULT_COMMITS = 50
+
+
+class FileHistoryCommit(BaseModel):
+    """One commit touching the file.
+
+    ``additions``/``deletions`` are ``None`` when git has no counts to
+    give: a binary file, or a commit that only renamed it. ``path`` is
+    the file's name at that commit — echo it back as ``commit_path``
+    back as ``commit_path`` when asking /file for that version, so
+    renamed files resolve under the name the commit knew.
+    """
+
+    hash: str
+    short_hash: str
+    author: str
+    date: Optional[str] = None
+    subject: str
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
+    path: Optional[str] = None
+
+
+class FileHistoryResponse(BaseModel):
+    project_id: str
+    relative_path: str
+    is_repo: bool
+    items: list[FileHistoryCommit]
+    total: int
+
+
+@router.get(
+    "/api/xo-projects/{project_id}/file-history",
+    response_model=FileHistoryResponse,
+)
+def project_file_history(
+    project_id: str, relative_path: str, limit: int = HISTORY_DEFAULT_COMMITS
+) -> FileHistoryResponse:
+    """Return the git log of one project file's edits."""
+    if not project_dir_exists(project_id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "project_not_found", "message": "Project not found."},
+        )
+
+    try:
+        raw = file_git_history(
+            project_id, relative_path, limit=max(1, min(limit, HISTORY_MAX_COMMITS))
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_relative_path",
+                "message": "relative_path is malformed or escapes the project root.",
+            },
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "scope_unavailable", "message": "File is not readable."},
+        ) from exc
+
+    if raw is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "file_not_found", "message": "File not found in project."},
+        )
+
+    return FileHistoryResponse(
+        project_id=raw["project_id"],
+        relative_path=raw["relative_path"],
+        is_repo=raw["is_repo"],
+        items=[FileHistoryCommit(**item) for item in raw["items"]],
+        total=len(raw["items"]),
     )
