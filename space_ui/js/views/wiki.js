@@ -248,8 +248,8 @@ const TAB_GUIDES={
       ['Change perspective','Use Graph root to temporarily reorganize the layout around any node without changing the XO filesystem.'],
       ['Browse project files','In List, open a project drawer: the Files panel lists one folder at a time via GET /api/xo-projects/{id}/tree, with breadcrumbs and separate folder/file panes.'],
       ['Review active work','In the same drawer, inspect todos, current sessions, and the latest normalized timeline events.'],
-      ['Jump between lenses','Use a List row’s Map action to focus that project on Graph, or the previewer’s Graph button to focus one file; use “Show on timeline” from Graph to carry a run into Timeline.'],
-      ['Read a file','Three surfaces open the same side drawer: a file row in Tree, a file row in the List drawer’s Files panel, and “Preview file” in Graph’s detail panel. Markdown renders, HTML renders inside an empty-sandbox iframe, everything else shows as escaped source; a Source toggle shows the raw text of any of them and Escape closes it.']
+      ['Jump between lenses','Use a List row’s Map action to focus that project on Graph; use “Show on timeline” from Graph to carry a run into Timeline.'],
+      ['Read a file','Three surfaces open the same floating window: a file row in Tree, a file row in the List drawer’s Files panel, and “Preview file” in Graph’s detail panel. Markdown renders, HTML renders inside a sandboxed iframe cut off from the app, everything else shows as escaped source; a Source toggle shows the raw text, a version dropdown shows the file as any commit left it, and Escape closes it.']
     ],
     sources:[
       ['GET /xo/space.json','Serves &lt;XO root&gt;/.xo/space.json, built by build_space_data() from the XO projects root and portable project metadata; feeds Graph, Tree and the Files List counts.','Workspace .xo file'],
@@ -488,21 +488,26 @@ function tabGuideArticle(id){
       ${guide.tab==='projects'?`
       <section class="wiki-section">
         <h2>The file previewer</h2>
-        <p>Three surfaces open the same side drawer: a file row in Tree, a file
-        row in the List drawer’s Files panel, and “Preview file” in Graph’s
-        detail panel. Opening a file does not navigate — the lens underneath
-        keeps its camera and its expansion state, and the drawer’s Graph
-        button is the one control that moves you. The drawer belongs to Files:
-        switching to any other tab closes it.</p>
+        <p>Three surfaces open the same floating window: a file row in Tree, a
+        file row in the List drawer’s Files panel, and “Preview file” in
+        Graph’s detail panel. Opening a file does not navigate — the window
+        floats over the lens underneath, draggable by its header and
+        resizable from its corner, and the view keeps its camera and its
+        expansion state. When the file lives in a git repository, a version
+        dropdown in the header renders the document as any commit left it.
+        The window belongs to Files: switching to any other tab closes it.</p>
         <p>How a file renders is a security contract, not a display
         preference. Markdown goes through the escape-first renderer, which
         escapes the source before it transforms it and emits only fixed,
         attribute-free tags. HTML from disk never enters this document: it
-        renders in an iframe with an empty <code>sandbox</code> attribute and
-        <code>srcdoc</code>, so it has an opaque origin, no scripts, and no
-        network. Everything else shows as escaped source, and a Source toggle
-        gives the raw text of any of them. Files in a workspace are agent
-        output, and this page holds your session.</p>
+        renders via <code>srcdoc</code> in a sandboxed iframe without
+        <code>allow-same-origin</code>, so it runs in an opaque origin — no
+        cookies, no storage, no parent window, and the API’s CORS allowlist
+        turns it away. Its scripts may run (documents that reveal content on
+        scroll are blank otherwise) but they run cut off from everything this
+        page holds. Everything else shows as escaped source, and a Source
+        toggle gives the raw text of any of them. Files in a workspace are
+        agent output, and this page holds your session.</p>
         <p class="wiki-note">Backed by
         <code>GET /api/xo-projects/{id}/file?relative_path=…</code>, which
         addresses a file by project id and project-relative path — never an
