@@ -13,6 +13,8 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
+from services.cowork_agent.adapters.loader import load_capability as _load_capability
+
 logger = logging.getLogger(__name__)
 
 SectionFetcher = Callable[[], Awaitable[dict[str, Any]]]
@@ -65,9 +67,7 @@ async def _fetch_models() -> dict[str, Any]:
     agent name appears here (modularity invariant). A missing capability
     raises and the broadcaster reports the section as empty.
     """
-    from services.cowork_agent.adapters.loader import load_capability
-
-    mod = load_capability("providers_status")
+    mod = _load_capability("providers_status")
     return flatten_providers(await mod.get_providers_status())
 
 
@@ -107,11 +107,23 @@ async def _fetch_skills() -> dict[str, Any]:
     return {"okx": {"installed": True}}
 
 
+async def _fetch_channels() -> dict[str, Any]:
+    """Channel connection state via the active agent's capability module.
+
+    Agents without channels (claude_code, codex) return the empty envelope,
+    so the section degrades to ``{}`` uniformly.
+    """
+    mod = _load_capability("channels_status")
+    payload = await mod.get_channels_status()
+    return payload.get("channels", {})
+
+
 def default_sections() -> dict[str, SectionFetcher]:
     return {
         "models": _fetch_models,
         "data": _fetch_data,
         "skills": _fetch_skills,
+        "channels": _fetch_channels,
     }
 
 

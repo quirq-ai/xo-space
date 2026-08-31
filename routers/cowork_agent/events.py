@@ -36,6 +36,8 @@ broadcaster = EventsBroadcaster(sections=default_sections(), interval=POLL_INTER
 _REFRESH_PREFIXES = (
     "/api/connectors/",
     "/api/config/providers/",
+    "/api/channels/",
+    "/api/secrets/",
     "/connect/",
     "/claude/setup-token",
     "/codex/setup",

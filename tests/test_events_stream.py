@@ -241,6 +241,31 @@ class RequestRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["n"], 1)
 
 
+class DefaultSectionsTests(unittest.IsolatedAsyncioTestCase):
+    def test_registry_contains_all_four_sections(self) -> None:
+        from services.cowork_agent.events_stream import default_sections
+
+        self.assertEqual(
+            list(default_sections()),
+            ["models", "data", "skills", "channels"],
+        )
+
+    async def test_channels_fetcher_unwraps_the_capability_envelope(self) -> None:
+        from services.cowork_agent import events_stream
+
+        class FakeCapability:
+            @staticmethod
+            async def get_channels_status() -> dict:
+                return {"channels": {"telegram": {"connected": True}}}
+
+        with mock.patch.object(
+            events_stream, "_load_capability", return_value=FakeCapability
+        ):
+            result = await events_stream._fetch_channels()
+
+        self.assertEqual(result, {"telegram": {"connected": True}})
+
+
 class RefreshTriggerTests(unittest.TestCase):
     def test_mutating_connector_and_auth_requests_trigger(self) -> None:
         from routers.cowork_agent.events import should_trigger_refresh
@@ -253,6 +278,8 @@ class RefreshTriggerTests(unittest.TestCase):
             ("POST", "/connect/claude-code"),
             ("POST", "/claude/setup-token/callback"),
             ("POST", "/codex/setup"),
+            ("POST", "/api/channels/add"),
+            ("PUT", "/api/secrets/env"),
         ]:
             self.assertTrue(should_trigger_refresh(method, path, 200), path)
 
