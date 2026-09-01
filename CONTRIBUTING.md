@@ -173,8 +173,8 @@ review, and some by tests.
    else — endpoints, the UI, agents — reads. Anything else written there is
    overwritten on the next tick.
 5. **Backward compatibility.** Endpoint paths, request schemas, and response
-   shapes are contracts. A missing capability degrades to an empty/501 shape,
-   never a crash.
+   shapes are contracts. A missing capability module degrades to an empty/501
+   shape; an import error inside an existing module fails loudly.
 6. **Never log secrets.** No tokens, keys, cookies, or prompt text in logs or
    error messages. `/health` reports whether a credential is present, never
    its value; keep it that way.

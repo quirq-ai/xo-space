@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -31,6 +30,7 @@ from services.cowork_agent.project_layout import (
     list_projects,
     list_unscaffolded_dirs,
     project_dir_exists,
+    relative_path_suffix,
     read_project_file,
 )
 
@@ -408,7 +408,7 @@ def project_file(
     # The gate judges the name the content will carry: the historical
     # name when a version is asked for, today's name otherwise.
     gate_name = commit_path if (commit and commit_path) else relative_path
-    suffix = PurePosixPath(gate_name or "").suffix.lower()
+    suffix = relative_path_suffix(gate_name or "").lower()
     if suffix not in PREVIEW_SUFFIXES:
         raise HTTPException(
             status_code=415,

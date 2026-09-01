@@ -101,7 +101,9 @@ mod = load_capability("usage", agent="hermes")   # target a specific agent
 
 A **capability** is just a module `adapters/<name>/<capability>.py`. A core
 router asks for a capability and forwards to it; it never branches on the agent
-name. A missing capability is normal — the router returns its empty/501 shape.
+name. A missing capability module is normal — the router returns its empty/501
+shape. An import error inside an existing capability is an implementation error
+and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 

@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.helpers import normalize_agent_id
 
@@ -365,6 +365,11 @@ def list_projects() -> list[dict]:
 def project_dir_exists(name: str) -> bool:
     """True iff the project root directory exists (scaffolded or not)."""
     return project_dir(name).is_dir()
+
+
+def relative_path_suffix(relative_path: str) -> str:
+    """Return a project-relative path's final suffix without filesystem access."""
+    return PurePosixPath(relative_path).suffix
 
 
 def list_project_tree(name: str, relative_path: str = "") -> dict | None:

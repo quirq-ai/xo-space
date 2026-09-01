@@ -16,8 +16,9 @@
 
 - Broker design: core code never names a specific agent. The active backend is
   resolved from `AGENT_NAME` through one seam, the capability loader
-  `services/cowork_agent/adapters/loader.py`. A missing capability degrades to an
-  empty/501 shape, never a crash.
+  `services/cowork_agent/adapters/loader.py`. A missing capability module
+  degrades to an empty/501 shape; an import error inside an existing module
+  fails loudly so a broken installation is not misreported as unsupported.
 - Agent-specific code lives only in three trees:
   `services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
   `config/models/<name>/` (legacy Plane-A model clients). No other file may name

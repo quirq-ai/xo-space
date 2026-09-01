@@ -143,14 +143,18 @@ async def build_tarball(project_dir: Path, output_path: Path) -> int:
 def extract_tarball(tarball_path: Path, target_dir: Path) -> None:
     """Extract ``tarball_path`` into ``target_dir``.
 
-    Refuses any member whose resolved destination escapes ``target_dir``
-    (tar-slip defence). Member permissions are preserved; ownership is
-    not (running process owns everything).
+    Refuses any member with a ``..`` path component or whose resolved
+    destination escapes ``target_dir`` (tar-slip defence). Member permissions
+    are preserved; ownership is not (running process owns everything).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     target_resolved = target_dir.resolve()
     with tarfile.open(tarball_path, "r:gz") as tar:
         for member in tar.getmembers():
+            if ".." in member.name.replace("\\", "/").split("/"):
+                raise RuntimeError(
+                    f"tarball member {member.name!r} contains '..' — refusing"
+                )
             dest = (target_dir / member.name).resolve()
             try:
                 dest.relative_to(target_resolved)
