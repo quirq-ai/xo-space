@@ -282,6 +282,7 @@ enable_channels() {
             '{
                 gateway: {
                     mode: "local",
+                    trustedProxies: ["127.0.0.1"],
                     controlUi: {
                         dangerouslyDisableDeviceAuth: true
                     },
@@ -375,6 +376,7 @@ enable_channels() {
 {
   "gateway": {
     "mode": "local",
+    "trustedProxies": ["127.0.0.1"],
     "controlUi": {
       "allowedOrigins": ["${control_ui_origin}"],
       "dangerouslyDisableDeviceAuth": true
@@ -415,6 +417,7 @@ EOJSON
 {
   "gateway": {
     "mode": "local",
+    "trustedProxies": ["127.0.0.1"],
     "controlUi": {
       "dangerouslyDisableDeviceAuth": true
     },
