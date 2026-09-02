@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.claude_code.auth_state import record_auth_failure
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ URL_FILE = Path("/tmp/xo-rc.url")   # single line: the current connect link
 ERR_FILE = Path("/tmp/xo-rc.err")   # small: the CLI's stderr, for debugging a failed start
 NAME_FILE = Path("/tmp/xo-rc.name")  # the label the session was launched with
 LOCK_FILE = Path("/tmp/xo-rc.lock")  # serializes start/stop
+_STARTUP_WAIT_SECONDS = 2.0
+_STARTUP_POLL_SECONDS = 0.1
 # Files removed on stop / a failed start (LOCK_FILE is persistent).
 _STATE_FILES = (PID_FILE, URL_FILE, ERR_FILE, NAME_FILE)
 
@@ -145,8 +148,35 @@ def _session_url() -> Optional[str]:
     return url or None
 
 
-def _cleanup_state() -> None:
+def _last_error() -> Optional[str]:
+    """The final CLI error, if Remote Control failed to start or later stopped."""
+    try:
+        detail = ERR_FILE.read_text(errors="replace").strip()
+    except OSError:
+        return None
+    return detail or None
+
+
+def _wait_for_start() -> bool:
+    """Wait briefly for a link or an early launcher exit.
+
+    A live process without a link is still a successful asynchronous launch: the
+    CLI may need longer than this small window to render its first dashboard.
+    """
+    deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if _session_url() is not None:
+            return True
+        if _running_pid() is None:
+            return False
+        time.sleep(_STARTUP_POLL_SECONDS)
+    return _running_pid() is not None
+
+
+def _cleanup_state(*, keep_error: bool = False) -> None:
     for f in _STATE_FILES:
+        if keep_error and f == ERR_FILE:
+            continue
         try:
             f.unlink()
         except OSError:
@@ -243,7 +273,15 @@ def status() -> dict[str, Any]:
     login = native_login_present()
     pid = _running_pid()
     if pid is None:
-        return {"running": False, "login_present": login, "session_url": None}
+        detail = _last_error()
+        if detail:
+            record_auth_failure(detail)
+        return {
+            "running": False,
+            "login_present": login,
+            "session_url": None,
+            "last_error": detail,
+        }
     return {
         "running": True,
         "login_present": login,
@@ -310,6 +348,18 @@ def start(name: Optional[str] = None) -> dict[str, Any]:
                 "running": False,
                 "error": "start_failed",
                 "detail": str(exc),
+            }
+
+        if not _wait_for_start():
+            detail = _last_error() or "Remote Control exited before it became ready."
+            record_auth_failure(detail)
+            _cleanup_state(keep_error=True)
+            return {
+                "ok": False,
+                "running": False,
+                "login_present": native_login_present(),
+                "error": "start_failed",
+                "detail": detail,
             }
 
         logger.info("Remote Control started: pid=%s dir=%s name=%r",

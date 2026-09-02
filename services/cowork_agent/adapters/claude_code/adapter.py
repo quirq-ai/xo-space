@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.adapters.claude_code.auth_state import (
+    clear_auth_failure,
+    record_auth_failure,
+)
 from services.cowork_agent.helpers import iso_now
 from services.cowork_agent.project_layout import (
     project_dir as _xo_project_dir,
@@ -379,9 +383,13 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             raise RuntimeError(f"ClaudeCodeAdapter.run timed out after {timeout}s")
 
         if proc.returncode != 0:
+            detail = stderr.decode(errors="replace")
+            record_auth_failure(detail)
             raise RuntimeError(
-                f"Claude CLI exited with code {proc.returncode}: {stderr.decode()[:500]}"
+                f"Claude CLI exited with code {proc.returncode}: {detail[:500]}"
             )
+
+        clear_auth_failure()
 
         try:
             data = json.loads(stdout)
@@ -455,6 +463,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             )
 
             native_session_id: str | None = None
+            saw_auth_failure = False
             response_parts: list[str] = []
             result_text: str = ""
             usage: dict = {}
@@ -464,6 +473,9 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 event = parse_stream_line(raw_line)
                 if event is None:
                     continue
+
+                if event.get("type") == "error":
+                    saw_auth_failure = record_auth_failure(event.get("error")) is not None
 
                 if event.get("type") == "session_id":
                     # Early ``system``/``init`` event — claude emits this on the
@@ -494,6 +506,11 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 yield event
 
             await proc.wait()
+            if proc.returncode != 0:
+                detail = (await proc.stderr.read()).decode(errors="replace")
+                saw_auth_failure = record_auth_failure(detail) is not None or saw_auth_failure
+            if proc.returncode == 0 and not saw_auth_failure:
+                clear_auth_failure()
 
             # Fall back to result event text when no token events were captured.
             if not response_parts and result_text:

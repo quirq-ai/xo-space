@@ -67,6 +67,7 @@ except ImportError:
     _HAS_PTY = False
 
 from fastapi import APIRouter, HTTPException
+from services.cowork_agent.adapters.claude_code.auth_state import clear_auth_failure
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -815,6 +816,7 @@ async def claude_setup_token(force: bool = False):
                     clear_session()
                     if returncode == 0:
                         print("[setup-token] login successful (exit 0)")
+                        clear_auth_failure()
                         # Compat shim for the currently-deployed frontend, which
                         # detects success by scraping stdout for the legacy
                         # `claude setup-token` string and ignores this `done`
