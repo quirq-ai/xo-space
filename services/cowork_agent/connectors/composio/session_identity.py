@@ -53,7 +53,7 @@ def register(user_id: str, ttl_seconds: Optional[float] = None) -> Optional[str]
 async def mint(xo_access_token: str, ttl_seconds: Optional[float] = None) -> Optional[str]:
     if not xo_access_token:
         return None
-    from services.cowork_agent.composio.identity import _validate_token
+    from services.cowork_agent.connectors.composio.identity import _validate_token
 
     user_id = await _validate_token(xo_access_token)
     if not user_id:

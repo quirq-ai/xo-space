@@ -31,12 +31,12 @@ import httpx
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from routers.cowork_agent.connectors import composio as router_mod
+from routers.cowork_agent.connectors import composio_mcp_proxy as mcp_proxy
 from services import tenancy
-from services.cowork_agent.composio import action_prefs, categories, gateway_bootstrap
-from services.cowork_agent.composio import identity as identity_mod
-from services.cowork_agent.composio import mcp_proxy
-from services.cowork_agent.composio import router as router_mod
-from services.cowork_agent.composio import service, session_identity
+from services.cowork_agent.connectors.composio import action_prefs, categories, gateway_bootstrap
+from services.cowork_agent.connectors.composio import identity as identity_mod
+from services.cowork_agent.connectors.composio import service, session_identity
 
 WORKSPACE = "ws-test"
 ACCOUNT = "user_abc123"

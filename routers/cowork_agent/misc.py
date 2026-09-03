@@ -34,8 +34,8 @@ async def list_tools(request: Request):
     401ing a list the UI polls opportunistically.
     """
     try:
-        from services.cowork_agent.composio import service as composio_service
-        from services.cowork_agent.composio.identity import resolve_user_from_bearer
+        from services.cowork_agent.connectors.composio import service as composio_service
+        from services.cowork_agent.connectors.composio.identity import resolve_user_from_bearer
     except Exception as exc:
         log.debug("tools: composio not importable: %s", exc)
         return []

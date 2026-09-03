@@ -49,7 +49,7 @@ async def _resolve_user_id(request: Request) -> str | None:
     the agent simply gets no Composio MCP server for that turn, which is the
     only safe answer: there is no shared account to fall back to.
     """
-    from services.cowork_agent.composio.identity import resolve_user_from_bearer
+    from services.cowork_agent.connectors.composio.identity import resolve_user_from_bearer
 
     user_id = await resolve_user_from_bearer(request)
     if not user_id:

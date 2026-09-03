@@ -15,6 +15,16 @@
     "session_header": ""
   },
   "model_prefix": "codex",
+  "mcp": {
+    "format": "toml",
+    "home_env": "CODEX_HOME",
+    "path_in_home": "config.toml",
+    "key_path": ["mcp_servers"],
+    "server_name": "composio",
+    "legacy_names": ["cowork", "xo_composio"],
+    "entry": {"url": "{proxy_url}", "enabled": true},
+    "create_if_missing": true
+  },
   "model_capabilities": {
     "function_calling": true,
     "vision": true,
