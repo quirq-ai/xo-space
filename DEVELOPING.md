@@ -380,6 +380,15 @@ out. `gateway_bootstrap.py` installs that URL into every agent exposing an
 demand. The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped
 routes exist only to 401 a stale config with a useful message.
 
+Four adapters implement `mcp_install`, and each writes its own gateway's shape —
+claude_code `{"type":"http","url":…}` in `~/.claude.json`, hermes and openclaw
+`{"url":…,"transport":"streamable-http","enabled":true}` in YAML/JSON, and codex
+a `[mcp_servers.composio]` TOML table in `$CODEX_HOME/config.toml`. The codex one
+splices text instead of round-tripping the document (the stdlib has no TOML
+writer, and that config is hand-written with comments), so it re-parses its own
+output and aborts if anything outside `mcp_servers` moved. An agent without the
+capability is not a bug: `/refresh-gateway` 422s naming the ones that have it.
+
 > An agent's MCP config is **machine-global**. It points at whichever principal
 > installed it last, so on a multi-user host the last writer wins — hence the
 > `multi_tenant_warning` in the refresh-gateway response.
