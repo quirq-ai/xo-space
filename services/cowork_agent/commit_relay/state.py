@@ -37,7 +37,8 @@ def state_path(repo: str) -> Path:
     `hash8` is the first 8 hex of sha1(identity) so two identities can never
     collide after sanitising, and the name can never contain a path separator.
     """
-    safe = _UNSAFE.sub("-", repo.replace("/", "__")).strip("-.") or "repo"
+    safe = _UNSAFE.sub("-", repo.replace("/", "__"))
+    safe = re.sub(r"\.{2,}", ".", safe).strip("-.") or "repo"
     digest = hashlib.sha1(repo.encode("utf-8")).hexdigest()[:8]
     return relay_state_dir() / f"{safe}-{digest}.json"
 
