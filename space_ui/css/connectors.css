@@ -1,0 +1,87 @@
+/* Connectors tab. Mirrors the Setup tab's card/badge/button vocabulary under a
+   .conn- prefix — those classes are per-view by convention, not shared, so the
+   rules are restated here rather than imported. Tokens come from base.css. */
+
+/* The registry auto-creates this section; without an explicit overflow it
+   inherits the stage's clipping and the grid cannot scroll. */
+#view-connectors{overflow:auto;background:var(--bg)}
+
+.conn-page{max-width:1080px;margin:0 auto;padding:26px 24px 60px}
+
+.conn-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:20px}
+.conn-kicker{font:500 9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
+.conn-hero h1{font:400 30px var(--serif);margin:0 0 8px}
+.conn-hero p{color:var(--ink-2);font-size:12.5px;line-height:1.55;max-width:62ch;margin:0}
+.conn-hero-actions{display:flex;gap:8px;flex:0 0 auto}
+
+.conn-refresh{
+  border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink-2);
+  padding:8px 15px;font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;cursor:pointer
+}
+.conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
+
+.conn-alert{display:flex;gap:11px;align-items:flex-start;padding:13px 15px;border-radius:11px;margin-bottom:18px;border:1px solid var(--line);background:var(--bg-2)}
+.conn-alert b{display:block;font-size:12.5px;margin-bottom:3px}
+.conn-alert p{margin:0;color:var(--ink-2);font-size:11.5px;line-height:1.5}
+.conn-alert span{color:var(--ink-3);line-height:1.3}
+.conn-alert.is-good{border-color:rgba(131,214,58,.4);background:rgba(131,214,58,.06)}
+.conn-alert.is-good span{color:var(--accent-deep)}
+.conn-alert.is-pending{border-color:rgba(226,174,91,.42);background:rgba(226,174,91,.06)}
+.conn-alert.is-pending span{color:#e2ae5b}
+.conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
+.conn-alert.is-error span{color:var(--err)}
+
+.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(288px,1fr));gap:12px;align-items:start}
+
+.conn-card{background:rgba(16,19,24,.88);border:1px solid var(--line);border-radius:16px;overflow:hidden;transition:border-color .16s var(--ease)}
+.conn-card:hover{border-color:var(--ink-4)}
+.conn-card.is-on{box-shadow:inset 2px 0 var(--accent-deep)}
+
+.conn-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:17px 18px 13px}
+.conn-card-id span{display:block;font:500 9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
+.conn-card-id h2{font:500 18px var(--serif);margin:0}
+.conn-card-head i{font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;font-style:normal;color:var(--ink-3);white-space:nowrap;padding-top:3px}
+.conn-card-head i.is-good{color:var(--accent-deep)}
+
+.conn-card-body{padding:0 18px}
+.conn-facts{display:flex;flex-wrap:wrap;gap:6px}
+.conn-fact{font:500 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
+
+.conn-card-error{
+  margin-top:11px;padding:9px 11px;border:1px solid rgba(200,103,76,.35);border-radius:8px;
+  background:rgba(200,103,76,.08);color:#e1937d;font-size:11.5px;line-height:1.45
+}
+
+.conn-card-acts{display:flex;gap:8px;padding:14px 18px 17px}
+.conn-primary,.conn-secondary{
+  border-radius:999px;padding:8px 16px;font:700 10px var(--mono);letter-spacing:.1em;
+  text-transform:uppercase;cursor:pointer;border:1px solid transparent
+}
+.conn-primary{background:var(--accent);color:#14100a}
+.conn-primary:hover{background:#b7e467}
+.conn-secondary{border-color:var(--line);background:transparent;color:var(--ink-2)}
+.conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
+.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}
+.conn-secondary.is-danger:hover{background:rgba(200,103,76,.1)}
+/* :disabled alone means "cannot act"; only an in-flight request earns the wait
+   cursor, via .is-busy. Same distinction as the Setup tab. */
+.conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
+.conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
+
+.conn-actions{border-top:1px solid var(--line-soft);padding:13px 18px 16px;max-height:340px;overflow:auto}
+.conn-actions-note{margin:0 0 10px;color:var(--ink-3);font-size:11px;line-height:1.5}
+.conn-action{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:11.5px;color:var(--ink-2);cursor:pointer}
+.conn-action:hover{color:var(--ink)}
+.conn-action input{accent-color:var(--accent-deep);cursor:pointer}
+.conn-action-name{flex:1;font-family:var(--mono);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conn-tag{font:600 8.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;border-radius:999px;padding:2px 7px}
+.conn-tag.is-read{color:var(--res);border:1px solid rgba(111,147,173,.4)}
+.conn-tag.is-write{color:#e2ae5b;border:1px solid rgba(226,174,91,.4)}
+
+.conn-empty{padding:22px;text-align:center;color:var(--ink-3);font-size:12px;border:1px dashed var(--line);border-radius:12px}
+.conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
+
+@media (max-width:720px){
+  .conn-hero{flex-direction:column}
+  .conn-grid{grid-template-columns:1fr}
+}

@@ -70,6 +70,43 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("scrollIntoView", registry)
 
+    def test_connectors_view_is_registered_and_identity_aware(self) -> None:
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
+        view = (
+            ROOT / "space_ui" / "js" / "views" / "connectors.js"
+        ).read_text(encoding="utf-8")
+        session = (
+            ROOT / "space_ui" / "js" / "core" / "session.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("import connectorsView from './views/connectors.js?v=", app)
+        self.assertIn("registerView(connectorsView);", app)
+        self.assertIn('href="css/connectors.css?v=', index)
+        self.assertIn("id:'connectors',label:'Connectors'", view)
+
+        # The Composio routes 401 without an identity, so every call must carry
+        # the session header. A view that quietly stopped sending it would show
+        # "sign in" forever.
+        self.assertIn("sessionHeaders()", view)
+        self.assertIn("X-XO-Session", session)
+        # The opaque id is per-tab: persisting it would outlive the server-side
+        # session table, which is in-memory and dies with the process.
+        self.assertNotIn("localStorage", session)
+
+        # The callback page posts to "*", so the origin check is what stops any
+        # other page forging a completion message.
+        self.assertIn("event.origin!==location.origin", view)
+        self.assertIn("connector-auth-complete", view)
+        # postMessage only accelerates; the status poll decides.
+        self.assertIn("connection_request_id=", view)
+
+        # The agent for refresh-gateway is resolved at runtime — naming one here
+        # would put an agent literal in a core (non-adapter) file.
+        self.assertIn("/api/runtime-config", view)
+        for agent in ("claude_code", "openclaw", "hermes", "antigravity"):
+            self.assertNotIn(agent, view)
+
     def test_quirq_view_registered_and_six_degrees_removed(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
@@ -243,6 +280,7 @@ class SpaceWikiTests(unittest.TestCase):
             "tab-wiki",
             "tab-quirq",
             "tab-setup",
+            "tab-connectors",
         ):
             self.assertIn(f"id:'{page_id}'", wiki)
             self.assertIn(f"'{page_id}':", wiki)
