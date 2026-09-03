@@ -177,7 +177,7 @@ async def consume_auth_flow(auth_session_id: str, poll_token: str) -> Dict[str, 
         session_id = None
         user_id = result.get("user_id")
         if user_id:
-            from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+            from services.cowork_agent.connectors.composio import session_identity  # local import: avoid load cycle
             session_id = session_identity.register(
                 user_id, ttl_seconds=result.get("expires_in"),
             )
@@ -272,7 +272,7 @@ async def xo_auth_session(request: Request):
     on ``/api/connectors/composio/*`` and ``/api/chat/prompt`` — the raw XO token
     never reaches the client. See services/cowork_agent/composio/session_identity.py.
     """
-    from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+    from services.cowork_agent.connectors.composio import session_identity  # local import: avoid load cycle
 
     auth = request.headers.get("authorization") or ""
     parts = auth.split(None, 1)
@@ -309,9 +309,9 @@ async def xo_auth_session_self():
     The returned ``user_id`` is the bare XO **account** id — it answers "which XO
     user is this backend", not "which tenant". The workspace-scoped principal
     used for Composio is composed per request in
-    ``services.cowork_agent.composio.identity.resolve_user_from_bearer``.
+    ``services.cowork_agent.connectors.composio.identity.resolve_user_from_bearer``.
     """
-    from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+    from services.cowork_agent.connectors.composio import session_identity  # local import: avoid load cycle
 
     token = get_auth_token()
     if not token:

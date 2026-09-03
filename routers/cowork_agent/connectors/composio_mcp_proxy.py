@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from services.cowork_agent.composio import service as composio_service
+from services.cowork_agent.connectors.composio import service as composio_service
 
 log = logging.getLogger(__name__)
 router = APIRouter()

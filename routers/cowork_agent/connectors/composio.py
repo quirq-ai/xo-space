@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from services.cowork_agent.composio import service as composio_service
-from services.cowork_agent.composio.identity import get_composio_user
+from services.cowork_agent.connectors.composio import service as composio_service
+from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,7 +72,7 @@ class AliasBody(BaseModel):
 async def list_toolkits(
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    from services.cowork_agent.composio import categories as composio_categories
+    from services.cowork_agent.connectors.composio import categories as composio_categories
     # One fetch feeds both the primary-account map and the per-toolkit counts.
     rows = composio_service.newest_first(
         composio_service.list_connections(user_id)
@@ -280,7 +280,7 @@ async def get_toolkit_prefs(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    from services.cowork_agent.composio import action_prefs as composio_action_prefs
+    from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
     return JSONResponse(
         {"actions": composio_action_prefs.get_toolkit_prefs(toolkit, user_id)}
     )
@@ -292,8 +292,8 @@ async def put_toolkit_prefs(
     body: PrefsBody,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    from services.cowork_agent.composio import action_prefs as composio_action_prefs
-    from services.cowork_agent.composio import categories as composio_categories
+    from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
+    from services.cowork_agent.connectors.composio import categories as composio_categories
     if toolkit not in composio_categories.classified_toolkits():
         raise HTTPException(
             status_code=404,

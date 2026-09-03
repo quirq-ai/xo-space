@@ -1,7 +1,7 @@
 """
 Boot-time MCP gateway install.
 
-Every agent that exposes an ``mcp_install`` capability gets its config pointed at
+Every agent whose manifest declares an ``mcp`` block gets its config pointed at
 this workspace's Composio proxy URL on each start. Before this existed the only
 path was a manual ``POST /api/connectors/composio/refresh-gateway``, so a fresh
 workspace — or a restart after the proxy token changed — left agents with no
@@ -35,12 +35,12 @@ async def install_gateways_at_startup() -> dict[str, dict]:
     # composio/auth packages import each other lazily to avoid a load cycle.
     from routers.auth.auth import get_auth_token
     from services import tenancy
-    from services.cowork_agent.composio import service as composio_service
-    from services.cowork_agent.composio.identity import _validate_token
+    from services.cowork_agent.connectors.composio import service as composio_service
+    from services.cowork_agent.connectors.composio.identity import _validate_token
 
     agents = composio_service.gateway_install_agents()
     if not agents:
-        log.info("gateway_bootstrap: no agent exposes an mcp_install capability; nothing to do.")
+        log.info("gateway_bootstrap: no agent manifest declares an 'mcp' block; nothing to do.")
         return {}
 
     token = get_auth_token()

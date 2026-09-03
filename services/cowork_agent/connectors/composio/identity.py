@@ -110,7 +110,7 @@ async def resolve_user_from_bearer(request: Request) -> Optional[str]:
     token = _extract_bearer(request)
     if not token:
         return None
-    from services.cowork_agent.composio.session_identity import resolve as resolve_session
+    from services.cowork_agent.connectors.composio.session_identity import resolve as resolve_session
     account_id = resolve_session(token) or await _validate_token(token)
     if not account_id:
         return None

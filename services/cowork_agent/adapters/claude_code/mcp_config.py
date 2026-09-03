@@ -48,7 +48,7 @@ def write_session_mcp_config(user_id: Optional[str], session_key: Optional[str])
         return None
 
     try:
-        from services.cowork_agent.composio import service as composio_service
+        from services.cowork_agent.connectors.composio import service as composio_service
     except Exception as exc:
         log.debug("mcp_config: composio_service not importable: %s", exc)
         return None

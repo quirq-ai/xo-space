@@ -714,7 +714,7 @@ async def lifespan(app: FastAPI):
     # backend holds no XO credential or has no workspace identity. Non-fatal.
     _mcp_gateway_task = None
     try:
-        from services.cowork_agent.composio.gateway_bootstrap import install_gateways_at_startup
+        from services.cowork_agent.connectors.composio.gateway_bootstrap import install_gateways_at_startup
         _mcp_gateway_task = asyncio.create_task(install_gateways_at_startup())
         print("   Composio MCP: background gateway install scheduled")
     except Exception as exc:

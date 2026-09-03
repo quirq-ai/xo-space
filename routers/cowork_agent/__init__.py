@@ -15,7 +15,7 @@ from .agents import router as agents_router
 from .channels import router as channels_router
 from .chat import router as chat_router
 from .config import router as config_router
-from services.cowork_agent.composio.router import router as composio_router
+from .connectors.composio import router as composio_router
 from .files import router as files_router
 from .fts import router as fts_router
 from .connectors.gdrive import router as gdrive_router
@@ -23,7 +23,7 @@ from .connectors.github_cli import router as github_cli_router
 from .connectors.github_pat import router as github_pat_router
 from .connectors.magicpath import router as magicpath_router
 from .connectors.manus import router as manus_router
-from services.cowork_agent.composio.mcp_proxy import router as mcp_proxy_router
+from .connectors.composio_mcp_proxy import router as mcp_proxy_router
 from .misc import router as misc_router
 from .onboarding import router as onboarding_router
 from .quirq_state import router as quirq_state_router

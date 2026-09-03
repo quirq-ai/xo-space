@@ -47,7 +47,7 @@ routers/                          broker routes only — NO agent branching
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
-    connectors/                   gdrive github manus onedrive vercel route modules
+    connectors/                   gdrive github manus onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects)
     legacy/                       frozen URL aliases (openclaw_usage)
 
@@ -61,7 +61,7 @@ services/
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
-                                    vercel/ manus/ + shared rclone/ engine and token_store.py
+                                    vercel/ manus/ composio/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 ```
@@ -328,10 +328,21 @@ one branch, serve both.
 
 ## 10. Connectors: Composio
 
-`services/cowork_agent/composio/` gives the active agent tools in the user's own
-SaaS accounts (Gmail, Google Workspace, Notion, Figma) via
-[Composio](https://composio.dev). It is the one subpackage under `services/` that
-owns routers — `routers/cowork_agent/__init__.py` imports them from there.
+Composio gives the active agent tools in the user's own SaaS accounts (Gmail,
+Google Workspace, Notion, Figma) via [Composio](https://composio.dev). It is laid
+out like every other connector — logic under `services/cowork_agent/connectors/`,
+HTTP surface under `routers/cowork_agent/connectors/`:
+
+| module | what it serves |
+|---|---|
+| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...` — toolkits, connect/disconnect, accounts, tools, prefs, refresh-gateway, the OAuth callback |
+| `routers/cowork_agent/connectors/composio_mcp_proxy.py` | `/mcp/composio-proxy/...` — the loopback reverse proxy agents reach Composio through |
+| `services/cowork_agent/connectors/composio/` | `service.py`, `identity.py`, `session_identity.py`, `mcp.py`, `gateway_bootstrap.py`, `action_prefs.py`, `categories.py` |
+
+It is the only sub-package among that folder's flat modules — seven modules is more
+than one file should carry. Note the depth: `service._REPO_ROOT` and
+`action_prefs._PREFS_PATH` reach the repo root with `parents[4]`, one deeper than a
+flat connector module would need.
 
 ### 10.1 The identity chain
 
@@ -372,22 +383,41 @@ already has, and only that id reaches the page.
 ### 10.2 The MCP proxy
 
 Agents reach Composio through `/mcp/composio-proxy/u/<token>`, a loopback reverse
-proxy (`mcp_proxy.py`), never directly. That is deliberate: the proxy injects the
+proxy (`connectors/composio_mcp_proxy.py`), never directly. That is deliberate: the proxy injects the
 Composio credential server-side, so **no API key is ever written into an agent's
 config file**. `_forwarded_headers` strips the client's `authorization` on the way
-out. `gateway_bootstrap.py` installs that URL into every agent exposing an
-`mcp_install` capability at boot, and `POST .../refresh-gateway` re-runs it on
+out. `gateway_bootstrap.py` installs that URL into every agent whose manifest
+declares an `mcp` block at boot, and `POST .../refresh-gateway` re-runs it on
 demand. The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped
 routes exist only to 401 a stale config with a useful message.
 
-Four adapters implement `mcp_install`, and each writes its own gateway's shape —
-claude_code `{"type":"http","url":…}` in `~/.claude.json`, hermes and openclaw
-`{"url":…,"transport":"streamable-http","enabled":true}` in YAML/JSON, and codex
-a `[mcp_servers.composio]` TOML table in `$CODEX_HOME/config.toml`. The codex one
-splices text instead of round-tripping the document (the stdlib has no TOML
-writer, and that config is hand-written with comments), so it re-parses its own
-output and aborts if anything outside `mcp_servers` moved. An agent without the
-capability is not a bug: `/refresh-gateway` 422s naming the ones that have it.
+**The install is declarative.** Each agent describes its own gateway shape as an
+`"mcp"` block in `config/agents/<name>/manifest.json`, and `composio/mcp.py` is the
+single writer that reads it — there is no per-agent Python, and adding an agent is
+adding a block. The manifest loader ignores keys it does not know and keeps the whole
+document on `AgentManifest.raw`, the same seam the `providers` and `channels` recipes
+use, so this needed no registry change. Today's four:
+
+| agent | file | format | key path | entry |
+|---|---|---|---|---|
+| claude_code | `~/.claude.json` | JSON | `mcpServers.composio` | `{"type":"http","url":…}` |
+| codex | `$CODEX_HOME/config.toml` | TOML | `mcp_servers.composio` | `{url:…, enabled:true}` |
+| hermes | `~/.hermes/config.yaml` | YAML | `mcp_servers.composio` | `{url:…, transport:"streamable-http", enabled:true}` |
+| openclaw | `~/.openclaw/openclaw.json` | JSON | `mcp.servers.composio` | same as hermes |
+
+A block sets the target file three ways, in precedence order: an explicit `path`,
+`home_env` + `path_in_home` (env override, else the manifest's `home_dir` — this is
+how codex follows `$CODEX_HOME`), or the manifest's own `config_file`, which is
+already the right file for three of the four. `entry` is written verbatim with
+`{proxy_url}` substituted; `legacy_names` are purged on every write so a rename can't
+leave two keys pointing at the same proxy and list every tool twice.
+
+The TOML path splices text instead of round-tripping the document (the stdlib has no
+TOML writer, and that config is hand-written with comments), so it re-parses its own
+output and aborts if anything outside the managed table moved. Across every format,
+two rules hold: a config that failed to parse is never rewritten, and an existing
+file's permissions are preserved. An agent without a block is not a bug — antigravity
+has none, and `/refresh-gateway` 422s naming the ones that do.
 
 > An agent's MCP config is **machine-global**. It points at whichever principal
 > installed it last, so on a multi-user host the last writer wins — hence the

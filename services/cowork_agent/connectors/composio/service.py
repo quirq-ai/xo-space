@@ -372,8 +372,8 @@ def list_tools(
         log.warning("composio: list_tools failed (toolkit=%s): %s", meta.slug, exc)
         return []
 
-    from services.cowork_agent.composio import action_prefs as composio_action_prefs
-    from services.cowork_agent.composio import categories as composio_categories
+    from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
+    from services.cowork_agent.connectors.composio import categories as composio_categories
 
     out: list[dict[str, Any]] = []
     for t in tools:
@@ -395,7 +395,8 @@ def list_tools(
     return out
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# connectors/composio/ → connectors/ → cowork_agent/ → services/ → repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _SESSIONS_PATH = _REPO_ROOT / "data" / "composio_sessions.json"
 
 _SESSION_IDS: dict[str, str] = {}
@@ -533,7 +534,7 @@ def _delete_remote_session(session_id: str, user_id: str) -> None:
 
 
 def _disabled_tools_config(user_id: str) -> dict[str, dict[str, list[str]]]:
-    from services.cowork_agent.composio import action_prefs as composio_action_prefs
+    from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
 
     try:
         prefs = composio_action_prefs.load_prefs(user_id)
@@ -686,15 +687,15 @@ def _composio_proxy_url(user_id: str) -> str:
 
 
 def install_into_gateway(user_id: str, agent: str) -> dict[str, Any]:
-    from services.cowork_agent.adapters.loader import try_load_capability
+    from services.cowork_agent.connectors.composio import mcp
 
-    mod = try_load_capability("mcp_install", agent=agent)
-    if mod is None or not hasattr(mod, "install"):
+    target = mcp.load_target(agent)
+    if target is None:
         return {
             "ok": False,
             "error": (
                 f"Agent '{agent}' does not support gateway MCP install "
-                "(no mcp_install capability)."
+                f"(no 'mcp' block in config/agents/{agent}/manifest.json)."
             ),
         }
     try:
@@ -702,16 +703,10 @@ def install_into_gateway(user_id: str, agent: str) -> dict[str, Any]:
     except Exception as exc:
         log.warning("composio: gateway install could not build proxy URL: %s", exc)
         return {"ok": False, "error": str(exc)}
-    return mod.install(proxy_url)
+    return mcp.apply(target, proxy_url)
 
 
 def gateway_install_agents() -> list[str]:
-    from services.cowork_agent.adapters.loader import try_load_capability
-    from services.cowork_agent.registry.adapter_registry import list_adapters
+    from services.cowork_agent.connectors.composio import mcp
 
-    out: list[str] = []
-    for name in list_adapters():
-        mod = try_load_capability("mcp_install", agent=name)
-        if mod is not None and hasattr(mod, "install"):
-            out.append(name)
-    return sorted(out)
+    return mcp.agents_with_targets()
