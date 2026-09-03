@@ -128,7 +128,9 @@ cp "$SRC" "$W/ws5/xo-space/uninstall.sh"
 mkdir -p "$W/home5/.argus" "$W/home5/.xo-cowork"
 echo db > "$W/home5/.argus/argus.db"
 mkdir -p "$W/tmp5"
-full="$( cd "$W/ws5" && HOME="$W/home5" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp5" bash ./xo-space/uninstall.sh --yes 2>&1 )" || {
+full="$( cd "$W/ws5" && HOME="$W/home5" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp5" \
+        XO_PROJECTS_ROOT="$W/ws5" QUIRQ_STATE_ROOT="$W/ws5/.quirq" \
+        bash ./xo-space/uninstall.sh --yes 2>&1 )" || {
     bad "full --yes run exits 0" "$full"; }
 state5="$([ -d "$W/ws5/projectA" ] && echo projects || echo lost)"
 state5="$state5|$([ -e "$W/ws5/xo-space" ] && echo checkout || echo nocheckout)"
@@ -139,7 +141,9 @@ check "full run: projects kept; checkout, .quirq, .xo, ~/.argus removed" \
       "$state5" "projects|nocheckout|noquirq|noxo|noargus"
 
 cp "$SRC" "$W/ws5/uninstall-copy.sh"
-again="$( cd "$W/ws5" && HOME="$W/home5" QUIRQ_DAEMON_TMPDIR="$W/tmp5" bash ./uninstall-copy.sh --yes >/dev/null 2>&1 && echo ok || echo err )"
+again="$( cd "$W/ws5" && HOME="$W/home5" QUIRQ_DAEMON_TMPDIR="$W/tmp5" \
+         XO_PROJECTS_ROOT="$W/ws5" QUIRQ_STATE_ROOT="$W/ws5/.quirq" \
+         bash ./uninstall-copy.sh --yes >/dev/null 2>&1 && echo ok || echo err )"
 check "second run is graceful (idempotent)" "$again" "ok"
 
 # ---- summary ---------------------------------------------------------------
