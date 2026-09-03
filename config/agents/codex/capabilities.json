@@ -24,5 +24,6 @@
     "telegram": { "enabled": false },
     "slack": { "enabled": false }
   },
-  "secrets": { "enabled": true }
+  "secrets": { "enabled": true },
+  "remote_control": { "enabled": true }
 }
