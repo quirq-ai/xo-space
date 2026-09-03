@@ -12,6 +12,7 @@ below is consumed by the parent package's ``all_routers`` so
 
 from fastapi import APIRouter
 
+from .relay import router as relay_router
 from .secrets import router as secrets_router
 from .visualizer import router as visualizer_router
 from .workspace_visualizer import router as workspace_visualizer_router
@@ -19,6 +20,7 @@ from .xo_projects import router as xo_projects_router
 
 bff_routers: list[APIRouter] = [
     xo_projects_router,
+    relay_router,
     secrets_router,
     visualizer_router,
     workspace_visualizer_router,
