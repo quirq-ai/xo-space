@@ -1,6 +1,7 @@
 {
   "name": "antigravity",
   "binary": "agy",
+  "install_url": "https://antigravity.google/download",
   "home_dir": "~/.gemini/antigravity-cli",
   "env_file": "~/.gemini/antigravity-cli/.env",
   "config_file": "~/.gemini/antigravity-cli/settings.json",

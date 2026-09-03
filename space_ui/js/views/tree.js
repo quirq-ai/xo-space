@@ -28,7 +28,7 @@ const ROW_H=34;    /* a container chip */
 const FILE_H=20;   /* a row in a leaf stack */
 const STACK_PAD=13;/* the leaf card's own padding */
 const GAP=7;       /* between sibling blocks */
-/* The left gutter is the scroll pane's padding (it matches the centred
+/* The left gutter comes from the camera's initial x (it matches the centred
    header), so the surface itself starts at zero. */
 const PAD_X=0,PAD_Y=24;
 /* A folder's files show a dozen at a time. The old cap of 40 made one folder
@@ -45,8 +45,66 @@ let loading=false;
 const expandedStacks=new Set(); /* leaf cards showing all of their files */
 let seen=new Set();             /* keys on screen last render — the rest are new */
 let growing=false;              /* this render came from an expand: draw branches in */
-let scrollLeft=0,scrollTop=0;   /* the surface is re-created each render */
-let anchor=null;                /* {key,offset} — keep this node where it was */
+let anchor=null;                /* {key,left,top} — keep this node where it was */
+
+/* ── camera ───────────────────────────────────────────────────────────────
+   The pane is not a scroller: the surface is a canvas you pan by dragging
+   and zoom with the wheel, cursor-anchored — the same feel as the Graph
+   lens next door. screen = layout*k + (x,y); k=1 is 1:1 px. The camera
+   survives re-renders (the surface is re-created, the transform re-applied). */
+let cam=null;                   /* {x,y,k}; null until the first render sizes it */
+const K_MIN=.25,K_MAX=2.5;
+let panning=false,panMoved=false,px=0,py=0,downX=0,downY=0;
+const canvasEl=()=>root.querySelector('.tv-canvas');
+function applyCam(){
+  const s=root.querySelector('.tv-surface');
+  if(s&&cam)s.style.transform='translate('+cam.x+'px,'+cam.y+'px) scale('+cam.k+')';
+}
+/* the root chip starts on the header's left line, like the old gutter did */
+function initCam(){
+  const c=canvasEl();
+  cam={x:c?Math.max(26,(c.clientWidth-1180)/2+26):26,y:0,k:1};
+}
+function onPointerDown(e){
+  const c=e.target.closest('.tv-canvas');
+  if(!c||e.button!==0||!cam)return;
+  panning=true;panMoved=false;
+  downX=px=e.clientX;downY=py=e.clientY;
+}
+function onPointerMove(e){
+  if(!panning)return;
+  /* 4px of slack so a click on a chip is a click, not a 0px pan. Capture
+     only once the pan is real: a captured pointer retargets the synthesized
+     click at the canvas, which would eat every chip's expand click. */
+  if(!panMoved){
+    if(Math.hypot(e.clientX-downX,e.clientY-downY)<=4)return;
+    panMoved=true;
+    const c=canvasEl();
+    if(c){c.classList.add('is-panning');c.setPointerCapture(e.pointerId);}
+  }
+  cam.x+=e.clientX-px;cam.y+=e.clientY-py;
+  px=e.clientX;py=e.clientY;
+  applyCam();
+}
+function onPointerUp(){
+  if(!panning)return;
+  panning=false;
+  const c=canvasEl();
+  if(c)c.classList.remove('is-panning');
+}
+function onWheel(e){
+  const c=e.target.closest('.tv-canvas');
+  if(!c||!cam)return;
+  e.preventDefault();
+  const nk=Math.max(K_MIN,Math.min(K_MAX,cam.k*Math.exp(-e.deltaY*.0016)));
+  /* keep the layout point under the cursor under the cursor */
+  const r=c.getBoundingClientRect();
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  cam.x=mx-(mx-cam.x)/cam.k*nk;
+  cam.y=my-(my-cam.y)/cam.k*nk;
+  cam.k=nk;
+  applyCam();
+}
 
 export default {
   /* No tab of its own: the Files tab owns the nav slot and this is its third
@@ -58,6 +116,12 @@ export default {
     root.innerHTML='<div class="tv"><div class="prj-note">loading the workspace…</div></div>';
     root.addEventListener('click',onClick);
     root.addEventListener('input',onInput);
+    root.addEventListener('pointerdown',onPointerDown);
+    root.addEventListener('pointermove',onPointerMove);
+    root.addEventListener('pointerup',onPointerUp);
+    root.addEventListener('pointercancel',onPointerUp);
+    /* wheel must preventDefault (page zoom/scroll), so non-passive */
+    root.addEventListener('wheel',onWheel,{passive:false});
     await load();
   },
   show(){if(model===null&&!loading)load();}
@@ -115,7 +179,7 @@ async function load(){
   loading=false;
   if(!res.ok){
     root.querySelector('.tv').innerHTML=
-      '<div class="prj-note">'+esc(res.offline?'xo-cowork-api is unreachable':res.error)+'</div>';
+      '<div class="prj-note">'+esc(res.offline?'xo-space is unreachable':res.error)+'</div>';
     return;
   }
   model=build(res.data);
@@ -205,7 +269,7 @@ function render(){
   const grew=growing;growing=false;
   root.querySelector('.tv').innerHTML=
     head()
-    +'<div class="tv-scroll"><div class="tv-surface'+(grew?' is-growing':'')
+    +'<div class="tv-canvas"><div class="tv-surface'+(grew?' is-growing':'')
       +'" style="width:'+Math.round(width)
       +'px;height:'+Math.round(height)+'px">'
       +'<svg class="tv-links" width="'+Math.round(width)+'" height="'+Math.round(height)+'">'
@@ -224,7 +288,9 @@ function render(){
     const surface=root.querySelector('.tv-surface');
     setTimeout(()=>surface&&surface.classList.remove('is-growing'),480);
   }
-  restoreScroll();
+  if(cam===null)initCam();
+  applyCam();
+  restoreAnchor();
   const input=root.querySelector('#tv-filter');
   if(input&&filter){input.focus();input.setSelectionRange(filter.length,filter.length);}
 }
@@ -236,6 +302,7 @@ function head(){
     +'<input class="tv-filter" id="tv-filter" placeholder="Filter by name…" '
       +'autocomplete="off" spellcheck="false" value="'+esc(filter)+'">'
     +'<button class="sess-refresh" data-tv="projects">Projects only</button>'
+    +'<button class="sess-refresh" data-tv="reset">Reset view</button>'
     +'<button class="sess-refresh" data-tv="reload">&#8635; Refresh</button>'
   +'</div>';
 }
@@ -291,16 +358,19 @@ function stackBlock(s,fresh){
    hand-off lives inside the previewer, so browsing the tree never costs you
    your place in it. */
 function onClick(e){
+  /* a drag that ended on a chip is a pan, not a click */
+  if(panMoved){panMoved=false;return;}
   const act=e.target.closest('[data-tv]');
   if(act){
     if(act.dataset.tv==='projects'){open=new Set(['']);expandedStacks.clear();render();}
+    else if(act.dataset.tv==='reset'){initCam();applyCam();}
     else{model=null;root.querySelector('.tv').innerHTML='<div class="prj-note">loading…</div>';load();}
     return;
   }
   const node=e.target.closest('[data-key]');
   if(node){
     const k=node.dataset.key;
-    keepScroll(k);
+    keepAnchor(k);
     if(open.has(k)){open.delete(k);}
     else{open.add(k);growing=true;}
     render();
@@ -309,7 +379,7 @@ function onClick(e){
   const more=e.target.closest('[data-stack]');
   if(more){
     const k=more.dataset.stack;
-    keepScroll(k);growing=true;
+    keepAnchor(k);growing=true;
     if(expandedStacks.has(k))expandedStacks.delete(k);else expandedStacks.add(k);
     render();
     return;
@@ -326,27 +396,26 @@ function onClick(e){
 }
 /* The surface is rebuilt on every render AND the layout reflows around the
    node you just opened — a parent re-centres over its taller subtree, which
-   can shove the whole tree (root included) off screen. Restoring the raw
-   scroll offset is not enough; the fix is to pin the clicked node to the
-   screen position it already had and let the tree grow around it. */
-function keepScroll(key){
-  const sc=root.querySelector('.tv-scroll');
-  if(!sc)return;
-  scrollLeft=sc.scrollLeft;scrollTop=sc.scrollTop;
+   can shove the whole tree (root included) off screen. The camera alone is
+   not enough; the fix is to pin the clicked node to the screen position it
+   already had and let the tree grow around it. Offsets are screen px, so
+   the same arithmetic holds at any zoom. */
+function keepAnchor(key){
   anchor=null;
   if(!key)return;
-  const el=root.querySelector('[data-key="'+CSS.escape(key)+'"]');
-  if(el)anchor={key,offset:el.getBoundingClientRect().top-sc.getBoundingClientRect().top};
+  const c=canvasEl(),el=root.querySelector('[data-key="'+CSS.escape(key)+'"]');
+  if(!c||!el)return;
+  const cr=c.getBoundingClientRect(),er=el.getBoundingClientRect();
+  anchor={key,left:er.left-cr.left,top:er.top-cr.top};
 }
-function restoreScroll(){
-  const sc=root.querySelector('.tv-scroll');
-  if(!sc)return;
-  sc.scrollLeft=scrollLeft;sc.scrollTop=scrollTop;
+function restoreAnchor(){
   if(!anchor)return;
-  const el=root.querySelector('[data-key="'+CSS.escape(anchor.key)+'"]');
-  if(el){
-    const now=el.getBoundingClientRect().top-sc.getBoundingClientRect().top;
-    sc.scrollTop+=now-anchor.offset;
+  const c=canvasEl(),el=root.querySelector('[data-key="'+CSS.escape(anchor.key)+'"]');
+  if(c&&el){
+    const cr=c.getBoundingClientRect(),er=el.getBoundingClientRect();
+    cam.x+=anchor.left-(er.left-cr.left);
+    cam.y+=anchor.top-(er.top-cr.top);
+    applyCam();
   }
   anchor=null;
 }

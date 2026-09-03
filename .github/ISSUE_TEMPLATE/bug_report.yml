@@ -1,0 +1,107 @@
+name: Bug report
+description: Something in XO Space is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in the fields below so the bug can be reproduced.
+        Before opening, search [open and closed issues](https://github.com/quirq-ai/xo-space/issues) for a twin.
+
+        > **Security:** if this is a vulnerability (credentials, a path escape, one user reaching another's data),
+        > do **not** describe it here. Open a blank issue titled **"Security: request for a private channel"**
+        > with no details, and a maintainer will reply with a private channel.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Area
+      description: Which part of XO Space is affected?
+      options:
+        - Server / API
+        - Watcher / .xo data
+        - Space UI (browser)
+        - Chat (a specific runtime)
+        - Sessions / usage / cost telemetry
+        - Installer / update / restart
+        - Connector (gdrive / onedrive / github / vercel / manus)
+        - xo-projects sync / backup
+        - Docs / Wiki
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install / run it?
+      options:
+        - curl -fsSL https://quirq.ai/install | sh
+        - ./install.sh from a clone
+        - ./cowork-api.sh dev
+        - ./quirq (Docker / compose.local.yml)
+        - Hosted / managed workspace
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        OS and version (Windows means WSL), Python version
+        (`./venv/bin/python --version`), and the checkout commit
+        (`git rev-parse --short HEAD`, or the *Installed* line on the Setup tab).
+      placeholder: "macOS 14 · Python 3.12.4 · commit 105eeb0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Active runtime (AGENT_NAME)
+      description: Which agent backend was active? Not needed if the bug is UI-only.
+      options:
+        - claude_code
+        - codex
+        - openclaw
+        - hermes
+        - antigravity
+        - cursor (telemetry only)
+        - Other / none
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: What happened?
+      description: "What you did, what you expected, and what actually happened. Include exact commands and the exact text of any error."
+      placeholder: |
+        1. Ran ...
+        2. Expected ...
+        3. Instead saw ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: |
+        `curl -s localhost:5002/health` and the tail of the server log —
+        `<state root>/quirq.log` (installer path) or `/tmp/xo-space.log` (`cowork-api.sh`).
+
+        **Redact tokens and keys before pasting** — `/health` reports presence, not values,
+        on purpose; logs may not.
+      placeholder: "Paste redacted evidence here."
+    validations:
+      required: false
+
+  - type: textarea
+    id: ui
+    attributes:
+      label: UI-only details
+      description: If this is a Space UI bug — browser and version, a screenshot, and the Wiki tab page for that view if it contradicts what you saw.
+    validations:
+      required: false

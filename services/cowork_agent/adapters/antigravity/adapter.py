@@ -1,7 +1,7 @@
 """
 Antigravity (agy) dispatch adapter.
 
-Google Antigravity's ``agy`` CLI as an xo-cowork-api Plane-B backend. Two facts
+Google Antigravity's ``agy`` CLI as an xo-space Plane-B backend. Two facts
 shape everything (both verified live against agy v1.1.2):
 
   1. **No auth CLI.** Login state is read from the OAuth token file

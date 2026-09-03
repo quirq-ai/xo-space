@@ -25,7 +25,6 @@ from typing import Optional, Union
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.registry import agent_env
-from services.cowork_agent.helpers import normalize_agent_id
 from services.cowork_agent.visualizer import reader as visualizer_reader
 from services.cowork_agent.visualizer import state as watcher_state
 
@@ -155,12 +154,14 @@ class _XoReader:
 class VisualizerScope(_XoReader):
     """Read-only handle over ``<project>/.xo/`` for one project.
 
-    ``project_id`` is sanitised through ``normalize_agent_id`` before
-    any FS lookup — the same defence the rest of the BFF relies on
-    (`bff-overview.md` §"Security properties"). A traversal attempt
-    like ``"../etc"`` collapses to a safe leaf name; the resulting
-    path is always inside ``xo_projects_root()`` so we don't need a
-    second clamp here.
+    ``project_id`` is resolved through
+    ``project_layout.resolve_project_dirname`` before any FS lookup —
+    it maps the id onto the directory that actually holds the project
+    (folder name and id are the same thing) and, failing that, falls
+    back to ``normalize_agent_id``. Either way the result is a safe
+    leaf name — a traversal attempt like ``"../etc"`` collapses — so
+    the path is always inside ``xo_projects_root()`` and we don't need
+    a second clamp here (`bff-overview.md` §"Security properties").
 
     Exposes a small CRUD surface over ``.xo/todos.json`` for the
     agent-facing ``POST/PATCH/DELETE /todos`` endpoints. The CRUD
@@ -169,7 +170,7 @@ class VisualizerScope(_XoReader):
     """
 
     def __init__(self, project_id: str) -> None:
-        self.project_id = normalize_agent_id(project_id)
+        self.project_id = project_layout.resolve_project_dirname(project_id)
         self._xo_root = project_layout.xo_dir(self.project_id)
         self._activity_path = watcher_state.project_activity_path(self.project_id)
 

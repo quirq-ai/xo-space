@@ -1,5 +1,5 @@
 """
-Auth router and auth-state helpers for XO Cowork API.
+Auth router and auth-state helpers for XO Space API.
 """
 
 import datetime

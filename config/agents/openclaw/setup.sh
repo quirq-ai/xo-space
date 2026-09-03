@@ -2,9 +2,9 @@
 # ==============================================================
 # config/agents/openclaw/setup.sh — install + configure OpenClaw.
 #
-# Invoked by xo-cowork-api's FastAPI lifespan (server.py's
+# Invoked by xo-space's FastAPI lifespan (server.py's
 # _run_agent_setup) when AGENT_NAME=openclaw. Runs every time the
-# xo-cowork-api server starts; each step is idempotent so repeat
+# xo-space server starts; each step is idempotent so repeat
 # invocations are cheap (≈ seconds) once the first run is done.
 #
 # This script absorbs the OpenClaw bootstrap work that used to live

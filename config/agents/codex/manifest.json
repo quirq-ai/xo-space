@@ -1,6 +1,7 @@
 {
   "name": "codex",
   "binary": "codex",
+  "install_url": "https://learn.chatgpt.com/docs/codex/cli",
   "home_dir": "~/.codex",
   "env_file": "~/.codex/.env",
   "config_file": "~/.codex/config.toml",

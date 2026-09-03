@@ -1,4 +1,4 @@
-# Developing xo-cowork-api
+# Developing xo-space
 
 A practical guide to working in this codebase: how it's wired, where things
 live, how to run and validate it, and how to add a new agent backend without
@@ -11,7 +11,7 @@ touching core code.
 
 ## 1. The mental model: a dumb broker + pluggable agents
 
-`xo-cowork-api` is a **broker**. Core code knows how to chat, list sessions,
+`xo-space` is a **broker**. Core code knows how to chat, list sessions,
 report usage, and serve status — but it never knows *which* agent backend it is
 talking to. Everything agent-specific is resolved at runtime from a single env
 var, **`AGENT_NAME`**, and lives in two predictable places per agent.
@@ -102,7 +102,9 @@ mod = load_capability("usage", agent="hermes")   # target a specific agent
 
 A **capability** is just a module `adapters/<name>/<capability>.py`. A core
 router asks for a capability and forwards to it; it never branches on the agent
-name. A missing capability is normal — the router returns its empty/501 shape.
+name. A missing capability module is normal — the router returns its empty/501
+shape. An import error inside an existing capability is an implementation error
+and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 
@@ -187,8 +189,9 @@ local deployments — the environment contract that selects behavior — is §9.
 **Validation playbook — run before every commit:**
 
 ```bash
-# 1. Import gate + route parity under each agent (expect 146 / 149 / 173 / 148)
-for a in claude_code openclaw hermes antigravity; do
+# 1. Import gate + route parity under each agent. Counts differ per agent by
+#    design and drift with every route added — read them, don't assert a number.
+for a in claude_code codex openclaw hermes antigravity; do
   AGENT_NAME=$a venv/bin/python -c "import server; \
     print('$a', len(server.app.openapi()['paths']))"
 done

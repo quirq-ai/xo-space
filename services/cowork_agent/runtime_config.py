@@ -38,7 +38,7 @@ ROOT_CONFIG_KEYS = frozenset({"XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT"})
 # The canonical one-liner from the website, not a raw GitHub URL: the site
 # bootstrapper follows repo renames and branch selection, so this string
 # cannot rot the way a hardcoded raw.githubusercontent.com path did.
-INSTALL_COMMAND = "curl -fsSL https://www.quirq.ai/install | sh"
+INSTALL_COMMAND = "curl -fsSL https://quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000
@@ -393,6 +393,30 @@ def applied_roots() -> dict[str, str]:
     }
 
 
+def _root_apply_command() -> str:
+    """The command Setup shows to make saved roots take effect.
+
+    Two audiences, two commands:
+
+    * Installer-managed container: the website one-liner. Re-running it also
+      remaps the bind mounts, which only the installer can do — a plain
+      restart cannot.
+    * Native install: re-run the checkout's own ``install.sh`` (it re-reads
+      ``roots.env`` and restarts). Shown with its real absolute path so it is
+      copy-paste ready, instead of a remote ``curl`` the local user does not
+      need — they already have the repo the server is running from.
+
+    Falls back to the website one-liner if that script is not on disk, so a
+    checkout without ``install.sh`` never shows a broken command.
+    """
+    if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
+        return INSTALL_COMMAND
+    script = Path(__file__).resolve().parents[2] / "install.sh"
+    if not script.is_file():
+        return INSTALL_COMMAND
+    return f'cd "{script.parent}" && ./install.sh'
+
+
 def root_settings() -> dict[str, Any]:
     current = applied_roots()
     saved = _parse_env_file(root_config_file(), ROOT_CONFIG_KEYS)
@@ -414,10 +438,11 @@ def root_settings() -> dict[str, Any]:
         "configured": configured,
         "change_required": change_required,
         # Saved roots are read at startup (server.py), so a plain restart
-        # applies them. The installer command stays for container installs,
-        # where the roots are also bind mounts that only it can remap.
+        # applies them. The apply command is native-vs-container aware: the
+        # local checkout's install.sh for native runs, the website one-liner
+        # for containers (where it also remaps the bind mounts).
         "applied_on_restart": True,
-        "apply_command": INSTALL_COMMAND,
+        "apply_command": _root_apply_command(),
         "config_file": str(root_config_file()),
     }
 
@@ -516,6 +541,9 @@ def runtime_sources() -> list[dict[str, Any]]:
                 "binary": manifest.binary,
                 "binary_available": shutil.which(manifest.binary) is not None,
                 "bootstrap_available": bool(setup.get("installs_cli")),
+                # Where to get the runtime, from its own manifest (core never
+                # knows an agent's URL). Absent → no link, nothing else changes.
+                "install_url": str(manifest.raw.get("install_url") or "").strip() or None,
                 "home": _path_status(manifest.home_dir, host_dir),
                 "session_files": session_files,
                 "latest_session_file": latest_session_file,
@@ -536,7 +564,16 @@ def runtime_status() -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
     reasons = restart_reasons()
+    # Additive and best-effort: the Setup card renders it when present, and
+    # a failure here must not take down the whole runtime-config endpoint.
+    try:
+        from services.usage_sync import usage_reporting_status
+
+        usage_reporting: dict[str, Any] | None = usage_reporting_status()
+    except Exception:
+        usage_reporting = None
     return {
+        "usage_reporting": usage_reporting,
         "configured": configured,
         "applied": applied,
         "restart_required": bool(reasons),

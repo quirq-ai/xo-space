@@ -1,0 +1,79 @@
+name: Feature / capability request
+description: A capability you want XO Space to add or improve — measuring, attributing, or guarding agent work.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        XO Space measures and attributes what coding agents deliver. Tell us what you want to
+        see, measure, or guard. The more concrete the better — say which surface it touches and
+        which runtimes it must work with.
+
+  - type: dropdown
+    id: theme
+    attributes:
+      label: What does this improve?
+      description: Pick the closest theme (choose the best fit).
+      options:
+        - Cost of tool calling (compute / tokens / latency per agent-to-tool interaction)
+        - Attribution (token spend mapped to agent / model / provider / workflow / human)
+        - Codebase drift (detecting silent file changes or refactors without review)
+        - Engineer performance (separating agent output from human validation)
+        - Security / runtime auditing (what the agent touched, who saw it, on untrusted hardware)
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      options:
+        - Server API (/api/*)
+        - Watcher / .xo data model
+        - Space UI (browser)
+        - Sessions / usage / cost telemetry
+        - xo-projects sync
+        - New connector
+        - New runtime
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Which runtimes must it work with?
+      options:
+        - All supported
+        - A specific one (name it below)
+        - Doesn't matter
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem / outcome you're after
+      description: What are you trying to know or control that XO Space doesn't do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: >
+        What should XO Space do? A new endpoint, a new .xo field, a new UI view, a watcher change?
+        Note anything that must stay backward compatible (existing endpoints / .xo shape) or that
+        must work in both local and hosted (cloud) deployments.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, the workflow this is part of, or a rough sense of how much it matters to you.
+    validations:
+      required: false

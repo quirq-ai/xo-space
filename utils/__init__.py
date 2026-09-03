@@ -1,1 +1,1 @@
-"""Shared utility helpers for the xo-cowork-api project."""
+"""Shared utility helpers for the xo-space project."""

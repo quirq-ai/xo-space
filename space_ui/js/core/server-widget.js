@@ -19,7 +19,7 @@ export function initServerWidget(){
     if(srvOn===on)return;
     srvOn=on;
     srvPip.className='pip '+(on?'on':'off');
-    srvText.textContent='xo-cowork-api · '+(on?'online':'offline');
+    srvText.textContent='xo-space · '+(on?'online':'offline');
     srvBtn.hidden=on; /* button exists only to show the start command */
     srvBtn.textContent='Start…';
     if(on)srvPop.classList.remove('is-open');
@@ -28,7 +28,7 @@ export function initServerWidget(){
     srvPop.classList.toggle('is-open');
   });
   document.getElementById('srv-copy').addEventListener('click',()=>{
-    navigator.clipboard.writeText('cd xo-cowork-api && ./cowork-api.sh start').then(()=>{
+    navigator.clipboard.writeText('cd xo-space && ./cowork-api.sh start').then(()=>{
       document.getElementById('srv-copy').textContent='Copied';
       setTimeout(()=>document.getElementById('srv-copy').textContent='Copy command',1400);
     });

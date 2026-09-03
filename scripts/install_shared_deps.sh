@@ -2,7 +2,7 @@
 # ==============================================================
 # scripts/install_shared_deps.sh — install shared system deps once at boot.
 #
-# Invoked by xo-cowork-api's FastAPI lifespan (server.py's
+# Invoked by xo-space's FastAPI lifespan (server.py's
 # _install_shared_deps) on every server start. Absorbs dep installs
 # that used to be repeated in every workspace template, so new templates
 # work out of the box.

@@ -73,7 +73,7 @@ function renderNoData(el,dataset){
   box.innerHTML='<div class="eyebrow">No data source</div>'+
     '<h1>Space reads its map from a local file.</h1>'+
     '<p>This page loads <b>'+source.url+'</b> — a file in the workspace <b>.xo</b> directory — from this local server, so the data stays on this machine. Start the workspace server:</p>'+
-    '<pre>cd xo-cowork-api && ./cowork-api.sh start</pre>'+
+    '<pre>cd xo-space && ./cowork-api.sh start</pre>'+
     '<p>then open <b>http://localhost:5002/space/</b></p>'+
     '<button id="nodata-retry">Retry</button>';
   el.appendChild(box);
@@ -959,7 +959,7 @@ function shapeTodos(res){
   if(!res.ok){
     return{rows:[],state:'error',
       note:res.notImplemented?'todos are not available for the active agent'
-        :res.offline?'xo-cowork-api is unreachable':String(res.error||'could not read todos')};
+        :res.offline?'xo-space is unreachable':String(res.error||'could not read todos')};
   }
   const rows=[];
   for(const [sid,sess] of Object.entries(res.data.sessions||{})){
@@ -1282,7 +1282,55 @@ addEventListener('keydown',e=>{
 
 /* ============================== TIMELINE ============================== */
 const T0G=+new Date(DATA.timeline.start+'T00:00:00'),T1G=+new Date(DATA.timeline.end+'T00:00:00');
+/* TF0/TF1 is the full axis of the current mode (computeRange fits it to the
+   data); T0/T1 is the window actually on screen — identical until the user
+   zooms or picks a year. Everything downstream (yOf, the scrubber, Play, the
+   ticks) reads the window, so zooming is nothing more than a narrower axis. */
+let TF0=T0G,TF1=T1G;
 let T0=T0G,T1=T1G;
+let tZoomed=false;
+const DAY=86400000,MIN_SPAN=DAY*7;
+let laneFilter='';
+let tRebuildRAF=null;
+/* one rebuild per frame, however many wheel ticks arrive */
+function scheduleBuild(){cancelAnimationFrame(tRebuildRAF);tRebuildRAF=requestAnimationFrame(buildTimeline);}
+function setView(a,b){
+  a=Math.max(TF0,a);b=Math.min(TF1,b);
+  if(b-a<MIN_SPAN){const mid=(a+b)/2;a=Math.max(TF0,mid-MIN_SPAN/2);b=Math.min(TF1,a+MIN_SPAN);}
+  T0=a;T1=b;
+  tZoomed=!(a<=TF0&&b>=TF1);
+  scheduleBuild();
+}
+function resetView(){tZoomed=false;T0=TF0;T1=TF1;scheduleBuild();}
+/* year chips: one per year the full axis touches, plus All once zoomed */
+function renderYears(){
+  const el=document.getElementById('tyears');if(!el)return;
+  const y0=new Date(TF0).getFullYear(),y1=new Date(TF1).getFullYear();
+  /* a year earns a chip only if the axis spends at least MIN_SPAN in it:
+     the 7-day pad alone must not grow a chip whose window then has to be
+     re-widened across the boundary and can never light up */
+  const years=[];
+  for(let y=y0;y<=y1;y++){
+    const overlap=Math.min(TF1,+new Date(y+1,0,1))-Math.max(TF0,+new Date(y,0,1));
+    if(overlap>=MIN_SPAN)years.push(y);
+  }
+  const inYear=y=>tZoomed&&T0>=+new Date(y,0,1)-DAY&&T1<=+new Date(y+1,0,1)+DAY;
+  const many=years.length>1;
+  el.innerHTML=(many||tZoomed
+      ?`<button type="button" data-year="all"${tZoomed?'':' class="is-on"'}>All</button>`:'')
+    +(many?years.map(y=>`<button type="button" data-year="${y}"${inYear(y)?' class="is-on"':''}>${y}</button>`).join(''):'');
+  el.hidden=!many&&!tZoomed;
+}
+document.getElementById('tyears').addEventListener('click',e=>{
+  const b=e.target.closest('[data-year]');if(!b)return;
+  stopPlay();
+  if(b.dataset.year==='all'){resetView();return;}
+  const y=+b.dataset.year;
+  setView(+new Date(y,0,1),+new Date(y+1,0,1));
+});
+document.getElementById('tlanes').addEventListener('input',e=>{
+  laneFilter=e.target.value;scheduleBuild();
+});
 const SVGNS='http://www.w3.org/2000/svg';
 let tNow=T1G,tPlaying=false,tTrace=null;
 const tplot=document.getElementById('tplot');
@@ -1329,6 +1377,9 @@ function defaultSub(){
   }
   return(DATA.meta.timelineSub||
     'Scrub through the workspace as it grew, newest at the top. Open any cluster from the graph to watch its run unfold here.')
+    /* the two modes fit their own data, so this axis is usually the shorter
+       one; say so, or the mismatch reads as missing history */
+    +(hasHist?' Files plot their git dates only, so this axis is shorter than By project.':'')
     +coverageNote();
 }
 function syncTModeUI(){
@@ -1345,7 +1396,6 @@ function setTMode(mode){
   if(mode==='project'&&tTrace)clearTrace(); /* traces are a By-file tool */
   syncTModeUI();
   buildTimeline();
-  if(tMode==='file'&&tTrace)drawTrace();
 }
 syncTModeUI();
 /* Each mode gets its own axis, spanning only what it actually plots: the
@@ -1356,14 +1406,22 @@ function computeRange(){
   const stamps=tMode==='project'
     ?histLanes.flatMap(cat=>(GITHIST[cat]||[]).map(day=>+new Date(day.d+'T00:00:00')))
     :LEAVES.filter(n=>n.date).map(n=>+new Date(n.date+'T00:00:00'));
-  if(!stamps.length){T0=T0G;T1=T1G;}
+  if(!stamps.length){TF0=T0G;TF1=T1G;}
   else{
     const pad=86400000*7;
     let lo=Infinity,hi=-Infinity;
     for(const t of stamps){if(t<lo)lo=t;if(t>hi)hi=t;}
-    T0=lo-pad;T1=hi+pad;
+    TF0=lo-pad;TF1=hi+pad;
   }
+  /* a zoomed window survives a mode switch as long as it still fits the
+     new axis; otherwise fall back to the full range */
+  if(tZoomed){
+    T0=Math.max(TF0,T0);T1=Math.min(TF1,T1);
+    if(T1-T0<MIN_SPAN)tZoomed=false;
+  }
+  if(!tZoomed){T0=TF0;T1=TF1;}
   tNow=Math.min(Math.max(tNow,T0),T1);
+  renderYears();
   const ticks=document.querySelector('#view-time .ticks');
   if(ticks){
     const fmtTick=(t,withYear)=>new Date(t).toLocaleDateString('en-US',
@@ -1376,11 +1434,7 @@ function buildTimeline(){
   const W=tplot.clientWidth,H=tplot.clientHeight;
   if(W<50||H<50)return;
   computeRange();
-  tsvg.setAttribute('viewBox',`0 0 ${W} ${H}`);
-  tsvg.innerHTML='';
   histDots=[];
-  /* Only lanes with something to plot: projects whose files are all undated
-     (nothing committed) would render as dead empty columns. */
   /* Every project gets a lane, including the ones with nothing to plot.
      Dropping them made the Timeline disagree with Files about how many
      projects exist, and a reader cannot tell "no history" from "missing".
@@ -1389,12 +1443,50 @@ function buildTimeline(){
   const hasData=cat=>tMode==='project'
     ?(GITHIST[cat]||[]).length>0
     :LEAVES.some(n=>n.cat===cat&&n.date);
-  const lanes=allLanes;
-  const colW=(W-64-16)/Math.max(1,lanes.length);
+  /* The lane filter narrows by project name: a hundred lanes at 18px each
+     is a smear, not a chart. Below MIN_COL the plot stops squeezing and
+     grows wider than the pane instead, panning sideways (drag, shift+wheel)
+     so the column headers stay legible whatever the project count. */
+  const q=laneFilter.trim().toLowerCase();
+  const lanes=q?allLanes.filter(cat=>CAT[cat].name.toLowerCase().includes(q)):allLanes;
+  const laneSet=new Set(lanes);
+  const MIN_COL=100;
+  const colW=Math.max(MIN_COL,(W-64-16)/Math.max(1,lanes.length));
+  const SW=Math.max(W,Math.round(64+16+colW*lanes.length));
+  tsvg.setAttribute('viewBox',`0 0 ${SW} ${H}`);
+  tsvg.style.width=SW+'px';
+  tsvg.innerHTML='';
+  if(!lanes.length){
+    const none=document.createElementNS(SVGNS,'text');
+    none.setAttribute('x',SW/2);none.setAttribute('y',H/2);
+    none.setAttribute('text-anchor','middle');
+    none.setAttribute('style',`font:italic 400 13px ${SERIF};fill:#56534b`);
+    none.textContent='No project matches the filter.';
+    tsvg.appendChild(none);
+  }
   /* Time runs vertically: newest at the top, oldest at the bottom. Narrow
      columns rotate their headers, which needs a taller top margin. */
   const rotated=colW<64;
   const M={t:rotated?76:34,r:16,b:18,l:64};
+  /* no plot band, no plot: with the margins eating the whole height yOf
+     divides by zero and a wheel tick would turn the window into NaN */
+  if(H<M.t+M.b+20){tsvg._yOf=null;return;}
+  /* Three layers, bottom to top: bands and grid, then the data clipped to
+     the plot band (a dot on the first row cannot spill into the headers,
+     one on the last cannot bury the commit counts), then the labels with
+     a dark halo. Zoom changes what the data does; the label zones stay
+     reserved regardless. */
+  const defs=document.createElementNS(SVGNS,'defs');
+  const clip=document.createElementNS(SVGNS,'clipPath');
+  clip.setAttribute('id','tclip');
+  const clipRect=document.createElementNS(SVGNS,'rect');
+  clipRect.setAttribute('x',0);clipRect.setAttribute('y',M.t-6);
+  clipRect.setAttribute('width',SW);clipRect.setAttribute('height',H-M.t-M.b+12);
+  clip.appendChild(clipRect);defs.appendChild(clip);tsvg.appendChild(defs);
+  const plotG=document.createElementNS(SVGNS,'g');
+  plotG.setAttribute('clip-path','url(#tclip)');
+  const labelsG=document.createElementNS(SVGNS,'g');
+  labelsG.setAttribute('style','paint-order:stroke;stroke:rgba(11,13,16,.9);stroke-width:3px;stroke-linejoin:round');
   const yOf=t=>M.t+(T1-t)/(T1-T0)*(H-M.t-M.b);
   /* column bands + headers */
   lanes.forEach((cat,i)=>{
@@ -1413,8 +1505,13 @@ function buildTimeline(){
     }
     tsvg.appendChild(band);
     const name=CAT[cat].name;
-    const label=name.length>18?name.slice(0,17)+'…':name;
+    /* fit the label to the lane, not to a fixed count: an 18-character
+       name is ~125px upright and collided with its neighbours */
+    const maxChars=rotated?18:Math.max(4,Math.floor((colW-8)/7.2));
+    const label=name.length>maxChars?name.slice(0,Math.max(1,maxChars-1))+'…':name;
     const lb=document.createElementNS(SVGNS,'text');
+    const full=document.createElementNS(SVGNS,'title');
+    full.textContent=name;lb.appendChild(full);
     if(rotated){
       const ax=x+colW/2+4,ay=M.t-10;
       lb.setAttribute('x',ax);lb.setAttribute('y',ay);
@@ -1426,8 +1523,8 @@ function buildTimeline(){
       lb.setAttribute('text-anchor','middle');
       lb.setAttribute('style',`font:italic 500 13px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
     }
-    lb.textContent=label;
-    tsvg.appendChild(lb);
+    lb.appendChild(document.createTextNode(label));
+    labelsG.appendChild(lb);
     if(!live){
       /* one line, centred in the empty column, saying why it is empty */
       const why=document.createElementNS(SVGNS,'text');
@@ -1435,7 +1532,7 @@ function buildTimeline(){
       why.setAttribute('text-anchor','middle');
       why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
       why.textContent=colW>=104?'NO GIT HISTORY':colW>=64?'NO HISTORY':'—';
-      tsvg.appendChild(why);
+      labelsG.appendChild(why);
     }
     if(tMode==='project'&&live){
       const total=(GITHIST[cat]||[]).reduce((sum,day)=>sum+day.n,0);
@@ -1444,7 +1541,7 @@ function buildTimeline(){
       sub.setAttribute('text-anchor','middle');
       sub.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.06em;fill:#56534b`);
       sub.textContent=colW>=70?`${total} COMMIT${total===1?'':'S'}`:String(total);
-      tsvg.appendChild(sub);
+      labelsG.appendChild(sub);
     }
   });
   /* month grid: horizontal rules, labeled in the left margin */
@@ -1455,7 +1552,7 @@ function buildTimeline(){
     while(+d<T1){
       const y=yOf(+d);
       const ln=document.createElementNS(SVGNS,'line');
-      ln.setAttribute('x1',M.l-6);ln.setAttribute('x2',W-M.r);
+      ln.setAttribute('x1',M.l-6);ln.setAttribute('x2',SW-M.r);
       ln.setAttribute('y1',y);ln.setAttribute('y2',y);
       ln.setAttribute('stroke',d.getMonth()===0?'rgba(233,228,217,.13)':'rgba(233,228,217,.05)');
       ln.setAttribute('stroke-dasharray','1 4');
@@ -1483,6 +1580,7 @@ function buildTimeline(){
     c.setAttribute('fill','#3a4136');c.dataset.milestone='1';c.dataset.t=+new Date(m.d+'T00:00:00');
     tsvg.appendChild(c);
   });
+  tsvg.appendChild(plotG);
   if(tMode==='file'){
   /* beeswarm: the date sets the row (y); collisions fan sideways inside the
      column, spilling downward (older) when a column is packed */
@@ -1505,9 +1603,11 @@ function buildTimeline(){
   });
   const dotsG=document.createElementNS(SVGNS,'g');
   dotsG.setAttribute('id','tdots');
-  tsvg.appendChild(dotsG);
+  plotG.appendChild(dotsG);
   LEAVES.forEach(n=>{
-    if(!n.date){n.tEl=null;return;} /* git-dated artifacts only */
+    /* git-dated artifacts only, and only in lanes that are on the plot: a
+       filtered-out leaf has no position and would land on stale coordinates */
+    if(!n.date||!laneSet.has(n.cat)){n.tEl=null;return;}
     const col=CAT[n.cat].color;
     const r=3.2+Math.min(2.6,(n.degree-1)*.5);
     let el;
@@ -1535,7 +1635,7 @@ function buildTimeline(){
   /* trace layer */
   const traceG=document.createElementNS(SVGNS,'g');
   traceG.setAttribute('id','ttrace');
-  tsvg.insertBefore(traceG,dotsG);
+  plotG.insertBefore(traceG,dotsG);
   }else{
   /* parallel git histories: one column per project, one dot per commit-day.
      Radius grows with the square root of that day's commit count, capped so
@@ -1547,7 +1647,7 @@ function buildTimeline(){
     base.setAttribute('x1',baseX);base.setAttribute('x2',baseX);
     base.setAttribute('y1',M.t-6);base.setAttribute('y2',H-M.b+6);
     base.setAttribute('stroke',hexA(col,.18));base.setAttribute('stroke-width',1);
-    tsvg.appendChild(base);
+    plotG.appendChild(base);
     (GITHIST[cat]||[]).forEach(day=>{
       const t=+new Date(day.d+'T00:00:00');
       const dot=document.createElementNS(SVGNS,'circle');
@@ -1556,7 +1656,7 @@ function buildTimeline(){
       dot.setAttribute('r',r);dot.setAttribute('fill',col);
       dot.dataset.hist=String(histDots.length);
       dot.style.cursor='pointer';
-      tsvg.appendChild(dot);
+      plotG.appendChild(dot);
       histDots.push({el:dot,t,cat,day});
     });
   });
@@ -1564,12 +1664,15 @@ function buildTimeline(){
   /* sweep: a horizontal rule at the scrubbed moment */
   const sweep=document.createElementNS(SVGNS,'line');
   sweep.setAttribute('id','tsweep');
-  sweep.setAttribute('x1',M.l-6);sweep.setAttribute('x2',W-M.r);
+  sweep.setAttribute('x1',M.l-6);sweep.setAttribute('x2',SW-M.r);
   sweep.setAttribute('stroke',ACCENT);sweep.setAttribute('stroke-width',1.2);
   sweep.setAttribute('stroke-dasharray','2 4');sweep.setAttribute('opacity',.55);
   tsvg.appendChild(sweep);
+  tsvg.appendChild(labelsG);
   tsvg._yOf=yOf;
-  renderTimelineState();
+  /* "after a rebuild, the trace is back" is the rebuild's invariant, not
+     the callers' — zoom, pan, chips, filter and resize all rebuild */
+  if(tTrace&&tMode==='file')drawTrace();else renderTimelineState();
 }
 function renderTimelineState(){
   const yOf=tsvg._yOf;if(!yOf)return;
@@ -1594,7 +1697,8 @@ function renderTimelineState(){
   document.getElementById('treadout').textContent=fmtMY(tNow);
   const m=[...MILES].reverse().find(x=>+new Date(x.d+'T00:00:00')<=tNow);
   const mEl=document.getElementById('tmilestone');
-  mEl.textContent=m?m.t:'';
+  /* labelled as what it is: a bare project name here read as a stray file */
+  mEl.textContent=m?'◆ milestone · '+m.t:'';
   mEl.style.opacity=m?1:0;
   document.getElementById('tscrub').value=Math.round((tNow-T0)/(T1-T0)*1000);
 }
@@ -1604,6 +1708,9 @@ function traceOnTimeline(n){
     ?LEAVES.filter(l=>belongsToCategory(l,n.cat)):[n];
   const list=ids.filter(l=>l.date).sort((a,b)=>a.date<b.date?-1:1);
   tTrace={ids:new Set(list.map(x=>x.id)),list,label:n.label};
+  /* a trace plays from its first date; a zoomed window that excludes it
+     would show nothing until the user found the All chip */
+  if(tZoomed)resetView();
   go('time');
   requestAnimationFrame(()=>{
     if(!list.length){
@@ -1626,8 +1733,10 @@ function drawTrace(){
   const g=tsvg.querySelector('#ttrace');
   if(!g)return;
   g.innerHTML='';
-  if(!tTrace||tTrace.list.length<2){renderTimelineState();return;}
-  const pts=tTrace.list.map(n=>[n.tx,n.ty]);
+  /* only the leaves that made it onto the plot — the lane filter may hide some */
+  const shown=tTrace?tTrace.list.filter(n=>n.tEl):[];
+  if(shown.length<2){renderTimelineState();return;}
+  const pts=shown.map(n=>[n.tx,n.ty]);
   let path=`M ${pts[0][0]} ${pts[0][1]}`;
   for(let i=1;i<pts.length;i++){
     const [x0,y0]=pts[i-1],[x1,y1]=pts[i];
@@ -1640,7 +1749,7 @@ function drawTrace(){
   g.appendChild(p);
   /* labels: alternate left/right, and step outward when several share a y window */
   const win=[];
-  tTrace.list.forEach((n,i)=>{
+  shown.forEach((n,i)=>{
     const near=win.filter(w=>Math.abs(w-n.ty)<24).length;
     win.push(n.ty);
     const left=i%2===0;
@@ -1703,7 +1812,64 @@ function showHistHC(d,mx,my){
     <div class="foot">Click to open this project on the graph</div>`;
   placeHC(mx,my);
 }
+/* Axis zoom + pan. Wheel zooms the time axis around the moment under the
+   cursor; a vertical drag pans it; a horizontal drag (or shift+wheel) pans
+   the lanes when they are wider than the pane. The same gestures as the
+   Graph and Tree lenses, so a hand that knows one knows all three. */
+const tOfY=y=>{
+  const yOf=tsvg._yOf;if(!yOf)return T1;
+  const top=yOf(T1),bottom=yOf(T0);
+  return T1-(y-top)/(bottom-top)*(T1-T0);
+};
+tplot.addEventListener('wheel',e=>{
+  e.preventDefault();
+  if(e.shiftKey||(e.deltaX&&!e.deltaY)){tplot.scrollLeft+=e.deltaX||e.deltaY;return;}
+  stopPlay();
+  const r=tplot.getBoundingClientRect();
+  const t=tOfY(e.clientY-r.top);
+  const f=Math.exp(e.deltaY*.0016);
+  setView(t-(t-T0)*f,t+(T1-t)*f);
+},{passive:false});
+let tDrag=null,tDragMoved=false;
+tplot.addEventListener('pointerdown',e=>{
+  if(e.button!==0||tDrag)return;
+  tDrag={id:e.pointerId,x:e.clientX,y:e.clientY,x0:e.clientX,y0:e.clientY};tDragMoved=false;
+});
+tplot.addEventListener('pointermove',e=>{
+  if(!tDrag||e.pointerId!==tDrag.id)return;
+  /* a release the pane never saw (before capture, outside it) must not
+     leave a phantom drag that pans on the next un-pressed hover */
+  if(e.buttons===0){endDrag();return;}
+  if(!tDragMoved){
+    /* 4px of slack keeps a click on a dot a click; capture only once the
+       drag is real, or the captured pointer would retarget that click */
+    if(Math.hypot(e.clientX-tDrag.x0,e.clientY-tDrag.y0)<=4)return;
+    tDragMoved=true;
+    tplot.setPointerCapture(e.pointerId);tplot.classList.add('is-panning');
+    stopPlay();hideHC();
+  }
+  const dx=e.clientX-tDrag.x,dy=e.clientY-tDrag.y;
+  tDrag.x=e.clientX;tDrag.y=e.clientY;
+  tplot.scrollLeft-=dx;
+  const yOf=tsvg._yOf;
+  if(yOf&&dy){
+    const span=T1-T0,hp=yOf(T0)-yOf(T1);
+    /* the window slides with the pointer but never past the full axis */
+    const a=Math.max(TF0,Math.min(T0+dy*span/hp,TF1-span));
+    T0=a;T1=a+span;tZoomed=!(T0<=TF0&&T1>=TF1);
+    scheduleBuild();
+  }
+});
+function endDrag(e){
+  if(!tDrag||(e&&e.pointerId!==undefined&&e.pointerId!==tDrag.id))return;
+  tDrag=null;tplot.classList.remove('is-panning');
+}
+/* on window, not the pane: an uncaptured release lands wherever the
+   pointer is, and the pane only captures once a drag is real */
+addEventListener('pointerup',endDrag);
+addEventListener('pointercancel',endDrag);
 tsvg.addEventListener('pointermove',e=>{
+  if(tDrag&&tDragMoved)return;
   const t=e.target;
   if(t.dataset&&t.dataset.id){showHC(byId.get(t.dataset.id),e.clientX,e.clientY);}
   else if(t.dataset&&t.dataset.hist){showHistHC(histDots[+t.dataset.hist],e.clientX,e.clientY);}
@@ -1711,6 +1877,8 @@ tsvg.addEventListener('pointermove',e=>{
 });
 tsvg.addEventListener('pointerleave',hideHC);
 tsvg.addEventListener('click',e=>{
+  /* a drag that ended on a dot is a pan, not a click */
+  if(tDragMoved){tDragMoved=false;return;}
   const t=e.target;
   if(t.dataset&&t.dataset.id){
     const n=byId.get(t.dataset.id);

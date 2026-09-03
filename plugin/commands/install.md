@@ -33,7 +33,7 @@ Install Quirq (xo-space) on this machine. The workspace directory is
    stays quiet:
 
    ```bash
-   cd <dir> && curl -fsSL https://www.quirq.ai/install | sh
+   cd <dir> && curl -fsSL https://quirq.ai/install | sh
    ```
 
 5. Poll `http://127.0.0.1:5002/health` (then 5003) every ~5 s, up to

@@ -140,17 +140,58 @@ async def build_tarball(project_dir: Path, output_path: Path) -> int:
     return output_path.stat().st_size
 
 
+def _member_path_parts(value: str, *, label: str) -> tuple[str, ...]:
+    """Return safe archive-relative path parts for a member or hard-link target."""
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise RuntimeError(f"tarball {label} {value!r} is absolute — refusing")
+    parts = tuple(part for part in normalized.split("/") if part not in {"", "."})
+    if not parts:
+        raise RuntimeError(f"tarball {label} {value!r} is empty — refusing")
+    if ".." in parts:
+        raise RuntimeError(f"tarball {label} {value!r} contains '..' — refusing")
+    return parts
+
+
+def _is_descendant_of(parts: tuple[str, ...], parent: tuple[str, ...]) -> bool:
+    return parts[:len(parent)] == parent
+
+
 def extract_tarball(tarball_path: Path, target_dir: Path) -> None:
     """Extract ``tarball_path`` into ``target_dir``.
 
-    Refuses any member whose resolved destination escapes ``target_dir``
-    (tar-slip defence). Member permissions are preserved; ownership is
-    not (running process owns everything).
+    Refuses unsafe member paths and hard-link targets before writing anything.
+    Symlink targets are preserved verbatim because project snapshots can
+    legitimately contain both relative and absolute links; no later member may
+    write through a symlink in the archive. Extraction explicitly uses
+    tarfile's ``tar`` filter so this policy does not change with Python's
+    default extraction filter.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     target_resolved = target_dir.resolve()
     with tarfile.open(tarball_path, "r:gz") as tar:
+        symlink_paths: list[tuple[str, ...]] = []
         for member in tar.getmembers():
+            member_parts = _member_path_parts(member.name, label="member")
+            if any(_is_descendant_of(member_parts, link) for link in symlink_paths):
+                raise RuntimeError(
+                    f"tarball member {member.name!r} writes through a symlink — refusing"
+                )
+
+            if member.islnk():
+                link_parts = _member_path_parts(member.linkname, label="hard-link target")
+                if any(_is_descendant_of(link_parts, link) for link in symlink_paths):
+                    raise RuntimeError(
+                        f"tarball hard-link target {member.linkname!r} crosses a symlink — refusing"
+                    )
+
+            # A symbolic link's target is intentionally not constrained to
+            # target_dir: tracked project links and virtualenv links may point
+            # outside it. The member-path check above prevents later archive
+            # entries from using such a link to write outside target_dir.
+            if member.issym():
+                symlink_paths.append(member_parts)
+
             dest = (target_dir / member.name).resolve()
             try:
                 dest.relative_to(target_resolved)
@@ -158,4 +199,8 @@ def extract_tarball(tarball_path: Path, target_dir: Path) -> None:
                 raise RuntimeError(
                     f"tarball member {member.name!r} would extract outside {target_dir} — refusing"
                 )
-        tar.extractall(target_dir)
+
+        try:
+            tar.extractall(target_dir, filter="tar")
+        except tarfile.FilterError as exc:
+            raise RuntimeError(f"tarball member rejected during extraction: {exc}") from exc

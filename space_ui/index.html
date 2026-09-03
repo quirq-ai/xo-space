@@ -7,13 +7,13 @@
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
 <link rel="stylesheet" href="css/graph.css?v=20260817-lens1">
 <link rel="stylesheet" href="css/sessions.css?v=20260725-sessions2">
-<link rel="stylesheet" href="css/timeline.css?v=20260813-timeline2">
+<link rel="stylesheet" href="css/timeline.css?v=20260825-timeline1">
 <link rel="stylesheet" href="css/chrome.css?v=20260813-timeline2">
-<link rel="stylesheet" href="css/projects.css?v=20260817-lens1">
-<link rel="stylesheet" href="css/wiki.css?v=20260725-collaboration1">
+<link rel="stylesheet" href="css/projects.css?v=20260824-treecam1">
+<link rel="stylesheet" href="css/wiki.css?v=20260827-firstrun1">
 <link rel="stylesheet" href="css/quirq.css?v=20260816-navswap1">
-<link rel="stylesheet" href="css/secrets.css?v=20260813-update1">
-<link rel="stylesheet" href="css/preview.css?v=20260816-preview1">
+<link rel="stylesheet" href="css/secrets.css?v=20260825-installlink1">
+<link rel="stylesheet" href="css/preview.css?v=20260827-htmlfix1">
 
 <div class="topbar">
   <div class="brand">
@@ -82,6 +82,8 @@
         <div class="sub" id="tsub">Scrub through the workspace as it grew. Open any cluster from the graph to watch its run unfold here.</div>
       </div>
       <div class="grow"></div>
+      <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…"
+        autocomplete="off" spellcheck="false" aria-label="Filter timeline lanes by project name">
       <div class="atlas-lens-switch tmode" id="tmode" aria-label="Timeline mode" hidden>
         <button class="is-on" type="button" data-tmode="file">By file</button>
         <button type="button" data-tmode="project">By project</button>
@@ -93,6 +95,10 @@
     <div class="scrubrow">
       <input id="tscrub" type="range" min="0" max="1000" value="1000">
       <div class="ticks"><span>JUN 2025</span><span>SEP</span><span>DEC</span><span>MAR 2026</span><span>JUL 2026</span></div>
+    </div>
+    <div class="trange">
+      <div class="tyears" id="tyears" aria-label="Jump to a year"></div>
+      <div class="thint">wheel to zoom the axis · drag to pan · shift+wheel for lanes</div>
     </div>
     <div id="tmilestone"></div>
     <div id="tplot"></div>
@@ -119,8 +125,8 @@
       <span id="preview-meta"></span>
     </div>
     <div class="pv-acts">
+      <select id="preview-version" title="View an earlier version of this file" hidden></select>
       <button id="preview-source" type="button" hidden>Source</button>
-      <button id="preview-graph" type="button" title="Focus this file on the graph">Graph</button>
       <button id="preview-close" type="button" title="Close (Esc)">&#10005;</button>
     </div>
   </header>
@@ -134,11 +140,11 @@
 <footer>
   <div class="srv">
     <span class="pip" id="srv-pip"></span>
-    <span id="srv-text">checking xo-cowork-api&hellip;</span>
+    <span id="srv-text">checking xo-space&hellip;</span>
     <button id="srv-btn" hidden></button>
     <div class="srvpop" id="srvpop">
       <div class="hint">Start the server from a shell</div>
-      <pre>cd xo-cowork-api &amp;&amp; ./cowork-api.sh start</pre>
+      <pre>cd xo-space &amp;&amp; ./cowork-api.sh start</pre>
       <button id="srv-copy">Copy command</button>
       <p>A page can check the server, but starting or stopping it needs a shell. This pill keeps polling and flips back on by itself.</p>
     </div>
@@ -146,6 +152,6 @@
   <div class="meta" id="fmeta"></div>
 </footer>
 
-<script type="module" src="js/app.js?v=20260817-plural1"></script>
+<script type="module" src="js/app.js?v=20260831-merged1"></script>
 
 </body></html>

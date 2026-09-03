@@ -1,5 +1,5 @@
 """
-XO Cowork API Server
+XO Space API Server
 FastAPI server that interfaces with local Claude Code CLI.
 """
 
@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import dotenv_values, load_dotenv
@@ -622,7 +622,7 @@ async def lifespan(app: FastAPI):
     # running once it is down.
     _session_telemetry_daemons("start")
 
-    print("🚀 Starting XO Cowork API Server...")
+    print("🚀 Starting XO Space API Server...")
     print(f"   Chat API: {CHAT_API_BASE_URL}")
     _tok = get_auth_token()
     _src = get_auth_state().get("token_source", "none")
@@ -778,12 +778,12 @@ async def lifespan(app: FastAPI):
             await _xo_status_task
         except asyncio.CancelledError:
             pass
-    print("👋 Shutting down XO Cowork API Server...")
+    print("👋 Shutting down XO Space API Server...")
 
 
 app = FastAPI(
-    title="XO Cowork API",
-    description="XO Cowork API - Claude Code Interface",
+    title="XO Space API",
+    description="XO Space API - local control plane brokering chat to coding-agent runtimes",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -826,9 +826,22 @@ mount_space(app)
 # =============================================================================
 
 @app.get("/")
-async def root():
-    """Root endpoint."""
-    return {"status": "XO Cowork API running"}
+async def root(request: Request):
+    """Root endpoint.
+
+    Browsers (``Accept: text/html``) are redirected to the Space UI at
+    ``/space/``; API clients and health checks still receive the JSON status.
+    This lets the workspace root URL land on the UI when the API is proxied at
+    the port root (e.g. a Coder subdomain app whose base is the port itself,
+    not ``/space``) — the UI then talks to the API same-origin.
+    """
+    if "text/html" in request.headers.get("accept", ""):
+        # Carry the query string across the redirect (still percent-encoded),
+        # so links like /?project=x land on /space/?project=x.
+        query = request.url.query
+        url = f"/space/?{query}" if query else "/space/"
+        return RedirectResponse(url=url, status_code=307)
+    return {"status": "XO Space API running"}
 
 
 @app.get("/health")
@@ -914,7 +927,7 @@ async def gateway_restart():
 
 @app.post("/app/restart")
 async def app_restart():
-    """Restart the XO Cowork API app process via cowork-api.sh."""
+    """Restart the XO Space API app process via cowork-api.sh."""
     import subprocess
     # Timestamped marker: a restart kills every in-flight subprocess (e.g. a
     # pending auth login) — correlate this line with mid-flow failures.

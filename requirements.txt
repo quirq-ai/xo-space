@@ -1,4 +1,4 @@
-# XO Cowork API Dependencies
+# XO Space API Dependencies
 
 # Web Framework
 fastapi>=0.109.0
@@ -25,4 +25,4 @@ python-multipart>=0.0.20
 # scripts/install_shared_deps.sh; the Space Sessions tab reads its DB.
 # Pinned: bump deliberately (an unpinned latest makes installs
 # non-reproducible across workspaces).
-argus-code==0.4.3
+argus-code==0.5.1

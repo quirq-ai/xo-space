@@ -1,6 +1,7 @@
 {
   "name": "openclaw",
   "binary": "openclaw",
+  "install_url": "https://docs.openclaw.ai/install",
   "home_dir": "~/.openclaw",
   "env_file": "~/.openclaw/.env",
   "config_file": "~/.openclaw/openclaw.json",

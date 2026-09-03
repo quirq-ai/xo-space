@@ -110,6 +110,10 @@ function renderShell(){
               +'<button class="setup-primary" id="runtime-save" type="submit">Save runtime</button>'
               +'<button class="setup-restart" id="runtime-restart" type="button" hidden>Apply &amp; restart</button>'
             +'</div>'
+            /* one fact, not a control: whether anything is reported to
+               xo-swarm-api — the same decision usage_sync logs, surfaced
+               where people actually look */
+            +'<small class="setup-usage-reporting" id="usage-reporting" hidden></small>'
           +'</form>'
         +'</section>'
         +'<section class="setup-card setup-sources-card">'
@@ -204,10 +208,10 @@ function commitLine(info){
 
 async function checkForUpdate(){
   const button=root.querySelector('#update-check');
-  button.disabled=true;
+  setBusy(button,true);
   renderUpdateState('<div class="setup-empty">Asking the git remote…</div>','Checking');
   const res=await apiFetch('/space/update/status');
-  button.disabled=false;
+  setBusy(button,false);
   if(!res.ok){
     renderUpdateState(`<div class="setup-empty">${esc(res.error||'The version check failed.')}</div>`,'Error');
     return;
@@ -241,10 +245,10 @@ async function checkForUpdate(){
 
 async function applyUpdate(){
   const applyButton=root.querySelector('#update-apply');
-  applyButton.disabled=true;
+  setBusy(applyButton,true);
   renderUpdateState('<div class="setup-empty">Fast-forwarding the checkout…</div>','Updating');
   const res=await apiFetch('/space/update/apply',{method:'POST'});
-  applyButton.disabled=false;
+  setBusy(applyButton,false);
   applyButton.hidden=true;
   if(!res.ok){
     renderUpdateState(`<div class="setup-empty">${esc(res.error||'The update failed.')}</div>`,'Error');
@@ -312,7 +316,16 @@ function renderRuntime(){
   const restartButton=root.querySelector('#runtime-restart');
   restartButton.hidden=!runtimeData.restart_required;
   restartButton.disabled=!runtimeData.restart_supported;
+  /* a re-render after a restart lands on the same element: nothing is in
+     flight any more, whatever the previous pass left on it */
+  restartButton.classList.remove('is-busy');
   restartButton.textContent=runtimeData.restart_supported?'Apply & restart':'Restart from terminal';
+  /* the disabled state is the instruction; say so on hover instead of
+     letting a dead button look like a stuck one */
+  restartButton.title=runtimeData.restart_supported?''
+    :'This process is not installer-managed — restart it from the terminal where you launched it.';
+
+  renderUsageReporting();
 
   const alert=root.querySelector('#setup-alert');
   const rootPending=Boolean(runtimeData.roots?.change_required);
@@ -350,6 +363,33 @@ function renderRuntime(){
   renderOverview();
   renderRoots();
   renderSources();
+}
+
+/* Usage-reporting status (GET /api/runtime-config → usage_reporting).
+   States mirror services/usage_sync.py usage_reporting_status(): off (no
+   key — nothing is sent), on (key accepted; shows the last reported day),
+   blocked (key rejected — nothing is sent), pending (key set, no
+   conclusive probe yet). Absent field (older server): stay hidden. */
+function renderUsageReporting(){
+  const el=root.querySelector('#usage-reporting');
+  if(!el)return;
+  const ur=runtimeData.usage_reporting;
+  if(!ur){el.hidden=true;return;}
+  const link=' <a href="https://github.com/quirq-ai/xo-space#what-leaves-your-machine" '
+    +'target="_blank" rel="noopener noreferrer">What leaves your machine &#8599;</a>';
+  let text;
+  if(ur.status==='on'){
+    text='<b>Usage reporting: on</b> — key accepted by xo-swarm-api'
+      +(ur.last_synced_date?'; last report '+esc(ur.last_synced_date):'')+'.';
+  }else if(ur.status==='blocked'){
+    text='<b>Usage reporting: blocked</b> — xo-swarm-api rejected the key; nothing is sent. Fix or remove XO_API_KEY.';
+  }else if(ur.status==='pending'){
+    text='<b>Usage reporting: pending</b> — a key is set but not verified yet; nothing is sent until a sync accepts it.';
+  }else{
+    text='<b>Usage reporting: off</b> — no XO_API_KEY set. Nothing is sent.';
+  }
+  el.innerHTML=text+link;
+  el.hidden=false;
 }
 
 function renderOverview(){
@@ -431,6 +471,13 @@ function renderSources(){
             source.binary_available?'good':'muted'
           )
           +fact(source.session_files+' session file'+(source.session_files===1?'':'s'),source.session_files?'good':'muted')
+          /* a Missing / CLI unavailable badge is a dead end without a way
+             forward: link the runtime's own install docs when the manifest
+             names them, only while something is actually absent */
+          +((!source.home?.exists||!source.binary_available)&&source.install_url
+            ?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">'
+              +'Install '+esc(prettyName(source.name))+' &#8599;</a>'
+            :'')
         +'</div>'
         +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'not reported')+'</code></div>'
         +'<div class="source-path"><span>Container</span><code>'+esc(source.home?.container_path||'not reported')+'</code></div>'
@@ -461,7 +508,7 @@ async function saveRuntime(event){
     showRuntimeError('Watcher interval must be between 0.25 and 60 seconds.');
     return;
   }
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config',{
     method:'PUT',
@@ -472,7 +519,7 @@ async function saveRuntime(event){
       watcher_source_mode:root.querySelector('#runtime-source-mode').value
     }
   });
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Save runtime';
   if(!res.ok){
     showRuntimeError(res.error);
@@ -489,7 +536,7 @@ async function saveRoots(event){
   error.hidden=true;
   error.textContent='';
   const button=root.querySelector('#roots-save');
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Saving…';
   const res=await apiFetch('/api/runtime-config/roots',{
     method:'PUT',
@@ -498,7 +545,7 @@ async function saveRoots(event){
       quirq_state_root:root.querySelector('#quirq-root-input').value.trim()
     }
   });
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Save roots';
   if(!res.ok){
     error.textContent=res.error||'The roots could not be saved.';
@@ -533,11 +580,11 @@ async function restartRuntime(){
   }
   if(!confirm('Restart Quirq now? The page will reconnect automatically.'))return;
   const button=root.querySelector('#runtime-restart');
-  button.disabled=true;
+  setBusy(button,true);
   button.textContent='Restarting…';
   const res=await apiFetch('/api/runtime-config/restart',{method:'POST'});
   if(!res.ok){
-    button.disabled=false;
+    setBusy(button,false);
     button.textContent='Apply & restart';
     showRuntimeError(res.error);
     return;
@@ -554,7 +601,7 @@ async function restartRuntime(){
       return;
     }
   }
-  button.disabled=false;
+  setBusy(button,false);
   button.textContent='Retry restart';
   showRuntimeError('The restart is taking longer than expected. Refresh status after the container becomes healthy.');
 }
@@ -657,10 +704,10 @@ async function saveSecret(event){
 
 async function removeSecret(key,button){
   if(!confirm('Remove '+key+'? The saved value cannot be recovered.'))return;
-  button.disabled=true;
+  setBusy(button,true);
   const res=await apiFetch('/api/secrets/'+encodeURIComponent(key),{method:'DELETE'});
   if(!res.ok){
-    button.disabled=false;
+    setBusy(button,false);
     showSecretError(res.error);
     return;
   }
@@ -670,11 +717,21 @@ async function removeSecret(key,button){
 }
 
 function setSecretBusy(busy){
-  secretSaveButton.disabled=busy;
-  secretCancelButton.disabled=busy;
+  setBusy(secretSaveButton,busy);
+  setBusy(secretCancelButton,busy);
   keyInput.disabled=busy;
   valueInput.disabled=busy;
   secretSaveButton.textContent=busy?'Saving…':(editingKey?'Replace value':'Save credential');
+}
+
+/* Disabled is not busy. A button that cannot act here (the restart on a
+   process the installer does not manage) and one that is mid-request look
+   identical to :disabled, but only the second has anything to wait for —
+   the first is an instruction. Every in-flight path goes through here so
+   the wait cursor means exactly one thing. */
+function setBusy(button,busy){
+  button.disabled=busy;
+  button.classList.toggle('is-busy',busy);
 }
 
 function showRuntimeError(message){

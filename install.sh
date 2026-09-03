@@ -65,6 +65,8 @@ REPO_NAME="${REPO_NAME%.git}"
 APP_DIR="${QUIRQ_APP_DIR:-${LAUNCH_DIR}/${REPO_NAME}}"
 PYTHON_VERSION="${QUIRQ_PYTHON_VERSION:-3.12}"
 UV_INSTALL_URL="https://astral.sh/uv/install.sh"
+# The canonical one-liner (INSTALLATION.md), echoed back as the update path.
+INSTALL_URL="https://quirq.ai/install"
 
 # Set by resolve_repo_dir, once we know whether we are running from a
 # checkout or have to create one.
@@ -112,6 +114,23 @@ resolve_repo_dir() {
         return
     fi
 
+    # Piped from curl while standing inside a checkout — typically someone
+    # re-running the one-liner from ./xo-space instead of from the workspace
+    # above it. Nesting a second clone in there would make this checkout the
+    # projects root and leave it permanently dirty (so it would never update
+    # again). Use it as the managed checkout and its parent as the workspace:
+    # exactly what running the same command one level up does. An explicit
+    # QUIRQ_APP_DIR still wins.
+    if [ -z "${QUIRQ_APP_DIR:-}" ] &&
+        [ -f "${LAUNCH_DIR}/server.py" ] &&
+        [ -f "${LAUNCH_DIR}/requirements.txt" ]; then
+        REPO_DIR="$LAUNCH_DIR"
+        LAUNCH_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
+        MANAGED_CHECKOUT=1
+        printf 'Running from inside the Quirq checkout; the workspace is %s\n' "$LAUNCH_DIR"
+        return
+    fi
+
     REPO_DIR="$APP_DIR"
     MANAGED_CHECKOUT=1
 }
@@ -125,6 +144,17 @@ fetch_repo() {
         printf 'Quirq is already installed here: %s\n' "$REPO_DIR"
         if [ -n "$(git -C "$REPO_DIR" status --porcelain)" ]; then
             printf 'It has local changes — keeping them, skipping the update.\n'
+            return
+        fi
+        # A checkout on some other branch was put there on purpose (a
+        # development clone, say); resetting it to SOURCE_REF would silently
+        # move it. Managed clones are made with --branch SOURCE_REF, so they
+        # always pass this and keep updating.
+        local branch
+        branch="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        if [ -n "$branch" ] && [ "$branch" != "HEAD" ] && [ "$branch" != "$SOURCE_REF" ]; then
+            printf 'It is on branch %s, not %s — leaving it as is. Set QUIRQ_SOURCE_REF=%s to track that branch instead.\n' \
+                "$branch" "$SOURCE_REF" "$branch"
             return
         fi
         printf 'Updating it to the latest %s...\n' "$SOURCE_REF"
@@ -219,6 +249,34 @@ check_optional_tools() {
     report_tool rclone "Google Drive and OneDrive connectors"
     report_tool gpg    "encrypted backup and restore"
     printf '  Anything marked MISSING disables only the feature next to it.\n'
+}
+
+# ==============================================================
+# Transparency — what this install sends anywhere, printed on
+# every run so it is never a surprise. Keep in step with the
+# README section "What leaves your machine".
+# ==============================================================
+print_reporting_notice() {
+    local log_file="$1"
+    cat <<'NOTICE'
+
+┌─ Usage reporting ───────────────────────────────────────────────────────┐
+│ Quirq reports usage to xo-swarm-api ONLY when XO_API_KEY in .env is set │
+│ and valid. Empty, missing, or invalid key: nothing is tracked.          │
+│                                                                         │
+│ Sent once a day when the key is set:      Never sent:                   │
+│   • token counts (input/output/cache)       • prompts or responses      │
+│   • estimated cost                          • file contents             │
+│   • message, session, tool-call counts      • file paths                │
+│   • per-model and per-tool breakdown        • anything, without the key │
+│   • workspace id/name, project id                                       │
+│                                                                         │
+│ Details: README → "What leaves your machine".                           │
+└─────────────────────────────────────────────────────────────────────────┘
+NOTICE
+    # The server logs every decision it makes about reporting; this is the
+    # one-liner that shows them, since the terminal itself stays quiet.
+    printf '  See what it decided:  grep usage_sync %s\n' "$log_file"
 }
 
 # ==============================================================
@@ -462,6 +520,10 @@ QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 # server's own default with an empty string.
 # ANTHROPIC_API_KEY=
 # CLAUDE_CODE_OAUTH_TOKEN=
+# Usage is reported to xo-swarm-api ONLY when this key is set and valid:
+# token counts, costs and session/tool counts once a day — never prompts or
+# file contents. Empty, missing or invalid: nothing is tracked. See the
+# README section "What leaves your machine".
 # XO_API_KEY=
 # CHAT_API_BASE_URL=https://api-swarm-beta.xo.builders
 ENVEOF
@@ -507,11 +569,35 @@ start_server() {
     printf '\n▶️  Starting Quirq: http://localhost:%s/space/\n\n' "$PORT"
     printf '    Logs:  %s\n' "$log_file"
     printf '    Press Ctrl-C to stop.\n\n'
+    print_restart_hint
 
     # exec replaces this shell so Ctrl-C reaches Uvicorn directly and no
     # wrapper lingers. If the server dies at boot, the prompt returns
     # silently — the log above has the reason.
     exec "$VENV_PYTHON" server.py >> "$log_file" 2>&1
+}
+
+# ==============================================================
+# How to come back. Once Ctrl-C returns the prompt there is nothing on
+# screen that says how to start again, and "run the installer command"
+# is only obvious to whoever ran it first. Print-only: start_server owns
+# the exec, and this must run before it, since nothing of this script
+# survives the exec.
+# ==============================================================
+print_restart_hint() {
+    # The ref goes on `sh`, not on `curl`: it is the bootstrap that reads it,
+    # and with a pipe an assignment binds to the command it precedes.
+    local ref_prefix=""
+    [ "$SOURCE_REF" = "main" ] || ref_prefix="QUIRQ_SOURCE_REF=${SOURCE_REF} "
+
+    if [ "$MANAGED_CHECKOUT" -eq 1 ]; then
+        printf '    Start again later:  cd %s && %s/install.sh\n' "$LAUNCH_DIR" "$REPO_DIR"
+        printf '    Update and start:   cd %s && curl -fsSL %s | %ssh\n\n' \
+            "$LAUNCH_DIR" "$INSTALL_URL" "$ref_prefix"
+    else
+        printf '    Start again later:  cd %s && ./install.sh\n' "$REPO_DIR"
+        printf '    Update:             Setup tab → Update, or git pull --ff-only, then start again\n\n'
+    fi
 }
 
 main() {
@@ -572,6 +658,7 @@ main() {
     printf '\nQuirq source: %s (%s)\nXO projects: %s\nQuirq state: %s\n' \
         "$REPO_DIR" "$source_label" "$projects_root" "$state_root"
     check_optional_tools
+    print_reporting_notice "${state_root}/quirq.log"
 
     ensure_port_available "$HOST" "$PORT"
     start_server "$projects_root" "$state_root"

@@ -52,6 +52,9 @@
 .wiki-callout{margin-top:38px;padding:20px 22px;border:1px solid rgba(168,217,79,.28);border-radius:12px;background:rgba(168,217,79,.055)}
 .wiki-callout b{display:block;margin-bottom:7px;font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
 .wiki-callout p{font-size:13px;line-height:1.65;color:var(--ink-2)}
+/* in-article cross-link to another wiki page or tab: reads as a link, is a button */
+.wiki-link{display:inline;padding:0;border:0;background:none;font:inherit;color:var(--accent);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.wiki-link:hover{color:var(--ink)}
 .wiki-tab-callout{display:flex;align-items:center;justify-content:space-between;gap:24px}
 .wiki-tab-callout>div{min-width:0}
 .wiki-tab-callout button{flex:none;border:1px solid rgba(168,217,79,.35);border-radius:999px;padding:8px 13px;font:600 8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}

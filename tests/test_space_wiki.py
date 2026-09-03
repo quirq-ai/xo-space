@@ -165,8 +165,11 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("Liveblocks + Yjs", wiki)
         self.assertIn("docs.yjs.dev/api/document-updates", wiki)
         self.assertIn("support.google.com/docs/answer/190843", wiki)
+        # The stylesheet must be cache-busted, but pinning the literal stamp
+        # turns every legitimate bump into a red test (see the app.js stamp
+        # test above for the same reasoning): assert the shape, not the value.
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("css/wiki.css?v=20260725-collaboration1", index)
+        self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
 
     def test_wiki_documents_space_walk_session_replay(self) -> None:
         wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
@@ -349,7 +352,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("const weight=", tree)
         self.assertIn("pathLength=", tree)
         self.assertIn("is-growing", tree)
-        self.assertIn("function restoreScroll", tree)
+        self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
         # Wiki Files guide must stay aligned with the three-lens UI (drift here
         # is how "two lenses" docs survive after Tree ships).
@@ -391,14 +394,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("st_mtime", layout)
 
     def test_previewer_renders_untrusted_files_safely(self) -> None:
-        """Opening a file shows it in the side drawer without navigating, and
-        without giving a file on disk the run of this document.
+        """Opening a file shows it in the floating window without navigating,
+        and without giving a file on disk the run of this document.
 
         Workspace files are agent output, not trusted content, and this page
         holds the user's session. Markdown goes through the escape-first
-        renderer; HTML renders in an iframe with an EMPTY sandbox attribute
-        (no allow-scripts, no allow-same-origin) so it cannot reach the page,
-        its storage, or the API it is served from.
+        renderer; HTML renders in a sandboxed iframe WITHOUT
+        allow-same-origin — an opaque origin: no cookies, no storage, no
+        parent access, and the API's CORS allowlist refuses it. allow-scripts
+        is deliberately granted (scroll-reveal reports and app index pages
+        are blank without it); the origin line, not the script line, is the
+        one that protects the session, and this test pins exactly that.
         """
         preview = (
             ROOT / "space_ui" / "js" / "core" / "preview.js"
@@ -411,11 +417,14 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('href="css/preview.css?v=', index)
         # markdown through the escape-first renderer, never raw
         self.assertIn("mdToHtml", preview)
-        # HTML only ever inside an empty sandbox
-        self.assertIn('sandbox=""', preview)
+        # HTML only ever inside a sandbox that withholds the origin: scripts
+        # may run, but never as this app. The attribute is pinned whole so a
+        # grant can only be added by rewriting this contract.
+        self.assertIn(
+            'sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"',
+            preview,
+        )
         self.assertIn("srcdoc=", preview)
-        self.assertNotIn("allow-scripts", preview)
-        self.assertNotIn("allow-same-origin", preview)
         # every surface opens it through the event, so no view imports another
         for view in ("tree", "projects", "atlas"):
             source = (
@@ -516,9 +525,12 @@ class SpaceWikiTests(unittest.TestCase):
 
         self.assertIn("curl -fsSL", guide)
         self.assertIn("localhost:5002", guide)
-        # Piping to `sh` fails: the installer uses BASH_SOURCE and pipefail.
-        self.assertIn("| bash", guide)
-        self.assertNotIn("| sh\n", guide)
+        # The canonical one-liner pipes to `sh`: the short URL serves a POSIX
+        # bootstrap that runs install.sh under bash. Fetching install.sh
+        # directly still needs bash (BASH_SOURCE, pipefail), and the guide
+        # must keep saying so.
+        self.assertIn("https://quirq.ai/install | sh", guide)
+        self.assertIn("pipe it to `bash`, not `sh`", guide)
         # git went from "you do not need it" to a hard prerequisite.
         self.assertNotIn("You do not need Git", guide)
 
@@ -546,6 +558,109 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("prepare_state_root", code)
         # Nothing may be installed beyond requirements.txt.
         self.assertIn("QUIRQ_SKIP_BOOT_INSTALL", code)
+
+    def test_first_run_is_explained_in_wiki_docs_and_the_empty_state(self) -> None:
+        """A fresh install opens on an empty Files tab. The wiki page, the two
+        docs and the empty state itself must all say what a project is and
+        the three ways to get one — and agree on the API call."""
+
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(encoding="utf-8")
+        self.assertIn("id:'first-run'", wiki)
+        self.assertIn("'first-run':firstRunArticle", wiki)
+        self.assertIn("Your first run", wiki)
+        self.assertIn("direct child folder of the workspace", wiki)
+        self.assertIn("POST /api/files/mkdir", wiki)
+        self.assertIn("xo-projects", wiki)
+        # In-article cross-link from the install guide to the first-run page.
+        self.assertIn('data-wiki-link="first-run"', wiki)
+        self.assertIn("data-wiki-link", wiki.split("function pageButton")[0])
+
+        projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
+        self.assertIn("data-first-run", projects)
+        self.assertIn("'first-run'", projects)
+        self.assertIn("scaffold:true", projects)
+        self.assertNotIn("Create one through the xo-space", projects)
+
+        guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for doc in (guide, wiki):
+            self.assertIn("Your first run", doc)
+            self.assertIn("/api/files/mkdir", doc)
+            # The first run is only empty if the directory was: a busy
+            # directory lists every folder as an unscaffolded project, and
+            # both full tellings must say so.
+            self.assertIn("unscaffolded", doc)
+        # The 2026-08-29 README rewrite tells the short version on purpose
+        # and hands off to the guide: pin the empty state, the "First run"
+        # paragraph, and the hand-off link instead of the full walkthrough.
+        self.assertIn("First run", readme)
+        self.assertIn("No projects in this workspace yet", readme)
+        self.assertIn("INSTALLATION.md", readme)
+        self.assertIn("## Your first run", guide)
+        self.assertIn("uv pip install --python", guide)
+        # The cross-link buttons need a rule, or they render as stock buttons.
+        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(encoding="utf-8")
+        self.assertIn(".wiki-link{", css)
+
+    def test_contributing_guide_matches_how_the_repo_actually_works(self) -> None:
+        """CONTRIBUTING.md is the front door for outside contributors. The
+        facts most likely to rot are pinned: the branch model, the four
+        invariants, the validation commands, and the README pointing at it."""
+        guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        # Work lands on development; main is the release branch.
+        self.assertIn("target `development`", guide)
+        self.assertIn("publish-container.yml", guide)
+        self.assertNotIn("Branch from and target **`main`**", guide)
+        for invariant in (
+            "modularity invariant", "Thin routers", "project folder is sacred",
+            "belongs to the watcher",
+        ):
+            self.assertIn(invariant, guide)
+        for command in (
+            "unittest discover -s tests -t .",
+            "bash tests/install_sh_harness.sh",
+            "./scripts/check_plugin_sync.sh",
+        ):
+            self.assertIn(command, guide)
+        # No hard-coded test count anywhere contributors read: it drifts with
+        # every PR, and a stale number is worse than none.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        developing = (ROOT / "DEVELOPING.md").read_text(encoding="utf-8")
+        for doc in (guide, readme, developing):
+            self.assertNotRegex(doc, r"\b\d{2,3} tests\b")
+        self.assertNotIn("expect 146", developing)
+        # Security reports must never be steered into a public issue body, and
+        # the guide must not link GitHub private reporting until it is enabled.
+        self.assertIn("request for a private channel", guide)
+        self.assertNotIn("security/advisories/new", guide)
+        # Windows contributors are told, up front, to use WSL.
+        self.assertIn("On Windows, use WSL", guide)
+
+        self.assertIn("[CONTRIBUTING.md](CONTRIBUTING.md)", readme)
+        self.assertNotIn("branch from it and target it", readme)
+
+    def test_installer_tells_you_how_to_come_back_and_never_nests(self) -> None:
+        """Ctrl-C hands back a bare prompt; the banner must have said how to
+        start again. And the one-liner run from inside ./xo-space must reuse
+        that checkout, not clone a second one into it (which makes the outer
+        checkout the projects root and leaves it dirty forever)."""
+
+        lines = (ROOT / "install.sh").read_text(encoding="utf-8").splitlines()
+        code = "\n".join(
+            line for line in lines if not line.lstrip().startswith("#")
+        )
+        self.assertIn("print_restart_hint", code)
+        self.assertIn("Start again later:", code)
+        self.assertIn("https://quirq.ai/install", code)
+        # The launch directory itself is probed for a checkout.
+        self.assertIn('"${LAUNCH_DIR}/server.py"', code)
+        # A checkout on another branch is left alone, like a dirty one.
+        self.assertIn("rev-parse --abbrev-ref HEAD", code)
+
+        guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(encoding="utf-8")
+        for doc in (guide, wiki):
+            self.assertIn("./xo-space/install.sh", doc)
 
     def test_installer_claims_no_container_only_capabilities(self) -> None:
         """Setting either would make the Setup tab offer a restart control

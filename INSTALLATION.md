@@ -3,7 +3,7 @@
 Pick a directory to keep Quirq in, then run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/quirq-ai/xo-space/main/install.sh | bash
+curl -fsSL https://quirq.ai/install | sh
 ```
 
 Open <http://localhost:5002/space/>.
@@ -20,8 +20,119 @@ Docker is not required. The command:
 
 Press Ctrl-C to stop it. Run the same command again to update and restart.
 
-It must be piped to `bash`, not `sh` — the script uses `BASH_SOURCE` and
-`set -o pipefail`, neither of which exists in POSIX `sh`.
+## Your first run
+
+What you see first depends on where you ran the installer. Quirq does not
+create anything for you: it watches the directory you installed in — your
+workspace, the *XO root* — and shows what is there.
+
+- **An empty directory:** Files says **No projects in this workspace yet**,
+  and Dashboard, Graph, Tree and Timeline draw the same empty map. Setup and
+  Wiki work fully; Sessions shows *no data* until a runtime has run a session
+  on this machine.
+- **A directory that already holds folders:** every non-hidden folder is
+  listed as a project on the spot — your existing repos, scratch folders, and
+  the `xo-space` checkout the installer just made — each marked
+  *unscaffolded*. Big repos count toward the map's file cap (400 per project,
+  1,500 across the workspace), so a very full directory shows a trimmed
+  picture. If that is not the collection you meant, point the XO root at a
+  narrower directory from the Setup tab; it changes which folders are listed
+  and never moves files.
+
+**A project is a direct child folder of the workspace.** The folder name is
+the project id, and the watcher lists every non-hidden folder it finds on its
+next tick. A plain folder shows up as *unscaffolded* (browsable, no `.xo/`
+metadata yet); a project created through the API is *scaffolded* — it gets
+`.xo/project.json` and the template docs an agent works from (`AGENTS.md`,
+`PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md`, `memory/`).
+
+Three ways to get a project in:
+
+1. **Drop a folder in** — `git clone <repo> <workspace>/my-app`, `mkdir`, or
+   copy. It appears unscaffolded within a tick.
+2. **Ask your coding agent** — Claude Code or Codex running in the workspace
+   carries the `xo-projects` skill (`.agents/skills/xo-projects/` in the
+   checkout, and the Claude Code plugin under `plugin/`). "Create an
+   xo-project called my-app" makes it call the API and scaffold the folder.
+3. **Call the API yourself:**
+
+   ```bash
+   curl -X POST http://localhost:5002/api/files/mkdir \
+     -H 'Content-Type: application/json' \
+     -d '{"path": "<XO root>/my-app", "scaffold": true, "display_name": "My App"}'
+   ```
+
+   The path must be a direct child of the XO root (400 otherwise, 409 if the
+   folder exists). The root is printed by the installer (`XO projects:`),
+   shown in the Setup tab, and returned by `GET /api/config/workspace`.
+
+Tabs fill in stages: any folder lights up Files (List, Graph, Tree) and a
+Dashboard node; a scaffolded project adds identity and todos; a `.git` inside
+the project adds a Timeline lane and file dates; an agent session adds live
+badges, drawer events and Sessions telemetry; credentials (Setup or `.env`)
+enable chat, connectors and backup. Nothing is required just to browse.
+
+Before the first chat, check three things in Setup: the roots are the ones you
+meant, the agent CLI is on the server's PATH (`claude` or `codex` — the
+installer does not install it; `npm install -g @anthropic-ai/claude-code`),
+and a credential is saved (Setup values are write-only and outrank `.env`).
+
+## Stopping and starting again
+
+Ctrl-C stops the server; nothing supervises it, so nothing restarts it. The
+startup banner prints both ways back, from the directory you installed in:
+
+```bash
+./xo-space/install.sh                      # start again, no update
+curl -fsSL https://quirq.ai/install | sh   # update to the latest main, then start
+```
+
+Running the one-liner from *inside* `./xo-space` is fine: the installer
+notices it is standing in a checkout and uses that one, with the directory
+above as the workspace, rather than cloning a second copy into it. It also
+leaves a checkout alone when it has local changes, or when it is on a branch
+other than the one it tracks (`main`, or `QUIRQ_SOURCE_REF`), so a
+development clone is never silently reset.
+
+The short URL serves a small POSIX-sh bootstrap that downloads `install.sh`
+to a temporary file and runs it under `bash`, which is why `| sh` works. If
+you fetch `install.sh` itself, pipe it to `bash`, not `sh` — the script uses
+`BASH_SOURCE` and `set -o pipefail`, neither of which exists in POSIX `sh`.
+
+## Uninstalling
+
+`uninstall.sh` removes everything the installer created and keeps your
+projects. Run it the way you run the installer — from the workspace:
+
+```bash
+./xo-space/uninstall.sh
+```
+
+It stops the running server first (the `cowork-api.sh` daemon included),
+brings down the local Docker compose project when the compose launcher was
+used, and then removes the managed checkout (venv, `.env`, and the
+`rclone.conf` / `mcp-tokens.json` connector credentials with it), the
+`.quirq` state root — `roots.env` is read first, so a root moved from the
+Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the
+derived telemetry DB in `~/.argus`, and a legacy `~/.xo-cowork` migration
+source. It ends with a summary of exactly what was removed and what was
+kept, and running it again when nothing is installed exits cleanly.
+
+Three deliberate protections:
+
+- **Your project folders under the XO root always stay.** `--purge-projects`
+  (or `--all`) deletes them too, but only after you type the XO root path
+  back at an interactive prompt — there is no non-interactive purge.
+- **A checkout with local changes is kept** (its venv is still removed);
+  `--force` overrides. An in-place install — you cloned the repo yourself
+  and it doubles as the XO root — is never deleted wholesale: only what the
+  installer created inside it is.
+- `--dry-run` prints the full plan and removes nothing; `--yes` skips the
+  confirmation for scripted use.
+
+The installer adds no PATH entries, cron jobs, or launchd/systemd units, so
+there are none to remove. uv (`~/.local/bin/uv`) is a general-purpose tool
+the installer may have fetched; it is left in place.
 
 ## Prerequisites
 
@@ -64,7 +175,7 @@ self-contained and you can move or delete it as one folder.
 |---|---|
 | `.` | Your projects root — each project is a subdirectory with its own `.xo` |
 | `./xo-space` | The Quirq source checkout |
-| `./xo-space/venv` | Python environment |
+| `./xo-space/venv` | Python environment, made by uv — it has no `pip`. To add packages (e.g. the test suite): `~/.local/bin/uv pip install --python ./xo-space/venv/bin/python -r <file>`; uv itself lives in `~/.local/bin`, which the installer does not add to your shell's PATH |
 | `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state |
 
 Open the **Setup** tab after installation. It shows the paths in use, CLI
@@ -109,10 +220,10 @@ Every value is overridable from the environment:
 For example:
 
 ```bash
-curl -fsSL <url>/install.sh | PORT=8080 XO_PROJECTS_ROOT=/absolute/path bash
+curl -fsSL https://quirq.ai/install | PORT=8080 XO_PROJECTS_ROOT=/absolute/path sh
 ```
 
-On first run the installer writes `quirq/.env` recording exactly what it used,
+On first run the installer writes `./xo-space/.env` (the checkout's `.env`) recording exactly what it used,
 then never rewrites it — it is yours to edit. Change a value there and re-run
 `./install.sh` to apply it. Credentials are written commented out; uncomment
 the ones you need, or configure them through the Setup tab instead.
@@ -120,7 +231,7 @@ the ones you need, or configure them through the Setup tab instead.
 Precedence, highest first:
 
 1. variables exported in your shell — `PORT=8080 ./install.sh`
-2. `quirq/.env`
+2. `./xo-space/.env`
 3. the defaults above
 
 The Setup tab's `runtime.env` and `secrets.env` are loaded with `override=True`

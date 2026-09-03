@@ -1,6 +1,7 @@
 {
   "name": "hermes",
   "binary": "hermes",
+  "install_url": "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
   "home_dir": "~/.hermes",
   "env_file": "~/.hermes/.env",
   "config_file": "~/.hermes/config.yaml",

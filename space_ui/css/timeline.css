@@ -35,5 +35,23 @@
   .ticks{display:flex;justify-content:space-between;font:400 9.5px var(--mono);letter-spacing:.08em;color:#56534b;margin-top:4px}
   #tmilestone{font:italic 400 13px var(--serif);color:var(--ink-2);margin-top:10px;min-height:18px;
     transition:opacity .4s var(--ease)}
-  #tplot{flex:1;min-height:0;margin-top:6px}
+  /* the plot pans: vertical drag / wheel work the time axis, horizontal
+     drag / shift+wheel slide the lanes once they outgrow the pane (the svg
+     is then wider than this box; overflow hidden + scrollLeft, no scrollbar) */
+  #tplot{flex:1;min-height:0;margin-top:6px;overflow:hidden;cursor:grab;
+    touch-action:none;user-select:none;-webkit-user-select:none}
+  #tplot.is-panning{cursor:grabbing}
   #tplot svg{width:100%;height:100%;display:block}
+  .tfilter{width:170px;flex:none;background:var(--bg-3);border:1px solid var(--line);
+    border-radius:7px;padding:5px 9px;font-size:12px;color:var(--ink)}
+  .tfilter:focus{outline:none;border-color:#39404d}
+  .trange{display:flex;align-items:center;gap:12px;margin-top:8px;min-height:20px}
+  .tyears{display:flex;gap:4px;flex-wrap:wrap}
+  .tyears[hidden]{display:none}
+  .tyears button{font:400 9.5px var(--mono);letter-spacing:.08em;color:var(--ink-3);
+    padding:2px 9px;border:1px solid var(--line-soft);border-radius:999px;background:transparent;
+    transition:color .16s var(--ease),border-color .16s var(--ease)}
+  .tyears button:hover{color:var(--ink);border-color:#39404d}
+  .tyears button.is-on{color:#14100a;background:var(--accent);border-color:var(--accent)}
+  .thint{font:400 9.5px var(--mono);letter-spacing:.06em;color:#56534b;margin-left:auto;white-space:nowrap}
+  @media (max-width:900px){.thint{display:none}}

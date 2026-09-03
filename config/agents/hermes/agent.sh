@@ -253,7 +253,12 @@ validate_env() {
 install_env() {
     log "Installing .env to ${HERMES_DIR}/.env..."
     mkdir -p "$HERMES_DIR"
-    if [ -f "$REPO_ROOT/.env" ]; then
+    # First-time-only copy: server.py runs setup on every boot, so an
+    # unconditional cp would clobber user-added keys in the agent .env each
+    # restart. Guard on the destination (same pattern as auth.json below).
+    if [ -f "$ENV_FILE" ]; then
+        log ".env already exists at ${ENV_FILE} — preserving manual edits"
+    elif [ -f "$REPO_ROOT/.env" ]; then
         cp "$REPO_ROOT/.env" "$ENV_FILE"
         chmod 600 "$ENV_FILE"
         log_success ".env copied to ${ENV_FILE} (mode 600)"

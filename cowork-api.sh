@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# XO Cowork API local runner and process manager
+# XO Space API local runner and process manager
 # Usage: ./cowork-api.sh {dev|install|start|stop|restart|status|logs}
+#
+# The /tmp basenames match what the Coder claude-code template uses for the
+# same process (/tmp/xo-space.{pid,log}), so one name finds it everywhere.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
-PID_FILE="/tmp/xo-cowork-api.pid"
-LOG_FILE="/tmp/xo-cowork-api.log"
-LOCK_FILE="/tmp/xo-cowork-api.lock"
+PID_FILE="/tmp/xo-space.pid"
+LOG_FILE="/tmp/xo-space.log"
+LOCK_FILE="/tmp/xo-space.lock"
 LOCK_PID_FILE="${LOCK_FILE}/pid"
 
 # Read only the simple scalar values needed by this shell wrapper. The server
@@ -283,7 +286,7 @@ kill_hindering_processes() {
 start_api() {
     acquire_lock
     if is_running; then
-        echo -e "${YELLOW}XO Cowork API is already running (PID: $(cat "$PID_FILE"))${NC}"
+        echo -e "${YELLOW}XO Space API is already running (PID: $(cat "$PID_FILE"))${NC}"
         return 0
     fi
 
@@ -297,7 +300,7 @@ start_api() {
         return 1
     fi
 
-    log "Starting XO Cowork API on ${HOST}:${PORT}..."
+    log "Starting XO Space API on ${HOST}:${PORT}..."
     nohup bash -c '
         cd "'"$SCRIPT_DIR"'"
         export HOST="'"$HOST"'"
@@ -310,11 +313,11 @@ start_api() {
     sleep 1
 
     if kill -0 "$pid" 2>/dev/null; then
-        log_success "XO Cowork API started (PID: $pid, port: $PORT)"
+        log_success "XO Space API started (PID: $pid, port: $PORT)"
         echo -e "Logs: ${CYAN}$LOG_FILE${NC}"
     else
         rm -f "$PID_FILE"
-        log_error "Failed to start XO Cowork API. Check logs: $LOG_FILE"
+        log_error "Failed to start XO Space API. Check logs: $LOG_FILE"
         return 1
     fi
 }
@@ -324,7 +327,7 @@ stop_api() {
     if is_running; then
         local pid
         pid=$(cat "$PID_FILE")
-        log "Stopping XO Cowork API (PID: $pid)..."
+        log "Stopping XO Space API (PID: $pid)..."
         kill_process_tree "$pid"
 
         for _ in $(seq 1 10); do
@@ -340,7 +343,7 @@ stop_api() {
 
     kill_hindering_processes
     wait_for_port_release 10 || true
-    log_success "XO Cowork API stopped"
+    log_success "XO Space API stopped"
 }
 
 restart_api() {
@@ -352,9 +355,9 @@ restart_api() {
 
 status_api() {
     if is_running; then
-        echo -e "${GREEN}XO Cowork API is running${NC} (PID: $(cat "$PID_FILE"))"
+        echo -e "${GREEN}XO Space API is running${NC} (PID: $(cat "$PID_FILE"))"
     else
-        echo -e "${RED}XO Cowork API is not running${NC}"
+        echo -e "${RED}XO Space API is not running${NC}"
     fi
 
     local listeners
