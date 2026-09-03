@@ -116,6 +116,7 @@ class _ComposioBase(unittest.TestCase):
                 get=lambda cid: SimpleNamespace(status="ACTIVE", id=cid),
                 list=lambda **kw: SimpleNamespace(items=[]),
                 delete=lambda cid: None,
+                update=lambda cid, **kw: SimpleNamespace(id=cid),
             ),
             tools=SimpleNamespace(get_raw_composio_tools=lambda **kw: []),
             sessions=SimpleNamespace(delete=lambda sid: None),
@@ -291,6 +292,323 @@ class ServiceDegradationTests(_ComposioBase):
         self.assertEqual(entry["type"], "http")
         self.assertEqual(entry["url"], "https://mcp.example/s")
         self.assertEqual(entry["headers"], {"x-a": "b"})
+
+
+def _account(cid, slug="gmail", *, status="ACTIVE", alias=None, created_at=None,
+             is_disabled=False):
+    """A connected-account row in the SDK's list shape."""
+    return SimpleNamespace(
+        id=cid,
+        toolkit=SimpleNamespace(slug=slug),
+        status=status,
+        alias=alias,
+        created_at=created_at,
+        is_disabled=is_disabled,
+        auth_scheme="OAUTH2",
+    )
+
+
+class MultiAccountTests(_ComposioBase):
+    """Several accounts of one toolkit per principal (aliases, pinning, session).
+
+    Two independent switches, and the tests keep them apart: `allow_multiple` on
+    /connect decides whether Composio *stores* a second account, while
+    COMPOSIO_MULTI_ACCOUNT decides whether more than one of them can reach a
+    session at the same time.
+    """
+
+    def _client_listing(self, items, *, capture=None):
+        def _list(**kw):
+            if capture is not None:
+                capture.append(kw)
+            return SimpleNamespace(items=items)
+
+        return self._fake_client(
+            connected_accounts=SimpleNamespace(
+                list=_list,
+                link=lambda **kw: SimpleNamespace(
+                    redirect_url="https://composio.example/auth", id="cr_1"
+                ),
+                update=lambda cid, **kw: SimpleNamespace(id=cid),
+                get=lambda cid: SimpleNamespace(status="ACTIVE", id=cid),
+                delete=lambda cid: None,
+            )
+        )
+
+    # ---- configuration ----
+
+    def test_multi_account_is_off_unless_asked_for(self) -> None:
+        self.assertIsNone(service.multi_account_config())
+        self.assertFalse(service.multi_account_enabled())
+
+    def test_enabling_yields_composio_defaults(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}):
+            config = service.multi_account_config()
+        self.assertEqual(config, {
+            "enable": True,
+            "max_accounts_per_toolkit": service.MULTI_ACCOUNT_DEFAULT_MAX,
+            "require_explicit_selection": False,
+        })
+
+    def test_max_outside_the_supported_range_is_clamped_not_forwarded(self) -> None:
+        # Composio rejects a max outside 2-10, and a session that cannot be
+        # created costs the user every tool, so an operator typo is clamped.
+        for raw, expected in (("99", 10), ("1", 2), ("notanumber", 5)):
+            with patch.dict(os.environ, {
+                "COMPOSIO_MULTI_ACCOUNT": "true",
+                "COMPOSIO_MULTI_ACCOUNT_MAX": raw,
+            }):
+                config = service.multi_account_config()
+            self.assertEqual(config["max_accounts_per_toolkit"], expected, raw)
+
+    def test_explicit_selection_is_passed_through(self) -> None:
+        with patch.dict(os.environ, {
+            "COMPOSIO_MULTI_ACCOUNT": "yes",
+            "COMPOSIO_MULTI_ACCOUNT_REQUIRE_SELECTION": "on",
+        }):
+            self.assertTrue(
+                service.multi_account_config()["require_explicit_selection"]
+            )
+
+    # ---- aliases ----
+
+    def test_alias_is_trimmed_and_blank_means_cleared(self) -> None:
+        self.assertEqual(service.normalize_alias("  work-gmail "), "work-gmail")
+        self.assertIsNone(service.normalize_alias("   "))
+        self.assertIsNone(service.normalize_alias(None))
+
+    def test_over_long_alias_is_refused_before_the_api_call(self) -> None:
+        with self.assertRaises(ValueError):
+            service.normalize_alias("x" * (service.ALIAS_MAX_LENGTH + 1))
+
+    def test_duplicate_alias_is_caught_locally_and_names_the_holder(self) -> None:
+        client = self._client_listing([_account("ca_1", alias="Work-Gmail")])
+        with patch.object(service, "_composio", return_value=client):
+            with self.assertRaises(service.AliasInUseError) as raised:
+                # Composio's uniqueness is per user and toolkit; casing must not
+                # be a way around it.
+                service.assert_alias_free(PRINCIPAL, "gmail", "work-gmail")
+        self.assertIn("ca_1", str(raised.exception))
+
+    def test_renaming_an_account_to_its_own_alias_is_not_a_collision(self) -> None:
+        client = self._client_listing([_account("ca_1", alias="work-gmail")])
+        with patch.object(service, "_composio", return_value=client):
+            service.assert_alias_free(
+                PRINCIPAL, "gmail", "work-gmail", except_account_id="ca_1",
+            )
+
+    def test_alias_only_collides_within_the_same_toolkit(self) -> None:
+        capture: list[dict] = []
+        client = self._client_listing([], capture=capture)
+        with patch.object(service, "_composio", return_value=client):
+            service.assert_alias_free(PRINCIPAL, "notion", "shared-name")
+        self.assertEqual(capture[0]["toolkit_slugs"], ["notion"])
+
+    def test_set_alias_clears_with_an_empty_string_not_none(self) -> None:
+        # connected_accounts.update(alias=None) leaves the alias alone; "" is
+        # what actually clears it.
+        seen: list[dict] = []
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(
+                update=lambda cid, **kw: seen.append({"id": cid, **kw}),
+            )
+        )
+        with patch.object(service, "_composio", return_value=client):
+            self.assertIsNone(service.set_alias("ca_1", "  "))
+            self.assertEqual(service.set_alias("ca_1", "work"), "work")
+        self.assertEqual(seen[0], {"id": "ca_1", "alias": ""})
+        self.assertEqual(seen[1], {"id": "ca_1", "alias": "work"})
+
+    def test_failed_alias_write_raises_rather_than_reporting_success(self) -> None:
+        def _boom(*_a, **_kw):
+            raise RuntimeError("composio is down")
+
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(update=_boom)
+        )
+        with patch.object(service, "_composio", return_value=client):
+            with self.assertRaises(RuntimeError):
+                service.set_alias("ca_1", "work")
+
+    # ---- connecting a second account ----
+
+    def test_connect_forwards_alias_and_allow_multiple(self) -> None:
+        seen: list[dict] = []
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(
+                list=lambda **kw: SimpleNamespace(items=[]),
+                link=lambda **kw: seen.append(kw) or SimpleNamespace(
+                    redirect_url="https://composio.example/auth", id="cr_1"
+                ),
+            )
+        )
+        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1"}), \
+                patch.object(service, "_composio", return_value=client):
+            result = service.initiate_connection(
+                PRINCIPAL, "gmail", alias=" work-gmail ", allow_multiple=True,
+            )
+        self.assertEqual(seen[0]["alias"], "work-gmail")
+        self.assertTrue(seen[0]["allow_multiple"])
+        self.assertEqual(result["alias"], "work-gmail")
+
+    def test_a_plain_connect_sends_neither_alias_nor_allow_multiple(self) -> None:
+        # The single-account flow must keep its exact previous request shape.
+        seen: list[dict] = []
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(
+                link=lambda **kw: seen.append(kw) or SimpleNamespace(
+                    redirect_url="https://composio.example/auth", id="cr_1"
+                ),
+            )
+        )
+        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1"}), \
+                patch.object(service, "_composio", return_value=client):
+            service.initiate_connection(PRINCIPAL, "gmail")
+        self.assertEqual(
+            set(seen[0]), {"user_id", "auth_config_id", "callback_url"}
+        )
+
+    # ---- listing ----
+
+    def test_accounts_are_listed_newest_first(self) -> None:
+        client = self._client_listing([
+            _account("ca_old", created_at="2026-01-01T00:00:00Z"),
+            _account("ca_new", created_at="2026-06-01T00:00:00Z"),
+        ])
+        with patch.object(service, "_composio", return_value=client):
+            rows = service.list_toolkit_accounts(PRINCIPAL, "gmail")
+        self.assertEqual(
+            [r["connected_account_id"] for r in rows], ["ca_new", "ca_old"]
+        )
+
+    def test_a_row_with_no_timestamp_sorts_last_instead_of_crashing(self) -> None:
+        client = self._client_listing([
+            _account("ca_undated"),
+            _account("ca_dated", created_at="2026-01-01T00:00:00Z"),
+        ])
+        with patch.object(service, "_composio", return_value=client):
+            rows = service.list_toolkit_accounts(PRINCIPAL, "gmail")
+        self.assertEqual(
+            [r["connected_account_id"] for r in rows], ["ca_dated", "ca_undated"]
+        )
+
+    def test_foreign_toolkit_rows_are_dropped_even_if_the_api_ignores_the_filter(self) -> None:
+        client = self._client_listing([
+            _account("ca_1", "gmail"), _account("ca_2", "notion"),
+        ])
+        with patch.object(service, "_composio", return_value=client):
+            rows = service.list_toolkit_accounts(PRINCIPAL, "gmail")
+        self.assertEqual([r["connected_account_id"] for r in rows], ["ca_1"])
+
+    def test_alias_and_created_at_reach_the_caller(self) -> None:
+        client = self._client_listing([
+            _account("ca_1", alias="work", created_at="2026-01-01T00:00:00Z"),
+        ])
+        with patch.object(service, "_composio", return_value=client):
+            row = service.list_connections(PRINCIPAL)[0]
+        self.assertEqual(row["alias"], "work")
+        self.assertEqual(row["created_at"], "2026-01-01T00:00:00Z")
+        self.assertFalse(row["is_disabled"])
+
+    # ---- pinning ----
+
+    def test_one_account_per_toolkit_reaches_the_session_when_multi_is_off(self) -> None:
+        # A session created with two ids for one toolkit is rejected outright, so
+        # the newest wins — the same account Composio would have picked.
+        client = self._client_listing([
+            _account("ca_old", created_at="2026-01-01T00:00:00Z"),
+            _account("ca_new", created_at="2026-06-01T00:00:00Z"),
+        ])
+        with patch.object(service, "_composio", return_value=client):
+            pinned = service.pinned_connected_accounts(PRINCIPAL)
+        self.assertEqual(pinned, {"gmail": ["ca_new"]})
+
+    def test_several_accounts_are_pinned_when_multi_is_on(self) -> None:
+        client = self._client_listing([
+            _account("ca_old", created_at="2026-01-01T00:00:00Z"),
+            _account("ca_new", created_at="2026-06-01T00:00:00Z"),
+        ])
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}), \
+                patch.object(service, "_composio", return_value=client):
+            pinned = service.pinned_connected_accounts(PRINCIPAL)
+        self.assertEqual(pinned, {"gmail": ["ca_new", "ca_old"]})
+
+    def test_pinning_never_exceeds_the_configured_maximum(self) -> None:
+        client = self._client_listing([
+            _account(f"ca_{i}", created_at=f"2026-0{i}-01T00:00:00Z")
+            for i in range(1, 5)
+        ])
+        with patch.dict(os.environ, {
+            "COMPOSIO_MULTI_ACCOUNT": "1", "COMPOSIO_MULTI_ACCOUNT_MAX": "2",
+        }), patch.object(service, "_composio", return_value=client):
+            pinned = service.pinned_connected_accounts(PRINCIPAL)
+        self.assertEqual(pinned, {"gmail": ["ca_4", "ca_3"]})
+
+    def test_a_disabled_account_is_not_pinned(self) -> None:
+        client = self._client_listing([
+            _account("ca_off", created_at="2026-06-01T00:00:00Z", is_disabled=True),
+            _account("ca_on", created_at="2026-01-01T00:00:00Z"),
+        ])
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}), \
+                patch.object(service, "_composio", return_value=client):
+            pinned = service.pinned_connected_accounts(PRINCIPAL)
+        self.assertEqual(pinned, {"gmail": ["ca_on"]})
+
+    # ---- the session ----
+
+    def test_session_creation_omits_multi_account_when_the_flag_is_off(self) -> None:
+        seen: list[dict] = []
+        client = self._fake_client(
+            create=lambda **kw: seen.append(kw) or SimpleNamespace(
+                session_id="sess_1",
+                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
+            )
+        )
+        with patch.object(service, "_composio", return_value=client):
+            service.get_session(PRINCIPAL)
+        self.assertNotIn("multi_account", seen[0])
+
+    def test_session_creation_carries_the_multi_account_block(self) -> None:
+        seen: list[dict] = []
+        client = self._fake_client(
+            create=lambda **kw: seen.append(kw) or SimpleNamespace(
+                session_id="sess_1",
+                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
+            )
+        )
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}), \
+                patch.object(service, "_composio", return_value=client):
+            service.get_session(PRINCIPAL)
+        self.assertTrue(seen[0]["multi_account"]["enable"])
+
+    def test_an_existing_session_converges_when_the_flag_is_turned_off(self) -> None:
+        # multi_account is sent as None rather than omitted: a session minted
+        # while the flag was on must stop being a multi-account session.
+        seen: list[dict] = []
+        client = self._fake_client(
+            use=lambda sid: SimpleNamespace(
+                update=lambda **kw: seen.append(kw),
+                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
+            )
+        )
+        service._SESSIONS_LOADED = True
+        service._SESSION_IDS[PRINCIPAL] = "sess_1"
+        with patch.object(service, "_composio", return_value=client):
+            service.sync_session(PRINCIPAL)
+        self.assertIsNone(seen[0]["multi_account"])
+
+    def test_a_rejected_session_update_falls_back_to_a_re_mint(self) -> None:
+        def _boom(**_kw):
+            raise RuntimeError("unsupported field")
+
+        client = self._fake_client(
+            use=lambda sid: SimpleNamespace(update=_boom),
+        )
+        service._SESSIONS_LOADED = True
+        service._SESSION_IDS[PRINCIPAL] = "sess_1"
+        with patch.object(service, "_composio", return_value=client):
+            service.sync_session(PRINCIPAL)
+        self.assertNotIn(PRINCIPAL, service._SESSION_IDS)
 
 
 class ActionPrefsTests(_ComposioBase):
@@ -623,6 +941,111 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             )
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("multi_tenant_warning", json.loads(response.body))
+
+    async def test_toolkits_report_the_account_count_and_multi_account_state(self) -> None:
+        rows = [
+            {"toolkit": "GMAIL", "connected_account_id": "ca_1", "status": "ACTIVE",
+             "alias": "work", "created_at": "2026-06-01T00:00:00Z"},
+            {"toolkit": "GMAIL", "connected_account_id": "ca_2", "status": "ACTIVE",
+             "alias": "personal", "created_at": "2026-01-01T00:00:00Z"},
+        ]
+        with patch.object(service, "list_connections", return_value=rows):
+            response = await router_mod.list_toolkits(user_id=PRINCIPAL)
+        body = json.loads(response.body)
+        gmail = next(t for t in body["toolkits"] if t["id"] == "gmail")
+        self.assertEqual(gmail["account_count"], 2)
+        # Newest first, so the primary shown on the card is the newer account.
+        self.assertEqual(gmail["alias"], "work")
+        self.assertFalse(body["multi_account"]["enable"])
+
+    async def test_accounts_route_marks_the_default_and_the_pinned_ones(self) -> None:
+        rows = [
+            {"toolkit": "GMAIL", "connected_account_id": "ca_new", "status": "ACTIVE",
+             "alias": "work", "created_at": "2026-06-01T00:00:00Z"},
+            {"toolkit": "GMAIL", "connected_account_id": "ca_old", "status": "ACTIVE",
+             "alias": None, "created_at": "2026-01-01T00:00:00Z"},
+        ]
+        with patch.object(service, "list_connections", return_value=rows):
+            response = await router_mod.list_toolkit_accounts(
+                "gmail", user_id=PRINCIPAL
+            )
+        accounts = json.loads(response.body)["accounts"]
+        self.assertEqual(
+            [a["connected_account_id"] for a in accounts], ["ca_new", "ca_old"]
+        )
+        # Multi-account is off here, so only the newest reaches the session.
+        self.assertEqual([a["pinned"] for a in accounts], [True, False])
+        self.assertEqual([a["is_default"] for a in accounts], [True, False])
+
+    async def test_accounts_route_rejects_an_unknown_toolkit(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            await router_mod.list_toolkit_accounts("nosuch", user_id=PRINCIPAL)
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_connect_with_a_taken_alias_is_a_409_not_a_422(self) -> None:
+        body = router_mod.ConnectBody(alias="work", allow_multiple=True)
+        with patch.object(
+            service, "initiate_connection",
+            side_effect=service.AliasInUseError("taken by ca_1"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await router_mod.connect("gmail", body, user_id=PRINCIPAL)
+        self.assertEqual(raised.exception.status_code, 409)
+
+    async def test_alias_on_an_account_you_do_not_own_is_a_404(self) -> None:
+        body = router_mod.AliasBody(alias="work")
+        with patch.object(service, "list_connections", return_value=[]):
+            with self.assertRaises(HTTPException) as raised:
+                await router_mod.put_account_alias(
+                    "gmail", "ca_someone_else", body, user_id=PRINCIPAL,
+                )
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_alias_collision_through_the_router_is_a_409(self) -> None:
+        rows = [
+            {"toolkit": "GMAIL", "connected_account_id": "ca_1", "alias": None,
+             "status": "ACTIVE"},
+            {"toolkit": "GMAIL", "connected_account_id": "ca_2", "alias": "work",
+             "status": "ACTIVE"},
+        ]
+        body = router_mod.AliasBody(alias="work")
+        with patch.object(service, "list_connections", return_value=rows):
+            with self.assertRaises(HTTPException) as raised:
+                await router_mod.put_account_alias(
+                    "gmail", "ca_1", body, user_id=PRINCIPAL,
+                )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("ca_2", raised.exception.detail)
+
+    async def test_alias_write_failure_is_a_502(self) -> None:
+        rows = [{"toolkit": "GMAIL", "connected_account_id": "ca_1",
+                 "alias": None, "status": "ACTIVE"}]
+        body = router_mod.AliasBody(alias="work")
+        with patch.object(service, "list_connections", return_value=rows), \
+                patch.object(
+                    service, "set_alias", side_effect=RuntimeError("composio said no")
+                ):
+            with self.assertRaises(HTTPException) as raised:
+                await router_mod.put_account_alias(
+                    "gmail", "ca_1", body, user_id=PRINCIPAL,
+                )
+        self.assertEqual(raised.exception.status_code, 502)
+
+    async def test_clearing_an_alias_re_syncs_the_session(self) -> None:
+        # The alias is resolved inside the session, so a rename the session has
+        # not seen would leave the agent naming an account that does not exist.
+        rows = [{"toolkit": "GMAIL", "connected_account_id": "ca_1",
+                 "alias": "work", "status": "ACTIVE"}]
+        body = router_mod.AliasBody(alias=None)
+        with patch.object(service, "list_connections", return_value=rows), \
+                patch.object(service, "set_alias", return_value=None) as set_alias, \
+                patch.object(service, "sync_session") as sync:
+            response = await router_mod.put_account_alias(
+                "gmail", "ca_1", body, user_id=PRINCIPAL,
+            )
+        set_alias.assert_called_once_with("ca_1", None)
+        sync.assert_called_once_with(PRINCIPAL)
+        self.assertIsNone(json.loads(response.body)["alias"])
 
     async def test_callback_reports_provider_failure_as_400(self) -> None:
         response = await router_mod.composio_callback(

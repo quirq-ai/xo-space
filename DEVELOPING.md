@@ -412,7 +412,33 @@ Degradation is per-scope, and worth knowing when reading a bug report:
 and need no scoping (§10.1). Locks live under `~/.quirq/watcher/locks/`, which is
 why tests must point `QUIRQ_STATE_ROOT` at a temp dir — see `tests/test_composio.py`.
 
-### 10.5 The UI
+### 10.5 Multiple connected accounts
+
+A principal can hold more than one account per toolkit (work and personal
+Gmail). Two switches, and they are independent:
+
+- **At Composio** — `POST .../{toolkit}/connect` with `allow_multiple: true`
+  adds an account instead of replacing the existing one, and `alias` labels it.
+  Aliases must be unique per user and toolkit; `service.assert_alias_free`
+  checks that before the call so a collision is a 409, not an opaque 502.
+- **In the session** — `COMPOSIO_MULTI_ACCOUNT=1` puts a `multi_account` block
+  on every session, which is what lets *several* accounts of one toolkit reach
+  the agent at once. With it off, `pinned_connected_accounts` pins exactly one
+  account per toolkit — the newest active one, matching what Composio would
+  pick itself. Pinning two with the flag off is rejected at session creation,
+  which is why the cap is enforced here rather than left to the API.
+
+So an extra account connected while the flag is off is stored and visible, but
+only the newest one reaches the agent. `/connect` logs that case rather than
+refusing it — swapping accounts is a legitimate reason to connect a second one.
+
+`GET .../{toolkit}/accounts` lists them newest-first with `alias`, `pinned` and
+`is_default`; `PUT .../{toolkit}/accounts/{id}/alias` sets or clears a label
+(a null or empty alias clears it). Both re-sync the session, because the alias
+is resolved *inside* the session — an agent passing `account: "work-gmail"`
+against a session that has not seen the rename gets nothing.
+
+### 10.6 The UI
 
 `space_ui/js/views/connectors.js` renders the toolkits. It is the only view that
 authenticates: `js/core/session.js` mints the session id and `apiFetch`'s
