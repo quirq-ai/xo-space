@@ -110,11 +110,110 @@ def _callback_url() -> str:
     ).strip()
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+# Composio rejects a max outside this range, so the env value is clamped rather
+# than forwarded: an operator typo must not make every session creation 400.
+MULTI_ACCOUNT_MIN_MAX = 2
+MULTI_ACCOUNT_MAX_MAX = 10
+MULTI_ACCOUNT_DEFAULT_MAX = 5
+
+ALIAS_MAX_LENGTH = 128
+
+
+def multi_account_config() -> Optional[dict[str, Any]]:
+    """The session `multi_account` block, or None when the feature is off.
+
+    Off is the Composio default: one account per toolkit per session, the most
+    recently connected one. Turning it on lets a principal hold several accounts
+    for the same toolkit (work and personal Gmail) inside one session.
+    """
+    if not _env_flag("COMPOSIO_MULTI_ACCOUNT"):
+        return None
+    raw = os.getenv("COMPOSIO_MULTI_ACCOUNT_MAX", "").strip()
+    try:
+        max_accounts = int(raw) if raw else MULTI_ACCOUNT_DEFAULT_MAX
+    except ValueError:
+        log.warning(
+            "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%r is not an integer; using %d.",
+            raw, MULTI_ACCOUNT_DEFAULT_MAX,
+        )
+        max_accounts = MULTI_ACCOUNT_DEFAULT_MAX
+    clamped = max(MULTI_ACCOUNT_MIN_MAX, min(MULTI_ACCOUNT_MAX_MAX, max_accounts))
+    if clamped != max_accounts:
+        log.warning(
+            "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%d is outside %d-%d; using %d.",
+            max_accounts, MULTI_ACCOUNT_MIN_MAX, MULTI_ACCOUNT_MAX_MAX, clamped,
+        )
+    return {
+        "enable": True,
+        "max_accounts_per_toolkit": clamped,
+        # When true and a toolkit has more than one active account, the agent
+        # must name one via the tool call's `account` parameter (id or alias)
+        # instead of silently getting the most recent.
+        "require_explicit_selection": _env_flag(
+            "COMPOSIO_MULTI_ACCOUNT_REQUIRE_SELECTION"
+        ),
+    }
+
+
+def multi_account_enabled() -> bool:
+    return multi_account_config() is not None
+
+
+def normalize_alias(alias: Optional[str]) -> Optional[str]:
+    """Fold an alias to its stored form: trimmed, or None to mean "cleared"."""
+    text = (alias or "").strip()
+    if not text:
+        return None
+    if len(text) > ALIAS_MAX_LENGTH:
+        raise ValueError(
+            f"Alias is too long ({len(text)} chars); the limit is {ALIAS_MAX_LENGTH}."
+        )
+    return text
+
+
+class AliasInUseError(ValueError):
+    """An alias is already taken by another account of the same toolkit."""
+
+
+def assert_alias_free(
+    user_id: str,
+    toolkit_id: str,
+    alias: str,
+    *,
+    except_account_id: Optional[str] = None,
+) -> None:
+    """Composio requires an alias to be unique per user and toolkit.
+
+    Checked here so a collision is a 409 naming the account that holds the
+    alias, rather than an opaque SDK error surfaced as a 502.
+    """
+    slug = toolkit_meta(toolkit_id).slug
+    folded = alias.casefold()
+    for row in list_connections(user_id, toolkit_slugs=[slug]):
+        if row.get("connected_account_id") == except_account_id:
+            continue
+        existing = (row.get("alias") or "").strip()
+        if existing and existing.casefold() == folded:
+            raise AliasInUseError(
+                f"Alias {alias!r} is already used by connected account "
+                f"{row.get('connected_account_id')} on {slug}."
+            )
+
+
 def initiate_connection(
     user_id: str,
     toolkit_id: str,
     auth_scheme: str = "OAUTH2",
     redirect_uri: Optional[str] = None,
+    alias: Optional[str] = None,
+    allow_multiple: bool = False,
 ) -> dict[str, Any]:
     # Every toolkit in TOOLKITS is OAUTH2-only, so _auth_config_id_for raises
     # for any other scheme before we get here. Re-add an API_KEY branch (via
@@ -122,15 +221,27 @@ def initiate_connection(
     scheme = auth_scheme.upper()
     auth_config_id = _auth_config_id_for(toolkit_id, scheme)
     callback = redirect_uri or _callback_url()
+    alias = normalize_alias(alias)
+    if alias:
+        assert_alias_free(user_id, toolkit_id, alias)
 
-    request = _composio().connected_accounts.link(
-        user_id=user_id,
-        auth_config_id=auth_config_id,
-        callback_url=callback,
-    )
+    link_kwargs: dict[str, Any] = {
+        "user_id": user_id,
+        "auth_config_id": auth_config_id,
+        "callback_url": callback,
+    }
+    if alias:
+        link_kwargs["alias"] = alias
+    if allow_multiple:
+        # Without this Composio reuses/replaces the existing account for this
+        # user + auth config instead of adding a second one.
+        link_kwargs["allow_multiple"] = True
+
+    request = _composio().connected_accounts.link(**link_kwargs)
     return {
         "auth_url": _attr(request, "redirect_url"),
         "connection_request_id": _attr(request, "id"),
+        "alias": alias,
     }
 
 
@@ -149,12 +260,17 @@ def check_connection(connection_request_id: str) -> dict[str, Any]:
 
 
 def list_connections(
-    user_id: str, *, statuses: Optional[list[str]] = None,
+    user_id: str,
+    *,
+    statuses: Optional[list[str]] = None,
+    toolkit_slugs: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     client = _composio()
     list_kwargs: dict[str, Any] = {"user_ids": [user_id]}
     if statuses:
         list_kwargs["statuses"] = statuses
+    if toolkit_slugs:
+        list_kwargs["toolkit_slugs"] = [s.lower() for s in toolkit_slugs]
     try:
         page = client.connected_accounts.list(**list_kwargs)
     except Exception as exc:
@@ -174,8 +290,60 @@ def list_connections(
             "connected_account_id": _attr(it, "id"),
             "status": _attr(it, "status", default="UNKNOWN"),
             "scheme": _attr(it, "auth_scheme", default=None),
+            # Multi-account fields. `alias` is the human label an agent can pass
+            # as a tool call's `account`; `created_at` is what "most recently
+            # connected" means when no account is named.
+            "alias": _attr(it, "alias", default=None),
+            "created_at": _attr(it, "created_at", default=None),
+            "is_disabled": bool(_attr(it, "is_disabled", default=False)),
         })
     return out
+
+
+def newest_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort connection rows newest-first, tolerating a missing created_at.
+
+    Composio's ISO-8601 timestamps sort lexicographically, so no parsing is
+    needed; a row with no timestamp sorts last rather than crashing the sort.
+    """
+    return sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+
+def list_toolkit_accounts(user_id: str, toolkit_id: str) -> list[dict[str, Any]]:
+    """Every connected account this principal holds for one toolkit.
+
+    Newest first, which is also the order Composio resolves "the default
+    account" in when a tool call names none.
+    """
+    meta = toolkit_meta(toolkit_id)
+    rows = [
+        row
+        for row in list_connections(user_id, toolkit_slugs=[meta.slug])
+        # The slug filter is server-side, but an SDK that ignores the parameter
+        # would otherwise leak other toolkits' accounts into this list.
+        if (row.get("toolkit") or "").upper() == meta.slug
+    ]
+    return newest_first(rows)
+
+
+def set_alias(connected_account_id: str, alias: Optional[str]) -> Optional[str]:
+    """Set or clear one connected account's alias.
+
+    Returns the stored alias (None when cleared). Raises RuntimeError on an SDK
+    failure — unlike the read paths, a silent no-op here would leave the caller
+    believing a rename happened.
+    """
+    normalized = normalize_alias(alias)
+    try:
+        _composio().connected_accounts.update(
+            connected_account_id, alias=normalized or "",
+        )
+    except Exception as exc:
+        log.warning(
+            "composio: set_alias failed for account=%s: %s", connected_account_id, exc,
+        )
+        raise RuntimeError(f"Composio rejected the alias update: {exc}") from exc
+    return normalized
 
 
 def disconnect(connected_account_id: str) -> bool:
@@ -384,21 +552,42 @@ def _disabled_tools_config(user_id: str) -> dict[str, dict[str, list[str]]]:
     }
 
 
-def _pinned_connected_accounts(user_id: str) -> dict[str, list[str]]:
+def pinned_connected_accounts(user_id: str) -> dict[str, list[str]]:
+    """Which connected accounts this principal's session may use, per toolkit.
+
+    With multi-account mode off a session may only carry one account per
+    toolkit, so a principal holding two active Gmail accounts gets the most
+    recently connected one — the same account Composio would pick itself.
+    Pinning both would be rejected at session creation.
+    """
     pinned: dict[str, list[str]] = {}
     try:
         rows = list_connections(user_id, statuses=["ACTIVE"])
     except Exception as exc:
         log.warning("composio: list_connections failed while building pin map for user=%s: %s", user_id, exc)
         return pinned
-    for row in rows:
+    multi = multi_account_config()
+    per_toolkit_cap = (
+        int(multi["max_accounts_per_toolkit"]) if multi else 1
+    )
+    for row in newest_first(rows):
         if (row.get("status") or "").upper() != "ACTIVE":
+            continue
+        if row.get("is_disabled"):
             continue
         slug = (row.get("toolkit") or "").lower()
         cid = row.get("connected_account_id")
         if not slug or not cid:
             continue
-        pinned.setdefault(slug, []).append(cid)
+        bucket = pinned.setdefault(slug, [])
+        if len(bucket) >= per_toolkit_cap:
+            log.info(
+                "composio: user=%s has more than %d active %s account(s); "
+                "pinning the newest and skipping %s.",
+                user_id, per_toolkit_cap, slug.upper(), cid,
+            )
+            continue
+        bucket.append(cid)
     return pinned
 
 
@@ -421,9 +610,14 @@ def sync_session(user_id: str) -> None:
         return
     try:
         session = _composio().use(sid)
+        # multi_account is passed even when it is None: that is how a session
+        # minted while the flag was on converges after the operator turns it
+        # off. If the API rejects the shape the except below re-mints, which
+        # reaches the same state by the other road.
         session.update(
-            connected_accounts=_pinned_connected_accounts(user_id),
+            connected_accounts=pinned_connected_accounts(user_id),
             tools=_disabled_tools_config(user_id),
+            multi_account=multi_account_config(),
         )
         log.info("composio: updated session %s for user=%s", sid, user_id)
     except Exception as exc:
@@ -450,7 +644,10 @@ def get_session(user_id: str):
         "tools": _disabled_tools_config(user_id),
         "mcp": True,
     }
-    pinned = _pinned_connected_accounts(user_id)
+    multi = multi_account_config()
+    if multi:
+        create_kwargs["multi_account"] = multi
+    pinned = pinned_connected_accounts(user_id)
     if pinned:
         create_kwargs["connected_accounts"] = pinned
     session = _composio().create(**create_kwargs)
