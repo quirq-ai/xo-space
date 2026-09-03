@@ -554,6 +554,38 @@ install_cli() {
 }
 
 # ==============================================================
+# Setup: Install the @openclaw/codex plugin
+#
+# Runs right after install_cli on every `setup`. `openclaw plugins install`
+# refuses a plugin id that is already installed (it points at
+# `plugins update` instead), so probe `openclaw plugins list --json` first
+# and skip when the plugin is present. A failed install is a warning, not
+# fatal — the gateway must still start without the plugin.
+# ==============================================================
+OPENCLAW_CODEX_PLUGIN="@openclaw/codex"
+
+install_codex_plugin() {
+    if ! command -v openclaw &>/dev/null; then
+        log_warn "openclaw CLI not found — skipping ${OPENCLAW_CODEX_PLUGIN} plugin install"
+        return 0
+    fi
+
+    local listing
+    listing="$(openclaw plugins list --json 2>/dev/null || true)"
+    if printf '%s' "$listing" | grep -Eq '"(@openclaw/codex|codex)"'; then
+        log "${OPENCLAW_CODEX_PLUGIN} plugin already installed — skipping"
+        return 0
+    fi
+
+    log "Installing ${OPENCLAW_CODEX_PLUGIN} plugin..."
+    if openclaw plugins install "$OPENCLAW_CODEX_PLUGIN" --accept-capabilities; then
+        log_success "${OPENCLAW_CODEX_PLUGIN} plugin installed"
+    else
+        log_warn "Failed to install ${OPENCLAW_CODEX_PLUGIN} plugin — continuing without it"
+    fi
+}
+
+# ==============================================================
 # Setup: Install missing peer deps for OpenClaw extensions
 #
 # Some OpenClaw extensions import npm packages they don't bundle
@@ -930,6 +962,7 @@ run_setup() {
     install_env
     enable_channels
     install_cli
+    install_codex_plugin
     configure_openrouter
     install_openclaw_peer_deps
     log "Running config doctor..."
