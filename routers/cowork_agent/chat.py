@@ -15,6 +15,7 @@ _dispatcher_sse. No backend is named in this file.
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 
@@ -25,6 +26,8 @@ from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.chat_state import active_streams
 from services.xo_manifest import resolve_agent_name
 
+log = logging.getLogger(__name__)
+
 # Tracks recently-started streams so a fast reconnect (e.g. navigation-caused
 # double-mount) gets a graceful done event rather than "Stream not found".
 # Maps stream_id -> {session_id, started_at}
@@ -32,6 +35,30 @@ _recently_started: dict[str, dict] = {}
 _RECENTLY_STARTED_TTL = 600  # seconds — must outlast SSE_HEARTBEAT_TIMEOUT (45s) + full reconnect backoff
 
 router = APIRouter()
+
+
+async def _resolve_user_id(request: Request) -> str | None:
+    """Resolve the Composio user_id for an incoming chat request.
+
+    Identity comes only from the request's ``Authorization: Bearer`` token, so
+    the launching user is always real and can never be spoofed via
+    ``body.user_id``. This selects nothing but the Composio user baked into the
+    per-session MCP config; chat/session storage is unchanged.
+
+    Returns None when the request carries no valid identity. Chat still runs —
+    the agent simply gets no Composio MCP server for that turn, which is the
+    only safe answer: there is no shared account to fall back to.
+    """
+    from services.cowork_agent.composio.identity import resolve_user_from_bearer
+
+    user_id = await resolve_user_from_bearer(request)
+    if not user_id:
+        log.warning(
+            "chat: no valid session bearer on this prompt — the turn runs "
+            "without Composio tools. Mint a session id via POST /xo-auth/session "
+            "and send it as 'X-XO-Session: <session_id>'."
+        )
+    return user_id
 
 
 def _resolve_backend_for_session(session_id: str) -> str | None:
@@ -115,6 +142,7 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
     agent_id = stream_info.get("agent_id")
     model = stream_info.get("model")
     is_new_session = stream_info.get("is_new_session", False)
+    user_id = stream_info.get("user_id")
 
     if is_new_session and our_session_id:
         event_id = 1
@@ -137,6 +165,7 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
                 agent_id=agent_id,
                 model=model,
                 is_new_session=is_new_session,
+                user_id=user_id,
             ):
                 await queue.put(event)
         except Exception as exc:
@@ -269,6 +298,7 @@ async def chat_prompt(request: Request):
         "agent_id": agent_id,
         "model": body.get("model"),
         "is_new_session": is_new_session,
+        "user_id": await _resolve_user_id(request),
     }
     return {"stream_id": stream_id, "session_id": our_session_id}
 
