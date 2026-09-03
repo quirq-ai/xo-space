@@ -34,6 +34,7 @@ from .usage import router as usage_router
 from .connectors.vercel import router as vercel_router
 from .workspace_memory import router as workspace_memory_router
 from .bff import bff_routers
+from .opentelemetry import router as opentelemetry_router
 from .xo_projects_sync import router as xo_projects_sync_router
 
 
@@ -52,6 +53,7 @@ def _active_agent_routes() -> list[APIRouter]:
 
 all_routers: list[APIRouter] = [
     sessions_router,
+    opentelemetry_router,
     chat_router,
     agents_router,
     config_router,
