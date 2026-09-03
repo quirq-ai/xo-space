@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from services.cowork_agent.commit_relay import status
+from services.cowork_agent.project_sharing import status
 
 R = "github.com/acme/trip-planner"
 

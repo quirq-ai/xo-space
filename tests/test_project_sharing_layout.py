@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.commit_relay import config, git_ops
+from services.cowork_agent.project_sharing import config, git_ops
 
 
 class GitRepoDirsTests(unittest.TestCase):
@@ -27,28 +27,28 @@ class GitRepoDirsTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_parked_reasons_in_priority_order(self) -> None:
-        with patch.dict(os.environ, {"RELAY_ENABLED": "false", "XO_PROJECT_ID": "ws-a"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "false", "XO_PROJECT_ID": "ws-a"}):
             with patch.object(config, "auth_token", return_value="tok"):
                 self.assertEqual(config.parked_reason(), "disabled")
-        with patch.dict(os.environ, {"RELAY_ENABLED": "true", "XO_PROJECT_ID": ""}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_PROJECT_ID": ""}):
             with patch.object(config, "auth_token", return_value="tok"):
                 self.assertEqual(config.parked_reason(), "no_workspace_id")
-        with patch.dict(os.environ, {"RELAY_ENABLED": "true", "XO_PROJECT_ID": "ws-a"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_PROJECT_ID": "ws-a"}):
             with patch.object(config, "auth_token", return_value=None):
                 self.assertEqual(config.parked_reason(), "no_auth")
             with patch.object(config, "auth_token", return_value="tok"):
                 self.assertIsNone(config.parked_reason())
 
     def test_interval_has_a_floor_and_a_default(self) -> None:
-        with patch.dict(os.environ, {"RELAY_POLL_INTERVAL_SECONDS": ""}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_POLL_INTERVAL_SECONDS": ""}):
             self.assertEqual(config.poll_interval(), 60.0)
-        with patch.dict(os.environ, {"RELAY_POLL_INTERVAL_SECONDS": "1"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_POLL_INTERVAL_SECONDS": "1"}):
             self.assertEqual(config.poll_interval(), 5.0)
-        with patch.dict(os.environ, {"RELAY_POLL_INTERVAL_SECONDS": "junk"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_POLL_INTERVAL_SECONDS": "junk"}):
             self.assertEqual(config.poll_interval(), 60.0)
 
     def test_jitter_stays_within_ratio(self) -> None:
-        with patch.dict(os.environ, {"RELAY_POLL_INTERVAL_SECONDS": "60", "RELAY_POLL_JITTER_RATIO": "0.2"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_POLL_INTERVAL_SECONDS": "60", "PROJECT_SHARING_POLL_JITTER_RATIO": "0.2"}):
             for _ in range(50):
                 v = config.jittered_interval()
                 self.assertGreaterEqual(v, 48.0)

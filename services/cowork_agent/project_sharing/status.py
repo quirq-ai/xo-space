@@ -2,7 +2,7 @@
 on the first tick. Single-process writer (the poller task); readers get copies.
 
 Two read shapes:
-- snapshot(): everything, for GET /api/relay/status.
+- snapshot(): everything, for GET /api/project-sharing/status.
 - feed_view(): a stable projection (no timestamps, no counters) for a
   change-published feed. `on_change` callbacks fire when it changes.
 
@@ -173,5 +173,5 @@ def notify_if_changed() -> bool:
         try:
             cb()
         except Exception as exc:  # noqa: BLE001 — a listener must not break the loop
-            log.warning("commit_relay: on_change listener failed: %s", exc)
+            log.warning("project_sharing: on_change listener failed: %s", exc)
     return True

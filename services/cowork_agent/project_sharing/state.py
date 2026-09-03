@@ -1,4 +1,4 @@
-"""Per-repo relay state, machine-local, under ~/.quirq/relay/.
+"""Per-repo relay state, machine-local, under ~/.quirq/project_sharing/.
 
 One JSON file per repo identity holding two independent fields:
 `last_reported` (publish step: last remote SHA announced to swarm) and
@@ -26,8 +26,8 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def relay_state_dir() -> Path:
-    """~/.quirq/relay (or under QUIRQ_STATE_ROOT). Not pre-created here."""
-    return quirq_state_dir() / "relay"
+    """~/.quirq/project_sharing (or under QUIRQ_STATE_ROOT). Not pre-created here."""
+    return quirq_state_dir() / "project_sharing"
 
 
 def state_path(repo: str) -> Path:
@@ -51,7 +51,7 @@ def _read(repo: str) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception as exc:  # noqa: BLE001 — corrupt state degrades to empty
-        log.debug("commit_relay: bad state %s: %s", path, exc)
+        log.debug("project_sharing: bad state %s: %s", path, exc)
         return {}
 
 

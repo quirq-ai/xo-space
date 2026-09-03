@@ -63,8 +63,8 @@ services/
     connectors/                   one package per external service: gdrive/ onedrive/ github/
                                     vercel/ manus/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
-    commit_relay/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
-                                    state in ~/.quirq/relay/, routes in bff/relay.py
+    project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
+                                    state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 ```
 
@@ -318,8 +318,8 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
-| `XO_PROJECT_ID` | this workspace's id at the swarm; the commit relay parks without it | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/commit_relay/config.py` |
-| `RELAY_ENABLED` / `RELAY_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/commit_relay/config.py` |
+| `XO_PROJECT_ID` | this workspace's id at the swarm; the commit relay parks without it | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py` |
+| `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
 | `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
 

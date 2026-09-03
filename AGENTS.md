@@ -11,9 +11,9 @@
 - Put endpoint modules in `routers/` via `APIRouter`.
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
-- The commit relay (`services/cowork_agent/commit_relay/`) is core, agent-free code:
+- Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free code:
   `config.py` is its only env reader, `service.py` its only router-facing surface,
-  and per-repo bookmarks live under `~/.quirq/relay/`, never in a project's `.xo/`.
+  and per-repo bookmarks live under `~/.quirq/project_sharing/`, never in a project's `.xo/`.
 
 ## Agent-modular architecture (read before touching core)
 

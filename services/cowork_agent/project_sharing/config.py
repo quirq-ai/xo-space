@@ -20,16 +20,16 @@ def workspace_id() -> str | None:
 
 
 def enabled() -> bool:
-    raw = (os.getenv("RELAY_ENABLED", "true") or "true").strip().lower()
+    raw = (os.getenv("PROJECT_SHARING_ENABLED", "true") or "true").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
 def watch_branch() -> str:
-    return (os.getenv("RELAY_WATCH_BRANCH", "main") or "main").strip() or "main"
+    return (os.getenv("PROJECT_SHARING_WATCH_BRANCH", "main") or "main").strip() or "main"
 
 
 def poll_interval() -> float:
-    raw = (os.getenv("RELAY_POLL_INTERVAL_SECONDS", "") or "").strip()
+    raw = (os.getenv("PROJECT_SHARING_POLL_INTERVAL_SECONDS", "") or "").strip()
     try:
         value = float(raw) if raw else DEFAULT_INTERVAL
     except ValueError:
@@ -38,7 +38,7 @@ def poll_interval() -> float:
 
 
 def jitter_ratio() -> float:
-    raw = (os.getenv("RELAY_POLL_JITTER_RATIO", "") or "").strip()
+    raw = (os.getenv("PROJECT_SHARING_POLL_JITTER_RATIO", "") or "").strip()
     try:
         value = float(raw) if raw else DEFAULT_JITTER
     except ValueError:

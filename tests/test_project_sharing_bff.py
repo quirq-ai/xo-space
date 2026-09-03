@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import relay as relay_routes
+from routers.cowork_agent.bff import project_sharing as relay_routes
 from routers.cowork_agent.bff.filters import is_valid_workspace_id
-from services.cowork_agent.commit_relay import service
+from services.cowork_agent.project_sharing import service
 
 
 def client() -> TestClient:
@@ -32,7 +32,7 @@ class WorkspaceIdPredicateTests(unittest.TestCase):
 class RelayRoutesTests(unittest.TestCase):
     def test_status_passes_through_snapshot(self) -> None:
         with patch.object(service, "status_snapshot", return_value={"cadence": "parked", "reason": "no_auth", "own_workspace_id": None, "watch_branch": "main"}):
-            r = client().get("/api/relay/status")
+            r = client().get("/api/project-sharing/status")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["reason"], "no_auth")
 

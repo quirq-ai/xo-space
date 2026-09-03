@@ -1,12 +1,12 @@
 """BFF routes for the commit relay — the Space UI's only relay surface.
 
-  GET  /api/relay/status                      window into the poller
+  GET  /api/project-sharing/status                      window into the poller
   GET  /api/xo-projects/{id}/commits          local git read (origin/<branch>, behind count)
   GET  /api/xo-projects/{id}/members          proxy to swarm
   POST /api/xo-projects/{id}/share            proxy to swarm, body {workspace_id}
   POST /api/xo-projects/{id}/revoke           proxy to swarm, body {workspace_id}
 
-Declarative over services.cowork_agent.commit_relay.service (typed errors →
+Declarative over services.cowork_agent.project_sharing.service (typed errors →
 HTTP here). No os/pathlib in this module (BFF rule P2). The browser never
 talks to swarm and never sees the token.
 """
@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from routers.cowork_agent.bff.filters import is_valid_workspace_id
-from services.cowork_agent.commit_relay import service
+from services.cowork_agent.project_sharing import service
 
 router = APIRouter()
 
@@ -38,7 +38,7 @@ def _workspace_id_or_422(body: ShareBody, what: str) -> str:
     return body.workspace_id.strip()
 
 
-@router.get("/api/relay/status")
+@router.get("/api/project-sharing/status")
 def relay_status() -> dict:
     return service.status_snapshot()
 

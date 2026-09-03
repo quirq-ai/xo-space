@@ -737,11 +737,11 @@ async def lifespan(app: FastAPI):
         print("   Watcher: disabled by runtime configuration")
 
     # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
-    # in a single tick, see services/cowork_agent/commit_relay/poller.py).
-    # RELAY_ENABLED=false is an emergency brake; with no XO_PROJECT_ID or no
+    # in a single tick, see services/cowork_agent/project_sharing/poller.py).
+    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_PROJECT_ID or no
     # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
     try:
-        from services.cowork_agent.commit_relay.poller import run_relay_poller
+        from services.cowork_agent.project_sharing.poller import run_relay_poller
         _relay_task = asyncio.create_task(run_relay_poller())
         print("   Relay: background task started")
     except Exception as e:

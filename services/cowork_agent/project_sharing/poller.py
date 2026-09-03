@@ -1,4 +1,4 @@
-"""The relay loop. One flat cadence (RELAY_POLL_INTERVAL_SECONDS, default 60,
+"""The relay loop. One flat cadence (PROJECT_SHARING_POLL_INTERVAL_SECONDS, default 60,
 jittered) or sooner when nudged.
 
 Per tick: enumerate local clones -> one POST /commits/poll -> git fetch repos
@@ -74,7 +74,7 @@ async def local_repo_map() -> dict[str, Path]:
     for repo in dupes:
         out.pop(repo, None)
         status.record_repo_error(repo, None, "two clones of this repo in one workspace — skipped")
-        log.warning("commit_relay: %s cloned twice in this workspace; skipping", repo)
+        log.warning("project_sharing: %s cloned twice in this workspace; skipping", repo)
     return out
 
 
@@ -161,7 +161,7 @@ async def run_tick() -> float:
             try:
                 await watcher.run_tick_repo(ws, repo, repos[repo], branch)
             except Exception as exc:  # noqa: BLE001 — one repo's failure stays its own
-                log.warning("commit_relay publish: %s: %s", repo, exc)
+                log.warning("project_sharing publish: %s: %s", repo, exc)
 
     await asyncio.gather(*(publish(r) for r in membership & set(repos)))
 
@@ -201,14 +201,14 @@ async def wait_for_next_tick(delay: float, scan_every: float = SCAN_INTERVAL) ->
 async def run_relay_poller() -> None:
     """Background entry point. Resilient until cancelled."""
     global _last_local_signature
-    log_line("relay: loop started (flat cadence; RELAY_ENABLED=false to brake)")
+    log_line("relay: loop started (flat cadence; PROJECT_SHARING_ENABLED=false to brake)")
     while True:
         try:
             delay = await run_tick()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — keep the loop alive
-            log.warning("commit_relay poller: tick error: %s", exc)
+            log.warning("project_sharing poller: tick error: %s", exc)
             delay = config.jittered_interval()
         _last_local_signature = _local_signature()
         await wait_for_next_tick(delay)

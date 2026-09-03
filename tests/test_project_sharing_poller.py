@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.commit_relay import config, poller, state, status, watcher
+from services.cowork_agent.project_sharing import config, poller, state, status, watcher
 
 R = "github.com/acme/trip-planner"
 
@@ -28,9 +28,9 @@ class PollerTickTests(unittest.TestCase):
             "QUIRQ_STATE_ROOT": str(self.root / ".quirq"),
             "XO_PROJECTS_ROOT": str(self.root / "projects"),
             "XO_PROJECT_ID": "ws-bbb",
-            "RELAY_ENABLED": "true",
-            "RELAY_POLL_INTERVAL_SECONDS": "60",
-            "RELAY_POLL_JITTER_RATIO": "0",
+            "PROJECT_SHARING_ENABLED": "true",
+            "PROJECT_SHARING_POLL_INTERVAL_SECONDS": "60",
+            "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
         })
         self._env.start()
         self._auth = patch.object(config, "auth_token", return_value="tok")
@@ -57,7 +57,7 @@ class PollerTickTests(unittest.TestCase):
         self.assertEqual(status.snapshot()["reason"], "no_workspace_id")
 
     def test_parked_when_disabled(self) -> None:
-        with patch.dict(os.environ, {"RELAY_ENABLED": "false"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "false"}):
             with patch.object(poller.swarm_client, "poll", new=AsyncMock()) as p:
                 run(poller.run_tick())
         p.assert_not_called()

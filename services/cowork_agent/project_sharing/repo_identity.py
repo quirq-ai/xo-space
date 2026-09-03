@@ -2,7 +2,7 @@
 
 `normalize_repo` is the single definition of "same repo" across the whole relay.
 It is duplicated verbatim in xo-swarm-api (utils/repo_identity.py); both copies
-share one test vector table (tests/test_commit_relay_identity.py). A drift here
+share one test vector table (tests/test_project_sharing_identity.py). A drift here
 silently splits one shared group into two.
 """
 from __future__ import annotations

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cowork_agent.commit_relay import state
+from services.cowork_agent.project_sharing import state
 
 REPO = "github.com/acme/trip-planner"
 
@@ -25,7 +25,7 @@ class CommitRelayStateTests(unittest.TestCase):
 
     def test_files_land_under_quirq_relay(self) -> None:
         state.save_cursor(REPO, 7)
-        files = list((self.root / "relay").glob("*.json"))
+        files = list((self.root / "project_sharing").glob("*.json"))
         self.assertEqual(len(files), 1)
         self.assertEqual(json.loads(files[0].read_text(encoding="utf-8")), {"cursor": 7})
 

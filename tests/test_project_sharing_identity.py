@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from services.cowork_agent.commit_relay.repo_identity import normalize_repo
-from services.cowork_agent.commit_relay.state import state_path
+from services.cowork_agent.project_sharing.repo_identity import normalize_repo
+from services.cowork_agent.project_sharing.state import state_path
 
 
 class RepoIdentityTests(unittest.TestCase):
@@ -39,6 +39,6 @@ class RepoIdentityTests(unittest.TestCase):
 
     def test_state_filename_never_escapes_the_relay_dir(self) -> None:
         p = state_path("evil.example/../../etc/passwd")
-        self.assertEqual(p.parent.name, "relay")
+        self.assertEqual(p.parent.name, "project_sharing")
         self.assertNotIn("..", p.name)
         self.assertNotIn("/", p.name)

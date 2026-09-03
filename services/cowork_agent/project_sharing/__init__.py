@@ -2,7 +2,7 @@
 
 Core code: names no agent. Talks to the swarm broker for membership and the
 commit ledger, and to GitHub via git for objects. Machine-local state lives
-under ~/.quirq/relay/ (see state.py). Entry point: poller.run_relay_poller().
+under ~/.quirq/project_sharing/ (see state.py). Entry point: poller.run_relay_poller().
 """
 from datetime import datetime
 

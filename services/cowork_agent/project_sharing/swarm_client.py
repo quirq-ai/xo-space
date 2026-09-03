@@ -34,13 +34,13 @@ def _detail(resp: httpx.Response) -> str:
 async def _post(path: str, payload: dict) -> httpx.Response | None:
     headers = _headers()
     if not headers:
-        log.debug("commit_relay: no swarm auth token for %s", path)
+        log.debug("project_sharing: no swarm auth token for %s", path)
         return None
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             return await client.post(f"{_base_url()}{path}", json=payload, headers=headers)
     except Exception as exc:  # noqa: BLE001
-        log.debug("commit_relay: %s failed: %s", path, exc)
+        log.debug("project_sharing: %s failed: %s", path, exc)
         return None
 
 
