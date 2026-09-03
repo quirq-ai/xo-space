@@ -711,6 +711,7 @@ async def lifespan(app: FastAPI):
     _sync_task = None
     _warmup_task = None
     _watcher_task = None
+    _relay_task = None
     if start_usage_sync_scheduler:
         try:
             _sync_task = asyncio.create_task(start_usage_sync_scheduler())
@@ -734,6 +735,17 @@ async def lifespan(app: FastAPI):
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
     else:
         print("   Watcher: disabled by runtime configuration")
+
+    # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
+    # in a single tick, see services/cowork_agent/commit_relay/poller.py).
+    # RELAY_ENABLED=false is an emergency brake; with no XO_PROJECT_ID or no
+    # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
+    try:
+        from services.cowork_agent.commit_relay.poller import run_relay_poller
+        _relay_task = asyncio.create_task(run_relay_poller())
+        print("   Relay: background task started")
+    except Exception as e:
+        print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
@@ -762,6 +774,13 @@ async def lifespan(app: FastAPI):
         _watcher_task.cancel()
         try:
             await _watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    if _relay_task and not _relay_task.done():
+        _relay_task.cancel()
+        try:
+            await _relay_task
         except asyncio.CancelledError:
             pass
 
