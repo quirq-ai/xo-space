@@ -11,9 +11,10 @@ import projectsView from './views/projects.js?v=20260827-firstrun1';
 import treeView from './views/tree.js?v=20260825-rename1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260831-merged1';
+import wikiView from './views/wiki.js?v=20260903-connectors1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
+import connectorsView from './views/connectors.js?v=20260903-connectors1';
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
 addEventListener('error',e=>console.error('Space shell error:',e.error||e.message));
@@ -33,6 +34,7 @@ try{
   registerView(wikiView);
   registerView(quirqView);
   registerView(secretsView);
+  registerView(connectorsView);
   startRegistry({defaultView:'dashboard'});
 }catch(err){console.error('Space registry failed to start:',err);}
 

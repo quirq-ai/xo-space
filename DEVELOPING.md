@@ -323,3 +323,99 @@ Because both shapes register the **same** routes (verified: the local route set
 minus the cloud route set is empty), cloud vs local never changes *which
 endpoints exist* — only the runtime behaviors above. That is what makes one tree,
 one branch, serve both.
+
+---
+
+## 10. Connectors: Composio
+
+`services/cowork_agent/composio/` gives the active agent tools in the user's own
+SaaS accounts (Gmail, Google Workspace, Notion, Figma) via
+[Composio](https://composio.dev). It is the one subpackage under `services/` that
+owns routers — `routers/cowork_agent/__init__.py` imports them from there.
+
+### 10.1 The identity chain
+
+This is the part to understand before changing anything. Two values travel
+through the code and conflating them is the bug the design prevents:
+
+- an **account id** — what XO's `/get-user-id` returns. *Every* workspace an XO
+  account owns resolves to the same value.
+- a **principal** — `<account_id>__ws__<CODER_WORKSPACE_ID>`, composed by
+  `services/tenancy.py`. This is the Composio tenant key.
+
+```
+browser ──X-XO-Session: <opaque id>──▶ composio/identity.py
+                                        │  session_identity.resolve()  (in-memory, 12h)
+                                        │  └─ or _validate_token() ──▶ XO /get-user-id
+                                        ▼
+                                      account id
+                                        │  tenancy.scoped_principal()   ← the ONE
+                                        ▼                                 composition point
+                                      principal ──▶ Composio user
+```
+
+**Invariant: stored and in-process state stays keyed by the bare account id;
+anything crossing the pod boundary is scoped.** `identity._TOKEN_CACHE` and
+`session_identity._SESSIONS` therefore hold account ids, and composition happens
+exactly once, at read, in `resolve_user_from_bearer`. Do not "fix" those to store
+principals — a single composition point is what makes double-scoping impossible.
+
+**It fails closed.** No `CODER_WORKSPACE_ID` means no tenant, so the routes 401
+rather than fall back to the account-wide bucket, which would merge every
+workspace of an account into one Composio tenant. `service.user_for_proxy_token`
+likewise *rejects* an unscoped token row instead of upgrading it.
+
+The browser never holds the raw XO token — `GET /xo-auth/session/self` (or
+`POST /xo-auth/session`) mints an opaque session id from a credential the backend
+already has, and only that id reaches the page.
+
+### 10.2 The MCP proxy
+
+Agents reach Composio through `/mcp/composio-proxy/u/<token>`, a loopback reverse
+proxy (`mcp_proxy.py`), never directly. That is deliberate: the proxy injects the
+Composio credential server-side, so **no API key is ever written into an agent's
+config file**. `_forwarded_headers` strips the client's `authorization` on the way
+out. `gateway_bootstrap.py` installs that URL into every agent exposing an
+`mcp_install` capability at boot, and `POST .../refresh-gateway` re-runs it on
+demand. The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped
+routes exist only to 401 a stale config with a useful message.
+
+> An agent's MCP config is **machine-global**. It points at whichever principal
+> installed it last, so on a multi-user host the last writer wins — hence the
+> `multi_tenant_warning` in the refresh-gateway response.
+
+### 10.3 Operator setup
+
+Two things must be created **by hand** in the Composio dashboard; nothing in this
+repo creates them (`auth_configs.create` is never called):
+
+1. an API key → `COMPOSIO_API_KEY`
+2. one *auth config* per toolkit → `COMPOSIO_AUTH_CONFIG_<TOOLKIT>`
+
+Then set `COMPOSIO_CALLBACK_URL` to this server's public origin. All keys are
+documented in [`.env.example`](.env.example).
+
+Degradation is per-scope, and worth knowing when reading a bug report:
+
+| Missing | Effect |
+|---|---|
+| `COMPOSIO_API_KEY` | every Composio route 500s (`/connect` 422s); the rest of the server is unaffected |
+| one `COMPOSIO_AUTH_CONFIG_*` | that toolkit is listed but 422s on `/connect`; others work |
+| `CODER_WORKSPACE_ID` | every Composio route 401s |
+| XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
+
+### 10.4 State on disk
+
+`data/composio_sessions.json` (0600) holds session ids and proxy tokens;
+`data/composio_action_prefs.json` holds per-user disabled actions — only
+*disabled* slugs are stored, so new actions default to enabled. Both are pod-local
+and need no scoping (§10.1). Locks live under `~/.quirq/watcher/locks/`, which is
+why tests must point `QUIRQ_STATE_ROOT` at a temp dir — see `tests/test_composio.py`.
+
+### 10.5 The UI
+
+`space_ui/js/views/connectors.js` renders the toolkits. It is the only view that
+authenticates: `js/core/session.js` mints the session id and `apiFetch`'s
+`headers` option carries it. The OAuth popup's callback posts back to its opener
+with `"*"` as the target origin, so **the listener validates `event.origin`**; the
+`…/status?connection_request_id=` poll, not the message, is what decides success.
