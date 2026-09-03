@@ -26,3 +26,20 @@ python-multipart>=0.0.20
 # Pinned: bump deliberately (an unpinned latest makes installs
 # non-reproducible across workspaces).
 argus-code==0.5.1
+
+# Composio — third-party tool integrations (Gmail, Notion, ...)
+#
+# SECURITY: the >=0.7 range this originally shipped with was withdrawn in #77
+# because it admitted the directory-traversal advisory GHSA-3mwv-j45g-vp3w
+# (last_affected 0.7.20). The floor below is above that ceiling — do NOT relax
+# it back toward 0.7.x.
+composio>=0.18,<0.19
+
+# Model Context Protocol — local MCP server exposes composio meta-tools to
+# OpenClaw / Hermes / Claude Code so gateways don't load every action upfront.
+#
+# SECURITY: the >=1.2 range this originally shipped with was withdrawn in #77;
+# it admitted six advisories, the last of which (GHSA-vj7q-gjh5-988w, WebSocket
+# Host/Origin validation) is only fixed in 1.28.1. That is the floor here —
+# every known MCP-SDK advisory is fixed at or below it. Do NOT lower it.
+mcp>=1.28.1

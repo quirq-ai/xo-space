@@ -8,7 +8,7 @@ import threading
 from typing import Optional, Dict, Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 
@@ -171,12 +171,23 @@ async def consume_auth_flow(auth_session_id: str, poll_token: str) -> Dict[str, 
             user_id=result.get("user_id"),
             auth_session_id=result.get("auth_session_id"),
         )
+        # Mint a backend-held session id so a browser can carry per-user identity
+        # without ever holding the raw XO token. Best-effort: identity resolution
+        # still works without it, this just enables the multi-tenant bearer path.
+        session_id = None
+        user_id = result.get("user_id")
+        if user_id:
+            from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+            session_id = session_identity.register(
+                user_id, ttl_seconds=result.get("expires_in"),
+            )
         return {
             "success": True,
             "message": "Authentication completed and token stored",
-            "user_id": result.get("user_id"),
+            "user_id": user_id,
             "expires_in": result.get("expires_in"),
             "scope": result.get("scope"),
+            "session_id": session_id,
         }
     except HTTPException:
         raise
@@ -248,6 +259,83 @@ async def xo_auth_consume(data: XOAuthConsumeRequest):
         data.auth_session_id, data.poll_token
     )
     return await consume_auth_flow(auth_session_id, poll_token)
+
+
+@router.post("/session")
+async def xo_auth_session(request: Request):
+    """Mint a backend-held opaque session id from an XO access token.
+
+    The XO platform (which already authenticated the user) hands the user's XO
+    access token here as ``Authorization: Bearer <xo_token>``. We validate it
+    against XO ``/get-user-id``, store ``{user_id, token}`` server-side, and
+    return ``{session_id}``. The browser then sends that opaque id as the bearer
+    on ``/api/connectors/composio/*`` and ``/api/chat/prompt`` — the raw XO token
+    never reaches the client. See services/cowork_agent/composio/session_identity.py.
+    """
+    from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+
+    auth = request.headers.get("authorization") or ""
+    parts = auth.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "Missing 'Authorization: Bearer <xo_token>' header."},
+        )
+    session_id = await session_identity.mint(parts[1].strip())
+    if not session_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "XO token rejected by /get-user-id."},
+        )
+    return {"success": True, "session_id": session_id}
+
+
+@router.get("/session/self")
+async def xo_auth_session_self():
+    """Mint a session id for the XO user this backend is itself authenticated as.
+
+    Bootstrap for the local/desktop UI, which has no XO login of its own: the
+    backend already holds an XO credential (XO_API_KEY, or the token from the
+    consume flow), so it resolves *that* credential's real ``user_id`` and hands
+    back an opaque session id the browser can use as its bearer.
+
+    This is a real XO user, not a shared sentinel, and it travels the same
+    per-request bearer path as any platform-supplied identity — when real
+    per-user tokens start arriving via POST /xo-auth/session, nothing else
+    changes and this endpoint simply stops being used.
+
+    401 when the backend itself is unauthenticated or XO rejects its credential.
+
+    The returned ``user_id`` is the bare XO **account** id — it answers "which XO
+    user is this backend", not "which tenant". The workspace-scoped principal
+    used for Composio is composed per request in
+    ``services.cowork_agent.composio.identity.resolve_user_from_bearer``.
+    """
+    from services.cowork_agent.composio import session_identity  # local import: avoid load cycle
+
+    token = get_auth_token()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": (
+                    "Backend is not authenticated to XO (no XO_API_KEY and no "
+                    "consumed session). Cannot mint a session."
+                )
+            },
+        )
+
+    session_id = await session_identity.mint(token)
+    if not session_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "XO rejected this backend's credential at /get-user-id."},
+        )
+    return {
+        "success": True,
+        "session_id": session_id,
+        "user_id": session_identity.resolve(session_id),
+    }
 
 
 @router.get("/whoami")
