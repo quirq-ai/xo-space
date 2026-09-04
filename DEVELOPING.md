@@ -53,6 +53,9 @@ routers/                          broker routes only — NO agent branching
 
 services/
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
+  swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
+                                    timeouts, SwarmResult) + one module per feature: auth usage
+                                    project_sharing chat. Nothing else builds a swarm URL.
   cowork_agent/
     adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
       base.py loader.py cli_status.py usage_common.py   contract + shared helpers

@@ -9,7 +9,7 @@ parsing/aggregation work lives in the active agent's
   - watermark I/O
   - delegate to ``module.aggregate_for_sync(since_date=watermark)``
   - decorate records with workspace identifiers
-  - POST to ``${CHAT_API_BASE_URL}/usage/report``
+  - POST /usage/report through services.swarm_api.usage (the one swarm door)
   - advance watermark
 
 On first run (no watermark): full historical backfill. Subsequently: only
@@ -22,17 +22,12 @@ import os
 import datetime
 from collections import defaultdict
 
-import httpx
-
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.engine.usage_loader import load_usage_module
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.builders")
-USAGE_REPORT_PATH = "/usage/report"
 
 # Watermark file is namespaced under the active agent so each adapter keeps
 # its own independent sync state. Switching AGENT_NAME (e.g. openclaw →
@@ -49,7 +44,7 @@ SYNC_HOUR_UTC = int(os.getenv("USAGE_SYNC_HOUR_UTC", "2"))
 DEBUG_ENABLED = (os.getenv("USAGE_SYNC_DEBUG", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
 DEBUG_INTERVAL_MINUTES = int(os.getenv("USAGE_SYNC_DEBUG_INTERVAL_MINUTES", "0") or "0")
 
-HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+from services.swarm_api import usage as swarm_usage
 
 
 def _timestamp_prefix() -> str:
@@ -141,9 +136,7 @@ def _record_key_probe(state: dict, outcome: str, status: int | None) -> None:
         print(f"{_timestamp_prefix()} usage_sync: could not persist key-probe state: {e}")
 
 
-async def _key_accepted(
-    client: httpx.AsyncClient, url: str, headers: dict, state: dict
-) -> bool:
+async def _key_accepted(state: dict) -> bool:
     """Verify the token before any usage data leaves the machine.
 
     Same endpoint, empty record list: the request carries only the token,
@@ -153,59 +146,51 @@ async def _key_accepted(
     only when the key is valid" is literally true, not just "stored only
     when the key is valid". The outcome is persisted for the Setup tab.
     """
-    try:
-        probe = await client.post(url, json={"records": []}, headers=headers)
-    except Exception as e:
-        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({e}) — nothing sent, will retry next cycle")
+    probe = await swarm_usage.probe_key()
+    if probe.offline or probe.unauthenticated:
+        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({probe.detail}) — nothing sent, will retry next cycle")
         _record_key_probe(state, "unverified", None)
         return False
-    if probe.status_code == 200:
-        _record_key_probe(state, "accepted", probe.status_code)
+    if probe.ok:
+        _record_key_probe(state, "accepted", probe.status)
         return True
-    if probe.status_code in (401, 403):
-        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status_code}) — nothing sent. Fix or remove the key in .env.")
-        _record_key_probe(state, "rejected", probe.status_code)
+    if probe.status in (401, 403):
+        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status}) — nothing sent. Fix or remove the key in .env.")
+        _record_key_probe(state, "rejected", probe.status)
     else:
-        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status_code} — nothing sent, will retry next cycle")
-        _record_key_probe(state, "unverified", probe.status_code)
+        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status} — nothing sent, will retry next cycle")
+        _record_key_probe(state, "unverified", probe.status)
     return False
 
 
 async def _post_records(records: list, daily: dict | None, state: dict) -> None:
     from routers.auth.auth import get_auth_token
 
-    token = get_auth_token()
-    if not token:
+    if not get_auth_token():
         print(f"{_timestamp_prefix()} usage_sync: not authenticated — skipping report (nothing sent)")
         return
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{USAGE_REPORT_PATH}"
-
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            if not await _key_accepted(client, url, headers, state):
-                return
-            response = await client.post(url, json={"records": records}, headers=headers)
-
-        if response.status_code == 200:
-            result = response.json()
-            upserted = result.get("upserted", 0)
-            if daily is None:
-                print(f"{_timestamp_prefix()} usage_sync: posted placeholder record (note carried; watermark not advanced)")
-            else:
-                print(f"{_timestamp_prefix()} usage_sync: successfully synced {upserted} day(s) to swarm")
-                yesterday = (
-                    datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
-                ).strftime("%Y-%m-%d")
-                latest_date = max(daily.keys())
-                watermark = min(yesterday, latest_date)
-                state["last_synced_date"] = watermark
-                state["last_sync_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                _save_sync_state(state)
+    if not await _key_accepted(state):
+        return
+    res = await swarm_usage.report(records)
+    if res.ok:
+        result = res.data if isinstance(res.data, dict) else {}
+        upserted = result.get("upserted", 0)
+        if daily is None:
+            print(f"{_timestamp_prefix()} usage_sync: posted placeholder record (note carried; watermark not advanced)")
         else:
-            print(f"{_timestamp_prefix()} usage_sync: POST failed with {response.status_code}: {response.text[:200]}")
-    except Exception as e:
-        print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {e}")
+            print(f"{_timestamp_prefix()} usage_sync: successfully synced {upserted} day(s) to swarm")
+            yesterday = (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            latest_date = max(daily.keys())
+            watermark = min(yesterday, latest_date)
+            state["last_synced_date"] = watermark
+            state["last_sync_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            _save_sync_state(state)
+    elif res.offline:
+        print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {res.detail}")
+    else:
+        print(f"{_timestamp_prefix()} usage_sync: POST failed with {res.status}: {res.text[:200]}")
 
 
 def usage_reporting_status() -> dict:

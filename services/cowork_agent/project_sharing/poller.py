@@ -17,7 +17,9 @@ from pathlib import Path
 
 from services.cowork_agent.project_layout import git_repo_dirs
 
-from . import config, git_ops, log_line, state, status, swarm_client, watcher
+from services.swarm_api import project_sharing as swarm_client
+
+from . import config, git_ops, log_line, state, status, watcher
 from .repo_identity import normalize_repo
 
 log = logging.getLogger(__name__)

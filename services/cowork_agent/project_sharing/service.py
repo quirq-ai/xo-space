@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from services.cowork_agent.project_layout import project_dir, project_dir_exists, xo_projects_root
 
-from . import config, git_ops, poller, status, swarm_client
+from services.swarm_api import project_sharing as swarm_client
+
+from . import config, git_ops, poller, status
 from .repo_identity import normalize_repo
 
 

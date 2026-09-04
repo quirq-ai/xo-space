@@ -12,7 +12,9 @@ ls-remote still runs on every tick where the local ref is quiet: it is the
 catch-all for pushes made from outside any XO Space."""
 from __future__ import annotations
 
-from . import git_ops, log_line, state, swarm_client
+from services.swarm_api import project_sharing as swarm_client
+
+from . import git_ops, log_line, state
 
 
 async def run_tick_repo(workspace_id: str, repo: str, repo_dir, branch: str) -> str:

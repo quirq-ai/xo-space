@@ -53,14 +53,10 @@ def jittered_interval() -> float:
 
 
 def auth_token() -> str | None:
-    """Bearer token for swarm. Lazy import: routers.auth pulls in the FastAPI
-    app's auth state, which unit tests must not load. Same accessor usage sync
-    uses, so "signed in" means one thing everywhere."""
-    try:
-        from routers.auth.auth import get_auth_token
-        return get_auth_token() or None
-    except Exception:  # noqa: BLE001 — no auth module == not signed in
-        return None
+    """Bearer token for swarm, from the one swarm client. Kept as a function
+    here so the relay's "am I signed in" check is patchable on its own."""
+    from services.swarm_api import auth_token as _swarm_token
+    return _swarm_token()
 
 
 def parked_reason() -> str | None:
