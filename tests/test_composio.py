@@ -17,6 +17,9 @@ Two traps this file works around, both easy to reintroduce:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import io
 import json
 import os
 import secrets
@@ -46,6 +49,7 @@ ACCOUNT = "user_abc123"
 # and its tests/test_auth_principal.py is what pins it. This value only has to be a
 # realistic string for the pod-side tests to pass around.
 PRINCIPAL = "user_abc123__ws__ws-test"
+PROXY_URL = "http://127.0.0.1:5002/mcp/composio-proxy/u/tok-test"
 
 
 def _make_request(headers: dict[str, str] | None = None, body: bytes = b"") -> Request:
@@ -130,6 +134,14 @@ class _ComposioBase(unittest.TestCase):
         service._SESSION_IDS.clear()
         service._PROXY_TOKENS.clear()
         service._SESSIONS_LOADED = False
+        # The reconcile sweep's single-flight state. The lock binds to the loop that
+        # first contends it, and IsolatedAsyncioTestCase gives every test a new loop.
+        service._SWEEP_LOCK = None
+        service._SWEEP_TASK = None
+        service._LAST_SWEEP_AT = 0.0
+        service._LAST_ERRORS.clear()
+        service._LAST_TOKEN_DURABLE = True
+        service._WARNED_UNDURABLE = False
         session_identity._SESSIONS.clear()
 
     @staticmethod
@@ -618,7 +630,8 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     def test_a_token_the_swarm_did_not_record_is_reported_undurable(self) -> None:
         # Minting must not silently proceed as if durable: a token the swarm never saw
-        # dies with this pod's store, and refresh-gateway would fail too.
+        # dies with this pod's store, and a re-install during the same outage would
+        # only mint another one the swarm never saw.
         with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
                 patch("services.xo_credential.get_auth_token", return_value="tok"), \
                 patch.object(
@@ -1229,6 +1242,15 @@ class RemovedEndpointTests(_ComposioBase):
         # silent cross-account read.
         self.assertFalse(hasattr(identity_mod, "_account_matches_backend"))
 
+    def test_the_refresh_gateway_route_is_gone(self) -> None:
+        # The gateway is installed by the reconcile sweep alone — at boot, on a timer,
+        # and when the Connectors tab loads. A manual route would be a second install
+        # path with its own failure modes to document and a button to explain.
+        self.assertFalse(hasattr(router_mod, "refresh_gateway"))
+        registered = {route.path for route in router_mod.router.routes}
+        self.assertNotIn("/api/connectors/composio/refresh-gateway", registered)
+        self.assertFalse(hasattr(service, "install_gateways_at_startup"))
+
 
 class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_session_header_wins_over_authorization(self) -> None:
@@ -1286,21 +1308,25 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
 
 class McpProxyTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
-    async def test_unknown_token_is_told_to_reinstall(self) -> None:
+    async def test_unknown_token_is_rejected_as_identity_required(self) -> None:
         response = await mcp_proxy._proxy(_make_request(), "POST", "no-such-token")
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(
-            json.loads(response.body)["error"], "composio_identity_required"
-        )
+        body = json.loads(response.body)
+        self.assertEqual(body["error"], "composio_identity_required")
+        # There is no manual install to point at any more: the reconcile sweep
+        # rewrites the config, so the remedy the agent is told is a restart.
+        self.assertNotIn("refresh-gateway", body["detail"])
+        self.assertIn("restart the agent", body["detail"])
 
     async def test_absent_token_is_rejected_the_same_way(self) -> None:
         response = await mcp_proxy._proxy(_make_request(), "POST", None)
         self.assertEqual(response.status_code, 401)
 
     async def test_an_unreachable_swarm_is_a_retryable_503_not_a_401(self) -> None:
-        # A 401 here would tell the operator to run refresh-gateway, which during the
-        # same outage also fails — and would rewrite every agent config with a token the
-        # swarm never recorded. 503 is truthful and makes the agent back off.
+        # A 401 here would tell the agent its config is stale when it is not, and the
+        # reconcile sweep could not rewrite it during the same outage anyway — it would
+        # only mint a token the swarm never recorded. 503 is truthful and makes the
+        # agent back off.
         transient = state.StateUnavailable("swarm down")
         with patch.object(
             service, "user_for_proxy_token", new=AsyncMock(side_effect=transient)
@@ -1401,6 +1427,21 @@ class CallbackHtmlTests(_ComposioBase):
 
 
 class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
+    def setUp(self) -> None:
+        super().setUp()
+        # /toolkits starts a background gateway sweep. Stubbed so no task outlives a
+        # test's loop; test_listing_toolkits_kicks_a_gateway_sweep asserts the call.
+        kick = patch.object(service, "kick_gateway_sweep", return_value=True)
+        self.kick = kick.start()
+        self.addCleanup(kick.stop)
+
+    async def test_listing_toolkits_kicks_a_gateway_sweep(self) -> None:
+        # Opening the Connectors tab (or pressing Refresh) is where the "Reinstall MCP
+        # gateway" button used to be; the sweep now starts itself, without blocking.
+        with patch.object(service, "list_connections", return_value=[]):
+            await router_mod.list_toolkits(user_id=PRINCIPAL)
+        self.kick.assert_called_once_with()
+
     async def test_toolkits_default_to_needs_auth(self) -> None:
         with patch.object(service, "list_connections", return_value=[]):
             response = await router_mod.list_toolkits(user_id=PRINCIPAL)
@@ -1489,34 +1530,6 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(
             json.loads(response.body)["actions"], {"GMAIL_SEND_EMAIL": False}
         )
-
-    async def test_refresh_gateway_rejects_an_unsupported_agent(self) -> None:
-        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]):
-            with self.assertRaises(HTTPException) as raised:
-                await router_mod.refresh_gateway(agent="nosuch", user_id=PRINCIPAL)
-        self.assertEqual(raised.exception.status_code, 422)
-        self.assertIn("claude_code", raised.exception.detail)
-
-    async def test_successful_refresh_warns_that_the_config_is_machine_global(self) -> None:
-        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch.object(service, "install_into_gateway", return_value={"ok": True}):
-            response = await router_mod.refresh_gateway(
-                agent="claude_code", user_id=PRINCIPAL
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("multi_tenant_warning", json.loads(response.body))
-
-    async def test_failed_refresh_is_reported_as_422(self) -> None:
-        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch.object(
-                    service, "install_into_gateway",
-                    return_value={"ok": False, "error": "no config file"},
-                ):
-            response = await router_mod.refresh_gateway(
-                agent="claude_code", user_id=PRINCIPAL
-            )
-        self.assertEqual(response.status_code, 422)
-        self.assertNotIn("multi_tenant_warning", json.loads(response.body))
 
     async def test_toolkits_report_the_account_count_and_multi_account_state(self) -> None:
         rows = [
@@ -1638,43 +1651,62 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertIn("connector-auth-complete", response.body.decode())
 
 
-class GatewayBootstrapTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
-    """Every branch fails closed: nothing installed beats the wrong tenant."""
+class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
+    """Every gate fails closed: nothing installed beats the wrong tenant. The sweep
+    also reports which gate closed and whether waiting can open it, which is what the
+    reconcile loop decides its next delay from."""
 
     async def test_no_capable_agent_installs_nothing(self) -> None:
         with patch.object(service, "gateway_install_agents", return_value=[]):
-            self.assertEqual(await service.install_gateways_at_startup(), {})
+            sweep = await service.install_gateways()
+        self.assertEqual(sweep.results, {})
+        self.assertEqual(sweep.skipped, "no_agents")
+        self.assertFalse(sweep.retryable)
 
-    async def test_no_credential_installs_nothing(self) -> None:
+    async def test_no_credential_installs_nothing_and_is_final(self) -> None:
+        # The XO credential is XO_API_KEY or the session consumed at boot — it cannot
+        # appear later in the process, so retrying would only burn round trips.
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("services.xo_credential.get_auth_token", return_value=""):
-            self.assertEqual(await service.install_gateways_at_startup(), {})
+            sweep = await service.install_gateways()
+        self.assertEqual(sweep.results, {})
+        self.assertEqual(sweep.skipped, "no_credential")
+        self.assertFalse(sweep.retryable)
 
-    async def test_an_unreachable_swarm_installs_nothing(self) -> None:
+    async def test_an_unreachable_swarm_installs_nothing_but_is_retryable(self) -> None:
         state.invalidate()
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("services.xo_credential.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request", side_effect=RuntimeError("network down"),
                 ):
-            self.assertEqual(await service.install_gateways_at_startup(), {})
+            sweep = await service.install_gateways()
+        self.assertEqual(sweep.results, {})
+        self.assertEqual(sweep.skipped, "principal_unavailable")
+        self.assertTrue(sweep.retryable)
 
-    async def test_rejected_credential_installs_nothing(self) -> None:
+    async def test_rejected_credential_installs_nothing_and_is_final(self) -> None:
         rejected = state.StateUnavailable("XO rejected it", authoritative=True)
         state.invalidate()
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("services.xo_credential.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", side_effect=rejected):
-            self.assertEqual(await service.install_gateways_at_startup(), {})
+            sweep = await service.install_gateways()
+        self.assertEqual(sweep.results, {})
+        self.assertEqual(sweep.skipped, "principal_unavailable")
+        self.assertFalse(sweep.retryable)
 
-    async def test_missing_workspace_installs_nothing(self) -> None:
+    async def test_missing_workspace_installs_nothing_and_is_final(self) -> None:
         with patch.dict(os.environ, {tenancy.WORKSPACE_ENV: ""}), \
                 patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("services.xo_credential.get_auth_token", return_value="tok"):
-            self.assertEqual(await service.install_gateways_at_startup(), {})
+            sweep = await service.install_gateways()
+        self.assertEqual(sweep.results, {})
+        self.assertEqual(sweep.skipped, "no_workspace")
+        self.assertFalse(sweep.retryable)
 
     async def test_a_failing_agent_does_not_stop_the_others(self) -> None:
-        def _install(_principal: str, agent: str) -> dict:
+        def _install(_principal: str, agent: str, **_kw: object) -> dict:
             if agent == "hermes":
                 raise RuntimeError("no config file")
             return {"ok": True, "config_path": "/tmp/x"}
@@ -1682,25 +1714,246 @@ class GatewayBootstrapTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         with patch.object(
             service, "gateway_install_agents", return_value=["claude_code", "hermes"]
         ), patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
                 patch.object(service, "install_into_gateway", side_effect=_install):
-            results = await service.install_gateways_at_startup()
+            sweep = await service.install_gateways()
 
-        self.assertTrue(results["claude_code"]["ok"])
-        self.assertFalse(results["hermes"]["ok"])
-        self.assertIn("RuntimeError", results["hermes"]["error"])
+        self.assertTrue(sweep.ran)
+        self.assertTrue(sweep.results["claude_code"]["ok"])
+        self.assertFalse(sweep.results["hermes"]["ok"])
+        self.assertIn("RuntimeError", sweep.results["hermes"]["error"])
 
-    async def test_install_receives_this_pod_s_principal(self) -> None:
-        seen: list[str] = []
+    async def test_install_receives_this_pod_s_principal_and_one_proxy_url(self) -> None:
+        seen: list[tuple[str, object]] = []
 
+        with patch.object(
+            service, "gateway_install_agents", return_value=["claude_code", "codex"]
+        ), patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch.object(service, "_composio_proxy_url", return_value=PROXY_URL) as minted, \
+                patch.object(
+                    service, "install_into_gateway",
+                    side_effect=lambda p, a, **kw: seen.append((p, kw.get("proxy_url")))
+                    or {"ok": True},
+                ):
+            await service.install_gateways()
+
+        self.assertEqual(seen, [(PRINCIPAL, PROXY_URL), (PRINCIPAL, PROXY_URL)])
+        # Minting registers the token with the swarm: one round trip per sweep, not
+        # one per agent.
+        minted.assert_called_once_with(PRINCIPAL)
+
+    async def test_a_failed_mint_fails_every_agent_and_still_runs(self) -> None:
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("services.xo_credential.get_auth_token", return_value="tok"), \
                 patch.object(
-                    service, "install_into_gateway",
-                    side_effect=lambda p, a: seen.append(p) or {"ok": True},
-                ):
-            await service.install_gateways_at_startup()
+                    service, "_composio_proxy_url", side_effect=ValueError("no user"),
+                ), contextlib.redirect_stdout(io.StringIO()):
+            sweep = await service.install_gateways()
+        self.assertTrue(sweep.ran)
+        self.assertFalse(sweep.results["claude_code"]["ok"])
+        self.assertIn("no user", sweep.results["claude_code"]["error"])
 
-        self.assertEqual(seen, [PRINCIPAL])
+    async def test_concurrent_sweeps_are_serialised(self) -> None:
+        # The boot loop and a Connectors-tab kick share one lock, so two sweeps never
+        # interleave their writes: the second starts only after the first finished.
+        order: list[str] = []
+
+        async def _slow_principal() -> str:
+            order.append("start")
+            await asyncio.sleep(0.01)
+            order.append("end")
+            return PRINCIPAL
+
+        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
+                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch.object(state, "aprincipal", side_effect=_slow_principal), \
+                patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
+                patch.object(service, "install_into_gateway", return_value={"ok": True}):
+            await asyncio.gather(service.install_gateways(), service.install_gateways())
+
+        self.assertEqual(order, ["start", "end", "start", "end"])
+        self.assertGreater(service.last_gateway_sweep_at(), 0.0)
+
+    async def test_later_sweeps_print_only_changes(self) -> None:
+        current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
+        patches = (
+            patch.object(service, "gateway_install_agents", return_value=["claude_code"]),
+            patch("services.xo_credential.get_auth_token", return_value="tok"),
+            patch.object(service, "_composio_proxy_url", return_value=PROXY_URL),
+            patch.object(service, "install_into_gateway", return_value=current),
+        )
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            boot, later = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(boot):
+                await service.install_gateways(announce=True)
+            with contextlib.redirect_stdout(later):
+                await service.install_gateways(announce=False)
+
+        self.assertIn("already current", boot.getvalue())
+        self.assertEqual(later.getvalue(), "")
+
+    async def test_the_durability_warning_prints_on_change_only(self) -> None:
+        # The warning replaced the Connectors tab's `durability_warning`. A long
+        # outage must not repeat it every tick, and recovery should be said once.
+        current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
+        outputs: list[str] = []
+        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
+                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
+                patch.object(service, "install_into_gateway", return_value=current):
+            for durable in (False, False, True, True):
+                service._LAST_TOKEN_DURABLE = durable
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    await service.install_gateways(announce=False)
+                outputs.append(out.getvalue())
+
+        self.assertIn("did not record", outputs[0])
+        self.assertEqual(outputs[1], "")
+        self.assertIn("now records", outputs[2])
+        self.assertEqual(outputs[3], "")
+
+
+class GatewayReconcileLoopTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
+    """The lifespan task: back off while XO is unreachable, stop on a gate a restart
+    must open, then tick on a timer — and a page load may start a sweep, never a
+    stampede."""
+
+    _TRANSIENT = service.GatewaySweep(skipped="principal_unavailable", retryable=True)
+    _FINAL = service.GatewaySweep(skipped="no_credential")
+    _RAN = service.GatewaySweep(results={"claude_code": {"ok": True}})
+
+    async def _drive(self, outcomes, *, interval: str) -> tuple[list[float], int, list[bool]]:
+        """Run the loop through ``outcomes``; returns (sleeps, outcomes left, announce flags).
+
+        The loop either returns on its own or is cancelled when the outcomes run out.
+        """
+        delays: list[float] = []
+        announced: list[bool] = []
+        remaining = list(outcomes)
+
+        async def _sweep(*, announce: bool = True) -> service.GatewaySweep:
+            if not remaining:
+                raise asyncio.CancelledError
+            announced.append(announce)
+            return remaining.pop(0)
+
+        async def _sleep(delay: float) -> None:
+            delays.append(delay)
+
+        with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": interval}), \
+                patch.object(service, "install_gateways", side_effect=_sweep), \
+                patch.object(service, "_sleep", side_effect=_sleep), \
+                contextlib.redirect_stdout(io.StringIO()):
+            try:
+                await service.gateway_reconcile_loop()
+            except asyncio.CancelledError:
+                pass
+        return delays, len(remaining), announced
+
+    async def test_backs_off_while_the_swarm_is_unreachable(self) -> None:
+        delays, _left, _ = await self._drive([self._TRANSIENT] * 8, interval="600")
+        self.assertEqual(delays, [5, 15, 30, 60, 120, 300, 300, 300])
+
+    async def test_a_final_gate_ends_the_loop_without_sleeping(self) -> None:
+        delays, left, _ = await self._drive([self._FINAL, self._RAN], interval="600")
+        self.assertEqual(delays, [])
+        self.assertEqual(left, 1)   # returned; never asked for the second sweep
+
+    async def test_a_successful_sweep_waits_the_reconcile_interval(self) -> None:
+        delays, _left, _ = await self._drive([self._RAN, self._RAN], interval="45")
+        self.assertEqual(delays, [45.0, 45.0])
+
+    async def test_backoff_resets_after_a_successful_sweep(self) -> None:
+        outcomes = [self._TRANSIENT, self._TRANSIENT, self._RAN, self._TRANSIENT]
+        delays, _left, _ = await self._drive(outcomes, interval="600")
+        self.assertEqual(delays, [5, 15, 600.0, 5])
+
+    async def test_interval_zero_means_boot_only(self) -> None:
+        delays, left, _ = await self._drive([self._RAN, self._RAN], interval="0")
+        self.assertEqual(delays, [])
+        self.assertEqual(left, 1)
+
+    async def test_only_the_first_sweep_announces(self) -> None:
+        _delays, _left, announced = await self._drive([self._RAN, self._RAN], interval="600")
+        self.assertEqual(announced, [True, False])
+
+    async def test_a_crashing_sweep_does_not_kill_the_timer(self) -> None:
+        calls = 0
+
+        async def _sweep(*, announce: bool = True) -> service.GatewaySweep:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("bug")
+            raise asyncio.CancelledError
+
+        delays: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            delays.append(delay)
+
+        with patch.object(service, "install_gateways", side_effect=_sweep), \
+                patch.object(service, "_sleep", side_effect=_sleep), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                self.assertLogs("services.cowork_agent.connectors.composio.service", "ERROR"):
+            with contextlib.suppress(asyncio.CancelledError):
+                await service.gateway_reconcile_loop()
+        self.assertEqual(delays, [5])   # treated as transient; tried again
+
+    def test_the_interval_knob_falls_back_on_garbage(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": "soon"}), \
+                self.assertLogs("services.cowork_agent.connectors.composio.service", "WARNING"):
+            self.assertEqual(service.reconcile_interval(), 600.0)
+        with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": ""}):
+            self.assertEqual(service.reconcile_interval(), 600.0)
+        with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": "30"}):
+            self.assertEqual(service.reconcile_interval(), 30.0)
+
+    async def test_a_page_load_starts_one_sweep_not_a_stampede(self) -> None:
+        started = 0
+        release = asyncio.Event()
+
+        async def _sweep(*, announce: bool = True) -> service.GatewaySweep:
+            nonlocal started
+            started += 1
+            await release.wait()
+            return self._FINAL
+
+        with patch.object(service, "install_gateways", side_effect=_sweep):
+            first = service.kick_gateway_sweep()
+            second = service.kick_gateway_sweep()   # the first is still pending
+            release.set()
+            await service._SWEEP_TASK
+
+        self.assertEqual((first, second), (True, False))
+        self.assertEqual(started, 1)
+
+    async def test_a_page_load_within_the_window_starts_nothing(self) -> None:
+        with patch.object(service, "install_gateways", return_value=self._FINAL) as sweep:
+            service._LAST_SWEEP_AT = time.monotonic()
+            self.assertFalse(service.kick_gateway_sweep())
+            service._LAST_SWEEP_AT = time.monotonic() - service._KICK_MIN_INTERVAL - 1
+            self.assertTrue(service.kick_gateway_sweep())
+            await service._SWEEP_TASK
+        sweep.assert_called_once_with(announce=False)
+
+    async def test_a_page_load_never_announces(self) -> None:
+        # The console summary belongs to the boot pass; a sweep a tab started prints
+        # only changes, otherwise every Refresh would re-list four agents.
+        with patch.object(service, "install_gateways", return_value=self._FINAL) as sweep:
+            self.assertTrue(service.kick_gateway_sweep())
+            await service._SWEEP_TASK
+        sweep.assert_called_once_with(announce=False)
+
+
+class GatewayKickWithoutLoopTests(_ComposioBase):
+    def test_a_kick_outside_the_event_loop_is_a_noop(self) -> None:
+        with patch.object(service, "install_gateways") as sweep:
+            self.assertFalse(service.kick_gateway_sweep())
+        sweep.assert_not_called()
 
 
 if __name__ == "__main__":

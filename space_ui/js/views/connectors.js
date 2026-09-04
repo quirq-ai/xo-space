@@ -34,7 +34,6 @@ let root=null;
 let toolkits=[];
 let openToolkit=null;      /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
-let activeAgent=null;      /* resolved from /api/runtime-config, never hardcoded */
 let loading=false;
 let listener=null;
 
@@ -61,7 +60,6 @@ function renderShell(){
             +'proxy that keeps the Composio key on the server.</p>'
         +'</div>'
         +'<div class="conn-hero-actions">'
-          +'<button class="conn-refresh" id="conn-gateway" type="button" hidden>Reinstall MCP gateway</button>'
           +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
         +'</div>'
       +'</header>'
@@ -74,7 +72,6 @@ function renderShell(){
 
 function bindEvents(){
   root.querySelector('#conn-refresh').addEventListener('click',()=>loadAll());
-  root.querySelector('#conn-gateway').addEventListener('click',refreshGateway);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
   if(!listener){
     listener=onAuthMessage;
@@ -92,16 +89,10 @@ async function loadAll(){
     const session=await ensureSession();
     if(!session){renderSignedOut();return;}
 
-    const [list,runtime]=await Promise.all([
-      apiFetch(BASE+'/toolkits',{headers:sessionHeaders()}),
-      apiFetch('/api/runtime-config'),
-    ]);
-
-    if(runtime.ok&&Array.isArray(runtime.data&&runtime.data.agents)){
-      const active=runtime.data.agents.find(a=>a&&a.active);
-      activeAgent=active?active.name:null;
-    }
-    root.querySelector('#conn-gateway').hidden=!activeAgent;
+    /* Listing also starts the server's MCP-gateway sweep in the background, so
+       opening this tab (or pressing Refresh) does what the old "Reinstall MCP
+       gateway" button did — the agent's wiring is never installed by hand. */
+    const list=await apiFetch(BASE+'/toolkits',{headers:sessionHeaders()});
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
@@ -377,29 +368,6 @@ async function toggleAction(toolkitId,input){
   if(Array.isArray(rows)){
     const row=rows.find(r=>r.slug===slug);
     if(row)row.enabled=enabled;
-  }
-}
-
-async function refreshGateway(){
-  if(!activeAgent)return;
-  const button=root.querySelector('#conn-gateway');
-  setBusy(button,true);
-  try{
-    const res=await apiFetch(
-      BASE+'/refresh-gateway?agent='+encodeURIComponent(activeAgent),
-      {method:'POST',headers:sessionHeaders()},
-    );
-    if(!res.ok){
-      setAlert('error','Could not reinstall the MCP gateway',esc(res.error||''));
-      return;
-    }
-    /* `durability_warning` means XO did not record the proxy token, so the install
-       works now but dies with this workspace. Worth saying; a plain success is not. */
-    const warning=res.data&&res.data.durability_warning;
-    setAlert(warning?'pending':'good','MCP gateway reinstalled for '+esc(activeAgent),
-      warning?esc(warning):'Restart the agent to pick up the new configuration.');
-  }finally{
-    setBusy(button,false);
   }
 }
 

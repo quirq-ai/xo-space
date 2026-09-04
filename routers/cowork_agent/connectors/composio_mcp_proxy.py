@@ -42,10 +42,12 @@ async def _proxy_user(token: str | None) -> str | None:
 _IDENTITY_REQUIRED = {
     "error": "composio_identity_required",
     "detail": (
-        "This MCP proxy call carried no recognised user token. "
-        "Re-install the MCP config for this agent "
-        "(POST /api/connectors/composio/refresh-gateway) so it "
-        "points at a valid /mcp/composio-proxy/u/<token> URL."
+        "This MCP proxy call carried no recognised user token: the agent's MCP config "
+        "is stale, or was written for another workspace. xo-space rewrites it "
+        "automatically (at boot, periodically, and when the Connectors tab loads) — "
+        "make sure xo-space is running, then restart the agent so it re-reads its "
+        "/mcp/composio-proxy/u/<token> URL. If this persists, check the server log "
+        "for 'Composio MCP' lines."
     ),
 }
 
@@ -57,9 +59,10 @@ async def _proxy(
         user_id = await _proxy_user(token)
     except composio_state.StateUnavailable as exc:
         # Reached only when this pod does not know the token AND xo-swarm-api could not
-        # be asked. Deliberately not a 401: that tells the operator to run
-        # refresh-gateway, which during the same outage also fails. 503 is truthful and
-        # retryable, and the agent backs off instead of looping.
+        # be asked. Deliberately not a 401: that tells the agent its config is stale
+        # when it is not, and the reconcile sweep could not rewrite it during the same
+        # outage anyway. 503 is truthful and retryable, and the agent backs off
+        # instead of looping.
         log.warning("mcp_proxy: tenant state unavailable: %s", exc)
         return JSONResponse(
             status_code=503,
@@ -148,7 +151,8 @@ async def _proxy(
 #
 # The unscoped routes carry no identity and therefore always 401. They are
 # deliberate: a stale agent config that predates the /u/<token> URLs gets a clear
-# error telling it to re-install, rather than silently reaching another tenant.
+# error saying its config is stale (the reconcile sweep rewrites it; the agent
+# needs a restart), rather than silently reaching another tenant.
 # Do not delete them as dead code.
 
 

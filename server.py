@@ -710,15 +710,18 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Startup skill install failed to schedule (non-fatal): {exc}")
 
-    # Point every agent that supports it at this workspace's Composio MCP proxy.
-    # Backgrounded because resolving the workspace-scoped principal costs one XO
-    # /get-user-id round trip; boot must not wait on it. Installs nothing when the
-    # backend holds no XO credential or has no workspace identity. Non-fatal.
+    # Point every agent that supports it at this workspace's Composio MCP proxy, and
+    # keep it that way: one sweep now, retries with backoff while XO is unreachable,
+    # then a periodic reconcile (COMPOSIO_MCP_RECONCILE_INTERVAL). This is the only
+    # install path — there is no manual endpoint. Backgrounded because resolving the
+    # workspace-scoped principal costs one XO round trip; boot must not wait on it.
+    # Installs nothing when the backend holds no XO credential or has no workspace
+    # identity. Non-fatal.
     _mcp_gateway_task = None
     try:
-        from services.cowork_agent.connectors.composio.service import install_gateways_at_startup
-        _mcp_gateway_task = asyncio.create_task(install_gateways_at_startup())
-        print("   Composio MCP: background gateway install scheduled")
+        from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
+        _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
+        print("   Composio MCP: background gateway install + reconcile scheduled")
     except Exception as exc:
         print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
 

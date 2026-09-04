@@ -335,7 +335,7 @@ HTTP surface under `routers/cowork_agent/connectors/`:
 
 | module | what it serves |
 |---|---|
-| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...` — toolkits, connect/disconnect, accounts, tools, prefs, refresh-gateway, the OAuth callback |
+| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...` — toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
 | `routers/cowork_agent/connectors/composio_mcp_proxy.py` | `/mcp/composio-proxy/...` — the loopback reverse proxy agents reach Composio through |
 | `services/cowork_agent/connectors/composio/` | `service.py`, `identity.py`, `session_identity.py`, `mcp.py`, `action_prefs.py`, `categories.py` |
 
@@ -409,10 +409,24 @@ Agents reach Composio through `/mcp/composio-proxy/u/<token>`, a loopback revers
 proxy (`connectors/composio_mcp_proxy.py`), never directly. That is deliberate: the proxy injects the
 Composio credential server-side, so **no API key is ever written into an agent's
 config file**. `_forwarded_headers` strips the client's `authorization` on the way
-out. `service.install_gateways_at_startup()` installs that URL into every agent
-whose manifest declares an `mcp` block at boot, and `POST .../refresh-gateway`
-re-runs it on demand. The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped
-routes exist only to 401 a stale config with a useful message.
+out. `service.install_gateways()` installs that URL into every agent whose manifest
+declares an enabled `mcp` block — and nothing else does: there is no manual endpoint
+and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
+boot, retries with backoff (5 s → 300 s) while xo-swarm-api cannot provide the
+principal, stops after one console line for a gate that cannot open without a restart
+(no XO credential, no `CODER_WORKSPACE_ID`, credential rejected), and then sweeps
+every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
+`GET /api/connectors/composio/toolkits` also kicks a rate-limited background sweep, so
+opening the Connectors tab is what pressing "Reinstall MCP gateway" used to be.
+
+Sweeps are single-flight (one asyncio lock) and idempotent — `mcp.apply` reports
+`changed: False` for a file that is already current, so an idle tick never writes — and
+the blocking half (minting the token is one swarm round trip, then the file writes) runs
+in a worker thread. The periodic pass is what repairs the cases the button existed for:
+a config file that appeared after boot, an agent that rewrote its config and dropped the
+entry, and a token the swarm did not record at boot (every sweep re-registers it). The
+`/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped routes exist only to
+401 a stale config with a useful message.
 
 **The install is declarative.** Each agent describes its own gateway shape as an
 `"mcp"` block in `config/agents/<name>/manifest.json`, and `composio/mcp.py` is the
@@ -440,7 +454,9 @@ TOML writer, and that config is hand-written with comments), so it re-parses its
 output and aborts if anything outside the managed table moved. Across every format,
 two rules hold: a config that failed to parse is never rewritten, and an existing
 file's permissions are preserved. An agent without a block is not a bug — antigravity
-has none, and `/refresh-gateway` 422s naming the ones that do.
+has none and is simply skipped. A block can also say `"enabled": false` to opt an agent
+out of the automatic install without deleting the recipe (the sweep would otherwise
+re-add an entry removed by hand); nothing already written is removed.
 
 > An agent's MCP config is **machine-global** — one file in the server's own `$HOME`.
 > That is not a multi-tenancy problem: one pod serves one person, and the config points
@@ -505,7 +521,7 @@ it to show "Composio is not configured" instead of a raw error, and
 Per-tenant state is **durable in xo-swarm-api**, not in this checkout. The container
 mounts no volume on `/app/data`, so everything below used to die with the pod — and since
 each agent's MCP config has a proxy token baked into it, every agent came back to a 401
-until someone ran `refresh-gateway`.
+until the next boot rewrote its config.
 
 The store is **split**, and the split is the point:
 
@@ -521,8 +537,10 @@ Two rules follow, and both are load-bearing:
   lookup. The swarm is consulted only on a local miss, which is exactly the case this
   design exists for; the answer is written back, so the pod self-heals.
 - **Mint must never fall back; resolve may.** A token the swarm never recorded stops
-  working the moment this pod's store is lost, and `refresh-gateway` would fail too. So
-  minting during an outage still returns a token but reports `durable: false`.
+  working the moment this pod's store is lost, and a re-install during the same outage
+  would only mint another unrecorded one. So minting during an outage still returns a
+  token but reports `durable: false`; the sweep prints a warning, and the next sweep
+  re-registers the token once the swarm is back.
 
 `data/composio_action_prefs.json` still holds per-user disabled actions locally and is
 mirrored to the swarm; only *disabled* slugs are stored, so new actions default to
@@ -536,13 +554,13 @@ degrades to the pre-existing behaviour.
 
 | Swarm says | MCP proxy returns |
 |---|---|
-| token unknown (404) | 401 `composio_identity_required` — re-install the agent's config |
+| token unknown (404) | 401 `composio_identity_required` — the agent's config is stale; the sweep rewrites it, the agent needs a restart |
 | credential rejected (401/403) | 401, distinct detail |
 | unreachable, something cached | serves the cached principal, one WARNING per error-TTL |
 | unreachable, nothing cached | **503 `composio_state_unavailable`** + `Retry-After` |
 
-That last row is not cosmetic: a 401 would send the operator to `refresh-gateway`, which
-during the same outage also fails.
+That last row is not cosmetic: a 401 would claim the agent's config is stale when it is
+fine, and the sweep could not rewrite it during the same outage anyway.
 
 ### 10.5 Multiple connected accounts
 
