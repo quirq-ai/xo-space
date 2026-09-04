@@ -72,12 +72,14 @@ _quirq_secrets_file = (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
 if _quirq_secrets_file:
     load_dotenv(_quirq_secrets_file, override=True)
 
-from routers.auth.auth import (
+from services.xo_credential import (
     XO_API_KEY,
     consume_auth_flow,
     get_auth_token,
     get_auth_state,
-    router as auth_router,
+)
+from routers.cowork_agent.connectors.composio_session import (
+    router as xo_auth_session_router,
 )
 from routers.auth.claude_setup_token import router as claude_setup_token_router
 from routers.auth.codex_setup import router as codex_setup_router
@@ -608,6 +610,16 @@ async def lifespan(app: FastAPI):
     # so a half-started install is still discoverable.
     _write_install_pointer()
 
+    # Boot sweep: drop any orphan Claude-Code mcp.json subdirs left behind
+    # by a crash or hard-kill of a previous run. Files there used to carry
+    # the Composio session URL + x-api-key; today they only carry the
+    # loopback-proxy URL, but stale per-session dirs still shouldn't
+    # accumulate.
+    tmp_root = Path(os.getenv("XO_MCP_TMP_ROOT", "/tmp/xo-cowork"))
+    if tmp_root.exists():
+        for child in tmp_root.iterdir():
+            shutil.rmtree(child, ignore_errors=True)
+
     # Bootstrap the agent runtime (OpenClaw, etc.) before serving traffic.
     # Done synchronously so the API doesn't accept requests until the
     # agent it's meant to drive is installed and configured.
@@ -657,6 +669,10 @@ async def lifespan(app: FastAPI):
             "⚠️ XO startup consume skipped: set both XO_AUTH_SESSION_ID and XO_POLL_TOKEN."
         )
 
+    # Composio identity is strictly per-request: the UI carries a session id,
+    # and each agent config carries that user's opaque MCP proxy token. There is
+    # no process-wide "instance user" to prime. See services/cowork_agent/composio/identity.py.
+
     # Start rclone daemon for the gdrive/onedrive connectors (non-fatal if rclone isn't installed)
     try:
         from services.cowork_agent.connectors.gdrive import ensure_rclone_running
@@ -693,6 +709,21 @@ async def lifespan(app: FastAPI):
         print("   Startup skills: background install scheduled")
     except Exception as exc:
         print(f"⚠️ Startup skill install failed to schedule (non-fatal): {exc}")
+
+    # Point every agent that supports it at this workspace's Composio MCP proxy, and
+    # keep it that way: one sweep now, retries with backoff while XO is unreachable,
+    # then a periodic reconcile (COMPOSIO_MCP_RECONCILE_INTERVAL). This is the only
+    # install path — there is no manual endpoint. Backgrounded because resolving the
+    # workspace-scoped principal costs one XO round trip; boot must not wait on it.
+    # Installs nothing when the backend holds no XO credential or has no workspace
+    # identity. Non-fatal.
+    _mcp_gateway_task = None
+    try:
+        from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
+        _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
+        print("   Composio MCP: background gateway install + reconcile scheduled")
+    except Exception as exc:
+        print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
 
     # Write ~/xo-projects/.xo/xo.json (static defaults) and seed live status
     # in the background. The dispatcher inside seed_agent_status() picks the
@@ -778,6 +809,13 @@ async def lifespan(app: FastAPI):
             await _xo_status_task
         except asyncio.CancelledError:
             pass
+
+    if _mcp_gateway_task and not _mcp_gateway_task.done():
+        _mcp_gateway_task.cancel()
+        try:
+            await _mcp_gateway_task
+        except asyncio.CancelledError:
+            pass
     print("👋 Shutting down XO Space API Server...")
 
 
@@ -801,7 +839,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(auth_router)
+app.include_router(xo_auth_session_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
 app.include_router(openclaw_usage_router)

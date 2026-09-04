@@ -100,6 +100,12 @@ const PAGES=[
     section:'Tab guides',
     title:'Setup tab',
     summary:'Configure roots, agent runtime, watcher coverage, credentials, and managed restarts.'
+  },
+  {
+    id:'tab-connectors',
+    section:'Tab guides',
+    title:'Connectors tab',
+    summary:'Connect Composio toolkits per user and per workspace, and choose which actions the agent may call.'
   }
 ];
 
@@ -119,7 +125,8 @@ const ARTICLES={
   'tab-sessions':()=>tabGuideArticle('sessions'),
   'tab-wiki':()=>tabGuideArticle('wiki'),
   'tab-quirq':()=>tabGuideArticle('quirq'),
-  'tab-setup':()=>tabGuideArticle('setup')
+  'tab-setup':()=>tabGuideArticle('setup'),
+  'tab-connectors':()=>tabGuideArticle('connectors')
 };
 const wikiEsc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -449,6 +456,42 @@ const TAB_GUIDES={
       ['Usage reporting: blocked','xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
     ],
     note:'XO root changes select a project collection and never move project files. An empty new .quirq root receives a safe state copy; a non-empty root is never merged.'
+  },
+  connectors:{
+    tab:'connectors',
+    name:'Connectors',
+    kicker:'Tab guide · Composio toolkits',
+    title:'Connectors: give the agent accounts to act in',
+    intro:'Connect Gmail, Google Workspace, Notion and Figma through Composio. A connection belongs to one XO account in one workspace, and its tools reach the active agent over a local MCP proxy that keeps the Composio API key on the server.',
+    facts:['OAuth2 only','per user, per workspace','per-action control','key never leaves the server'],
+    jobs:[
+      ['Connect an app','Authorize a toolkit in a provider popup. The server records the connected account against your workspace-scoped principal, never an account-wide one.'],
+      ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
+      ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
+      ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically — at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']
+    ],
+    sources:[
+      ['GET /api/connectors/composio/toolkits','The registered toolkits and your connection status for each.','Tile state'],
+      ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
+      ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
+      ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in data/composio_action_prefs.json.','Action control'],
+      ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
+    ],
+    steps:[
+      ['Configure the server','Set COMPOSIO_API_KEY on the XO side (xo-swarm-api), plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. This workspace holds no Composio credentials — it fetches them with its XO credential. Both are created by hand in the Composio dashboard — nothing here creates them.'],
+      ['Sign in','The tab needs an XO identity. With XO_API_KEY set, the session mints itself when the tab opens.'],
+      ['Connect','Press Connect and complete consent in the popup. The tile flips to Connected when the poll sees an ACTIVE account.'],
+      ['Trim the toolset','Open Actions on a connected tile and switch off anything the agent should not call.'],
+      ['Restart the agent','MCP configuration is read at agent start, so a newly connected toolkit reaches an already-running agent only after it restarts.']
+    ],
+    checks:[
+      ['“Composio is not configured”','COMPOSIO_API_KEY could not be resolved — either XO has none set, or this server could not reach XO to fetch it. The rest of the server is unaffected. A brief XO outage is covered by the cache; a cold start during one is not.'],
+      ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id on the XO side. The others still work.'],
+      ['“Sign in to XO”','The backend holds no XO credential, so there is no per-user identity to scope a connection to. Set XO_API_KEY or sign in from the app.'],
+      ['Nothing happens after consent','The popup may have been blocked. The status poll still decides, so leave the tab open; if the window closed early, press Connect again.'],
+      ['Agent still has no tools','Restart the agent — MCP config is read at start. The gateway is written automatically at boot, re-checked every few minutes and whenever this tab loads. If the server log says “Composio MCP skipped”, fix the cause it names (no XO credential, no workspace id, XO unreachable, or the agent’s config file does not exist yet) and restart xo-space.']
+    ],
+    note:'Disconnect removes the connection from this workspace — it deletes the connected account at Composio, it does not revoke the grant in your Google, Notion or Figma account. Remove that in the provider’s own settings.'
   }
 };
 
