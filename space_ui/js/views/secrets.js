@@ -88,6 +88,11 @@ function renderShell(){
       +'<div class="setup-grid">'
         +'<section class="setup-card setup-runtime">'
           +'<div class="setup-card-head"><div><span>01 · Process</span><h2>Agent and watcher</h2></div><i id="setup-applied-badge">Checking</i></div>'
+          /* one fact, not a control: whether anything is reported to
+             xo-swarm-api — the same decision usage_sync logs, surfaced
+             first in the card so it cannot be missed. Outside the form so
+             the form's first label keeps its first-child spacing. */
+          +'<div class="setup-usage-reporting" id="usage-reporting" hidden></div>'
           +'<form id="runtime-form" novalidate>'
             +'<label for="runtime-agent">Active agent backend</label>'
             +'<select id="runtime-agent" name="agent_name" required><option>Loading…</option></select>'
@@ -110,10 +115,6 @@ function renderShell(){
               +'<button class="setup-primary" id="runtime-save" type="submit">Save runtime</button>'
               +'<button class="setup-restart" id="runtime-restart" type="button" hidden>Apply &amp; restart</button>'
             +'</div>'
-            /* one fact, not a control: whether anything is reported to
-               xo-swarm-api — the same decision usage_sync logs, surfaced
-               where people actually look */
-            +'<small class="setup-usage-reporting" id="usage-reporting" hidden></small>'
           +'</form>'
         +'</section>'
         +'<section class="setup-card setup-sources-card">'
@@ -377,18 +378,20 @@ function renderUsageReporting(){
   if(!ur){el.hidden=true;return;}
   const link=' <a href="https://github.com/quirq-ai/xo-space#what-leaves-your-machine" '
     +'target="_blank" rel="noopener noreferrer">What leaves your machine &#8599;</a>';
-  let text;
-  if(ur.status==='on'){
-    text='<b>Usage reporting: on</b> — key accepted by xo-swarm-api'
-      +(ur.last_synced_date?'; last report '+esc(ur.last_synced_date):'')+'.';
-  }else if(ur.status==='blocked'){
-    text='<b>Usage reporting: blocked</b> — xo-swarm-api rejected the key; nothing is sent. Fix or remove XO_API_KEY.';
-  }else if(ur.status==='pending'){
-    text='<b>Usage reporting: pending</b> — a key is set but not verified yet; nothing is sent until a sync accepts it.';
-  }else{
-    text='<b>Usage reporting: off</b> — no XO_API_KEY set. Nothing is sent.';
-  }
-  el.innerHTML=text+link;
+  const states={
+    on:['on','Key accepted by xo-swarm-api'
+      +(ur.last_synced_date?'; last report '+esc(ur.last_synced_date):'')
+      +'. A daily summary of token counts, cost and session/tool counts goes out — never prompts, responses or files.'],
+    blocked:['blocked','xo-swarm-api rejected the key; nothing is sent. Fix or remove XO_API_KEY.'],
+    pending:['pending','A key is set but not verified yet; nothing is sent until a sync accepts it.'],
+    off:['off','No XO_API_KEY set. Nothing is sent.']
+  };
+  const [state,detail]=states[ur.status]||states.off;
+  el.className='setup-usage-reporting is-'+state;
+  el.innerHTML='<span aria-hidden="true"></span><div>'
+    +'<b>Usage reporting: '+state+'</b>'
+    +'<p>'+detail+link+'</p>'
+    +'</div>';
   el.hidden=false;
 }
 
