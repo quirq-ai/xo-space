@@ -43,7 +43,7 @@ from services.cowork_agent.connectors.composio import service, session_identity,
 WORKSPACE = "ws-test"
 ACCOUNT = "user_abc123"
 # A literal, not composed: this repo no longer owns the format. xo-swarm-api does,
-# and its tests/test_auth_tenancy.py is what pins it. This value only has to be a
+# and its tests/test_auth_principal.py is what pins it. This value only has to be a
 # realistic string for the pod-side tests to pass around.
 PRINCIPAL = "user_abc123__ws__ws-test"
 
@@ -504,7 +504,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     """Fetching this pod's tenant key from xo-swarm-api.
 
-    The format itself is pinned on the swarm (tests/test_auth_tenancy.py); this repo can
+    The format itself is pinned on the swarm (tests/test_auth_principal.py); this repo can
     only assert that it passes the string through untouched and does not re-grow a
     composer of its own.
     """

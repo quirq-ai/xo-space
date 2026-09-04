@@ -15,7 +15,7 @@ What remains is a **gate**, not a resolver:
    :mod:`.state`.
 
 The tenant key itself is composed in one place only, on the swarm
-(``auth/tenancy.py``). It is stored inside Composio against every connected account, so a
+(``auth/principal.py``). It is stored inside Composio against every connected account, so a
 second implementation drifting from the first would orphan all of them — which is why
 there is no longer one here.
 """

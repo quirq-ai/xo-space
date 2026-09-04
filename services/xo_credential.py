@@ -1,7 +1,7 @@
 """The one XO credential this process holds for its own outbound calls.
 
 **This is not an auth subsystem, and there is no longer one here.** xo-swarm-api owns
-authentication: it verifies Clerk credentials, composes tenant keys (`auth/tenancy.py`),
+authentication: it verifies Clerk credentials, composes tenant keys (`auth/principal.py`),
 runs the browser OAuth handshake (`/auth/browser/start|status|consume`) and, since the
 session utility moved, mints the opaque bearer the UI carries
 (`POST /auth/session/self`). What is left here is the thing that cannot live over there —

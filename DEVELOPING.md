@@ -355,7 +355,7 @@ Clerk credentials, composes tenant keys, runs the browser OAuth handshake, and m
 session ids the UI carries. What lives here is one credential and one pass-through route.
 
 The key is `<account_id>__ws__<CODER_WORKSPACE_ID>`, and it is composed **in
-xo-swarm-api, in `auth/tenancy.py`, and nowhere else**. xo-space supplies the one half
+xo-swarm-api, in `auth/principal.py`, and nowhere else**. xo-space supplies the one half
 the swarm cannot know — its own workspace id — and receives the composed string.
 
 ```
