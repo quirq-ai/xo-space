@@ -24,6 +24,7 @@ from collections import defaultdict
 
 import httpx
 
+from services import tenancy
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.engine.usage_loader import load_usage_module
 
@@ -172,7 +173,7 @@ async def _key_accepted(
 
 
 async def _post_records(records: list, daily: dict | None, state: dict) -> None:
-    from routers.auth.auth import get_auth_token
+    from services.xo_credential import get_auth_token
 
     token = get_auth_token()
     if not token:
@@ -221,7 +222,7 @@ def usage_reporting_status() -> dict:
     The probe outcome comes from the state file `_key_accepted` writes; the
     same file carries the watermark, so ``last_synced_date`` rides along.
     """
-    from routers.auth.auth import get_auth_token  # sanctioned lazy import (see CONTRIBUTING)
+    from services.xo_credential import get_auth_token  # sanctioned lazy import (see CONTRIBUTING)
 
     state = _load_sync_state()
     probe = state.get("key_probe") or {}
@@ -255,7 +256,14 @@ async def _run_sync(is_backfill: bool = False) -> None:
     nothing, posts a zero-valued placeholder whose ``note`` column explains
     why so the analytics surface still shows the sync ran.
     """
-    workspace_id = os.getenv("CODER_WORKSPACE_ID") or "unknown"
+    # Via tenancy, not a bare getenv: the "unknown" bucket this used to fall back to
+    # collides across every misconfigured workspace, and it would not join with the
+    # workspace ids the Composio tenant state now records on the swarm.
+    try:
+        workspace_id = tenancy.workspace_id()
+    except tenancy.WorkspaceIdentityUnavailable as exc:
+        print(f"{_timestamp_prefix()} usage_sync: {exc} — skipping report (nothing sent)")
+        return
     workspace_name = os.getenv("CODER_WORKSPACE_NAME") or None
     project_id = os.getenv("XO_PROJECT_ID") or None
 

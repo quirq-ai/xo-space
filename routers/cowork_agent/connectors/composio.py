@@ -321,12 +321,16 @@ async def refresh_gateway(
 
     result = composio_service.install_into_gateway(user_id, agent)
     if result.get("ok"):
-        result["multi_tenant_warning"] = (
-            f"{agent}'s MCP config is machine-global. It now points at "
-            f"Composio user '{user_id}' for every session on this host, "
-            "including other users'. Per-user isolation on this backend "
-            "requires one gateway process per user."
-        )
+        # A token xo-swarm-api never recorded works until this pod's local store is
+        # lost, and then the agent 401s with no way to recover but another install.
+        # Say so rather than reporting an unqualified success.
+        result["durable"] = composio_service.last_token_was_durable()
+        if not result["durable"]:
+            result["durability_warning"] = (
+                "xo-swarm-api did not record this proxy token, so it will stop "
+                "working if this workspace is recreated. Re-run this once the "
+                "connection to XO is restored."
+            )
     status = 200 if result.get("ok") else 422
     return JSONResponse(result, status_code=status)
 

@@ -13,7 +13,7 @@ class UsageReportingStatusTests(unittest.TestCase):
     """usage_reporting_status() composes 'is anything reported' for Setup.
 
     Hermetic: the sync state file is pointed at a temp path, and the auth
-    token comes from a patched routers.auth.auth.get_auth_token — no real
+    token comes from a patched services.xo_credential.get_auth_token — no real
     ~/.quirq, .env, or network.
     """
 
@@ -26,7 +26,7 @@ class UsageReportingStatusTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _status(self, token: str | None) -> dict:
-        with mock.patch("routers.auth.auth.get_auth_token", return_value=token):
+        with mock.patch("services.xo_credential.get_auth_token", return_value=token):
             return usage_sync.usage_reporting_status()
 
     def test_off_without_a_key(self) -> None:

@@ -72,8 +72,17 @@ def get_toolkit_prefs(toolkit_id: str, user_id: str) -> Dict[str, bool]:
     return dict(load_prefs(user_id).get(toolkit_id, {}))
 
 
-def is_action_enabled(toolkit_id: str, slug: str, user_id: str) -> bool:
-    return load_prefs(user_id).get(toolkit_id, {}).get(slug, True) is True
+def disabled_slugs(user_id: str, toolkit_id: str) -> frozenset[str]:
+    """The disabled slugs for one toolkit, in a single read.
+
+    Only *disabled* slugs are ever stored, so anything absent from this set is enabled —
+    which is what makes an action added to a toolkit later default to on.
+
+    Deliberately set-shaped rather than a per-slug predicate: the one caller classifies a
+    whole tool listing at once, and a per-slug helper meant re-reading the entire store
+    for each of up to 200 tools.
+    """
+    return frozenset(load_prefs(user_id).get(toolkit_id, {}))
 
 
 def bulk_set(
@@ -101,4 +110,10 @@ def bulk_set(
         else:
             current.pop(uid, None)
         write_json_atomic(path, {"version": 2, "users": current})
-        return toolkit_map
+    # Mirror to xo-swarm-api outside the file lock — a slow round trip must not hold it.
+    # Best-effort: prefs are a preference, not a credential, and a swarm that is down
+    # must not make the toggle fail.
+    from services.cowork_agent.connectors.composio import state
+
+    state.put_prefs(toolkit_id, dict(updates))
+    return toolkit_map

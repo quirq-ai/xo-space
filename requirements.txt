@@ -35,6 +35,16 @@ argus-code==0.5.1
 # it back toward 0.7.x.
 composio>=0.18,<0.19
 
+# YAML — hermes keeps its config in ~/.hermes/config.yaml, so the hermes
+# adapter (adapters/hermes/routes.py, top-level import), the config editor
+# (routers/cowork_agent/config.py) and the Composio MCP writer
+# (connectors/composio/mcp.py) all need it. It was undeclared and only ever
+# present transitively; with a clean install AGENT_NAME=hermes did not boot at
+# all (ModuleNotFoundError: yaml). Floor at the 6.x line — the repo only calls
+# safe_load/safe_dump, so nothing here needs the 5.x FullLoader path the
+# CVE-2020-14343 advisory covers.
+PyYAML>=6.0
+
 # Model Context Protocol — local MCP server exposes composio meta-tools to
 # OpenClaw / Hermes / Claude Code so gateways don't load every action upfront.
 #

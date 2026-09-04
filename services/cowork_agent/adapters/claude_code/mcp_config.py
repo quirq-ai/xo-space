@@ -9,9 +9,9 @@ MANAGE_CONNECTIONS, GET_TOOL_SCHEMAS, REMOTE_WORKBENCH, REMOTE_BASH_TOOL).
 The URL written into the file is xo-cowork-api's loopback MCP proxy
 (`composio_service._composio_proxy_url(user_id)` →
 `http://127.0.0.1:<PORT>/mcp/composio-proxy/u/<token>`). The proxy resolves that
-opaque token to this session's user and injects COMPOSIO_API_KEY from .env at
-request time. Net: this file holds no Composio credentials — only a localhost
-URL scoped to one user.
+opaque token to this session's user and injects the Composio credential
+server-side at request time. Net: this file holds no Composio credentials — only
+a localhost URL scoped to one user.
 
 The file lives under /tmp/xo-cowork/<session>/mcp.json and is unlinked
 after the subprocess exits.

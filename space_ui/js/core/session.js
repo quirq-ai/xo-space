@@ -2,20 +2,24 @@
 
    Everything else in this UI is same-origin and unauthenticated: the page is
    served from the API's own origin and each fetch forwards the page query
-   string. The Composio routes are the exception — they resolve a per-user,
-   workspace-scoped principal and 401 without one, so they need a header.
+   string. The Composio routes are the exception — they act as a workspace-scoped
+   principal and 401 without a session, so they need a header.
 
-   GET /xo-auth/session/self mints an opaque session id from the credential the
-   backend already holds (XO_API_KEY, or a consumed browser login). The raw XO
-   token never reaches the browser; only the opaque id does, and it lives in a
-   module variable rather than browser storage, so it dies with the tab. The
-   server-side session table is in-memory too — persisting the id would just
-   outlive the entry it names.
+   The id selects nothing. This backend has exactly one principal, composed by XO
+   from the credential the backend holds plus this workspace's id; the session is
+   only proof that the tab was vouched for by a backend that is signed in.
+
+   GET /xo-auth/session/self asks XO to mint an opaque session id against the
+   credential the backend already holds (XO_API_KEY, or a consumed browser login);
+   the backend proxies, it does not mint. The raw XO token never reaches the
+   browser; only the opaque id does, and it lives in a module variable rather than
+   browser storage, so it dies with the tab. The backend's own record of the id is
+   in-memory too — persisting it would just outlive the entry it names.
 
    The id is minted once and shared: concurrent callers await the same promise. */
 /* Same stamp as the connectors view, so both share ONE api.js module instance
    (a differing URL would give each its own, splitting singleFlight's map). */
-import {apiFetch} from './api.js?v=20260903-connectors1';
+import {apiFetch} from './api.js?v=20260904-tenancy1';
 
 let sessionId=null;
 let inflight=null;

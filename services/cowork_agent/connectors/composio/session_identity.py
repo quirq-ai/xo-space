@@ -1,74 +1,75 @@
+"""Session ids this pod has been handed — a local record, not a mint.
+
+The UI needs *some* bearer on the Composio routes, because those are the one part of this
+server that refuse to act without knowing the request came from a vouched-for tab. It does
+not need an identity: this backend serves exactly one XO account and runs in exactly one
+workspace, so the tenant key is a constant fetched from xo-swarm-api
+(:func:`.state.principal`), not something a session id selects.
+
+**The ids are minted by xo-swarm-api** (``POST /auth/session/self``,
+``auth/session_identity.py`` over there), which is where authentication lives. This module
+records what the proxy route ``GET /xo-auth/session/self`` was handed, so that checking an
+id on the *next* request stays a dict lookup — the check runs on the MCP proxy's hot path,
+on ``initialize``, ``tools/list`` and every ``tools/call``, and must not become a round
+trip to the swarm.
+
+What that costs, stated plainly: this record is a cache with a TTL, so an id revoked at
+the swarm keeps working here until it expires. The bound is the TTL, and the swarm remains
+the authority — ``GET /auth/session/resolve`` answers definitively for anything that needs
+a definitive answer.
+
+The table is in-memory and per-process on purpose. Persisting an id would outlive the
+process whose credential vouched for it, and an id minted for one workspace must not mean
+anything in another.
+
+The raw XO token is never stored here, and never was.
+"""
+
 from __future__ import annotations
 
-import logging
 import os
-import secrets
 import time
-from dataclasses import dataclass
 from typing import Optional
-
-log = logging.getLogger(__name__)
 
 _SESSION_TTL = float(os.getenv("XO_SESSION_TTL", str(12 * 60 * 60)))
 
-
-@dataclass
-class _Entry:
-    user_id: str
-    expires_at: float
-
-
-_SESSIONS: dict[str, _Entry] = {}
+# session id -> expiry (monotonic)
+_SESSIONS: dict[str, float] = {}
 
 
 def _prune(now: float) -> None:
-    expired = [sid for sid, e in _SESSIONS.items() if e.expires_at <= now]
-    for sid in expired:
+    for sid in [s for s, exp in _SESSIONS.items() if exp <= now]:
         _SESSIONS.pop(sid, None)
 
 
-def register(user_id: str, ttl_seconds: Optional[float] = None) -> Optional[str]:
-    # Stores the bare XO **account** id, not a workspace-scoped principal. That
-    # is deliberate: `_SESSIONS` is per-process and in-memory, so a session id
-    # minted in one workspace does not exist in another workspace's process and
-    # cannot be replayed across pods. Scoping happens once, at read, in
-    # composio.identity.resolve_user_from_bearer. Do not scope here too.
-    #
-    # The caller's XO access token is deliberately NOT stored. Nothing reads it
-    # back, and holding a live credential for the process lifetime is exposure
-    # without a purpose. Add it back only alongside a real consumer.
-    if not user_id:
-        return None
+def remember(session_id: str, ttl_seconds: Optional[float] = None) -> str:
+    """Record an id minted by xo-swarm-api, so later requests can check it locally.
+
+    ``ttl_seconds`` is the swarm's own ``expires_in``: the local record must never outlive
+    the session it stands for. Unusable values fall back to the default rather than to
+    zero, which would make the id useless the moment it was handed out.
+    """
     now = time.monotonic()
     _prune(now)
-    session_id = secrets.token_urlsafe(32)
-    _SESSIONS[session_id] = _Entry(
-        user_id=str(user_id),
-        expires_at=now + (ttl_seconds if ttl_seconds and ttl_seconds > 0 else _SESSION_TTL),
-    )
-    log.info("session_identity: registered session for user=%s", user_id)
+    try:
+        ttl = _SESSION_TTL if ttl_seconds is None else float(ttl_seconds)
+    except (TypeError, ValueError):
+        ttl = _SESSION_TTL
+    if ttl <= 0:
+        ttl = _SESSION_TTL
+    _SESSIONS[session_id] = now + ttl
     return session_id
 
 
-async def mint(xo_access_token: str, ttl_seconds: Optional[float] = None) -> Optional[str]:
-    if not xo_access_token:
-        return None
-    from services.cowork_agent.connectors.composio.identity import _validate_token
-
-    user_id = await _validate_token(xo_access_token)
-    if not user_id:
-        return None
-    return register(user_id, ttl_seconds=ttl_seconds)
-
-
-def resolve(session_id: str) -> Optional[str]:
+def is_valid(session_id: Optional[str]) -> bool:
+    """True iff this id was handed to this process and has not expired."""
     if not session_id:
-        return None
-    _prune(time.monotonic())
-    entry = _SESSIONS.get(session_id)
-    if entry is None:
-        return None
-    if entry.expires_at <= time.monotonic():
+        return False
+    now = time.monotonic()
+    expires_at = _SESSIONS.get(session_id)
+    if expires_at is None:
+        return False
+    if expires_at <= now:
         _SESSIONS.pop(session_id, None)
-        return None
-    return entry.user_id
+        return False
+    return True
