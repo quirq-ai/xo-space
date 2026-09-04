@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -540,7 +542,7 @@ def _persist_session_id(user_id: str, session_id: Optional[str]) -> None:
 
 
 # Set by the last proxy_token_for_user call: False when the swarm did not record the
-# token, so the refresh-gateway response can tell the operator the install is not durable.
+# token, so the reconcile sweep can warn the operator that the install is not durable.
 _LAST_TOKEN_DURABLE = True
 
 
@@ -553,13 +555,19 @@ def proxy_token_for_user(user_id: str) -> str:
     The plaintext stays on this pod — only its sha256 goes to the swarm, which is all the
     swarm needs to answer "who owns this token?". Minting deliberately does **not** fall
     back to swarm-less operation silently: a token the swarm never recorded stops working
-    the moment this pod's local store is lost, and `refresh-gateway` would fail too, so
-    the caller is told via `_LAST_TOKEN_DURABLE`.
+    the moment this pod's local store is lost, and a re-install during the same outage
+    would only mint another unrecorded one, so the caller is told via
+    `_LAST_TOKEN_DURABLE` — and every later reconcile sweep re-registers the token, which
+    is how the pod heals once the swarm is back.
+
+    Runs on the worker thread of the reconcile sweep as well as on the event loop, so the
+    dict walks below take a snapshot: `user_for_proxy_token_local` can update
+    `_PROXY_TOKENS` from the loop while a sweep iterates it.
     """
     global _LAST_TOKEN_DURABLE
     uid = _require_user_id(user_id, "proxy_token_for_user")
     _ensure_sessions_loaded()
-    for token, owner in _PROXY_TOKENS.items():
+    for token, owner in list(_PROXY_TOKENS.items()):
         if owner == uid:
             state.cache_principal(token, uid)
             _LAST_TOKEN_DURABLE = state.put_proxy_token(token)
@@ -577,7 +585,7 @@ def proxy_token_for_user(user_id: str) -> str:
         tokens[token] = uid
 
     _write_store(_mutate, owner=uid)
-    for tok, owner in _PROXY_TOKENS.items():
+    for tok, owner in list(_PROXY_TOKENS.items()):
         if owner == uid:
             state.cache_principal(tok, uid)
             _LAST_TOKEN_DURABLE = state.put_proxy_token(tok)
@@ -621,7 +629,7 @@ async def user_for_proxy_token(token: str) -> Optional[str]:
 
     Raises `state.StateUnavailable` when the swarm cannot be reached and nothing is
     cached; the proxy renders that as a retryable 503 rather than a 401, because a 401
-    would send the user to `refresh-gateway`, which during an outage also fails.
+    would tell the agent its config is stale when it is not.
     """
     local = user_for_proxy_token_local(token)
     if local:
@@ -808,7 +816,15 @@ def _composio_proxy_url(user_id: str) -> str:
     return f"http://127.0.0.1:{port}/mcp/composio-proxy/u/{proxy_token_for_user(uid)}"
 
 
-def install_into_gateway(user_id: str, agent: str) -> dict[str, Any]:
+def install_into_gateway(
+    user_id: str, agent: str, *, proxy_url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Point one agent's config at this workspace's proxy.
+
+    Synchronous, and it may block: minting the proxy URL registers the token with
+    xo-swarm-api (one HTTP round trip). The reconcile sweep therefore mints once and
+    passes ``proxy_url`` in, rather than paying that per agent.
+    """
     from services.cowork_agent.connectors.composio import mcp
 
     target = mcp.load_target(agent)
@@ -817,14 +833,15 @@ def install_into_gateway(user_id: str, agent: str) -> dict[str, Any]:
             "ok": False,
             "error": (
                 f"Agent '{agent}' does not support gateway MCP install "
-                f"(no 'mcp' block in config/agents/{agent}/manifest.json)."
+                f"(no enabled 'mcp' block in config/agents/{agent}/manifest.json)."
             ),
         }
-    try:
-        proxy_url = _composio_proxy_url(user_id)
-    except Exception as exc:
-        log.warning("composio: gateway install could not build proxy URL: %s", exc)
-        return {"ok": False, "error": str(exc)}
+    if proxy_url is None:
+        try:
+            proxy_url = _composio_proxy_url(user_id)
+        except Exception as exc:
+            log.warning("composio: gateway install could not build proxy URL: %s", exc)
+            return {"ok": False, "error": str(exc)}
     return mcp.apply(target, proxy_url)
 
 
@@ -834,88 +851,298 @@ def gateway_install_agents() -> list[str]:
     return mcp.agents_with_targets()
 
 
-async def install_gateways_at_startup() -> dict[str, dict]:
-    """Point every agent whose manifest declares an ``mcp`` block at this
-    workspace's Composio proxy. Called from ``server.py``'s lifespan.
+# ── The reconcile sweep ─────────────────────────────────────────────────────
+#
+# Installing the MCP gateway into agents is automatic and has no manual path. There
+# used to be a `POST /api/connectors/composio/refresh-gateway` behind a button on the
+# Connectors tab, for the cases the one-shot boot install silently gave up on: XO
+# unreachable at boot, an agent config file that did not exist yet, an agent that
+# rewrote its config and dropped the entry, a token the swarm never recorded. Every
+# one of those is closed by running the same idempotent sweep again — at boot with
+# backoff, on a timer, and when the Connectors tab loads — so the button went.
 
-    Before this existed the only install path was a manual
-    ``POST /api/connectors/composio/refresh-gateway``, so a fresh workspace —
-    or a restart after the proxy token changed — left agents with no Composio
-    tools and no signal beyond a 401 telling the user to run that endpoint.
 
-    Identity at boot: ``install_into_gateway`` wants this workspace's principal, and
-    there is no request to carry one. The backend holds its own XO credential, so it asks
-    xo-swarm-api directly — the same fetch every later request reads from cache, so this
-    also warms it.
+@dataclass(frozen=True)
+class GatewaySweep:
+    """The outcome of one :func:`install_gateways` pass."""
 
-    Fail closed and quietly: no credential, no workspace identity, or an unreachable
-    swarm means nothing is installed and the agents keep whatever config they already
-    have. Nothing here is fatal to boot.
+    results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # None when the sweep ran; otherwise which gate stopped it: "no_agents",
+    # "no_credential", "no_workspace" or "principal_unavailable".
+    skipped: Optional[str] = None
+    # Whether waiting can help. Only an unreachable swarm changes on its own: the XO
+    # credential is fixed at boot and the workspace id is injected by the pod.
+    retryable: bool = False
+    # One sentence for the console, where the boot summary is the only thing read.
+    detail: str = ""
 
-    Returns a per-agent result map (also useful in tests); callers at boot ignore
-    it and rely on the printed summary.
+    @property
+    def ran(self) -> bool:
+        return self.skipped is None
+
+
+_SWEEP_LOCK: Optional[asyncio.Lock] = None
+_SWEEP_TASK: Optional["asyncio.Task[GatewaySweep]"] = None
+_LAST_SWEEP_AT = 0.0                     # monotonic; 0 = never
+_LAST_ERRORS: dict[str, str] = {}        # agent -> last printed error, so sweeps stay quiet
+_WARNED_UNDURABLE = False                # the durability warning prints on change only
+_RETRY_DELAYS: tuple[int, ...] = (5, 15, 30, 60, 120, 300)   # while XO is unreachable
+_KICK_MIN_INTERVAL = 30.0                # seconds between sweeps a page load may start
+_DEFAULT_RECONCILE_INTERVAL = 600.0
+_sleep = asyncio.sleep                   # module attribute so tests can shorten the loop
+
+
+def _sweep_lock() -> asyncio.Lock:
+    # Created lazily so importing this module does not require a running loop.
+    global _SWEEP_LOCK
+    if _SWEEP_LOCK is None:
+        _SWEEP_LOCK = asyncio.Lock()
+    return _SWEEP_LOCK
+
+
+def reconcile_interval() -> float:
+    """Seconds between periodic sweeps: ``COMPOSIO_MCP_RECONCILE_INTERVAL``, default 600.
+
+    ``0`` (or a negative number) disables the periodic pass — the boot sweep, its
+    retries and the Connectors-tab kick still run.
     """
-    # Local imports: this module is reached from server.py's lifespan, and the
-    # composio and auth packages import each other lazily to avoid a load cycle.
-    from services.xo_credential import get_auth_token
-
-    agents = gateway_install_agents()
-    if not agents:
-        log.info("composio: no agent manifest declares an 'mcp' block; nothing to install.")
-        return {}
-
-    token = get_auth_token()
-    if not token:
-        log.info(
-            "composio: backend holds no XO credential (no XO_API_KEY and no "
-            "consumed session); skipping MCP install for %s.", agents,
-        )
-        return {}
-
+    raw = (os.getenv("COMPOSIO_MCP_RECONCILE_INTERVAL") or "").strip()
+    if not raw:
+        return _DEFAULT_RECONCILE_INTERVAL
     try:
-        tenancy.workspace_id()
-    except tenancy.WorkspaceIdentityUnavailable as exc:
+        return float(raw)
+    except ValueError:
         log.warning(
-            "composio: %s — refusing to install an MCP config bound to an unscoped "
-            "Composio bucket, which every workspace of this account would share. "
-            "%s is injected by the Coder pod.",
-            exc, tenancy.WORKSPACE_ENV,
+            "composio: COMPOSIO_MCP_RECONCILE_INTERVAL=%r is not a number; using %s.",
+            raw, _DEFAULT_RECONCILE_INTERVAL,
         )
-        return {}
+        return _DEFAULT_RECONCILE_INTERVAL
 
+
+def last_gateway_sweep_at() -> float:
+    """``time.monotonic()`` of the last finished sweep, or ``0.0``."""
+    return _LAST_SWEEP_AT
+
+
+def _report(agent: str, result: dict[str, Any], announce: bool) -> None:
+    # print, not log.info: the boot summary is the only place anyone looks, and
+    # `services.*` loggers are not wired to a handler. Same convention as
+    # skill_installer. Later sweeps print only what changed, or an error not yet seen.
+    if result.get("ok"):
+        _LAST_ERRORS.pop(agent, None)
+        if result.get("changed") is False:
+            if announce:
+                print(f"   Composio MCP: {agent} already current ({result.get('config_path')})")
+        else:
+            print(f"✅ Composio MCP installed for {agent}: {result.get('config_path')}")
+        return
+    error = str(result.get("error") or "")
+    if announce or _LAST_ERRORS.get(agent) != error:
+        # Expected when an agent isn't provisioned on this host — its config file
+        # simply doesn't exist yet. A later sweep installs once it appears.
+        print(f"⚠️ Composio MCP skipped for {agent}: {error}")
+    _LAST_ERRORS[agent] = error
+
+
+def _apply_to_agents(
+    principal: str, agents: list[str], announce: bool,
+) -> dict[str, dict[str, Any]]:
+    """The blocking half of a sweep, run off the event loop.
+
+    Mints the proxy URL once — that is one xo-swarm-api round trip, which also
+    re-registers a token the swarm missed earlier — then writes every agent.
+    """
     try:
-        principal = await state.aprincipal()
-    except Exception as exc:  # network/JSON faults must not break boot
-        log.warning(
-            "composio: no principal for this workspace (%s); skipping MCP install. "
-            "Agents keep their existing config; it resolves on the next boot or a "
-            "manual refresh-gateway.", exc,
+        proxy_url = _composio_proxy_url(principal)
+    except Exception as exc:
+        log.warning("composio: gateway install could not build proxy URL: %s", exc)
+        results = {agent: {"ok": False, "error": str(exc)} for agent in agents}
+        for agent, result in results.items():
+            _report(agent, result, announce)
+        return results
+
+    global _WARNED_UNDURABLE
+    durable = last_token_was_durable()
+    if not durable and (announce or not _WARNED_UNDURABLE):
+        # This used to be the Connectors tab's `durability_warning`. Printed when the
+        # token becomes undurable, not on every tick of a long outage.
+        print(
+            "⚠️ Composio MCP: xo-swarm-api did not record this workspace's proxy token, "
+            "so the install stops working if this workspace is recreated. The next "
+            "sweep re-registers it."
         )
-        return {}
+    elif durable and _WARNED_UNDURABLE:
+        print("✅ Composio MCP: xo-swarm-api now records this workspace's proxy token.")
+    _WARNED_UNDURABLE = not durable
 
-    # Now that the principal is known, a pre-ownership store can classify and upgrade
-    # itself — which is what keeps the proxy serving locally through a later outage.
-    _ensure_sessions_loaded()
-
-    results: dict[str, dict] = {}
+    results: dict[str, dict[str, Any]] = {}
     for agent in agents:
         try:
-            result = install_into_gateway(principal, agent)
+            result = install_into_gateway(principal, agent, proxy_url=proxy_url)
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         results[agent] = result
-
-        # print, not log.info: this runs from the lifespan, where the boot summary
-        # is the only place anyone looks, and `services.*` loggers are not wired to
-        # a handler. Same convention as skill_installer.
-        if result.get("ok"):
-            if result.get("changed") is False:
-                print(f"   Composio MCP: {agent} already current ({result.get('config_path')})")
-            else:
-                print(f"✅ Composio MCP installed for {agent}: {result.get('config_path')}")
-        else:
-            # Expected when an agent isn't provisioned on this host — its config
-            # file simply doesn't exist. Not an error worth shouting about.
-            print(f"⚠️ Composio MCP skipped for {agent}: {result.get('error')}")
-
+        _report(agent, result, announce)
     return results
+
+
+async def install_gateways(*, announce: bool = True) -> GatewaySweep:
+    """One idempotent sweep: point every agent whose manifest declares an enabled
+    ``mcp`` block at this workspace's Composio proxy.
+
+    Identity: ``install_into_gateway`` wants this workspace's principal, and there is
+    no request to carry one. The backend holds its own XO credential, so it asks
+    xo-swarm-api directly — the same fetch every later request reads from cache, so
+    this also warms it.
+
+    Fail closed and quietly: no credential, no workspace identity, or an unreachable
+    swarm means nothing is installed and the agents keep whatever config they already
+    have. The returned :class:`GatewaySweep` says which gate closed and whether a
+    later sweep can pass it. Never raises; nothing here is fatal to boot.
+
+    Single-flight: the boot loop and a Connectors-tab kick share one lock, so two
+    sweeps never interleave their writes. The file and network work runs in a worker
+    thread — minting the token is a blocking HTTP call — so a slow swarm does not
+    stall the event loop.
+
+    ``announce`` prints the full per-agent summary (the boot pass). Later sweeps print
+    only what changed and errors not seen before.
+    """
+    # Local import: this module is reached from server.py's lifespan, and the
+    # composio and auth packages import each other lazily to avoid a load cycle.
+    from services.xo_credential import get_auth_token
+    global _LAST_SWEEP_AT
+
+    async with _sweep_lock():
+        try:
+            agents = gateway_install_agents()
+            if not agents:
+                detail = "no agent manifest declares an enabled 'mcp' block"
+                log.info("composio: %s; nothing to install.", detail)
+                return GatewaySweep(skipped="no_agents", detail=detail)
+
+            if not get_auth_token():
+                detail = (
+                    "the backend holds no XO credential (no XO_API_KEY and no "
+                    "consumed session)"
+                )
+                log.info("composio: %s; skipping MCP install for %s.", detail, agents)
+                return GatewaySweep(skipped="no_credential", detail=detail)
+
+            try:
+                tenancy.workspace_id()
+            except tenancy.WorkspaceIdentityUnavailable as exc:
+                detail = f"{exc} — {tenancy.WORKSPACE_ENV} is injected by the Coder pod"
+                log.warning(
+                    "composio: %s; refusing to install an MCP config bound to an "
+                    "unscoped Composio bucket, which every workspace of this account "
+                    "would share.", detail,
+                )
+                return GatewaySweep(skipped="no_workspace", detail=detail)
+
+            # A store that already names its owner lets the principal fetch fall back
+            # to it during a swarm outage (state.principal_payload), so read it first.
+            _ensure_sessions_loaded()
+
+            try:
+                principal = await state.aprincipal()
+            except state.StateUnavailable as exc:
+                retryable = not exc.authoritative
+                detail = (
+                    f"xo-swarm-api could not provide this workspace's principal ({exc})"
+                    if retryable else
+                    f"xo-swarm-api rejected this backend's XO credential ({exc})"
+                )
+                log.warning(
+                    "composio: %s; skipping MCP install. Agents keep their existing "
+                    "config; %s.", detail,
+                    "the next sweep retries" if retryable else "fix it and restart",
+                )
+                return GatewaySweep(
+                    skipped="principal_unavailable", retryable=retryable, detail=detail,
+                )
+            except Exception as exc:  # network/JSON faults must not break boot
+                detail = f"xo-swarm-api could not provide this workspace's principal ({exc})"
+                log.warning(
+                    "composio: %s; skipping MCP install. Agents keep their existing "
+                    "config; the next sweep retries.", detail,
+                )
+                return GatewaySweep(
+                    skipped="principal_unavailable", retryable=True, detail=detail,
+                )
+
+            # Now that the principal is known, a pre-ownership store can classify and
+            # upgrade itself — which keeps the proxy serving locally through a later outage.
+            _ensure_sessions_loaded()
+
+            results = await asyncio.to_thread(_apply_to_agents, principal, agents, announce)
+            return GatewaySweep(results=results)
+        finally:
+            _LAST_SWEEP_AT = time.monotonic()
+
+
+async def gateway_reconcile_loop() -> None:
+    """The lifespan task: sweep now, retry while XO is unreachable, then keep every
+    agent's config current on a timer. Cancelled at shutdown.
+
+    Backoff follows ``_RETRY_DELAYS`` and stays at its last value; a gate that cannot
+    open without a restart ends the loop after one console line. After a sweep runs,
+    the next one is :func:`reconcile_interval` seconds later — ``0`` stops here.
+    """
+    attempt = 0
+    announce = True
+    while True:
+        try:
+            sweep = await install_gateways(announce=announce)
+        except Exception as exc:  # a bug must not kill the timer; the next tick retries
+            log.exception("composio: gateway sweep failed unexpectedly: %s", exc)
+            sweep = GatewaySweep(skipped="principal_unavailable", retryable=True, detail=str(exc))
+        announce = False
+
+        if sweep.skipped and not sweep.retryable:
+            print(f"⚠️ Composio MCP: not installed — {sweep.detail}. Fix it and restart xo-space.")
+            return
+
+        if sweep.skipped:
+            delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+            if attempt < len(_RETRY_DELAYS):
+                print(f"   Composio MCP: {sweep.detail}; retrying in {delay}s")
+            attempt += 1
+        else:
+            attempt = 0
+            delay = reconcile_interval()
+            if delay <= 0:
+                return
+        await _sleep(delay)
+
+
+def _log_sweep_task_outcome(task: "asyncio.Task[GatewaySweep]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning("composio: background gateway sweep failed: %s", exc)
+
+
+def kick_gateway_sweep() -> bool:
+    """Start a background sweep from a request handler — fire and forget.
+
+    Called where the Reinstall button used to be pressed: when the Connectors tab
+    loads or its Refresh is pressed. Single-flight and rate-limited, so a page that
+    reloads in a loop costs nothing; the handler never waits on it. Returns whether a
+    sweep was scheduled.
+    """
+    global _SWEEP_TASK
+    if _SWEEP_TASK is not None and not _SWEEP_TASK.done():
+        return False
+    if _SWEEP_LOCK is not None and _SWEEP_LOCK.locked():
+        return False
+    if _LAST_SWEEP_AT and time.monotonic() - _LAST_SWEEP_AT < _KICK_MIN_INTERVAL:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _SWEEP_TASK = loop.create_task(install_gateways(announce=False))
+    _SWEEP_TASK.add_done_callback(_log_sweep_task_outcome)
+    return True

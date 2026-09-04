@@ -101,11 +101,18 @@ class SpaceWikiTests(unittest.TestCase):
         # postMessage only accelerates; the status poll decides.
         self.assertIn("connection_request_id=", view)
 
-        # The agent for refresh-gateway is resolved at runtime — naming one here
-        # would put an agent literal in a core (non-adapter) file.
-        self.assertIn("/api/runtime-config", view)
+        # The MCP gateway is installed by the server's reconcile sweep, so the view
+        # has neither a repair button nor a reason to know which agent is active —
+        # and naming one here would put an agent literal in a core (non-adapter) file.
+        self.assertNotIn("refresh-gateway", view)
+        self.assertNotIn("conn-gateway", view)
+        self.assertNotIn("/api/runtime-config", view)
         for agent in ("claude_code", "openclaw", "hermes", "antigravity"):
             self.assertNotIn(agent, view)
+        wiki = (
+            ROOT / "space_ui" / "js" / "views" / "wiki.js"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("refresh-gateway", wiki)
 
     def test_quirq_view_registered_and_six_degrees_removed(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")

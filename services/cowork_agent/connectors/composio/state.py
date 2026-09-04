@@ -3,8 +3,9 @@
 The session ids and MCP proxy tokens keyed by a Composio principal used to live only in
 ``data/composio_sessions.json`` inside this checkout. The published container mounts no
 volume on ``/app/data``, so a pod recreation lost them — and because every agent's MCP
-config has a proxy token baked into it, every agent came back to a 401 until somebody ran
-``refresh-gateway``. xo-swarm-api owns that state now; this module is the client.
+config has a proxy token baked into it, every agent came back to a 401 until the config
+was rewritten with a fresh token. xo-swarm-api owns that state now; this module is the
+client.
 
 **The store is split, and the split is the point.** The swarm holds
 ``sha256(proxy_token)``; this pod keeps the plaintext, in the same 0600 file it always
@@ -18,9 +19,10 @@ dump for every tenant at once. Two consequences worth knowing:
   died, the agent's config did not. The answer is written back, so the pod self-heals.
 - **Mint must never fall back; resolve may.** If the swarm is unreachable while minting,
   this pod must not invent a token and write it into every agent's config — the swarm
-  would never have seen it, and once the local file is dropped everything 401s while
-  ``refresh-gateway`` also fails. Mint proceeds local-only, loudly, and reports
-  ``durable=False`` so the UI can say so.
+  would never have seen it, and once the local file is dropped everything 401s while a
+  re-install during the same outage can only mint another unrecorded one. Mint proceeds
+  local-only, loudly, and reports ``durable=False`` so the reconcile sweep can say so;
+  the next sweep re-registers the token once the swarm is back.
 
 ``COMPOSIO_STATE_SOURCE`` mirrors ``COMPOSIO_CREDENTIALS_SOURCE`` in
 :mod:`.credentials` — ``local`` (the default today) writes through to the swarm but reads
@@ -73,8 +75,9 @@ class StateUnavailable(RuntimeError):
     ``authoritative`` separates "the owner said no" (404/401/403 — never masked, never
     served from a stale cache) from "the owner could not be reached" (retryable, and the
     caller may serve a stale answer). The MCP proxy turns the first into a 401 telling the
-    agent to re-install, and the second into a retryable 503 — a 401 there would send the
-    user to ``refresh-gateway``, which during an outage also fails.
+    agent its config is stale, and the second into a retryable 503 — a 401 there would
+    claim a stale config when the config is fine and the reconcile sweep could not
+    rewrite it during the outage anyway.
     """
 
     def __init__(

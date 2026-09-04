@@ -20,6 +20,9 @@ Block shape::
       "entry": {"url": "{proxy_url}"},      # required — must mention {proxy_url}
       "legacy_names": ["cowork"],           # optional — purged on every write
       "create_if_missing": false,           # optional — default false
+      "enabled": true,                      # optional — false opts the agent out of the
+                                            #   automatic install (distinct from an
+                                            #   ``entry.enabled`` written into its config)
       "prune": [                            # optional — extra keys to delete
         {"key_path": ["plugins", "entries"], "names": ["composio"]}
       ],
@@ -94,6 +97,9 @@ class McpTarget:
     entry: dict[str, Any]
     create_if_missing: bool
     prune: tuple[_Prune, ...]
+    # False keeps the block (and its validation) but takes the agent out of the
+    # automatic install; nothing is removed from a config already written.
+    enabled: bool = True
 
     @property
     def managed_names(self) -> tuple[str, ...]:
@@ -178,6 +184,10 @@ def _validated(agent: str, manifest: Any, block: Any) -> McpTarget:
     if not isinstance(create_if_missing, bool):
         raise _Invalid("'create_if_missing' must be a boolean")
 
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise _Invalid("'enabled' must be a boolean")
+
     prune_raw = block.get("prune", [])
     if not isinstance(prune_raw, list):
         raise _Invalid("'prune' must be a list of {key_path, names} objects")
@@ -202,16 +212,19 @@ def _validated(agent: str, manifest: Any, block: Any) -> McpTarget:
         entry=entry,
         create_if_missing=create_if_missing,
         prune=tuple(prune),
+        enabled=enabled,
     )
 
 
 def load_target(agent: str) -> McpTarget | None:
-    """The validated ``mcp`` block for ``agent``, or ``None``.
+    """The validated, enabled ``mcp`` block for ``agent``, or ``None``.
 
-    ``None`` for three distinct, all-normal cases: the agent has no manifest, the
-    manifest declares no ``mcp`` block (it simply does not support Composio), or the
-    block is malformed. The last one is logged. Never raises — this runs on the boot
-    path, where a bad config must not take the server down.
+    ``None`` for four distinct, all-normal cases: the agent has no manifest, the
+    manifest declares no ``mcp`` block (it simply does not support Composio), the block
+    is malformed, or it says ``"enabled": false``. The malformed one is logged — after
+    validation even when disabled, so a typo in an opted-out block is still reported.
+    Never raises — this runs on the boot path, where a bad config must not take the
+    server down.
     """
     try:
         from services.cowork_agent.registry.agent_registry import get_agent
@@ -226,13 +239,17 @@ def load_target(agent: str) -> McpTarget | None:
         return None
 
     try:
-        return _validated(agent, manifest, block)
+        target = _validated(agent, manifest, block)
     except _Invalid as exc:
         log.warning(
             "composio mcp: config/agents/%s/manifest.json has an unusable 'mcp' block: %s",
             agent, exc,
         )
         return None
+    if not target.enabled:
+        log.info("composio mcp: %s opts out of the automatic install ('enabled': false)", agent)
+        return None
+    return target
 
 
 def agents_with_targets() -> list[str]:
@@ -448,8 +465,9 @@ def _render_toml_block(target: McpTarget, entry: dict) -> str:
     header = ".".join(_toml_key(k) for k in (*target.key_path, target.server_name))
     lines = [
         f"[{header}]",
-        "# Managed by xo-space — rewritten by",
-        "# POST /api/connectors/composio/refresh-gateway.",
+        "# Managed by xo-space: installed automatically and kept current, so hand",
+        "# edits here are overwritten. Opt out with \"enabled\": false in the agent",
+        "# manifest's mcp block.",
     ]
     lines += [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in entry.items()]
     return "\n".join(lines) + "\n"
@@ -506,14 +524,19 @@ def _apply_toml(target: McpTarget, entry: dict, original: str, existed: bool) ->
 
     servers = _peek(before, target.key_path) or {}
     has_legacy = any(name in servers for name in target.legacy_names)
-    if existed and servers.get(target.server_name) == entry and not has_legacy:
+    block = _render_toml_block(target, entry)
+    # Current means the values match *and* the managed table reads exactly as we
+    # would write it: the block carries the comment a hand-editor reads, so a stale
+    # one (an older wording, a retired endpoint) is refreshed once and then stable.
+    if existed and servers.get(target.server_name) == entry and not has_legacy \
+            and block in original:
         return None
 
     patterns = [
         _toml_header_pattern((*target.key_path, name)) for name in target.managed_names
     ]
     kept = "\n".join(_strip_tables(original.splitlines(), patterns)).rstrip("\n")
-    text = (kept + "\n\n" if kept else "") + _render_toml_block(target, entry)
+    text = (kept + "\n\n" if kept else "") + block
 
     try:
         after = tomllib.loads(text)
@@ -572,9 +595,9 @@ def _write(path: Path, text: str, existed: bool) -> str | None:
 def apply(target: McpTarget, proxy_url: str) -> dict[str, Any]:
     """Idempotently point ``target``'s config at ``proxy_url``.
 
-    Re-call to refresh. The caller (the refresh-gateway route, or the boot-time
-    installer) is responsible for telling the user to restart the agent; an
-    already-current config reports ``changed: False`` so a boot install stays silent.
+    Re-call to refresh. The caller (the reconcile sweep in ``service.py``) is
+    responsible for telling the user to restart the agent; an already-current config
+    reports ``changed: False`` so a periodic sweep stays silent.
     """
     if not proxy_url:
         return _err("No proxy URL supplied.")

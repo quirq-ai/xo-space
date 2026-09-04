@@ -73,6 +73,9 @@ async def list_toolkits(
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
     from services.cowork_agent.connectors.composio import categories as composio_categories
+    # The tab loading (or its Refresh) is the moment a user used to press "Reinstall
+    # MCP gateway"; the sweep now runs itself here, in the background, rate-limited.
+    composio_service.kick_gateway_sweep()
     # One fetch feeds both the primary-account map and the per-toolkit counts.
     rows = composio_service.newest_first(
         composio_service.list_connections(user_id)
@@ -302,37 +305,6 @@ async def put_toolkit_prefs(
     updated = composio_action_prefs.bulk_set(toolkit, body.actions, user_id)
     composio_service.sync_session(user_id)
     return JSONResponse({"actions": updated})
-
-
-@router.post("/api/connectors/composio/refresh-gateway")
-async def refresh_gateway(
-    agent: str = Query(...),
-    user_id: str = Depends(get_composio_user),
-) -> JSONResponse:
-    supported = composio_service.gateway_install_agents()
-    if agent not in supported:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Agent '{agent}' has no gateway MCP install path. "
-                f"Supported: {supported or '(none installed)'}."
-            ),
-        )
-
-    result = composio_service.install_into_gateway(user_id, agent)
-    if result.get("ok"):
-        # A token xo-swarm-api never recorded works until this pod's local store is
-        # lost, and then the agent 401s with no way to recover but another install.
-        # Say so rather than reporting an unqualified success.
-        result["durable"] = composio_service.last_token_was_durable()
-        if not result["durable"]:
-            result["durability_warning"] = (
-                "xo-swarm-api did not record this proxy token, so it will stop "
-                "working if this workspace is recreated. Re-run this once the "
-                "connection to XO is restored."
-            )
-    status = 200 if result.get("ok") else 422
-    return JSONResponse(result, status_code=status)
 
 
 @router.get("/api/connectors/composio/callback")

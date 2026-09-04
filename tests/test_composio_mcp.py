@@ -127,6 +127,30 @@ class ManifestBlockTests(unittest.TestCase):
                 self.assertNotIn("api_key", blob)
                 self.assertNotIn("authorization", blob)
 
+    def test_the_shipped_blocks_are_enabled(self) -> None:
+        for agent in mcp.agents_with_targets():
+            self.assertTrue(mcp.load_target(agent).enabled, agent)
+
+    def test_a_block_can_opt_out_with_enabled_false(self) -> None:
+        # The sweep re-adds an entry removed by hand, so this flag is the one way to
+        # say "not this agent" without deleting the recipe. Validation still runs.
+        block = {
+            "format": "json", "path": "/x/c.json", "key_path": ["mcpServers"],
+            "server_name": "composio", "entry": {"url": "{proxy_url}"}, "enabled": False,
+        }
+        opted_out = SimpleNamespace(raw={"mcp": block}, home_dir=Path("/x"),
+                                    config_file=Path("/x/c"))
+        with patch(
+            "services.cowork_agent.registry.agent_registry.get_agent", return_value=opted_out
+        ):
+            with self.assertNoLogs("services.cowork_agent.connectors.composio.mcp", "WARNING"):
+                self.assertIsNone(mcp.load_target("a"))
+        # A disabled agent is refused by the same name-based path as an absent block.
+        with patch.object(mcp, "load_target", return_value=None):
+            result = composio_service.install_into_gateway("user_1__ws__ws-test", "a")
+        self.assertFalse(result["ok"])
+        self.assertIn("enabled 'mcp' block", result["error"])
+
 
 class ManifestBlockRejectionTests(unittest.TestCase):
     """A bad block must be reported and skipped, never crash the boot path."""
@@ -161,6 +185,13 @@ class ManifestBlockRejectionTests(unittest.TestCase):
 
     def test_path_in_home_without_home_env_is_rejected(self) -> None:
         self._reject({**self._valid(), "path_in_home": "c.toml"}, "requires 'home_env'")
+
+    def test_a_non_boolean_enabled_is_rejected(self) -> None:
+        # "false" the string would be truthy and silently keep the agent installed.
+        self._reject({**self._valid(), "enabled": "false"}, "'enabled' must be a boolean")
+
+    def test_enabled_defaults_to_true(self) -> None:
+        self.assertTrue(mcp._validated("a", self.manifest, self._valid()).enabled)
 
     def test_a_non_object_block_is_rejected(self) -> None:
         self._reject_raw("not-an-object", "must be a JSON object")
@@ -213,6 +244,32 @@ class TomlWriterTests(_TempConfig):
     def test_a_created_config_is_private(self) -> None:
         self._apply()
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
+
+    def test_a_stale_managed_comment_is_refreshed_once(self) -> None:
+        # Values equal, wording old: rewritten once so a hand-editor never reads a
+        # retired instruction, then reported current on the next pass.
+        self._write(
+            "[mcp_servers.composio]\n"
+            "# Managed by xo-space — rewritten by\n"
+            "# POST /api/connectors/composio/refresh-gateway.\n"
+            f'url = "{PROXY}"\n'
+            "enabled = true\n"
+        )
+        first = self._apply()
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(first["changed"])
+        self.assertNotIn("refresh-gateway", self._text())
+        self.assertFalse(self._apply()["changed"])
+
+    def test_the_managed_comment_names_no_manual_route(self) -> None:
+        # The comment is what a user editing config.toml by hand reads: it must say
+        # the table is rewritten automatically and how to opt out, not point at an
+        # endpoint that no longer exists.
+        self._apply()
+        text = self._text()
+        self.assertIn("Managed by xo-space", text)
+        self.assertIn('"enabled": false', text)
+        self.assertNotIn("refresh-gateway", text)
 
     def test_an_existing_config_keeps_its_own_mode(self) -> None:
         self._write('model = "gpt-5"\n')
@@ -560,6 +617,18 @@ class GatewayWiringTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("antigravity", result["error"])
         self.assertIn("manifest.json", result["error"])
+
+    def test_install_into_gateway_accepts_a_precomputed_proxy_url(self) -> None:
+        # The sweep mints once (one swarm round trip) and hands the URL to every
+        # agent; an install given the URL must not mint again.
+        with patch.object(mcp, "apply", return_value={"ok": True}) as applied, \
+                patch.object(composio_service, "_composio_proxy_url") as minted:
+            result = composio_service.install_into_gateway(
+                "user_1__ws__ws-test", "codex", proxy_url=PROXY,
+            )
+        self.assertTrue(result["ok"])
+        minted.assert_not_called()
+        self.assertEqual(applied.call_args[0][1], PROXY)
 
 
 if __name__ == "__main__":

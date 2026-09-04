@@ -468,14 +468,13 @@ const TAB_GUIDES={
       ['Connect an app','Authorize a toolkit in a provider popup. The server records the connected account against your workspace-scoped principal, never an account-wide one.'],
       ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
       ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
-      ['Repair the agent wiring','Reinstall the MCP gateway when an agent has lost its Composio tools, or after the proxy token changed.']
+      ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically — at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']
     ],
     sources:[
       ['GET /api/connectors/composio/toolkits','The registered toolkits and your connection status for each.','Tile state'],
       ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
       ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in data/composio_action_prefs.json.','Action control'],
-      ['POST /api/connectors/composio/refresh-gateway','Rewrites the active agent’s MCP config to point at this workspace’s proxy URL.','Agent wiring'],
       ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
     ],
     steps:[
@@ -490,7 +489,7 @@ const TAB_GUIDES={
       ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id on the XO side. The others still work.'],
       ['“Sign in to XO”','The backend holds no XO credential, so there is no per-user identity to scope a connection to. Set XO_API_KEY or sign in from the app.'],
       ['Nothing happens after consent','The popup may have been blocked. The status poll still decides, so leave the tab open; if the window closed early, press Connect again.'],
-      ['Agent still has no tools','Reinstall the MCP gateway from the header, then restart the agent. Its config is machine-global, so it points at whoever installed it last.']
+      ['Agent still has no tools','Restart the agent — MCP config is read at start. The gateway is written automatically at boot, re-checked every few minutes and whenever this tab loads. If the server log says “Composio MCP skipped”, fix the cause it names (no XO credential, no workspace id, XO unreachable, or the agent’s config file does not exist yet) and restart xo-space.']
     ],
     note:'Disconnect removes the connection from this workspace — it deletes the connected account at Composio, it does not revoke the grant in your Google, Notion or Figma account. Remove that in the provider’s own settings.'
   }
