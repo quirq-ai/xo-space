@@ -170,30 +170,72 @@ function render(){
   if(!SD){wrap.innerHTML='<div class="sess-note">Open this tab to load session telemetry.</div>';return;}
   const showWin=(sub==='overview'||sub==='tools');
   const sources=sourceDefs();
+  const activeCount=sources.filter(s=>enabledAgents.has(s.id)).length;
+  const labelText=activeCount===sources.length?'All Sources ('+sources.length+')':activeCount?activeCount+' Selected':'+ Select Sources';
+
   wrap.innerHTML='<div class="sess-head">'
     +'<div class="sess-subnav">'+SUBS.map(([k,l])=>'<button data-sub="'+k+'" class="'+(k===sub?'is-on':'')+'">'+l+'</button>').join('')+'</div>'
-    +'<fieldset class="sess-sources"><legend>Sources</legend>'
-    +sources.map(source=>'<label class="'+(source.available===false?'is-unavailable':'')+'" title="'+esc(source.available===false?(source.message||source.label+' is unavailable'):source.label+' sessions')+'">'
-      +'<input type="checkbox" data-agent="'+esc(source.id)+'" aria-controls="sess-body" '+(enabledAgents.has(source.id)?'checked ':'')+'>'
-      +'<span>'+esc(source.label)+'</span>'+(source.available===false?'<i>offline</i>':'')+'</label>').join('')+'</fieldset>'
+    +'<div class="sess-sources-dropdown">'
+      +'<button type="button" class="sess-dropdown-toggle" id="sess-dropdown-toggle">'
+        +'<span>SOURCES: <b>'+esc(labelText)+'</b></span> <small>▼</small>'
+      +'</button>'
+      +'<div class="sess-dropdown-menu" id="sess-dropdown-menu" hidden>'
+        +'<div class="sess-dropdown-actions">'
+          +'<button type="button" id="sess-select-all">Select All</button>'
+          +'<button type="button" id="sess-clear-all">Clear All</button>'
+        +'</div>'
+        +'<div class="sess-dropdown-options">'
+          +sources.map(source=>'<label class="'+(source.available===false?'is-unavailable':'')+'" title="'+esc(source.available===false?(source.message||source.label+' is unavailable'):source.label+' sessions')+'">'
+            +'<input type="checkbox" data-agent="'+esc(source.id)+'" '+(enabledAgents.has(source.id)?'checked ':'')+'>'
+            +'<span>'+esc(source.label)+'</span>'+(source.available===false?'<i>offline</i>':'')
+          +'</label>').join('')
+        +'</div>'
+      +'</div>'
+    +'</div>'
     +'<div class="sess-spacer"></div>'
     +(showWin?'<div class="sess-win">'+WINS.map(([k,l])=>'<button data-win="'+k+'" class="'+(k===win?'is-on':'')+'">'+l+'</button>').join('')+'</div>':'')
     +'<button class="sess-refresh" id="sess-refresh" title="Re-fetch (server rebuilds behind its 30s cache)">&#8635; Refresh</button>'
     +'</div><div id="sess-body"></div>';
+
+  const toggleBtn=wrap.querySelector('#sess-dropdown-toggle');
+  const menuEl=wrap.querySelector('#sess-dropdown-menu');
+  toggleBtn.addEventListener('click',e=>{
+    e.stopPropagation();
+    menuEl.hidden=!menuEl.hidden;
+  });
+  document.addEventListener('click',e=>{
+    if(!wrap.contains(e.target))menuEl.hidden=true;
+  },{once:true});
+
+  wrap.querySelector('#sess-select-all')?.addEventListener('click',e=>{
+    e.stopPropagation();
+    sources.forEach(s=>enabledAgents.add(s.id));
+    render();
+    wrap.querySelector('#sess-dropdown-menu').hidden=false;
+  });
+  wrap.querySelector('#sess-clear-all')?.addEventListener('click',e=>{
+    e.stopPropagation();
+    enabledAgents.clear();
+    sel=null;
+    render();
+    wrap.querySelector('#sess-dropdown-menu').hidden=false;
+  });
+
   wrap.querySelectorAll('[data-sub]').forEach(b=>b.addEventListener('click',()=>{sub=b.dataset.sub;sel=null;render();}));
   wrap.querySelectorAll('[data-win]').forEach(b=>b.addEventListener('click',()=>{win=b.dataset.win;render();}));
-  wrap.querySelectorAll('[data-agent]').forEach(input=>input.addEventListener('change',()=>{
+  wrap.querySelectorAll('[data-agent]').forEach(input=>input.addEventListener('change',e=>{
+    e.stopPropagation();
     const changedAgent=input.dataset.agent;
     if(input.checked)enabledAgents.add(input.dataset.agent);else enabledAgents.delete(input.dataset.agent);
     const selected=SD.sessions.find(row=>sessionKey(row)===sel);
     if(selected&&!agentOn(selected))sel=null;
     render();
-    [...wrap.querySelectorAll('[data-agent]')].find(next=>next.dataset.agent===changedAgent)?.focus();
+    wrap.querySelector('#sess-dropdown-menu').hidden=false;
   }));
   document.getElementById('sess-refresh').addEventListener('click',()=>{SD=null;load();});
   const el=document.getElementById('sess-body');
   if(!enabledAgents.size){
-    el.innerHTML='<div class="scard sess-empty-filter"><b>No session sources selected</b><span>Turn on Claude Code, Codex, Cursor, or any combination to calculate this view.</span></div>';
+    el.innerHTML='<div class="scard sess-empty-filter"><b>No session sources selected</b><span>Select one or more sources from the dropdown to calculate this view.</span></div>';
     return;
   }
   if(!sources.some(source=>enabledAgents.has(source.id)&&source.available!==false)){

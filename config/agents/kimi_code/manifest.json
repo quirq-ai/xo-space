@@ -1,0 +1,44 @@
+{
+  "name": "kimi_code",
+  "binary": "kimi",
+  "install_url": "https://kimi.moonshot.cn",
+  "home_dir": "~/.kimi-code",
+  "env_file": "~/.kimi-code/.env",
+  "config_file": "~/.kimi-code/config.json",
+  "agents_dir": "~/.kimi-code/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.kimi-code/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "kimi",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 2000000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "kimi-k3",
+    "catalog": [
+      "kimi-k3",
+      "kimi-k2.5",
+      "kimi-k1.5",
+      "kimi-latest",
+      "moonshot-v1-8k",
+      "moonshot-v1-32k",
+      "moonshot-v1-128k",
+      "local/ollama",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["sessions/*.json", "sessions/*.jsonl", "logs/*.json", "logs/*.jsonl"],
+    "secrets": []
+  }
+}

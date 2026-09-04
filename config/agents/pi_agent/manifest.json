@@ -1,0 +1,39 @@
+{
+  "name": "pi_agent",
+  "binary": "pi",
+  "install_url": "https://pi.ai",
+  "home_dir": "~/.pi/agent",
+  "env_file": "~/.pi/agent/.env",
+  "config_file": "~/.pi/agent/config.json",
+  "agents_dir": "~/.pi/agent/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.pi/agent/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "pi",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 128000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "pi-agent-v1",
+    "catalog": [
+      "pi-agent-v1",
+      "pi-coder",
+      "local/ollama",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["sessions/*.json", "sessions/*.jsonl", "telemetry/**/*.json"],
+    "secrets": []
+  }
+}
