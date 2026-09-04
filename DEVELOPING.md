@@ -64,6 +64,11 @@ services/
                                     vercel/ manus/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
+
+utils/
+  commands.py                     THE ONE EXECUTOR for external commands: run/run_spec over an argv list,
+                                    CommandSpec.from_json, safe_arg; never a shell (see §7)
+  local_port.py                   deterministic local port selection
 ```
 
 The **only** two trees an agent author touches are `config/agents/<name>/` and
@@ -233,6 +238,25 @@ exceptions:
 ---
 
 ## 7. Conventions
+
+### One executor for external commands
+
+Every subprocess xo-space starts goes through `utils/commands.py`:
+`run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
+argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
+described as data (the skill catalog, manifests, future automation). The
+spec is `{"argv": [...], "cwd", "env", "timeout"}`; there is deliberately no
+`command` string that reaches a shell, and `split_command()` refuses `&&`,
+`|`, `;`, redirections and `$()` outright. Untrusted values (a repo name, a
+branch, a path from a request) go into **one** argv slot via `safe_arg()`,
+which rejects anything starting with `-` so it cannot become a flag
+(argument injection, the quieter cousin of command injection, CWE-78).
+
+`tests/test_command_executor.py` enforces this: no shell form may appear
+anywhere, and a direct `subprocess` / `create_subprocess_exec` call is
+allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
+only shrink. Converting a file means removing it from that list.
+
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via
   `APIRouter`; business logic lives in `services/`. `server.py` is the only file

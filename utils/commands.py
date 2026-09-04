@@ -46,11 +46,12 @@ input never reaches a shell interpreter.
 from __future__ import annotations
 
 import asyncio
+import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -299,3 +300,139 @@ async def run_chain(
                 )
             break
     return results
+
+
+# =============================================================================
+# The one door: a JSON-shaped command spec
+# =============================================================================
+#
+# Everything above takes a Python list. Config files (the skill catalog, agent
+# manifests, future automation) describe commands as data, so this is the
+# shape they use and the validation they all get:
+#
+#     {"argv": ["npm", "install", "-g", "@okxweb3/a2a-node"],
+#      "cwd": "/home/coder", "env": {"CI": "1"}, "timeout": 300}
+#
+# `argv` is the only way to say what runs. There is no "command string" key
+# and never will be: a string is what a shell parses, and a shell is where
+# command injection (CWE-78) happens. A value that must come from user input
+# goes into ONE argv slot via `safe_arg`, which refuses anything that a
+# program would read as an option (argument injection).
+
+SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$(", "\n")
+
+
+class CommandSpecError(ValueError):
+    """A command spec that must not run: malformed, or trying to reach a shell."""
+
+
+def safe_arg(value: Any, *, allow_option: bool = False) -> str:
+    """Return `value` as one argv element, or raise CommandSpecError.
+
+    Refuses empty strings, NUL bytes, and (unless `allow_option`) anything
+    starting with '-' so an attacker-controlled repo name, branch, or path can
+    never become `--upload-pack=...` or `-c core.sshCommand=...`. Callers that
+    legitimately pass a flag pass it as a literal in their own argv, not
+    through this function.
+    """
+    if not isinstance(value, str) or not value:
+        raise CommandSpecError("argument must be a non-empty string")
+    if "\x00" in value:
+        raise CommandSpecError("argument contains a NUL byte")
+    if not allow_option and value.startswith("-"):
+        raise CommandSpecError(f"argument {value!r} looks like an option; refuse it or pass it after '--'")
+    return value
+
+
+def split_command(template: str) -> list[str]:
+    """Turn a human-written command line into argv WITHOUT a shell.
+
+    POSIX quoting rules (shlex), so `--dir "{skills_dir}"` stays one token.
+    Refuses anything a shell would interpret as more than one command or as a
+    redirection: those need a real shell, and this codebase does not run one.
+    """
+    if not isinstance(template, str) or not template.strip():
+        raise CommandSpecError("command must be a non-empty string")
+    for op in SHELL_OPERATORS:
+        if op in template:
+            raise CommandSpecError(
+                f"command contains shell operator {op!r}; write it as separate steps or an argv list")
+    try:
+        argv = shlex.split(template, posix=True)
+    except ValueError as exc:
+        raise CommandSpecError(f"unbalanced quoting in command: {exc}") from exc
+    if not argv:
+        raise CommandSpecError("command is empty after parsing")
+    return argv
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """One command as data. Build it with `from_json` so every field is
+    validated once, in one place, before anything runs."""
+
+    argv: list[str]
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    timeout: float | None = None
+    log_path: str | None = None
+    log_label: str = ""
+
+    ALLOWED_KEYS = frozenset({"argv", "command", "cwd", "env", "timeout", "log_path", "log_label"})
+
+    @classmethod
+    def from_json(cls, obj: Mapping[str, Any]) -> "CommandSpec":
+        if not isinstance(obj, Mapping):
+            raise CommandSpecError("command spec must be an object")
+        unknown = set(obj) - cls.ALLOWED_KEYS
+        if unknown:
+            raise CommandSpecError(f"unknown command spec keys: {sorted(unknown)}")
+        if "argv" in obj and "command" in obj:
+            raise CommandSpecError("give argv or command, not both")
+        if "argv" in obj:
+            argv = obj["argv"]
+            if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+                raise CommandSpecError("argv must be a non-empty list of non-empty strings")
+            if any("\x00" in a for a in argv):
+                raise CommandSpecError("argv contains a NUL byte")
+            argv = list(argv)
+        elif "command" in obj:
+            argv = split_command(obj["command"])
+        else:
+            raise CommandSpecError("command spec needs argv (preferred) or command")
+        cwd = obj.get("cwd")
+        if cwd is not None and (not isinstance(cwd, str) or not cwd):
+            raise CommandSpecError("cwd must be a non-empty string")
+        env = obj.get("env")
+        if env is not None and (not isinstance(env, Mapping)
+                                or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())):
+            raise CommandSpecError("env must map strings to strings")
+        timeout = obj.get("timeout")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0):
+            raise CommandSpecError("timeout must be a positive number of seconds")
+        log_path = obj.get("log_path")
+        if log_path is not None and not isinstance(log_path, str):
+            raise CommandSpecError("log_path must be a string")
+        log_label = obj.get("log_label", "")
+        if not isinstance(log_label, str):
+            raise CommandSpecError("log_label must be a string")
+        return cls(argv=argv, cwd=cwd, env=dict(env) if env is not None else None,
+                   timeout=float(timeout) if timeout is not None else None,
+                   log_path=log_path, log_label=log_label)
+
+    def with_argv(self, argv: Sequence[str]) -> "CommandSpec":
+        """Same spec, different argv (used after placeholder expansion)."""
+        return CommandSpec(argv=[str(a) for a in argv], cwd=self.cwd, env=self.env,
+                           timeout=self.timeout, log_path=self.log_path, log_label=self.log_label)
+
+
+async def run_spec(spec: CommandSpec) -> CommandResult:
+    """Run a validated spec. Config-driven callers (catalog, manifests) come
+    through here; Python callers with a literal argv may call `run` directly."""
+    return await run(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
+                     log_path=spec.log_path, log_label=spec.log_label)
+
+
+def run_spec_sync(spec: CommandSpec) -> CommandResult:
+    return run_sync(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
+                    log_path=spec.log_path, log_label=spec.log_label)
