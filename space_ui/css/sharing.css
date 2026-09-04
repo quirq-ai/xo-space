@@ -1,0 +1,53 @@
+  /* ---------------- project sharing (Files → List lens) ----------------
+     Strip above the list, "shared with you" inbox at the top of the list,
+     and the Sharing drawer panel. Reuses the Files tab's .tchip / .prj-note /
+     .prj-list vocabulary so it reads as part of the same surface. */
+
+  /* strip */
+  .shr-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    margin:-6px 0 14px;padding:8px 12px;background:var(--bg-2);
+    border:1px solid var(--line-soft);border-radius:10px;font-size:12px}
+  .shr-left,.shr-right{display:flex;align-items:center;gap:8px;min-width:0}
+  .shr-muted{color:var(--ink-3);font-size:11.5px}
+  .shr-id{font:500 11px var(--mono);color:var(--ink-2);background:var(--bg-3);
+    border:1px solid var(--line-soft);border-radius:6px;padding:2px 7px}
+  .shr-copy{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:3px 9px;
+    transition:all .16s var(--ease)}
+  .shr-copy:hover{color:var(--accent);border-color:var(--accent)}
+
+  /* chips added to the shared vocabulary */
+  .tchip.st-shared{color:var(--accent);border-color:var(--accent)}
+  .tchip.st-available{color:#e0b04c;border-color:#e0b04c}
+
+  /* inbox: repos shared with this workspace, not cloned here */
+  .shr-inbox{background:var(--bg-2);border:1px dashed var(--line);border-radius:12px;
+    padding:12px 14px;margin-bottom:10px}
+  .shr-inbox .prj-ptitle{margin-bottom:8px}
+  .shr-inbox-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;
+    border-top:1px solid var(--line-soft)}
+  .shr-inbox-row:first-of-type{border-top:0;padding-top:0}
+  .shr-repo{display:flex;align-items:center;gap:8px;font-size:13px}
+  .shr-hint{color:var(--ink-3);font-size:11.5px}
+  .shr-cmd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .shr-cmd code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
+    border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;
+    overflow-x:auto;max-width:100%}
+
+  /* drawer panel */
+  .shr-panel{display:flex;flex-direction:column;gap:12px}
+  .shr-sec-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .shr-sec-title{font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-3)}
+  .shr-hash{font:500 11px var(--mono);color:var(--ink-3);flex:none}
+  .shr-subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shr-rows{display:flex;flex-direction:column;gap:6px}
+  .shr-row{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
+  .shr-row.is-revoked .shr-id{text-decoration:line-through;color:var(--ink-3)}
+  .shr-revoke{margin-left:auto;font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:#e07a5f;border:1px solid transparent;border-radius:999px;padding:3px 9px}
+  .shr-revoke:hover{border-color:#e07a5f}
+  .shr-revoke:disabled{opacity:.5}
+  .shr-form{display:flex;gap:8px;align-items:center;margin-top:10px}
+  .shr-input{width:auto;flex:1;min-width:0}
+  .shr-form button[disabled]{opacity:.5;cursor:default}
