@@ -4,7 +4,7 @@ One Coder workspace = one pod = one tenant. This module answers only the half of
 identity the pod itself knows: its own ``CODER_WORKSPACE_ID``.
 
 **It does not compose the tenant key.** The principal — ``<account>__ws__<workspace>`` —
-is composed by xo-swarm-api (``auth/tenancy.py``) from the credential this backend
+is composed by xo-swarm-api (``auth/principal.py``) from the credential this backend
 authenticates with plus the workspace id it supplies, and reaches this process through
 ``connectors.composio.state.principal()``. There is exactly one composer, in one repo,
 because the principal is stored inside Composio against every connected account and two
