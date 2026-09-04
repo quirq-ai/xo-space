@@ -26,6 +26,30 @@ class SessionTelemetryUnavailable(RuntimeError):
     """Raised only when no discovered telemetry provider can be read."""
 
 
+# Last logged reason per unavailable provider. The watcher rebuilds this view
+# every few seconds, and a runtime that is simply not installed (no Codex
+# state DB, no Cursor home) would otherwise repeat the identical warning for
+# the life of the process. Log a reason once; a changed reason or a recovery
+# is news and logs again. Setup → Native session sources shows the live
+# state of every source, so the log does not need to.
+_unavailable_reasons: dict[str, str] = {}
+
+
+def _note_provider_unavailable(provider: str, reason: str) -> None:
+    if _unavailable_reasons.get(provider) == reason:
+        return
+    _unavailable_reasons[provider] = reason
+    print(
+        f"⚠️ session telemetry provider {provider} unavailable ({reason}) "
+        "— logged once until it changes; see Setup → Native session sources"
+    )
+
+
+def _note_provider_available(provider: str) -> None:
+    if _unavailable_reasons.pop(provider, None) is not None:
+        print(f"✅ session telemetry provider {provider} available again")
+
+
 def _number(value: Any) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
@@ -249,8 +273,9 @@ def build_session_telemetry() -> dict:
             contribution["source"] = source
             contributions.append(contribution)
             source_status.append(source)
+            _note_provider_available(provider)
         except Exception as exc:
-            print(f"⚠️ session telemetry provider {provider} unavailable ({exc})")
+            _note_provider_unavailable(provider, str(exc))
             source = _source_shell(provider, module)
             source.update({
                 "status": "unavailable",

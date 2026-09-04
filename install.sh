@@ -275,8 +275,11 @@ print_reporting_notice() {
 └─────────────────────────────────────────────────────────────────────────┘
 NOTICE
     # The server logs every decision it makes about reporting; this is the
-    # one-liner that shows them, since the terminal itself stays quiet.
+    # one-liner that shows them, since the terminal itself stays quiet. The
+    # same decision is the first thing on the Setup tab's "Agent and
+    # watcher" card, for people who never open the log.
     printf '  See what it decided:  grep usage_sync %s\n' "$log_file"
+    printf '  Live status:          Setup tab → Agent and watcher (top of the card)\n'
 }
 
 # ==============================================================
