@@ -476,18 +476,18 @@ const TAB_GUIDES={
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
       ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in data/composio_action_prefs.json.','Action control'],
       ['POST /api/connectors/composio/refresh-gateway','Rewrites the active agent’s MCP config to point at this workspace’s proxy URL.','Agent wiring'],
-      ['GET /xo-auth/session/self','Mints the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
+      ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
     ],
     steps:[
-      ['Configure the server','Set COMPOSIO_API_KEY in .env, plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. Both are created by hand in the Composio dashboard — nothing here creates them.'],
+      ['Configure the server','Set COMPOSIO_API_KEY on the XO side (xo-swarm-api), plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. This workspace holds no Composio credentials — it fetches them with its XO credential. Both are created by hand in the Composio dashboard — nothing here creates them.'],
       ['Sign in','The tab needs an XO identity. With XO_API_KEY set, the session mints itself when the tab opens.'],
       ['Connect','Press Connect and complete consent in the popup. The tile flips to Connected when the poll sees an ACTIVE account.'],
       ['Trim the toolset','Open Actions on a connected tile and switch off anything the agent should not call.'],
       ['Restart the agent','MCP configuration is read at agent start, so a newly connected toolkit reaches an already-running agent only after it restarts.']
     ],
     checks:[
-      ['“Composio is not configured”','COMPOSIO_API_KEY is unset, so the toolkits route fails. The rest of the server is unaffected. Set it in .env and restart.'],
-      ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id. The others still work.'],
+      ['“Composio is not configured”','COMPOSIO_API_KEY could not be resolved — either XO has none set, or this server could not reach XO to fetch it. The rest of the server is unaffected. A brief XO outage is covered by the cache; a cold start during one is not.'],
+      ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id on the XO side. The others still work.'],
       ['“Sign in to XO”','The backend holds no XO credential, so there is no per-user identity to scope a connection to. Set XO_API_KEY or sign in from the app.'],
       ['Nothing happens after consent','The popup may have been blocked. The status poll still decides, so leave the tab open; if the window closed early, press Connect again.'],
       ['Agent still has no tools','Reinstall the MCP gateway from the header, then restart the agent. Its config is machine-global, so it points at whoever installed it last.']

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.cowork_agent.connectors.composio import service as composio_service
+from services.cowork_agent.connectors.composio import state as composio_state
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,29 +33,48 @@ def _forwarded_headers(incoming: dict[str, str], inject: dict[str, str]) -> dict
     return out
 
 
-def _proxy_user(token: str | None) -> str | None:
+async def _proxy_user(token: str | None) -> str | None:
     if not token:
         return None
-    return composio_service.user_for_proxy_token(token)
+    return await composio_service.user_for_proxy_token(token)
+
+
+_IDENTITY_REQUIRED = {
+    "error": "composio_identity_required",
+    "detail": (
+        "This MCP proxy call carried no recognised user token. "
+        "Re-install the MCP config for this agent "
+        "(POST /api/connectors/composio/refresh-gateway) so it "
+        "points at a valid /mcp/composio-proxy/u/<token> URL."
+    ),
+}
 
 
 async def _proxy(
     request: Request, method: str, token: str | None = None,
 ) -> StreamingResponse | JSONResponse:
-    user_id = _proxy_user(token)
-    if not user_id:
+    try:
+        user_id = await _proxy_user(token)
+    except composio_state.StateUnavailable as exc:
+        # Reached only when this pod does not know the token AND xo-swarm-api could not
+        # be asked. Deliberately not a 401: that tells the operator to run
+        # refresh-gateway, which during the same outage also fails. 503 is truthful and
+        # retryable, and the agent backs off instead of looping.
+        log.warning("mcp_proxy: tenant state unavailable: %s", exc)
         return JSONResponse(
-            status_code=401,
+            status_code=503,
+            headers={"Retry-After": "30"},
             content={
-                "error": "composio_identity_required",
+                "error": "composio_state_unavailable",
                 "detail": (
-                    "This MCP proxy call carried no recognised user token. "
-                    "Re-install the MCP config for this agent "
-                    "(POST /api/connectors/composio/refresh-gateway) so it "
-                    "points at a valid /mcp/cowork-proxy/u/<token> URL."
+                    "Could not reach xo-swarm-api to resolve this MCP proxy token. "
+                    "This is transient — retry shortly. The agent's configuration is "
+                    "fine; do not re-install it."
                 ),
             },
         )
+    if not user_id:
+        return JSONResponse(status_code=401, content=_IDENTITY_REQUIRED)
 
     try:
         entry = composio_service.build_mcp_server_entry(user_id)

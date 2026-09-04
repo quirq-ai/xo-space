@@ -38,7 +38,7 @@ def _resolve_user_id() -> str:
     construction at import time in some test paths.
     """
     try:
-        from routers.auth.auth import get_auth_state
+        from services.xo_credential import get_auth_state
         return (get_auth_state().get("user_id") or "local")
     except Exception:
         return "local"

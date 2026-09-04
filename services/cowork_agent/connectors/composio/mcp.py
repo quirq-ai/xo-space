@@ -34,7 +34,8 @@ Block shape::
 
 ``entry`` is written verbatim with the literal token ``{proxy_url}`` replaced in every
 string. No credential is ever written: the URL is a loopback proxy path whose opaque
-token the backend resolves, and ``mcp_proxy.py`` injects COMPOSIO_API_KEY server-side.
+token the backend resolves, and ``composio_mcp_proxy.py`` injects the Composio
+credential server-side.
 
 Two invariants hold across every format, inherited from the per-adapter installers
 this module replaces:

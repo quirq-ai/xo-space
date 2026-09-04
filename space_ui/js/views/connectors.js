@@ -19,7 +19,7 @@
    this view needs apiFetch's `headers` option, which was added at that stamp,
    and StaticFiles sends no Cache-Control — a browser holding the older bare
    URL would drop the session header and strand this tab on "sign in to XO". */
-import {apiFetch} from '../core/api.js?v=20260903-connectors1';
+import {apiFetch} from '../core/api.js?v=20260904-tenancy1';
 import {toast} from '../core/ui.js';
 import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260903-connectors1';
 
@@ -114,7 +114,7 @@ async function loadAll(){
 function renderSignedOut(){
   setAlert('pending',
     'Sign in to XO to use connectors',
-    (sessionError()||'')+' Connections are per user, so this page needs an '
+    (sessionError()||'')+' Connections are scoped to this workspace, so this page needs an '
       +'identity. Set XO_API_KEY in .env, or sign in from the app, then refresh.');
   root.querySelector('#conn-grid').innerHTML=
     '<div class="conn-empty">No identity &mdash; nothing to show yet.</div>';
@@ -138,9 +138,12 @@ function renderListFailure(res){
     note='Your session is no longer valid.';
   }else if(notConfigured){
     setAlert('pending','Composio is not configured on this server',
-      'Set COMPOSIO_API_KEY in .env, plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id '
-      +'per app you want to offer &mdash; both are created in the Composio '
-      +'dashboard. Restart the server afterwards.');
+      'Composio credentials come from your XO account, not from this workspace. '
+      +'Check that this server is signed in (XO_API_KEY) and that COMPOSIO_API_KEY '
+      +'plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app are set on the XO side '
+      +'&mdash; both are created in the Composio dashboard. A self-hosted install '
+      +'with its own Composio project can set them locally with '
+      +'COMPOSIO_CREDENTIALS_SOURCE=env.');
     note='No connectors to show until the server has a Composio API key.';
   }else{
     setAlert('error','Could not list connectors',esc(res.error||''));
@@ -282,7 +285,8 @@ function connectErrorText(res,toolkitId){
   if(res.status===422){
     return'This toolkit has no auth config on the server. Create one in the '
       +'Composio dashboard and set COMPOSIO_AUTH_CONFIG_'
-      +String(toolkitId).toUpperCase()+' in .env, then restart.';
+      +String(toolkitId).toUpperCase()+' where this install reads its Composio '
+      +'credentials — your XO account, or locally in self-host mode.';
   }
   if(res.offline)return'xo-space is unreachable.';
   return res.error||'Could not start authorization.';
@@ -389,8 +393,10 @@ async function refreshGateway(){
       setAlert('error','Could not reinstall the MCP gateway',esc(res.error||''));
       return;
     }
-    const warning=res.data&&res.data.multi_tenant_warning;
-    setAlert('good','MCP gateway reinstalled for '+esc(activeAgent),
+    /* `durability_warning` means XO did not record the proxy token, so the install
+       works now but dies with this workspace. Worth saying; a plain success is not. */
+    const warning=res.data&&res.data.durability_warning;
+    setAlert(warning?'pending':'good','MCP gateway reinstalled for '+esc(activeAgent),
       warning?esc(warning):'Restart the agent to pick up the new configuration.');
   }finally{
     setBusy(button,false);
