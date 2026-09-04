@@ -96,8 +96,9 @@ except Exception as _usage_import_err:
 # Configuration
 # =============================================================================
 
-# External Chat API base URL (xo-swarm-api or similar)
-CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.builders")
+# The swarm base URL and every swarm call live in services/swarm_api.
+from services.swarm_api import base_url as swarm_base_url
+from services.swarm_api.chat import ChatAPIClient
 STAGE = (os.getenv("STAGE", "beta") or "beta").strip().lower()
 IS_LOCAL_STAGE = STAGE == "local"
 
@@ -271,79 +272,6 @@ class AskQuestionRequest(BaseModel):
     user_id: Optional[str] = "default_user"
     message_type: Optional[str] = "@xo"
     agent_type: Optional[str] = None
-
-
-# =============================================================================
-# External Chat API Client
-# =============================================================================
-
-class ChatAPIClient:
-    """Client for external Chat API endpoints."""
-
-    def __init__(self, base_url: str = CHAT_API_BASE_URL):
-        self.base_url = base_url.rstrip("/")
-
-    def _headers(self) -> Dict[str, str]:
-        token = get_auth_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
-    async def push_message(
-        self,
-        project_id: str,
-        user_id: str,
-        message: str,
-        message_type: str = "@xo"
-    ) -> Optional[Dict[str, Any]]:
-        """Push a message to the chat storage via external API."""
-        url = f"{self.base_url}/chat/add_message"
-        payload = {
-            "project_id": project_id,
-            "user_id": user_id,
-            "message": message,
-            "type": message_type
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                response = await client.post(url, json=payload, headers=self._headers())
-                if response.status_code == 200:
-                    print(f"✅ Pushed message: project={project_id}, type={message_type}")
-                    return response.json()
-                else:
-                    print(f"⚠️ Failed to push message: {response.status_code} - {response.text}")
-                    return None
-        except Exception as e:
-            print(f"⚠️ Chat API error: {str(e)}")
-            return None
-
-    async def fetch_messages(
-        self,
-        project_id: str,
-        limit: int = 50
-    ) -> Optional[list]:
-        """Fetch messages from the chat storage."""
-        url = f"{self.base_url}/chat/get_messages"
-        params = {"project_id": project_id, "limit": limit}
-
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                response = await client.get(url, params=params, headers=self._headers())
-                if response.status_code == 200:
-                    data = response.json()
-                    messages = data.get("messages", [])
-                    print(f"✅ Fetched {len(messages)} messages: project={project_id}")
-                    return messages
-                else:
-                    print(f"⚠️ Failed to fetch messages: {response.status_code} - {response.text}")
-                    return None
-        except Exception as e:
-            print(f"⚠️ Chat API error: {str(e)}")
-            return None
-
-    async def get_message_count(self, project_id: str) -> int:
-        """Get message count for a project."""
-        messages = await self.fetch_messages(project_id, limit=100)
-        return len(messages) if messages else 0
 
 
 # Global chat client
@@ -623,7 +551,7 @@ async def lifespan(app: FastAPI):
     _session_telemetry_daemons("start")
 
     print("🚀 Starting XO Space API Server...")
-    print(f"   Chat API: {CHAT_API_BASE_URL}")
+    print(f"   Chat API: {swarm_base_url()}")
     _tok = get_auth_token()
     _src = get_auth_state().get("token_source", "none")
     print(f"   Chat API auth: {'enabled (' + _src + ')' if _tok else 'not set'}")
@@ -711,6 +639,7 @@ async def lifespan(app: FastAPI):
     _sync_task = None
     _warmup_task = None
     _watcher_task = None
+    _relay_task = None
     if start_usage_sync_scheduler:
         try:
             _sync_task = asyncio.create_task(start_usage_sync_scheduler())
@@ -734,6 +663,17 @@ async def lifespan(app: FastAPI):
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
     else:
         print("   Watcher: disabled by runtime configuration")
+
+    # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
+    # in a single tick, see services/cowork_agent/project_sharing/poller.py).
+    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_PROJECT_ID or no
+    # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
+    try:
+        from services.cowork_agent.project_sharing.poller import run_relay_poller
+        _relay_task = asyncio.create_task(run_relay_poller())
+        print("   Relay: background task started")
+    except Exception as e:
+        print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
@@ -762,6 +702,13 @@ async def lifespan(app: FastAPI):
         _watcher_task.cancel()
         try:
             await _watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    if _relay_task and not _relay_task.done():
+        _relay_task.cancel()
+        try:
+            await _relay_task
         except asyncio.CancelledError:
             pass
 
@@ -850,7 +797,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.datetime.now().isoformat(),
-        "chat_api_url": CHAT_API_BASE_URL,
+        "chat_api_url": swarm_base_url(),
         "stage": STAGE,
         "auth": get_auth_state(),
         "ai_provider": AI_PROVIDER,
