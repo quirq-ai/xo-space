@@ -49,6 +49,7 @@ _SKIP_DIRS = {"node_modules", "__pycache__", "venv", "dist", "build", "target"}
 # must stay cheap regardless of how much is on disk. Each stage is capped.
 MAX_LEAVES_PER_PROJECT = 400          # per-project output bound (newest-first)
 MAX_TOTAL_LEAVES = 1500               # whole-graph output bound (browser must render it)
+MIN_LEAVES_PER_PROJECT = 40           # workspace-cap floor — no project trimmed to zero
 MAX_FILES_SCANNED_PER_PROJECT = 2000  # traversal bound (walk stops here)
 BUILD_DEADLINE_S = 10.0               # whole-build wall-clock bound
 MAX_LEAVES_PER_GROUP = 40             # bigger dirs split into per-subdir groups
@@ -295,6 +296,64 @@ def _walk_project(pid: str, cat: str, created_dates: dict) -> tuple[list[dict], 
     return groups, leaves
 
 
+def _newest_first(leaves: list[dict]) -> list[dict]:
+    """Newest git first-appearance date first; undated leaves last."""
+    return sorted(leaves, key=lambda leaf: leaf["date"] or "", reverse=True)
+
+
+def _trim_total(
+    leaves: list[dict],
+    cap: int = MAX_TOTAL_LEAVES,
+    floor: int = MIN_LEAVES_PER_PROJECT,
+) -> list[dict]:
+    """Bound the whole graph at ``cap`` without trimming any project to zero.
+
+    The old rule kept the newest ``cap`` leaves workspace-wide by git
+    first-appearance date. Undated leaves — every file of a non-git project —
+    sort as older than everything, so a few big repos filled the budget and
+    each non-git project lost *all* of its files; the Files list then said
+    "no files yet" for folders that plainly have files (#36).
+
+    Now every project is first guaranteed a floor — its own count, or
+    ``max(floor, cap // n_projects)``, whichever is smaller — and the
+    remaining budget is filled newest-first from what is left, so the big
+    repos absorb the cuts. When even the floors alone overflow the cap
+    (hundreds of projects), the floor shrinks to ``max(1, cap // n)``:
+    the cap may then be exceeded slightly, but a project with files on
+    disk never disappears from the graph.
+    """
+    if len(leaves) <= cap:
+        return leaves
+
+    # "path" is "<pid>/<rel>" and a pid is one path segment, so the split is
+    # unambiguous ("id" is "<pid>:<rel>", but a folder name may contain ":").
+    by_project: dict[str, list[dict]] = {}
+    for leaf in leaves:
+        by_project.setdefault(leaf["path"].split("/", 1)[0], []).append(leaf)
+
+    n = len(by_project)
+    per_project_floor = max(floor, cap // n)
+    if sum(min(len(bucket), per_project_floor) for bucket in by_project.values()) > cap:
+        per_project_floor = max(1, cap // n)
+
+    kept: list[dict] = []
+    overflow: list[dict] = []
+    for bucket in by_project.values():
+        bucket = _newest_first(bucket)
+        kept.extend(bucket[:per_project_floor])
+        overflow.extend(bucket[per_project_floor:])
+
+    remaining = cap - len(kept)
+    if remaining > 0:
+        kept.extend(_newest_first(overflow)[:remaining])
+
+    dropped = len(leaves) - len(kept)
+    print(f"space_index: dropped {dropped} leaves workspace-wide "
+          f"(cap {cap}, per-project floor {per_project_floor}); "
+          f"empty groups pruned")
+    return _newest_first(kept)
+
+
 def _build_ties(leaves: list[dict], commits_by_pid: dict[str, list[list[str]]]) -> list[dict]:
     """Derived cross-ties between kept leaves, strongest first, capped.
 
@@ -420,13 +479,9 @@ def build_space_data() -> dict:
             milestones.append({"d": first_commit, "t": f"{display} first commit"})
 
     if len(leaves) > MAX_TOTAL_LEAVES:
-        dropped = len(leaves) - MAX_TOTAL_LEAVES
-        leaves.sort(key=lambda leaf: leaf["date"] or "", reverse=True)
-        leaves = leaves[:MAX_TOTAL_LEAVES]
+        leaves = _trim_total(leaves)
         kept_groups = {leaf["group"] for leaf in leaves}
         groups = [g for g in groups if g["id"] in kept_groups]
-        print(f"space_index: dropped {dropped} oldest leaves workspace-wide "
-              f"(cap {MAX_TOTAL_LEAVES}); empty groups pruned")
 
     ties = _build_ties(leaves, commits_by_pid)
 

@@ -274,6 +274,7 @@ const TAB_GUIDES={
       ['No open sessions','This is a valid live-presence zero, not proof that no historical work exists.'],
       ['Unexpected root label','Graph root is an in-view lens, not the host XO directory configured in Setup.'],
       ['Stale result','Nothing is generated per request. &lt;XO root&gt;/.xo/space.json is rebuilt by the watcher at most every 30 seconds (XO_VIEWS_REFRESH_S) and by a request only once the file is older than 120 seconds (XO_VIEW_MAX_AGE_S), so a reader can be up to two minutes behind. List Refresh re-fetches the project catalog and any open drawer.'],
+      ['“No files mapped” in the Files column','The workspace graph is bounded (space_index caps 400 leaves per project and 1500 workspace-wide, guaranteeing every project a floor before big repos are trimmed newest-first), and this project’s files did not make the map. The drawer’s Files panel lists the folder live and is the ground truth; “no files yet” is shown only for a genuinely empty mapping without the cap in play.'],
       ['Tree shows fewer columns than expected','Intentional: files stack beside their folder so horizontal distance means depth only.'],
       ['No List | Graph | Tree pill on Dashboard','Intentional: Dashboard shares the canvas but is its own tab, not a Files lens.']
     ],

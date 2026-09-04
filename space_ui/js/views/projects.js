@@ -345,7 +345,11 @@ function liveCell(p){
 function filesCell(p){
   const c=counts.get(p.id);
   if(!c)return'<span class="prj-cell prj-num is-none">—</span>';
-  if(!c.files)return'<span class="prj-cell prj-num is-none">no files yet</span>';
+  /* zero + workspace cap: the graph may simply not have mapped this project,
+     so don't claim the folder is empty — the drawer lists it live */
+  if(!c.files)return capped
+    ?'<span class="prj-cell prj-num is-none" title="The workspace graph is at its cap, so this project&#39;s files may not be mapped. Open the row — the drawer lists the folder live.">no files mapped</span>'
+    :'<span class="prj-cell prj-num is-none">no files yet</span>';
   return'<span class="prj-cell prj-num">'
     +c.files.toLocaleString()+(c.capped?'+':'')+' file'+(c.files===1?'':'s')
     +(c.folders?'<em>'+c.folders.toLocaleString()+' folder'+(c.folders===1?'':'s')+'</em>':'')
