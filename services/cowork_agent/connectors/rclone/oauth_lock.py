@@ -7,7 +7,7 @@ Only ONE OAuth flow can be active at a time across ALL connectors — if a
 second `rclone authorize` subprocess starts while another is still waiting for
 its callback, the second one will fail to bind :53682 and crash silently.
 
-Each connector module (gdrive_rclone, onedrive_rclone, ...) registers a
+Each connector module (gdrive.provider, onedrive.provider, ...) registers a
 zero-arg getter that returns its current sessions. `has_active_oauth()` scans
 all registered iterables for a session whose `status == "awaiting_oauth"`.
 """

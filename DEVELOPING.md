@@ -60,7 +60,8 @@ services/
                                     routes.py paths.py models.py *_status.py store/state_db …
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
-    connectors/                   external services: gdrive/onedrive/github/vercel/manus/rclone_*/token_store
+    connectors/                   one package per external service: gdrive/ onedrive/ github/
+                                    vercel/ manus/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 ```
@@ -101,7 +102,9 @@ mod = load_capability("usage", agent="hermes")   # target a specific agent
 
 A **capability** is just a module `adapters/<name>/<capability>.py`. A core
 router asks for a capability and forwards to it; it never branches on the agent
-name. A missing capability is normal — the router returns its empty/501 shape.
+name. A missing capability module is normal — the router returns its empty/501
+shape. An import error inside an existing capability is an implementation error
+and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 

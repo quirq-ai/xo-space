@@ -27,17 +27,19 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Optional
 
 import httpx
 
-from .rclone_oauth_lock import (
+from .oauth_lock import (
     cancel_all_active_oauth,
     has_active_oauth,
     register_sessions,
@@ -49,13 +51,59 @@ log = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-# rclone config file — stored inside the project directory, shared by every
-# connector (gdrive, onedrive, …).
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RCLONE_CONFIG_PATH = os.getenv(
-    "RCLONE_CONFIG",
-    os.path.join(_PROJECT_ROOT, "rclone.conf"),
+# rclone config file — the remotes of every rclone-backed connector (gdrive,
+# onedrive, …). Kept in the user's config directory so connected accounts
+# survive a redeploy and a checkout carries no secrets. The path is rclone's
+# own default (`rclone config file`), so a remote this API configures is also
+# visible to `rclone` typed in a terminal, with no --config to remember.
+# Pre-move location: `services/rclone.conf`, four dirnames up from this file.
+# Any file left there is moved here at import (_migrate_legacy_config).
+_LEGACY_CONFIG_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
+_LEGACY_RCLONE_CONFIG = os.path.join(_LEGACY_CONFIG_DIR, "rclone.conf")
+
+RCLONE_CONFIG_PATH = os.path.expanduser(
+    os.getenv("RCLONE_CONFIG") or str(Path.home() / ".config" / "rclone" / "rclone.conf")
+)
+
+
+def _migrate_legacy_config() -> None:
+    """Move a pre-existing services/rclone.conf to RCLONE_CONFIG_PATH, once.
+
+    Runs at import so the path is settled before any rclone subprocess sees
+    ``--config``. No-op unless a legacy file exists and the new one doesn't;
+    a failure is logged, leaving the legacy file untouched for a manual move.
+    """
+    if RCLONE_CONFIG_PATH == _LEGACY_RCLONE_CONFIG:
+        return
+    if os.path.exists(RCLONE_CONFIG_PATH) or not os.path.exists(_LEGACY_RCLONE_CONFIG):
+        return
+    try:
+        os.makedirs(os.path.dirname(RCLONE_CONFIG_PATH), exist_ok=True)
+        shutil.move(_LEGACY_RCLONE_CONFIG, RCLONE_CONFIG_PATH)
+        os.chmod(RCLONE_CONFIG_PATH, 0o600)  # holds OAuth tokens
+        log.info("Moved rclone config %s -> %s", _LEGACY_RCLONE_CONFIG, RCLONE_CONFIG_PATH)
+    except OSError as exc:
+        log.warning(
+            "Could not move %s to %s: %s — connected remotes may need re-authorizing",
+            _LEGACY_RCLONE_CONFIG, RCLONE_CONFIG_PATH, exc,
+        )
+
+
+def _ensure_config_dir() -> None:
+    """Create the config directory so rclone (and our own append) can write."""
+    parent = os.path.dirname(RCLONE_CONFIG_PATH)
+    if not parent:
+        return
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        log.warning("Could not create %s: %s", parent, exc)
+
+
+_migrate_legacy_config()
+_ensure_config_dir()
 
 # rclone's OAuth callback port — hardcoded by the providers' OAuth client
 # registration (embedded in rclone's bundled credentials).

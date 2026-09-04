@@ -564,7 +564,16 @@ def runtime_status() -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
     reasons = restart_reasons()
+    # Additive and best-effort: the Setup card renders it when present, and
+    # a failure here must not take down the whole runtime-config endpoint.
+    try:
+        from services.usage_sync import usage_reporting_status
+
+        usage_reporting: dict[str, Any] | None = usage_reporting_status()
+    except Exception:
+        usage_reporting = None
     return {
+        "usage_reporting": usage_reporting,
         "configured": configured,
         "applied": applied,
         "restart_required": bool(reasons),

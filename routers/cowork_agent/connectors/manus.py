@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from services.cowork_agent.connectors.manus_connector import (
+from services.cowork_agent.connectors.manus import (
     delete_manus_key,
     get_manus_key,
     get_status,

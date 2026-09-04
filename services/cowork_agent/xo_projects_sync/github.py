@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from services.cowork_agent.connectors import github_connector
+from services.cowork_agent.connectors import github as github_connector
 
 from .config import BACKUP_REPO_PREFIX, ENV_GITHUB_PAT
 

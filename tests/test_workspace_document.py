@@ -94,10 +94,25 @@ class WorkspaceViewFileTests(unittest.TestCase):
 
     def test_the_expensive_sink_self_throttles(self) -> None:
         """The watcher ticks every second; these views walk every mapped file
-        in the workspace, so they must not rebuild on every tick."""
+        in the workspace, so they must not rebuild on every tick.
+
+        The window is pinned wide and HOME is pointed at the temp dir:
+        ``apply()`` stamps ``_last_build`` before it builds, and the sessions
+        view scans the session stores under the real ``$HOME``, so on a
+        developer machine with a large ``~/.claude`` the first build could
+        outlast the default 30 s window and make the second call due again —
+        a wall-clock flake, and a hermeticity leak besides."""
         with tempfile.TemporaryDirectory() as tmp:
             root = _workspace(tmp)
-            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(root)}, clear=False):
+            with patch.dict(
+                os.environ,
+                {
+                    "XO_PROJECTS_ROOT": str(root),
+                    "XO_VIEWS_REFRESH_S": "3600",
+                    "HOME": tmp,
+                },
+                clear=False,
+            ):
                 views._last_build = 0.0
                 self.assertTrue(views.apply())     # first tick builds
                 self.assertFalse(views.apply())    # second is not due

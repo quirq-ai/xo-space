@@ -110,6 +110,10 @@ function renderShell(){
               +'<button class="setup-primary" id="runtime-save" type="submit">Save runtime</button>'
               +'<button class="setup-restart" id="runtime-restart" type="button" hidden>Apply &amp; restart</button>'
             +'</div>'
+            /* one fact, not a control: whether anything is reported to
+               xo-swarm-api — the same decision usage_sync logs, surfaced
+               where people actually look */
+            +'<small class="setup-usage-reporting" id="usage-reporting" hidden></small>'
           +'</form>'
         +'</section>'
         +'<section class="setup-card setup-sources-card">'
@@ -321,6 +325,8 @@ function renderRuntime(){
   restartButton.title=runtimeData.restart_supported?''
     :'This process is not installer-managed — restart it from the terminal where you launched it.';
 
+  renderUsageReporting();
+
   const alert=root.querySelector('#setup-alert');
   const rootPending=Boolean(runtimeData.roots?.change_required);
   if(rootPending){
@@ -357,6 +363,33 @@ function renderRuntime(){
   renderOverview();
   renderRoots();
   renderSources();
+}
+
+/* Usage-reporting status (GET /api/runtime-config → usage_reporting).
+   States mirror services/usage_sync.py usage_reporting_status(): off (no
+   key — nothing is sent), on (key accepted; shows the last reported day),
+   blocked (key rejected — nothing is sent), pending (key set, no
+   conclusive probe yet). Absent field (older server): stay hidden. */
+function renderUsageReporting(){
+  const el=root.querySelector('#usage-reporting');
+  if(!el)return;
+  const ur=runtimeData.usage_reporting;
+  if(!ur){el.hidden=true;return;}
+  const link=' <a href="https://github.com/quirq-ai/xo-space#what-leaves-your-machine" '
+    +'target="_blank" rel="noopener noreferrer">What leaves your machine &#8599;</a>';
+  let text;
+  if(ur.status==='on'){
+    text='<b>Usage reporting: on</b> — key accepted by xo-swarm-api'
+      +(ur.last_synced_date?'; last report '+esc(ur.last_synced_date):'')+'.';
+  }else if(ur.status==='blocked'){
+    text='<b>Usage reporting: blocked</b> — xo-swarm-api rejected the key; nothing is sent. Fix or remove XO_API_KEY.';
+  }else if(ur.status==='pending'){
+    text='<b>Usage reporting: pending</b> — a key is set but not verified yet; nothing is sent until a sync accepts it.';
+  }else{
+    text='<b>Usage reporting: off</b> — no XO_API_KEY set. Nothing is sent.';
+  }
+  el.innerHTML=text+link;
+  el.hidden=false;
 }
 
 function renderOverview(){

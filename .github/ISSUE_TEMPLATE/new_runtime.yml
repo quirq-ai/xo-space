@@ -1,0 +1,63 @@
+name: New runtime
+description: Add support for a new coding-agent runtime.
+labels: ["new-runtime"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a runtime is designed to be **two folders and zero core edits** (DEVELOPING.md §4):
+        `config/agents/<name>/` and `services/cowork_agent/adapters/<name>/`. Say what the runtime
+        is and what you can provide; we'll help shape the two folders.
+
+  - type: input
+    id: name
+    attributes:
+      label: Runtime name
+      description: The AGENT_NAME you'd use, e.g. `claude_code`, `hermes`.
+    validations:
+      required: true
+
+  - type: input
+    id: binary
+    attributes:
+      label: Binary / CLI or gateway
+      description: How is it invoked — a CLI subprocess, or an HTTP gateway + port?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chat
+    attributes:
+      label: Chat support
+      options:
+        - Yes — can run a turn via CLI / gateway
+        - No — read-only telemetry only
+    validations:
+      required: true
+
+  - type: dropdown
+    id: telemetry
+    attributes:
+      label: Session / usage telemetry
+      options:
+        - Yes — exposes sessions, tokens, cost
+        - Partial — sessions only
+        - No
+    validations:
+      required: true
+
+  - type: textarea
+    id: storage
+    attributes:
+      label: Where does it store sessions?
+      description: On-disk session store location and format (JSONL, DB, files), so the watcher can read it.
+    validations:
+      required: false
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: Your plan / what you can provide
+      description: Which capabilities you intend to add (adapter, usage, models, sessions, routes, ...) and whether you'll implement it yourself.
+    validations:
+      required: false

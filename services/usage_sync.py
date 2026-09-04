@@ -125,7 +125,25 @@ def _empty_record(workspace_id: str, workspace_name, project_id, note: str,
     }
 
 
-async def _key_accepted(client: httpx.AsyncClient, url: str, headers: dict) -> bool:
+def _record_key_probe(state: dict, outcome: str, status: int | None) -> None:
+    """Persist the last key-probe outcome so the Setup tab can show the
+    reporting status (off / on / blocked) without grepping the log.
+    ``outcome``: "accepted", "rejected", or "unverified" (probe inconclusive).
+    Best-effort: a failure to persist must never block the sync itself."""
+    state["key_probe"] = {
+        "outcome": outcome,
+        "status": status,
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    try:
+        _save_sync_state(state)
+    except OSError as e:
+        print(f"{_timestamp_prefix()} usage_sync: could not persist key-probe state: {e}")
+
+
+async def _key_accepted(
+    client: httpx.AsyncClient, url: str, headers: dict, state: dict
+) -> bool:
     """Verify the token before any usage data leaves the machine.
 
     Same endpoint, empty record list: the request carries only the token,
@@ -133,19 +151,23 @@ async def _key_accepted(client: httpx.AsyncClient, url: str, headers: dict) -> b
     through, and stores nothing on success. Anything but 200 fails closed —
     a token the swarm has not accepted sends no usage data, so "reported
     only when the key is valid" is literally true, not just "stored only
-    when the key is valid".
+    when the key is valid". The outcome is persisted for the Setup tab.
     """
     try:
         probe = await client.post(url, json={"records": []}, headers=headers)
     except Exception as e:
         print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({e}) — nothing sent, will retry next cycle")
+        _record_key_probe(state, "unverified", None)
         return False
     if probe.status_code == 200:
+        _record_key_probe(state, "accepted", probe.status_code)
         return True
     if probe.status_code in (401, 403):
         print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status_code}) — nothing sent. Fix or remove the key in .env.")
+        _record_key_probe(state, "rejected", probe.status_code)
     else:
         print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status_code} — nothing sent, will retry next cycle")
+        _record_key_probe(state, "unverified", probe.status_code)
     return False
 
 
@@ -161,7 +183,7 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            if not await _key_accepted(client, url, headers):
+            if not await _key_accepted(client, url, headers, state):
                 return
             response = await client.post(url, json={"records": records}, headers=headers)
 
@@ -184,6 +206,41 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
             print(f"{_timestamp_prefix()} usage_sync: POST failed with {response.status_code}: {response.text[:200]}")
     except Exception as e:
         print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {e}")
+
+
+def usage_reporting_status() -> dict:
+    """One fact for the Setup tab: is anything being reported?
+
+    ``status`` is one of:
+      - "off"      no key set — nothing is sent, not even a placeholder
+      - "on"       key set and accepted by xo-swarm-api on the last probe
+      - "blocked"  key set but rejected (HTTP 401/403) — nothing is sent
+      - "pending"  key set, no conclusive probe yet (first sync still to
+                   run, or the last probe could not reach the swarm)
+
+    The probe outcome comes from the state file `_key_accepted` writes; the
+    same file carries the watermark, so ``last_synced_date`` rides along.
+    """
+    from routers.auth.auth import get_auth_token  # sanctioned lazy import (see CONTRIBUTING)
+
+    state = _load_sync_state()
+    probe = state.get("key_probe") or {}
+    outcome = probe.get("outcome")
+    if not get_auth_token():
+        status = "off"
+    elif outcome == "accepted":
+        status = "on"
+    elif outcome == "rejected":
+        status = "blocked"
+    else:
+        status = "pending"
+    return {
+        "status": status,
+        "probe_outcome": outcome,
+        "probe_at": probe.get("at"),
+        "last_synced_date": state.get("last_synced_date"),
+        "last_sync_at": state.get("last_sync_at"),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from services.cowork_agent.connectors.onedrive_rclone import (
+from services.cowork_agent.connectors.onedrive import (
     cancel_session,
     create_remote_session,
     delete_remote,

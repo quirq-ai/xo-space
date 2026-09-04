@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from services.cowork_agent.connectors.gdrive_rclone import (
+from services.cowork_agent.connectors.gdrive import (
     cancel_session,
     create_remote_session,
     delete_remote,

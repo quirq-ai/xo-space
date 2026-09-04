@@ -1,0 +1,18 @@
+# Issue template config — see CONTRIBUTING.md "Reporting a bug" and "Security".
+#
+# blank_issues_enabled stays TRUE on purpose: CONTRIBUTING.md asks people to
+# report a vulnerability by opening a BLANK issue titled
+# "Security: request for a private channel" with no details. Disabling blank
+# issues would remove that path.
+blank_issues_enabled: true
+
+contact_links:
+  - name: XO Space documentation
+    url: https://docs.xo.builders
+    about: Product docs, architecture, installing Space, and the UI walkthrough.
+  - name: Contributing guide
+    url: https://github.com/quirq-ai/xo-space/blob/main/CONTRIBUTING.md
+    about: Ground rules, dev setup, and the PR process before you open an issue.
+  - name: Security
+    url: https://github.com/quirq-ai/xo-space/issues/new
+    about: 'Do NOT describe a vulnerability in a public issue. Open a blank issue titled "Security: request for a private channel" with no details, and a maintainer will reply with a private channel.'

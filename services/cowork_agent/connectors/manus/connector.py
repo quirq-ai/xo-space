@@ -2,9 +2,9 @@
 Manus AI connector — API key approach.
 
 No OAuth. User generates an API key on manus.im and pastes it.
-We store it in mcp-tokens.json and validate via task.list.
+We store it in token.json and validate via task.list.
 
-Token file: <project_root>/mcp-tokens.json  (.gitignored)
+Token file: ~/.config/token.json  (see connectors/token_store.py)
 """
 
 import logging
@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import httpx
 
-from .token_store import TOKEN_FILE, delete_entry, get_entry, set_entry
+from ..token_store import TOKEN_FILE, delete_entry, get_entry, set_entry
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 MANUS_API = "https://api.manus.ai/v2"
 
 # ---------------------------------------------------------------------------
-# Token storage (provider key "manus" in mcp-tokens.json, owned by token_store)
+# Token storage (provider key "manus" in token.json, owned by token_store)
 # ---------------------------------------------------------------------------
 
 def get_manus_key() -> str | None:
@@ -35,7 +35,7 @@ def get_manus_key() -> str | None:
 
 
 def save_manus_key(api_key: str) -> None:
-    """Save a Manus API key to mcp-tokens.json."""
+    """Save a Manus API key to token.json."""
     set_entry("manus", {
         "api_key": api_key,
         "expires_at": 0,
@@ -45,7 +45,7 @@ def save_manus_key(api_key: str) -> None:
 
 
 def delete_manus_key() -> None:
-    """Remove the Manus entry from mcp-tokens.json."""
+    """Remove the Manus entry from token.json."""
     delete_entry("manus")
     log.info("Manus API key removed from %s", TOKEN_FILE)
 
