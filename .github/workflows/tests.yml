@@ -1,0 +1,67 @@
+# CI for pull requests and the two long-lived branches.
+#
+# Runs exactly what CONTRIBUTING.md § "Testing and validation" asks a
+# contributor to run by hand, in the same order, so a green check here means
+# the same thing as a green local run: the unittest suite, the import gate
+# across every runtime (route counts are read, not asserted — they differ by
+# design), the two shell-script harnesses, the plugin-bundle sync check, and
+# a syntax pass over the build-free Space UI modules.
+#
+# Ubuntu only for now: the watcher needs fcntl (Windows is WSL-only by
+# policy), and macOS runners would re-buy what the suite already proved
+# cross-platform in review. Python 3.12 is the documented floor.
+
+name: tests
+
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Unit test suite
+        run: venv/bin/python -m unittest discover -s tests -t .
+
+      - name: Import gate — the app must build under every runtime
+        run: |
+          for a in claude_code codex openclaw hermes antigravity; do
+            AGENT_NAME=$a venv/bin/python -c "import server; print('$a', len(server.app.openapi()['paths']))"
+          done
+
+      - name: install.sh harness
+        run: bash tests/install_sh_harness.sh
+
+      - name: uninstall.sh harness
+        run: bash tests/uninstall_sh_harness.sh
+
+      - name: Plugin bundles in sync
+        run: ./scripts/check_plugin_sync.sh
+
+      - name: Space UI syntax (no build step, so no compiler catches these)
+        run: |
+          failed=0
+          while IFS= read -r f; do
+            node --check "$f" || failed=1
+          done < <(find space_ui/js -name '*.js')
+          exit $failed
