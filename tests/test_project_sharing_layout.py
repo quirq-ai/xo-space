@@ -80,3 +80,14 @@ class LocalRemoteHeadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / ".git").mkdir()
             self.assertIsNone(git_ops.local_remote_head(Path(tmp), "main"))
+
+
+class StatusSnapshotTests(unittest.TestCase):
+    def test_snapshot_carries_the_projects_root_for_clone_commands(self) -> None:
+        from services.cowork_agent.project_sharing import service
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "XO_PROJECT_ID": "ws-a"}):
+                snap = service.status_snapshot()
+        self.assertEqual(Path(snap["projects_root"]), Path(tmp).resolve())
+        self.assertEqual(snap["own_workspace_id"], "ws-a")

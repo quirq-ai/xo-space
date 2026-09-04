@@ -107,9 +107,12 @@ export function sharingStripHTML(){
 }
 
 /* ── shared with you (not cloned here) ────────────────────────────────────── */
+/* The relay only sees clones directly under the XO root, so the command
+   must target that exact directory; the server reports it in the status. */
 function cloneCmd(repo){
   const name=repo.split('/').pop();
-  return'git clone https://'+repo+'.git ~/xo-projects/'+name;
+  const root=(status&&status.projects_root)||'~/xo-projects';
+  return'git clone https://'+repo+'.git '+root.replace(/\/$/,'')+'/'+name;
 }
 export function sharedWithYouHTML(){
   if(!status||status.cadence==='parked')return'';
@@ -119,7 +122,7 @@ export function sharedWithYouHTML(){
     +'<div class="prj-ptitle">Shared with you · not on this machine yet</div>'
     +avail.map(([repo])=>'<div class="shr-inbox-row">'
       +'<span class="shr-repo"><span class="tchip st-available">shared</span><b>'+esc(repo)+'</b></span>'
-      +'<span class="shr-hint">Clone it under your XO root and sync starts on its own within seconds.</span>'
+      +'<span class="shr-hint">Clone it into your XO root ('+esc((status&&status.projects_root)||'~/xo-projects')+') and sync starts on its own within seconds.</span>'
       +'<span class="shr-cmd"><code>'+esc(cloneCmd(repo))+'</code>'
         +'<button class="shr-copy" type="button" data-copy="'+esc(cloneCmd(repo))+'" title="Copy clone command">copy</button></span>'
       +'</div>').join('')

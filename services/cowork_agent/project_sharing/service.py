@@ -3,7 +3,7 @@ about HTTP. This is the only relay module the BFF imports, so route handlers
 stay free of os/pathlib (BFF rule P2)."""
 from __future__ import annotations
 
-from services.cowork_agent.project_layout import project_dir, project_dir_exists
+from services.cowork_agent.project_layout import project_dir, project_dir_exists, xo_projects_root
 
 from . import config, git_ops, poller, status, swarm_client
 from .repo_identity import normalize_repo
@@ -45,6 +45,9 @@ def status_snapshot() -> dict:
     snap = status.snapshot()
     snap["own_workspace_id"] = config.workspace_id()
     snap["watch_branch"] = config.watch_branch()
+    # The UI builds the clone command for "shared with you" repos from this;
+    # a clone anywhere else is invisible to the relay.
+    snap["projects_root"] = str(xo_projects_root())
     return snap
 
 

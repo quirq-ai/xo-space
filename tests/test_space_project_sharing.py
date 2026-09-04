@@ -50,6 +50,12 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
             self.assertIn(path, mod)
         self.assertNotIn("/commits/poll", mod)  # the browser never talks to swarm
 
+    def test_clone_command_targets_the_reported_projects_root(self) -> None:
+        mod = read("js/views/projects_sharing.js")
+        self.assertIn("status.projects_root", mod)
+        # the literal default is only a fallback for a missing snapshot
+        self.assertIn("||'~/xo-projects'", mod)
+
     def test_relay_status_is_the_only_source_of_shared(self) -> None:
         mod = read("js/views/projects_sharing.js")
         self.assertIn("if(memberState(id)==='live')fillMembers(id);", mod)
