@@ -65,15 +65,22 @@ class CommandResult:
 
     argv: list[str]
     returncode: int
-    output: str  # stdout + stderr, merged
+    output: str  # stdout (+ stderr merged unless separate_stderr was requested)
     duration_seconds: float
     timed_out: bool = False
     binary_missing: bool = False
     exception: str | None = None
+    stderr: str = ""  # populated only when separate_stderr=True
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and not self.timed_out and not self.binary_missing
+
+    @property
+    def stdout(self) -> str:
+        """Alias for `output`, so call sites ported from `subprocess.run`
+        keep reading `.stdout` / `.stderr` / `.returncode`."""
+        return self.output
 
 
 def _render_log_entry(ts: str, label: str, argv: Sequence[str], result: CommandResult) -> str:
@@ -91,6 +98,47 @@ def _render_log_entry(ts: str, label: str, argv: Sequence[str], result: CommandR
     return f"{header}$ {cmdline}\n{tail}[exit {rc}]\n"
 
 
+def _text(value) -> str:
+    """bytes or str or None -> str (subprocess hands back bytes when we do
+    not ask for text mode, which we cannot when passing binary stdin)."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def spawn_detached(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+) -> CommandResult:
+    """Start a process and do not wait for it: its own session, stdio to
+    /dev/null. For restart/update scripts that outlive this server. The
+    result only says whether the spawn itself worked."""
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    argv_list = [str(a) for a in argv]
+    try:
+        subprocess.Popen(
+            argv_list,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return CommandResult(argv=argv_list, returncode=-1, output=f"{argv_list[0]} not found in PATH",
+                             duration_seconds=0.0, binary_missing=True)
+    except Exception as e:  # noqa: BLE001
+        return CommandResult(argv=argv_list, returncode=-1, output=f"[exception] {e}",
+                             duration_seconds=0.0, exception=str(e))
+    return CommandResult(argv=argv_list, returncode=0, output="", duration_seconds=0.0)
+
+
 def _write_log(log_path: Path, entry: str) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as f:
@@ -105,6 +153,9 @@ async def run(
     env: dict[str, str] | None = None,
     log_path: str | Path | None = None,
     log_label: str = "",
+    input: bytes | None = None,
+    separate_stderr: bool = False,
+    inherit_output: bool = False,
 ) -> CommandResult:
     """Run a command asynchronously and return a `CommandResult`.
 
@@ -116,6 +167,13 @@ async def run(
     env:        environment overrides; unset → inherit parent.
     log_path:   if provided, append a formatted log entry after the run.
     log_label:  prefix for the log entry (e.g. "provisioning: anthropic").
+    input:      bytes written to the child's stdin (a passphrase, a payload);
+                without it stdin is /dev/null so nothing can hang on a prompt.
+    separate_stderr:  keep stderr apart (`result.stderr`) instead of merging it
+                into `output`. For callers that parse stdout.
+    inherit_output:   do not capture at all — the child writes straight to
+                this process's stdout/stderr (long setup scripts whose progress
+                must be visible live). `output` is then empty.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -130,8 +188,10 @@ async def run(
             *argv_list,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+            stdout=None if inherit_output else asyncio.subprocess.PIPE,
+            stderr=None if inherit_output
+                   else (asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT),
         )
     except FileNotFoundError:
         result = CommandResult(
@@ -158,9 +218,9 @@ async def run(
 
     try:
         if timeout is not None:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input=input), timeout=timeout)
         else:
-            stdout, _ = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=input)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
@@ -179,8 +239,9 @@ async def run(
     result = CommandResult(
         argv=argv_list,
         returncode=proc.returncode if proc.returncode is not None else -1,
-        output=stdout.decode(errors="replace"),
+        output=(stdout or b"").decode(errors="replace"),
         duration_seconds=duration,
+        stderr=(stderr or b"").decode(errors="replace") if separate_stderr else "",
     )
     if log_path is not None:
         _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
@@ -195,8 +256,12 @@ def run_sync(
     env: dict[str, str] | None = None,
     log_path: str | Path | None = None,
     log_label: str = "",
+    input: bytes | None = None,
+    separate_stderr: bool = False,
+    inherit_output: bool = False,
 ) -> CommandResult:
     """Synchronous sibling of `run` — for scripts, startup probes, or tests.
+    Same options as `run`.
 
     Do NOT call this from inside an async handler — it will block the
     event loop. Use `run` there.
@@ -214,8 +279,9 @@ def run_sync(
             argv_list,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            capture_output=True,
-            text=True,
+            input=input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            capture_output=not inherit_output,
             timeout=timeout,
             check=False,
         )
@@ -234,7 +300,7 @@ def run_sync(
         result = CommandResult(
             argv=argv_list,
             returncode=-1,
-            output=(e.stdout or "") + (e.stderr or "") + f"\n[timed out after {timeout}s]",
+            output=_text(e.stdout) + _text(e.stderr) + f"[timed out after {timeout}s]",
             duration_seconds=time.monotonic() - started,
             timed_out=True,
         )
@@ -253,12 +319,14 @@ def run_sync(
             _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
         return result
 
-    merged = (completed.stdout or "") + (completed.stderr or "")
+    out = _text(completed.stdout)
+    err = _text(completed.stderr)
     result = CommandResult(
         argv=argv_list,
         returncode=completed.returncode,
-        output=merged,
+        output=out if separate_stderr else out + err,
         duration_seconds=time.monotonic() - started,
+        stderr=err if separate_stderr else "",
     )
     if log_path is not None:
         _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))

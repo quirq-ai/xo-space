@@ -23,6 +23,7 @@ daemon, no port held open except rclone's transient :53682 OAuth callback).
 """
 
 import asyncio
+from utils.commands import run
 import json
 import logging
 import os
@@ -124,26 +125,15 @@ async def _rclone_cli(*args: str, timeout: int = 30) -> str:
     non-zero exit. Always passes ``--config`` so commands target our project's
     rclone.conf."""
     full_args = ("rclone",) + args + ("--config", RCLONE_CONFIG_PATH)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *full_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError("rclone binary not found in PATH") from exc
-
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+    res = await run(list(full_args), timeout=timeout, separate_stderr=True)
+    if res.binary_missing:
+        raise RuntimeError("rclone binary not found in PATH")
+    if res.timed_out:
         raise RuntimeError(f"rclone {args[0] if args else ''} timed out after {timeout}s")
-
-    if proc.returncode != 0:
-        err_text = (stderr or stdout).decode(errors="replace").strip()
-        raise RuntimeError(f"rclone error: {err_text or f'exit code {proc.returncode}'}")
-    return stdout.decode(errors="replace")
+    if res.returncode != 0:
+        err_text = (res.stderr or res.output).strip()
+        raise RuntimeError(f"rclone error: {err_text or f'exit code {res.returncode}'}")
+    return res.output
 
 
 async def _rclone_cli_stdin_stream(

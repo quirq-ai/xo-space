@@ -91,6 +91,45 @@ class RunSpecTests(unittest.TestCase):
         res = run(run_spec(CommandSpec.from_json({"argv": ["definitely-not-a-binary-xyz"]})))
         self.assertTrue(res.binary_missing)
 
+    def test_separate_stderr_keeps_stdout_clean(self) -> None:
+        from utils.commands import run as run_cmd, run_sync
+        code = "import sys; sys.stdout.write('out'); sys.stderr.write('err')"
+        res = run(run_cmd([sys.executable, "-c", code], separate_stderr=True, timeout=30))
+        self.assertEqual((res.output, res.stderr, res.stdout), ("out", "err", "out"))
+        merged = run(run_cmd([sys.executable, "-c", code], timeout=30))
+        self.assertIn("out", merged.output)
+        self.assertIn("err", merged.output)
+        self.assertEqual(merged.stderr, "")
+        sync = run_sync([sys.executable, "-c", code], separate_stderr=True, timeout=30)
+        self.assertEqual((sync.output, sync.stderr), ("out", "err"))
+
+    def test_stdin_input_reaches_the_child(self) -> None:
+        from utils.commands import run as run_cmd, run_sync
+        code = "import sys; sys.stdout.write(sys.stdin.read().upper())"
+        res = run(run_cmd([sys.executable, "-c", code], input=b"secret", timeout=30))
+        self.assertEqual(res.output, "SECRET")
+        sync = run_sync([sys.executable, "-c", code], input=b"abc", timeout=30)
+        self.assertEqual(sync.output, "ABC")
+
+    def test_without_input_stdin_is_closed_so_prompts_cannot_hang(self) -> None:
+        from utils.commands import run as run_cmd
+        code = "import sys; sys.stdout.write(repr(sys.stdin.read()))"
+        res = run(run_cmd([sys.executable, "-c", code], timeout=30))
+        self.assertEqual(res.output, "''")
+
+    def test_inherit_output_captures_nothing_but_reports_exit(self) -> None:
+        from utils.commands import run_sync
+        res = run_sync([sys.executable, "-c", "import sys; sys.exit(0)"], inherit_output=True, timeout=30)
+        self.assertTrue(res.ok)
+        self.assertEqual(res.output, "")
+
+    def test_spawn_detached_reports_spawn_failure_only(self) -> None:
+        from utils.commands import spawn_detached
+        ok = spawn_detached([sys.executable, "-c", "pass"])
+        self.assertTrue(ok.ok)
+        missing = spawn_detached(["definitely-not-a-binary-xyz"])
+        self.assertTrue(missing.binary_missing)
+
 
 class SkillCatalogArgvTests(unittest.TestCase):
     def test_entries_resolve_to_argv_lists(self) -> None:
@@ -165,20 +204,11 @@ class OneExecutorTests(unittest.TestCase):
         "services/cowork_agent/adapters/hermes/routes.py",
         "routers/auth/claude_setup_token.py",
         "routers/auth/codex_setup.py",
-        # plain one-shot calls — straightforward to convert to utils.commands.run
-        "routers/cowork_agent/channels.py",
-        "routers/cowork_agent/config.py",
-        "server.py",
+        # partly migrated: their one-shot calls use the runner; what remains is a
+        # live-streamed `gh auth login --web` and rclone's stdin-streaming /
+        # long-running authorize flows, which need a pipe the runner does not offer
         "services/cowork_agent/connectors/github/cli_auth.py",
-        "services/cowork_agent/connectors/github/common.py",
         "services/cowork_agent/connectors/rclone/connector.py",
-        "services/cowork_agent/file_history.py",
-        "services/cowork_agent/providers_status_lib.py",
-        "services/cowork_agent/self_update.py",
-        "services/cowork_agent/visualizer/space_index.py",
-        "services/cowork_agent/xo_projects_sync/crypto.py",
-        "services/cowork_agent/xo_projects_sync/github.py",
-        "services/cowork_agent/xo_projects_sync/tarball.py",
     }
     DIRECT = re.compile(r"subprocess\.(run|Popen|check_output|check_call|call)\(|create_subprocess_exec\(")
     SHELL = re.compile(r"shell\s*=\s*True|create_subprocess_shell\(|os\.system\(|os\.popen\(")

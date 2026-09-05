@@ -27,6 +27,7 @@ persistent staging directory.
 from __future__ import annotations
 
 import asyncio
+from utils.commands import run
 import base64
 import shutil
 from dataclasses import dataclass
@@ -100,13 +101,8 @@ async def repo_exists(owner: str, name: str, *, auth: GitHubAuth) -> bool:
         # gh respects its own auth, which may be a different identity than
         # `auth.token`. We still trust it because the design routes both
         # gh-via-UI and PAT-via-UI through the same connector lookup.
-        proc = await asyncio.create_subprocess_exec(
-            "gh", "repo", "view", f"{owner}/{name}",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        if proc.returncode == 0:
+        res = await run(["gh", "repo", "view", f"{owner}/{name}"])
+        if res.ok:
             return True
         # Fall through to REST — gh may have failed for reasons other than 404
         # (e.g. unauthenticated host). REST gives a precise status.
@@ -128,21 +124,18 @@ async def create_repo(owner: str, name: str, *, auth: GitHubAuth) -> str:
     `discover_owner(auth)` for the fallback to succeed.
     """
     if await _gh_cli_authenticated():
-        proc = await asyncio.create_subprocess_exec(
+        res = await run([
             "gh", "repo", "create", f"{owner}/{name}",
             "--private",
             "--add-readme",
             "--description", "Encrypted xo-project backup (auto-managed by xo-space).",
             "--confirm",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode == 0:
+        ], separate_stderr=True)
+        if res.ok:
             return f"https://github.com/{owner}/{name}.git"
         # gh failed; surface the error but try REST too so we don't fail
         # the whole setup on transient gh issues.
-        gh_err = stderr.decode("utf-8", "replace").strip()
+        gh_err = (res.stderr or res.output).strip()
     else:
         gh_err = None
 
@@ -221,13 +214,8 @@ async def commit_and_push_in(path: Path, message: str, *, auth: GitHubAuth) -> b
     """
     await _git(["add", "-A"], cwd=path, auth=None)
     # `git status --porcelain` lists nothing iff working tree is clean.
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(path), "status", "--porcelain",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, _ = await proc.communicate()
-    if not stdout.strip():
+    res = await run(["git", "-C", str(path), "status", "--porcelain"], separate_stderr=True)
+    if not res.output.strip():
         return False
     await _git(["commit", "-m", message], cwd=path, auth=None)
     await _git(["push", "origin", "HEAD"], cwd=path, auth=auth)
@@ -261,30 +249,22 @@ async def _git(args: list[str], *, cwd: Path, auth: GitHubAuth | None) -> str:
     if auth is not None:
         full += ["-c", f"http.https://github.com/.extraheader={_git_extraheader(auth)}"]
     full += ["-C", str(cwd)] + args
-    proc = await asyncio.create_subprocess_exec(
-        *full,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    res = await run(full, separate_stderr=True)
+    if res.binary_missing:
+        raise FileNotFoundError(res.output)
+    if res.returncode != 0:
         # Strip the auth header from any echoed args before surfacing.
-        err = stderr.decode("utf-8", "replace").strip()
+        err = (res.stderr or res.output).strip()
         raise RuntimeError(f"git {' '.join(args)} failed: {err}")
-    return stdout.decode("utf-8", "replace")
+    return res.output
 
 
 async def _gh_cli_authenticated() -> bool:
     """`gh` is on PATH AND `gh auth status` exits zero for github.com."""
     if shutil.which("gh") is None:
         return False
-    proc = await asyncio.create_subprocess_exec(
-        "gh", "auth", "status", "--hostname", "github.com",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.wait()
-    return proc.returncode == 0
+    res = await run(["gh", "auth", "status", "--hostname", "github.com"])
+    return res.ok
 
 
 async def _get(auth: GitHubAuth, path: str) -> dict[str, Any]:

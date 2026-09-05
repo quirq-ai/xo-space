@@ -18,6 +18,7 @@ Caveats (intentional, per Option B):
 from __future__ import annotations
 
 import asyncio
+from utils.commands import run
 import logging
 import os
 import re
@@ -182,19 +183,13 @@ async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
 
 async def _read_gh_token() -> str | None:
     """Fetch the active github.com token via `gh auth token`."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
-        log.warning("Failed to read gh token: %s", exc)
+    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], timeout=10, separate_stderr=True)
+    if res.timed_out or res.binary_missing or res.exception is not None:
+        log.warning("Failed to read gh token: %s", res.output.strip())
         return None
-    if proc.returncode != 0:
+    if res.returncode != 0:
         return None
-    token = stdout.decode("utf-8", errors="replace").strip()
+    token = res.output.strip()
     return token or None
 
 
@@ -233,17 +228,7 @@ async def start_login() -> dict[str, Any]:
         # Clear any prior `gh` session for github.com — `gh auth login` refuses
         # to start a fresh device flow when an account is already logged in.
         # Errors here are non-fatal (e.g. "not logged in" exits non-zero).
-        try:
-            logout = await asyncio.create_subprocess_exec(
-                GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME,
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(logout.wait(), timeout=5)
-        except (asyncio.TimeoutError, FileNotFoundError, OSError):
-            pass
+        await run([GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME], env=env, timeout=5)
 
         # `--insecure-storage` writes the token to a plain file under
         # ~/.config/gh — fine here because we immediately export it into

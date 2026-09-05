@@ -19,7 +19,7 @@ UI — that history was never part of the project's address space.
 from __future__ import annotations
 
 import re
-import subprocess
+from utils.commands import CommandResult, run_sync
 from pathlib import Path
 
 from services.cowork_agent.project_layout import project_dir, read_project_file
@@ -35,18 +35,12 @@ _COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}")
 _LOG_FORMAT = "%x1e%H%x1f%an%x1f%aI%x1f%s"
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess | None:
+def _git(args: list[str], cwd: Path) -> CommandResult | None:
     """Run git, or return ``None`` when git itself is unavailable."""
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = run_sync(["git", *args], cwd=cwd, timeout=GIT_TIMEOUT_SECONDS, separate_stderr=True)
+    if res.binary_missing or res.timed_out or res.exception is not None:
         return None
+    return res
 
 
 def _repo_toplevel(file_dir: Path, project_root: Path) -> Path | None:

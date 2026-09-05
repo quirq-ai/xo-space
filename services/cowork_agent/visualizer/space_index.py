@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import os
 import re
-import subprocess
+from utils.commands import run_sync
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -138,14 +138,13 @@ def _git_facts(pdir: Path) -> tuple[
         # the timeline would render that foreign log as the project's lane.
         if not (pdir / ".git").exists():
             return {}, None, [], []
-        out = subprocess.run(
+        out = run_sync(
             [
                 "git", "-C", str(pdir), "log",
                 "--reverse", "--date=short",
                 "--pretty=format:%x01%ad%x02%s", "--name-only",
             ],
-            capture_output=True, text=True, errors="replace",
-            timeout=_GIT_TIMEOUT_S,
+            timeout=_GIT_TIMEOUT_S, separate_stderr=True,
         )
     except Exception:
         return {}, None, [], []

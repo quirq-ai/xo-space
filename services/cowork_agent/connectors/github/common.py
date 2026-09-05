@@ -18,6 +18,7 @@ Token file: ~/.config/token.json  (see connectors/token_store.py)
 """
 
 import asyncio
+from utils.commands import run
 import logging
 import shutil
 from typing import Any, Literal
@@ -190,20 +191,11 @@ _SUBPROCESS_TIMEOUT_SECONDS = 10
 
 async def _run(*args: str) -> tuple[int, str]:
     """Run a command; return (returncode, merged output). Never raises."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_SUBPROCESS_TIMEOUT_SECONDS
-        )
-    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
-        log.warning("Command %s failed: %s", args[0], exc)
+    res = await run(list(args), timeout=_SUBPROCESS_TIMEOUT_SECONDS)
+    if res.timed_out or res.binary_missing or res.exception is not None:
+        log.warning("Command %s failed: %s", args[0], res.output.strip())
         return 1, ""
-    return proc.returncode or 0, stdout.decode("utf-8", "replace").strip()
+    return res.returncode or 0, res.output.strip()
 
 
 def commit_email(validation: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from utils.commands import run
 
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.registry.agent_env import upsert_env_entry
@@ -47,31 +48,19 @@ async def _run_one(platform: str, argv: list[str]) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(_AGENT.cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=_AGENT.cli_timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            _append_log(ts, platform, argv, f"[timed out after {_AGENT.cli_timeout_seconds}s]", rc="timeout")
-            return -1
-    except FileNotFoundError:
+    result = await run(argv, cwd=str(_AGENT.cwd), timeout=_AGENT.cli_timeout_seconds)
+    if result.timed_out:
+        _append_log(ts, platform, argv, f"[timed out after {_AGENT.cli_timeout_seconds}s]", rc="timeout")
+        return -1
+    if result.binary_missing:
         _append_log(ts, platform, argv, f"{_AGENT.binary} CLI not found in PATH", rc="missing-binary")
         return -1
-    except Exception as e:  # noqa: BLE001 — log and carry on
-        _append_log(ts, platform, argv, f"[exception] {e}", rc="exception")
+    if result.exception is not None:
+        _append_log(ts, platform, argv, result.output, rc="exception")
         return -1
 
-    _append_log(ts, platform, argv, stdout.decode(errors="replace"), rc=str(proc.returncode))
-    return proc.returncode
+    _append_log(ts, platform, argv, result.output, rc=str(result.returncode))
+    return result.returncode
 
 
 async def _run_provisioning_bg(platform: str, recipe: dict) -> None:

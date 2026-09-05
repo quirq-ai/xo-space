@@ -11,7 +11,7 @@ the running server keeps executing the old version until restarted.
 from __future__ import annotations
 
 import re
-import subprocess
+from utils.commands import CommandResult, run_sync
 from pathlib import Path
 from typing import Optional
 
@@ -29,14 +29,11 @@ class UpdateError(RuntimeError):
     """A git step failed in a way the caller should surface verbatim."""
 
 
-def _git(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(REPO_ROOT), *args],
-        capture_output=True, text=True, errors="replace", timeout=timeout,
-    )
+def _git(*args: str, timeout: float = 10.0) -> CommandResult:
+    return run_sync(["git", "-C", str(REPO_ROOT), *args], timeout=timeout, separate_stderr=True)
 
 
-def _line(res: subprocess.CompletedProcess) -> str:
+def _line(res: CommandResult) -> str:
     return (res.stdout or "").strip()
 
 
@@ -90,10 +87,9 @@ def check_update_status(fetch: bool = True) -> dict:
     }
 
     if fetch:
-        try:
-            fetched = _git("fetch", "--quiet", _REMOTE, branch,
-                           timeout=_FETCH_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
+        fetched = _git("fetch", "--quiet", _REMOTE, branch,
+                       timeout=_FETCH_TIMEOUT_S)
+        if fetched.timed_out:
             fetched = None
         if fetched is None or fetched.returncode != 0:
             detail = _URL_USERINFO_RE.sub("//", (fetched.stderr if fetched else "timed out").strip())
@@ -159,7 +155,7 @@ def apply_update() -> dict:
     if merged.returncode != 0:
         raise UpdateError(
             "git merge --ff-only failed: "
-            + _URL_USERINFO_RE.sub("//", (merged.stderr or "").strip())[:300]
+            + _URL_USERINFO_RE.sub("//", (merged.stderr or merged.output or "").strip())[:300]
         )
 
     new = _commit_info("HEAD")
