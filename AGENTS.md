@@ -11,6 +11,9 @@
 - Put endpoint modules in `routers/` via `APIRouter`.
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
+- Every external command runs through `utils/commands.py` (`run` / `run_spec` over an
+  argv list, `safe_arg` for untrusted values). No `shell=True`, no command strings;
+  `tests/test_command_executor.py` enforces it and holds the migration backlog.
 
 ## Agent-modular architecture (read before touching core)
 

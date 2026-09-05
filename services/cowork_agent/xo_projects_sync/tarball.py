@@ -24,6 +24,7 @@ Two decisions worth understanding before editing:
 from __future__ import annotations
 
 import asyncio
+from utils.commands import run
 import fnmatch
 import os
 import tarfile
@@ -66,24 +67,19 @@ def _path_has_excluded_component(rel_parts: tuple[str, ...]) -> bool:
 
 async def _git_ls_files(project_dir: Path) -> list[str]:
     """Tracked + untracked-but-not-ignored files, as project-relative paths."""
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "-C", str(project_dir),
-        "ls-files",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "-z",  # NUL-delimited; handles paths with newlines/spaces
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    res = await run(
+        ["git", "-C", str(project_dir), "ls-files", "--cached", "--others", "--exclude-standard",
+         "-z"],  # NUL-delimited; handles paths with newlines/spaces
+        separate_stderr=True,
     )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    if res.binary_missing:
+        raise FileNotFoundError(res.output)
+    if res.returncode != 0:
         raise RuntimeError(
-            f"git ls-files failed in {project_dir}: {stderr.decode('utf-8', 'replace').strip()}"
+            f"git ls-files failed in {project_dir}: {(res.stderr or res.output).strip()}"
         )
     # Trailing NUL is normal; filter empties.
-    return [p for p in stdout.decode("utf-8", "replace").split("\x00") if p]
+    return [p for p in res.output.split("\x00") if p]
 
 
 def _walk_files(project_dir: Path) -> list[str]:

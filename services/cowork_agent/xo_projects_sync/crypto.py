@@ -16,6 +16,7 @@ backups silently.
 from __future__ import annotations
 
 import asyncio
+from utils.commands import run
 import shutil
 from pathlib import Path
 
@@ -81,27 +82,21 @@ async def encrypt_to_chunks(
     if ciphertext_tmp.exists():
         ciphertext_tmp.unlink()
 
-    proc = await asyncio.create_subprocess_exec(
-        "gpg",
-        "--batch",
-        "--yes",
-        "--quiet",
-        "--no-symkey-cache",
-        "--cipher-algo", "AES256",
-        "--symmetric",
-        "--passphrase-fd", "0",
-        "-o", str(ciphertext_tmp),
-        str(plaintext_path),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+    res = await run(
+        [
+            "gpg", "--batch", "--yes", "--quiet", "--no-symkey-cache",
+            "--cipher-algo", "AES256", "--symmetric", "--passphrase-fd", "0",
+            "-o", str(ciphertext_tmp), str(plaintext_path),
+        ],
+        input=passphrase.encode("utf-8"), separate_stderr=True,
     )
-    _, stderr = await proc.communicate(input=passphrase.encode("utf-8"))
-    if proc.returncode != 0:
+    if res.binary_missing:
+        raise FileNotFoundError(res.output)
+    if res.returncode != 0:
         # Clean up partial output before raising so the next attempt isn't confused.
         if ciphertext_tmp.exists():
             ciphertext_tmp.unlink()
-        raise GpgFailedError(f"gpg encrypt failed: {stderr.decode('utf-8', 'replace').strip()}")
+        raise GpgFailedError(f"gpg encrypt failed: {(res.stderr or res.output).strip()}")
 
     parts = _split_into_parts(ciphertext_tmp, output_dir)
     ciphertext_tmp.unlink()
@@ -172,23 +167,18 @@ async def decrypt_from_chunks(
                         break
                     dst.write(chunk)
 
-    proc = await asyncio.create_subprocess_exec(
-        "gpg",
-        "--batch",
-        "--yes",
-        "--quiet",
-        "--no-symkey-cache",
-        "--decrypt",
-        "--passphrase-fd", "0",
-        "-o", str(output_path),
-        str(ciphertext_tmp),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+    res = await run(
+        [
+            "gpg", "--batch", "--yes", "--quiet", "--no-symkey-cache",
+            "--decrypt", "--passphrase-fd", "0",
+            "-o", str(output_path), str(ciphertext_tmp),
+        ],
+        input=passphrase.encode("utf-8"), separate_stderr=True,
     )
-    _, stderr = await proc.communicate(input=passphrase.encode("utf-8"))
+    if res.binary_missing:
+        raise FileNotFoundError(res.output)
     ciphertext_tmp.unlink()  # always remove the reassembled ciphertext
-    if proc.returncode != 0:
+    if res.returncode != 0:
         if output_path.exists():
             output_path.unlink()  # don't leave a partial plaintext
-        raise GpgFailedError(f"gpg decrypt failed: {stderr.decode('utf-8', 'replace').strip()}")
+        raise GpgFailedError(f"gpg decrypt failed: {(res.stderr or res.output).strip()}")

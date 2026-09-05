@@ -46,11 +46,12 @@ input never reaches a shell interpreter.
 from __future__ import annotations
 
 import asyncio
+import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -64,15 +65,22 @@ class CommandResult:
 
     argv: list[str]
     returncode: int
-    output: str  # stdout + stderr, merged
+    output: str  # stdout (+ stderr merged unless separate_stderr was requested)
     duration_seconds: float
     timed_out: bool = False
     binary_missing: bool = False
     exception: str | None = None
+    stderr: str = ""  # populated only when separate_stderr=True
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and not self.timed_out and not self.binary_missing
+
+    @property
+    def stdout(self) -> str:
+        """Alias for `output`, so call sites ported from `subprocess.run`
+        keep reading `.stdout` / `.stderr` / `.returncode`."""
+        return self.output
 
 
 def _render_log_entry(ts: str, label: str, argv: Sequence[str], result: CommandResult) -> str:
@@ -90,6 +98,47 @@ def _render_log_entry(ts: str, label: str, argv: Sequence[str], result: CommandR
     return f"{header}$ {cmdline}\n{tail}[exit {rc}]\n"
 
 
+def _text(value) -> str:
+    """bytes or str or None -> str (subprocess hands back bytes when we do
+    not ask for text mode, which we cannot when passing binary stdin)."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def spawn_detached(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+) -> CommandResult:
+    """Start a process and do not wait for it: its own session, stdio to
+    /dev/null. For restart/update scripts that outlive this server. The
+    result only says whether the spawn itself worked."""
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    argv_list = [str(a) for a in argv]
+    try:
+        subprocess.Popen(
+            argv_list,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return CommandResult(argv=argv_list, returncode=-1, output=f"{argv_list[0]} not found in PATH",
+                             duration_seconds=0.0, binary_missing=True)
+    except Exception as e:  # noqa: BLE001
+        return CommandResult(argv=argv_list, returncode=-1, output=f"[exception] {e}",
+                             duration_seconds=0.0, exception=str(e))
+    return CommandResult(argv=argv_list, returncode=0, output="", duration_seconds=0.0)
+
+
 def _write_log(log_path: Path, entry: str) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as f:
@@ -104,6 +153,9 @@ async def run(
     env: dict[str, str] | None = None,
     log_path: str | Path | None = None,
     log_label: str = "",
+    input: bytes | None = None,
+    separate_stderr: bool = False,
+    inherit_output: bool = False,
 ) -> CommandResult:
     """Run a command asynchronously and return a `CommandResult`.
 
@@ -115,6 +167,13 @@ async def run(
     env:        environment overrides; unset → inherit parent.
     log_path:   if provided, append a formatted log entry after the run.
     log_label:  prefix for the log entry (e.g. "provisioning: anthropic").
+    input:      bytes written to the child's stdin (a passphrase, a payload);
+                without it stdin is /dev/null so nothing can hang on a prompt.
+    separate_stderr:  keep stderr apart (`result.stderr`) instead of merging it
+                into `output`. For callers that parse stdout.
+    inherit_output:   do not capture at all — the child writes straight to
+                this process's stdout/stderr (long setup scripts whose progress
+                must be visible live). `output` is then empty.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -129,8 +188,10 @@ async def run(
             *argv_list,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+            stdout=None if inherit_output else asyncio.subprocess.PIPE,
+            stderr=None if inherit_output
+                   else (asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT),
         )
     except FileNotFoundError:
         result = CommandResult(
@@ -157,9 +218,9 @@ async def run(
 
     try:
         if timeout is not None:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input=input), timeout=timeout)
         else:
-            stdout, _ = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=input)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
@@ -178,8 +239,9 @@ async def run(
     result = CommandResult(
         argv=argv_list,
         returncode=proc.returncode if proc.returncode is not None else -1,
-        output=stdout.decode(errors="replace"),
+        output=(stdout or b"").decode(errors="replace"),
         duration_seconds=duration,
+        stderr=(stderr or b"").decode(errors="replace") if separate_stderr else "",
     )
     if log_path is not None:
         _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
@@ -194,8 +256,12 @@ def run_sync(
     env: dict[str, str] | None = None,
     log_path: str | Path | None = None,
     log_label: str = "",
+    input: bytes | None = None,
+    separate_stderr: bool = False,
+    inherit_output: bool = False,
 ) -> CommandResult:
     """Synchronous sibling of `run` — for scripts, startup probes, or tests.
+    Same options as `run`.
 
     Do NOT call this from inside an async handler — it will block the
     event loop. Use `run` there.
@@ -213,8 +279,9 @@ def run_sync(
             argv_list,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            capture_output=True,
-            text=True,
+            input=input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            capture_output=not inherit_output,
             timeout=timeout,
             check=False,
         )
@@ -233,7 +300,7 @@ def run_sync(
         result = CommandResult(
             argv=argv_list,
             returncode=-1,
-            output=(e.stdout or "") + (e.stderr or "") + f"\n[timed out after {timeout}s]",
+            output=_text(e.stdout) + _text(e.stderr) + f"[timed out after {timeout}s]",
             duration_seconds=time.monotonic() - started,
             timed_out=True,
         )
@@ -252,12 +319,14 @@ def run_sync(
             _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
         return result
 
-    merged = (completed.stdout or "") + (completed.stderr or "")
+    out = _text(completed.stdout)
+    err = _text(completed.stderr)
     result = CommandResult(
         argv=argv_list,
         returncode=completed.returncode,
-        output=merged,
+        output=out if separate_stderr else out + err,
         duration_seconds=time.monotonic() - started,
+        stderr=err if separate_stderr else "",
     )
     if log_path is not None:
         _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
@@ -299,3 +368,139 @@ async def run_chain(
                 )
             break
     return results
+
+
+# =============================================================================
+# The one door: a JSON-shaped command spec
+# =============================================================================
+#
+# Everything above takes a Python list. Config files (the skill catalog, agent
+# manifests, future automation) describe commands as data, so this is the
+# shape they use and the validation they all get:
+#
+#     {"argv": ["npm", "install", "-g", "@okxweb3/a2a-node"],
+#      "cwd": "/home/coder", "env": {"CI": "1"}, "timeout": 300}
+#
+# `argv` is the only way to say what runs. There is no "command string" key
+# and never will be: a string is what a shell parses, and a shell is where
+# command injection (CWE-78) happens. A value that must come from user input
+# goes into ONE argv slot via `safe_arg`, which refuses anything that a
+# program would read as an option (argument injection).
+
+SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$(", "\n")
+
+
+class CommandSpecError(ValueError):
+    """A command spec that must not run: malformed, or trying to reach a shell."""
+
+
+def safe_arg(value: Any, *, allow_option: bool = False) -> str:
+    """Return `value` as one argv element, or raise CommandSpecError.
+
+    Refuses empty strings, NUL bytes, and (unless `allow_option`) anything
+    starting with '-' so an attacker-controlled repo name, branch, or path can
+    never become `--upload-pack=...` or `-c core.sshCommand=...`. Callers that
+    legitimately pass a flag pass it as a literal in their own argv, not
+    through this function.
+    """
+    if not isinstance(value, str) or not value:
+        raise CommandSpecError("argument must be a non-empty string")
+    if "\x00" in value:
+        raise CommandSpecError("argument contains a NUL byte")
+    if not allow_option and value.startswith("-"):
+        raise CommandSpecError(f"argument {value!r} looks like an option; refuse it or pass it after '--'")
+    return value
+
+
+def split_command(template: str) -> list[str]:
+    """Turn a human-written command line into argv WITHOUT a shell.
+
+    POSIX quoting rules (shlex), so `--dir "{skills_dir}"` stays one token.
+    Refuses anything a shell would interpret as more than one command or as a
+    redirection: those need a real shell, and this codebase does not run one.
+    """
+    if not isinstance(template, str) or not template.strip():
+        raise CommandSpecError("command must be a non-empty string")
+    for op in SHELL_OPERATORS:
+        if op in template:
+            raise CommandSpecError(
+                f"command contains shell operator {op!r}; write it as separate steps or an argv list")
+    try:
+        argv = shlex.split(template, posix=True)
+    except ValueError as exc:
+        raise CommandSpecError(f"unbalanced quoting in command: {exc}") from exc
+    if not argv:
+        raise CommandSpecError("command is empty after parsing")
+    return argv
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """One command as data. Build it with `from_json` so every field is
+    validated once, in one place, before anything runs."""
+
+    argv: list[str]
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    timeout: float | None = None
+    log_path: str | None = None
+    log_label: str = ""
+
+    ALLOWED_KEYS = frozenset({"argv", "command", "cwd", "env", "timeout", "log_path", "log_label"})
+
+    @classmethod
+    def from_json(cls, obj: Mapping[str, Any]) -> "CommandSpec":
+        if not isinstance(obj, Mapping):
+            raise CommandSpecError("command spec must be an object")
+        unknown = set(obj) - cls.ALLOWED_KEYS
+        if unknown:
+            raise CommandSpecError(f"unknown command spec keys: {sorted(unknown)}")
+        if "argv" in obj and "command" in obj:
+            raise CommandSpecError("give argv or command, not both")
+        if "argv" in obj:
+            argv = obj["argv"]
+            if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+                raise CommandSpecError("argv must be a non-empty list of non-empty strings")
+            if any("\x00" in a for a in argv):
+                raise CommandSpecError("argv contains a NUL byte")
+            argv = list(argv)
+        elif "command" in obj:
+            argv = split_command(obj["command"])
+        else:
+            raise CommandSpecError("command spec needs argv (preferred) or command")
+        cwd = obj.get("cwd")
+        if cwd is not None and (not isinstance(cwd, str) or not cwd):
+            raise CommandSpecError("cwd must be a non-empty string")
+        env = obj.get("env")
+        if env is not None and (not isinstance(env, Mapping)
+                                or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())):
+            raise CommandSpecError("env must map strings to strings")
+        timeout = obj.get("timeout")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0):
+            raise CommandSpecError("timeout must be a positive number of seconds")
+        log_path = obj.get("log_path")
+        if log_path is not None and not isinstance(log_path, str):
+            raise CommandSpecError("log_path must be a string")
+        log_label = obj.get("log_label", "")
+        if not isinstance(log_label, str):
+            raise CommandSpecError("log_label must be a string")
+        return cls(argv=argv, cwd=cwd, env=dict(env) if env is not None else None,
+                   timeout=float(timeout) if timeout is not None else None,
+                   log_path=log_path, log_label=log_label)
+
+    def with_argv(self, argv: Sequence[str]) -> "CommandSpec":
+        """Same spec, different argv (used after placeholder expansion)."""
+        return CommandSpec(argv=[str(a) for a in argv], cwd=self.cwd, env=self.env,
+                           timeout=self.timeout, log_path=self.log_path, log_label=self.log_label)
+
+
+async def run_spec(spec: CommandSpec) -> CommandResult:
+    """Run a validated spec. Config-driven callers (catalog, manifests) come
+    through here; Python callers with a literal argv may call `run` directly."""
+    return await run(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
+                     log_path=spec.log_path, log_label=spec.log_label)
+
+
+def run_spec_sync(spec: CommandSpec) -> CommandResult:
+    return run_sync(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
+                    log_path=spec.log_path, log_label=spec.log_label)

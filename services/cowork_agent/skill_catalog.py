@@ -3,18 +3,22 @@ On-demand skill install catalog.
 
 Backs ``GET /api/skills/catalog`` and ``POST /api/skills/install``. The catalog
 file (``config/skills/catalog.json``) is the server-side source of truth
-mapping a skill name to one or more shell commands; clients only ever send a
+mapping a skill name to one or more commands; clients only ever send a
 name, and command text is never returned to them (entries may embed tokens or
-host paths). Distinct from ``skill_installer.py``, which copies repo-bundled
+host paths). Commands run through ``utils.commands`` as argv lists — there is
+no shell, so a catalog entry can never chain, pipe or redirect. Distinct from ``skill_installer.py``, which copies repo-bundled
 skills at startup.
 
 Catalog entry shape (one of ``command``/``commands`` is required):
 
     name             required, unique
     description      optional
-    command          single shell command string
-    commands         non-empty list of shell command strings, run
-                     sequentially, stopping at the first failure
+    command          one command: an argv list (preferred) or a string that
+                     is split with POSIX quoting and no shell
+    commands         non-empty list of such commands, run sequentially,
+                     stopping at the first failure; a string containing a
+                     shell operator (&&, |, ;, >, <, `, $() makes the entry
+                     invalid
     timeout_seconds  optional, default 300 — applies per command
     cwd              optional working directory for every command
     success_message  optional human-authored line returned as ``summary`` on
@@ -32,9 +36,10 @@ boot-time skills, declared per agent in
 """
 
 import asyncio
-import contextlib
 import json
 from pathlib import Path
+
+from utils.commands import CommandSpecError, run, split_command
 
 from services.cowork_agent.registry import agent_registry
 from services.cowork_agent.registry.settings import load_agent_config
@@ -104,9 +109,9 @@ async def install(name: str) -> dict:
     async with lock:
         steps: list[dict] = []
         ok = True
-        for index, command in enumerate(entry["commands"]):
+        for index, argv in enumerate(entry["commands"]):
             try:
-                rendered = _expand_placeholders(command)
+                rendered = [_expand_placeholders(token) for token in argv]
             except Exception as exc:
                 steps.append(_step_result(index, ok=False, exit_code=None, stdout="",
                                           stderr=f"placeholder expansion failed: {exc}",
@@ -251,6 +256,22 @@ def _lock_for(name: str) -> asyncio.Lock:
     return _locks.setdefault(name, asyncio.Lock())
 
 
+def _to_argv(step) -> list[str] | None:
+    """A catalog step is an argv list, or a string split without a shell.
+    None means the step is invalid (and so is its entry)."""
+    if isinstance(step, list):
+        if step and all(isinstance(t, str) and t for t in step):
+            return list(step)
+        return None
+    if isinstance(step, str):
+        try:
+            return split_command(step)
+        except CommandSpecError as exc:
+            print(f"⚠️ skill catalog: rejected command {step!r}: {exc}")
+            return None
+    return None
+
+
 def _normalize(entry) -> dict | None:
     """Validate one raw catalog entry; None means invalid (skip it)."""
     if not isinstance(entry, dict):
@@ -260,17 +281,18 @@ def _normalize(entry) -> dict | None:
         return None
 
     command, commands = entry.get("command"), entry.get("commands")
-    if isinstance(command, str) and command.strip() and commands is None:
-        resolved = [command]
-    elif (
-        command is None
-        and isinstance(commands, list)
-        and commands
-        and all(isinstance(c, str) and c.strip() for c in commands)
-    ):
-        resolved = list(commands)
+    if command is not None and commands is None:
+        raw_steps = [command]
+    elif command is None and isinstance(commands, list) and commands:
+        raw_steps = list(commands)
     else:
         return None
+    resolved: list[list[str]] = []
+    for step in raw_steps:
+        argv = _to_argv(step)
+        if argv is None:
+            return None
+        resolved.append(argv)
 
     timeout = entry.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
@@ -292,40 +314,19 @@ def _normalize(entry) -> dict | None:
     }
 
 
-async def _run_step(index: int, command: str, timeout_seconds: float, cwd: str | None) -> dict:
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
-    except Exception as exc:
-        return _step_result(index, ok=False, exit_code=None, stdout="",
-                            stderr=f"failed to start command: {exc}",
-                            duration=loop.time() - started, timed_out=False)
-
-    timed_out = False
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
-        timed_out = True
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
-        stdout_b, stderr_b = b"", b""
-
-    exit_code = proc.returncode
+async def _run_step(index: int, argv: list[str], timeout_seconds: float, cwd: str | None) -> dict:
+    """One catalog step through the shared runner: argv, no shell. The runner
+    merges stdout and stderr, so the step reports them as one stream."""
+    result = await run(argv, cwd=cwd, timeout=timeout_seconds)
+    output = result.output[:_OUTPUT_CAP]
     return _step_result(
         index,
-        ok=(not timed_out and exit_code == 0),
-        exit_code=exit_code,
-        stdout=stdout_b.decode(errors="replace")[:_OUTPUT_CAP],
-        stderr=stderr_b.decode(errors="replace")[:_OUTPUT_CAP],
-        duration=loop.time() - started,
-        timed_out=timed_out,
+        ok=result.ok,
+        exit_code=None if result.binary_missing or result.exception else result.returncode,
+        stdout=output if result.ok else "",
+        stderr="" if result.ok else output,
+        duration=result.duration_seconds,
+        timed_out=result.timed_out,
     )
 
 

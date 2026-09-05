@@ -7,7 +7,6 @@ import asyncio
 import os
 import json
 import datetime
-import subprocess
 import sys
 import uuid
 import shutil
@@ -25,6 +24,7 @@ import uvicorn
 from config.models.claude_code import ClaudeCodeClient
 from config.models.codex import CodexCodeClient
 from utils.local_port import LocalPortsUnavailableError, resolve_server_port
+from utils.commands import run_sync, spawn_detached
 
 # Load environment variables. Keys already exported by the shell (or by
 # docker -e / compose) are recorded first: they outrank every file below,
@@ -500,18 +500,17 @@ def _run_agent_setup() -> None:
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm
         # + OpenClaw CLI). Steady-state re-runs finish in seconds.
-        result = subprocess.run(
-            ["bash", script],
-            cwd=repo_root,
-            check=False,
-            timeout=900,
-        )
-        if result.returncode == 0:
+        # inherit_output: the script's progress streams straight to the server
+        # log, as it always has, instead of appearing all at once at the end.
+        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True)
+        if result.timed_out:
+            print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
+        elif result.binary_missing or result.exception is not None:
+            print(f"⚠️ Agent setup ({agent}) failed (non-fatal): {result.output}")
+        elif result.returncode == 0:
             print(f"✅ Agent setup ({agent}) completed")
         else:
             print(f"⚠️ Agent setup ({agent}) exited with code {result.returncode} (non-fatal — server will still start)")
-    except subprocess.TimeoutExpired:
-        print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
     except Exception as e:
         print(f"⚠️ Agent setup ({agent}) failed (non-fatal): {e}")
 
@@ -552,19 +551,15 @@ def _install_shared_deps() -> None:
         env = os.environ.copy()
         env["PATH"] = os.pathsep.join(
             [os.path.dirname(sys.executable), env.get("PATH", "")])
-        result = subprocess.run(
-            ["bash", script],
-            cwd=repo_root,
-            check=False,
-            timeout=600,
-            env=env,
-        )
-        if result.returncode == 0:
+        result = run_sync(["bash", script], cwd=repo_root, timeout=600, env=env, inherit_output=True)
+        if result.timed_out:
+            print("⚠️ Shared dep install timed out after 10min (non-fatal)")
+        elif result.binary_missing or result.exception is not None:
+            print(f"⚠️ Shared dep install failed (non-fatal): {result.output}")
+        elif result.returncode == 0:
             print("✅ Shared dep check completed")
         else:
             print(f"⚠️ Shared dep install exited with code {result.returncode} (non-fatal — server will still start)")
-    except subprocess.TimeoutExpired:
-        print("⚠️ Shared dep install timed out after 10min (non-fatal)")
     except Exception as e:
         print(f"⚠️ Shared dep install failed (non-fatal): {e}")
 
@@ -909,20 +904,16 @@ async def gateway_restart():
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")
-    try:
-        result = subprocess.run(
-            [str(script), "restart"],
-            capture_output=True, text=True, timeout=30
-        )
-        return {
-            "status": "restarted" if result.returncode == 0 else "error",
-            "output": result.stdout,
-            "error": result.stderr if result.returncode != 0 else None
-        }
-    except subprocess.TimeoutExpired:
+    result = run_sync([str(script), "restart"], timeout=30, separate_stderr=True)
+    if result.timed_out:
         return {"status": "error", "error": "Restart timed out after 30s"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    if result.binary_missing or result.exception is not None:
+        raise HTTPException(status_code=500, detail={"error": result.output})
+    return {
+        "status": "restarted" if result.returncode == 0 else "error",
+        "output": result.output,
+        "error": result.stderr if result.returncode != 0 else None
+    }
 
 
 @app.post("/app/restart")
@@ -935,20 +926,13 @@ async def app_restart():
     script = (Path(__file__).resolve().parent / "cowork-api.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App restart script not found")
-    try:
-        subprocess.Popen(
-            [str(script), "restart"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(script.parent),
-            start_new_session=True,
-        )
-        return {
-            "status": "accepted",
-            "message": "Restart triggered in background"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    spawned = spawn_detached([str(script), "restart"], cwd=str(script.parent))
+    if not spawned.ok:
+        raise HTTPException(status_code=500, detail={"error": spawned.output})
+    return {
+        "status": "accepted",
+        "message": "Restart triggered in background"
+    }
 
 
 @app.post("/app/update")
@@ -958,20 +942,13 @@ async def app_update():
     script = (Path(__file__).resolve().parent / "cowork-update.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App update script not found")
-    try:
-        subprocess.Popen(
-            [str(script)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(script.parent),
-            start_new_session=True,
-        )
-        return {
-            "status": "accepted",
-            "message": "Update triggered in background"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    spawned = spawn_detached([str(script)], cwd=str(script.parent))
+    if not spawned.ok:
+        raise HTTPException(status_code=500, detail={"error": spawned.output})
+    return {
+        "status": "accepted",
+        "message": "Update triggered in background"
+    }
 
 
 @app.post("/ask_question")

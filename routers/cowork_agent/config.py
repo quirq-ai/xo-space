@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from utils.commands import run
 
 from services.cowork_agent.registry.agent_registry import get_agent, get_active_agent
 from services.cowork_agent.helpers import _mask_sensitive
@@ -39,7 +40,8 @@ async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -
     its provisioning log.
 
     Argvs are pre-rendered from the manifest's command templates — no
-    user input is interpolated, so `create_subprocess_exec` is safe.
+    user input is interpolated, and every step runs through the shared
+    runner (`utils.commands.run`) as an argv list, so nothing reaches a shell.
     Chain aborts on the first non-zero exit so a broken `models set`
     doesn't leave later aliases pointing at nothing.
     """
@@ -51,21 +53,14 @@ async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -
         for argv in argvs:
             log.write(f"$ {' '.join(argv)}\n")
             log.flush()
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    cwd=str(_AGENT.cwd),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-                stdout, _ = await proc.communicate()
-                log.write(stdout.decode(errors="replace"))
-                log.write(f"[exit {proc.returncode}]\n")
-                if proc.returncode != 0:
-                    log.write("[chain aborted]\n")
-                    return
-            except Exception as e:  # noqa: BLE001 — log every failure, keep going
-                log.write(f"[exception] {e}\n[chain aborted]\n")
+            result = await run(argv, cwd=str(_AGENT.cwd))
+            if result.binary_missing or result.exception is not None:
+                log.write(f"[exception] {result.output}\n[chain aborted]\n")
+                return
+            log.write(result.output)
+            log.write(f"[exit {result.returncode}]\n")
+            if result.returncode != 0:
+                log.write("[chain aborted]\n")
                 return
         log.write("[chain ok]\n")
 
