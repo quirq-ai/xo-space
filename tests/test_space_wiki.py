@@ -602,6 +602,30 @@ class SpaceWikiTests(unittest.TestCase):
         css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(encoding="utf-8")
         self.assertIn(".wiki-link{", css)
 
+    def test_wiki_steps_keep_extra_children_out_of_the_counter_column(self) -> None:
+        """Install-page steps put a <code> between the title and the body.
+
+        The wide layout is a 3-track grid (counter | title | body). Grid
+        auto-placement then drops the paragraph into the 38px counter
+        column, which on a QHD viewport reads as a single vertical strip
+        of letters. Pin the explicit columns so a command or a second
+        paragraph stays in the body track on every width.
+        """
+        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grid-template-columns:38px 205px minmax(0,1fr)",
+            css,
+        )
+        self.assertIn(".wiki-steps li>:not(b){grid-column:3}", css)
+        # The 900px stack must move title AND body into column 2. Pinning
+        # only p leaves a sibling <code> in the counter track.
+        self.assertIn(
+            ".wiki-steps b,.wiki-steps li>:not(b){grid-column:2;grid-row:auto}",
+            css,
+        )
+
     def test_contributing_guide_matches_how_the_repo_actually_works(self) -> None:
         """CONTRIBUTING.md is the front door for outside contributors. The
         facts most likely to rot are pinned: the branch model, the four
