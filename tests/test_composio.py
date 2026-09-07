@@ -4,7 +4,7 @@ One TestCase per source module, per the suite convention. There is no conftest,
 so isolation is explicit: `_ComposioBase.setUp` resets the module-level caches and
 redirects every on-disk store into a temp dir.
 
-Two traps this file works around, both easy to reintroduce:
+Three traps this file works around, all easy to reintroduce:
 
 - `service._write_store` and `action_prefs.bulk_set` take a lock via
   `visualizer.flock.locked`, which places its sentinel under
@@ -13,6 +13,12 @@ Two traps this file works around, both easy to reintroduce:
 - `identity._TOKEN_TTL_SECONDS` and `session_identity._SESSION_TTL` are evaluated
   at import, so `patch.dict(os.environ, ...)` cannot move them. Patch the
   attributes instead. Everything in `service.py` reads env at call time.
+- Both stores migrate themselves out of the old in-checkout `data/` location on
+  first access. Redirecting the store path alone is NOT enough: the legacy tuples
+  would still point at the developer's real `data/composio_sessions.json`, and the
+  first read in the suite would `shutil.move` their live proxy tokens into a temp
+  dir that is then deleted. The tuples are emptied below; `MigrationTests` is the
+  only place they hold (temp) paths.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from services import tenancy
 from services.cowork_agent.connectors.composio import action_prefs, categories
 from services.cowork_agent.connectors.composio import credentials
 from services.cowork_agent.connectors.composio import identity as identity_mod
+from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.connectors.composio import service, session_identity, state
 
 WORKSPACE = "ws-test"
@@ -104,6 +111,11 @@ class _ComposioBase(unittest.TestCase):
         for patcher in (
             patch.object(service, "_SESSIONS_PATH", self.sessions_path),
             patch.object(action_prefs, "_store_path", return_value=self.prefs_path),
+            # Without these two, migration would move the developer's REAL
+            # data/composio_*.json into this temp dir and delete it on cleanup —
+            # see the third trap in the module docstring.
+            patch.object(service, "_LEGACY_SESSIONS_PATHS", ()),
+            patch.object(action_prefs, "_LEGACY_PREFS_PATHS", ()),
             # The developer's real XO_API_KEY is in this shell, and the tenant-state
             # client and the account-mismatch guard both reach for it. Without this the
             # suite would make live calls to xo-swarm-api. Tests that exercise those
@@ -698,6 +710,100 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         with patch.dict(os.environ, {"PORT": "5010"}):
             url = service._composio_proxy_url(PRINCIPAL)
         self.assertIn("http://127.0.0.1:5010/mcp/composio-proxy/u/", url)
+
+
+class MigrationTests(_ComposioBase):
+    """Both stores move themselves out of the old in-checkout `data/` location.
+
+    The only place in this file where the legacy tuples are non-empty — and they point
+    at a temp dir, never the real checkout. See the third trap in the module docstring.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.legacy_dir = Path(self._tmp.name) / "checkout" / "data"
+        self.legacy_dir.mkdir(parents=True, exist_ok=True)
+        self.legacy_sessions = self.legacy_dir / "composio_sessions.json"
+        self.legacy_prefs = self.legacy_dir / "composio_action_prefs.json"
+
+    def _arm(self) -> None:
+        """Point the legacy tuples at this test's temp checkout."""
+        for patcher in (
+            patch.object(service, "_LEGACY_SESSIONS_PATHS", (self.legacy_sessions,)),
+            patch.object(action_prefs, "_LEGACY_PREFS_PATHS", (self.legacy_prefs,)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _write_legacy_store(self) -> dict:
+        doc = {
+            "version": 3,
+            "principal": PRINCIPAL,
+            "sessions": {PRINCIPAL: "trs_legacy"},
+            "proxy_tokens": {"tok-from-the-checkout": PRINCIPAL},
+        }
+        self.legacy_sessions.write_text(json.dumps(doc), encoding="utf-8")
+        return doc
+
+    def test_a_store_left_in_the_checkout_is_moved_once(self) -> None:
+        self._write_legacy_store()
+        self._arm()
+
+        owner, sessions, tokens = service._load_store()
+
+        self.assertEqual(owner, PRINCIPAL)
+        self.assertEqual(sessions, {PRINCIPAL: "trs_legacy"})
+        self.assertEqual(tokens, {"tok-from-the-checkout": PRINCIPAL})
+        self.assertTrue(self.sessions_path.exists())
+        # Moved, not copied: a store left behind in the checkout is exactly the thing
+        # this change exists to stop shipping around.
+        self.assertFalse(self.legacy_sessions.exists())
+        # It carries live proxy tokens, so the move must land it owner-only.
+        self.assertEqual(stat.S_IMODE(self.sessions_path.stat().st_mode), 0o600)
+
+    def test_a_store_already_in_place_is_not_clobbered(self) -> None:
+        self._write_legacy_store()
+        self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sessions_path.write_text(
+            json.dumps({
+                "version": 3,
+                "principal": PRINCIPAL,
+                "sessions": {PRINCIPAL: "trs_current"},
+                "proxy_tokens": {},
+            }),
+            encoding="utf-8",
+        )
+        self._arm()
+
+        _owner, sessions, _tokens = service._load_store()
+
+        self.assertEqual(sessions, {PRINCIPAL: "trs_current"})
+        # The legacy file is left alone rather than deleted: nothing read it, so
+        # nothing should destroy it either.
+        self.assertTrue(self.legacy_sessions.exists())
+
+    def test_a_migration_failure_is_not_fatal(self) -> None:
+        self._write_legacy_store()
+        self._arm()
+
+        with patch.object(paths.shutil, "move", side_effect=OSError("read-only")):
+            owner, sessions, tokens = service._load_store()
+
+        # The same degradation as a store that was never written — not a crash on the
+        # MCP hot path, which runs this on every tools/call.
+        self.assertEqual((owner, sessions, tokens), (None, {}, {}))
+        self.assertFalse(self.sessions_path.exists())
+
+    def test_prefs_migrate_through_the_patched_store_path(self) -> None:
+        self.legacy_prefs.write_text(
+            json.dumps({"version": 2, "users": {PRINCIPAL: {"gmail": {"SEND": False}}}}),
+            encoding="utf-8",
+        )
+        self._arm()
+
+        self.assertEqual(action_prefs.load_prefs(PRINCIPAL), {"gmail": {"SEND": False}})
+        self.assertTrue(self.prefs_path.exists())
+        self.assertFalse(self.legacy_prefs.exists())
 
 
 class ServiceDegradationTests(_ComposioBase):

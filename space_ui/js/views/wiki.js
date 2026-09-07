@@ -474,7 +474,7 @@ const TAB_GUIDES={
       ['GET /api/connectors/composio/toolkits','The registered toolkits and your connection status for each.','Tile state'],
       ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
-      ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in data/composio_action_prefs.json.','Action control'],
+      ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in ~/.config/composio/action_prefs.json.','Action control'],
       ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
     ],
     steps:[

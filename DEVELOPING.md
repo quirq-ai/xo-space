@@ -312,6 +312,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `AGENT_NAME` | active backend adapter — **orthogonal** to packaging | set per template (e.g. `codex`) | set by install (default `claude_code`) | `registry/` |
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/cowork_agent/local_state.py` |
+| `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio`; compose sets `/root/.quirq/composio` | `connectors/composio/paths.py` |
 | `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/runtime.env`, `<state>/secrets.env` | `server.py` (dotenv load) |
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
@@ -337,12 +338,13 @@ HTTP surface under `routers/cowork_agent/connectors/`:
 |---|---|
 | `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...` — toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
 | `routers/cowork_agent/connectors/composio_mcp_proxy.py` | `/mcp/composio-proxy/...` — the loopback reverse proxy agents reach Composio through |
-| `services/cowork_agent/connectors/composio/` | `service.py`, `identity.py`, `session_identity.py`, `mcp.py`, `action_prefs.py`, `categories.py` |
+| `services/cowork_agent/connectors/composio/` | `service.py`, `identity.py`, `session_identity.py`, `mcp.py`, `action_prefs.py`, `categories.py`, `paths.py` |
 
 It is the only sub-package among that folder's flat modules — seven modules is more
-than one file should carry. Note the depth: `service._REPO_ROOT` and
-`action_prefs._PREFS_PATH` reach the repo root with `parents[4]`, one deeper than a
-flat connector module would need.
+than one file should carry. Note the depth: `paths._CHECKOUT_DATA_DIR` reaches the repo
+root with `parents[4]`, one deeper than a flat connector module would need — and it is
+the only thing in the package that still needs to know where the checkout is, purely to
+find the pre-move `data/` location to migrate away from.
 
 ### 10.1 The identity chain
 
@@ -523,12 +525,20 @@ mounts no volume on `/app/data`, so everything below used to die with the pod �
 each agent's MCP config has a proxy token baked into it, every agent came back to a 401
 until the next boot rewrote its config.
 
+The local half no longer lives in the checkout either: it sits in the user's config
+directory (`~/.config/composio/`, per `connectors/composio/paths.py`), alongside
+`~/.config/token.json` and for the same reason — a fresh clone, a redeploy or an
+`uninstall` must not take live proxy tokens with it. A store left at the old
+`data/composio_*.json` location is moved into place on first access.
+`COMPOSIO_STORE_DIR` relocates the pair; note it is *not* one of the `COMPOSIO_STATE_*`
+variables, which are xo-swarm-api URL paths, not filesystem ones.
+
 The store is **split**, and the split is the point:
 
 | | holds | why |
 |---|---|---|
 | xo-swarm-api | `sha256(proxy_token)`, session ids, prefs | it only ever answers *"which principal owns this token?"* — a unique-index lookup on the digest does that exactly as well, so the shared table is not a credential dump for every tenant at once |
-| this pod, `data/composio_sessions.json` (0600) | the **plaintext** token | it is the only side that needs to hand the token to an agent |
+| this pod, `~/.config/composio/sessions.json` (0600) | the **plaintext** token | it is the only side that needs to hand the token to an agent |
 
 Two rules follow, and both are load-bearing:
 
@@ -542,10 +552,11 @@ Two rules follow, and both are load-bearing:
   token but reports `durable: false`; the sweep prints a warning, and the next sweep
   re-registers the token once the swarm is back.
 
-`data/composio_action_prefs.json` still holds per-user disabled actions locally and is
-mirrored to the swarm; only *disabled* slugs are stored, so new actions default to
-enabled. Locks live under `~/.quirq/watcher/locks/`, which is why tests must point
-`QUIRQ_STATE_ROOT` at a temp dir — see `tests/test_composio.py`.
+`~/.config/composio/action_prefs.json` still holds per-user disabled actions locally and
+is mirrored to the swarm; only *disabled* slugs are stored, so new actions default to
+enabled. Locks live under `~/.quirq/watcher/locks/` and are keyed on the store's absolute
+path, which is why tests must point `QUIRQ_STATE_ROOT` at a temp dir — see
+`tests/test_composio.py`, whose header lists the three isolation traps.
 
 `COMPOSIO_STATE_SOURCE` mirrors `COMPOSIO_CREDENTIALS_SOURCE` (§10.3): `local` (today's
 default) writes through to the swarm but reads only from the file; `swarm` also reads

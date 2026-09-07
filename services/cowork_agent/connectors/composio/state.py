@@ -1,11 +1,12 @@
 """Durable Composio tenant state, held by xo-swarm-api.
 
-The session ids and MCP proxy tokens keyed by a Composio principal used to live only in
-``data/composio_sessions.json`` inside this checkout. The published container mounts no
-volume on ``/app/data``, so a pod recreation lost them — and because every agent's MCP
-config has a proxy token baked into it, every agent came back to a 401 until the config
-was rewritten with a fresh token. xo-swarm-api owns that state now; this module is the
-client.
+The session ids and MCP proxy tokens keyed by a Composio principal used to live only in a
+file on this pod — ``~/.config/composio/sessions.json`` today, and
+``data/composio_sessions.json`` inside the checkout before that. The published container
+mounts no volume on ``/app/data``, so a pod recreation lost them — and because every
+agent's MCP config has a proxy token baked into it, every agent came back to a 401 until
+the config was rewritten with a fresh token. xo-swarm-api owns that state now; this
+module is the client.
 
 **The store is split, and the split is the point.** The swarm holds
 ``sha256(proxy_token)``; this pod keeps the plaintext, in the same 0600 file it always

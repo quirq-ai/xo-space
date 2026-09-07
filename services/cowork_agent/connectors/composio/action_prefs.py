@@ -4,18 +4,29 @@ import logging
 from pathlib import Path
 from typing import Dict
 
+from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.reader import read_json
 
 log = logging.getLogger(__name__)
 
-# connectors/composio/ → connectors/ → cowork_agent/ → services/ → repo root.
-_PREFS_PATH = Path(__file__).resolve().parents[4] / "data" / "composio_action_prefs.json"
+# Outside the checkout, alongside the sessions store — see paths.py.
+_PREFS_PATH = paths.store_dir() / "action_prefs.json"
+_LEGACY_PREFS_PATHS = (paths.legacy_checkout_path("composio_action_prefs.json"),)
 
 
 def _store_path() -> Path:
     return _PREFS_PATH
+
+
+def _migrate() -> None:
+    """Move a prefs document left in the checkout. No mode: prefs are not a secret.
+
+    Routed through ``_store_path()`` rather than ``_PREFS_PATH`` because that function is
+    the seam tests redirect, so migration follows the redirect with them.
+    """
+    paths.migrate_legacy(_store_path(), _LEGACY_PREFS_PATHS)
 
 
 def _require_user_id(user_id: str | None) -> str:
@@ -36,6 +47,7 @@ def _coerce_toolkit_map(entry: object) -> Dict[str, bool]:
 
 
 def load_all() -> Dict[str, Dict[str, Dict[str, bool]]]:
+    _migrate()
     data = read_json(_store_path())
     if not isinstance(data, dict):
         return {}
@@ -89,6 +101,9 @@ def bulk_set(
     toolkit_id: str, updates: Dict[str, bool], user_id: str,
 ) -> Dict[str, bool]:
     uid = _require_user_id(user_id)
+    # Before the lock, for the same reason as the sessions store: the lock sentinel is
+    # keyed on the absolute path.
+    _migrate()
     path = _store_path()
     with locked(path):
         current = load_all()
