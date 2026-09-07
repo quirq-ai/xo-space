@@ -446,7 +446,7 @@ const TAB_GUIDES={
       ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first. When a runtime or its CLI is missing, the card links to that runtime’s own install docs.'],
       ['Sessions missing','Confirm the native runtime directory is mounted and watcher coverage includes it.'],
       ['Secret value hidden','That is intentional; replace the value or remove the variable.'],
-      ['Usage reporting: blocked','xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
+      ['Usage reporting: blocked','The status strip at the top of Agent and watcher shows xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
     ],
     note:'XO root changes select a project collection and never move project files. An empty new .quirq root receives a safe state copy; a non-empty root is never merged.'
   }

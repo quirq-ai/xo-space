@@ -222,6 +222,56 @@ class CombinedSessionsTests(unittest.TestCase):
         }
         self.assertEqual(statuses, {"bad": "unavailable", "good": "available"})
 
+    def test_unavailable_provider_is_logged_once_until_it_changes(self) -> None:
+        # The watcher rebuilds this view every tick; a runtime that is simply
+        # not installed must not repeat the same warning on every rebuild.
+        good = SimpleNamespace(
+            SOURCE_ID="good",
+            SOURCE_LABEL="Good",
+            COST_STATUS="estimated",
+            collect_session_telemetry=self._good_payload,
+        )
+        flaky = SimpleNamespace(
+            SOURCE_ID="flaky",
+            SOURCE_LABEL="Flaky",
+            COST_STATUS="unavailable",
+            collect_session_telemetry=mock.Mock(
+                side_effect=[
+                    RuntimeError("state DB not found"),
+                    RuntimeError("state DB not found"),
+                    RuntimeError("permission denied"),
+                    self._good_payload(),
+                ]
+            ),
+        )
+
+        def load(_capability: str, *, agent: str):
+            return {"flaky": flaky, "good": good}[agent]
+
+        session_telemetry._unavailable_reasons.clear()
+        self.addCleanup(session_telemetry._unavailable_reasons.clear)
+        with mock.patch.object(
+            session_telemetry,
+            "list_capability_providers",
+            return_value=["flaky", "good"],
+        ), mock.patch.object(
+            session_telemetry,
+            "try_load_capability",
+            side_effect=load,
+        ), mock.patch("builtins.print") as fake_print:
+            for _ in range(4):
+                session_telemetry.build_session_telemetry()
+
+        lines = [str(call.args[0]) for call in fake_print.call_args_list]
+        self.assertEqual(
+            [line.split(" — ")[0] for line in lines],
+            [
+                "⚠️ session telemetry provider flaky unavailable (state DB not found)",
+                "⚠️ session telemetry provider flaky unavailable (permission denied)",
+                "✅ session telemetry provider flaky available again",
+            ],
+        )
+
 
 class SessionPromptTests(unittest.IsolatedAsyncioTestCase):
     def test_claude_prompts_are_lazy_clean_and_grouped_by_exchange(self) -> None:
