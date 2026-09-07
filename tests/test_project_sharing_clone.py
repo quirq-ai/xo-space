@@ -80,10 +80,32 @@ class CloneFunctionTests(unittest.TestCase):
         self.assertFalse((self.root / ".trip-planner.cloning").exists())
         self.assertFalse((self.root / "trip-planner").exists())
 
-    def test_not_found_without_token_is_needs_auth_but_with_token_is_error(self) -> None:
+    def test_refusals_split_on_whether_a_token_was_sent(self) -> None:
+        # anonymous and refused: sign in.  token sent and still refused: that
+        # account is not a collaborator.  anything else: a plain error.
         self.assertEqual(clone.classify_failure("remote: Repository not found.", had_token=False), "needs_auth")
-        self.assertEqual(clone.classify_failure("remote: Repository not found.", had_token=True), "error")
+        self.assertEqual(clone.classify_failure("remote: Repository not found.", had_token=True), "no_access")
+        self.assertEqual(clone.classify_failure("fatal: Authentication failed for 'https://github.com/x/y.git/'", had_token=True), "no_access")
         self.assertEqual(clone.classify_failure("fatal: unable to access: Could not resolve host", had_token=True), "error")
+        self.assertEqual(clone.classify_failure("fatal: unable to access: Could not resolve host", had_token=False), "error")
+
+    def test_no_access_names_the_connected_account(self) -> None:
+        class Auth:
+            token = "ghp_secret"
+
+        async def fake_clone(url, dest, *, config_args, cwd, timeout):
+            Path(dest).mkdir(parents=True)
+            return False, "remote: Repository not found.\nfatal: repository 'https://github.com/acme/trip-planner.git/' not found", False
+
+        with patch.object(clone, "_github_auth", new=AsyncMock(return_value=(Auth(), True))), \
+             patch.object(clone, "_github_login", new=AsyncMock(return_value="krishbhimani")), \
+             patch.object(git_ops, "clone", new=fake_clone):
+            res = run(clone.clone_shared_repo(R))
+        self.assertEqual(res.state, "no_access")
+        self.assertTrue(res.had_token)
+        self.assertIn("connected as krishbhimani", res.detail)
+        self.assertIn("cannot see this repo", res.detail)
+        self.assertFalse((self.root / ".trip-planner.cloning").exists())
 
     def test_timeout_is_an_error_with_detail(self) -> None:
         with patch.object(git_ops, "clone", new=AsyncMock(return_value=(False, "", True))), \
@@ -188,6 +210,16 @@ class AutoCloneInTickTests(unittest.TestCase):
         self.assertEqual(poller._clone_backoff(1), 300.0)
         self.assertEqual(poller._clone_backoff(3), 1200.0)
         self.assertEqual(poller._clone_backoff(9), 3600.0)
+
+    def test_no_access_retries_on_backoff_not_on_token_presence(self) -> None:
+        with patch.object(clone, "_github_auth", new=AsyncMock(return_value=(object(), True))):
+            _, cl = self._tick(clone.CloneResult("no_access", "trip-planner", "cannot see", had_token=True))
+            cl.assert_awaited_once()
+            c = status.snapshot()["repos"][R]["clone"]
+            self.assertEqual(c["state"], "no_access")
+            self.assertIsNotNone(c["next_retry_at"])       # backed off like an error
+            _, cl = self._tick(clone.CloneResult("cloned", "trip-planner"))
+            cl.assert_not_called()                          # a token being present is not the trigger
 
     def test_exists_retries_only_once_the_folder_is_gone(self) -> None:
         (self.root / "trip-planner").mkdir()

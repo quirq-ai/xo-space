@@ -23,7 +23,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         m = re.search(r"from '\./projects_sharing\.js\?v=([\w-]+)'", projects)
         self.assertIsNotNone(m, "projects.js must import projects_sharing.js with ?v=")
         app = read("js/app.js")
-        self.assertIn("./views/projects.js?v=20260907-sharing4", app)
+        self.assertIn("./views/projects.js?v=20260907-sharing5", app)
 
     def test_panel_is_registered_and_bind_hook_is_called(self) -> None:
         projects = read("js/views/projects.js")
@@ -61,8 +61,10 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
 
     def test_inbox_reflects_auto_clone_states_and_hands_off_to_setup(self) -> None:
         mod = read("js/views/projects_sharing.js")
-        for state in ("cloning", "needs_auth", "exists", "error"):
+        for state in ("cloning", "needs_auth", "no_access", "exists", "error"):
             self.assertIn("st==='" + state + "'", mod)
+        # only the no-token state sends people to Setup; no-access does not
+        self.assertEqual(mod.count("data-connect-github>Connect GitHub"), 1)
         self.assertIn("data-connect-github", mod)
         self.assertIn("navTo('secrets')", mod)
         self.assertIn("projects-sharing-fast", mod)   # faster poll only while cloning

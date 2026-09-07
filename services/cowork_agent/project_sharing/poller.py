@@ -212,7 +212,9 @@ async def _pick_clone_candidate(available: list[str]) -> str | None:
             if project and not (xo_projects_root() / project).exists():
                 return repo
             continue
-        if st == "error":
+        if st in ("error", "no_access"):
+            # no_access is fixed on GitHub's side (a collaborator invite), so
+            # it is polled on the same backoff as a plain error
             due = c.get("next_retry_at")
             if due is None or now >= float(due):
                 return repo
@@ -235,7 +237,7 @@ async def _maybe_auto_clone(available: list[str]) -> bool:
     except Exception as exc:  # noqa: BLE001 — a clone failure is a state, not a crash
         res = clone.CloneResult("error", None, str(exc))
     attempts = int(((status.snapshot()["repos"].get(repo) or {}).get("clone") or {}).get("attempts") or 1)
-    next_retry = time.time() + _clone_backoff(attempts) if res.state == "error" else None
+    next_retry = time.time() + _clone_backoff(attempts) if res.state in ("error", "no_access") else None
     status.record_clone_result(repo, res.state, res.detail, project=res.project,
                                had_token=res.had_token, next_retry_at=next_retry)
     if res.state == "cloned":

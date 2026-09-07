@@ -145,6 +145,10 @@ function inboxRow(repo,r){
     chip='<span class="tchip st-blocked">needs GitHub sign-in</span>';
     hint='This looks like a private repo. Connect GitHub in Setup and XO Space will clone it on the next check, or clone it yourself:';
     extra='<button class="sess-refresh shr-connect" type="button" data-connect-github>Connect GitHub</button>';
+  }else if(st==='no_access'){
+    chip='<span class="tchip st-blocked">no access</span>';
+    hint=esc(c.detail||'the connected GitHub account cannot see this repo')
+      +'. Ask the repo owner to add that account as a collaborator; XO Space retries on its own. Or clone it yourself with an account that has access:';
   }else if(st==='exists'){
     chip='<span class="tchip st-blocked">folder in the way</span>';
     hint=esc(c.detail||'a folder with this name already exists here')+'. Move or rename it and XO Space will try again, or clone under another name:';

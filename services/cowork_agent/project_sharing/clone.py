@@ -98,13 +98,28 @@ def _config_args(repo: str, auth) -> list[str]:
 
 
 def classify_failure(stderr: str, had_token: bool) -> str:
+    """needs_auth: no token and GitHub refused (private repo, anonymous).
+    no_access: a token WAS sent and GitHub still refused or said "not found",
+    which is what it answers when that account is not a collaborator.
+    error: anything else (network, disk, bad URL)."""
     text = (stderr or "").lower()
-    if any(m in text for m in _AUTH_MARKERS):
-        return "needs_auth"
-    if not had_token and any(m in text for m in _NOT_FOUND_MARKERS):
-        # GitHub answers 404 for a private repo when unauthenticated
-        return "needs_auth"
-    return "error"
+    refused = any(m in text for m in _AUTH_MARKERS) or any(m in text for m in _NOT_FOUND_MARKERS)
+    if not refused:
+        return "error"
+    return "no_access" if had_token else "needs_auth"
+
+
+async def _github_login() -> str | None:
+    """The account behind the connected token, for the no_access message.
+    One API call per classified failure, never per tick (retries are backed
+    off), and any problem just drops the name from the sentence."""
+    try:
+        from services.cowork_agent.connectors.github import get_status
+        info = await get_status()
+        login = (info or {}).get("username") or ""
+        return login.strip() or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _last_line(text: str) -> str:
@@ -139,8 +154,13 @@ async def clone_shared_repo(repo: str) -> CloneResult:
         shutil.rmtree(tmp, ignore_errors=True)
         if timed_out:
             return CloneResult("error", dirname, f"timed out after {int(config.clone_timeout())}s", had_token)
-        return CloneResult(classify_failure(stderr, had_token), dirname,
-                           _last_line(stderr) or "git clone failed", had_token)
+        state_name = classify_failure(stderr, had_token)
+        if state_name == "no_access":
+            login = await _github_login()
+            who = f"GitHub is connected as {login}" if login else "the connected GitHub account"
+            return CloneResult("no_access", dirname,
+                               f"{who}, but that account cannot see this repo", had_token)
+        return CloneResult(state_name, dirname, _last_line(stderr) or "git clone failed", had_token)
     try:
         tmp.rename(target)
     except OSError as exc:
