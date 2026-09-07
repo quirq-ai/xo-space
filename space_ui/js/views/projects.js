@@ -6,6 +6,9 @@
    are deliberately not wired yet; the sync-vs-git decision is open. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js';
+import {sharingPanel,sharingStripHTML,sharedWithYouHTML,bindSharingCopies,bindSharingActions,
+  refreshSharingStatus,startSharingPoll,syncSharingPanel,setSharingNav,consumeNewClone,sharingRowChip}
+  from './projects_sharing.js?v=20260907-sharing7';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dtfmt=iso=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'—';
@@ -139,6 +142,7 @@ const PANELS=[
   {key:'todos',   title:'Todos',        path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/todos',            render:rTodos},
   {key:'activity',title:'Open sessions',path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/activity',         render:rActivity},
   {key:'timeline',title:'Recent events',path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/timeline?limit=20',render:rTimeline},
+  sharingPanel, /* commits behind, members, share/revoke — see projects_sharing.js */
 ];
 
 let root=null,items=null,expanded=null;
@@ -161,7 +165,11 @@ export default {
     root=el;
     switchTo=ctx.switchTo;
     el.innerHTML='<div class="prj">'+skeleton()+'</div>';
-    await loadList();
+    /* sharing status rides alongside the list; it never gates it */
+    setSharingNav(ctx.switchTo);
+    startSharingPoll(refreshSharingUI);
+    await Promise.all([loadList(),refreshSharingStatus()]);
+    refreshSharingUI();
   },
   show(){/* keep whatever the user had open; Refresh re-fetches */}
 };
@@ -259,10 +267,33 @@ function render(){
   const rows=visible();
   root.querySelector('.prj').innerHTML=
     head(rows.length)
-    +'<div class="prj-body">'+rowsHTML(rows)+'</div>';
+    +sharingStripHTML()
+    +'<div class="prj-body">'+sharedWithYouHTML()+rowsHTML(rows)+'</div>';
   bindHead();
+  bindSharingCopies(root);
+  bindSharingActions(root);
   bindRows();
   if(expanded)fillDrawer(expanded);
+}
+/* Repaint only the sharing surfaces from a fresh status snapshot: the strip,
+   the inbox, and the open drawer's Sharing chip/members. The head and rows
+   are left alone so a filter mid-keystroke survives a background refresh. */
+function refreshSharingUI(){
+  if(!root)return;
+  const strip=root.querySelector('#prj-sharing-strip');
+  if(strip){strip.outerHTML=sharingStripHTML();}
+  else{const h=root.querySelector('.prj-head');if(h)h.insertAdjacentHTML('afterend',sharingStripHTML());}
+  const inbox=root.querySelector('#prj-shared');
+  const html=sharedWithYouHTML();
+  if(inbox)inbox.outerHTML=html;
+  else{const b=root.querySelector('.prj-body');if(b&&html)b.insertAdjacentHTML('afterbegin',html);}
+  bindSharingCopies(root);
+  bindSharingActions(root);
+  /* row chips read the same snapshot; repaint them without rebuilding rows */
+  root.querySelectorAll('[data-shr-row]').forEach(el=>{el.innerHTML=sharingRowChip(el.dataset.shrRow);});
+  if(expanded)syncSharingPanel(expanded);
+  /* a clone just landed: the new folder is a project now, show it */
+  if(consumeNewClone())loadList();
 }
 /* Repaint the rows only. Rebuilding the head would destroy the filter input
    mid-keystroke and throw the caret to the end — which is what the old
@@ -271,7 +302,9 @@ function renderRows(){
   const rows=visible();
   const box=root.querySelector('.prj-body');
   if(!box){render();return;}
-  box.innerHTML=rowsHTML(rows);
+  box.innerHTML=sharedWithYouHTML()+rowsHTML(rows);
+  bindSharingCopies(box);
+  bindSharingActions(box);
   bindRows();
   const count=root.querySelector('#prj-count');
   if(count)count.textContent=summary(rows.length);
@@ -324,7 +357,10 @@ function syncSortUI(){
 let fdeb=null;
 function bindHead(){
   const r=root.querySelector('#prj-refresh');
-  if(r)r.addEventListener('click',loadList);
+  if(r)r.addEventListener('click',async()=>{
+    await Promise.all([loadList(),refreshSharingStatus()]);
+    refreshSharingUI();
+  });
   root.querySelectorAll('[data-sort]').forEach(b=>
     b.addEventListener('click',()=>{sortK=b.dataset.sort;syncSortUI();renderRows();}));
   const f=root.querySelector('#prj-filter');
@@ -375,6 +411,7 @@ function rowHTML(p){
         +'<span class="prj-cell prj-name"><b>'+esc(p.display_name||p.id)+'</b>'
           +(p.id!==p.display_name?'<em>'+esc(p.id)+'</em>':'')
           +(p.unscaffolded?'<span class="tchip st-blocked">unscaffolded</span>':'')
+          +'<span class="prj-shr" data-shr-row="'+esc(p.id)+'">'+sharingRowChip(p.id)+'</span>'
           +(p.description?'<small>'+esc(p.description)+'</small>':'')
         +'</span>'
         +liveCell(p)
@@ -423,6 +460,8 @@ async function fillPanel(id,pn){
     /* keep the breadcrumb outside the response so a failed fetch cannot
        take the way back with it */
     :(pn.key==='files'?crumbs(id,cwd.get(id)||''):'')+panelFail(res);
+  /* panels with controls wire them here; a failed fetch renders no controls */
+  if(res.ok&&typeof pn.bind==='function'){pn.bind(el,id);return;}
   if(pn.key!=='files')return;
   el.querySelectorAll('[data-cd]').forEach(b=>
     b.addEventListener('click',()=>{
