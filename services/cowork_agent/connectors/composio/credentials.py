@@ -46,7 +46,7 @@ _TTL = float(os.getenv("COMPOSIO_CREDENTIALS_TTL", "300"))
 _ERROR_TTL = float(os.getenv("COMPOSIO_CREDENTIALS_ERROR_TTL", "30"))
 _STALE_MAX = float(os.getenv("COMPOSIO_CREDENTIALS_STALE_MAX", "3600"))
 
-# Deliberately tighter than services.xo_credential.HTTP_TIMEOUT (30s/10s): this call is sync
+# Deliberately tighter than routers.auth.auth.HTTP_TIMEOUT (30s/10s): this call is sync
 # and runs on the event loop, so a hung swarm must fail fast into the documented degraded
 # state rather than stall every request for half a minute.
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -73,7 +73,7 @@ class Bundle:
     fetched_at: float  # time.monotonic()
 
 
-# Mirrors services/xo_credential.py's auth_lock: the fetch can be entered from several
+# Mirrors routers/auth/auth.py's auth_lock: the fetch can be entered from several
 # request handlers at once, and one blocking round trip is enough.
 _LOCK = threading.Lock()
 _BUNDLE: Optional[Bundle] = None  # only ever a "swarm" bundle
@@ -129,7 +129,7 @@ def _get(url: str, headers: dict[str, str]) -> httpx.Response:
 def _fetch_from_swarm() -> Bundle:
     # Deferred import: routers.auth and this package import each other lazily to avoid a
     # load cycle (same reason as identity._validate_token).
-    from services.xo_credential import CHAT_API_BASE_URL, get_auth_token
+    from routers.auth.auth import CHAT_API_BASE_URL, get_auth_token
 
     token = get_auth_token()
     if not token:

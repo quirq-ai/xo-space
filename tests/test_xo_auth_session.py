@@ -19,8 +19,7 @@ import httpx
 from fastapi import HTTPException
 
 from routers.cowork_agent.connectors import composio_session
-from services import tenancy
-from services.cowork_agent.connectors.composio import session_identity
+from services.cowork_agent.connectors.composio import session_identity, state
 
 WORKSPACE = "ws-1234"
 ACCOUNT = "user_abc"
@@ -39,7 +38,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         session_identity._SESSIONS.clear()
         self.addCleanup(session_identity._SESSIONS.clear)
 
-        env = patch.dict("os.environ", {tenancy.WORKSPACE_ENV: WORKSPACE})
+        env = patch.dict("os.environ", {state.WORKSPACE_ENV: WORKSPACE})
         env.start()
         self.addCleanup(env.stop)
 
@@ -132,9 +131,9 @@ class RefusalTests(_Base):
         self.assertIn("XO_API_KEY", exc.detail["error"])
 
     async def test_no_workspace_is_a_401_and_never_an_account_wide_bucket(self) -> None:
-        with patch.dict("os.environ", {tenancy.WORKSPACE_ENV: ""}):
+        with patch.dict("os.environ", {state.WORKSPACE_ENV: ""}):
             exc = await self._fails_with(401)
-        self.assertIn(tenancy.WORKSPACE_ENV, exc.detail["error"])
+        self.assertIn(state.WORKSPACE_ENV, exc.detail["error"])
 
     async def test_a_rejected_credential_is_a_401_not_a_503(self) -> None:
         # Authoritative: XO said no. Sending the user to sign in is the right advice.

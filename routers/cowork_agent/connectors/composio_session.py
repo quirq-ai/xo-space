@@ -31,9 +31,8 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from services import tenancy
-from services.cowork_agent.connectors.composio import session_identity
-from services.xo_credential import CHAT_API_BASE_URL, HTTP_TIMEOUT, get_auth_token
+from routers.auth.auth import CHAT_API_BASE_URL, HTTP_TIMEOUT, get_auth_token
+from services.cowork_agent.connectors.composio import session_identity, state
 
 log = logging.getLogger(__name__)
 
@@ -58,15 +57,15 @@ async def xo_auth_session_self():
         )
 
     try:
-        workspace_id = tenancy.workspace_id()
-    except tenancy.WorkspaceIdentityUnavailable as exc:
+        workspace_id = state.workspace_id()
+    except state.WorkspaceIdentityUnavailable as exc:
         # Fail closed, and say which half is missing. Falling back to an account-wide
         # bucket would share one Composio tenant across every workspace of this account.
         raise HTTPException(
             status_code=401,
             detail={
                 "error": (
-                    f"Workspace identity unavailable ({exc}). {tenancy.WORKSPACE_ENV} "
+                    f"Workspace identity unavailable ({exc}). {state.WORKSPACE_ENV} "
                     "is injected by the Coder pod."
                 )
             },
@@ -140,8 +139,6 @@ async def xo_auth_session_self():
     # Best effort, and never fatal: the mint above already proved the credential and the
     # workspace, so this only warms the cache every later request reads.
     try:
-        from services.cowork_agent.connectors.composio import state
-
         await state.aprincipal_payload()
     except Exception as exc:
         log.warning("xo_auth_session: principal cache not warmed: %s", exc)

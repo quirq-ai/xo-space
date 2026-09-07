@@ -8,7 +8,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from services import tenancy
 from services.cowork_agent.connectors.composio import credentials, paths, state
 
 log = logging.getLogger(__name__)
@@ -1016,7 +1015,7 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
     """
     # Local import: this module is reached from server.py's lifespan, and the
     # composio and auth packages import each other lazily to avoid a load cycle.
-    from services.xo_credential import get_auth_token
+    from routers.auth.auth import get_auth_token
     global _LAST_SWEEP_AT
 
     async with _sweep_lock():
@@ -1036,9 +1035,9 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                 return GatewaySweep(skipped="no_credential", detail=detail)
 
             try:
-                tenancy.workspace_id()
-            except tenancy.WorkspaceIdentityUnavailable as exc:
-                detail = f"{exc} — {tenancy.WORKSPACE_ENV} is injected by the Coder pod"
+                state.workspace_id()
+            except state.WorkspaceIdentityUnavailable as exc:
+                detail = f"{exc} — {state.WORKSPACE_ENV} is injected by the Coder pod"
                 log.warning(
                     "composio: %s; refusing to install an MCP config bound to an "
                     "unscoped Composio bucket, which every workspace of this account "

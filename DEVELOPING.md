@@ -349,7 +349,7 @@ find the pre-move `data/` location to migrate away from.
 ### 10.1 The identity chain
 
 **One backend, one principal.** This process holds exactly one XO credential
-(`services/xo_credential.py`; `get_auth_token()` takes no arguments) and runs in exactly
+(`routers/auth/auth.py`; `get_auth_token()` takes no arguments) and runs in exactly
 one Coder workspace, so it has exactly one Composio tenant key for its whole lifetime.
 
 There is no auth subsystem in this repo. xo-swarm-api owns authentication — it verifies
@@ -372,7 +372,7 @@ browser ──X-XO-Session: <opaque id>──▶ composio/identity.py
 
 **The bearer is a gate, not a selector.** It chooses nothing — there is one principal —
 it only proves the tab was vouched for by a backend that is signed in to XO. Session ids
-therefore carry no account id, and `services/tenancy.py` cannot compose a principal at
+therefore carry no account id, and `connectors/composio/state.py` cannot compose a principal at
 all. If you find yourself adding a `SEPARATOR` constant back to xo-space, you are
 re-creating the bug this design removed: two composers that drift apart silently orphan
 every connected account Composio holds. `tests/test_composio.py` asserts they stay gone.

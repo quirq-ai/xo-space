@@ -61,7 +61,7 @@ _NEGATIVE_TTL = float(os.getenv("COMPOSIO_STATE_NEGATIVE_TTL", "60"))
 # prune-on-insert in identity._validate_token.
 _CACHE_MAX = 512
 
-# Tighter than services.xo_credential.HTTP_TIMEOUT (30s): some of these calls are sync and run
+# Tighter than routers.auth.auth.HTTP_TIMEOUT (30s): some of these calls are sync and run
 # on the event loop, so a hung swarm must fail fast rather than stall every request.
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
@@ -161,7 +161,7 @@ def _alock() -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 def _endpoint(suffix: str = "", base: str = "") -> tuple[str, dict[str, str]]:
-    from services.xo_credential import CHAT_API_BASE_URL, get_auth_token
+    from routers.auth.auth import CHAT_API_BASE_URL, get_auth_token
 
     token = get_auth_token()
     if not token:
@@ -246,10 +246,36 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         ) from exc
 
 
-def _workspace() -> str:
-    from services import tenancy
+# Injected by the Coder pod. The sole source of workspace identity. One Coder workspace =
+# one pod = one tenant; this is the half of that identity the pod itself knows. The
+# principal (``<account>__ws__<workspace>``) is composed by xo-swarm-api, never here.
+WORKSPACE_ENV = "CODER_WORKSPACE_ID"
 
-    return tenancy.workspace_id()
+
+class WorkspaceIdentityUnavailable(RuntimeError):
+    """CODER_WORKSPACE_ID is unset or empty, so there is no tenant to scope to."""
+
+
+def workspace_id() -> str:
+    """This pod's workspace id.
+
+    Read at call time, not import time, so an operator (or a verification run) can change
+    the environment without reimporting. Fails closed: there is no default and no
+    ``"unknown"`` bucket, because a shared fallback would merge every misconfigured pod
+    into one tenant.
+
+    Raises:
+        WorkspaceIdentityUnavailable: when the variable is unusable. Callers must surface
+            this, never substitute a default.
+    """
+    value = (os.getenv(WORKSPACE_ENV) or "").strip()
+    if value:
+        return value
+    raise WorkspaceIdentityUnavailable(f"{WORKSPACE_ENV} is not set")
+
+
+def _workspace() -> str:
+    return workspace_id()
 
 
 # ---------------------------------------------------------------------------
