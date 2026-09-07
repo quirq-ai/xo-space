@@ -46,6 +46,21 @@ def jitter_ratio() -> float:
     return min(0.9, max(0.0, value))
 
 
+def auto_clone() -> bool:
+    """Clone repos shared with this workspace by ourselves. Kill-switch only."""
+    raw = (os.getenv("PROJECT_SHARING_AUTO_CLONE", "true") or "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def clone_timeout() -> float:
+    raw = (os.getenv("PROJECT_SHARING_CLONE_TIMEOUT_SECONDS", "") or "").strip()
+    try:
+        value = float(raw) if raw else 600.0
+    except ValueError:
+        value = 600.0
+    return max(30.0, value)
+
+
 def jittered_interval() -> float:
     base = poll_interval()
     ratio = jitter_ratio()

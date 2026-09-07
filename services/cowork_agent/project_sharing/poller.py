@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
-from services.cowork_agent.project_layout import git_repo_dirs
+from services.cowork_agent.project_layout import git_repo_dirs, xo_projects_root
 
 from services.swarm_api import project_sharing as swarm_client
 
-from . import config, git_ops, log_line, state, status, watcher
+from . import clone, config, git_ops, log_line, state, status, watcher
 from .repo_identity import normalize_repo
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ async def run_tick() -> float:
         _fail_streak = 0
 
     membership: set[str] = set()
+    available_repos: list[str] = []
     drain = False
     for entry in resp.get("repos") or []:
         repo = entry.get("repo")
@@ -127,6 +129,7 @@ async def run_tick() -> float:
         d = repos.get(repo)
         if entry.get("available") or d is None:
             status.record_available(repo)
+            available_repos.append(repo)
             continue
         events = entry.get("events") or []
         if not events:
@@ -154,6 +157,11 @@ async def run_tick() -> float:
         if entry.get("has_more"):
             drain = True
 
+    # Auto-clone: one shared-but-not-cloned repo per tick. The new folder is
+    # picked up by the normal scan; a short drain tick baselines it quickly.
+    if await _maybe_auto_clone(available_repos):
+        drain = True
+
     # Publish step with membership fresh from THIS tick, after the fetch step.
     sem = asyncio.Semaphore(PUBLISH_CONCURRENCY)
     branch = config.watch_branch()
@@ -170,6 +178,73 @@ async def run_tick() -> float:
     status.record_poll(ok=True, membership=membership, local={r: repos[r].name for r in repos})
     status.notify_if_changed()
     return DRAIN_INTERVAL if drain else config.jittered_interval()
+
+
+def _clone_backoff(attempts: int) -> float:
+    """5 → 10 → 20 → 40 → 60 min (cap) between retries of a plain error."""
+    return min(3600.0, 300.0 * (2 ** max(0, attempts - 1)))
+
+
+async def _pick_clone_candidate(available: list[str]) -> str | None:
+    """First `available` repo whose retry condition holds (§5 of the spec):
+    never attempted; needs_auth and a token has since appeared; exists and
+    the offending folder is gone; error and the backoff has elapsed."""
+    repos = status.snapshot()["repos"]
+    now = time.time()
+    token_checked: bool | None = None
+    for repo in sorted(available):
+        c = (repos.get(repo) or {}).get("clone")
+        if c is None:
+            return repo
+        st = c.get("state")
+        if st == "cloning":
+            continue
+        if st == "needs_auth":
+            if c.get("had_token"):
+                continue
+            if token_checked is None:
+                _, token_checked = await clone._github_auth()
+            if token_checked:
+                return repo
+            continue
+        if st == "exists":
+            project = (repos.get(repo) or {}).get("project")
+            if project and not (xo_projects_root() / project).exists():
+                return repo
+            continue
+        if st == "error":
+            due = c.get("next_retry_at")
+            if due is None or now >= float(due):
+                return repo
+            continue
+    return None
+
+
+async def _maybe_auto_clone(available: list[str]) -> bool:
+    """Clone at most one repo this tick. Returns True when a clone landed."""
+    if not available or not config.auto_clone():
+        return False
+    repo = await _pick_clone_candidate(available)
+    if repo is None:
+        return False
+    status.record_clone_started(repo)
+    status.notify_if_changed()
+    log_line(f"⬇️ relay: cloning {repo} (shared with this workspace)")
+    try:
+        res = await clone.clone_shared_repo(repo)
+    except Exception as exc:  # noqa: BLE001 — a clone failure is a state, not a crash
+        res = clone.CloneResult("error", None, str(exc))
+    attempts = int(((status.snapshot()["repos"].get(repo) or {}).get("clone") or {}).get("attempts") or 1)
+    next_retry = time.time() + _clone_backoff(attempts) if res.state == "error" else None
+    status.record_clone_result(repo, res.state, res.detail, project=res.project,
+                               had_token=res.had_token, next_retry_at=next_retry)
+    if res.state == "cloned":
+        log_line(f"✅ relay: cloned {repo} into {res.project}")
+    elif res.state == "already":
+        log_line(f"   relay: {repo} is already cloned as {res.project}")
+    else:
+        log_line(f"⚠️ relay: clone of {repo} → {res.state}: {res.detail}")
+    return res.state == "cloned"
 
 
 async def wait_for_next_tick(delay: float, scan_every: float = SCAN_INTERVAL) -> str:
@@ -204,6 +279,12 @@ async def run_relay_poller() -> None:
     """Background entry point. Resilient until cancelled."""
     global _last_local_signature
     log_line("relay: loop started (flat cadence; PROJECT_SHARING_ENABLED=false to brake)")
+    try:
+        stale = clone.cleanup_stale_temp_dirs()
+        if stale:
+            log_line(f"   relay: removed {len(stale)} half-finished clone folder(s): {', '.join(stale)}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("commit_relay: temp-dir cleanup failed: %s", exc)
     while True:
         try:
             delay = await run_tick()

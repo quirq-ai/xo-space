@@ -6,8 +6,9 @@
    are deliberately not wired yet; the sync-vs-git decision is open. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js';
-import {sharingPanel,sharingStripHTML,sharedWithYouHTML,bindSharingCopies,
-  refreshSharingStatus,startSharingPoll,syncSharingPanel} from './projects_sharing.js?v=20260907-sharing2';
+import {sharingPanel,sharingStripHTML,sharedWithYouHTML,bindSharingCopies,bindSharingActions,
+  refreshSharingStatus,startSharingPoll,syncSharingPanel,setSharingNav,consumeNewClone}
+  from './projects_sharing.js?v=20260907-sharing3';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dtfmt=iso=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'—';
@@ -165,6 +166,7 @@ export default {
     switchTo=ctx.switchTo;
     el.innerHTML='<div class="prj">'+skeleton()+'</div>';
     /* sharing status rides alongside the list; it never gates it */
+    setSharingNav(ctx.switchTo);
     startSharingPoll(refreshSharingUI);
     await Promise.all([loadList(),refreshSharingStatus()]);
     refreshSharingUI();
@@ -269,6 +271,7 @@ function render(){
     +'<div class="prj-body">'+sharedWithYouHTML()+rowsHTML(rows)+'</div>';
   bindHead();
   bindSharingCopies(root);
+  bindSharingActions(root);
   bindRows();
   if(expanded)fillDrawer(expanded);
 }
@@ -285,7 +288,10 @@ function refreshSharingUI(){
   if(inbox)inbox.outerHTML=html;
   else{const b=root.querySelector('.prj-body');if(b&&html)b.insertAdjacentHTML('afterbegin',html);}
   bindSharingCopies(root);
+  bindSharingActions(root);
   if(expanded)syncSharingPanel(expanded);
+  /* a clone just landed: the new folder is a project now, show it */
+  if(consumeNewClone())loadList();
 }
 /* Repaint the rows only. Rebuilding the head would destroy the filter input
    mid-keystroke and throw the caret to the end — which is what the old
@@ -296,6 +302,7 @@ function renderRows(){
   if(!box){render();return;}
   box.innerHTML=sharedWithYouHTML()+rowsHTML(rows);
   bindSharingCopies(box);
+  bindSharingActions(box);
   bindRows();
   const count=root.querySelector('#prj-count');
   if(count)count.textContent=summary(rows.length);

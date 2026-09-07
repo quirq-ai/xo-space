@@ -58,6 +58,7 @@ def _repo(repo: str) -> dict:
         "project": None, "shared": False, "available": False,
         "last_fetch_at": None, "fetched": 0,
         "pending_github": False, "last_error": None,
+        "clone": None,  # None | {state, detail, at, attempts, had_token, next_retry_at}
     })
 
 
@@ -119,6 +120,36 @@ def record_synced(repo: str, project: str) -> None:
     _repo(repo).update(project=project, pending_github=False, last_error=None)
 
 
+def record_clone_started(repo: str) -> None:
+    r = _repo(repo)
+    prev = r.get("clone") or {}
+    r["clone"] = {"state": "cloning", "detail": "", "at": _now(),
+                  "attempts": int(prev.get("attempts") or 0) + 1,
+                  "had_token": False, "next_retry_at": None}
+
+
+def record_clone_result(repo: str, state: str, detail: str = "", *,
+                        project: str | None = None, had_token: bool = False,
+                        next_retry_at: float | None = None) -> None:
+    """`cloned` / `already` clear the clone field (the folder now exists and
+    the normal scan takes over); the three failure states keep it, with the
+    retry decision the poller computed."""
+    r = _repo(repo)
+    if project:
+        r["project"] = project
+    if state in ("cloned", "already"):
+        r["clone"] = None
+        r["available"] = False
+        if state == "cloned":
+            _event(repo, "cloned", f"cloned into {project}")
+        return
+    prev = r.get("clone") or {}
+    r["clone"] = {"state": state, "detail": detail, "at": _now(),
+                  "attempts": int(prev.get("attempts") or 0),
+                  "had_token": had_token, "next_retry_at": next_retry_at}
+    _event(repo, "clone_failed", f"{state}: {detail}" if detail else state)
+
+
 def record_repo_error(repo: str, project, err: str, pending_github: bool = False) -> None:
     r = _repo(repo)
     if project:
@@ -145,7 +176,9 @@ def feed_view() -> dict:
     about changed. No timestamps, no counters."""
     repos = {
         repo: {"project": r["project"], "shared": r["shared"],
-               "available": r["available"], "last_error": r["last_error"]}
+               "available": r["available"], "last_error": r["last_error"],
+               "clone": ({"state": r["clone"]["state"], "detail": r["clone"]["detail"]}
+                         if r.get("clone") else None)}
         for repo, r in sorted(_state["repos"].items())
     }
     recent = [{"repo": e["repo"], "kind": e["kind"], "detail": e["detail"]}

@@ -22,7 +22,7 @@
      live      shared: safe to fetch members and offer revoke
    Only `live` fetches /members; only `solo` says "not shared" as a fact. */
 import {API_BASE,apiFetch} from '../core/api.js';
-import {setSlottedInterval} from '../core/store.js';
+import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {toast} from '../core/ui.js';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -52,7 +52,23 @@ export async function refreshSharingStatus(){
    the same tick. Share/revoke refresh explicitly (see below). */
 export function startSharingPoll(update){
   onUpdate=update||(()=>{});
-  setSlottedInterval('projects-sharing',async()=>{await refreshSharingStatus();onUpdate();},60000);
+  const tick=async()=>{await refreshSharingStatus();onUpdate();syncFastPoll();};
+  setSlottedInterval('projects-sharing',tick,60000);
+  syncFastPoll();
+}
+/* While a clone is in flight the person is probably watching: re-read every
+   3 s, and drop back to the minute as soon as nothing is cloning. Slotted, so
+   it can never stack. */
+let fastPolling=false;
+function syncFastPoll(){
+  const want=anyCloning();
+  if(want&&!fastPolling){
+    fastPolling=true;
+    setSlottedInterval('projects-sharing-fast',async()=>{await refreshSharingStatus();onUpdate();syncFastPoll();},3000);
+  }else if(!want&&fastPolling){
+    fastPolling=false;
+    clearSlottedInterval('projects-sharing-fast');
+  }
 }
 /* after a write the relay is nudged and ticks within ~1 s; re-read shortly
    after so the strip and chips flip without waiting for the minute */
@@ -114,19 +130,69 @@ function cloneCmd(repo){
   const root=(status&&status.projects_root)||'~/xo-projects';
   return'git clone https://'+repo+'.git '+root.replace(/\/$/,'')+'/'+name;
 }
+/* One row per repo shared with this workspace and not cloned here. The relay
+   clones these by itself; the row says where that stands and, when it cannot
+   proceed, why and what to do. The manual command stays as the fallback. */
+function inboxRow(repo,r){
+  const c=r.clone||null,st=c?c.state:null;
+  const cmd='<span class="shr-cmd"><code>'+esc(cloneCmd(repo))+'</code>'
+    +'<button class="shr-copy" type="button" data-copy="'+esc(cloneCmd(repo))+'" title="Copy clone command">copy</button></span>';
+  let chip,hint,extra='';
+  if(st==='cloning'){
+    chip='<span class="tchip st-shared">cloning…</span>';
+    hint='XO Space is cloning this into your XO root. It appears in the list below when done.';
+  }else if(st==='needs_auth'){
+    chip='<span class="tchip st-blocked">needs GitHub sign-in</span>';
+    hint='This looks like a private repo. Connect GitHub in Setup and XO Space will clone it on the next check, or clone it yourself:';
+    extra='<button class="sess-refresh shr-connect" type="button" data-connect-github>Connect GitHub</button>';
+  }else if(st==='exists'){
+    chip='<span class="tchip st-blocked">folder in the way</span>';
+    hint=esc(c.detail||'a folder with this name already exists here')+'. Move or rename it and XO Space will try again, or clone under another name:';
+  }else if(st==='error'){
+    chip='<span class="tchip st-blocked">clone failed</span>';
+    hint=esc(c.detail||'git clone failed')+' — XO Space will retry later, or clone it yourself:';
+  }else{
+    chip='<span class="tchip st-available">shared</span>';
+    hint='Shared with you. XO Space clones it into your XO root ('+esc((status&&status.projects_root)||'~/xo-projects')+') on its next check, or clone it yourself:';
+  }
+  return'<div class="shr-inbox-row" data-clone-state="'+esc(st||'')+'">'
+    +'<span class="shr-repo">'+chip+'<b>'+esc(repo)+'</b></span>'
+    +'<span class="shr-hint">'+hint+'</span>'
+    +(extra?'<span class="shr-actions">'+extra+'</span>':'')
+    +(st==='cloning'?'':cmd)
+    +'</div>';
+}
 export function sharedWithYouHTML(){
   if(!status||status.cadence==='parked')return'';
   const avail=Object.entries(status.repos||{}).filter(([,r])=>r.available&&r.shared);
   if(!avail.length)return'';
   return'<div class="shr-inbox" id="prj-shared">'
     +'<div class="prj-ptitle">Shared with you · not on this machine yet</div>'
-    +avail.map(([repo])=>'<div class="shr-inbox-row">'
-      +'<span class="shr-repo"><span class="tchip st-available">shared</span><b>'+esc(repo)+'</b></span>'
-      +'<span class="shr-hint">Clone it into your XO root ('+esc((status&&status.projects_root)||'~/xo-projects')+') and sync starts on its own within seconds.</span>'
-      +'<span class="shr-cmd"><code>'+esc(cloneCmd(repo))+'</code>'
-        +'<button class="shr-copy" type="button" data-copy="'+esc(cloneCmd(repo))+'" title="Copy clone command">copy</button></span>'
-      +'</div>').join('')
+    +avail.map(([repo,r])=>inboxRow(repo,r)).join('')
     +'</div>';
+}
+/* True while any shared repo is mid-clone: the tab polls faster then. */
+export function anyCloning(){
+  return!!status&&Object.values(status.repos||{}).some(r=>r.clone&&r.clone.state==='cloning');
+}
+/* True once per new `cloned` transition, so the projects view can reload
+   its list and show the new folder without waiting for a manual refresh. */
+let seenCloned=0;
+export function consumeNewClone(){
+  if(!status)return false;
+  const n=(status.recent||[]).filter(e=>e.kind==='cloned').length;
+  const fresh=n>seenCloned;
+  seenCloned=n;
+  return fresh;
+}
+/* Cross-view jump for the Connect GitHub button (views never import each
+   other; the projects view hands us ctx.switchTo on mount). */
+let navTo=null;
+export function setSharingNav(fn){navTo=fn;}
+export function bindSharingActions(root){
+  root.querySelectorAll('[data-connect-github]').forEach(b=>b.addEventListener('click',()=>{
+    if(navTo)navTo('secrets');else toast('open Setup and connect GitHub');
+  }));
 }
 
 /* copy buttons in the strip and inbox (and the panel's own) */

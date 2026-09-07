@@ -78,7 +78,9 @@ class PollerTickTests(unittest.TestCase):
         self.assertEqual([e["kind"] for e in status.snapshot()["recent"]], ["fetched"])
 
     def test_available_repo_is_recorded_once_and_not_fetched(self) -> None:
-        with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/other")), \
+        # auto-clone has its own tests; here the repo must stay "available"
+        with patch.dict(os.environ, {"PROJECT_SHARING_AUTO_CLONE": "false"}), \
+             patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/other")), \
              patch.object(poller.git_ops, "fetch_origin", new=AsyncMock()) as fetch, \
              patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "available": True}]})), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):

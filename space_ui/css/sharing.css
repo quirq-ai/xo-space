@@ -29,6 +29,9 @@
   .shr-inbox-row:first-of-type{border-top:0;padding-top:0}
   .shr-repo{display:flex;align-items:center;gap:8px;font-size:13px}
   .shr-hint{color:var(--ink-3);font-size:11.5px}
+  .shr-actions{display:flex;gap:8px}
+  .shr-connect{font-size:12px;padding:5px 11px}
+  .shr-inbox-row[data-clone-state="cloning"] .shr-repo b{color:var(--ink-2)}
   .shr-cmd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .shr-cmd code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;

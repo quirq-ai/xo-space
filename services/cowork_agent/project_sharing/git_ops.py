@@ -7,6 +7,7 @@ notice its own push without a network call."""
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 _SEP = "\x1f"  # unit separator: cannot appear in git subjects/authors
@@ -103,6 +104,34 @@ async def recent_commits(repo_dir, branch: str, limit: int = 20) -> tuple[list[d
                                 "author": parts[2], "date": parts[3]})
         return commits, source
     return [], "none"
+
+
+async def clone(url: str, dest, *, config_args: list[str] | None = None,
+                cwd=None, timeout: float = 600.0) -> tuple[bool, str, bool]:
+    """`git [config_args] clone -- <url> <dest>` with a hard timeout.
+    Returns (ok, stderr, timed_out). `config_args` carry `-c` credential
+    overrides so the token never appears in the URL or in .git/config."""
+    argv = ["git", *(config_args or []), "clone", "--", url, str(dest)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd) if cwd is not None else None,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except FileNotFoundError:
+        return False, "git not found in PATH", False
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc), False
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return False, f"timed out after {timeout}s", True
+    return proc.returncode == 0, err.decode(errors="replace"), False
 
 
 async def behind_count(repo_dir, branch: str) -> int | None:
