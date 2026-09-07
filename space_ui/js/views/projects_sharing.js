@@ -145,24 +145,36 @@ function chip(projectId){
   if(st==='disabled')return'<span class="tchip st-blocked">sharing parked</span>';
   return'<span class="tchip">waiting</span>';
 }
+/* The list is origin/<branch> newest-first and `behind` counts the commits
+   HEAD does not have, so the top `behind` rows are exactly the unapplied
+   ones (fast-forward case). Highlight them and offer the exact merge
+   command; XO Space fetches, it never merges for you. */
 function commitsHTML(d){
   const cs=d.commits||[];
-  const behind=d.behind;
-  const head='<div class="shr-sec-head"><span class="shr-sec-title">Commits on origin/'+esc(d.branch||'main')+'</span>'
-    +(behind>0?'<span class="tchip st-shared">'+behind+' new · not applied</span>':'')+'</div>';
+  const behind=d.behind|0;
+  const branch=d.branch||'main';
+  const head='<div class="shr-sec-head"><span class="shr-sec-title">Commits on origin/'+esc(branch)+'</span>'
+    +(behind>0
+      ?'<span class="tchip st-shared">'+behind+' new · not applied</span>'
+      :(d.behind===0?'<span class="tchip">up to date</span>':''))+'</div>';
   if(!cs.length)return head+'<div class="prj-note">no commits on '+esc(d.source||'origin')+' yet</div>';
-  return head+'<div class="prj-list">'+cs.slice(0,5).map(c=>'<div class="prj-li">'
+  const apply=d.path?'git -C '+d.path+' merge --ff-only origin/'+branch:'';
+  return head+'<div class="prj-list">'+cs.slice(0,5).map((c,i)=>'<div class="prj-li'+(i<behind?' is-new':'')+'">'
     +'<code class="shr-hash">'+esc(short(c.hash))+'</code>'
     +'<span class="shr-subject">'+esc(c.subject)+'</span>'
+    +(i<behind?'<span class="tchip st-shared shr-newtag">new</span>':'')
     +'<span class="tmuted">'+esc(c.author)+' · '+rel(c.date)+'</span>'
     +'</div>').join('')+'</div>'
-    +(behind>0?'<div class="prj-note">merge from your terminal — XO Space fetches, it never merges for you</div>':'');
+    +(behind>0&&apply
+      ?'<div class="shr-apply"><span class="shr-muted">apply</span><code>'+esc(apply)+'</code>'
+        +'<button class="shr-copy" type="button" data-copy="'+esc(apply)+'" title="Copy merge command">copy</button></div>'
+      :'');
 }
 function panelHTML(id,d){
   const st=memberState(id);
   return'<div class="shr-panel" data-project="'+esc(id)+'">'
     +'<div class="shr-sec">'+commitsHTML(d)+'</div>'
-    +'<div class="shr-sec"><div class="shr-sec-head"><span class="shr-sec-title">Sharing</span>'+chip(id)+'</div>'
+    +'<div class="shr-sec"><div class="shr-sec-head"><span class="shr-sec-title">Members</span>'+chip(id)+'</div>'
       +'<div class="shr-members" id="shr-members-'+esc(id)+'" data-state="'+st+'">'
         +'<div class="prj-note">'+(st==='live'?'loading…':IDLE_NOTE[st])+'</div></div>'
       +'<form class="shr-form" data-project="'+esc(id)+'">'
@@ -189,9 +201,9 @@ async function fillMembers(id){
   still.innerHTML=ms.length?'<div class="shr-rows">'+ms.map(m=>'<div class="shr-row'+(m.status==='revoked'?' is-revoked':'')+'">'
       +'<code class="shr-id">'+esc(m.workspace_id)+'</code>'
       +'<span class="tchip">'+esc(m.role)+'</span>'
+      +(m.workspace_id===own?'<span class="tchip st-shared">this workspace</span>':'')
       +(m.status==='revoked'?'<span class="tchip st-blocked">revoked</span>':'')
       +(m.bound===false&&m.status==='active'?'<span class="shr-muted" title="that workspace has not checked in yet">not seen yet</span>':'')
-      +(m.workspace_id===own?'<span class="shr-muted">(this workspace)</span>':'')
       +(iOwn&&m.role!=='owner'&&m.status==='active'
         ?'<button class="shr-revoke" type="button" data-id="'+esc(id)+'" data-ws="'+esc(m.workspace_id)+'">Revoke</button>':'')
       +'</div>').join('')+'</div>'

@@ -91,3 +91,17 @@ class StatusSnapshotTests(unittest.TestCase):
                 snap = service.status_snapshot()
         self.assertEqual(Path(snap["projects_root"]), Path(tmp).resolve())
         self.assertEqual(snap["own_workspace_id"], "ws-a")
+
+    def test_project_commits_carries_the_project_path(self) -> None:
+        from unittest.mock import AsyncMock
+        import asyncio
+        from services.cowork_agent.project_sharing import git_ops, service
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "trip-planner" / ".git").mkdir(parents=True)
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp}), \
+                 patch.object(git_ops, "recent_commits", new=AsyncMock(return_value=([{"hash": "a" * 40, "subject": "s", "author": "me", "date": "2026-09-07T00:00:00+00:00"}], "origin/main"))), \
+                 patch.object(git_ops, "behind_count", new=AsyncMock(return_value=1)):
+                payload = asyncio.new_event_loop().run_until_complete(service.project_commits("trip-planner", 5))
+        self.assertEqual(Path(payload["path"]), (Path(tmp) / "trip-planner").resolve())
+        self.assertEqual(payload["behind"], 1)

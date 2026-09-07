@@ -77,7 +77,7 @@ async def project_commits(project_id: str, limit: int) -> dict:
     commits, source = await git_ops.recent_commits(d, branch, limit)
     behind = await git_ops.behind_count(d, branch)
     return {"project_id": project_id, "branch": branch, "source": source,
-            "behind": behind, "commits": commits}
+            "behind": behind, "commits": commits, "path": str(d)}
 
 
 async def members(project_id: str) -> dict:

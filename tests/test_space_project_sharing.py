@@ -23,7 +23,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         m = re.search(r"from '\./projects_sharing\.js\?v=([\w-]+)'", projects)
         self.assertIsNotNone(m, "projects.js must import projects_sharing.js with ?v=")
         app = read("js/app.js")
-        self.assertIn("./views/projects.js?v=20260904-sharing1", app)
+        self.assertIn("./views/projects.js?v=20260907-sharing2", app)
 
     def test_panel_is_registered_and_bind_hook_is_called(self) -> None:
         projects = read("js/views/projects.js")
@@ -49,6 +49,15 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         ):
             self.assertIn(path, mod)
         self.assertNotIn("/commits/poll", mod)  # the browser never talks to swarm
+
+    def test_unapplied_commits_are_marked_and_the_merge_command_is_offered(self) -> None:
+        mod = read("js/views/projects_sharing.js")
+        self.assertIn("i<behind?' is-new':''", mod)
+        self.assertIn("merge --ff-only origin/", mod)
+        self.assertIn("up to date", mod)
+        css = read("css/sharing.css")
+        self.assertIn(".prj-li.is-new", css)
+        self.assertIn(".shr-apply", css)
 
     def test_clone_command_targets_the_reported_projects_root(self) -> None:
         mod = read("js/views/projects_sharing.js")

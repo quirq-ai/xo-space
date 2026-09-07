@@ -51,3 +51,12 @@
   .shr-form{display:flex;gap:8px;align-items:center;margin-top:10px}
   .shr-input{width:auto;flex:1;min-width:0}
   .shr-form button[disabled]{opacity:.5;cursor:default}
+
+  /* unapplied commits: accent bar + tag; the rest read as history */
+  .shr-panel .prj-li{padding-left:8px;border-left:2px solid transparent;border-radius:0 6px 6px 0}
+  .shr-panel .prj-li.is-new{border-left-color:var(--accent);background:var(--bg-3)}
+  .shr-panel .prj-li:not(.is-new) .shr-subject{color:var(--ink-2)}
+  .shr-newtag{flex:none}
+  .shr-apply{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .shr-apply code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
+    border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;overflow-x:auto;max-width:100%}
