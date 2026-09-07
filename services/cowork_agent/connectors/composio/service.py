@@ -541,14 +541,6 @@ def _persist_session_id(user_id: str, session_id: Optional[str]) -> None:
             sessions.pop(user_id, None)
 
     _write_store(_mutate, owner=user_id)
-    # Mirror to xo-swarm-api so the id outlives this pod. Best-effort: a swarm that is
-    # down, or predates these endpoints, must not break session handling.
-    state.put_session_id(session_id)
-
-
-# Set by the last proxy_token_for_user call: False when the swarm did not record the
-# token, so the reconcile sweep can warn the operator that the install is not durable.
-_LAST_TOKEN_DURABLE = True
 
 
 def proxy_token_for_user(user_id: str) -> str:
@@ -557,25 +549,19 @@ def proxy_token_for_user(user_id: str) -> str:
     Idempotent on purpose: the boot-time gateway install calls this on every restart, and
     churning the token would strand agents holding the previous URL.
 
-    The plaintext stays on this pod — only its sha256 goes to the swarm, which is all the
-    swarm needs to answer "who owns this token?". Minting deliberately does **not** fall
-    back to swarm-less operation silently: a token the swarm never recorded stops working
-    the moment this pod's local store is lost, and a re-install during the same outage
-    would only mint another unrecorded one, so the caller is told via
-    `_LAST_TOKEN_DURABLE` — and every later reconcile sweep re-registers the token, which
-    is how the pod heals once the swarm is back.
+    The token never leaves this pod: it is minted here and stored in the 0600
+    ``sessions.json``, which is also the only thing that can resolve it. A store that is
+    lost takes every agent's proxy URL with it, and the next sweep mints a fresh token and
+    rewrites every agent's MCP config.
 
     Runs on the worker thread of the reconcile sweep as well as on the event loop, so the
     dict walks below take a snapshot: `user_for_proxy_token_local` can update
     `_PROXY_TOKENS` from the loop while a sweep iterates it.
     """
-    global _LAST_TOKEN_DURABLE
     uid = _require_user_id(user_id, "proxy_token_for_user")
     _ensure_sessions_loaded()
     for token, owner in list(_PROXY_TOKENS.items()):
         if owner == uid:
-            state.cache_principal(token, uid)
-            _LAST_TOKEN_DURABLE = state.put_proxy_token(token)
             return token
 
     token = secrets.token_urlsafe(32)
@@ -592,16 +578,8 @@ def proxy_token_for_user(user_id: str) -> str:
     _write_store(_mutate, owner=uid)
     for tok, owner in list(_PROXY_TOKENS.items()):
         if owner == uid:
-            state.cache_principal(tok, uid)
-            _LAST_TOKEN_DURABLE = state.put_proxy_token(tok)
             return tok
-    _LAST_TOKEN_DURABLE = state.put_proxy_token(token)
     return token
-
-
-def last_token_was_durable() -> bool:
-    """Whether the swarm recorded the most recently minted proxy token."""
-    return _LAST_TOKEN_DURABLE
 
 
 def user_for_proxy_token_local(token: str) -> Optional[str]:
@@ -626,35 +604,15 @@ def user_for_proxy_token_local(token: str) -> Optional[str]:
 async def user_for_proxy_token(token: str) -> Optional[str]:
     """Resolve an MCP proxy token to its owning principal.
 
-    **Local first.** This runs on `initialize`, `tools/list` and every `tools/call`, so
-    the steady state must stay a dict lookup with no network. The swarm is consulted only
-    on a local miss — which is precisely the case this whole change exists for: the pod's
-    store was lost but the agent's config, with its token, was not. The answer is written
-    back into the local store, so the pod self-heals and the next call is local again.
+    **Purely local.** This pod's ``sessions.json`` is the only thing that knows who owns a
+    proxy token, so this runs on `initialize`, `tools/list` and every `tools/call` as a
+    dict lookup with no network. A token this pod cannot place is unknown, full stop: the
+    proxy answers 401 and the agent re-reads the config the next sweep rewrites.
 
-    Raises `state.StateUnavailable` when the swarm cannot be reached and nothing is
-    cached; the proxy renders that as a retryable 503 rather than a 401, because a 401
-    would tell the agent its config is stale when it is not.
+    Async because the MCP proxy awaits it and the lookup is on that hot path; nothing here
+    blocks.
     """
-    local = user_for_proxy_token_local(token)
-    if local:
-        state.cache_principal(token, local)
-        return local
-
-    if state.source() != "swarm":
-        return None
-
-    remote = await state.resolve_proxy_token(token)
-    if remote:
-        # Self-heal: adopt the row so the next request never leaves the pod.
-        _PROXY_TOKENS[token] = remote
-
-        def _mutate(_sessions: dict[str, str], tokens: dict[str, str]) -> None:
-            tokens[token] = remote
-
-        _write_store(_mutate, owner=remote)
-        log.info("composio: recovered proxy token ownership from xo-swarm-api.")
-    return remote
+    return user_for_proxy_token_local(token)
 
 
 def _delete_remote_session(session_id: str, user_id: str) -> None:
@@ -890,7 +848,6 @@ _SWEEP_LOCK: Optional[asyncio.Lock] = None
 _SWEEP_TASK: Optional["asyncio.Task[GatewaySweep]"] = None
 _LAST_SWEEP_AT = 0.0                     # monotonic; 0 = never
 _LAST_ERRORS: dict[str, str] = {}        # agent -> last printed error, so sweeps stay quiet
-_WARNED_UNDURABLE = False                # the durability warning prints on change only
 _RETRY_DELAYS: tuple[int, ...] = (5, 15, 30, 60, 120, 300)   # while XO is unreachable
 _KICK_MIN_INTERVAL = 30.0                # seconds between sweeps a page load may start
 _DEFAULT_RECONCILE_INTERVAL = 600.0
@@ -924,11 +881,6 @@ def reconcile_interval() -> float:
         return _DEFAULT_RECONCILE_INTERVAL
 
 
-def last_gateway_sweep_at() -> float:
-    """``time.monotonic()`` of the last finished sweep, or ``0.0``."""
-    return _LAST_SWEEP_AT
-
-
 def _report(agent: str, result: dict[str, Any], announce: bool) -> None:
     # print, not log.info: the boot summary is the only place anyone looks, and
     # `services.*` loggers are not wired to a handler. Same convention as
@@ -954,8 +906,8 @@ def _apply_to_agents(
 ) -> dict[str, dict[str, Any]]:
     """The blocking half of a sweep, run off the event loop.
 
-    Mints the proxy URL once — that is one xo-swarm-api round trip, which also
-    re-registers a token the swarm missed earlier — then writes every agent.
+    Mints the proxy URL once — that is one read of this pod's token store — then writes
+    every agent.
     """
     try:
         proxy_url = _composio_proxy_url(principal)
@@ -965,20 +917,6 @@ def _apply_to_agents(
         for agent, result in results.items():
             _report(agent, result, announce)
         return results
-
-    global _WARNED_UNDURABLE
-    durable = last_token_was_durable()
-    if not durable and (announce or not _WARNED_UNDURABLE):
-        # This used to be the Connectors tab's `durability_warning`. Printed when the
-        # token becomes undurable, not on every tick of a long outage.
-        print(
-            "⚠️ Composio MCP: xo-swarm-api did not record this workspace's proxy token, "
-            "so the install stops working if this workspace is recreated. The next "
-            "sweep re-registers it."
-        )
-    elif durable and _WARNED_UNDURABLE:
-        print("✅ Composio MCP: xo-swarm-api now records this workspace's proxy token.")
-    _WARNED_UNDURABLE = not durable
 
     results: dict[str, dict[str, Any]] = {}
     for agent in agents:
