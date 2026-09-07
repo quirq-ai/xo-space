@@ -37,10 +37,6 @@ def _status_map_from_rows(
     return by_slug
 
 
-def _toolkit_status_map(user_id: str) -> dict[str, dict[str, Any]]:
-    return _status_map_from_rows(composio_service.list_connections(user_id))
-
-
 def _account_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:

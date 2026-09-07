@@ -125,10 +125,4 @@ def bulk_set(
         else:
             current.pop(uid, None)
         write_json_atomic(path, {"version": 2, "users": current})
-    # Mirror to xo-swarm-api outside the file lock — a slow round trip must not hold it.
-    # Best-effort: prefs are a preference, not a credential, and a swarm that is down
-    # must not make the toggle fail.
-    from services.cowork_agent.connectors.composio import state
-
-    state.put_prefs(toolkit_id, dict(updates))
     return toolkit_map

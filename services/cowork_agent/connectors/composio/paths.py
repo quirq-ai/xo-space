@@ -8,8 +8,7 @@ this pod can no longer resolve, and they all 401 until their config is rewritten
 
 ``COMPOSIO_STORE_DIR`` moves the pair in one variable — a mounted volume, ``~/.composio``,
 wherever. Deliberately *not* named ``COMPOSIO_STATE_*``: that family belongs to the
-xo-swarm-api HTTP client in :mod:`.state`, where ``COMPOSIO_STATE_PATH`` is a URL path, not
-a filesystem one.
+xo-swarm-api identity client in :mod:`.state`, and tunes a cache rather than a path.
 
 The default is ``~/.config/composio/`` rather than ``~/.composio/`` because the Composio
 SDK owns the latter — it caches downloads in ``~/.composio/files`` and treats

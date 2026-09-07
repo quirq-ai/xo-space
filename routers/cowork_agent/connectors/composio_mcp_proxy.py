@@ -8,7 +8,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import state as composio_state
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,27 +54,9 @@ _IDENTITY_REQUIRED = {
 async def _proxy(
     request: Request, method: str, token: str | None = None,
 ) -> StreamingResponse | JSONResponse:
-    try:
-        user_id = await _proxy_user(token)
-    except composio_state.StateUnavailable as exc:
-        # Reached only when this pod does not know the token AND xo-swarm-api could not
-        # be asked. Deliberately not a 401: that tells the agent its config is stale
-        # when it is not, and the reconcile sweep could not rewrite it during the same
-        # outage anyway. 503 is truthful and retryable, and the agent backs off
-        # instead of looping.
-        log.warning("mcp_proxy: tenant state unavailable: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            headers={"Retry-After": "30"},
-            content={
-                "error": "composio_state_unavailable",
-                "detail": (
-                    "Could not reach xo-swarm-api to resolve this MCP proxy token. "
-                    "This is transient — retry shortly. The agent's configuration is "
-                    "fine; do not re-install it."
-                ),
-            },
-        )
+    # Resolution is a lookup in this pod's own token store, so it does not fail — an
+    # unrecognised token simply has no owner and falls through to the 401 below.
+    user_id = await _proxy_user(token)
     if not user_id:
         return JSONResponse(status_code=401, content=_IDENTITY_REQUIRED)
 

@@ -35,7 +35,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 from fastapi import HTTPException
@@ -151,8 +151,6 @@ class _ComposioBase(unittest.TestCase):
         service._SWEEP_TASK = None
         service._LAST_SWEEP_AT = 0.0
         service._LAST_ERRORS.clear()
-        service._LAST_TOKEN_DURABLE = True
-        service._WARNED_UNDURABLE = False
         session_identity._SESSIONS.clear()
 
     @staticmethod
@@ -382,147 +380,6 @@ class CredentialsTests(_ComposioBase):
         # The names are safe and are what an operator actually needs.
         self.assertIn("COMPOSIO_AUTH_CONFIG_NOTION", joined)
 
-    def test_status_reports_without_exposing_the_key(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            snapshot = credentials.status()
-        self.assertEqual(snapshot["source"], "swarm")
-        self.assertEqual(snapshot["configured"], ["COMPOSIO_AUTH_CONFIG_NOTION"])
-        self.assertNotIn(self.SECRET, repr(snapshot))
-
-
-class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
-    """The xo-swarm-api tenant-state client."""
-
-    @staticmethod
-    def _response(status: int, payload: dict | None = None) -> httpx.Response:
-        if payload is None:
-            return httpx.Response(status, text="")
-        return httpx.Response(status, json=payload)
-
-    def _swarm(self):
-        return patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"})
-
-    async def test_only_a_digest_ever_crosses_the_wire(self) -> None:
-        # The swarm never needs the token itself, so it must never receive one.
-        seen: list[dict] = []
-
-        async def _fake(method, suffix="", *, params=None, json=None):
-            seen.append(json or {})
-            return {"principal": PRINCIPAL}
-
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_arequest", side_effect=_fake):
-            await state.resolve_proxy_token("plaintext-token-value-aaaaaaaaaaaa")
-
-        self.assertNotIn("plaintext-token-value-aaaaaaaaaaaa", str(seen))
-        digest = seen[0]["token_sha256"]
-        self.assertEqual(len(digest), 64)
-        self.assertEqual(digest, state.token_fingerprint("plaintext-token-value-aaaaaaaaaaaa"))
-
-    async def test_a_resolved_token_is_cached(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(
-                    state, "_arequest",
-                    new=AsyncMock(return_value={"principal": PRINCIPAL}),
-                ) as arequest:
-            self.assertEqual(await state.resolve_proxy_token("tok-aaaaaaaaaaaaaaaa"), PRINCIPAL)
-            self.assertEqual(await state.resolve_proxy_token("tok-aaaaaaaaaaaaaaaa"), PRINCIPAL)
-        self.assertEqual(arequest.await_count, 1)
-
-    async def test_an_unknown_token_is_negatively_cached(self) -> None:
-        # Without this a stale agent config retries forever over HTTP; locally it only
-        # ever cost a dict miss.
-        unavailable = state.StateUnavailable("not found", authoritative=True)
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_arequest", new=AsyncMock(side_effect=unavailable)) as arequest:
-            self.assertIsNone(await state.resolve_proxy_token("tok-bbbbbbbbbbbbbbbb"))
-            self.assertIsNone(await state.resolve_proxy_token("tok-bbbbbbbbbbbbbbbb"))
-        self.assertEqual(arequest.await_count, 1)
-
-    async def test_a_malformed_token_costs_nothing(self) -> None:
-        with self._swarm(), patch.object(state, "_arequest") as arequest:
-            self.assertIsNone(await state.resolve_proxy_token("has spaces!"))
-        arequest.assert_not_called()
-
-    async def test_concurrent_resolves_make_one_round_trip(self) -> None:
-        import asyncio as _asyncio
-
-        calls = 0
-
-        async def _fake(*a, **kw):
-            nonlocal calls
-            calls += 1
-            await _asyncio.sleep(0.01)
-            return {"principal": PRINCIPAL}
-
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_arequest", side_effect=_fake):
-            results = await _asyncio.gather(
-                *[state.resolve_proxy_token("tok-cccccccccccccccc") for _ in range(5)]
-            )
-        self.assertEqual(results, [PRINCIPAL] * 5)
-        self.assertEqual(calls, 1)
-
-    async def test_a_transient_failure_serves_the_stale_principal(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(
-                    state, "_arequest",
-                    new=AsyncMock(return_value={"principal": PRINCIPAL}),
-                ):
-            await state.resolve_proxy_token("tok-dddddddddddddddd")
-
-        transient = state.StateUnavailable("swarm down")
-        with self._swarm(), \
-                patch.object(state, "_TOKEN_CACHE", dict(state._TOKEN_CACHE)), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_arequest", new=AsyncMock(side_effect=transient)):
-            state._TOKEN_CACHE["tok-dddddddddddddddd"] = (
-                PRINCIPAL, 0.0, __import__("time").monotonic()
-            )
-            self.assertEqual(
-                await state.resolve_proxy_token("tok-dddddddddddddddd"), PRINCIPAL
-            )
-
-    async def test_a_transient_failure_with_a_cold_cache_raises(self) -> None:
-        # The proxy turns this into a retryable 503, not a 401 — see McpProxyTests.
-        transient = state.StateUnavailable("swarm down")
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_arequest", new=AsyncMock(side_effect=transient)):
-            with self.assertRaises(state.StateUnavailable) as raised:
-                await state.resolve_proxy_token("tok-eeeeeeeeeeeeeeee")
-        self.assertFalse(raised.exception.authoritative)
-
-    def test_no_xo_credential_is_authoritative(self) -> None:
-        with self._swarm(), patch("routers.auth.auth.get_auth_token", return_value=None):
-            with self.assertRaises(state.StateUnavailable) as raised:
-                state._endpoint()
-        self.assertTrue(raised.exception.authoritative)
-
-    def test_a_token_from_another_workspace_is_refused(self) -> None:
-        # The swarm filters by account, not workspace, so a resolve can legitimately
-        # return a sibling workspace's principal. Adopting it would re-home that token
-        # into this workspace's tenant — exactly what the workspace half prevents.
-        with self.assertLogs(state.log, level="ERROR"):
-            self.assertIsNone(
-                state.assert_principal_is_ours("user_abc123__ws__someone-elses-ws")
-            )
-
-    def test_our_own_principal_passes_silently(self) -> None:
-        self.assertEqual(state.assert_principal_is_ours(PRINCIPAL), PRINCIPAL)
-
-    def test_it_accepts_when_this_pod_does_not_know_its_principal_yet(self) -> None:
-        # A cold cache must not turn token recovery into a dead end.
-        state.invalidate()
-        self.assertEqual(state.assert_principal_is_ours("user_x__ws__ws-9"), "user_x__ws__ws-9")
-
 
 class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     """Fetching this pod's tenant key from xo-swarm-api.
@@ -639,37 +496,14 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     async def test_empty_token_resolves_to_nobody(self) -> None:
         self.assertIsNone(await service.user_for_proxy_token(""))
 
-    def test_a_token_the_swarm_did_not_record_is_reported_undurable(self) -> None:
-        # Minting must not silently proceed as if durable: a token the swarm never saw
-        # dies with this pod's store, and a re-install during the same outage would
-        # only mint another one the swarm never saw.
-        with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(
-                    state, "_request", side_effect=state.StateUnavailable("down")
-                ):
+    def test_minting_never_leaves_the_pod(self) -> None:
+        # The token is local state: it is written to this pod's 0600 store and nowhere
+        # else, so minting one must make no network call at all.
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
+                patch.object(state, "_request") as request:
             token = service.proxy_token_for_user(PRINCIPAL)
         self.assertTrue(token)
-        self.assertFalse(service.last_token_was_durable())
-
-    def test_a_recorded_token_is_reported_durable(self) -> None:
-        with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(state, "_request", return_value={"principal": PRINCIPAL}):
-            service.proxy_token_for_user(PRINCIPAL)
-        self.assertTrue(service.last_token_was_durable())
-
-    def test_minting_sends_only_a_digest(self) -> None:
-        seen: list[dict] = []
-        with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(
-                    state, "_request",
-                    side_effect=lambda *a, **kw: seen.append(kw.get("json") or {}) or {},
-                ):
-            token = service.proxy_token_for_user(PRINCIPAL)
-        self.assertNotIn(token, str(seen))
-        self.assertEqual(seen[0]["token_sha256"], state.token_fingerprint(token))
+        request.assert_not_called()
 
     async def test_a_local_hit_never_touches_the_network_with_a_cold_principal(self) -> None:
         # Constraint, executable: the MCP proxy calls this on every tool call. A pod
@@ -679,19 +513,17 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         service._SESSIONS_LOADED = False
         service._PROXY_TOKENS.clear()
         state.invalidate()                     # principal unknown; store still owns
-        with patch.object(state, "_arequest") as arequest, \
-                patch.object(state, "_request") as request:
+        with patch.object(state, "_request") as request:
             self.assertEqual(await service.user_for_proxy_token(token), PRINCIPAL)
-        arequest.assert_not_called()
         request.assert_not_called()
 
     async def test_a_local_hit_never_touches_the_network(self) -> None:
         # The hot path: the MCP proxy calls this on every tool call, so the steady
         # state must stay a dict lookup.
         token = service.proxy_token_for_user(PRINCIPAL)
-        with patch.object(state, "_arequest") as arequest:
+        with patch.object(state, "_request") as request:
             self.assertEqual(await service.user_for_proxy_token(token), PRINCIPAL)
-        arequest.assert_not_called()
+        request.assert_not_called()
 
     def test_store_is_written_private_and_versioned(self) -> None:
         service.proxy_token_for_user(PRINCIPAL)
@@ -1445,21 +1277,14 @@ class McpProxyTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         response = await mcp_proxy._proxy(_make_request(), "POST", None)
         self.assertEqual(response.status_code, 401)
 
-    async def test_an_unreachable_swarm_is_a_retryable_503_not_a_401(self) -> None:
-        # A 401 here would tell the agent its config is stale when it is not, and the
-        # reconcile sweep could not rewrite it during the same outage anyway — it would
-        # only mint a token the swarm never recorded. 503 is truthful and makes the
-        # agent back off.
-        transient = state.StateUnavailable("swarm down")
-        with patch.object(
-            service, "user_for_proxy_token", new=AsyncMock(side_effect=transient)
-        ):
-            response = await mcp_proxy._proxy(_make_request(), "POST", "tok-ffffffffffff")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(
-            json.loads(response.body)["error"], "composio_state_unavailable"
-        )
-        self.assertEqual(response.headers["retry-after"], "30")
+    async def test_resolution_makes_no_network_call(self) -> None:
+        # Token ownership is answered from this pod's own store, so the proxy's hot path
+        # cannot be taken down by an unreachable swarm — there is nothing to reach.
+        token = service.proxy_token_for_user(PRINCIPAL)
+        with patch.object(state, "_request") as request, \
+                patch.object(service, "build_mcp_server_entry", return_value={}):
+            await mcp_proxy._proxy(_make_request(), "POST", token)
+        request.assert_not_called()
 
     async def test_session_build_failure_is_a_502(self) -> None:
         token = service.proxy_token_for_user(PRINCIPAL)
@@ -1591,8 +1416,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             {"toolkit": "GMAIL", "connected_account_id": "ca_1", "status": "ACTIVE"},
             {"toolkit": "GMAIL", "connected_account_id": "ca_2", "status": "EXPIRED"},
         ]
-        with patch.object(service, "list_connections", return_value=rows):
-            by_slug = router_mod._toolkit_status_map(PRINCIPAL)
+        by_slug = router_mod._status_map_from_rows(rows)
         self.assertEqual(by_slug["GMAIL"]["connected_account_id"], "ca_1")
 
     async def test_unconfigured_toolkit_is_a_422_not_a_500(self) -> None:
@@ -1895,7 +1719,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             await asyncio.gather(service.install_gateways(), service.install_gateways())
 
         self.assertEqual(order, ["start", "end", "start", "end"])
-        self.assertGreater(service.last_gateway_sweep_at(), 0.0)
+        self.assertGreater(service._LAST_SWEEP_AT, 0.0)
 
     async def test_later_sweeps_print_only_changes(self) -> None:
         current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
@@ -1916,27 +1740,6 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
         self.assertIn("already current", boot.getvalue())
         self.assertEqual(later.getvalue(), "")
-
-    async def test_the_durability_warning_prints_on_change_only(self) -> None:
-        # The warning replaced the Connectors tab's `durability_warning`. A long
-        # outage must not repeat it every tick, and recovery should be said once.
-        current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
-        outputs: list[str] = []
-        with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
-                patch.object(service, "install_into_gateway", return_value=current):
-            for durable in (False, False, True, True):
-                service._LAST_TOKEN_DURABLE = durable
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    await service.install_gateways(announce=False)
-                outputs.append(out.getvalue())
-
-        self.assertIn("did not record", outputs[0])
-        self.assertEqual(outputs[1], "")
-        self.assertIn("now records", outputs[2])
-        self.assertEqual(outputs[3], "")
 
 
 class GatewayReconcileLoopTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):

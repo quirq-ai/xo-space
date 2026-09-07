@@ -249,16 +249,3 @@ def invalidate() -> None:
     global _BUNDLE, _NEXT_ATTEMPT
     with _LOCK:
         _BUNDLE, _NEXT_ATTEMPT = None, 0.0
-
-
-def status() -> dict:
-    """A key-free snapshot for diagnostics. Never returns credential material."""
-    try:
-        current = bundle()
-    except CredentialsUnavailable as exc:
-        return {"source": "unavailable", "configured": [], "error": str(exc)}
-    return {
-        "source": current.source,
-        "configured": sorted(current.auth_configs),
-        "error": None,
-    }

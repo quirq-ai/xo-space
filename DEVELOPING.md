@@ -430,12 +430,12 @@ opening the Connectors tab is what pressing "Reinstall MCP gateway" used to be.
 
 Sweeps are single-flight (one asyncio lock) and idempotent — `mcp.apply` reports
 `changed: False` for a file that is already current, so an idle tick never writes — and
-the blocking half (minting the token is one swarm round trip, then the file writes) runs
-in a worker thread. The periodic pass is what repairs the cases the button existed for:
-a config file that appeared after boot, an agent that rewrote its config and dropped the
-entry, and a token the swarm did not record at boot (every sweep re-registers it). The
-`/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped routes exist only to
-401 a stale config with a useful message.
+the blocking half (reading or minting the token, then the file writes) runs in a worker
+thread. The periodic pass is what repairs the cases the button existed for: a config file
+that appeared after boot, an agent that rewrote its config and dropped the entry, and a
+pod whose token store was lost (the sweep mints a fresh token and rewrites every config).
+The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped routes exist only
+to 401 a stale config with a useful message.
 
 **The install is declarative.** Each agent describes its own gateway shape as an
 `"mcp"` block in `config/agents/<name>/manifest.json`, and `composio/mcp.py` is the
@@ -525,60 +525,46 @@ Every failure raised from `credentials.py` carries the literal string
 it to show "Composio is not configured" instead of a raw error, and
 `tests/test_composio.py` pins it from the Python side.
 
-### 10.4 State: a split store
+### 10.4 State: a local store
 
-Per-tenant state is **durable in xo-swarm-api**, not in this checkout. The container
-mounts no volume on `/app/data`, so everything below used to die with the pod — and since
-each agent's MCP config has a proxy token baked into it, every agent came back to a 401
-until the next boot rewrote its config.
+Per-tenant state lives on **this pod**, and only here. It sits in the user's config
+directory (`~/.config/composio/`, per `connectors/composio/paths.py`) rather than the
+checkout, alongside `~/.config/token.json` and for the same reason — a fresh clone, a
+redeploy or an `uninstall` must not take live proxy tokens with it. A store left at the
+old `data/composio_*.json` location is moved into place on first access.
+`COMPOSIO_STORE_DIR` relocates the pair.
 
-The local half no longer lives in the checkout either: it sits in the user's config
-directory (`~/.config/composio/`, per `connectors/composio/paths.py`), alongside
-`~/.config/token.json` and for the same reason — a fresh clone, a redeploy or an
-`uninstall` must not take live proxy tokens with it. A store left at the old
-`data/composio_*.json` location is moved into place on first access.
-`COMPOSIO_STORE_DIR` relocates the pair; note it is *not* one of the `COMPOSIO_STATE_*`
-variables, which are xo-swarm-api URL paths, not filesystem ones.
+| file | holds |
+|---|---|
+| `sessions.json` (0600) | the owning principal, this tenant's Composio session ids, and the **plaintext** MCP proxy tokens |
+| `action_prefs.json` | per-user disabled actions — only *disabled* slugs, so an action added to a toolkit later defaults to enabled |
 
-The store is **split**, and the split is the point:
+Both documents name their owning principal, so a pod classifies its own rows with no
+network. That is what keeps `user_for_proxy_token` a dict lookup on the MCP hot path —
+`initialize`, `tools/list` and *every* `tools/call` — and a token this pod cannot place
+is simply unknown.
 
-| | holds | why |
-|---|---|---|
-| xo-swarm-api | `sha256(proxy_token)`, session ids, prefs | it only ever answers *"which principal owns this token?"* — a unique-index lookup on the digest does that exactly as well, so the shared table is not a credential dump for every tenant at once |
-| this pod, `~/.config/composio/sessions.json` (0600) | the **plaintext** token | it is the only side that needs to hand the token to an agent |
-
-Two rules follow, and both are load-bearing:
-
-- **Resolution is local-first.** `user_for_proxy_token` is on the MCP hot path —
-  `initialize`, `tools/list` and *every* `tools/call` — so the steady state stays a dict
-  lookup. The swarm is consulted only on a local miss, which is exactly the case this
-  design exists for; the answer is written back, so the pod self-heals.
-- **Mint must never fall back; resolve may.** A token the swarm never recorded stops
-  working the moment this pod's store is lost, and a re-install during the same outage
-  would only mint another unrecorded one. So minting during an outage still returns a
-  token but reports `durable: false`; the sweep prints a warning, and the next sweep
-  re-registers the token once the swarm is back.
-
-`~/.config/composio/action_prefs.json` still holds per-user disabled actions locally and
-is mirrored to the swarm; only *disabled* slugs are stored, so new actions default to
-enabled. Locks live under `~/.quirq/watcher/locks/` and are keyed on the store's absolute
+**The store does not survive a pod recreation.** The published container mounts no volume,
+so losing it loses every agent's proxy token: the next reconcile sweep mints a fresh one
+and rewrites every agent's MCP config, and an agent still holding the old URL gets a 401
+telling it to restart. Mounting a volume at `COMPOSIO_STORE_DIR` is what avoids that
+churn. Locks live under `~/.quirq/watcher/locks/` and are keyed on the store's absolute
 path, which is why tests must point `QUIRQ_STATE_ROOT` at a temp dir — see
 `tests/test_composio.py`, whose header lists the three isolation traps.
 
-`COMPOSIO_STATE_SOURCE` mirrors `COMPOSIO_CREDENTIALS_SOURCE` (§10.3): `local` (today's
-default) writes through to the swarm but reads only from the file; `swarm` also reads
-from it. Nothing is ever fatal — a swarm that is down, or that predates these endpoints,
-degrades to the pre-existing behaviour.
+The one thing xo-swarm-api still answers for a tenant is its **identity**:
+`GET /auth/workspace-principal` composes `<account>__ws__<workspace>` (§10.1). That is a
+pure identity lookup — it reads no database — and `connectors/composio/state.py` is its
+client. It caches the answer for the life of the pod, serves a stale one during a
+transient outage, and falls back to the owner recorded in `sessions.json` when the swarm
+cannot be reached at all; an *authoritative* refusal (a rejected XO credential) never
+falls back.
 
-| Swarm says | MCP proxy returns |
+| MCP proxy case | returns |
 |---|---|
-| token unknown (404) | 401 `composio_identity_required` — the agent's config is stale; the sweep rewrites it, the agent needs a restart |
-| credential rejected (401/403) | 401, distinct detail |
-| unreachable, something cached | serves the cached principal, one WARNING per error-TTL |
-| unreachable, nothing cached | **503 `composio_state_unavailable`** + `Retry-After` |
-
-That last row is not cosmetic: a 401 would claim the agent's config is stale when it is
-fine, and the sweep could not rewrite it during the same outage anyway.
+| token not in this pod's store, or no token in the URL | 401 `composio_identity_required` — the agent's config is stale; the sweep rewrites it, the agent needs a restart |
+| session build fails | 502 `composio_session_unavailable` |
+| Composio unreachable upstream | 502 `composio_unreachable` |
 
 ### 10.5 Multiple connected accounts
 
