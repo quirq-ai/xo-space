@@ -27,13 +27,15 @@ export function withPageQuery(path){
   return path+(path.includes('?')?'&':'?')+ps;
 }
 
-async function doFetch(path,method,body){
+async function doFetch(path,method,body,headers){
   try{
     const opts={method,cache:'no-store'};
+    const h={...(headers||{})};
     if(body!==undefined){
-      opts.headers={'Content-Type':'application/json'};
+      h['Content-Type']='application/json';
       opts.body=JSON.stringify(body);
     }
+    if(Object.keys(h).length)opts.headers=h;
     const r=await fetch(withPageQuery(path),opts);
     if(!r.ok){
       let message='http '+r.status;
@@ -53,7 +55,16 @@ async function doFetch(path,method,body){
   }
 }
 
-export function apiFetch(path,{method='GET',body}={}){
-  if(method==='GET')return singleFlight('GET '+path,()=>doFetch(path,'GET'));
-  return doFetch(path,method,body); /* writes are never deduped — disable the button instead */
+/* `headers` is opt-in and merged last, so it can also override Content-Type.
+   Only the connector routes need it today (they carry X-XO-Session); every
+   other caller omits it and sends exactly the headers it always did. */
+export function apiFetch(path,{method='GET',body,headers}={}){
+  if(method==='GET'){
+    /* The single-flight key must include the headers: two GETs for the same
+       path under different identities are different requests, and sharing one
+       in-flight promise would serve one caller the other's answer. */
+    const key='GET '+path+(headers?' '+JSON.stringify(headers):'');
+    return singleFlight(key,()=>doFetch(path,'GET',undefined,headers));
+  }
+  return doFetch(path,method,body,headers); /* writes are never deduped — disable the button instead */
 }
