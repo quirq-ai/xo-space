@@ -31,7 +31,7 @@ class NoGitOrigin(RelayError):
 
 
 class WorkspaceUnconfigured(RelayError):
-    status, code, message = 409, "workspace_unconfigured", "This workspace has no XO_PROJECT_ID configured; sharing is disabled."
+    status, code, message = 409, "workspace_unconfigured", "This workspace has no XO_SPACE_ID configured; sharing is disabled."
 
 
 class SwarmError(RelayError):

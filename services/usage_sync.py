@@ -242,7 +242,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
     """
     workspace_id = os.getenv("CODER_WORKSPACE_ID") or "unknown"
     workspace_name = os.getenv("CODER_WORKSPACE_NAME") or None
-    project_id = os.getenv("XO_PROJECT_ID") or None
+    project_id = os.getenv("XO_SPACE_ID") or None
 
     state = _load_sync_state()
     last_synced_date = None if is_backfill else state.get("last_synced_date")

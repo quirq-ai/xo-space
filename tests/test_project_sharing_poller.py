@@ -27,7 +27,7 @@ class PollerTickTests(unittest.TestCase):
         self._env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(self.root / ".quirq"),
             "XO_PROJECTS_ROOT": str(self.root / "projects"),
-            "XO_PROJECT_ID": "ws-bbb",
+            "XO_SPACE_ID": "ws-bbb",
             "PROJECT_SHARING_ENABLED": "true",
             "PROJECT_SHARING_POLL_INTERVAL_SECONDS": "60",
             "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
@@ -50,7 +50,7 @@ class PollerTickTests(unittest.TestCase):
         self.assertEqual(delay, 60.0)
 
     def test_parked_when_no_workspace_id(self) -> None:
-        with patch.dict(os.environ, {"XO_PROJECT_ID": ""}):
+        with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
             with patch.object(poller.swarm_client, "poll", new=AsyncMock()) as p:
                 run(poller.run_tick())
         p.assert_not_called()

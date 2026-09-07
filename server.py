@@ -666,7 +666,7 @@ async def lifespan(app: FastAPI):
 
     # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
     # in a single tick, see services/cowork_agent/project_sharing/poller.py).
-    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_PROJECT_ID or no
+    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_SPACE_ID or no
     # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
     try:
         from services.cowork_agent.project_sharing.poller import run_relay_poller

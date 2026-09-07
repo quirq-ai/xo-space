@@ -158,7 +158,7 @@ class AutoCloneInTickTests(unittest.TestCase):
         self._env = patch.dict(os.environ, {
             "XO_PROJECTS_ROOT": str(self.root),
             "QUIRQ_STATE_ROOT": str(Path(self._tmp.name) / ".quirq"),
-            "XO_PROJECT_ID": "ws-b", "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
+            "XO_SPACE_ID": "ws-b", "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
         })
         self._env.start()
         self._auth = patch.object(config, "auth_token", return_value="tok")

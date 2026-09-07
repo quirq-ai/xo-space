@@ -18,7 +18,7 @@ class NudgeTests(unittest.TestCase):
         self._env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(Path(self._tmp.name) / ".quirq"),
             "XO_PROJECTS_ROOT": str(Path(self._tmp.name) / "projects"),
-            "XO_PROJECT_ID": "ws-a", "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
+            "XO_SPACE_ID": "ws-a", "PROJECT_SHARING_POLL_JITTER_RATIO": "0",
         })
         self._env.start()
 

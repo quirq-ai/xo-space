@@ -27,13 +27,13 @@ class GitRepoDirsTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_parked_reasons_in_priority_order(self) -> None:
-        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "false", "XO_PROJECT_ID": "ws-a"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "false", "XO_SPACE_ID": "ws-a"}):
             with patch.object(config, "auth_token", return_value="tok"):
                 self.assertEqual(config.parked_reason(), "disabled")
-        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_PROJECT_ID": ""}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_SPACE_ID": ""}):
             with patch.object(config, "auth_token", return_value="tok"):
                 self.assertEqual(config.parked_reason(), "no_workspace_id")
-        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_PROJECT_ID": "ws-a"}):
+        with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "true", "XO_SPACE_ID": "ws-a"}):
             with patch.object(config, "auth_token", return_value=None):
                 self.assertEqual(config.parked_reason(), "no_auth")
             with patch.object(config, "auth_token", return_value="tok"):
@@ -87,7 +87,7 @@ class StatusSnapshotTests(unittest.TestCase):
         from services.cowork_agent.project_sharing import service
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "XO_PROJECT_ID": "ws-a"}):
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "XO_SPACE_ID": "ws-a"}):
                 snap = service.status_snapshot()
         self.assertEqual(Path(snap["projects_root"]), Path(tmp).resolve())
         self.assertEqual(snap["own_workspace_id"], "ws-a")

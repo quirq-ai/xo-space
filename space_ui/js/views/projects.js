@@ -8,7 +8,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js';
 import {sharingPanel,sharingStripHTML,sharedWithYouHTML,bindSharingCopies,bindSharingActions,
   refreshSharingStatus,startSharingPoll,syncSharingPanel,setSharingNav,consumeNewClone,sharingRowChip}
-  from './projects_sharing.js?v=20260907-sharing5';
+  from './projects_sharing.js?v=20260907-sharing6';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dtfmt=iso=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'—';

@@ -23,7 +23,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         m = re.search(r"from '\./projects_sharing\.js\?v=([\w-]+)'", projects)
         self.assertIsNotNone(m, "projects.js must import projects_sharing.js with ?v=")
         app = read("js/app.js")
-        self.assertIn("./views/projects.js?v=20260907-sharing5", app)
+        self.assertIn("./views/projects.js?v=20260907-sharing6", app)
 
     def test_panel_is_registered_and_bind_hook_is_called(self) -> None:
         projects = read("js/views/projects.js")

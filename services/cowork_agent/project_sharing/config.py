@@ -16,7 +16,7 @@ DEFAULT_JITTER = 0.2
 
 
 def workspace_id() -> str | None:
-    return (os.getenv("XO_PROJECT_ID", "") or "").strip() or None
+    return (os.getenv("XO_SPACE_ID", "") or "").strip() or None
 
 
 def enabled() -> bool:
