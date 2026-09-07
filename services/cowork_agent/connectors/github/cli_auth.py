@@ -9,6 +9,11 @@ github.com. Once `gh` exits successfully, the resulting token is read with
 This sits alongside the PAT flow (github_pat.py) — the two methods share the
 same storage and validation (common.py); only the *acquisition* differs.
 
+Polling is idempotent: a session keeps its final answer (connected / failed)
+until it expires or is cancelled, so a client that retries a poll — because
+a response was lost, a proxy timed out, or a background tab was throttled —
+sees the same answer instead of "unknown session".
+
 Caveats (intentional, per Option B):
   - In-memory session state. A FastAPI worker restart drops in-progress logins.
   - Output parsing depends on `gh` CLI version 2.x stdout format.
@@ -67,11 +72,19 @@ class _Session:
     process: asyncio.subprocess.Process
     user_code: str
     started_at: float = field(default_factory=time.time)
-    status: str = "pending"  # pending | completed | failed | cancelled
+    # pending   — `gh` is still waiting for the user to authorize
+    # completed — `gh` exited 0 and handed us a token (not yet validated/stored)
+    # connected — token validated and saved; `payload` holds the response body
+    # failed    — `gh` exited non-zero, or the token failed validation
+    status: str = "pending"
     error: str | None = None
     token: str | None = None
+    payload: dict[str, Any] | None = None
     # Keeps the background reader alive for the lifetime of the subprocess.
     drain_task: asyncio.Task | None = None
+    # Serialises completed → connected so two overlapping polls of the same
+    # session validate and store the token once, not twice.
+    finalize_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 _active: dict[str, _Session] = {}
@@ -230,24 +243,17 @@ async def start_login() -> dict[str, Any]:
         # Prevent gh from trying to launch a browser on the server.
         env["BROWSER"] = "true"
 
-        # Clear any prior `gh` session for github.com — `gh auth login` refuses
-        # to start a fresh device flow when an account is already logged in.
-        # Errors here are non-fatal (e.g. "not logged in" exits non-zero).
-        try:
-            logout = await asyncio.create_subprocess_exec(
-                GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME,
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(logout.wait(), timeout=5)
-        except (asyncio.TimeoutError, FileNotFoundError, OSError):
-            pass
+        # Do NOT `gh auth logout` first. Non-interactive `gh auth login` happily
+        # re-authenticates an already-logged-in account (it only prompts when
+        # interactive), and the existing session is what git's credential
+        # helper (`gh auth git-credential`, wired by `gh auth setup-git`) runs
+        # on. Logging out here meant an abandoned or failed retry left every
+        # private-repo clone broken while token.json still said "connected".
 
         # `--insecure-storage` writes the token to a plain file under
-        # ~/.config/gh — fine here because we immediately export it into
-        # token.json and never depend on gh's local store after that.
+        # ~/.config/gh. The workspace has no keyring, and git's credential
+        # helper reads this same store, so the file is the source of truth for
+        # git while token.json is the source of truth for the API.
         proc = await asyncio.create_subprocess_exec(
             GH_BIN, "auth", "login",
             "--web",
@@ -286,42 +292,55 @@ async def start_login() -> dict[str, Any]:
     }
 
 
-async def poll_login(session_id: str) -> dict[str, Any]:
-    """
-    Check the status of an in-progress login. Returns one of:
-      - {"status": "pending",   "user_code": ..., "verification_uri": ...}
-      - {"status": "completed", "token": ...}              (consume once)
-      - {"status": "failed",    "error": ...}
-      - {"status": "not_found"}                            (unknown session_id)
-    """
+async def _lookup(session_id: str) -> _Session | None:
+    """Fetch a live session, evicting expired ones first."""
     async with _lock:
         _evict_stale_locked()
-        session = _active.get(session_id)
-        if not session:
-            return {"status": "not_found"}
+        return _active.get(session_id)
 
-        if session.status == "pending":
-            return {
-                "status": "pending",
-                "user_code": session.user_code,
-                "verification_uri": VERIFICATION_URI,
-            }
 
-        # Terminal state — pop so subsequent polls return not_found.
-        _active.pop(session_id, None)
+async def _finalize_connection(session: _Session) -> None:
+    """
+    Turn a ``completed`` session (gh handed us a token) into ``connected``
+    (token validated, stored, git wired up) or ``failed``.
 
-        if session.status == "completed" and session.token:
-            return {"status": "completed", "token": session.token}
+    Runs at most once per session: the caller holds ``session.finalize_lock``
+    and we re-check the status under it, so a second poll that arrives while
+    the first is still validating simply waits and then reads the result.
+    """
+    if session.status != "completed":
+        return
 
-        return {
-            "status": session.status,
-            "error": session.error or "Login failed.",
-        }
+    token = session.token or ""
+    validation = await validate_token(token)
+    if not validation.get("valid"):
+        session.status = "failed"
+        session.error = validation.get(
+            "error",
+            "GitHub CLI login completed but the token failed validation.",
+        )
+        session.token = None
+        return
+
+    save_github_token(token, auth_method=AUTH_METHOD)
+    # This flow leaves a live `gh` session behind, so git can borrow it for
+    # HTTPS auth as well as take its identity from it.
+    await configure_git_identity(validation, setup_credential_helper=True)
+    log.info("GitHub connected as @%s (via gh CLI)", validation.get("username"))
+
+    session.payload = connection_payload(validation, AUTH_METHOD)
+    session.status = "connected"
+    # Persisted now — no reason to keep the raw token in memory.
+    session.token = None
 
 
 async def connect(session_id: str) -> dict[str, Any]:
     """
     Poll a login session and, once `gh` hands us a token, validate + store it.
+
+    Idempotent: polling a finished session returns the same answer every time
+    until the session expires (SESSION_TTL_SECONDS) or is cancelled. A client
+    that retries a poll never turns a success into "not_found".
 
     Mirrors ``github_pat.connect``, so both flows converge on the same stored
     entry and the same response body. Returns:
@@ -330,30 +349,29 @@ async def connect(session_id: str) -> dict[str, Any]:
         {"ok": False, "status": "not_found"}             unknown/expired session
         {"ok": False, "status": "failed", "error": ...}  login or validation failed
     """
-    result = await poll_login(session_id)
-    status = result.get("status")
+    session = await _lookup(session_id)
+    if not session:
+        return {"ok": False, "status": "not_found"}
 
-    if status != "completed":
-        return {"ok": False, **result}
+    async with session.finalize_lock:
+        await _finalize_connection(session)
 
-    token = result["token"]
-    validation = await validate_token(token)
-    if not validation.get("valid"):
+    if session.status == "pending":
         return {
             "ok": False,
-            "status": "failed",
-            "error": validation.get(
-                "error",
-                "GitHub CLI login completed but the token failed validation.",
-            ),
+            "status": "pending",
+            "user_code": session.user_code,
+            "verification_uri": VERIFICATION_URI,
         }
 
-    save_github_token(token, auth_method=AUTH_METHOD)
-    # This flow leaves a live `gh` session behind, so git can borrow it for
-    # HTTPS auth as well as take its identity from it.
-    await configure_git_identity(validation, setup_credential_helper=True)
-    log.info("GitHub connected as @%s (via gh CLI)", validation.get("username"))
-    return {"ok": True, "payload": connection_payload(validation, AUTH_METHOD)}
+    if session.status == "connected" and session.payload is not None:
+        return {"ok": True, "payload": dict(session.payload)}
+
+    return {
+        "ok": False,
+        "status": "failed",
+        "error": session.error or "Login failed.",
+    }
 
 
 async def cancel_login(session_id: str) -> dict[str, Any]:
