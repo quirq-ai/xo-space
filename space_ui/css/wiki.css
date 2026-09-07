@@ -34,9 +34,13 @@
 .wiki-flow span{display:block;font-size:11.5px;line-height:1.55;color:var(--ink-3)}
 .wiki-flow>i{align-self:center;font-style:normal;color:var(--accent)}
 .wiki-steps{list-style:none;counter-reset:watcher-step;display:flex;flex-direction:column}
-.wiki-steps li{counter-increment:watcher-step;display:grid;grid-template-columns:38px 205px 1fr;gap:14px;padding:18px 0;border-top:1px solid var(--line-soft)}
-.wiki-steps li::before{content:counter(watcher-step,decimal-leading-zero);font:600 10px var(--mono);letter-spacing:.1em;color:var(--accent);padding-top:3px}
-.wiki-steps b{font-size:13px;color:var(--ink)}
+.wiki-steps li{counter-increment:watcher-step;display:grid;grid-template-columns:38px 205px minmax(0,1fr);gap:14px;padding:18px 0;border-top:1px solid var(--line-soft)}
+.wiki-steps li::before{content:counter(watcher-step,decimal-leading-zero);grid-column:1;grid-row:1;font:600 10px var(--mono);letter-spacing:.1em;color:var(--accent);padding-top:3px}
+.wiki-steps b{grid-column:2;grid-row:1;font-size:13px;color:var(--ink)}
+/* A <code> command or second <p> must stay in the body track. Auto-placement
+   drops the extra child into the 38px counter column and the install page
+   renders as a single vertical strip of letters on any viewport over 900px. */
+.wiki-steps li>:not(b){grid-column:3}
 .wiki-steps p{font-size:13px;line-height:1.65;color:var(--ink-2)}
 .wiki-article code{font:500 .9em var(--mono);color:#c8e79a;background:rgba(168,217,79,.07);border:1px solid rgba(168,217,79,.12);border-radius:4px;padding:1px 4px;overflow-wrap:anywhere}
 .wiki-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
@@ -104,8 +108,8 @@
   .wiki-page-link{min-width:210px}
   .wiki-flow{grid-template-columns:1fr}
   .wiki-flow>i{rotate:90deg;justify-self:center}
-  .wiki-steps li{grid-template-columns:32px 1fr}
-  .wiki-steps p{grid-column:2}
+  .wiki-steps li{grid-template-columns:32px minmax(0,1fr)}
+  .wiki-steps b,.wiki-steps li>:not(b){grid-column:2;grid-row:auto}
   .wiki-layer-grid{grid-template-columns:1fr}
   .wiki-recipe{grid-template-columns:1fr}
   .wiki-recipe>i{rotate:90deg;justify-self:center}
