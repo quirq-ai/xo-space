@@ -11,14 +11,21 @@
   .sess-subnav button.is-on{background:var(--bg-3);color:var(--ink)}
   .sess-win button{font-size:12px;color:var(--ink-3);padding:4px 10px;border-radius:6px}
   .sess-win button.is-on{background:var(--bg-3);color:var(--accent)}
-  .sess-sources{display:flex;align-items:center;gap:3px;min-width:0;margin:0;padding:3px 5px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
-  .sess-sources legend{padding:0 4px;font:600 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
-  .sess-sources label{display:flex;align-items:center;gap:6px;padding:4px 7px;border-radius:6px;color:var(--ink-2);font-size:12px;cursor:pointer;white-space:nowrap}
-  .sess-sources label:hover{background:var(--bg-3);color:var(--ink)}
-  .sess-sources label.is-unavailable{color:var(--ink-3)}
-  .sess-sources label i{font:500 8.5px/1 var(--mono);color:var(--err);text-transform:uppercase}
-  .sess-sources input{width:14px;height:14px;margin:0;accent-color:var(--accent);cursor:pointer}
-  .sess-sources input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .sess-sources-dropdown{position:relative}
+  .sess-dropdown-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:9px;padding:6px 12px;cursor:pointer}
+  .sess-dropdown-toggle:hover{background:var(--bg-3);color:var(--ink)}
+  .sess-dropdown-toggle b{color:var(--accent);font-weight:600}
+  .sess-dropdown-toggle small{font-size:9px;color:var(--ink-3)}
+  .sess-dropdown-menu{position:absolute;top:calc(100% + 4px);left:0;z-index:20;min-width:240px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .sess-dropdown-actions{display:flex;justify-content:space-between;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line-soft)}
+  .sess-dropdown-actions button{font:600 10px/1 var(--mono);color:var(--accent);background:none;border:none;padding:3px 6px;cursor:pointer}
+  .sess-dropdown-actions button:hover{text-decoration:underline}
+  .sess-dropdown-options{display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto}
+  .sess-dropdown-options label{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;color:var(--ink-2);font-size:12px;cursor:pointer}
+  .sess-dropdown-options label:hover{background:var(--bg-3);color:var(--ink)}
+  .sess-dropdown-options label.is-unavailable{color:var(--ink-3)}
+  .sess-dropdown-options label i{font:500 8.5px/1 var(--mono);color:var(--err);text-transform:uppercase;margin-left:auto}
+  .sess-dropdown-options input{width:14px;height:14px;margin:0;accent-color:var(--accent);cursor:pointer}
   .sess-spacer{flex:1}
   .sess-refresh{font-size:13px;color:var(--ink-2);border:1px solid var(--line);border-radius:9px;padding:6px 12px}
   .sess-refresh:hover{color:var(--accent);border-color:var(--accent)}

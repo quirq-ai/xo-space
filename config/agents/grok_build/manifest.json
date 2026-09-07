@@ -1,0 +1,41 @@
+{
+  "name": "grok_build",
+  "binary": "grok",
+  "install_url": "https://x.ai",
+  "home_dir": "~/.grok",
+  "env_file": "~/.grok/.env",
+  "config_file": "~/.grok/config.json",
+  "agents_dir": "~/.grok/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.grok/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "grok",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 128000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "grok-code",
+    "catalog": [
+      "grok-code",
+      "grok-2",
+      "grok-2-vision",
+      "grok-beta",
+      "local/ollama",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["sessions/*.json", "sessions/*.jsonl", "traces/*.json", "traces/*.jsonl"],
+    "secrets": []
+  }
+}

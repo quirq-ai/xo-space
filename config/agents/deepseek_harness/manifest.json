@@ -1,0 +1,42 @@
+{
+  "name": "deepseek_harness",
+  "binary": "dsh",
+  "install_url": "https://deepseek.com",
+  "home_dir": "~/.dsh",
+  "env_file": "~/.dsh/.env",
+  "config_file": "~/.dsh/config.json",
+  "agents_dir": "~/.dsh/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.dsh/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "deepseek",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 128000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "deepseek-reasoner",
+    "catalog": [
+      "deepseek-reasoner",
+      "deepseek-coder",
+      "deepseek-chat",
+      "deepseek-v4-flash-free",
+      "local/ollama-deepseek-r1",
+      "local/vllm-deepseek-v3",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["sessions/*.json", "sessions/*.jsonl", "logs/*.json", "logs/*.jsonl"],
+    "secrets": []
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "omp",
+  "binary": "omp",
+  "install_url": "https://github.com/omp-ai/omp",
+  "home_dir": "~/.omp",
+  "env_file": "~/.omp/.env",
+  "config_file": "~/.omp/config.json",
+  "agents_dir": "~/.omp/agent/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.omp/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "omp",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 200000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "omp-agent-v1",
+    "catalog": [
+      "omp-agent-v1",
+      "omp-coder-large",
+      "local/ollama",
+      "local/vllm",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["agent/sessions/*.json", "agent/sessions/*.jsonl", "*.json"],
+    "secrets": []
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "opencode",
+  "binary": "opencode",
+  "install_url": "https://github.com/opencode-ai/opencode",
+  "home_dir": "~/.local/share/opencode",
+  "env_file": "~/.config/opencode/.env",
+  "config_file": "~/.config/opencode/config.json",
+  "agents_dir": "~/.local/share/opencode/sessions",
+  "workspace_dir": "~/xo-projects",
+  "provisioning_log": "~/.local/share/opencode/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 300,
+  "api": {
+    "session_header": ""
+  },
+  "model_prefix": "opencode",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": true,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 200000,
+    "max_output": 16384
+  },
+  "models": {
+    "default": "deepseek-v4-flash-free",
+    "catalog": [
+      "deepseek-v4-flash-free",
+      "deepseek-reasoner",
+      "deepseek-coder",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3-coder-30b",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+      "gpt-5.1-codex",
+      "gpt-5.2",
+      "glm-4.7",
+      "ornith-1.0-35b",
+      "hy3-free",
+      "north-mini-code-free",
+      "local/ollama",
+      "local/vllm",
+      "custom/openai-compatible"
+    ]
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["*.json", "*.jsonl", "sessions/*.json", "sessions/*.jsonl", "opencode.db"],
+    "secrets": []
+  }
+}
