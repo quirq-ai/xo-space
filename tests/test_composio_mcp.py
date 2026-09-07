@@ -573,7 +573,7 @@ class GatewayWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         # install_into_gateway mints a proxy token, which writes the session
         # store and takes a lock under quirq state. Both are redirected here —
-        # see the header of tests/test_composio.py for the same two traps.
+        # see the header of tests/test_composio.py for the same three traps.
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
@@ -582,11 +582,18 @@ class GatewayWiringTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-        store = patch.object(
-            composio_service, "_SESSIONS_PATH", tmp / "data" / "composio_sessions.json"
-        )
-        store.start()
-        self.addCleanup(store.stop)
+        for patcher in (
+            patch.object(
+                composio_service,
+                "_SESSIONS_PATH",
+                tmp / "data" / "composio_sessions.json",
+            ),
+            # Emptied, or migration moves the developer's REAL store into this temp
+            # dir and deletes it — the third trap in tests/test_composio.py.
+            patch.object(composio_service, "_LEGACY_SESSIONS_PATHS", ()),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         self._reset_caches()
         self.addCleanup(self._reset_caches)

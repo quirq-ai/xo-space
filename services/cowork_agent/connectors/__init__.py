@@ -13,17 +13,18 @@ its ``__init__``, so callers import the connector, not its internals::
     manus/     Manus                 (connector.py — API key)
     composio/  Composio              (service.py + credentials.py + identity.py
                                        + session_identity.py + mcp.py + categories.py
-                                       + action_prefs.py)
+                                       + action_prefs.py + paths.py)
 
 Two shared pieces sit alongside them, deliberately not connectors:
 
     rclone/       the engine gdrive and onedrive both drive
     token_store   the single owner of ``token.json``
 
-Both credential stores live in the user's config directory, never the checkout:
-``~/.config/token.json`` (token_store) and ``~/.config/rclone/rclone.conf``
-(rclone's own default). Files left at the old ``services/`` locations are moved
-on startup.
+Credential stores live in the user's config directory, never the checkout:
+``~/.config/token.json`` (token_store), ``~/.config/rclone/rclone.conf`` (rclone's
+own default), and ``~/.config/composio/{sessions,action_prefs}.json`` (see
+``composio/paths.py``). Files left at the old ``services/`` and ``data/``
+locations are moved into place on first access.
 
 These are all agent-agnostic; their HTTP surfaces live in the matching
 ``routers/cowork_agent/connectors/`` modules — for Composio, both

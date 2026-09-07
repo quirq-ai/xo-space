@@ -6,11 +6,10 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
 from services import tenancy
-from services.cowork_agent.connectors.composio import credentials, state
+from services.cowork_agent.connectors.composio import credentials, paths, state
 
 log = logging.getLogger(__name__)
 
@@ -417,9 +416,12 @@ def list_tools(
     return out
 
 
-# connectors/composio/ → connectors/ → cowork_agent/ → services/ → repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-_SESSIONS_PATH = _REPO_ROOT / "data" / "composio_sessions.json"
+# The store lives in the user's config directory, never the checkout — see paths.py.
+# Resolved once at import, and every use site below reads this module global rather than
+# re-resolving, which is what keeps `patch.object(service, "_SESSIONS_PATH", ...)` a
+# working test seam.
+_SESSIONS_PATH = paths.store_dir() / "sessions.json"
+_LEGACY_SESSIONS_PATHS = (paths.legacy_checkout_path("composio_sessions.json"),)
 
 _SESSION_IDS: dict[str, str] = {}
 _PROXY_TOKENS: dict[str, str] = {}
@@ -437,6 +439,7 @@ def _load_store() -> tuple[Optional[str], dict[str, str], dict[str, str]]:
     """
     from services.cowork_agent.visualizer.reader import read_json
 
+    paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
     data = read_json(_SESSIONS_PATH)
     if not isinstance(data, dict):
         return None, {}, {}
@@ -508,6 +511,9 @@ def _write_store(mutate, *, owner: str) -> None:
     from services.cowork_agent.visualizer.flock import locked
 
     try:
+        # Before the lock: its sentinel is keyed on the store's absolute path, so moving
+        # the file out from under a held lock would be locking the wrong name.
+        paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
         with locked(_SESSIONS_PATH):
             _existing, sessions, tokens = _load_store()
             mutate(sessions, tokens)
