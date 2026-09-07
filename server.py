@@ -72,16 +72,16 @@ _quirq_secrets_file = (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
 if _quirq_secrets_file:
     load_dotenv(_quirq_secrets_file, override=True)
 
-from services.xo_credential import (
+from routers.auth.auth import (
     XO_API_KEY,
     consume_auth_flow,
     get_auth_token,
     get_auth_state,
+    router as auth_router,
 )
 from routers.cowork_agent.connectors.composio_session import (
     router as xo_auth_session_router,
 )
-from routers.auth.auth import router as xo_auth_router
 from routers.auth.claude_setup_token import router as claude_setup_token_router
 from routers.auth.codex_setup import router as codex_setup_router
 from routers.cowork_agent.legacy.openclaw_usage import router as openclaw_usage_router
@@ -788,7 +788,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(xo_auth_session_router)
-app.include_router(xo_auth_router)
+app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
 app.include_router(openclaw_usage_router)

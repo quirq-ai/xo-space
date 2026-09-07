@@ -43,7 +43,6 @@ from starlette.requests import Request
 
 from routers.cowork_agent.connectors import composio as router_mod
 from routers.cowork_agent.connectors import composio_mcp_proxy as mcp_proxy
-from services import tenancy
 from services.cowork_agent.connectors.composio import action_prefs, categories
 from services.cowork_agent.connectors.composio import credentials
 from services.cowork_agent.connectors.composio import identity as identity_mod
@@ -94,7 +93,7 @@ class _ComposioBase(unittest.TestCase):
         env = patch.dict(
             os.environ,
             {
-                tenancy.WORKSPACE_ENV: WORKSPACE,
+                state.WORKSPACE_ENV: WORKSPACE,
                 "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
                 "COMPOSIO_API_KEY": "test-key",
                 # Hermetic: the credentials provider must never reach for
@@ -120,7 +119,7 @@ class _ComposioBase(unittest.TestCase):
             # client and the account-mismatch guard both reach for it. Without this the
             # suite would make live calls to xo-swarm-api. Tests that exercise those
             # paths patch get_auth_token themselves.
-            patch("services.xo_credential.XO_API_KEY", None),
+            patch("routers.auth.auth.XO_API_KEY", None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -253,7 +252,7 @@ class CredentialsTests(_ComposioBase):
 
     def test_the_bundle_is_fetched_once_and_cached(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()) as get:
             self.assertEqual(credentials.api_key(), self.SECRET)
             self.assertEqual(credentials.auth_config_id(
@@ -261,10 +260,10 @@ class CredentialsTests(_ComposioBase):
         self.assertEqual(get.call_count, 1)
 
     def test_it_calls_the_same_channel_usage_sync_uses(self) -> None:
-        from services.xo_credential import CHAT_API_BASE_URL
+        from routers.auth.auth import CHAT_API_BASE_URL
 
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()) as get:
             credentials.api_key()
 
@@ -279,14 +278,14 @@ class CredentialsTests(_ComposioBase):
         # service._auth_config_id_for owns that message: it is the only caller
         # that knows the toolkit slug and the auth scheme.
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             self.assertIsNone(
                 credentials.auth_config_id("COMPOSIO_AUTH_CONFIG_FIGMA"))
 
     def test_no_xo_credential_is_reported_against_the_key_name(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value=None):
+                patch("routers.auth.auth.get_auth_token", return_value=None):
             with self.assertRaises(RuntimeError) as raised:
                 credentials.api_key()
         self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
@@ -297,7 +296,7 @@ class CredentialsTests(_ComposioBase):
         # anyone who can write this environment point the connector at their own
         # Composio project and harvest every subsequent OAuth grant.
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._response(503)):
             with self.assertRaises(credentials.CredentialsUnavailable) as raised:
                 credentials.api_key()
@@ -307,12 +306,12 @@ class CredentialsTests(_ComposioBase):
     def test_a_401_drops_the_cache_rather_than_serving_stale(self) -> None:
         # A revoked credential must stop working, not linger for an hour.
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             credentials.api_key()
         with self._swarm(), \
                 patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._response(401)):
             with self.assertRaises(credentials.CredentialsUnavailable) as raised:
                 credentials.api_key()
@@ -321,25 +320,25 @@ class CredentialsTests(_ComposioBase):
     def test_an_unreachable_swarm_serves_the_cached_bundle(self) -> None:
         # A swarm restart must not take every connector down with it.
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             credentials.api_key()
         with self._swarm(), \
                 patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get",
                              side_effect=httpx.ConnectError("refused")):
             self.assertEqual(credentials.api_key(), self.SECRET)
 
     def test_a_stale_bundle_eventually_expires(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             credentials.api_key()
         with self._swarm(), \
                 patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
                 patch.object(credentials, "_STALE_MAX", 0.0), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get",
                              side_effect=httpx.ConnectError("refused")):
             with self.assertRaises(credentials.CredentialsUnavailable):
@@ -347,7 +346,7 @@ class CredentialsTests(_ComposioBase):
 
     def test_an_empty_key_from_the_swarm_is_not_accepted(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._response(
                     200, {"api_key": "  ", "auth_configs": {}})):
             with self.assertRaises(credentials.CredentialsUnavailable) as raised:
@@ -374,7 +373,7 @@ class CredentialsTests(_ComposioBase):
 
     def test_the_credential_never_reaches_the_log(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             with self.assertLogs(credentials.log, level="INFO") as captured:
                 credentials.api_key()
@@ -385,7 +384,7 @@ class CredentialsTests(_ComposioBase):
 
     def test_status_reports_without_exposing_the_key(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get", return_value=self._ok()):
             snapshot = credentials.status()
         self.assertEqual(snapshot["source"], "swarm")
@@ -414,7 +413,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             return {"principal": PRINCIPAL}
 
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_arequest", side_effect=_fake):
             await state.resolve_proxy_token("plaintext-token-value-aaaaaaaaaaaa")
 
@@ -425,7 +424,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     async def test_a_resolved_token_is_cached(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_arequest",
                     new=AsyncMock(return_value={"principal": PRINCIPAL}),
@@ -439,7 +438,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # ever cost a dict miss.
         unavailable = state.StateUnavailable("not found", authoritative=True)
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_arequest", new=AsyncMock(side_effect=unavailable)) as arequest:
             self.assertIsNone(await state.resolve_proxy_token("tok-bbbbbbbbbbbbbbbb"))
             self.assertIsNone(await state.resolve_proxy_token("tok-bbbbbbbbbbbbbbbb"))
@@ -462,7 +461,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             return {"principal": PRINCIPAL}
 
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_arequest", side_effect=_fake):
             results = await _asyncio.gather(
                 *[state.resolve_proxy_token("tok-cccccccccccccccc") for _ in range(5)]
@@ -472,7 +471,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     async def test_a_transient_failure_serves_the_stale_principal(self) -> None:
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_arequest",
                     new=AsyncMock(return_value={"principal": PRINCIPAL}),
@@ -482,7 +481,7 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         transient = state.StateUnavailable("swarm down")
         with self._swarm(), \
                 patch.object(state, "_TOKEN_CACHE", dict(state._TOKEN_CACHE)), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_arequest", new=AsyncMock(side_effect=transient)):
             state._TOKEN_CACHE["tok-dddddddddddddddd"] = (
                 PRINCIPAL, 0.0, __import__("time").monotonic()
@@ -495,14 +494,14 @@ class StateClientTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # The proxy turns this into a retryable 503, not a 401 — see McpProxyTests.
         transient = state.StateUnavailable("swarm down")
         with self._swarm(), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_arequest", new=AsyncMock(side_effect=transient)):
             with self.assertRaises(state.StateUnavailable) as raised:
                 await state.resolve_proxy_token("tok-eeeeeeeeeeeeeeee")
         self.assertFalse(raised.exception.authoritative)
 
     def test_no_xo_credential_is_authoritative(self) -> None:
-        with self._swarm(), patch("services.xo_credential.get_auth_token", return_value=None):
+        with self._swarm(), patch("routers.auth.auth.get_auth_token", return_value=None):
             with self.assertRaises(state.StateUnavailable) as raised:
                 state._endpoint()
         self.assertTrue(raised.exception.authoritative)
@@ -536,8 +535,8 @@ class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_the_local_composer_has_not_come_back(self) -> None:
         for gone in ("SEPARATOR", "scoped_principal", "is_scoped"):
             self.assertFalse(
-                hasattr(tenancy, gone),
-                f"tenancy.{gone} is back — the tenant key is composed by xo-swarm-api "
+                hasattr(state, gone),
+                f"state.{gone} is back — the tenant key is composed by xo-swarm-api "
                 "and a second composer is what silently orphans connected accounts.",
             )
 
@@ -546,13 +545,13 @@ class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # against every connected account.
         weird = "user_AbC123__ws__Ws-Test_-9"
         state.invalidate()
-        with patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", return_value={"principal": weird}):
             self.assertEqual(await state.aprincipal(), weird)
 
     async def test_it_is_fetched_once_and_cached(self) -> None:
         state.invalidate()
-        with patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request", return_value={"principal": PRINCIPAL}
                 ) as request:
@@ -564,7 +563,7 @@ class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # A pod that booted once knows whose rows it holds, so it rides out an outage.
         state.invalidate()
         state.adopt_principal(PRINCIPAL)
-        with patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request", side_effect=state.StateUnavailable("down")
                 ):
@@ -575,7 +574,7 @@ class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         state.invalidate()
         state.adopt_principal(PRINCIPAL)
         rejected = state.StateUnavailable("rejected", authoritative=True)
-        with patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", side_effect=rejected):
             with self.assertRaises(state.StateUnavailable):
                 await state.aprincipal()
@@ -586,7 +585,7 @@ class PrincipalTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         state.invalidate()
         state.adopt_principal(PRINCIPAL)
         missing = state.StateUnavailable("nf", authoritative=True, not_found=True)
-        with patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", side_effect=missing):
             with self.assertLogs(state.log, level="ERROR"):
                 self.assertEqual(await state.aprincipal(), PRINCIPAL)
@@ -645,7 +644,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # dies with this pod's store, and a re-install during the same outage would
         # only mint another one the swarm never saw.
         with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request", side_effect=state.StateUnavailable("down")
                 ):
@@ -655,7 +654,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     def test_a_recorded_token_is_reported_durable(self) -> None:
         with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", return_value={"principal": PRINCIPAL}):
             service.proxy_token_for_user(PRINCIPAL)
         self.assertTrue(service.last_token_was_durable())
@@ -663,7 +662,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_minting_sends_only_a_digest(self) -> None:
         seen: list[dict] = []
         with patch.dict(os.environ, {"COMPOSIO_STATE_SOURCE": "swarm"}), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request",
                     side_effect=lambda *a, **kw: seen.append(kw.get("json") or {}) or {},
@@ -1339,7 +1338,6 @@ class RemovedEndpointTests(_ComposioBase):
         # flow for this backend's own credential and must never mint a session from a
         # token the caller presents, nor shadow the UI's session/self pass-through.
         import routers.auth.auth as auth_mod
-        from services import xo_credential
 
         self.assertFalse(hasattr(auth_mod, "xo_auth_session"))
         registered = {
@@ -1360,9 +1358,6 @@ class RemovedEndpointTests(_ComposioBase):
                 ("POST", "/xo-auth/logout"),
             },
         )
-        # One credential per process: the router reads it, it does not keep a copy.
-        self.assertIs(auth_mod.auth_state, xo_credential.auth_state)
-        self.assertIs(auth_mod.get_auth_token, xo_credential.get_auth_token)
 
     def test_the_account_matching_guard_is_gone_with_it(self) -> None:
         # The guard existed only to refuse those sessions. Keeping it without the
@@ -1402,7 +1397,7 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # deployment with no CODER_WORKSPACE_ID reports "invalid or expired
         # bearer token" and sends the operator hunting the wrong problem.
         request = _make_request({"x-xo-session": "sid-1"})
-        with patch.dict(os.environ, {tenancy.WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
             with self.assertRaises(HTTPException) as raised:
                 await identity_mod.get_composio_user(request)
         self.assertEqual(raised.exception.status_code, 401)
@@ -1431,7 +1426,7 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         state.invalidate()
         sid = session_identity.remember(secrets.token_urlsafe(32))
         request = _make_request({"x-xo-session": sid})
-        with patch.dict(os.environ, {tenancy.WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
             self.assertIsNone(await identity_mod.resolve_user_from_bearer(request))
 
 
@@ -1614,7 +1609,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # shape as a missing key, carrying a detail the Connectors tab can match.
         body = router_mod.ConnectBody()
         with patch.dict(os.environ, {"COMPOSIO_CREDENTIALS_SOURCE": "swarm"}), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(credentials, "_get",
                              side_effect=httpx.ConnectError("refused")):
             with self.assertRaises(HTTPException) as raised:
@@ -1795,7 +1790,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # The XO credential is XO_API_KEY or the session consumed at boot — it cannot
         # appear later in the process, so retrying would only burn round trips.
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value=""):
+                patch("routers.auth.auth.get_auth_token", return_value=""):
             sweep = await service.install_gateways()
         self.assertEqual(sweep.results, {})
         self.assertEqual(sweep.skipped, "no_credential")
@@ -1804,7 +1799,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     async def test_an_unreachable_swarm_installs_nothing_but_is_retryable(self) -> None:
         state.invalidate()
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     state, "_request", side_effect=RuntimeError("network down"),
                 ):
@@ -1817,7 +1812,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         rejected = state.StateUnavailable("XO rejected it", authoritative=True)
         state.invalidate()
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", side_effect=rejected):
             sweep = await service.install_gateways()
         self.assertEqual(sweep.results, {})
@@ -1825,9 +1820,9 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertFalse(sweep.retryable)
 
     async def test_missing_workspace_installs_nothing_and_is_final(self) -> None:
-        with patch.dict(os.environ, {tenancy.WORKSPACE_ENV: ""}), \
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}), \
                 patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"):
+                patch("routers.auth.auth.get_auth_token", return_value="tok"):
             sweep = await service.install_gateways()
         self.assertEqual(sweep.results, {})
         self.assertEqual(sweep.skipped, "no_workspace")
@@ -1841,7 +1836,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
         with patch.object(
             service, "gateway_install_agents", return_value=["claude_code", "hermes"]
-        ), patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        ), patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
                 patch.object(service, "install_into_gateway", side_effect=_install):
             sweep = await service.install_gateways()
@@ -1856,7 +1851,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
         with patch.object(
             service, "gateway_install_agents", return_value=["claude_code", "codex"]
-        ), patch("services.xo_credential.get_auth_token", return_value="tok"), \
+        ), patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(service, "_composio_proxy_url", return_value=PROXY_URL) as minted, \
                 patch.object(
                     service, "install_into_gateway",
@@ -1872,7 +1867,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     async def test_a_failed_mint_fails_every_agent_and_still_runs(self) -> None:
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(
                     service, "_composio_proxy_url", side_effect=ValueError("no user"),
                 ), contextlib.redirect_stdout(io.StringIO()):
@@ -1893,7 +1888,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             return PRINCIPAL
 
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "aprincipal", side_effect=_slow_principal), \
                 patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
                 patch.object(service, "install_into_gateway", return_value={"ok": True}):
@@ -1906,7 +1901,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
         patches = (
             patch.object(service, "gateway_install_agents", return_value=["claude_code"]),
-            patch("services.xo_credential.get_auth_token", return_value="tok"),
+            patch("routers.auth.auth.get_auth_token", return_value="tok"),
             patch.object(service, "_composio_proxy_url", return_value=PROXY_URL),
             patch.object(service, "install_into_gateway", return_value=current),
         )
@@ -1928,7 +1923,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         current = {"ok": True, "changed": False, "config_path": "/tmp/x"}
         outputs: list[str] = []
         with patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
-                patch("services.xo_credential.get_auth_token", return_value="tok"), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(service, "_composio_proxy_url", return_value=PROXY_URL), \
                 patch.object(service, "install_into_gateway", return_value=current):
             for durable in (False, False, True, True):
