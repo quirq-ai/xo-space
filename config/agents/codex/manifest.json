@@ -21,7 +21,6 @@
     "path_in_home": "config.toml",
     "key_path": ["mcp_servers"],
     "server_name": "composio",
-    "legacy_names": ["cowork", "xo_composio"],
     "entry": {"url": "{proxy_url}", "enabled": true},
     "create_if_missing": true
   },

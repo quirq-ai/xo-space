@@ -20,7 +20,6 @@
     "path": "~/.claude.json",
     "key_path": ["mcpServers"],
     "server_name": "composio",
-    "legacy_names": ["cowork", "xo_composio"],
     "entry": {"type": "http", "url": "{proxy_url}"},
     "create_if_missing": false
   },

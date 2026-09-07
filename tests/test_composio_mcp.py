@@ -42,6 +42,20 @@ def _target(agent: str, path: Path) -> mcp.McpTarget:
     return dataclasses.replace(target, path=path)
 
 
+def _target_with_legacy(agent: str, path: Path, *names: str) -> mcp.McpTarget:
+    """The agent's block with ``legacy_names`` grafted on.
+
+    No agent ships ``legacy_names`` any more — the rename it was added for is
+    done, and every config has since been rewritten. The purge itself stays: it
+    is what stops a renamed server being registered twice (and its stale proxy
+    token being offered to the model alongside the live one), so the next rename
+    only has to add the name back to a manifest. These tests are what keep that
+    path honest in the meantime, so they synthesise the block rather than
+    depending on one being shipped.
+    """
+    return dataclasses.replace(_target(agent, path), legacy_names=names)
+
+
 class _TempConfig(unittest.TestCase):
     """A temp dir plus the read/write helpers the format suites share."""
 
@@ -130,6 +144,15 @@ class ManifestBlockTests(unittest.TestCase):
     def test_the_shipped_blocks_are_enabled(self) -> None:
         for agent in mcp.agents_with_targets():
             self.assertTrue(mcp.load_target(agent).enabled, agent)
+
+    def test_no_shipped_block_carries_legacy_names(self) -> None:
+        # The rename these covered is done and every config has been rewritten
+        # since, so shipping them only costs a purge pass on every write. The
+        # support stays in the writer for the next rename (see
+        # `_target_with_legacy`); this pins the fact that nothing needs it now,
+        # so a name re-added by hand is a deliberate act and not a leftover.
+        for agent in mcp.agents_with_targets():
+            self.assertEqual(mcp.load_target(agent).legacy_names, (), agent)
 
     def test_a_block_can_opt_out_with_enabled_false(self) -> None:
         # The sweep re-adds an entry removed by hand, so this flag is the one way to
@@ -316,8 +339,9 @@ class TomlWriterTests(_TempConfig):
         self.assertIn("composio", servers)
 
     def test_a_legacy_table_is_removed_so_tools_are_not_listed_twice(self) -> None:
+        target = _target_with_legacy("codex", self.config, "cowork")
         self._write(f'[mcp_servers.cowork]\nurl = "{PROXY}"\nenabled = true\n')
-        self.assertTrue(self._apply()["ok"])
+        self.assertTrue(mcp.apply(target, PROXY)["ok"])
         servers = self._parsed()["mcp_servers"]
         self.assertNotIn("cowork", servers)
         self.assertIn("composio", servers)
@@ -417,8 +441,9 @@ class JsonWriterTests(_TempConfig):
         self.assertEqual(parsed["mcpServers"]["docs"], {"url": "u"})
 
     def test_a_legacy_key_is_purged(self) -> None:
+        target = _target_with_legacy("claude_code", self.config, "cowork")
         self._write(json.dumps({"mcpServers": {"cowork": {"url": "old"}}}))
-        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        self.assertTrue(mcp.apply(target, PROXY)["ok"])
         servers = self._parsed()["mcpServers"]
         self.assertNotIn("cowork", servers)
         self.assertIn("composio", servers)
@@ -542,8 +567,9 @@ class YamlWriterTests(_TempConfig):
         self.assertEqual(parsed["model"]["provider"], "anthropic")
 
     def test_a_legacy_key_is_purged(self) -> None:
+        target = _target_with_legacy("hermes", self.config, "cowork")
         self._write("mcp_servers:\n  cowork:\n    url: old\n")
-        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        self.assertTrue(mcp.apply(target, PROXY)["ok"])
         self.assertNotIn("cowork", self._parsed()["mcp_servers"])
 
     def test_a_second_install_is_a_no_op(self) -> None:
