@@ -18,11 +18,12 @@ from __future__ import annotations
 import asyncio
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from services.cowork_agent import project_layout
 
-from . import config, git_ops
+from . import config, git_ops, state
 from .repo_identity import normalize_repo
 
 CLONING_SUFFIX = ".cloning"
@@ -145,4 +146,6 @@ async def clone_shared_repo(repo: str) -> CloneResult:
     except OSError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         return CloneResult("error", dirname, f"could not move clone into place: {exc}", had_token)
+    # Remember that XO Space, not the user, put this folder here (survives restarts).
+    state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat())
     return CloneResult("cloned", dirname, "", had_token)

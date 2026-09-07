@@ -203,6 +203,27 @@ export function bindSharingCopies(root){
   }));
 }
 
+/* ── row chip ─────────────────────────────────────────────────────────────
+   Shown beside the project name in the list for every repo the relay knows
+   is shared, so "which of my projects are synced" is visible without opening
+   a drawer. For the first day after XO Space cloned it, say so. */
+const DAY=86400*1000;
+export function sharingRowChip(projectId){
+  const e=entryFor(projectId);
+  if(!e||!e.shared)return'';
+  const at=e.auto_cloned_at;
+  const fresh=at&&(Date.now()-new Date(at).getTime())<DAY;
+  return'<span class="tchip st-shared prj-shr-chip" title="synced through project sharing">shared'
+    +(fresh?' · auto-cloned '+rel(at):'')+'</span>';
+}
+function clonedNote(projectId){
+  const e=entryFor(projectId);
+  if(!e||!e.auto_cloned_at)return'';
+  const d=new Date(e.auto_cloned_at);
+  return'<span class="shr-muted" title="'+esc(e.auto_cloned_at)+'">cloned by XO Space on '
+    +esc(d.toLocaleDateString(undefined,{dateStyle:'medium'}))+'</span>';
+}
+
 /* ── drawer panel ─────────────────────────────────────────────────────────── */
 function chip(projectId){
   const st=memberState(projectId);
@@ -240,7 +261,7 @@ function panelHTML(id,d){
   const st=memberState(id);
   return'<div class="shr-panel" data-project="'+esc(id)+'">'
     +'<div class="shr-sec">'+commitsHTML(d)+'</div>'
-    +'<div class="shr-sec"><div class="shr-sec-head"><span class="shr-sec-title">Members</span>'+chip(id)+'</div>'
+    +'<div class="shr-sec"><div class="shr-sec-head"><span class="shr-sec-title">Members</span>'+chip(id)+clonedNote(id)+'</div>'
       +'<div class="shr-members" id="shr-members-'+esc(id)+'" data-state="'+st+'">'
         +'<div class="prj-note">'+(st==='live'?'loading…':IDLE_NOTE[st])+'</div></div>'
       +'<form class="shr-form" data-project="'+esc(id)+'">'

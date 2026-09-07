@@ -22,7 +22,8 @@ class CloneFunctionTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name) / "projects"
         self.root.mkdir()
-        self._env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.root)})
+        self._env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.root),
+                                            "QUIRQ_STATE_ROOT": str(Path(self._tmp.name) / ".quirq")})
         self._env.start()
         self._auth = patch.object(clone, "_github_auth", new=AsyncMock(return_value=(None, False)))
         self._auth.start()
@@ -48,6 +49,8 @@ class CloneFunctionTests(unittest.TestCase):
         self.assertEqual(seen["cwd"], self.root.resolve())
         self.assertTrue((self.root / "trip-planner" / ".git").is_dir())
         self.assertFalse(seen["dest"].exists())                        # renamed, not copied
+        from services.cowork_agent.project_sharing import state
+        self.assertIsNotNone(state.load_cloned_at(R))                  # remembered for the UI
 
     def test_existing_folder_with_same_origin_is_already(self) -> None:
         (self.root / "Trip-Planner" / ".git").mkdir(parents=True)  # capitalised on disk

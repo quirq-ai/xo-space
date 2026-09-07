@@ -16,6 +16,11 @@
     transition:all .16s var(--ease)}
   .shr-copy:hover{color:var(--accent);border-color:var(--accent)}
 
+  /* row chip beside the project name (empty span when not shared) */
+  .prj-shr{display:inline-flex;align-items:center}
+  .prj-shr:empty{display:none}
+  .prj-shr-chip{margin-left:6px}
+
   /* chips added to the shared vocabulary */
   .tchip.st-shared{color:var(--accent);border-color:var(--accent)}
   .tchip.st-available{color:#e0b04c;border-color:#e0b04c}

@@ -92,6 +92,19 @@ class StatusSnapshotTests(unittest.TestCase):
         self.assertEqual(Path(snap["projects_root"]), Path(tmp).resolve())
         self.assertEqual(snap["own_workspace_id"], "ws-a")
 
+    def test_snapshot_says_whether_xo_space_cloned_each_repo(self) -> None:
+        from services.cowork_agent.project_sharing import service, state, status
+
+        status.reset()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(Path(tmp) / ".quirq"), "XO_PROJECTS_ROOT": tmp}):
+                status.record_poll(ok=True, membership={"github.com/a/one", "github.com/a/two"},
+                                   local={"github.com/a/one": "one", "github.com/a/two": "two"})
+                state.save_cloned_at("github.com/a/one", "2026-09-07T10:00:00+00:00")
+                repos = service.status_snapshot()["repos"]
+        self.assertEqual(repos["github.com/a/one"]["auto_cloned_at"], "2026-09-07T10:00:00+00:00")
+        self.assertIsNone(repos["github.com/a/two"]["auto_cloned_at"])
+
     def test_project_commits_carries_the_project_path(self) -> None:
         from unittest.mock import AsyncMock
         import asyncio

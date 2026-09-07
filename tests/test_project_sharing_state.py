@@ -49,6 +49,13 @@ class CommitRelayStateTests(unittest.TestCase):
         state.save_cursor(REPO, 3)  # recovers by overwriting
         self.assertEqual(state.load_cursor(REPO), 3)
 
+    def test_cloned_at_is_remembered_beside_the_bookmarks(self) -> None:
+        self.assertIsNone(state.load_cloned_at(REPO))
+        state.save_cursor(REPO, 4)
+        state.save_cloned_at(REPO, "2026-09-07T10:00:00+00:00")
+        self.assertEqual(state.load_cloned_at(REPO), "2026-09-07T10:00:00+00:00")
+        self.assertEqual(state.load_cursor(REPO), 4)  # same file, no clobber
+
     def test_keyed_on_identity_not_folder(self) -> None:
         # A folder rename changes nothing the relay reads: the key is the origin.
         state.save_cursor(REPO, 11)

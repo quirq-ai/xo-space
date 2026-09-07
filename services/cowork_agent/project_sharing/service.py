@@ -7,7 +7,7 @@ from services.cowork_agent.project_layout import project_dir, project_dir_exists
 
 from services.swarm_api import project_sharing as swarm_client
 
-from . import config, git_ops, poller, status
+from . import config, git_ops, poller, state, status
 from .repo_identity import normalize_repo
 
 
@@ -47,6 +47,10 @@ def status_snapshot() -> dict:
     snap = status.snapshot()
     snap["own_workspace_id"] = config.workspace_id()
     snap["watch_branch"] = config.watch_branch()
+    # "did XO Space clone this?" comes from the per-repo state file, so it is
+    # still answerable after a restart when the in-memory event is gone.
+    for repo, entry in snap.get("repos", {}).items():
+        entry["auto_cloned_at"] = state.load_cloned_at(repo)
     # The UI builds the clone command for "shared with you" repos from this;
     # a clone anywhere else is invisible to the relay.
     snap["projects_root"] = str(xo_projects_root())

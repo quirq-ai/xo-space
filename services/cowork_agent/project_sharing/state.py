@@ -71,6 +71,18 @@ def save_last_reported(repo: str, sha: str) -> None:
     _write(repo, data)
 
 
+def load_cloned_at(repo: str) -> str | None:
+    """ISO time the relay cloned this repo here, or None if the user cloned
+    it (or nothing is known). Survives restarts, unlike the in-memory event."""
+    return _read(repo).get("cloned_at") or None
+
+
+def save_cloned_at(repo: str, iso: str) -> None:
+    data = _read(repo)
+    data["cloned_at"] = iso
+    _write(repo, data)
+
+
 def load_cursor(repo: str) -> int:
     try:
         return int(_read(repo).get("cursor") or 0)
