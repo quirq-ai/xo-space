@@ -23,7 +23,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         m = re.search(r"from '\./projects_sharing\.js\?v=([\w-]+)'", projects)
         self.assertIsNotNone(m, "projects.js must import projects_sharing.js with ?v=")
         app = read("js/app.js")
-        self.assertIn("./views/projects.js?v=20260907-sharing6", app)
+        self.assertIn("./views/projects.js?v=20260907-sharing7", app)
 
     def test_panel_is_registered_and_bind_hook_is_called(self) -> None:
         projects = read("js/views/projects.js")
@@ -82,6 +82,17 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         self.assertIn("data-shr-row=", projects)                 # in the row template
         self.assertIn("[data-shr-row]", projects)                # repainted on status refresh
         self.assertIn(".prj-shr:empty{display:none}", read("css/sharing.css"))
+
+    def test_shared_chips_drop_when_only_the_owner_is_left(self) -> None:
+        # the owner row is irrevocable, so "shared" must come from the member
+        # count (others = members - 1), and an absent count must still say shared
+        mod = read("js/views/projects_sharing.js")
+        self.assertIn("function others(e)", mod)
+        self.assertIn("typeof m==='number'", mod)
+        self.assertIn("if(n===0)return'';", mod)                          # row chip
+        self.assertIn("nobody else can see it\">not shared", mod)         # drawer chip
+        self.assertIn("r.shared&&others(r)!==0", mod)                      # strip count
+        self.assertIn("' with '+n", mod)
 
     def test_clone_command_targets_the_reported_projects_root(self) -> None:
         mod = read("js/views/projects_sharing.js")

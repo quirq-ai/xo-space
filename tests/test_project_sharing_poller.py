@@ -107,6 +107,19 @@ class PollerTickTests(unittest.TestCase):
             run(poller.run_tick())
         self.assertEqual(seen["last"], "c1")
 
+    def test_member_count_passes_through_and_absence_is_tolerated(self) -> None:
+        with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
+             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "members": 3, "events": [], "has_more": False}]})), \
+             patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
+            run(poller.run_tick())
+            self.assertEqual(status.snapshot()["repos"][R]["members"], 3)
+        with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
+             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "events": [], "has_more": False}]})), \
+             patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
+            run(poller.run_tick())                        # older swarm: no field
+        self.assertIsNone(status.snapshot()["repos"][R]["members"])
+        self.assertTrue(status.snapshot()["repos"][R]["shared"])
+
     def test_on_change_fires_at_end_of_tick(self) -> None:
         calls = []
         status.on_change(lambda: calls.append(1))

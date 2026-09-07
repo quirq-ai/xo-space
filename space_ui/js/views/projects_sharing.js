@@ -107,7 +107,7 @@ export function sharingStripHTML(){
     +'<span class="shr-muted">'+esc(REASON[status.reason]||'parked')+'</span>';
   else{
     const ok=status.last_poll_ok;
-    const n=Object.values(status.repos||{}).filter(r=>r.shared).length;
+    const n=Object.values(status.repos||{}).filter(r=>r.shared&&others(r)!==0).length;
     left='<span class="tchip'+(ok===false?' st-blocked':' st-shared')+'">sharing '+(ok===false?'check failed':'on')+'</span>'
       +'<span class="shr-muted">last check '+(status.last_poll_at?rel(status.last_poll_at):'pending')
       +(n?' · '+n+' shared repo'+(n===1?'':'s'):'')
@@ -212,13 +212,24 @@ export function bindSharingCopies(root){
    is shared, so "which of my projects are synced" is visible without opening
    a drawer. For the first day after XO Space cloned it, say so. */
 const DAY=86400*1000;
+/* How many OTHER workspaces can see the repo: the swarm's active-row count
+   minus this one. The owner row never goes away, so a repo whose last member
+   was revoked still comes back as a member with a count of 1 — that is "not
+   shared" to a person. null when the swarm did not report a count (older
+   server), in which case "shared" is still the honest answer. */
+function others(e){
+  const m=e&&e.members;
+  return(typeof m==='number')?Math.max(0,m-1):null;
+}
 export function sharingRowChip(projectId){
   const e=entryFor(projectId);
   if(!e||!e.shared)return'';
+  const n=others(e);
+  if(n===0)return'';
   const at=e.auto_cloned_at;
   const fresh=at&&(Date.now()-new Date(at).getTime())<DAY;
   return'<span class="tchip st-shared prj-shr-chip" title="synced through project sharing">shared'
-    +(fresh?' · auto-cloned '+rel(at):'')+'</span>';
+    +(n?' with '+n:'')+(fresh?' · auto-cloned '+rel(at):'')+'</span>';
 }
 function clonedNote(projectId){
   const e=entryFor(projectId);
@@ -231,7 +242,11 @@ function clonedNote(projectId){
 /* ── drawer panel ─────────────────────────────────────────────────────────── */
 function chip(projectId){
   const st=memberState(projectId);
-  if(st==='live')return'<span class="tchip st-shared">shared</span>';
+  if(st==='live'){
+    const n=others(entryFor(projectId));
+    if(n===0)return'<span class="tchip" title="you own this; nobody else can see it">not shared</span>';
+    return'<span class="tchip st-shared">shared'+(n?' with '+n:'')+'</span>';
+  }
   if(st==='solo')return'<span class="tchip">not shared</span>';
   if(st==='disabled')return'<span class="tchip st-blocked">sharing parked</span>';
   return'<span class="tchip">waiting</span>';

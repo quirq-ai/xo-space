@@ -56,6 +56,7 @@ def _now() -> str:
 def _repo(repo: str) -> dict:
     return _state["repos"].setdefault(repo, {
         "project": None, "shared": False, "available": False,
+        "members": None,  # active rows at the swarm, owner included; None = not reported
         "last_fetch_at": None, "fetched": 0,
         "pending_github": False, "last_error": None,
         "clone": None,  # None | {state, detail, at, attempts, had_token, next_retry_at}
@@ -75,7 +76,11 @@ def set_parked(reason: str) -> None:
     _state["workspace_configured"] = reason != "no_workspace_id"
 
 
-def record_poll(ok: bool, membership: set | None = None, local: dict | None = None) -> None:
+def record_poll(ok: bool, membership: set | None = None, local: dict | None = None,
+                members: dict | None = None) -> None:
+    """`members` maps repo -> active member count as the swarm reported it this
+    tick (owner included). Missing for a repo, or an older swarm that sends
+    none, leaves the count unknown (None) rather than pretending to know."""
     _state["last_poll_at"] = _now()
     _state["last_poll_ok"] = ok
     _state["enabled"] = True
@@ -85,6 +90,7 @@ def record_poll(ok: bool, membership: set | None = None, local: dict | None = No
     if membership is None:
         return
     local = local or {}
+    members = members or {}
     for repo, project in local.items():
         _repo(repo)["project"] = project
     for repo, r in list(_state["repos"].items()):
@@ -93,11 +99,15 @@ def record_poll(ok: bool, membership: set | None = None, local: dict | None = No
             _event(repo, "revoked", "repo left membership")
             r["available"] = False
         r["shared"] = now_shared
+        if not now_shared:
+            r["members"] = None
         if repo in local:
             r["available"] = False
     for repo in membership:
         r = _repo(repo)
         r["shared"] = True
+        n = members.get(repo)
+        r["members"] = int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) else None
         if repo in local:
             r["available"] = False
 
@@ -175,7 +185,7 @@ def feed_view() -> dict:
     """Stable projection: changes only when something a person would care
     about changed. No timestamps, no counters."""
     repos = {
-        repo: {"project": r["project"], "shared": r["shared"],
+        repo: {"project": r["project"], "shared": r["shared"], "members": r.get("members"),
                "available": r["available"], "last_error": r["last_error"],
                "clone": ({"state": r["clone"]["state"], "detail": r["clone"]["detail"]}
                          if r.get("clone") else None)}

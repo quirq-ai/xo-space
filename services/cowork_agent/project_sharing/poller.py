@@ -119,6 +119,7 @@ async def run_tick() -> float:
         _fail_streak = 0
 
     membership: set[str] = set()
+    member_counts: dict[str, int] = {}
     available_repos: list[str] = []
     drain = False
     for entry in resp.get("repos") or []:
@@ -126,6 +127,8 @@ async def run_tick() -> float:
         if not repo:
             continue
         membership.add(repo)
+        if "members" in entry:  # absent on an older swarm: count stays unknown
+            member_counts[repo] = entry["members"]
         d = repos.get(repo)
         if entry.get("available") or d is None:
             status.record_available(repo)
@@ -175,7 +178,8 @@ async def run_tick() -> float:
 
     await asyncio.gather(*(publish(r) for r in membership & set(repos)))
 
-    status.record_poll(ok=True, membership=membership, local={r: repos[r].name for r in repos})
+    status.record_poll(ok=True, membership=membership, local={r: repos[r].name for r in repos},
+                       members=member_counts)
     status.notify_if_changed()
     return DRAIN_INTERVAL if drain else config.jittered_interval()
 

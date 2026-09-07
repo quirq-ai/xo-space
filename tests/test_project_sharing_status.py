@@ -68,6 +68,24 @@ class CommitRelayStatusTests(unittest.TestCase):
         self.assertTrue(status.notify_if_changed())
         self.assertEqual(len(calls), 2)
 
+    def test_member_count_follows_the_swarm_and_stays_unknown_when_absent(self) -> None:
+        # owner + one member; then the member is revoked: the owner row is
+        # irrevocable so the repo stays in membership with a count of 1
+        status.record_poll(ok=True, membership={R}, local={R: "p"}, members={R: 2})
+        self.assertEqual(status.snapshot()["repos"][R]["members"], 2)
+        self.assertEqual(status.feed_view()["repos"][R]["members"], 2)   # a chip change is feed-worthy
+        status.record_poll(ok=True, membership={R}, local={R: "p"}, members={R: 1})
+        self.assertEqual(status.snapshot()["repos"][R]["members"], 1)
+        self.assertTrue(status.snapshot()["repos"][R]["shared"])         # still a member
+        # an older swarm reports no count: unknown, never a guess
+        status.record_poll(ok=True, membership={R}, local={R: "p"})
+        self.assertIsNone(status.snapshot()["repos"][R]["members"])
+        status.record_poll(ok=True, membership={R}, local={R: "p"}, members={R: "2"})
+        self.assertIsNone(status.snapshot()["repos"][R]["members"])      # garbage is unknown too
+        # leaving membership clears it
+        status.record_poll(ok=True, membership=set(), local={R: "p"}, members={})
+        self.assertIsNone(status.snapshot()["repos"][R]["members"])
+
     def test_snapshot_is_a_copy(self) -> None:
         status.record_poll(ok=True, membership={R}, local={R: "p"})
         snap = status.snapshot()
