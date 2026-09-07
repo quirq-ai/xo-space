@@ -24,7 +24,6 @@
     "format": "json",
     "key_path": ["mcp", "servers"],
     "server_name": "composio",
-    "legacy_names": ["cowork", "xo_composio"],
     "entry": {"url": "{proxy_url}", "transport": "streamable-http", "enabled": true},
     "create_if_missing": false,
     "prune": [{"key_path": ["plugins", "entries"], "names": ["composio"]}]
