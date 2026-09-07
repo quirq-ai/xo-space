@@ -114,12 +114,16 @@ function renderSignedOut(){
 /* The /toolkits route is the only source of the toolkit list, so when it fails
    there are no tiles to draw. Say precisely which of the two causes it was. */
 function renderListFailure(res){
-  /* An unconfigured server raises RuntimeError inside the toolkits route, which
-     FastAPI renders as a plain-text 500 — so there is no JSON detail to match
-     on and res.error is just "http 500". Treating any 500 here as "not
-     configured" is the documented cause (.env.example), and the banner tells
-     the operator exactly which keys to set. */
-  const notConfigured=/COMPOSIO_API_KEY/i.test(res.error||'')||res.status===500;
+  /* CredentialsUnavailable's message always contains the literal
+     "COMPOSIO_API_KEY" (service.py), so matching it names the cause with
+     confidence. A bare 500 is *not* proof of one: every server-side fault in
+     the route — a missing `composio` package, a Composio outage — is rendered
+     by FastAPI as the same plain-text 500 with no detail to match on. Blaming
+     credentials for all of them sends the operator off to verify keys that are
+     already correct, so an unmatched 500 points at the log instead, where the
+     traceback says which it was. */
+  const notConfigured=/COMPOSIO_API_KEY/i.test(res.error||'');
+  const serverFault=!notConfigured&&res.status===500;
   let note;
   if(res.offline){
     setAlert('error','xo-space is unreachable','The server is down or restarting.');
@@ -136,6 +140,15 @@ function renderListFailure(res){
       +'with its own Composio project can set them locally with '
       +'COMPOSIO_CREDENTIALS_SOURCE=env.');
     note='No connectors to show until the server has a Composio API key.';
+  }else if(serverFault){
+    setAlert('error','Listing connectors failed on this server',
+      'The server errored while listing toolkits and returned no detail, so the '
+      +'reason is only in the xo-space server log &mdash; read the traceback there '
+      +'first. The usual causes are the <code>composio</code> package missing from '
+      +'the venv (install it from requirements.txt) or credentials this server '
+      +'cannot fetch (XO_API_KEY plus a reachable CHAT_API_BASE_URL, or '
+      +'COMPOSIO_CREDENTIALS_SOURCE=env for a self-hosted install).');
+    note='Connectors are unavailable until the server-side error is cleared.';
   }else{
     setAlert('error','Could not list connectors',esc(res.error||''));
     note=res.error||'Unavailable.';
