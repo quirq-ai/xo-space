@@ -1205,14 +1205,14 @@ class SessionIdentityTests(_ComposioBase):
 
 
 class RemovedEndpointTests(_ComposioBase):
-    """The xo-auth surface is one route, and must stay one route.
+    """The xo-auth surface never mints a session for another account.
 
     ``POST /xo-auth/session`` minted a session for *another* account. Since xo-swarm-api
     composes the tenant key from the credential this backend presents, such a session
     would silently receive this backend's principal — and its Composio connections with
-    it. ``POST /xo-auth/consume`` went with the auth module: consuming is a boot-time
-    call into ``services.xo_credential``, not an HTTP surface. Only the pass-through that
-    the shipped UI calls survives.
+    it. It must not come back. The session pass-through the shipped UI calls lives alone
+    in ``composio_session``; the browser-flow proxy (``routers/auth/auth.py``) holds no
+    state of its own and only ever presents this backend's credential.
     """
 
     def test_only_the_session_self_pass_through_is_exposed(self) -> None:
@@ -1228,13 +1228,35 @@ class RemovedEndpointTests(_ComposioBase):
         self.assertNotIn(("POST", "/xo-auth/consume"), registered)
         self.assertEqual(registered, {("GET", "/xo-auth/session/self")})
 
-    def test_the_auth_module_is_gone_from_this_repo(self) -> None:
-        # xo-swarm-api owns authentication. What is left here is one credential
-        # (services/xo_credential.py), not an auth subsystem.
-        import importlib
+    def test_the_auth_router_never_mints_for_another_account(self) -> None:
+        # xo-swarm-api owns authentication. routers/auth/auth.py proxies its browser
+        # flow for this backend's own credential and must never mint a session from a
+        # token the caller presents, nor shadow the UI's session/self pass-through.
+        import routers.auth.auth as auth_mod
+        from services import xo_credential
 
-        with self.assertRaises(ModuleNotFoundError):
-            importlib.import_module("routers.auth.auth")
+        self.assertFalse(hasattr(auth_mod, "xo_auth_session"))
+        registered = {
+            (method, route.path)
+            for route in auth_mod.router.routes
+            for method in getattr(route, "methods", set())
+        }
+        self.assertNotIn(("POST", "/xo-auth/session"), registered)
+        self.assertNotIn(("GET", "/xo-auth/session/self"), registered)
+        self.assertEqual(
+            registered,
+            {
+                ("POST", "/xo-auth/start"),
+                ("GET", "/xo-auth/status/{auth_session_id}"),
+                ("POST", "/xo-auth/consume"),
+                ("GET", "/xo-auth/whoami"),
+                ("GET", "/xo-auth/state"),
+                ("POST", "/xo-auth/logout"),
+            },
+        )
+        # One credential per process: the router reads it, it does not keep a copy.
+        self.assertIs(auth_mod.auth_state, xo_credential.auth_state)
+        self.assertIs(auth_mod.get_auth_token, xo_credential.get_auth_token)
 
     def test_the_account_matching_guard_is_gone_with_it(self) -> None:
         # The guard existed only to refuse those sessions. Keeping it without the

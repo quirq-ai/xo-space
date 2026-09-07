@@ -43,7 +43,14 @@ CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.bu
 # the consume flow is skipped entirely.
 XO_API_KEY = os.getenv("XO_API_KEY", "").strip() or None
 
+# xo-swarm-api browser-auth flow (``routes/external_auth_endpoints.py`` over there) and
+# the token-validation endpoint (``GET /get-user-id``). Only consume has a local
+# consequence; the rest are proxied by ``routers/auth/auth.py`` for UIs that drive the
+# browser flow through this backend.
+XO_AUTH_START_PATH = os.getenv("XO_AUTH_START_PATH", "/auth/browser/start")
+XO_AUTH_STATUS_PATH = os.getenv("XO_AUTH_STATUS_PATH", "/auth/browser/status")
 XO_AUTH_CONSUME_PATH = os.getenv("XO_AUTH_CONSUME_PATH", "/auth/browser/consume")
+XO_GET_USER_ID_PATH = os.getenv("XO_GET_USER_ID_PATH", "/get-user-id")
 
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
@@ -78,6 +85,13 @@ def set_auth_token(
         auth_state["expires_at"] = expires_at
         auth_state["user_id"] = user_id
         auth_state["auth_session_id"] = auth_session_id
+
+
+def clear_auth_token() -> None:
+    """Forget the consumed token. ``XO_API_KEY`` is environment, so it is unaffected."""
+    with auth_lock:
+        for key in auth_state:
+            auth_state[key] = None
 
 
 def get_auth_token() -> Optional[str]:
