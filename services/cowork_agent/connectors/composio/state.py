@@ -42,7 +42,7 @@ _TTL = float(os.getenv("COMPOSIO_STATE_TTL", "900"))
 _ERROR_TTL = float(os.getenv("COMPOSIO_STATE_ERROR_TTL", "30"))
 _STALE_MAX = float(os.getenv("COMPOSIO_STATE_STALE_MAX", "3600"))
 
-# Tighter than routers.auth.auth.HTTP_TIMEOUT (30s): some of these calls are sync and run
+# Tighter than the swarm client's default timeout (30s): some of these calls are sync and run
 # on the event loop, so a hung swarm must fail fast rather than stall every request.
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
@@ -101,7 +101,8 @@ def _alock() -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 def _endpoint() -> tuple[str, dict[str, str]]:
-    from routers.auth.auth import CHAT_API_BASE_URL, get_auth_token
+    from routers.auth.auth import get_auth_token
+    from services import swarm_api
 
     token = get_auth_token()
     if not token:
@@ -110,7 +111,7 @@ def _endpoint() -> tuple[str, dict[str, str]]:
             "backend holds no XO credential. Set XO_API_KEY, or sign in to XO.",
             authoritative=True,
         )
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{IDENTITY_PATH}"
+    url = f"{swarm_api.base_url()}{IDENTITY_PATH}"
     return url, {"Authorization": f"Bearer {token}"}
 
 

@@ -23,7 +23,8 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from routers.auth.auth import CHAT_API_BASE_URL, HTTP_TIMEOUT, get_auth_token
+from routers.auth.auth import get_auth_token
+from services import swarm_api
 from services.cowork_agent.connectors.composio import session_identity, state
 
 log = logging.getLogger(__name__)
@@ -61,9 +62,9 @@ async def xo_auth_session_self():
             },
         )
 
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{SESSION_MINT_PATH}"
+    url = f"{swarm_api.base_url()}{SESSION_MINT_PATH}"
     try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=swarm_api.DEFAULT_TIMEOUT) as client:
             response = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {token}"},

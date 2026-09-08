@@ -44,7 +44,7 @@ _TTL = float(os.getenv("COMPOSIO_CREDENTIALS_TTL", "300"))
 _ERROR_TTL = float(os.getenv("COMPOSIO_CREDENTIALS_ERROR_TTL", "30"))
 _STALE_MAX = float(os.getenv("COMPOSIO_CREDENTIALS_STALE_MAX", "3600"))
 
-# Deliberately tighter than routers.auth.auth.HTTP_TIMEOUT (30s/10s): this call is sync
+# Deliberately tighter than the swarm client's default timeout (30s/10s): this call is sync
 # and runs on the event loop, so a hung swarm must fail fast into the documented degraded
 # state rather than stall every request for half a minute.
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -127,7 +127,8 @@ def _get(url: str, headers: dict[str, str]) -> httpx.Response:
 def _fetch_from_swarm() -> Bundle:
     # Deferred import: routers.auth and this package import each other lazily to avoid a
     # load cycle (same reason as identity._validate_token).
-    from routers.auth.auth import CHAT_API_BASE_URL, get_auth_token
+    from routers.auth.auth import get_auth_token
+    from services import swarm_api
 
     token = get_auth_token()
     if not token:
@@ -138,13 +139,13 @@ def _fetch_from_swarm() -> Bundle:
             authoritative=True,
         )
 
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{CREDENTIALS_PATH}"
+    url = f"{swarm_api.base_url()}{CREDENTIALS_PATH}"
     try:
         resp = _get(url, {"Authorization": f"Bearer {token}"})
     except Exception as exc:
         raise CredentialsUnavailable(
             f"COMPOSIO_API_KEY could not be fetched from xo-swarm-api at {url}: {exc}. "
-            "Check CHAT_API_BASE_URL and that xo-swarm-api is reachable."
+            "Check the swarm base URL and that xo-swarm-api is reachable."
         ) from exc
 
     if resp.status_code == 503:

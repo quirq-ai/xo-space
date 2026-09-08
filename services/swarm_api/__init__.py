@@ -12,6 +12,8 @@ per feature, all on the same transport:
 Nothing outside this package builds a swarm URL or reads CHAT_API_BASE_URL;
 tests/test_swarm_api.py enforces that.
 """
-from ._http import SwarmResult, auth_headers, auth_token, base_url, request
+from ._http import DEFAULT_TIMEOUT, SwarmResult, auth_headers, auth_token, base_url, request
 
-__all__ = ["SwarmResult", "auth_headers", "auth_token", "base_url", "request"]
+__all__ = [
+    "DEFAULT_TIMEOUT", "SwarmResult", "auth_headers", "auth_token", "base_url", "request",
+]

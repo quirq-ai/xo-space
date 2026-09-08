@@ -277,7 +277,7 @@ class CredentialsTests(_ComposioBase):
         self.assertEqual(get.call_count, 1)
 
     def test_it_calls_the_same_channel_usage_sync_uses(self) -> None:
-        from routers.auth.auth import CHAT_API_BASE_URL
+        from services import swarm_api
 
         with self._swarm(), \
                 patch("routers.auth.auth.get_auth_token", return_value="tok"), \
@@ -287,7 +287,7 @@ class CredentialsTests(_ComposioBase):
         url, headers = get.call_args[0]
         self.assertEqual(
             url,
-            f"{CHAT_API_BASE_URL.rstrip('/')}/connectors/composio/credentials",
+            f"{swarm_api.base_url()}/connectors/composio/credentials",
         )
         self.assertEqual(headers, {"Authorization": "Bearer tok"})
 
