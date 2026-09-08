@@ -8,10 +8,12 @@ and delegates every read to ``services.cowork_agent.visualizer.reader``.
 
 Most endpoints are populated when the watcher has written the backing
 file (``stats.json``, ``sessions-augment.json``, the session index,
-``timeline.jsonl``, the activity snapshot). ``todos.json`` is the one
-exception and the reason the todo handlers below are writers: it has no
+``timeline.jsonl``, the activity snapshot). ``todos.json`` is the first of three
+exceptions and the reason the todo handlers below are writers: it has no
 watcher sink at all, and the ``POST/PATCH/DELETE /todos`` endpoints own
-it outright (syncplan §7, T8). Files written under older schema versions
+it outright (syncplan §7, T8). ``workitems.json`` and ``peers.json`` are
+the other two — authored state in the synced tier whose only writer is a
+route in this module. Files written under older schema versions
 degrade gracefully — readers treat missing keys as zero.
 """
 
@@ -49,7 +51,11 @@ from routers.cowork_agent.bff._visualizer_models import (
     MessagesEntry,
     ModelUsageEntry,
     ModelUsageWithTotals,
+    CreatePeerRequest,
+    DeletePeerResponse,
     OpenSession,
+    Peer,
+    PeersResponse,
     PerformanceEntry,
     ReleaseWorkitemClaimResponse,
     SessionCostSummary,
@@ -63,6 +69,7 @@ from routers.cowork_agent.bff._visualizer_models import (
     TodosResponse,
     ToolUsage,
     ToolUsageEntry,
+    UpdatePeerRequest,
     UpdateTodoRequest,
     UpdateWorkitemRequest,
     UsageAnalyticsResponse,
@@ -97,12 +104,11 @@ from routers.cowork_agent.bff._visualizer_presenter import (
 from services.cowork_agent import coder_identity, github_poller, scopes
 from services.cowork_agent.connectors import github_connector, github_issue_actions
 from services.cowork_agent.visualizer import workitem_projection as _projection
-from services.cowork_agent.visualizer.ingest.events import WorkitemEvent
+from services.cowork_agent.visualizer.peers_store import VALID_ROLES as _PEER_ROLES
 from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES
 from services.cowork_agent.visualizer.workitems_store import (
     VALID_STATE_REASONS as _WORKITEM_STATE_REASONS,
     VALID_STATUSES as _WORKITEM_STATUSES,
-    emit_workitem_events as _emit_workitem_events,
     is_adopted as _is_adopted,
 )
 
@@ -517,13 +523,14 @@ def project_todos_delete(
 # ``services.cowork_agent.visualizer.workitems_store`` through the scope
 # handle. Reads additionally pass through
 # ``visualizer.workitem_projection``, which joins the record with the
-# GitHub mirror (§5.3, W7): for an adopted item ``status`` and
-# ``assignee`` are the mirror's, always, and ``title``/``labels`` fall
-# back to the snapshot taken at adoption. When the mirror has nothing to
-# say — never polled, no ``gh``, offline, the issue deleted — the item
-# still renders from the file, flagged ``stale``, with the four
-# GitHub-owned fields ``null``, which is "unknown", not "unset". It is
-# never a 404.
+# GitHub mirror (§5.3, W7): for an adopted item ``status`` is the
+# mirror's, always, ``title``/``labels`` fall back to the snapshot taken
+# at adoption, and the mirror's own assignees are served beside — never
+# as — this Space's ``assignee``, which is the file's for both kinds
+# (§13, amendment 33). When the mirror has nothing to say — never polled,
+# no ``gh``, offline, the issue deleted — the item still renders from the
+# file, flagged ``stale``, with the GitHub-owned fields ``null``, which is
+# "unknown", not "unset". It is never a 404.
 
 
 #: Store codes that mean *the caller asked for something invalid*. Each
@@ -743,17 +750,28 @@ def _make_workitem_model(d: dict, *, in_progress: bool = False) -> Workitem:
     a stored field and there is nothing on the record to read.
 
     ``d`` is expected to have been through
-    :func:`workitem_projection.project_workitem` — so ``status``,
-    ``assignee`` and friends may already be the mirror's answer rather
-    than the file's, and ``assignees`` / ``stale`` are present. It reads
-    a *raw* record just as happily: both projected keys default, which is
+    :func:`workitem_projection.project_workitem` — so ``status`` and
+    friends may already be the mirror's answer rather than the file's, and
+    ``assignees`` / ``github_assignees`` / ``stale`` are present. It reads
+    a *raw* record just as happily: every projected key defaults, which is
     what keeps this function usable on a record the projection never saw.
+
+    ``origin`` and ``assigned`` are **derived here, not read**: ``origin``
+    from the source model that was just built, so it cannot disagree with
+    ``source.kind`` even for a record whose ``source`` block is malformed
+    (both fall back to local/space together), and ``assigned`` from the
+    assignee that is actually being served, so the boolean and the identity
+    can never contradict each other.
     """
     workitem_id = str(d.get("id", ""))
     raw_assignees = d.get("assignees")
+    raw_github_assignees = d.get("github_assignees")
     raw_labels = d.get("labels")
     raw_links = d.get("links")
     raw_links = raw_links if isinstance(raw_links, dict) else {}
+    source = _make_workitem_source(d, workitem_id=workitem_id)
+    assignee = d.get("assignee")
+    assignee = assignee if isinstance(assignee, str) and assignee else None
     return Workitem(
         id=workitem_id,
         title=str(d.get("title", "")),
@@ -769,11 +787,17 @@ def _make_workitem_model(d: dict, *, in_progress: bool = False) -> Workitem:
             d.get("state_reason"), allowed=_WORKITEM_STATE_REASONS,
             fallback=None, field="state_reason", workitem_id=workitem_id,
         ),
-        source=_make_workitem_source(d, workitem_id=workitem_id),
-        assignee=d.get("assignee"),
+        source=source,
+        origin="github" if source.kind == "github" else "space",
+        assignee=assignee,
+        assigned=assignee is not None,
         assignees=(
             [str(x) for x in raw_assignees if isinstance(x, str)]
             if isinstance(raw_assignees, list) else []
+        ),
+        github_assignees=(
+            [str(x) for x in raw_github_assignees if isinstance(x, str)]
+            if isinstance(raw_github_assignees, list) else []
         ),
         stale=bool(d.get("stale")),
         in_progress=in_progress,
@@ -819,19 +843,32 @@ def project_workitems_list(
     across projects, and a list has no union key, so the collision class
     that lost rows in the workspace view (O-C) cannot occur there at all.
 
-    ``status`` and ``assignee`` filter on what is *stored*, so an adopted
-    item never matches either — it stores neither field, by design
-    (§5.3). The rendered rows *do* carry the mirror's answer for those
-    two, because the read-time projection has joined them in; the filter
-    deliberately still does not, since a filter that answered from the
-    mirror would silently drop every adopted item on a machine that has
-    never polled. ``?kind=`` is how you narrow to one population, and the
-    workspace rollup (§7.3, W9) is where "assigned to me" is answered
-    across projects. **A filtered list therefore has fewer rows than a
-    filtered client-side pass over the unfiltered one.**
+    ``status`` filters on what is *stored*, so an adopted item never
+    matches it — it stores no status, by design (§5.3). The rendered rows
+    *do* carry the mirror's answer, because the read-time projection has
+    joined it in; the filter deliberately still does not, since a filter
+    that answered from the mirror would silently drop every adopted item
+    on a machine that has never polled. ``?kind=`` is how you narrow to
+    one population, and the workspace rollup (§7.3, W9) is where
+    "assigned to me" is answered across projects. **A ``?status=``-filtered
+    list therefore has fewer rows than a filtered client-side pass over
+    the unfiltered one.**
+
+    ``assignee`` is a stored field for both kinds since §13 amendment 33,
+    so that filter answers for an adopted item too. It matches this
+    Space's own assignment only; ``github_assignees`` — who GitHub has on
+    the issue — is rendered on every row but is not a filter here, because
+    it is information about the issue rather than an assignment this
+    system made. The rollup considers both.
 
     Deleted workitems are hidden by default; ``?include_deleted=true``
     returns them with their ``deleted_at`` / ``deleted_by`` set.
+
+    Every row carries ``origin`` — ``"github"`` when the workitem came
+    from a GitHub issue, ``"space"`` when it did not — and ``assigned``,
+    a plain "is anyone on this". ``origin: "space"`` is the same thing as
+    ``source.kind: "local"`` on disk; the two vocabularies exist because
+    the stored one is a synced format that was not worth renaming.
 
     Each row carries the derived ``in_progress`` (§5.4): true iff an
     agent holds a claim on it and that agent's session is still present
@@ -875,12 +912,11 @@ def project_workitems_create(
 ) -> Workitem:
     """Create a workitem under the project (any runtime can call).
 
-    Creates a **local** item: ``status`` defaults to ``open``, and
-    ``assignee`` is local-only — a local workitem is assignable to
-    yourself and only to yourself, permanently, because assignment across
-    Spaces *is* a GitHub assignee (D1) and a local item never becomes an
-    issue (D8). Work that needs to reach a peer is created as an issue
-    from the start.
+    Creates a **local** item — ``origin: "space"`` on the wire,
+    ``source.kind: "local"`` on disk. ``status`` defaults to ``open`` and
+    ``assignee`` is stored as given: it is a local annotation (§13,
+    amendment 33) and reaches nobody outside this Space, since ``.xo/`` is
+    snapshot backup/restore rather than continuous merge.
 
     There is no way to create an *adopted* item here; that is the
     adoption endpoint's job (§7.2, W7) and needs the mirror. See
@@ -905,7 +941,8 @@ def project_workitems_create(
         ) from exc
     # Projected even though a created item is always local and the mirror
     # can therefore say nothing about it: the projection is what fills
-    # ``assignees`` from the single stored ``assignee``, and a create that
+    # ``assignees``/``github_assignees`` beside the stored ``assignee``,
+    # and a create that
     # answered in a different shape from the following GET would be a
     # second wire contract for one record.
     return _make_workitem_model(_projection.project_workitem(new))
@@ -1176,13 +1213,14 @@ def project_workitems_release(
 #
 # §7.2, tasks W7 and W8. Three facts shape everything below.
 #
-# **1. Coordination lives in GitHub** (D1). Assignment is a GitHub assignee,
-# because GitHub is already a shared, concurrent, conflict-free, audited store
-# with an assignment primitive and this system already has `gh` auth. Two
-# Spaces assigning at once is GitHub's problem, and GitHub has solved it. The
-# cost, stated plainly: work that is not a GitHub issue cannot be assigned
-# across Spaces, and there is no mechanism to make it one (D8 removed
-# promotion). A local workitem is self-assignable, permanently.
+# **1. GitHub is read-only to this system.** D1 put coordination in GitHub —
+# assignment was a GitHub assignee — and that decision was reversed
+# (workitems-plan §13, amendment 33). Nothing here writes an issue: the
+# poller reads, adoption reads one issue, and assignment writes a local
+# annotation into `.xo/workitems.json`. The cost, stated plainly: `.xo/` is
+# snapshot backup/restore rather than continuous merge, so an assignment is
+# visible only inside the Space that made it. What GitHub knows about who is
+# on an issue is still read and served, as `github_assignees`.
 #
 # **2. Adoption is explicit** (D2). The mirror holds every issue in the repo;
 # `.xo/workitems.json` holds only what someone *chose* to track. So this
@@ -1190,10 +1228,9 @@ def project_workitems_release(
 # adopt verb, rather than an importer.
 #
 # **3. The poller is the mirror's only writer.** These routes read it and
-# never write it — not even to save a UI 60 seconds of staleness after an
-# assignment. `github_mirror`'s merge rules assume one writer, and an
-# assignment answered with `pending: true` is honest where a forged row would
-# not be.
+# never write it. `github_mirror`'s merge rules assume one writer, and there
+# is nothing a route could forge into it that the next poll would not
+# contradict.
 #
 # `GET /github/issues` is also where D9's lazy-polling hook is called.
 # `github_poller.note_interest()` existed with no caller — there is no viewing
@@ -1259,9 +1296,9 @@ def _require_github_repo(scope: scopes.VisualizerScope) -> str:
             detail={
                 "code": "not_a_github_project",
                 "message": (
-                    "This project has no github.com remote in project.json, so "
-                    "there are no issues to adopt and no assignee to write. "
-                    "Set a GitHub origin, or keep the work as local workitems."
+                    "This project has no github.com remote in project.json, "
+                    "so there are no issues to adopt. Set a GitHub origin, or "
+                    "keep the work as local workitems."
                 ),
             },
         )
@@ -1329,7 +1366,9 @@ def _issue_number(row: dict) -> int:
     return 0
 
 
-def _issue_model(row: dict, tracked: dict[str, str]) -> GithubIssue:
+def _issue_model(
+    row: dict, tracked: dict[str, str], live: frozenset[str] = frozenset()
+) -> GithubIssue:
     """One mirror row on the wire, tolerating a row that is not quite right.
 
     Total by construction, like ``_make_workitem_model``: the mirror is
@@ -1377,6 +1416,10 @@ def _issue_model(row: dict, tracked: dict[str, str]) -> GithubIssue:
         updated_at=row.get("updated_at") if isinstance(row.get("updated_at"), str) else None,
         adopted=node_id in tracked,
         workitem_id=tracked.get(node_id),
+        # Same derivation the workitem listing uses, resolved once per
+        # request by the caller. An unadopted issue is never in progress:
+        # there is no workitem for an agent to claim.
+        in_progress=tracked.get(node_id) in live,
     )
 
 
@@ -1437,7 +1480,12 @@ def project_github_issues(project_id: str) -> GithubIssuesResponse:
         key=lambda row: (str(row.get("updated_at") or ""), _issue_number(row)),
         reverse=True,
     )
-    models = [_issue_model(row, tracked) for row in rows]
+    # Resolved once for the whole page, not per row: it reads the claims
+    # file and the presence snapshot, and doing that eighty-five times would
+    # turn a browse into a storm. Total by contract, so a missing runtime
+    # home degrades every row to "not in progress" rather than failing.
+    live = _in_progress_ids(scope) if tracked else frozenset()
+    models = [_issue_model(row, tracked, live) for row in rows]
     untracked = sum(
         1 for row in models if row.state == "open" and not row.adopted
     )
@@ -1498,12 +1546,13 @@ async def project_github_issue_adopt(
 
     What lands in the synced document is the **adoption record**: the issue
     reference, plus ``title`` and ``labels`` as a one-time snapshot that is
-    never refreshed. ``status``, ``state_reason``, ``assignee`` and ``body``
-    are not stored at all — GitHub owns them, and a stale ``closed`` or a
-    stale assignee is a false statement about who owes what (§5.3). The
-    snapshot is what keeps the item readable when the mirror is gone; without
-    it a stale adopted item renders as ``repo#42``, which is not a work item
-    anyone can act on.
+    never refreshed. ``status``, ``state_reason`` and ``body`` are not stored
+    at all — GitHub owns them, and a stale ``closed`` is a false statement
+    about whether the work is done (§5.3). An ``assignee`` the workitem
+    already carried is **kept**: it is ours, not GitHub's (§13, amendment
+    33). The snapshot is what keeps the item readable when the mirror is
+    gone; without it a stale adopted item renders as ``repo#42``, which is
+    not a work item anyone can act on.
 
     **The labels cost one GraphQL point, and that is the whole reason for the
     call.** The poll deliberately does not fetch labels — a nested ``labels``
@@ -1589,18 +1638,18 @@ def project_workitem_unadopt(project_id: str, workitem_id: str) -> Workitem:
     ``DELETE …/adoption`` rather than ``DELETE …/workitems/{id}``, which
     tombstones.
 
-    It **materialises** the four GitHub-owned fields in the same write that
-    drops ``source.github``, because the schema forbids them on an adopted
-    record and requires ``status`` on a local one — the transition cannot be
-    two writes without an invalid document in between. The values come from
-    the projection the caller was just being served, so the item looks the
-    same across the transition; with no mirror to read, ``status`` falls back
-    to ``open``, the least-committal value.
+    It **materialises** the GitHub-owned fields in the same write that drops
+    ``source.github``, because the schema forbids them on an adopted record
+    and requires ``status`` on a local one — the transition cannot be two
+    writes without an invalid document in between. The values come from the
+    projection the caller was just being served, so the item looks the same
+    across the transition; with no mirror to read, ``status`` falls back to
+    ``open``, the least-committal value.
 
-    The **assignee is not materialised**, deliberately. A local workitem is
-    self-assignable and permanently so (D1, D8), so importing a peer's GitHub
-    login into it would leave a record asserting an assignment that nothing
-    coordinates and nobody would ever see change. Un-adopting drops it.
+    The **assignee is kept**, not materialised and not dropped: it was never
+    GitHub's (§13, amendment 33), so there is nothing to import and nothing
+    to discard. Un-adopting an issue is not a statement about who owes the
+    work.
 
     Idempotent: a workitem that is already local comes back unchanged, which
     matches every other DELETE on this surface. A workitem that does not exist
@@ -1636,29 +1685,47 @@ def project_workitem_unadopt(project_id: str, workitem_id: str) -> Workitem:
     )
 
 
-# ── /api/xo-projects/{id}/workitems/{id}/assignee — W8 ──────────────────────
+# ── /api/xo-projects/{id}/workitems/{id}/assignee — W8, amended ─────────────
 #
-# Assignment is the one field this system does not own. For an adopted item
-# it is written to GitHub and read back by the next poll (D1); for a local
-# item it is written to the file and can only ever name yourself (D8). The
-# two are one endpoint because they are one question to a caller, and the
-# response says which of the two happened rather than pretending they are
-# the same.
+# **This endpoint used to write to GitHub. It does not any more.**
+#
+# D1 put coordination in GitHub: for an adopted item ``PUT …/assignee``
+# issued a ``PATCH /repos/{owner}/{repo}/issues/{n}`` with an ``assignees``
+# array and wrote nothing locally, and a *local* item was self-assignable
+# only, permanently, because nothing could route it to a peer. That decision
+# was reversed (workitems-plan §13, amendment 33). GitHub is now **read-only**
+# to this system: the poller reads issues, adoption reads one issue, and no
+# code path anywhere writes an issue.
+#
+# So there is one path, not two. Assignment is a local annotation in
+# ``.xo/workitems.json`` for every workitem, adopted or not, and it is
+# written by the store like any other field — which is also why the
+# ``workitem.assigned`` timeline line comes out of the store now rather than
+# being emitted by hand here.
+#
+# What that costs, said plainly rather than left for someone to discover:
+# ``.xo/`` is snapshot backup/restore, not continuous merge (restore is a
+# wholesale force-replace), so **an assignment is visible only inside the
+# Space that made it**. Assigning a peer records an intention; it does not
+# deliver work. The ``local_assignee_only`` refusal that used to guard that
+# distinction is gone with the write it was guarding, because refusing a peer
+# no longer buys anything: there is no longer a second, working way to reach
+# them.
+#
+# Nothing on this path touches the network — not the store, not resolving
+# ``me``, not the budget gate that used to stand in front of the GitHub call.
 
 
-#: The spellings of "me". Accepted for both kinds, resolved differently:
-#: to this Space's GitHub login for an adopted item, to its own user id for
-#: a local one. §4 is why no mapping table is needed for either — each Space
-#: only has to recognise itself, and for adopted items GitHub does the
-#: routing.
+#: The spellings of "me", resolved to this Space's own identity. §4 is why
+#: no mapping table is needed: each Space only has to recognise itself.
 _SELF_ALIASES: frozenset[str] = frozenset({"me", "@me", "self"})
 
 
 def _self_identities() -> list[str]:
-    """The names this Space answers to for a **local** assignment.
+    """The names this Space answers to.
 
-    No network and no subprocess: a local workitem must be assignable with
-    GitHub switched off entirely, which is most of the point of it existing.
+    No network and no subprocess: assignment must work with GitHub switched
+    off entirely, which is most of the point of it being local.
     ``resolve_user_id`` is the authenticated user when there is one, the Coder
     workspace owner otherwise, and ``"local"`` off Coder — the last of which
     identifies nobody, but it is the honest answer and it is what every other
@@ -1678,18 +1745,24 @@ def _self_identities() -> list[str]:
 async def _self_github_login() -> Optional[str]:
     """This Space's own GitHub login, or ``None``.
 
+    **Not used for assignment any more** — assignment writes locally and asks
+    GitHub nothing. It survives for the workspace rollup, where ``me`` has to
+    match the *mirror's* assignees as well as this Space's own name: a peer
+    (or you, from another machine) assigning you on the issue itself is real
+    information, and answering "what is assigned to me" without it would hide
+    work that exists.
+
     Two paths because there are two populations. A user who pasted a PAT has
     a token in ``mcp-tokens.json`` and possibly no ``gh`` session at all, and
     ``validate_token`` answers for them without a subprocess (§4 — it already
     returns ``username`` from ``GET /user``). A user who ran the device-flow
     login has a ``gh`` session, and may have no stored token; ``gh api user``
     answers for them. Trying the cheap one first and falling through is what
-    makes "assign to me" work in both.
+    makes "assigned to me" work in both.
 
-    Not cached. The call happens only when someone assigns with ``me``, which
-    is rare, and a cached login that went stale after a re-auth would assign
-    work to the wrong person — the one failure mode this whole design exists
-    to avoid.
+    Not cached. A cached login that went stale after a re-auth would answer
+    with another person's work — the one failure mode this design exists to
+    avoid.
     """
     try:
         token = github_connector.get_github_token()
@@ -1714,31 +1787,31 @@ async def _self_github_login() -> Optional[str]:
 async def project_workitem_assign(
     project_id: str, workitem_id: str, body: AssignWorkitemRequest,
 ) -> WorkitemAssignment:
-    """Set (or clear) who owes this workitem.
+    """Set (or clear) who owes this workitem. **Always a local write.**
 
-    **Adopted item — the write goes to GitHub.** ``PATCH
-    /repos/{owner}/{repo}/issues/{n}`` with an ``assignees`` array (§3),
-    through ``gh`` (D5). Nothing is written into ``.xo/workitems.json``: the
-    store refuses the field outright for an adopted item, and a local copy
-    would be the stale assignee §5.3 forbids. The response carries
-    ``pending: true`` — GitHub has it, and this Space learns it back from the
-    next poll of the mirror, up to a minute later.
+    One path for both kinds (§13, amendment 33): the assignee is stored in
+    ``<project>/.xo/workitems.json``, for an adopted item exactly as for one
+    this Space authored. **No GitHub call is made, ever** — not to write the
+    assignee, not to resolve ``me``, and not to check a budget. Assignment
+    works offline, unauthenticated, and with ``gh`` uninstalled.
 
-    GitHub *accepts* a login that cannot be assigned — someone without access
-    to the repository — and silently drops it from the array, answering 200
-    with the assignees unchanged. So the result set is compared with what was
-    asked for and a silent drop becomes ``400 assignee_not_assignable``
-    rather than a success the caller has to notice for themselves.
+    ``"me"`` resolves to this Space's own identity (``resolve_user_id`` —
+    the Coder user, or the workspace owner). Any other value is stored as
+    given, with an optional leading ``@`` stripped so ``@octocat`` and
+    ``octocat`` are one name; ``null`` clears the assignee.
 
-    **Local item — anyone but yourself is refused.** Assignment across Spaces
-    *is* a GitHub assignee (D1), and D8 removed promotion, so a local workitem
-    is permanently self-assignable only. The refusal is a ``400`` that names
-    the accepted values, not a silent success and not a shrug: work that needs
-    to reach a peer has to be created as a GitHub issue in the first place,
-    and discovering that after the fact is the failure this endpoint exists to
-    prevent.
-
-    ``null`` clears the assignee in both cases.
+    **Any identity is accepted for any workitem**, which is a change: a local
+    item used to be self-assignable only (``400 local_assignee_only``),
+    because assignment across Spaces *was* a GitHub assignee and a local item
+    could never become one. With no GitHub write left there is nothing that
+    refusal would protect. What it protected against is now true of every
+    assignment and is said here instead of enforced: ``.xo/`` is snapshot
+    backup/restore, not continuous merge, so **an assignment is visible only
+    inside the Space that made it.** Assigning a peer records who this Space
+    thinks owes the work; it does not notify them and it does not reach their
+    machine. To hand work to someone through GitHub, assign it on the issue —
+    it will show up here as ``github_assignees``, which this system reads and
+    never writes.
     """
     scope = _require_project(project_id)
     try:
@@ -1754,41 +1827,28 @@ async def project_workitem_assign(
         )
 
     wanted = (body.assignee or "").strip() or None
-    if _is_adopted(found):
-        return await _assign_on_github(scope, project_id, workitem_id, found, wanted)
-    return await _assign_locally(scope, project_id, workitem_id, wanted)
-
-
-async def _assign_locally(
-    scope: scopes.VisualizerScope,
-    project_id: str,
-    workitem_id: str,
-    wanted: Optional[str],
-) -> WorkitemAssignment:
-    """The local half: yourself, or nobody. No network, ever."""
-    identities = _self_identities()
-    if wanted is not None:
-        resolved = identities[0] if wanted.lower() in _SELF_ALIASES else wanted
-        if resolved not in identities:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "local_assignee_only",
-                    "message": (
-                        f"A local workitem is assignable only to yourself, "
-                        f"permanently. Assignment across Spaces is a GitHub "
-                        f"assignee, and a local workitem never becomes a GitHub "
-                        f"issue — so {wanted!r} is a name nothing would route "
-                        f"to. Accepted: 'me', or {identities}. To hand this "
-                        f"work to someone else, create it as a GitHub issue "
-                        f"and adopt that."
-                    ),
-                },
-            )
+    if wanted is None:
+        resolved: Optional[str] = None
+    elif wanted.lower() in _SELF_ALIASES:
+        # ``resolve_user_id`` is total — the authenticated user, the Coder
+        # owner, or the literal ``"local"`` — so this list is never empty
+        # and there is no "me is nobody" case to answer. Indexed rather
+        # than guarded on purpose: a guard would have to choose a fallback,
+        # and the only quiet one available (``None``) turns "assign this to
+        # me" into "un-assign it", which is the wrong write to make on the
+        # strength of a contract this Space controls.
+        resolved = _self_identities()[0]
     else:
-        resolved = None
+        # A leading ``@`` is how people write a login and is not part of it.
+        # Stored with it, the name would fail the store's charset and answer
+        # ``400 invalid_assignee`` for a spelling the rollup filter accepts.
+        resolved = wanted.lstrip("@").strip() or None
 
     try:
+        # Off the event loop: it is a locked read-modify-write of a file.
+        # The store emits ``workitem.assigned`` from inside the write, so
+        # there is no event to emit here — the route used to emit one only
+        # because the GitHub path wrote nothing it could hang an event on.
         updated = await asyncio.to_thread(
             scope.update_workitem, workitem_id, assignee=resolved,
         )
@@ -1796,119 +1856,327 @@ async def _assign_locally(
         raise _workitem_error(
             exc, failure="workitems.json write failed.",
         ) from exc
+
     stored = updated.get("assignee")
+    stored = stored if isinstance(stored, str) and stored else None
     return WorkitemAssignment(
         project_id=project_id,
         workitem_id=workitem_id,
-        kind="local",
+        # The workitem's own kind, as stored — not "where the write went",
+        # which is now always the same place.
+        kind="github" if _is_adopted(updated) else "local",
         assignee=stored,
-        assignees=[stored] if isinstance(stored, str) and stored else [],
-        # The file is the record for a local item, and it is already written.
+        assignees=[stored] if stored else [],
+        # Nothing is outstanding: the file is the record and it is written.
         pending=False,
     )
 
 
-async def _assign_on_github(
-    scope: scopes.VisualizerScope,
-    project_id: str,
-    workitem_id: str,
-    record: dict,
-    wanted: Optional[str],
-) -> WorkitemAssignment:
-    """The adopted half: GitHub is the store, and the poll is the read-back."""
-    ref = (record.get("source") or {}).get("github")
-    number = ref.get("number") if isinstance(ref, dict) else None
-    repo = ref.get("repo") if isinstance(ref, dict) else None
-    if not isinstance(number, int) or not isinstance(repo, str) or not repo:
-        # The record says it mirrors an issue but cannot say which. Refusing
-        # is the only safe answer: guessing a repository would assign work on
-        # somebody else's.
-        raise HTTPException(
+# ── /api/xo-projects/{id}/peers — the collaborator roster ───────────────────
+#
+# ``<project>/.xo/peers.json`` shipped in the project template as a stub
+# with a schema already written and **no writer anywhere in the tree**.
+# These five handlers are that writer, and they are its only one.
+#
+# It is the todos/workitems dialect a third time, on purpose: same
+# ``{"code", "message"}`` 400 bodies, same idempotent DELETE, same
+# document-error 409. Three things differ, and each is a decision:
+#
+# * **``user_id`` is the identity and the path segment.** The schema
+#   gives a peer no separate id and stores ``peers`` as an array, so the
+#   ``user_id`` is what makes the roster a set. It is immutable —
+#   changing it is a DELETE plus a POST, which is why ``UpdatePeerRequest``
+#   has no ``user_id`` field.
+#
+# * **POST of an existing ``user_id`` is 409, not an upsert.** A create
+#   that quietly rewrote an existing peer's ``role`` would make a
+#   privilege change the side effect of an insert the caller believed was
+#   new. The edit they wanted is a PATCH and it says so. See
+#   ``peers_store.create_peer``.
+#
+# * **DELETE is a hard delete.** No tombstone, unlike todos and
+#   workitems: ``peers.schema.json`` is ``additionalProperties: false``
+#   with nothing to tombstone into, and — the reason that matters —
+#   ``peers.json`` is in the synced tier, so a removed collaborator kept
+#   as a tombstone would travel to every Space the project reaches. That
+#   is a privacy problem, not a history feature.
+#
+# There is no ``runtime`` anywhere on this surface, for a fourth reason
+# of the same kind: the schema declares no field to attribute a roster
+# edit to, so accepting one would be accepting a value with nowhere to
+# go. And nothing here appends to ``timeline.jsonl`` — its closed
+# vocabulary has ``peer.sync.*`` and nothing for a roster edit, and
+# emitting a sync event because somebody was added to a list would be a
+# false statement about a sync that never happened.
+#
+# **Not wired, deliberately:** nothing validates a workitem ``assignee``
+# against this roster. Rejecting an assignee who is not a listed peer is
+# a behaviour change on a different surface. What *is* guaranteed is the
+# other direction: ``peers_store`` validates ``user_id`` against the same
+# charset ``workitems_store`` applies to ``assignee``, so a listed peer
+# can always be assigned work.
+
+
+#: Store codes that mean *the caller asked for something invalid* — 400
+#: with the store's own message, which names the field and the
+#: constraint and is therefore worth forwarding rather than replacing.
+_PEER_CALLER_ERRORS: frozenset[str] = frozenset({
+    "invalid_user_id",
+    "invalid_role",
+    "invalid_label",
+    "invalid_endpoint",
+    "invalid_value",
+})
+
+
+def _peer_error(exc: Exception, *, failure: str) -> HTTPException:
+    """Map a ``PeersStoreError`` onto its HTTP answer.
+
+    ``peer_not_found`` → **404**, the ``invalid_*`` family → **400**,
+    ``corrupt_document`` / ``unsupported_schema`` → **409** with a
+    path-free message, anything unrecognised → **500**. That is
+    :func:`_workitem_error` restated for a second document, and the
+    document-error text is literally shared with it — the reasoning for
+    409 is written out there in full and is not repeated here.
+
+    ``peer_exists`` → **409** is the one code this surface adds. It is a
+    conflict in exactly RFC 9110's sense: the request is well formed, the
+    server is fine, and it conflicts with *the current state of the
+    target resource* — somebody is already on the roster under that
+    ``user_id``. The caller resolves it by PATCHing the peer instead, and
+    the body carries the code so a client can tell it apart from a
+    corrupt document without parsing prose.
+
+    Like the workitems mapping, the store's own text for a document error
+    embeds the absolute path and is **logged, not served**: this layer
+    does not echo filesystem paths back to a caller.
+    """
+    code = getattr(exc, "code", None)
+    if code == "peer_not_found":
+        return HTTPException(
+            status_code=404,
+            detail={"code": code, "message": "Peer not found."},
+        )
+    if code in _PEER_CALLER_ERRORS:
+        return HTTPException(
+            status_code=400, detail={"code": code, "message": str(exc)},
+        )
+    if code == "peer_exists":
+        # The store's message names no path, so it is served as written:
+        # it says what to do instead, which a generic 409 could not.
+        return HTTPException(
+            status_code=409, detail={"code": code, "message": str(exc)},
+        )
+    if code in _WORKITEM_DOCUMENT_ERRORS:
+        logger.error("peers.json refused (%s): %s", code, exc)
+        return HTTPException(
             status_code=409,
             detail={
-                "code": "corrupt_document",
-                "message": (
-                    "This workitem is adopted but its issue reference is "
-                    "unusable, so there is no issue to assign. Un-adopt it "
-                    "(DELETE its /adoption) and adopt the issue again."
+                "code": code,
+                "message": _WORKITEM_DOCUMENT_ERRORS[code].format(
+                    document="peers.json"
                 ),
             },
         )
-
-    # Before anything that reaches GitHub — resolving ``me`` is itself a
-    # call, and a paused poller means the machine has been told to stand
-    # down, not that this one request is special.
-    _github_budget_gate()
-
-    login = wanted
-    if login is not None and login.lower() in _SELF_ALIASES:
-        login = await _self_github_login()
-        if not login:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "github_not_connected",
-                    "message": (
-                        "This Space does not know its own GitHub login, so "
-                        "'me' cannot be resolved. Connect GitHub, or assign by "
-                        "login explicitly."
-                    ),
-                },
-            )
-    if login is not None:
-        login = login.lstrip("@")
-
-    result = await github_issue_actions.set_assignees(
-        repo, number, [login] if login else [],
+    return HTTPException(
+        status_code=500,
+        detail={"code": "scope_unavailable", "message": failure},
     )
-    if not result.ok:
-        raise _github_error(result.error_kind, result.error)
-    if login and login not in result.assignees:
-        # GitHub answered 200 and did not assign them. That is its documented
-        # behaviour for a login without access to the repository, and it is
-        # exactly the "appears to succeed" this task refuses to reproduce.
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "assignee_not_assignable",
-                "message": (
-                    f"GitHub accepted the request but did not assign "
-                    f"{login!r} to {repo}#{number}: it silently drops an "
-                    f"assignee who cannot be assigned. They need access to "
-                    f"the repository. Assignees are now "
-                    f"{result.assignees or 'none'}."
-                ),
-            },
-        )
 
-    # **The one workitem event emitted from a route, and only because
-    # there is no write to hang it on.** Every other ``workitem.*`` line
-    # comes out of the store, so it cannot be missed by a caller taking a
-    # different path. This assignment wrote to GitHub and deliberately
-    # wrote nothing locally (§5.3), yet D1 makes the GitHub assignee the
-    # one that actually routes work across Spaces — so without this the
-    # timeline would carry ``workitem.assigned`` for local items only,
-    # which is the half that matters least. Addressed by ``project_id``
-    # so this module still resolves no paths of its own.
-    _emit_workitem_events(scope.project_id, [
-        WorkitemEvent(
-            ts=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            action="assigned",
-            workitem_id=workitem_id,
-            assignee=result.assignees[0] if result.assignees else None,
+
+def _make_peer_model(d: dict) -> Peer:
+    """Shape one stored record for the wire.
+
+    ``role`` is coerced rather than trusted, for the reason
+    :func:`_coerce_workitem_choice` exists: ``Peer.role`` is a
+    ``Literal`` so the OpenAPI schema carries the enum, but a synced
+    ``.xo/`` is restored wholesale from somewhere else, so "the store
+    wrote it" is not the same claim as "this process wrote it". This
+    model is built *after* the route's ``try``/``except``, so one
+    unrecognised role would raise a ``ValidationError`` that took the
+    whole roster with it.
+
+    The fallback is ``"viewer"`` — the **least** privileged role in the
+    schema's enum. A row this Space cannot interpret must not be rendered
+    as an owner; guessing downwards is the only safe direction, and the
+    warning names the row so it can be repaired.
+    """
+    role = d.get("role")
+    if role not in _PEER_ROLES:
+        logger.warning(
+            "peer %s carries role %r, which is not in the declared vocabulary "
+            "%s; rendering it as 'viewer', the least privileged role. Repair "
+            "the record.",
+            d.get("user_id") or "<no user_id>", role, sorted(_PEER_ROLES),
         )
-    ])
-    return WorkitemAssignment(
+        role = "viewer"
+    return Peer(
+        user_id=str(d.get("user_id", "")),
+        role=role,
+        added_at=d.get("added_at"),
+        endpoint=d.get("endpoint"),
+        label=d.get("label"),
+    )
+
+
+@router.get(
+    "/api/xo-projects/{project_id}/peers",
+    response_model=PeersResponse,
+)
+def project_peers(
+    project_id: str,
+    role: Optional[str] = Query(
+        default=None, description="Filter to `owner`, `collaborator` or `viewer`."
+    ),
+) -> PeersResponse:
+    """Everyone this project is shared with, oldest first.
+
+    Empty ``{peers: []}`` when nothing has written ``peers.json`` yet,
+    and equally when the document exists and lists nobody — the schema
+    says an empty list *is* the answer for a solo project. A document
+    that exists but cannot be read is a **409**, never an empty roster
+    (see :func:`_peer_error`): a roster silently read as empty is a
+    project that has forgotten every collaborator, which is the O-E
+    failure with the highest cost in this tree.
+
+    ``updated_at`` is the document's own stamp — when the roster last
+    *changed*, not when it was last touched, because an idempotent write
+    writes nothing at all.
+    """
+    scope = _require_project(project_id)
+    try:
+        updated_at, peers = scope.read_peer_roster(role=role)
+    except Exception as exc:
+        raise _peer_error(exc, failure="peers.json is not readable.") from exc
+    return PeersResponse(
         project_id=project_id,
-        workitem_id=workitem_id,
-        kind="github",
-        assignee=result.assignees[0] if result.assignees else None,
-        assignees=list(result.assignees),
-        # GitHub has it; this Space reads it back from the next poll. Nothing
-        # was written to ``.xo/`` and nothing was written to the mirror — the
-        # poller is its only writer, and a forged row to save 60 seconds is
-        # the stale value §5.3 forbids, arrived at on purpose.
-        pending=True,
+        updated_at=updated_at,
+        peers=[_make_peer_model(row) for row in peers],
+    )
+
+
+@router.post(
+    "/api/xo-projects/{project_id}/peers",
+    response_model=Peer,
+    status_code=201,
+)
+def project_peers_create(project_id: str, body: CreatePeerRequest) -> Peer:
+    """Add a collaborator to the roster.
+
+    ``added_at`` is server-set and is not a field on the request: it
+    records when this Space learned of the peer.
+
+    **A ``user_id`` already on the roster is ``409 peer_exists``, not an
+    upsert.** The roster is a set keyed by identity, and an upsert would
+    silently rewrite an existing peer's ``role`` — a privilege change as
+    the side effect of an insert the caller thought was new — while also
+    having no honest answer for ``added_at``. PATCH is the edit, and it
+    is one call away.
+    """
+    scope = _require_project(project_id)
+    try:
+        new = scope.create_peer(
+            user_id=body.user_id,
+            role=body.role,
+            label=body.label,
+            endpoint=body.endpoint,
+        )
+    except Exception as exc:
+        raise _peer_error(exc, failure="peers.json write failed.") from exc
+    return _make_peer_model(new)
+
+
+@router.get(
+    "/api/xo-projects/{project_id}/peers/{user_id}",
+    response_model=Peer,
+)
+def project_peers_get(project_id: str, user_id: str) -> Peer:
+    """Fetch one peer by ``user_id``.
+
+    404 when they are not on the roster. There is no tombstone to look
+    past and no ``?include_deleted=`` twin: a removed peer is removed.
+    """
+    scope = _require_project(project_id)
+    try:
+        found = scope.get_peer(user_id)
+    except Exception as exc:
+        raise _peer_error(exc, failure="peers.json is not readable.") from exc
+    if found is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "peer_not_found", "message": "Peer not found."},
+        )
+    return _make_peer_model(found)
+
+
+@router.patch(
+    "/api/xo-projects/{project_id}/peers/{user_id}",
+    response_model=Peer,
+)
+def project_peers_update(
+    project_id: str, user_id: str, body: UpdatePeerRequest,
+) -> Peer:
+    """Change a peer's ``role``, ``label`` or ``endpoint``.
+
+    Only the keys the request carries are touched — and for the two
+    nullable ones (``label``, ``endpoint``) *carrying the key with a
+    null* is a different request from omitting it: ``{"label": null}``
+    removes the display name, ``{}`` leaves it alone.
+    ``UpdatePeerRequest.store_kwargs`` is where that distinction is
+    preserved.
+
+    ``user_id`` and ``added_at`` cannot be changed. ``user_id`` is the
+    identity, so re-keying a record would hand whatever it meant to a
+    different person — that is a DELETE plus a POST, deliberately two
+    calls. ``added_at`` is this Space's own observation of when the peer
+    joined, not a value a caller revises.
+
+    An idempotent PATCH is genuinely idempotent: a call that changes
+    nothing writes nothing and does not advance the document's
+    ``updated_at``.
+    """
+    scope = _require_project(project_id)
+    try:
+        updated = scope.update_peer(user_id, **body.store_kwargs())
+    except Exception as exc:
+        raise _peer_error(exc, failure="peers.json write failed.") from exc
+    return _make_peer_model(updated)
+
+
+@router.delete(
+    "/api/xo-projects/{project_id}/peers/{user_id}",
+    response_model=DeletePeerResponse,
+)
+def project_peers_delete(project_id: str, user_id: str) -> DeletePeerResponse:
+    """Remove a collaborator. **A hard delete — there is no tombstone.**
+
+    This is the deliberate divergence from ``DELETE /todos`` and
+    ``DELETE /workitems``, which tombstone. Two reasons, and the second
+    is the one that decided it:
+
+    * ``peers.schema.json`` is ``additionalProperties: false`` and
+      declares no ``deleted_at`` / ``deleted_by``. Tombstoning would mean
+      changing a document that already ships in the project template.
+    * ``peers.json`` is in the **synced** tier. A removed collaborator
+      lingering as a tombstone would travel to every Space this project
+      ever reaches, carrying "this person used to have access" forever.
+      That is a privacy problem wearing a history feature's clothes.
+
+    The cost, stated rather than hidden: the fact that they were ever
+    listed is gone. An access log belongs in an append-only runtime
+    document, not in the roster.
+
+    Idempotent: ``deleted: false`` when the peer was not listed, never a
+    404 — the same contract as the other two DELETEs. There is no
+    ``?runtime=`` here, because there is no tombstone to attribute.
+    """
+    scope = _require_project(project_id)
+    try:
+        deleted = scope.delete_peer(user_id)
+    except Exception as exc:
+        raise _peer_error(exc, failure="peers.json write failed.") from exc
+    return DeletePeerResponse(
+        project_id=project_id, user_id=user_id, deleted=deleted,
     )
 
 

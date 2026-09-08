@@ -27,11 +27,20 @@ as todos.
 
 **Two kinds of workitem**, and the difference governs almost everything below:
 
-- **local** (`source.kind: "local"`) — authored here. You own every field.
-- **adopted** (`source.kind: "github"`) — a mirror of a GitHub issue. **GitHub
-  is authoritative** for title, state and assignee; the file keeps only a
-  snapshot taken at adoption. Writing those fields returns `400
-  github_authoritative`.
+- **from this Space** (`origin: "space"`) — authored here. You own every field.
+- **from GitHub** (`origin: "github"`) — a mirror of a GitHub issue. **GitHub
+  is authoritative** for `status`, `state_reason` and `body`; the file keeps
+  only a `title`/`labels` snapshot taken at adoption. Writing those three
+  returns `400 github_authoritative`.
+
+**`origin` and `source.kind` are the same distinction in two vocabularies.**
+`origin: "github"` is `source.kind: "github"`, and **`origin: "space"` is
+`source.kind: "local"`** — the stored name was not changed, because it is a
+synced on-disk format. Read `origin`; expect `source.kind` on disk.
+
+**GitHub is read-only to this system.** Nothing here ever writes to GitHub —
+not assignment, not closing, not anything. Issues are polled and adopted;
+that is all. See §7.
 
 ---
 
@@ -76,25 +85,42 @@ POST /api/xo-projects/demo/workitems
 ```json
 201
 {
-  "id": "a3af03b3-c3b2-40c9-83ec-1ad800aa79a9",
+  "id": "c6ddbed6-13df-4e2f-b3ca-3c4249196188",
   "title": "Rate-limit the poller",
   "body": "Budget is in points.",
   "labels": ["infra"],
   "status": "open",
   "state_reason": null,
   "source": { "kind": "local", "github": null },
+  "origin": "space",
   "assignee": "ankitdwivedi",
+  "assigned": true,
   "assignees": ["ankitdwivedi"],
+  "github_assignees": [],
   "stale": false,
   "in_progress": false,
   "links": { "todo_ids": [], "session_ids": [] },
-  "created_at": "2026-09-08T08:57:08Z",
-  "updated_at": "2026-09-08T08:57:08Z",
+  "created_at": "2026-09-08T10:47:12Z",
+  "updated_at": "2026-09-08T10:47:12Z",
   "created_by": "claude_code",
   "deleted_at": null,
   "deleted_by": null
 }
 ```
+
+### The five fields about who owes the work
+
+| field | what it is |
+|---|---|
+| `assignee` | who **this Space** says owes it. `null` when nobody does. From `.xo/workitems.json`, for both kinds. |
+| `assigned` | `assignee != null`, as a boolean. Nothing more. |
+| `assignees` | `assignee` as a list, at most one long. The same fact. |
+| `github_assignees` | who **GitHub** has on the issue. Information, never an assignment made here. `[]` for a `space` workitem and for one whose issue the mirror cannot speak for. |
+| `origin` | `"github"` or `"space"` — where the workitem came from. |
+
+`assigned` is about `assignee` only: an issue with `github_assignees:
+["octocat"]` and no local assignee is `assigned: false`. Somebody is on it
+upstream; nobody has been given it here.
 
 `id` is a UUID4 and is unique across every project — the workspace rollup
 (§8) is a cross-project query, so ids must be unique by construction, not by
@@ -173,7 +199,8 @@ GET /api/xo-projects/demo/github/issues
 ```
 ```json
 200
-{ "project_id": "demo", "repo": null, "fetched_at": null, "error": null,
+{ "project_id": "demo", "repo": "dwivedi-ai/xo-cowork-api",
+  "fetched_at": null, "error": null,
   "issues": [], "untracked": 0, "tracked": 0 }
 ```
 
@@ -193,56 +220,164 @@ returns the same workitem, not two.
 
 **What adoption copies, and what it does not.** `title` and `labels` are
 snapshotted **once** and never refreshed — they are the fallback that keeps the
-item readable when GitHub is unreachable. `status`, `state_reason`, `assignee`
-and `body` are *not* stored: GitHub owns them and a stale `closed` or a stale
-assignee is a false statement about who owes what. Absent beats wrong.
+item readable when GitHub is unreachable. `status`, `state_reason` and `body`
+are *not* stored: GitHub owns them and a stale `closed` is a false statement
+about whether the work is done. Absent beats wrong. An `assignee` the workitem
+already had is **kept** — it is yours, not GitHub's (§7).
 
 ### Reading an adopted item
 
 The read path joins the file with the mirror. When the mirror has the issue you
-get live state. When it doesn't — deleted, transferred, or the poller has never
-run — you still get **200, never 404**:
+get live state — note `github_assignees`, which is GitHub's own, and `assignee`,
+which is nobody until someone here assigns it:
 
 ```json
-{ "title": "snapshotted title",      // from the adoption snapshot
-  "status": null,                    // unknown, NOT defaulted to "open"
+200
+{
+  "id": "8ce59779-be62-44d6-a7d7-707dbf6fec43",
+  "title": "Rate-limit the poller",
+  "body": null,
+  "labels": ["infra", "perf"],
+  "status": "open",
+  "state_reason": null,
+  "source": {
+    "kind": "github",
+    "github": {
+      "repo": "dwivedi-ai/xo-cowork-api",
+      "number": 42,
+      "node_id": "I_kwDOABCD1234",
+      "url": "https://github.com/dwivedi-ai/xo-cowork-api/issues/42"
+    }
+  },
+  "origin": "github",
   "assignee": null,
-  "stale": true }
+  "assigned": false,
+  "assignees": [],
+  "github_assignees": ["octocat"],
+  "stale": false,
+  "in_progress": false,
+  "links": { "todo_ids": [], "session_ids": [] },
+  "created_at": "2026-09-08T10:47:12Z",
+  "updated_at": "2026-09-08T10:47:12Z",
+  "created_by": "claude_code",
+  "deleted_at": null,
+  "deleted_by": null
+}
+```
+
+When the mirror doesn't have it — deleted, transferred, or the poller has never
+run — you still get **200, never 404**. This is the same workitem after the
+mirror was removed, and after it had been assigned to `ada` here:
+
+```json
+200
+{
+  "id": "8ce59779-be62-44d6-a7d7-707dbf6fec43",
+  "title": "Rate-limit the poller",
+  "body": null,
+  "labels": ["infra", "perf"],
+  "status": null,
+  "state_reason": null,
+  "source": {
+    "kind": "github",
+    "github": {
+      "repo": "dwivedi-ai/xo-cowork-api",
+      "number": 42,
+      "node_id": "I_kwDOABCD1234",
+      "url": "https://github.com/dwivedi-ai/xo-cowork-api/issues/42"
+    }
+  },
+  "origin": "github",
+  "assignee": "ada",
+  "assigned": true,
+  "assignees": ["ada"],
+  "github_assignees": [],
+  "stale": true,
+  "in_progress": false,
+  "links": { "todo_ids": [], "session_ids": [] },
+  "created_at": "2026-09-08T10:47:12Z",
+  "updated_at": "2026-09-08T10:47:12Z",
+  "created_by": "claude_code",
+  "deleted_at": null,
+  "deleted_by": null
+}
 ```
 
 **`stale: true` means "I could not confirm this against GitHub."** Treat
-`status: null` as unknown, never as open. A stale item matches no `?status=`
-or `?assignee=` filter — it appears only in an unfiltered listing.
+`status: null` as unknown, never as open, and `github_assignees: []` as "the
+mirror has nothing to say", not "nobody is on it upstream". `assignee` is
+unaffected by staleness — it never came from GitHub in the first place. A stale
+item matches no `?status=` filter, so it appears in an unfiltered listing and
+in an `?assignee=` one that matches its local assignee.
 
 ---
 
-## 7. Assignment
+## 7. Assignment — always local, never GitHub
 
 ```json
 PUT /api/xo-projects/demo/workitems/{id}/assignee
-{ "assignee": "me" }            // or a GitHub login
+{ "assignee": "me" }            // or any name; null to un-assign
 ```
 
-- **Adopted item** → written to **GitHub** as an issue assignee, and read back
-  by the next poll. Nothing is written locally. Responds `pending: true`.
-  GitHub silently ignores a login that cannot be assigned, so the response is
-  checked against what was asked and a silent drop becomes
-  `400 assignee_not_assignable` rather than a false success.
-- **Local item** → assignable **only to yourself, permanently**:
+**One path for both kinds.** The assignee is written into
+`<project>/.xo/workitems.json`. **No GitHub call is made** — not to write the
+assignee, not to resolve `me`, not to check a rate budget. It works offline,
+unauthenticated, with `gh` uninstalled.
+
+An adopted workitem, assigned to a peer:
+
+```json
+200
+{ "project_id": "demo",
+  "workitem_id": "8ce59779-be62-44d6-a7d7-707dbf6fec43",
+  "kind": "github",
+  "assignee": "ada",
+  "assignees": ["ada"],
+  "pending": false }
+```
+
+`"me"`, on a workitem this Space authored:
+
+```json
+200
+{ "project_id": "demo",
+  "workitem_id": "c6ddbed6-13df-4e2f-b3ca-3c4249196188",
+  "kind": "local",
+  "assignee": "ankitdwivedi",
+  "assignees": ["ankitdwivedi"],
+  "pending": false }
+```
+
+- `kind` is the workitem's own kind (`source.kind`), **not** where the write
+  went — the write always goes to the same place.
+- `pending` is always `false`. Nothing is outstanding.
+- `"me"` is this Space's own identity. A leading `@` is stripped, so
+  `@octocat` and `octocat` are one name. `null` un-assigns.
+- **Any name is accepted**, for any workitem. A name that cannot be stored is
+  `400 invalid_assignee`, and nothing is written:
 
 ```json
 400
-{ "detail": { "code": "local_assignee_only",
-  "message": "A local workitem is assignable only to yourself, permanently.
-    Assignment across Spaces is a GitHub assignee, and a local workitem never
-    becomes a GitHub issue … To hand this work to someone else, create it as a
-    GitHub issue and adopt that." } }
+{ "detail": { "code": "invalid_assignee",
+  "message": "assignee must match [A-Za-z0-9_:\\-\\.] (1..200 chars)." } }
 ```
 
-That is the design, not a limitation to work around: coordination lives in
-GitHub, which is already a shared, concurrent, conflict-free store. A local
-workitem never becomes a GitHub issue — if work needs to reach a peer, create
-it as an issue first and adopt it.
+### What an assignment does *not* do
+
+**It does not reach the person you assigned.** `.xo/` is snapshot
+backup/restore, not continuous sync — a restore force-replaces the folder —
+so an assignment is visible **only inside the Space that made it**. Assigning
+a peer records who this Space thinks owes the work. It does not notify them
+and it does not appear on their machine.
+
+To hand work to someone through GitHub, **assign it on the issue**. It shows
+up here as `github_assignees`, which this system reads once a minute and never
+writes. That is the only assignment two Spaces can both see, and it is not
+something this API can make for you.
+
+*(This reverses an earlier design in which assigning an adopted item wrote a
+GitHub assignee and a local item was self-assignable only. The
+`local_assignee_only` and `assignee_not_assignable` errors are gone with it.)*
 
 ---
 
@@ -253,24 +388,95 @@ GET /api/workspace/workitems?assignee=me&status=open&limit=100
 ```
 ```json
 200
-{ "workitems": [ /* each row is a Workitem plus project_id and pid */ ],
-  "count": 0, "total": 0, "truncated": false,
+{
+  "workitems": [
+    {
+      "id": "a9649f0c-cb41-4d81-b19f-a29b092bc575",
+      "title": "Rate-limit the poller",
+      "body": "Budget is in points.",
+      "labels": ["infra"],
+      "status": "open",
+      "state_reason": null,
+      "source": { "kind": "local", "github": null },
+      "origin": "space",
+      "assignee": "ankitdwivedi",
+      "assigned": true,
+      "assignees": ["ankitdwivedi"],
+      "github_assignees": [],
+      "stale": false,
+      "in_progress": false,
+      "links": { "todo_ids": [], "session_ids": [] },
+      "created_at": "2026-09-08T10:49:06Z",
+      "updated_at": "2026-09-08T10:49:06Z",
+      "created_by": "claude_code",
+      "deleted_at": null,
+      "deleted_by": null,
+      "project_id": "demo",
+      "pid": "22222222-3333-4444-8555-666666666666"
+    },
+    {
+      "id": "80c2011b-c166-4f4d-849c-e2b3b950979a",
+      "title": "Rate-limit the poller",
+      "body": null,
+      "labels": ["infra", "perf"],
+      "status": "open",
+      "state_reason": null,
+      "source": {
+        "kind": "github",
+        "github": {
+          "repo": "dwivedi-ai/xo-cowork-api",
+          "number": 42,
+          "node_id": "I_kwDOABCD1234",
+          "url": "https://github.com/dwivedi-ai/xo-cowork-api/issues/42"
+        }
+      },
+      "origin": "github",
+      "assignee": null,
+      "assigned": false,
+      "assignees": [],
+      "github_assignees": ["dwivedi-ai"],
+      "stale": false,
+      "in_progress": false,
+      "links": { "todo_ids": [], "session_ids": [] },
+      "created_at": "2026-09-08T10:49:06Z",
+      "updated_at": "2026-09-08T10:49:06Z",
+      "created_by": "claude_code",
+      "deleted_at": null,
+      "deleted_by": null,
+      "project_id": "demo",
+      "pid": "22222222-3333-4444-8555-666666666666"
+    }
+  ],
+  "count": 2, "total": 2, "truncated": false,
   "assignee": "me",
   "identities": ["ankitdwivedi", "ankitdwivedi:collabse_07c611", "dwivedi-ai"],
   "assignee_unresolved": null,
   "projects": 1,
-  "skipped": [] }
+  "skipped": []
+}
 ```
+
+Both halves of `me` are doing work there. The first row matched because this
+Space assigned it to `ankitdwivedi`; the second matched because **GitHub** has
+`dwivedi-ai` on the issue — `assigned` is `false` on it, since nobody assigned
+it *here*.
+
+Each row is a full workitem — `origin`, `assigned`, `github_assignees` and all
+— plus `project_id` and `pid`. The two surfaces answer identically.
 
 **This is the one to poll.** It is a flat list across every project — no union
 key, so no row can be lost to a key collision — filtered on the *projected*
 view, so adopted items match on their live GitHub state rather than on what
 happens to be stored.
 
+- **`?assignee=` matches two things**: the workitem's own `assignee` (what
+  someone assigned *here*) **and** its `github_assignees` (who GitHub has on
+  the issue). Both, because both are true answers to "who owes this" and
+  dropping either hides real work.
 - **`me` is a set, not a name.** It resolves to this Space's local identities
-  *and* its GitHub login (see `identities` above), because a local workitem is
-  self-assigned to a Coder identity while an adopted one is assigned to a
-  GitHub login. Matching either would miss half your work.
+  *and* its GitHub login (see `identities` above), because an assignment made
+  here names a Coder identity while an issue names a GitHub login. Matching
+  either alone would miss half your work.
 - **No GitHub credential** → still 200, still filtered on the local half, with
   `assignee_unresolved: "no_github_credential"`. Never "everything".
 - **`skipped`** names any project whose document could not be read, with its
@@ -278,6 +484,9 @@ happens to be stored.
   before concluding you have no work.
 - Ordering is newest-first by the record's local `updated_at`, so it is
   "recently changed here", not "recently active on GitHub".
+- A **stale** adopted item matches no `?status=`, so a filtered rollup omits
+  it. It still matches `?assignee=` on its local assignee — that fact does not
+  come from GitHub and staleness does not put it in doubt.
 - No network call is made for the workitem data. `?assignee=me` costs one
   identity lookup per request.
 
@@ -308,9 +517,7 @@ existed". Prefer closing.
 | `project_not_found` | 404 | no such project folder |
 | `workitem_not_found` | 404 | unknown or tombstoned id |
 | `invalid_runtime`, `invalid_assignee`, `invalid_value`, `invalid_status`, `invalid_state_reason`, `invalid_source`, `invalid_todo_id`, `invalid_session_id`, `invalid_node_id` | 400 | your request |
-| `github_authoritative` | 400 | you wrote a field GitHub owns on an adopted item |
-| `local_assignee_only` | 400 | see §7 |
-| `assignee_not_assignable` | 400 | GitHub silently dropped the login |
+| `github_authoritative` | 400 | you wrote `status`, `state_reason` or `body` on a `github` workitem |
 | `corrupt_document`, `unsupported_schema` | **409** | the file on disk is unreadable or from a newer version — **repair it and retry the identical request**; not your fault and not a retryable server error |
 | `not_authenticated` | 503 | this Space has no usable GitHub credential |
 | `scope_unavailable` | 500 | read/write failed |

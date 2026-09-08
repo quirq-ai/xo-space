@@ -209,6 +209,21 @@ class SchemaAcceptsRealOutputTests(_ValidatingCase):
         self.adopt(labels=["bug"])
         self.assertValid(self.document(), "an adopted workitem with labels")
 
+    def test_an_adopted_item_may_carry_a_local_assignee(self) -> None:
+        """The reversal of D1 (§13, amendment 33), at the schema level.
+        Assignment is a local annotation, so it is permitted on an adopted
+        record exactly as on a local one — and this document comes out of
+        the store rather than being hand-written, so the schema is being
+        checked against its writer."""
+        item = self.adopt()
+        workitems_store.update_workitem(
+            self.path, item["id"], assignee="dwivedi-ai",
+        )
+        stored = self.document()["items"][item["id"]]
+        self.assertEqual(stored["assignee"], "dwivedi-ai")
+        self.assertNotIn("status", stored, "the other three stay GitHub's")
+        self.assertValid(self.document(), "an adopted workitem with an assignee")
+
     def test_a_document_with_no_items_yet_validates(self) -> None:
         item = self.create()
         workitems_store.delete_workitem(self.path, item["id"])
@@ -296,11 +311,16 @@ class SchemaRejectsTests(_ValidatingCase):
 
     def test_it_rejects_a_snapshotted_status_on_an_adopted_item(self) -> None:
         """§5.3, the subtle half: a stale ``closed`` is a false statement
-        about who owes what. Absent beats wrong."""
+        about whether the work is done. Absent beats wrong.
+
+        ``assignee`` used to be a fourth entry here and is deliberately
+        not (§13, amendment 33): it is a local annotation now, so an
+        adopted record may carry one — see
+        :meth:`SchemaAcceptsRealOutputTests.test_an_adopted_item_may_carry_a_local_assignee`.
+        """
         for field, value in (
             ("status", "closed"),
             ("state_reason", "completed"),
-            ("assignee", "someone-else"),
             ("body", "the issue text"),
         ):
             with self.subTest(field=field):
@@ -405,7 +425,6 @@ class CreateTests(_WorkitemsCase):
         for field, value in (
             ("status", "closed"),
             ("state_reason", "completed"),
-            ("assignee", "peer-login"),
             ("body", "issue text"),
         ):
             with self.subTest(field=field):
@@ -413,6 +432,18 @@ class CreateTests(_WorkitemsCase):
                     self.adopt(**{field: value})
                 self.assertEqual(raised.exception.code, "github_authoritative")
         self.assertFalse(self.path.exists(), "a refused create wrote a document")
+
+    def test_an_item_born_adopted_may_be_assigned_at_birth(self) -> None:
+        """§13 amendment 33: ``assignee`` is not GitHub's, so creating an
+        adopted record with one is a write this store performs rather than
+        refuses. It is still absent-by-default, as ``null``."""
+        item = self.adopt(assignee="dwivedi-ai")
+        self.assertEqual(item["assignee"], "dwivedi-ai")
+        self.assertNotIn("status", item)
+        second = self.adopt(source={"kind": "github", "github": {
+            **GITHUB_REF, "number": 43, "node_id": "I_other",
+        }})
+        self.assertIsNone(second["assignee"], "absent-by-default, as null")
 
     def test_a_missing_file_is_created_rather_than_refused(self) -> None:
         self.assertFalse(self.path.exists())
@@ -581,7 +612,6 @@ class UpdateTests(_WorkitemsCase):
         for field, value in (
             ("status", "closed"),
             ("state_reason", "completed"),
-            ("assignee", "peer-login"),
             ("body", "text"),
         ):
             with self.subTest(field=field):
@@ -591,6 +621,37 @@ class UpdateTests(_WorkitemsCase):
                     )
                 self.assertEqual(raised.exception.code, "github_authoritative")
         self.assertEqual(self.document()["items"][item["id"]], item)
+
+    def test_update_assigns_an_adopted_item_locally(self) -> None:
+        """The reversal of D1 in the store: assigning an adopted workitem
+        is an ordinary local write, not a ``github_authoritative`` refusal
+        and not a call to GitHub (this module cannot make one)."""
+        item = self.adopt()
+        updated = workitems_store.update_workitem(
+            self.path, item["id"], assignee="peer-login",
+        )
+        self.assertEqual(updated["assignee"], "peer-login")
+        self.assertEqual(
+            self.document()["items"][item["id"]]["assignee"], "peer-login",
+        )
+        cleared = workitems_store.update_workitem(
+            self.path, item["id"], assignee=None,
+        )
+        self.assertIsNone(cleared["assignee"])
+
+    def test_assigning_an_old_adopted_record_keeps_the_key_order(self) -> None:
+        """A record written before amendment 33 carries no ``assignee``
+        key at all. Adding one must not append it after ``deleted_by`` —
+        ``_KEY_ORDER`` exists so the synced document does not carry that
+        diff noise."""
+        item = self.adopt()
+        doc = self.document()
+        doc["items"][item["id"]].pop("assignee", None)
+        self.path.write_text(json.dumps(doc), encoding="utf-8")
+        workitems_store.update_workitem(self.path, item["id"], assignee="ada")
+        keys = list(self.document()["items"][item["id"]])
+        self.assertLess(keys.index("assignee"), keys.index("links"))
+        self.assertGreater(keys.index("assignee"), keys.index("source"))
 
     def test_update_still_edits_the_local_half_of_an_adopted_item(self) -> None:
         item = self.adopt()

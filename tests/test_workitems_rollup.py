@@ -5,12 +5,15 @@ every project on this machine, in one call. Four things it claims, and
 this module is where each is made to hold:
 
 * **it filters the projection, not the file.** The project tier's
-  ``?status=`` / ``?assignee=`` read *stored* fields, so an adopted item
-  never matches either — it stores neither, because GitHub owns both
-  (§5.3). W7's agent flagged that as a known limit and the plan says W9
-  answers it properly. ``ProjectedFilterTests`` is the proof: an adopted
-  item whose file holds no status at all is found by ``?status=closed``
-  because the *mirror* says closed.
+  ``?status=`` reads a *stored* field, so an adopted item never matches
+  it — it stores no status, because GitHub owns it (§5.3). W7's agent
+  flagged that as a known limit and the plan says W9 answers it properly.
+  ``ProjectedFilterTests`` is the proof: an adopted item whose file holds
+  no status at all is found by ``?status=closed`` because the *mirror*
+  says closed. ``?assignee=`` matches two things here — the workitem's own
+  ``assignee`` (a local annotation since §13 amendment 33) and the issue's
+  ``github_assignees`` — because those are two truthful answers to "who
+  owes this" and dropping either hides real work.
 * **it is a flat list.** O-C lost rows to a cross-project union keyed by
   a constant. A list has no union key, so the whole class is gone —
   ``RollupShapeTests`` pins that two projects' rows both survive and that
@@ -269,7 +272,14 @@ class ProjectedFilterTests(_RollupCase):
         self.assertEqual(self.titles(self.get(status="closed")), ["closed on github"])
         self.assertEqual(self.get(status="open")["workitems"], [])
 
-    def test_assignee_comes_from_the_mirror_for_an_adopted_item(self) -> None:
+    def test_githubs_own_assignees_still_match_the_filter(self) -> None:
+        """This used to be "assignee comes from the mirror for an adopted
+        item", and half of that is now false: the *projected* ``assignee``
+        is the file's for both kinds (§13, amendment 33). What is still
+        true, and load-bearing, is that GitHub's assignees match
+        ``?assignee=`` — a peer putting themselves on the issue is the one
+        way their claim reaches this machine, and a rollup that ignored it
+        would hide work that plainly exists."""
         self.adopt("alpha", 7)
         self.adopt("beta", 8, title="someone else's")
         self.seed_mirror("alpha", _issue(7, assignees=["octocat"], title="mine"))
@@ -285,6 +295,52 @@ class ProjectedFilterTests(_RollupCase):
         for spelling in ("octocat", "@octocat", "@OCTOCAT", "OctoCat"):
             with self.subTest(spelling=spelling):
                 self.assertEqual(self.titles(self.get(assignee=spelling)), ["mine"])
+
+    def test_the_row_says_where_the_work_came_from_and_whether_it_is_taken(
+        self,
+    ) -> None:
+        """``origin`` and ``assigned``, the two fields this endpoint gained
+        with the reversal. The rollup row is a subclass of the project-tier
+        model, so both surfaces answer identically by construction — this
+        pins that they are actually populated on the workspace side."""
+        self.adopt("alpha", 7, title="from an issue")
+        # The mirror's title wins for an adopted item, so it has to agree
+        # or the row comes back under the mirror's name.
+        self.seed_mirror(
+            "alpha", _issue(7, assignees=["octocat"], title="from an issue"),
+        )
+        self.create("alpha", title="from this space", assignee="ada")
+
+        rows = {row["title"]: row for row in self.get()["workitems"]}
+        issue_row = rows["from an issue"]
+        self.assertEqual(issue_row["origin"], "github")
+        self.assertEqual(issue_row["source"]["kind"], "github")
+        self.assertFalse(issue_row["assigned"], "GitHub having someone on it "
+                                                "is not an assignment we made")
+        self.assertEqual(issue_row["github_assignees"], ["octocat"])
+
+        local_row = rows["from this space"]
+        self.assertEqual(local_row["origin"], "space",
+                         "if it is not from GitHub it is from this Space")
+        self.assertEqual(local_row["source"]["kind"], "local",
+                         "`origin: space` IS `source.kind: local` on disk")
+        self.assertTrue(local_row["assigned"])
+        self.assertEqual(local_row["assignee"], "ada")
+        self.assertEqual(local_row["github_assignees"], [])
+
+    def test_an_adopted_item_can_be_assigned_here_and_still_matches(self) -> None:
+        """The reversal's rollup consequence: an assignment made in this
+        Space is what ``?assignee=`` finds, for an adopted workitem too."""
+        item = self.adopt("alpha", 7, title="mine now")
+        self.seed_mirror(
+            "alpha", _issue(7, assignees=["someone-else"], title="mine now"),
+        )
+        workitems_store.update_workitem(
+            self.workitems_path("alpha"), item["id"], assignee="ada",
+        )
+        self.assertEqual(self.titles(self.get(assignee="ada")), ["mine now"])
+        self.assertEqual(self.titles(self.get(assignee="someone-else")),
+                         ["mine now"], "GitHub's view still matches too")
 
     def test_a_local_item_still_filters_on_its_stored_fields(self) -> None:
         self.create("alpha", title="mine", assignee="ada")

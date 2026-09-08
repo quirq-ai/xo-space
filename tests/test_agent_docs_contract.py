@@ -65,6 +65,9 @@ WORKITEMS_API_DOC = (
     ROOT / ".agents" / "skills" / "xo-projects" / "references"
     / "workitems-http-api.md"
 )
+PEERS_API_DOC = (
+    ROOT / ".agents" / "skills" / "xo-projects" / "references" / "peers-http-api.md"
+)
 TEMPLATE = ROOT / "services" / "cowork_agent" / "project_template"
 
 #: Every agent-facing doc the plan lists for T10, plus the two template
@@ -73,6 +76,7 @@ AGENT_DOCS = (
     SKILL,
     TODO_API_DOC,
     WORKITEMS_API_DOC,
+    PEERS_API_DOC,
     TEMPLATE / "AGENTS.md",
     TEMPLATE / "OBJECTIVES.md",
     TEMPLATE / "PLAN.md",
@@ -362,7 +366,7 @@ class CatalogAgreesWithTheWritersTests(unittest.TestCase):
     proves it is *true*: nothing here is allowed to place a file. Every
     document is produced by the code that owns it in production — the
     project scaffold, a real ``Watcher.tick()``, the ``xo.json`` manifest
-    builder, and the three request-path stores (todos, workitems, the
+    builder, and the request-path stores (todos, workitems, peers, the
     GitHub mirror and workitem claims) — and only then is each published
     row resolved and required to land on the result.
 
@@ -452,6 +456,12 @@ class CatalogAgreesWithTheWritersTests(unittest.TestCase):
         scope.claim_workitem(
             item["id"], session_id="sess-1", runtime=_FakeSource.name
         )
+        # ``peers.json`` also arrives with the template, so this is not
+        # what makes the row present — it is here so the row is satisfied
+        # by the code that owns it in production rather than by a copied
+        # stub. ``tests/test_peers_catalog.py`` is the writer-derived
+        # check that would fail if the two disagreed.
+        scope.create_peer(user_id="a-peer", role="collaborator")
         # An empty page list is a legitimate poll of a quiet repo and still
         # writes the mirror, so no GitHub response has to be invented.
         github_mirror.record_pages(

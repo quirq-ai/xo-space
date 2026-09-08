@@ -25,14 +25,20 @@ wrong rather than loudly broken.
   ``workitems.schema.json`` here, because "the record still validates" is
   the entire reason the function exists.
 
-* **A local workitem rejects assignment to anyone but yourself**, with a
-  400 that says so, rather than appearing to succeed (W8's second
-  acceptance criterion). D8 removed promotion, so this is permanent.
+* **Assignment never touches GitHub, for either kind of workitem.** D1
+  put coordination in GitHub and W8 wrote an assignee onto the issue;
+  that decision was reversed (§13, amendment 33), ``set_assignees`` is
+  deleted, and :class:`NoGithubWriteTests` proves the claim the hard way
+  — it makes the subprocess seam itself explode and then assigns both an
+  adopted and a local workitem.
 
-* **Assignment writes GitHub and nothing else.** No row goes into
-  ``.xo/``, and none goes into the mirror either — the poller is its
-  single writer, and a forged row to save a UI 60 seconds is exactly the
-  stale value §5.3 forbids.
+* **Assignment is a local annotation, accepted for anyone.** It lands in
+  ``.xo/workitems.json`` for every workitem, adopted or not. The
+  ``local_assignee_only`` refusal is gone with the GitHub write it was
+  standing in for; what it guarded against is now true of *every*
+  assignment and is documented rather than enforced — ``.xo/`` does not
+  continuously sync, so an assignment is visible only inside the Space
+  that made it.
 
 Everything runs **offline and unauthenticated**: no test here spawns
 ``gh``, reads a real token, or touches the network. Both roots are
@@ -60,7 +66,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from services.cowork_agent import github_poller
-from services.cowork_agent.connectors import github_issue_actions
+from services.cowork_agent.connectors import github_issue_actions, github_issues
 from services.cowork_agent.connectors.github_issues import (
     ERROR_KINDS,
     query_connections,
@@ -206,20 +212,44 @@ class ProjectionTests(unittest.TestCase):
         record.update(extra)
         return record
 
-    def test_state_and_assignee_come_from_the_mirror_always(self) -> None:
-        row = _mirror_row(
-            state="closed", state_reason="not_planned",
-            assignees=[{"login": "ada", "avatar_url": "https://a"},
-                       {"login": "grace", "avatar_url": None}],
-        )
+    def test_state_comes_from_the_mirror_always(self) -> None:
+        row = _mirror_row(state="closed", state_reason="not_planned")
         out = workitem_projection.project_workitem(
             self.adopted(), issues={NODE_ID: row}
         )
         self.assertEqual(out["status"], "closed")
         self.assertEqual(out["state_reason"], "not_planned")
-        self.assertEqual(out["assignees"], ["ada", "grace"])
-        self.assertEqual(out["assignee"], "ada", "the singular field is the first")
         self.assertFalse(out["stale"])
+
+    def test_the_assignee_is_the_files_and_githubs_is_served_beside_it(self) -> None:
+        """§13 amendment 33, the row of the table that changed sides.
+        ``assignee`` used to be "the mirror, always" for an adopted item.
+        It is now ours — read from the file for both kinds — and what
+        GitHub knows is served under a name that cannot be mistaken for
+        it."""
+        row = _mirror_row(
+            assignees=[{"login": "ada", "avatar_url": "https://a"},
+                       {"login": "grace", "avatar_url": None}],
+        )
+        out = workitem_projection.project_workitem(
+            self.adopted(assignee="dwivedi-ai"), issues={NODE_ID: row}
+        )
+        self.assertEqual(out["assignee"], "dwivedi-ai", "ours, from the file")
+        self.assertEqual(out["assignees"], ["dwivedi-ai"])
+        self.assertEqual(out["github_assignees"], ["ada", "grace"],
+                         "GitHub's own, flattened — information, not assignment")
+
+    def test_an_unassigned_adopted_item_is_not_assigned_to_githubs_people(self) -> None:
+        """The failure this split exists to prevent: GitHub having someone
+        on the issue must not read as an assignment this Space made."""
+        out = workitem_projection.project_workitem(
+            self.adopted(), issues={NODE_ID: _mirror_row(
+                assignees=[{"login": "ada", "avatar_url": None}],
+            )},
+        )
+        self.assertIsNone(out["assignee"])
+        self.assertEqual(out["assignees"], [])
+        self.assertEqual(out["github_assignees"], ["ada"])
 
     def test_the_title_is_the_mirrors_and_the_labels_are_the_snapshots(self) -> None:
         """§5.3, and §6.2's reason for the asymmetry: the poll fetches a
@@ -263,10 +293,14 @@ class ProjectionTests(unittest.TestCase):
             "status": "closed", "state_reason": "completed",
             "source": {"kind": "local"}, "assignee": "ada",
         }
-        out = workitem_projection.project_workitem(local, issues={NODE_ID: _mirror_row()})
+        out = workitem_projection.project_workitem(local, issues={NODE_ID: _mirror_row(
+            assignees=[{"login": "octocat", "avatar_url": None}],
+        )})
         self.assertEqual(out["status"], "closed")
         self.assertEqual(out["assignee"], "ada")
         self.assertEqual(out["assignees"], ["ada"], "one field for both kinds")
+        self.assertEqual(out["github_assignees"], [],
+                         "no issue has an opinion about a local item")
         self.assertEqual(out["body"], "notes")
         self.assertFalse(out["stale"], "nothing external owns a local item")
 
@@ -310,9 +344,20 @@ class StaleProjectionTests(unittest.TestCase):
                 # Unknown, not defaulted: absent beats wrong (§5.3).
                 self.assertIsNone(out["status"])
                 self.assertIsNone(out["state_reason"])
-                self.assertIsNone(out["assignee"])
-                self.assertEqual(out["assignees"], [])
                 self.assertIsNone(out["body"])
+                self.assertEqual(out["github_assignees"], [],
+                                 "the mirror asserts nothing about who is on it")
+
+    def test_a_stale_item_still_says_who_this_space_put_on_it(self) -> None:
+        """``assignee`` is not GitHub's (§13, amendment 33), so the mirror
+        being gone does not make it unknown. Blanking it here would lose a
+        fact that is on disk and perfectly readable."""
+        record = dict(self.RECORD, assignee="dwivedi-ai")
+        out = workitem_projection.project_workitem(record, issues={})
+        self.assertTrue(out["stale"])
+        self.assertEqual(out["assignee"], "dwivedi-ai")
+        self.assertEqual(out["assignees"], ["dwivedi-ai"])
+        self.assertEqual(out["github_assignees"], [])
 
     def test_an_unusable_mirror_document_reads_as_no_issues(self) -> None:
         for document in (None, {}, {"issues": None}, {"issues": []}, "nonsense", 7):
@@ -817,8 +862,11 @@ class AdoptRouteTests(_RoutedCase):
         self.assertEqual(item["source"]["kind"], "github")
         self.assertEqual(item["source"]["github"], GITHUB_REF)
         stored = self.stored(item["id"])
-        for field in ("status", "state_reason", "assignee", "body"):
+        for field in ("status", "state_reason", "body"):
             self.assertNotIn(field, stored, f"{field} is GitHub's, not stored")
+        self.assertIsNone(stored["assignee"],
+                          "assignee is ours (§13, amendment 33) — stored, and "
+                          "null until somebody assigns it")
 
     def test_a_second_adopt_of_one_issue_is_200_and_the_same_record(self) -> None:
         with patch.object(github_issue_actions, "fetch_issue", _fetch_ok()):
@@ -917,8 +965,13 @@ class AdoptedProjectionRouteTests(_RoutedCase):
                 self.assertEqual(row["title"], "renamed on GitHub")
                 self.assertEqual(row["status"], "closed")
                 self.assertEqual(row["state_reason"], "completed")
-                self.assertEqual(row["assignee"], "ada")
-                self.assertEqual(row["assignees"], ["ada"])
+                self.assertIsNone(row["assignee"],
+                                  "nobody assigned it *here*")
+                self.assertFalse(row["assigned"])
+                self.assertEqual(row["assignees"], [])
+                self.assertEqual(row["github_assignees"], ["ada"],
+                                 "who GitHub has on the issue, kept separate")
+                self.assertEqual(row["origin"], "github")
                 self.assertFalse(row["stale"])
                 self.assertEqual(row["labels"], ["infra", "perf"],
                                  "the adoption snapshot, never refreshed")
@@ -944,6 +997,8 @@ class AdoptedProjectionRouteTests(_RoutedCase):
         self.assertIsNone(row["status"], "unknown, not defaulted")
         self.assertIsNone(row["assignee"])
         self.assertEqual(row["assignees"], [])
+        self.assertEqual(row["github_assignees"], [])
+        self.assertEqual(row["origin"], "github", "still a GitHub workitem")
 
         listed = self.client.get(f"{self.base}/workitems")
         self.assertEqual(listed.status_code, 200, listed.text)
@@ -966,7 +1021,11 @@ class AdoptedProjectionRouteTests(_RoutedCase):
         self.assertFalse(row["stale"])
         self.assertEqual(row["status"], "open")
         self.assertEqual(row["assignee"], "ada")
+        self.assertTrue(row["assigned"])
         self.assertEqual(row["assignees"], ["ada"])
+        self.assertEqual(row["github_assignees"], [])
+        self.assertEqual(row["origin"], "space",
+                         "not from GitHub, so it is from this Space")
         self.assertEqual(row["body"], "notes")
 
 
@@ -1021,9 +1080,19 @@ class UnadoptRouteTests(_RoutedCase):
                             "a fresh record; the old one is a local note now")
 
 
-class LocalAssignmentTests(_RoutedCase):
-    """W8's second acceptance criterion, and the one that must not be a
-    silent success: a local workitem rejects anyone but yourself."""
+class AssignmentTests(_RoutedCase):
+    """One path for both kinds, and it writes ``.xo/workitems.json``.
+
+    D1 made assignment a GitHub assignee and W8 implemented two halves —
+    a ``PATCH`` against the issue for an adopted item, a self-only local
+    write for the other. That decision was reversed (§13, amendment 33).
+    There is one path now: the assignee is a local annotation, stored for
+    every workitem, and nothing on this route reaches GitHub.
+    """
+
+    def adopted(self) -> dict:
+        with patch.object(github_issue_actions, "fetch_issue", _fetch_ok()):
+            return self.adopt().json()
 
     def assign(self, workitem_id: str, assignee):
         return self.client.put(
@@ -1031,18 +1100,19 @@ class LocalAssignmentTests(_RoutedCase):
             json={"assignee": assignee},
         )
 
-    def test_assigning_a_peer_is_a_400_that_says_why(self) -> None:
+    # ── the local half ───────────────────────────────────────────────
+
+    def test_assigning_a_peer_is_accepted_and_stored(self) -> None:
+        """The reversal, in one assertion. This was ``400
+        local_assignee_only``: a local workitem could never reach a peer,
+        because reaching a peer *was* a GitHub assignee. With no GitHub
+        write left, the refusal guards nothing — so any identity is
+        accepted, and what it means is documented rather than enforced."""
         local = self.create_local()
         res = self.assign(local["id"], "some-peer")
-        self.assertEqual(res.status_code, 400, res.text)
-        detail = res.json()["detail"]
-        self.assertEqual(detail["code"], "local_assignee_only")
-        message = detail["message"]
-        self.assertIn("only to yourself", message)
-        self.assertIn("GitHub issue", message,
-                      "it has to say what to do instead")
-        self.assertIsNone(self.stored(local["id"])["assignee"],
-                          "nothing was written")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["assignee"], "some-peer")
+        self.assertEqual(self.stored(local["id"])["assignee"], "some-peer")
 
     def test_assigning_to_me_resolves_to_this_space(self) -> None:
         local = self.create_local()
@@ -1063,6 +1133,15 @@ class LocalAssignmentTests(_RoutedCase):
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(res.json()["assignee"], "ankitdwivedi")
 
+    def test_a_leading_at_is_not_part_of_the_name(self) -> None:
+        """``@octocat`` and ``octocat`` are one person. Stored with the
+        ``@`` the name would fail the store's charset and answer 400 for a
+        spelling the rollup filter accepts."""
+        local = self.create_local()
+        res = self.assign(local["id"], "@octocat")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["assignee"], "octocat")
+
     def test_null_clears_the_assignee(self) -> None:
         local = self.create_local(assignee="local")
         res = self.assign(local["id"], None)
@@ -1070,19 +1149,6 @@ class LocalAssignmentTests(_RoutedCase):
         self.assertIsNone(res.json()["assignee"])
         self.assertEqual(res.json()["assignees"], [])
         self.assertIsNone(self.stored(local["id"])["assignee"])
-
-    def test_it_never_reaches_github(self) -> None:
-        """A local workitem must be fully functional with GitHub switched
-        off — that is most of the point of it existing (§6.3)."""
-        local = self.create_local()
-
-        async def _explode(*args, **kwargs):  # pragma: no cover - must not run
-            raise AssertionError("a local assignment called GitHub")
-
-        with patch.object(github_issue_actions, "set_assignees", _explode), \
-                patch.object(github_issue_actions, "authenticated_login", _explode):
-            res = self.assign(local["id"], "me")
-        self.assertEqual(res.status_code, 200, res.text)
 
     def test_an_unknown_workitem_is_a_404(self) -> None:
         res = self.assign("nope", None)
@@ -1098,161 +1164,156 @@ class LocalAssignmentTests(_RoutedCase):
         )
         self.assertEqual(res.status_code, 422, res.text)
 
+    def test_an_unstorable_name_is_a_400_not_a_silent_write(self) -> None:
+        local = self.create_local()
+        res = self.assign(local["id"], "not a login")
+        self.assertEqual(res.status_code, 400, res.text)
+        self.assertEqual(res.json()["detail"]["code"], "invalid_assignee")
 
-class GithubAssignmentTests(_RoutedCase):
-    """The adopted half: the write goes to GitHub, and only to GitHub."""
+    # ── the adopted half, which is now the same half ─────────────────
 
-    def adopted(self) -> dict:
-        with patch.object(github_issue_actions, "fetch_issue", _fetch_ok()):
-            return self.adopt().json()
-
-    def assign(self, workitem_id: str, assignee):
-        return self.client.put(
-            f"{self.base}/workitems/{workitem_id}/assignee",
-            json={"assignee": assignee},
-        )
-
-    def test_it_writes_github_and_nothing_else(self) -> None:
+    def test_an_adopted_item_is_assigned_locally_and_nothing_is_pending(self) -> None:
         item = self.adopted()
         self.write_mirror(_mirror_row())
         mirror_before = github_mirror.mirror_path(self.PROJECT).read_bytes()
-        synced_before = self.path.read_bytes()
-        seen: list = []
 
-        async def _assign(repo, number, wanted, **kwargs):
-            seen.append((str(repo), number, list(wanted)))
-            return github_issue_actions.AssignResult(
-                ok=True, repo=str(repo), number=number, assignees=list(wanted),
-            )
-
-        with patch.object(github_issue_actions, "set_assignees", _assign):
-            res = self.assign(item["id"], "ada")
+        res = self.assign(item["id"], "ada")
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(seen, [(REPO, 42, ["ada"])])
         body = res.json()
-        self.assertEqual(body["kind"], "github")
+        self.assertEqual(body["kind"], "github", "the workitem's kind, as stored")
         self.assertEqual(body["assignee"], "ada")
-        self.assertTrue(body["pending"], "the next poll reads it back")
-        self.assertNotIn("assignee", self.stored(item["id"]),
-                         "GitHub is authoritative; the store forbids the field")
+        self.assertFalse(body["pending"],
+                         "nothing is outstanding: the write already landed")
         self.assertEqual(
-            self.path.read_bytes(), synced_before,
-            "the synced tier was written for an assignment GitHub owns",
+            self.stored(item["id"])["assignee"], "ada",
+            "the synced tier is where an assignment lives now",
         )
         self.assertEqual(
             github_mirror.mirror_path(self.PROJECT).read_bytes(), mirror_before,
-            "the poller is the mirror's single writer",
+            "the poller is still the mirror's single writer",
         )
 
-    def test_null_clears_the_assignees_on_github(self) -> None:
+    def test_an_adopted_items_assignee_is_served_beside_githubs(self) -> None:
         item = self.adopted()
-        seen: list = []
+        self.write_mirror(_mirror_row(
+            assignees=[{"login": "octocat", "avatar_url": None}],
+        ))
+        self.assign(item["id"], "ada")
+        row = self.client.get(f"{self.base}/workitems/{item['id']}").json()
+        self.assertEqual(row["assignee"], "ada")
+        self.assertTrue(row["assigned"])
+        self.assertEqual(row["github_assignees"], ["octocat"])
 
-        async def _assign(repo, number, wanted, **kwargs):
-            seen.append(list(wanted))
-            return github_issue_actions.AssignResult(
-                ok=True, repo=str(repo), number=number, assignees=[],
-            )
-
-        with patch.object(github_issue_actions, "set_assignees", _assign):
-            res = self.assign(item["id"], None)
-        self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(seen, [[]], "an empty array is how GitHub un-assigns")
-        self.assertIsNone(res.json()["assignee"])
-
-    def test_me_resolves_through_the_spaces_own_login(self) -> None:
-        """§4: each Space only needs to know its *own* login. There is no
-        workspace → login mapping table anywhere, because GitHub routes."""
+    def test_me_needs_no_github_login_for_an_adopted_item(self) -> None:
+        """It used to resolve through ``gh api user`` and answer ``503
+        github_not_connected`` when it could not. There is nothing to
+        route now, so ``me`` is this Space's own name for both kinds and
+        an unauthenticated machine assigns perfectly well."""
         item = self.adopted()
-        with patch.object(github_issue_actions, "authenticated_login",
-                          _login("dwivedi-ai")), \
-                patch.object(github_issue_actions, "set_assignees", _assign_echo()):
-            res = self.assign(item["id"], "@me")
-        self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(res.json()["assignee"], "dwivedi-ai")
-
-    def test_me_prefers_the_stored_token_and_never_spawns_gh(self) -> None:
-        item = self.adopted()
-
-        async def _validate(token):
-            return {"valid": True, "username": "pat-user"}
-
-        async def _explode(**kwargs):  # pragma: no cover - must not run
-            raise AssertionError("gh was spawned when a stored token answered")
-
-        with patch("services.cowork_agent.connectors.github_connector."
-                   "get_github_token", return_value="tok"), \
-                patch("services.cowork_agent.connectors.github_connector."
-                      "validate_token", _validate), \
-                patch.object(github_issue_actions, "authenticated_login", _explode), \
-                patch.object(github_issue_actions, "set_assignees", _assign_echo()):
+        with patch.dict(os.environ, {"CODER_WORKSPACE_OWNER_NAME": "ankitdwivedi"}), \
+                patch.object(github_issue_actions, "authenticated_login", _no_login):
             res = self.assign(item["id"], "me")
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(res.json()["assignee"], "pat-user")
+        self.assertEqual(res.json()["assignee"], "ankitdwivedi")
 
-    def test_an_unresolvable_me_says_to_connect_github(self) -> None:
+    def test_a_paused_poller_does_not_stop_an_assignment(self) -> None:
+        """The budget gate went with the GitHub call. A rate-limited or
+        unauthenticated machine cannot poll; it can still say who owes
+        what, because that is a local write."""
         item = self.adopted()
-        with patch.object(github_issue_actions, "authenticated_login", _no_login):
-            res = self.assign(item["id"], "me")
-        self.assertEqual(res.status_code, 503, res.text)
-        self.assertEqual(res.json()["detail"]["code"], "github_not_connected")
-
-    def test_a_silently_dropped_assignee_is_a_400_not_a_success(self) -> None:
-        """GitHub answers 200 and simply does not assign a login without
-        access to the repository. Reporting that as success is precisely
-        the "appears to succeed" W8 refuses."""
-        item = self.adopted()
-        with patch.object(github_issue_actions, "set_assignees", _assign_ok()):
-            res = self.assign(item["id"], "a-stranger")
-        self.assertEqual(res.status_code, 400, res.text)
-        self.assertEqual(res.json()["detail"]["code"], "assignee_not_assignable")
-        self.assertIn("access to the repository", res.json()["detail"]["message"])
-
-    def test_a_github_failure_keeps_its_kind(self) -> None:
-        item = self.adopted()
-        for kind, status, code in (
-            ("not_authenticated", 503, "github_not_connected"),
-            ("forbidden", 403, "github_forbidden"),
-            ("not_found", 404, "issue_not_found"),
-            ("rate_limited", 503, "github_rate_limited"),
-            ("timeout", 502, "github_unavailable"),
-        ):
-            with self.subTest(kind):
-                with patch.object(github_issue_actions, "set_assignees",
-                                  _assign_failing(kind)):
-                    res = self.assign(item["id"], "ada")
-                self.assertEqual(res.status_code, status, res.text)
-                self.assertEqual(res.json()["detail"]["code"], code)
-
-    def test_a_paused_poller_stops_the_assignment_before_it_spends(self) -> None:
-        """Including the ``me`` lookup, which is itself a GitHub call."""
-        item = self.adopted()
-
-        async def _explode(*args, **kwargs):  # pragma: no cover - must not run
-            raise AssertionError("called GitHub while the poller was paused")
-
         with patch.object(github_poller, "budget_snapshot", return_value={
-            "spent_last_hour": 0, "remaining": 4000, "limit": 5000,
+            "spent_last_hour": 0, "remaining": 0, "limit": 5000,
             "reset_at": None, "paused": True, "pause_reason": "not_authenticated",
-        }), patch.object(github_issue_actions, "set_assignees", _explode), \
-                patch.object(github_issue_actions, "authenticated_login", _explode):
-            res = self.assign(item["id"], "me")
-        self.assertEqual(res.status_code, 503, res.text)
-        self.assertEqual(res.json()["detail"]["code"], "github_rate_limited")
+        }):
+            res = self.assign(item["id"], "ada")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["assignee"], "ada")
 
-    def test_an_unusable_issue_reference_is_refused_rather_than_guessed(self) -> None:
+    def test_an_unusable_issue_reference_no_longer_blocks_assignment(self) -> None:
+        """It was a 409: the record claimed to mirror an issue but could
+        not say which, and guessing a repository would have assigned work
+        on somebody else's. No request is made now, so there is nothing to
+        guess and no reason to refuse a local annotation."""
         item = self.adopted()
         doc = json.loads(self.path.read_text("utf-8"))
         doc["items"][item["id"]]["source"]["github"] = {"node_id": NODE_ID}
         self.path.write_text(json.dumps(doc), encoding="utf-8")
 
-        async def _explode(*args, **kwargs):  # pragma: no cover - must not run
-            raise AssertionError("assigned against a guessed repository")
+        res = self.assign(item["id"], "ada")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(self.stored(item["id"])["assignee"], "ada")
 
-        with patch.object(github_issue_actions, "set_assignees", _explode):
-            res = self.assign(item["id"], "ada")
+    def test_a_corrupt_document_is_still_a_409(self) -> None:
+        local = self.create_local()
+        self.path.write_bytes(b"{not json")
+        res = self.assign(local["id"], "ada")
         self.assertEqual(res.status_code, 409, res.text)
         self.assertEqual(res.json()["detail"]["code"], "corrupt_document")
+        self.assertNotIn(str(self.path), res.json()["detail"]["message"])
+
+
+class NoGithubWriteTests(_RoutedCase):
+    """**No assignment can reach GitHub.** The point of the reversal, and
+    the one property worth proving at the seam rather than at the module
+    boundary every other case stubs.
+
+    ``set_assignees`` is deleted, so there is no function left to patch
+    and assert was not called — an absence is not evidence. Instead this
+    blows up ``_run_gh``, which is how *every* call in this system reaches
+    the ``gh`` binary, and then assigns. Anything that tried to talk to
+    GitHub — the deleted write, a resurrected one, a ``me`` lookup, a
+    budget probe — raises through the route and fails the test.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        async def _explode(*args, **kwargs):
+            raise AssertionError(
+                "assignment reached the `gh` seam; GitHub is read-only "
+                "(workitems-plan §13, amendment 33)"
+            )
+
+        for module in (github_issues, github_issue_actions):
+            patcher = patch.object(module, "_run_gh", _explode)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_the_connector_no_longer_has_a_write_at_all(self) -> None:
+        """Deleted, not left unused: a function that still exists is a
+        function something can be wired back to by accident."""
+        self.assertFalse(hasattr(github_issue_actions, "set_assignees"))
+        self.assertFalse(hasattr(github_issue_actions, "AssignResult"))
+        for name in ("fetch_issue", "authenticated_login"):
+            self.assertTrue(hasattr(github_issue_actions, name),
+                            f"{name} is a read and is still needed")
+
+    def test_neither_kind_of_assignment_touches_the_gh_seam(self) -> None:
+        local = self.create_local()
+        with patch.object(github_issue_actions, "fetch_issue", _fetch_ok()):
+            adopted = self.adopt().json()
+
+        for label, workitem_id in (("local", local["id"]),
+                                   ("adopted", adopted["id"])):
+            for value in ("a-peer", "me", None):
+                with self.subTest(kind=label, assignee=value):
+                    res = self.client.put(
+                        f"{self.base}/workitems/{workitem_id}/assignee",
+                        json={"assignee": value},
+                    )
+                    self.assertEqual(res.status_code, 200, res.text)
+
+    def test_the_assignment_landed_in_the_synced_document(self) -> None:
+        """Not merely "it did not call GitHub" — it wrote where it says
+        it writes, for the adopted item as much as the local one."""
+        with patch.object(github_issue_actions, "fetch_issue", _fetch_ok()):
+            adopted = self.adopt().json()
+        self.client.put(
+            f"{self.base}/workitems/{adopted['id']}/assignee",
+            json={"assignee": "a-peer"},
+        )
+        stored = json.loads(self.path.read_text("utf-8"))["items"][adopted["id"]]
+        self.assertEqual(stored["assignee"], "a-peer")
 
 
 class BudgetSharingTests(_RoutedCase):
@@ -1418,59 +1479,16 @@ class GhInvocationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error_kind, "no_cli")
 
-    # ── set_assignees ────────────────────────────────────────────────
-
-    def test_assignment_sends_the_array_that_replaces_the_set(self) -> None:
-        """§3 names the call: ``PATCH /repos/{o}/{r}/issues/{n}`` with an
-        ``assignees`` array. It replaces, which is what makes a ``PUT`` of
-        the assignee a real ``PUT``."""
-        gh = self.fake_gh(
-            json.dumps({"assignees": [{"login": "ada"}]}), capture_input=True,
-        )
-        result = asyncio.run(
-            github_issue_actions.set_assignees(REPO, 42, ["ada"], gh_bin=gh)
-        )
-        self.assertTrue(result.ok, result.error)
-        self.assertEqual(result.assignees, ["ada"])
-        argv = self.argv()
-        self.assertEqual(argv[:4],
-                         ["api", "-X", "PATCH",
-                          f"repos/{REPO}/issues/42"])
-        self.assertEqual(argv[4], "--input")
-        self.assertEqual(
-            json.loads(self.body_log.read_text("utf-8")), {"assignees": ["ada"]},
-        )
-
-    def test_clearing_sends_an_empty_array(self) -> None:
-        """The reason the body is a file rather than ``-f 'assignees[]='``:
-        gh's field syntax cannot spell an empty array, and a PUT that could
-        set an assignee but never clear one would be half an endpoint."""
-        gh = self.fake_gh(json.dumps({"assignees": []}), capture_input=True)
-        result = asyncio.run(
-            github_issue_actions.set_assignees(REPO, 42, [], gh_bin=gh)
-        )
-        self.assertTrue(result.ok, result.error)
-        self.assertEqual(result.assignees, [])
-        self.assertEqual(
-            json.loads(self.body_log.read_text("utf-8")), {"assignees": []},
-        )
-
-    def test_the_request_body_is_cleaned_up(self) -> None:
-        gh = self.fake_gh(json.dumps({"assignees": []}), capture_input=True)
-        asyncio.run(github_issue_actions.set_assignees(REPO, 42, ["ada"], gh_bin=gh))
-        leftovers = list(Path(tempfile.gettempdir()).glob("xo-assignees-*.json"))
-        self.assertEqual(leftovers, [], "the request body outlived the call")
-
-    def test_a_rejected_credential_keeps_its_kind(self) -> None:
-        gh = self.fake_gh(
-            json.dumps({"message": "Bad credentials", "status": "401"}),
-            exit_code=1,
-        )
-        result = asyncio.run(
-            github_issue_actions.set_assignees(REPO, 42, ["ada"], gh_bin=gh)
-        )
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error_kind, "not_authenticated")
+    # ── set_assignees is gone ────────────────────────────────────────
+    #
+    # There were four cases here driving the ``PATCH …/issues/{n}`` against
+    # a fake ``gh``: the assignees array that replaces the set, the empty
+    # array that clears it, the temp-file request body being cleaned up, and
+    # a rejected credential keeping its error kind. All four tested a write
+    # to GitHub, and there is no longer a write to GitHub — §13 amendment 33
+    # deleted ``set_assignees`` rather than leaving it unused. What replaced
+    # them is ``NoGithubWriteTests``, which asserts the *absence* at the
+    # subprocess seam instead of the presence at the argv.
 
     # ── authenticated_login ──────────────────────────────────────────
 

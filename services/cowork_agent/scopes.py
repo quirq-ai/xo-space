@@ -15,7 +15,8 @@ Visualizer scopes are read-only handles over **three** roots, not one
 
 * the **synced** root — ``<project>/.xo/`` — ``todos.json`` and the four
   todo CRUD methods, ``workitems.json`` and its seven (five CRUD plus the
-  adopt/unadopt transitions), plus the workspace registry;
+  adopt/unadopt transitions), ``peers.json`` and its six, plus the
+  workspace registry;
 * the **runtime** root — ``~/.quirq/projects/<key>/`` per project, and
   ``~/.quirq/workspace/`` for the workspace rollups (T20) — ``stats.json``,
   ``timeline.jsonl`` and the session index, which are machine-local
@@ -209,9 +210,12 @@ class VisualizerScope(_XoReader):
     a second clamp here (`bff-overview.md` §"Security properties").
 
     Exposes a small CRUD surface over ``.xo/todos.json`` for the
-    agent-facing ``POST/PATCH/DELETE /todos`` endpoints, and the same
-    over ``.xo/workitems.json`` for ``/workitems`` (workitems-plan §7.1). Those endpoints
-    are the file's **only** writer, for every backend — the watcher's
+    agent-facing ``POST/PATCH/DELETE /todos`` endpoints, the same
+    over ``.xo/workitems.json`` for ``/workitems`` (workitems-plan §7.1),
+    and the same again over ``.xo/peers.json`` for ``/peers`` — the
+    collaborator roster, which the template ships as a stub and which
+    these routes are the first and only writer of. Those endpoints
+    are each file's **only** writer, for every backend — the watcher's
     todos sink is gone (syncplan §7, T8). The CRUD helpers still take
     :func:`visualizer.flock.locked`, but against themselves: two
     concurrent requests are two read-modify-writes on one document.
@@ -343,16 +347,69 @@ class VisualizerScope(_XoReader):
     def unadopt_workitem(self, workitem_id: str, **kwargs) -> dict:
         """Stop mirroring the issue, keep the workitem.
 
-        The four GitHub-owned fields are materialised in the same write
-        that drops ``source.github``: the schema *requires* ``status`` on
-        a local record and forbids it on an adopted one, so the two
-        halves cannot be separate calls without leaving an invalid
-        document in between.
+        The GitHub-owned fields are materialised in the same write that
+        drops ``source.github``: the schema *requires* ``status`` on a
+        local record and forbids it on an adopted one, so the two halves
+        cannot be separate calls without leaving an invalid document in
+        between. ``assignee`` is not among them — it is a local
+        annotation the record already carries and the store keeps it
+        (workitems-plan §13, amendment 33).
         """
         from services.cowork_agent.visualizer import workitems_store
         return workitems_store.unadopt_workitem(
             self._workitems_path(), workitem_id, **kwargs
         )
+
+    # ── Peers CRUD (delegates to visualizer.peers_store) ──────────────
+    #
+    # The third authored document in the synced tier, and the same shape
+    # as the two blocks above: the routes are its only writer and the
+    # store raises the same ``(code, message)`` error type. Every method
+    # forwards ``**kwargs`` for the O-A reason — a signature that named
+    # its arguments here is how a store parameter becomes structurally
+    # unreachable over HTTP.
+    #
+    # There is no ``deleted_by`` to thread through, and that is the one
+    # difference worth knowing: removing a peer is a hard delete, because
+    # ``peers.schema.json`` has no tombstone fields and a tombstone in the
+    # synced tier would carry a removed collaborator to every Space the
+    # project reaches.
+
+    def _peers_path(self):
+        # Path stays behind the handle so route files never import
+        # pathlib (P2 grep stays clean), same as ``_todos_path``.
+        from services.cowork_agent.visualizer import peers_store  # noqa: F401
+        return self._xo_root / "peers.json"
+
+    def create_peer(self, **kwargs) -> dict:
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.create_peer(self._peers_path(), **kwargs)
+
+    def read_peer_roster(self, **kwargs) -> tuple:
+        """``(updated_at, peers)`` — both in one read.
+
+        The list route serves the document's stamp beside its contents,
+        and two reads would be two revisions of a file that a concurrent
+        request can change in between.
+        """
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.read_roster(self._peers_path(), **kwargs)
+
+    def list_peers(self, **kwargs) -> list:
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.list_peers(self._peers_path(), **kwargs)
+
+    def get_peer(self, user_id: str, **kwargs):
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.get_peer(self._peers_path(), user_id, **kwargs)
+
+    def update_peer(self, user_id: str, **kwargs) -> dict:
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.update_peer(self._peers_path(), user_id, **kwargs)
+
+    def delete_peer(self, user_id: str, **kwargs) -> bool:
+        from services.cowork_agent.visualizer import peers_store
+        return peers_store.delete_peer(self._peers_path(), user_id, **kwargs)
 
     # ── The GitHub mirror (runtime tier; read-only here) ──────────────
     #
@@ -606,15 +663,18 @@ class WorkspaceVisualizerScope(_XoReader):
         each project's records are read, joined with that project's GitHub
         mirror through :mod:`visualizer.workitem_projection`, and the
         *result* is filtered. An adopted item therefore matches on the
-        mirror's status and the mirror's assignees, which is the only place
-        those two facts exist.
+        mirror's status, and on GitHub's own assignees as well as this
+        Space's — the mirror is the only place the first two of those
+        exist.
 
         **No network, ever.** The mirror is a local JSON file the poller
         owns; nothing here fetches, and nothing here writes. A project the
         poller has never reached simply projects stale, and a stale row
-        carries ``status`` / ``assignee`` ``None`` — so it matches neither
-        ``?status=`` nor ``?assignee=``, and appears only in an unfiltered
-        rollup. Absent beats wrong (§5.3), applied to a predicate.
+        carries ``status`` ``None`` and no ``github_assignees`` — so it
+        matches no ``?status=``, and matches ``?assignee=`` only if this
+        Space assigned it locally, which is a fact the mirror's absence
+        does not put in doubt. Absent beats wrong (§5.3), applied to a
+        predicate.
 
         **Cost per call**: one scan of the projects root — the scan
         :func:`list_project_ids` already makes, asked for its pid
@@ -637,12 +697,18 @@ class WorkspaceVisualizerScope(_XoReader):
         rendering it is the route's job, and so is keeping the absolute
         path in the message out of the response.
 
-        ``assignees`` matches case-insensitively against the *projected*
-        ``assignees`` list (and the singular ``assignee``): GitHub logins
-        are unique case-insensitively and a caller typing ``@Octocat``
-        means the same person GitHub spells ``octocat``. ``None`` means no
-        assignee filter; an **empty** iterable is a filter nothing can
-        match, which is the honest answer when "me" resolved to nobody.
+        ``assignees`` matches case-insensitively against **both** the
+        workitem's own ``assignee`` (this Space's annotation, the file's
+        for either kind since amendment 33) and its ``github_assignees``
+        (who GitHub has on the adopted issue). Both, because "what is
+        assigned to me" has two truthful answers and dropping either
+        hides real work: the local half is what this Space decided, and
+        the GitHub half is how a peer says "I have this" in the one place
+        peers can see. Matching is case-insensitive — GitHub logins are
+        unique case-insensitively and a caller typing ``@Octocat`` means
+        the person GitHub spells ``octocat``. ``None`` means no assignee
+        filter; an **empty** iterable is a filter nothing can match, which
+        is the honest answer when "me" resolved to nobody.
         """
         from services.cowork_agent.visualizer import workitem_projection
         from services.cowork_agent.visualizer.workspace_index import (
@@ -731,11 +797,19 @@ def _workitem_matches(
 ) -> bool:
     """The rollup's predicate, applied to a **projected** record.
 
-    Reads ``status`` and ``assignees`` as the projection left them: the
-    mirror's answer for an adopted item, the file's for a local one. A
-    record whose status is ``None`` — an adopted item the mirror cannot
-    speak for — matches no ``status`` filter, because "unknown" is not
-    "open" and guessing would be the stale-state lie §5.3 forbids.
+    Reads ``status`` as the projection left it: the mirror's answer for an
+    adopted item, the file's for a local one. A record whose status is
+    ``None`` — an adopted item the mirror cannot speak for — matches no
+    ``status`` filter, because "unknown" is not "open" and guessing would
+    be the stale-state lie §5.3 forbids.
+
+    The assignee half reads **two** things and unions them: ``assignee`` /
+    ``assignees``, which is this Space's own annotation (the file's, for
+    either kind, since amendment 33), and ``github_assignees``, which is
+    who GitHub has on the issue. Assignment no longer travels through
+    GitHub, but GitHub's assignees are still the only way a peer's claim
+    on an issue reaches this machine, and "what is assigned to me" that
+    ignored them would hide work that plainly exists.
     """
     if status is not None and record.get("status") != status:
         return False
@@ -743,14 +817,15 @@ def _workitem_matches(
         return True
     found = {
         value.casefold()
-        for value in record.get("assignees") or []
+        for key in ("assignees", "github_assignees")
+        for value in record.get(key) or []
         if isinstance(value, str) and value
     }
     single = record.get("assignee")
     if isinstance(single, str) and single:
-        # The projection fills ``assignees`` for both kinds, so this is
-        # belt and braces — and it is what keeps the predicate correct on a
-        # record that never went through the projection at all.
+        # The projection fills ``assignees`` from it, so this is belt and
+        # braces — and it is what keeps the predicate correct on a record
+        # that never went through the projection at all.
         found.add(single.casefold())
     return bool(found & assignees)
 

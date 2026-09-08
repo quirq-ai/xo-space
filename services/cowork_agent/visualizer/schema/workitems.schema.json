@@ -32,7 +32,7 @@
         "title":  { "type": "string", "minLength": 1, "maxLength": 1000,
                     "description": "Authored for a local item. For `source.kind == \"github\"` it is a ONE-TIME snapshot taken at adoption and never refreshed (§5.3): adoption is a human act, a GitHub rename is not, so snapshotting the title keeps this file quiet while still giving a readable fallback when the mirror is gone. Without it a stale adopted item renders as `repo#42`, which is not a work item anyone can act on." },
         "body":   { "type": ["string", "null"],
-                    "description": "Local items only — see the conditional below. Absent for an adopted item: the mirror has the issue body." },
+                    "description": "Local items only — see the conditional below. Absent for an adopted item: GitHub has the issue body and the issue URL is where it is read." },
         "labels": { "type": "array", "maxItems": 50,
                     "items": { "type": "string", "minLength": 1, "maxLength": 100 },
                     "description": "Local labels. Permitted on an adopted item too — labels are fetched lazily at adoption rather than in the poll query, because a nested `labels` connection was measured to double the poll's GraphQL cost and halve the project ceiling (§6.2)." },
@@ -42,7 +42,7 @@
                     "description": "Mirrors GitHub's vocabulary exactly. Local items only." },
         "source": { "$ref": "#/definitions/source" },
         "assignee": { "type": ["string", "null"],
-                    "description": "Local-only assignment. Absent for an adopted item: assignment IS a GitHub assignee (D1), and the mirror is authoritative. A local item is assignable only to yourself, permanently — there is no promotion of a local item to a GitHub issue (D8), so work that needs a peer is created as an issue from the start." },
+                    "description": "Who this Space says owes the work. Permitted on BOTH kinds — this is the one field the conditional below does not forbid on an adopted record, and it used to. D1 made assignment a GitHub assignee; that decision was reversed (workitems-plan §13, amendment 33). Nothing in this system writes to GitHub any more, so an assignee cannot go stale against an upstream value: it is a local annotation, written when a human assigns and never when GitHub changes, which is what keeps this synced document quiet. The cost is stated where it bites: `.xo/` is snapshot backup/restore, not continuous merge, so an assignment is visible only inside the Space that made it. GitHub's own `assignees` are still read from the mirror and served beside this as separate information (`github_assignees` on the wire) — who GitHub thinks is on the issue, never who we assigned." },
         "links":  { "$ref": "#/definitions/links" },
         "created_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": "string", "format": "date-time",
@@ -55,7 +55,7 @@
       },
       "allOf": [
         {
-          "description": "The asymmetry of §5.3, and the whole design in one rule. For an adopted item GitHub is authoritative for state and assignment, so this file does NOT snapshot them: a stale title is a cosmetic inaccuracy, but a stale `closed` or a stale assignee is a false statement about who owes what. Absent beats wrong. An adopted item whose issue has vanished from the mirror therefore renders as its snapshotted title plus the issue reference, flagged stale, with state and assignee unknown — never a 404.",
+          "description": "The asymmetry of §5.3, and the whole design in one rule. For an adopted item GitHub is authoritative for state and body, so this file does NOT snapshot them: a stale title is a cosmetic inaccuracy, but a stale `closed` is a false statement about whether the work is done. Absent beats wrong. An adopted item whose issue has vanished from the mirror therefore renders as its snapshotted title plus the issue reference, flagged stale, with state unknown — never a 404. `assignee` was a fourth forbidden field here until amendment 33 reversed D1: it is now permitted on an adopted record, because nothing writes assignment to GitHub and the value is therefore ours rather than a cache of somebody else's.",
           "if": {
             "type": "object",
             "required": ["source"],
@@ -68,7 +68,6 @@
               { "properties": { "source": { "required": ["github"] } } },
               { "not": { "required": ["status"] } },
               { "not": { "required": ["state_reason"] } },
-              { "not": { "required": ["assignee"] } },
               { "not": { "required": ["body"] } }
             ]
           },

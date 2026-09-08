@@ -289,11 +289,17 @@ class ReadTests(_RoutedCase):
             ids(kind="local"), [open_item["id"], closed["id"], mine["id"]]
         )
 
-    def test_an_adopted_item_never_matches_a_stored_field_filter(self) -> None:
-        """§5.3: it stores neither ``status`` nor ``assignee``, so the
-        honest answer to "is it open" is *this surface cannot say* — the
-        projection (W7) answers it by joining the mirror. Matching it
-        here would be answering it wrong."""
+    def test_an_adopted_item_never_matches_a_stored_status_filter(self) -> None:
+        """§5.3: it stores no ``status``, so the honest answer to "is it
+        open" is *this surface cannot say* — the projection (W7) answers
+        it by joining the mirror. Matching it here would be answering it
+        wrong.
+
+        ``?assignee=`` is included because an *unassigned* adopted item
+        must not match one either. It is a stored field for both kinds
+        since §13 amendment 33, so it matches when this Space has actually
+        assigned the item — never because GitHub has somebody on the
+        issue, which is information rather than assignment."""
         adopted = self.seed_adopted()
         for params in ({"status": "open"}, {"status": "closed"},
                        {"assignee": "ada"}):
@@ -481,7 +487,7 @@ class AdoptedItemTests(_RoutedCase):
 
     def test_writing_a_github_owned_field_is_a_400(self) -> None:
         adopted = self.seed_adopted()
-        for payload in ({"status": "closed"}, {"assignee": "ada"},
+        for payload in ({"status": "closed"},
                         {"body": "notes"}, {"state_reason": "completed"}):
             with self.subTest(**payload):
                 res = self.client.patch(
@@ -491,6 +497,20 @@ class AdoptedItemTests(_RoutedCase):
                 self.assertEqual(
                     res.json()["detail"]["code"], "github_authoritative"
                 )
+
+    def test_an_adopted_item_takes_an_assignee_like_any_other(self) -> None:
+        """``assignee`` was a fourth entry above until §13 amendment 33
+        reversed D1. Nothing writes assignment to GitHub any more, so it
+        is a local annotation on an adopted record exactly as on a local
+        one — a 200, and a value on disk."""
+        adopted = self.seed_adopted()
+        res = self.client.patch(
+            f"{self.base}/{adopted['id']}", json={"assignee": "ada"}
+        )
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["assignee"], "ada")
+        self.assertTrue(res.json()["assigned"])
+        self.assertEqual(self.stored(adopted["id"])["assignee"], "ada")
 
     def test_local_fields_on_an_adopted_item_still_update(self) -> None:
         """The refusal is scoped to the four fields, not to the record."""

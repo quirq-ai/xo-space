@@ -86,6 +86,16 @@ _PROJECT_OUTPUT_CONTRACT = (
         "used_by": "Workitems",
     },
     {
+        "path": "peers.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Peers API (the routes are the file's only writer)",
+        "purpose": (
+            "Roster of the humans this project is shared with, their roles "
+            "and optional sync endpoints; an empty list means solo"
+        ),
+        "used_by": "Projects",
+    },
+    {
         "path": "stats.json",
         "tier": _TIER_RUNTIME,
         "producer": "Watcher statistics sink",

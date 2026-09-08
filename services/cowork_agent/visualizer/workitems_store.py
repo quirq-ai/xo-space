@@ -15,15 +15,26 @@ Three things are load-bearing here and none of them is obvious.
 synced tier (rule R-TIER); a document that cached what GitHub owns
 would churn at GitHub's rate inside the tier that is snapshot-restored
 wholesale. So for an adopted item this store writes the *adoption
-record* and nothing else: ``title`` and ``labels`` are snapshotted
-once, at adoption, as the readable fallback when the mirror is gone
-(labels are fetched lazily then, because the poll deliberately does
-not carry them — §6.2), and ``status``,
-``state_reason``, ``assignee`` and ``body`` are **omitted entirely**
-(plan §5.3). A stale title is a cosmetic inaccuracy; a stale ``closed``
-or a stale assignee is a false statement about who owes what. Absent
-beats wrong. Writing one of them for an adopted item is refused
+record* and its local annotations, and nothing else: ``title`` and
+``labels`` are snapshotted once, at adoption, as the readable fallback
+when the mirror is gone (labels are fetched lazily then, because the
+poll deliberately does not carry them — §6.2), and ``status``,
+``state_reason`` and ``body`` are **omitted entirely** (plan §5.3). A
+stale title is a cosmetic inaccuracy; a stale ``closed`` is a false
+statement about whether the work is done. Absent beats wrong. Writing
+one of those three for an adopted item is refused
 (``github_authoritative``) rather than quietly accepted.
+
+``assignee`` **is not one of them, and used to be.** D1 put assignment
+in GitHub — ``PUT …/assignee`` on an adopted item issued a ``PATCH``
+against the issue and this store refused the field. That decision was
+reversed (§13, amendment 33): GitHub is now **read-only** to this
+system, and assignment is a *local annotation* carried here for every
+workitem, adopted or not. It stays quiet because it is written when a
+human assigns, never when GitHub changes. The cost of the reversal,
+stated where the field lives: ``.xo/`` does not continuously sync
+(restore is a wholesale force-replace), so an assignment is visible
+only inside the Space that made it.
 
 **2. There is no ``in_progress``.** ``status`` is ``open`` | ``closed``
 — GitHub's own two values, so the two can never disagree (§5.4, D7).
@@ -122,9 +133,15 @@ VALID_STATE_REASONS: frozenset[str] = frozenset(
 
 VALID_SOURCE_KINDS: frozenset[str] = frozenset({"local", "github"})
 
-#: The four fields GitHub is authoritative for. Never stored for an
-#: adopted item (§5.3) — see the module docstring.
-GITHUB_OWNED_FIELDS: tuple[str, ...] = ("status", "state_reason", "assignee", "body")
+#: The fields GitHub is authoritative for. Never stored for an adopted
+#: item (§5.3) — see the module docstring.
+#:
+#: ``assignee`` was the fourth entry and is deliberately **not** here any
+#: more (§13, amendment 33 — the reversal of D1). Nothing in this system
+#: writes to GitHub, so an assignee is ours to record; an adopted record
+#: may carry one exactly like a local one, and ``workitems.schema.json``
+#: permits it on both. The other three stay GitHub's.
+GITHUB_OWNED_FIELDS: tuple[str, ...] = ("status", "state_reason", "body")
 
 _DEFAULT_STATUS = "open"
 
@@ -635,10 +652,15 @@ def _new_record(
     """One freshly-minted record, with a server-minted UUID4 ``id``.
 
     The §5.3 asymmetry lives here and nowhere else: an adopted record simply
-    does not carry ``status``, ``state_reason``, ``assignee`` or ``body``.
-    They are absent rather than ``null`` because the schema *forbids* them for
+    does not carry ``status``, ``state_reason`` or ``body``. They are absent
+    rather than ``null`` because the schema *forbids* them for
     ``source.kind == "github"`` — "unknown, ask GitHub" and "known to be
     empty" are different claims, and only absence can make the first one.
+
+    ``assignee`` is on the other side of that line, and the placement is the
+    point of amendment 33: it is written for **both** kinds, ``null`` when
+    nobody is assigned. Nothing writes it to GitHub any more, so there is no
+    upstream value it could go stale against — it is simply ours.
     """
     adopted = source["kind"] == "github"
     stamp = _now_iso()
@@ -650,8 +672,7 @@ def _new_record(
         record["status"] = status
         record["state_reason"] = state_reason
     record["source"] = source
-    if not adopted:
-        record["assignee"] = assignee
+    record["assignee"] = assignee
     record["links"] = links
     record["created_at"] = stamp
     record["updated_at"] = stamp
@@ -692,9 +713,11 @@ def create_workitem(
     ``assignee`` and ``body``. Passing
     ``source={"kind": "github", "github": {...}}`` records an
     **adoption**: ``title`` is snapshotted once as the readable fallback
-    and the four GitHub-owned fields are omitted from the record
-    entirely — supplying one raises ``github_authoritative`` rather than
-    storing a value that will be wrong within the hour (§5.3).
+    and the GitHub-owned fields are omitted from the record entirely —
+    supplying one raises ``github_authoritative`` rather than storing a
+    value that will be wrong within the hour (§5.3). ``assignee`` is
+    accepted for both kinds: it is a local annotation now, not GitHub's
+    (§13, amendment 33).
 
     Raises :class:`WorkitemsStoreError` on any invalid input, and on a
     ``workitems.json`` that exists but cannot be read — a corrupt
@@ -710,20 +733,19 @@ def create_workitem(
     }
     resolved_labels = _validate_labels(labels or [])
 
+    if assignee is not None:
+        _validate_safe_key(assignee, "assignee")
     if adopted:
         _refuse_github_owned(
             {
                 "status": UNSET if status is None else status,
                 "state_reason": UNSET if state_reason is None else state_reason,
-                "assignee": UNSET if assignee is None else assignee,
                 "body": UNSET if body is None else body,
             }
         )
     else:
         _validate_optional_text(body, field="body", limit=_BODY_LIMIT)
         _validate_state_reason(state_reason)
-        if assignee is not None:
-            _validate_safe_key(assignee, "assignee")
 
     # ``is None`` rather than ``or``: an empty status is a malformed
     # request, not an unstated one, and must not quietly become "open".
@@ -818,11 +840,17 @@ def list_workitems(
     projects, and a list has no union key, so the O-C collision class
     cannot occur there at all.
 
-    The ``status`` and ``assignee`` filters read what is *stored*, so an
-    adopted item never matches either: it stores neither field, by
-    design. Filtering an adopted item on state or assignee is the read-
-    time projection's job (§5.3, W7), which joins the mirror — this
-    store deliberately cannot answer it, rather than answering it wrong.
+    The ``status`` filter reads what is *stored*, so an adopted item
+    never matches it: it stores no status, by design. Filtering an
+    adopted item on state is the read-time projection's job (§5.3, W7),
+    which joins the mirror — this store deliberately cannot answer it,
+    rather than answering it wrong.
+
+    ``assignee`` is different since amendment 33: it *is* stored, for
+    both kinds, so this filter answers for an adopted item too. What it
+    still cannot see is GitHub's own assignees, which live in the mirror
+    and are information rather than assignment — the rollup (§7.3) is
+    where the two are considered together.
     """
     if status is not None:
         _validate_status(status)
@@ -872,10 +900,11 @@ def update_workitem(
     ``None`` **clears** them, which is how an item is un-assigned or
     reopened.
 
-    For an adopted item the four GitHub-owned fields raise
+    For an adopted item the GitHub-owned fields raise
     ``github_authoritative`` (§5.3): closing an adopted workitem means
-    closing the issue (W8), not writing ``closed`` into a file GitHub
-    does not read.
+    closing the issue, not writing ``closed`` into a file GitHub does
+    not read. ``assignee`` is **not** among them since amendment 33 —
+    assigning an adopted workitem writes here, like everything else.
 
     Raises ``workitem_not_found`` if the id is absent or names a
     tombstone — a deleted workitem is not editable, which is what stops
@@ -913,7 +942,6 @@ def update_workitem(
                 {
                     "status": UNSET if status is None else status,
                     "state_reason": state_reason,
-                    "assignee": assignee,
                     "body": body,
                 }
             )
@@ -961,6 +989,13 @@ def update_workitem(
 
         stamp = _now_iso()
         record["updated_at"] = stamp
+        # Re-ordered because a write can *introduce* a key: an adopted
+        # record stored before amendment 33 carries no ``assignee``, and
+        # assigning it would otherwise append the key after ``deleted_by``.
+        # ``_KEY_ORDER`` exists precisely so the synced document does not
+        # carry that kind of diff noise.
+        record = _ordered(record)
+        items[workitem_id] = record
         _write(workitems_path, items)
         updated = copy.deepcopy(record)
 
@@ -1052,10 +1087,12 @@ def delete_workitem(
 # Adoption is a **state transition, not a field edit**, which is why it is not
 # ``update_workitem`` (§13, amendment 8). ``source.kind`` decides which fields
 # the record may even carry: ``workitems.schema.json`` forbids ``status``,
-# ``state_reason``, ``assignee`` and ``body`` on an adopted item, and
-# *requires* ``status`` on a local one. So flipping the kind has to drop four
-# keys in one direction and materialise them in the other, and a PATCH that
-# set ``source`` alone would leave the record invalid whichever way it went.
+# ``state_reason`` and ``body`` on an adopted item, and *requires* ``status``
+# on a local one. So flipping the kind has to drop three keys in one direction
+# and materialise them in the other, and a PATCH that set ``source`` alone
+# would leave the record invalid whichever way it went. ``assignee`` is the
+# one field that crosses unchanged in both directions (amendment 33): the
+# schema permits it on either kind, because it is ours and not GitHub's.
 #
 # What adoption writes is the §5.1 adoption record: the issue reference, plus
 # ``title`` and ``labels`` as a **one-time snapshot** that is never refreshed.
@@ -1122,12 +1159,17 @@ def adopt_workitem(
       plan refuses: nothing is created on GitHub, and the issue being adopted
       already exists and was already public.
 
-    The transition **drops** ``status``, ``state_reason``, ``assignee`` and
-    ``body``. That is a deliberate loss of local edits, not an oversight:
-    those four are GitHub's for an adopted item, and keeping the old values
-    would leave the record asserting a state nothing maintains. The title and
-    labels the caller passes replace the local ones for the same reason — the
-    record now stands for the issue.
+    The transition **drops** ``status``, ``state_reason`` and ``body``. That
+    is a deliberate loss of local edits, not an oversight: those three are
+    GitHub's for an adopted item, and keeping the old values would leave the
+    record asserting a state nothing maintains. The title and labels the
+    caller passes replace the local ones for the same reason — the record now
+    stands for the issue.
+
+    ``assignee`` **survives** the transition (amendment 33). It is a local
+    annotation and adoption does not change who this Space decided owes the
+    work; dropping it would silently un-assign somebody for adopting the
+    issue their work was already about.
 
     Raises :class:`WorkitemsStoreError`: ``invalid_source`` for a malformed
     reference, ``workitem_not_found`` for an absent or tombstoned id,
@@ -1273,7 +1315,7 @@ def unadopt_workitem(
     *,
     status: Optional[str] = None,
     state_reason: Optional[str] = None,
-    assignee: Optional[str] = None,
+    assignee: Any = UNSET,
     body: Optional[str] = None,
 ) -> dict:
     """Stop mirroring a GitHub issue, keeping the workitem. Returns the record.
@@ -1281,8 +1323,8 @@ def unadopt_workitem(
     The mirror image of :func:`adopt_workitem`, and the reason neither is a
     field edit: an adopted record carries **no** ``status``, and the schema
     *requires* one on a local record. So un-adopting has to materialise the
-    four GitHub-owned fields in the same write that drops ``source.github``,
-    or it leaves a document that no longer validates.
+    GitHub-owned fields in the same write that drops ``source.github``, or it
+    leaves a document that no longer validates.
 
     The caller supplies what to materialise, because the store reads no
     runtime state: it cannot see the mirror, and inventing a value would be
@@ -1292,12 +1334,11 @@ def unadopt_workitem(
     value, which keeps the row visible and actionable rather than reading as
     work someone finished.
 
-    ``assignee`` defaults to ``None`` on purpose. A local workitem is
-    self-assignable only and permanently (D1/D8), so importing a peer's GitHub
-    login into it would create a record whose assignment nothing coordinates.
-    The parameter exists for a caller that *does* know the assignment is its
-    own — it is the materialisation contract, and a store that could not
-    express it would push that decision somewhere it cannot be validated.
+    ``assignee`` is **kept** by default (:data:`UNSET`), which is the reversal
+    of D1 arriving here: it was never GitHub's to materialise, it is a local
+    annotation the record already carries, and un-adopting an issue is not a
+    statement about who owes the work. Passing ``None`` clears it explicitly;
+    passing a name replaces it.
 
     Idempotent: un-adopting an already-local workitem returns it unchanged and
     writes nothing. ``workitem_not_found`` for an absent or tombstoned id.
@@ -1305,7 +1346,7 @@ def unadopt_workitem(
     resolved_status = _DEFAULT_STATUS if status is None else status
     _validate_status(resolved_status)
     _validate_state_reason(state_reason)
-    if assignee is not None:
+    if not isinstance(assignee, _Unset) and assignee is not None:
         _validate_safe_key(assignee, "assignee")
     _validate_optional_text(body, field="body", limit=_BODY_LIMIT)
 
@@ -1321,7 +1362,9 @@ def unadopt_workitem(
         updated["source"] = {"kind": "local"}
         updated["status"] = resolved_status
         updated["state_reason"] = state_reason
-        updated["assignee"] = assignee
+        updated["assignee"] = (
+            record.get("assignee") if isinstance(assignee, _Unset) else assignee
+        )
         updated["body"] = body
         updated["updated_at"] = _now_iso()
 

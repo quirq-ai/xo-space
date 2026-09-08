@@ -103,7 +103,7 @@
         },
         "assignees": {
           "type": "array",
-          "description": "THE coordination substrate (D1): assignment is a GitHub assignee, so this array is the answer to 'who owes what'. Costs nothing extra — assignees(first:5) measured at 1 point, the same as omitting it. An empty array means unassigned; the field's absence means the row was written by something that is not the poller.",
+          "description": "Who GitHub has on the issue. This was THE coordination substrate under D1 — assignment WAS a GitHub assignee — and that decision was reversed (workitems-plan §13, amendment 33): nothing in this system writes an assignee any more, so this array is information about the issue rather than an assignment made here. It is still fetched, and still matters: it is the only way a peer's claim on an issue reaches this machine, so the projection serves it as `github_assignees` beside the workitem's own `assignee` and the rollup matches both. Costs nothing extra — assignees(first:5) measured at 1 point, the same as omitting it. An empty array means nobody is on it upstream; the field's absence means the row was written by something that is not the poller.",
           "items": {
             "type": "object",
             "additionalProperties": false,

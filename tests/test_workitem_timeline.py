@@ -738,11 +738,17 @@ class RouteEmissionTests(unittest.TestCase):
         self.assertEqual(self.types()[-1], "workitem.assigned")
         self.assertEqual(self.lines()[-1]["assignee"], "ada")
 
-    def test_assigning_on_github_is_still_recorded(self) -> None:
-        """The one event a route emits, and why: the write went to
-        GitHub and nothing was written to ``.xo/`` (§5.3), so there is no
-        store call to hang it on — yet D1 makes *this* the assignment
-        that actually routes work."""
+    def test_assigning_an_adopted_item_also_comes_from_the_store(self) -> None:
+        """This case used to prove the opposite: assignment on an adopted
+        item wrote to GitHub, wrote nothing to ``.xo/``, and so had to
+        emit ``workitem.assigned`` from the *route* — the one workitem
+        event a route ever emitted, precisely because there was no write
+        to hang it on.
+
+        §13 amendment 33 removed the GitHub write. Both kinds now write
+        the store, so both emit from the store, and the route emits
+        nothing. Emitting there as well would double every line.
+        """
         async def _fetch(repo, number, **kwargs):
             return github_issue_actions.IssueResult(
                 ok=True, repo=str(repo), number=number, issue={
@@ -754,11 +760,6 @@ class RouteEmissionTests(unittest.TestCase):
                 },
             )
 
-        async def _assign(repo, number, wanted, **kwargs):
-            return github_issue_actions.AssignResult(
-                ok=True, repo=str(repo), number=number, assignees=list(wanted),
-            )
-
         with patch.object(github_issue_actions, "fetch_issue", _fetch):
             adopted = self.client.post(
                 f"{self.base}/github/issues/42/adopt",
@@ -767,22 +768,23 @@ class RouteEmissionTests(unittest.TestCase):
         self.assertEqual(adopted.status_code, 201, adopted.text)
         workitem_id = adopted.json()["id"]
 
-        with patch.object(github_issue_actions, "set_assignees", _assign):
-            res = self.client.put(
-                f"{self.base}/workitems/{workitem_id}/assignee",
-                json={"assignee": "ada"},
-            )
+        res = self.client.put(
+            f"{self.base}/workitems/{workitem_id}/assignee",
+            json={"assignee": "ada"},
+        )
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(
             self.types(),
             ["workitem.created", "workitem.adopted", "workitem.assigned"],
+            "exactly one assigned line — the store's, not the store's plus "
+            "the route's",
         )
         self.assertEqual(self.lines()[-1]["assignee"], "ada")
-        self.assertNotIn(
-            "assignee",
+        self.assertEqual(
             json.loads((self.xo / "workitems.json").read_text("utf-8"))
-            ["items"][workitem_id],
-            "the timeline records it; the synced tier still must not",
+            ["items"][workitem_id]["assignee"],
+            "ada",
+            "the synced tier is where the assignment lives now",
         )
 
     @unittest.skipIf(Draft7Validator is None, _SKIP_REASON)

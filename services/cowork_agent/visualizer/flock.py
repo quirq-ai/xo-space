@@ -1,7 +1,7 @@
 """Advisory file lock helper, used for files written by both the
 watcher and the BFF API endpoints.
 
-Four files need it today, for two distinct reasons — and the list is
+Five files need it today, for two distinct reasons — and the list is
 expected to grow, so **widen it rather than re-narrowing the claim.**
 
 *Genuinely two writers:*
@@ -17,6 +17,8 @@ are still two read-modify-writes racing for the same document:
 
 * ``.xo/todos.json`` — the watcher's todo sink is gone (T8).
 * ``.xo/workitems.json`` — the workitems CRUD surface (W2/W3).
+* ``.xo/peers.json`` — the peers CRUD surface. The template ships the
+  document; these routes are the first and only thing that writes it.
 * ``~/.quirq/projects/<pid>/workitems/claims.json`` — agent claims
   (W7b). Note this one is **runtime tier**, not ``.xo/``: the lock is
   about concurrent request threads, not about the synced/runtime split.

@@ -733,11 +733,15 @@ def workspace_timeline(
 # a caller guess.
 #
 # **It filters the projection, not the file.** The per-project route's
-# ``?status=`` and ``?assignee=`` read stored fields, so an adopted item
-# never matches either — it stores neither, because GitHub owns both (§5.3).
-# This route joins the mirror first and filters the result, which is the
-# whole reason §7.3 exists as a separate surface rather than a client-side
-# loop over §7.1.
+# ``?status=`` reads a stored field, so an adopted item never matches it —
+# it stores no status, because GitHub owns it (§5.3). This route joins the
+# mirror first and filters the result, which is the whole reason §7.3 exists
+# as a separate surface rather than a client-side loop over §7.1. The
+# assignee half filters on **both** the workitem's own ``assignee`` (a local
+# annotation since §13 amendment 33, stored for either kind) and the issue's
+# ``github_assignees``: assignment no longer travels through GitHub, but
+# GitHub's assignees are still the only way a peer's claim on an issue
+# reaches this machine.
 #
 # **It never goes to the network for workitem data.** The mirror is a local
 # file the poller owns; this route reads it and nothing else. The single
@@ -845,16 +849,14 @@ async def _resolve_assignee(
     which is the honest answer when "me" is nobody.
 
     **``me`` is a set, not a name**, and this is the one place the plan is
-    silent. §4 resolves ``me`` to this Space's GitHub login, which is
-    right for adopted items — GitHub does the routing, so a Space only has
-    to recognise itself and no workspace→login table is needed. But a
-    *local* workitem is assigned through ``PUT …/assignee`` to
-    ``coder_identity.resolve_user_id()``, never to a GitHub login (D1/D8:
-    a local item is self-assignable only, permanently). Resolving ``me``
-    to the login alone would therefore hide from "what is assigned to me"
-    exactly the items this Space assigned to itself. So ``me`` is the
-    union of both, which needs the same one call and returns the same
-    rows for adopted items.
+    silent. §4 resolves ``me`` to this Space's GitHub login, which is what
+    matches an issue's own assignees. But ``PUT …/assignee`` writes
+    ``coder_identity.resolve_user_id()`` — for every workitem now, adopted
+    or not (§13, amendment 33) — so resolving ``me`` to the login alone
+    would hide from "what is assigned to me" exactly the items this Space
+    assigned to itself. So ``me`` is the union of both: the local half
+    matches what this Space wrote, and the GitHub half matches what a peer
+    put on the issue.
 
     The GitHub half costs **one** ``GET /user`` — through the stored PAT
     when there is one, through ``gh api user`` otherwise — for the whole
@@ -967,13 +969,22 @@ async def workspace_workitems(
     GitHub mirror *first* and the join's result is filtered, so an adopted
     item matches on the issue's real state and the issue's real assignees.
 
-    **Unknown is not open, and it is not yours.** An adopted item the
-    mirror cannot speak for — never polled, no ``gh``, offline, the issue
-    deleted — projects with ``status`` and ``assignee`` ``null`` and
-    ``stale: true``. It matches no ``?status=`` and no ``?assignee=``, so a
-    filtered rollup omits it while an unfiltered one still shows it,
-    flagged. That is §5.3's "absent beats wrong" applied to a predicate:
-    guessing ``open`` would put someone else's finished work on your list.
+    **Unknown is not open.** An adopted item the mirror cannot speak for —
+    never polled, no ``gh``, offline, the issue deleted — projects with
+    ``status`` ``null``, no ``github_assignees`` and ``stale: true``. It
+    matches no ``?status=``, so a filtered rollup omits it while an
+    unfiltered one still shows it, flagged. That is §5.3's "absent beats
+    wrong" applied to a predicate: guessing ``open`` would put someone
+    else's finished work on your list. Its ``assignee`` is unaffected — the
+    mirror never owned it — so a stale item this Space assigned to you
+    still answers ``?assignee=me``.
+
+    **Every row carries ``origin`` and ``assigned``**, exactly as the
+    per-project listing does — this model is a subclass of that one, so the
+    two surfaces cannot drift. ``origin`` is ``"github"`` for a workitem
+    that came from an issue and ``"space"`` for one that did not (the same
+    distinction the stored document spells ``source.kind: "local"``), and
+    ``assigned`` is the plain boolean form of ``assignee``.
 
     **No network for the data.** Local files only — the stored document
     and the mirror the poller writes. Nothing here fetches from GitHub and

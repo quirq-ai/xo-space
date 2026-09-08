@@ -13,11 +13,24 @@ field                ``source.kind == local``   ``source.kind == github``
 ``labels``           the file                   the file's snapshot — the
                                                 poll never fetches labels
 ``body``             the file                   nobody (see below)
-``assignee``         the file                   **the mirror, always**
+``assignee``         **the file**               **the file** (amendment 33)
+``github_assignees`` always ``[]``              the mirror's own assignees,
+                                                as information only
 ``status``           the file                   **the mirror, always**
 ``in_progress``      a live claim (§5.4)        a live claim (§5.4)
 ``links``            the file                   the file
 ===================  =========================  =============================
+
+**``assignee`` changed sides, and that is the point of amendment 33.** It
+used to read "the mirror, always" for an adopted item, because D1 put
+coordination in GitHub and ``PUT …/assignee`` wrote there. GitHub is now
+read-only to this system: assignment is a local annotation stored in
+``.xo/workitems.json`` for *every* workitem, so the file answers for both
+kinds and there is no join to do. What the mirror knows is still served,
+under a name that cannot be mistaken for ours — ``github_assignees``, "who
+GitHub thinks is on this issue". Keeping the two under one name would make a
+row that says ``assignee: "ada"`` ambiguous about who decided that, which is
+the whole reason the field exists.
 
 Three things about it are load-bearing.
 
@@ -34,10 +47,12 @@ what a row with no mirror reads as anyway.
 from the mirror — deleted, transferred, the poller has never run, ``gh`` is
 not installed, the machine is offline — still renders. It renders as the
 title and labels snapshotted at adoption plus the issue reference, flagged
-:data:`stale`, with state and assignee **unknown**: ``status``,
-``state_reason`` and ``assignee`` come back ``None``, not defaulted. That is
-§5.3's rule that absent beats wrong, applied at the only place that could
-break it. The feature has to be useful with GitHub switched off.
+:data:`stale`, with GitHub's half **unknown**: ``status``, ``state_reason``
+and ``body`` come back ``None``, not defaulted, and ``github_assignees`` is
+empty because the mirror asserts nothing. ``assignee`` is unaffected — it
+was never GitHub's to lose, so a stale row still says who this Space put on
+it. That is §5.3's rule that absent beats wrong, applied at the only place
+that could break it. The feature has to be useful with GitHub switched off.
 
 **3. ``body`` is unknown for an adopted item, and the plan is wrong about
 why.** §5.3 says the body comes from "the mirror only — not snapshotted", but
@@ -71,9 +86,11 @@ from services.cowork_agent.visualizer.workitems_store import (
 logger = logging.getLogger(__name__)
 
 #: The keys the projection adds to a stored record on its way to the wire.
-#: Neither is stored anywhere: ``stale`` is a statement about the *mirror*,
-#: and ``assignees`` is the mirror's own list flattened to logins.
-PROJECTED_KEYS: tuple[str, ...] = ("assignees", "stale")
+#: None of them is stored anywhere: ``stale`` is a statement about the
+#: *mirror*, ``assignees`` is this Space's own single ``assignee`` as a list,
+#: and ``github_assignees`` is the mirror's own list flattened to logins —
+#: information about the issue, never an assignment this system made.
+PROJECTED_KEYS: tuple[str, ...] = ("assignees", "github_assignees", "stale")
 
 
 def mirror_issues(mirror: object) -> dict[str, dict]:
@@ -132,12 +149,13 @@ def tracked_node_ids(records: Iterable[Any]) -> dict[str, str]:
 
 
 def _logins(row: Mapping) -> list[str]:
-    """``assignees[].login`` — the coordination substrate, flattened.
+    """A mirror row's ``assignees[].login``, flattened.
 
     Kept as a list because it *is* one: an issue can carry several
     assignees, and collapsing them to the first would make the surface
-    disagree with GitHub about who owes the work. The singular ``assignee``
-    the wire model has always had is the first of these.
+    disagree with GitHub about who it has on the issue. It is served as
+    ``github_assignees`` and is **not** this system's assignment — see the
+    module docstring.
     """
     people = row.get("assignees")
     if not isinstance(people, list):
@@ -170,7 +188,9 @@ def project_workitem(
     """One stored record, joined with the mirror. **Never raises.**
 
     Returns a new dict — the stored fields with the §5.3 join applied, plus
-    ``assignees`` (the mirror's list, flattened to logins) and ``stale``.
+    ``assignees`` (this Space's own assignment, as a list of at most one),
+    ``github_assignees`` (the mirror's list, flattened to logins — GitHub's
+    view of the issue, not an assignment we made) and ``stale``.
 
     ``stale`` is precisely "this record is adopted and its issue is not in
     the mirror". It is not a freshness measure: how *old* the mirror is is a
@@ -189,7 +209,12 @@ def project_workitem(
             exc_info=True,
         )
         out = dict(record) if isinstance(record, Mapping) else {}
-        out.setdefault("assignees", [])
+        assignee = out.get("assignee")
+        out.setdefault(
+            "assignees",
+            [assignee] if isinstance(assignee, str) and assignee else [],
+        )
+        out.setdefault("github_assignees", [])
         out.setdefault("stale", False)
         return out
 
@@ -200,15 +225,22 @@ def _project(record: Mapping, issues: Mapping[str, Mapping]) -> dict:
         # store only ever hands back dicts, but a caller passing something
         # else deserves an empty projection, not a stack trace in the log of
         # a request that succeeded anyway.
-        return {"assignees": [], "stale": False}
+        return {"assignees": [], "github_assignees": [], "stale": False}
     out = dict(record)
+    # Assignment is ours for both kinds (amendment 33), so it is read off the
+    # file *before* the branch and never touched again below. ``assignees``
+    # is the same fact as a list, kept so a client reads one shape whether or
+    # not it cares about the singular field.
+    assignee = out.get("assignee")
+    assignee = assignee if isinstance(assignee, str) and assignee else None
+    out["assignee"] = assignee
+    out["assignees"] = [assignee] if assignee else []
     node_id = adopted_node_id(record)
     if node_id is None:
-        # A local item answers for itself. ``assignees`` is filled from its
-        # single ``assignee`` so a client reads one field for both kinds
-        # rather than branching on ``source.kind`` to find the answer.
-        assignee = out.get("assignee")
-        out["assignees"] = [assignee] if isinstance(assignee, str) and assignee else []
+        # A local item answers for itself, and no issue anywhere has an
+        # opinion about it — an empty list rather than an absent key, so the
+        # two kinds serialise the same shape.
+        out["github_assignees"] = []
         out["stale"] = False
         return out
 
@@ -216,11 +248,12 @@ def _project(record: Mapping, issues: Mapping[str, Mapping]) -> dict:
     if not isinstance(row, Mapping):
         # The §5.3 promise, and the acceptance criterion for W7: readable,
         # flagged, and honest about what it does not know. Never a 404.
+        # ``assignee`` survives untouched: the mirror never owned it, so
+        # there is nothing about it that the mirror's absence makes unknown.
         out["stale"] = True
         out["status"] = None
         out["state_reason"] = None
-        out["assignee"] = None
-        out["assignees"] = []
+        out["github_assignees"] = []
         out["body"] = None
         return out
 
@@ -237,9 +270,11 @@ def _project(record: Mapping, issues: Mapping[str, Mapping]) -> dict:
         out["labels"] = labels
     out["status"] = _choice(row.get("state"), VALID_STATUSES)
     out["state_reason"] = _choice(row.get("state_reason"), VALID_STATE_REASONS)
-    logins = _logins(row)
-    out["assignees"] = logins
-    out["assignee"] = logins[0] if logins else None
+    # Information, not assignment. GitHub's assignees are still worth seeing
+    # — they are how a peer says "I have this" in the place peers can see —
+    # but nothing in this system writes them and they never overwrite
+    # ``assignee``, which is what this Space decided.
+    out["github_assignees"] = _logins(row)
     # The mirror carries no body (§5.2's query does not select one), so this
     # is unknown rather than empty. The issue URL is where it is read.
     out["body"] = None

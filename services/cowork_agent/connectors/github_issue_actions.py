@@ -1,37 +1,38 @@
-"""The two GitHub calls a *person* makes: adopt an issue, assign one.
+"""The GitHub reads a *person* triggers: fetch one issue, ask who we are.
 
-``docs/workitems-plan.md`` §7.2 (W7, W8). :mod:`.github_issues` is the poll —
-one repo's page of issues, once a minute, on a budget. This module is its
+``docs/workitems-plan.md`` §7.2 (W7). :mod:`.github_issues` is the poll — one
+repo's page of issues, once a minute, on a budget. This module is its
 interactive sibling: one issue, on demand, because a human clicked something.
 They are separate for reasons that are not stylistic.
 
 * **Different cadence, different cost rules.** The poll is pinned to one
   GraphQL point because it runs 60 times an hour per repo and the ceiling is
-  the binding constraint (§6.2). These calls happen when someone adopts or
-  reassigns, which is rare, so they can afford the ``labels`` connection the
-  poll cannot: adoption's whole job is to take the one-time snapshot §5.3
-  asks for, and *lazily at adoption* is exactly where the plan puts the label
+  the binding constraint (§6.2). This call happens when someone adopts an
+  issue, which is rare, so it can afford the ``labels`` connection the poll
+  cannot: adoption's whole job is to take the one-time snapshot §5.3 asks
+  for, and *lazily at adoption* is exactly where the plan puts the label
   fetch. Measured against ``cjpais/Handy`` on 2026-09-08:
   :data:`ISSUE_QUERY` with ``labels(first:20)`` and ``assignees(first:5)``
   costs **1 point**, the same as the poll — the label cost the plan warns
   about is per *page of 100 issues*, not per issue.
 
-* **Different verb.** Assignment is a write, and §3 names the call: ``PATCH
-  /repos/{owner}/{repo}/issues/{n}`` with an ``assignees`` array. It is sent
-  through ``gh`` (D5 — ``gh`` is the client, for its auth and its transport)
-  but it is REST, so it lands on the **core** 5,000/hour budget rather than
-  the GraphQL one the poller lives on. The poll therefore cannot be starved
-  by assignment, and vice versa. The array *replaces* the assignee set, which
-  is what makes a ``PUT`` of the assignee a real ``PUT``; ``--add-assignee``
-  / ``--remove-assignee`` would have needed the current set first and a diff
-  after, with a race in the middle.
+* **Everything here is a read.** There was a ``set_assignees`` beside these
+  two — a ``PATCH /repos/{owner}/{repo}/issues/{n}`` that wrote an
+  ``assignees`` array, because D1 put coordination in GitHub. **That decision
+  was reversed** (§13, amendment 33): assignment is now a local annotation in
+  ``.xo/workitems.json`` for every workitem, adopted or not, and *nothing in
+  this system writes to GitHub*. The function was deleted rather than left
+  unused, so there is no half-live write path for a future caller to rewire
+  by accident. GitHub remains the authority for an adopted issue's
+  ``status``/``state_reason``/``body``, which this module and the poller
+  read and never set.
 
 **It never raises**, exactly like :mod:`.github_issues`, and for the same
 reason: no ``gh``, no auth, no network, a deleted repo and a spent budget are
 five *states* a caller has to render, not five exceptions. ``error_kind`` is
 one of that module's :data:`~.github_issues.ERROR_KINDS`.
 
-**Why it imports four private helpers from that module.** ``_run_gh``,
+**Why it imports five private helpers from that module.** ``_run_gh``,
 ``_parse_rate``, ``_classify_graphql_errors``, ``_classify_rest_error`` and
 ``_classify_stderr`` are the contract for *how this system talks to gh*: a
 process group that can be killed as a tree, a token injected into the child's
@@ -41,19 +42,17 @@ here would produce a second table that could disagree with the first — the
 defect this codebase names outright when it refuses a second error mapping
 for the claim routes. Borrowing them keeps one.
 
-One thing that is *not* here: nothing in this module writes to disk. Adoption
-records go through ``workitems_store``, and the mirror stays single-writer —
-the poller — which is why the label fetch happens here rather than being
-folded into the poll (§5.2, amendment 2).
+One thing that is *not* here: nothing in this module writes anything, to disk
+or to GitHub. Adoption records go through ``workitems_store``, and the mirror
+stays single-writer — the poller — which is why the label fetch happens here
+rather than being folded into the poll (§5.2, amendment 2).
 """
 
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
 
 from .github_issues import (
     GH_BIN,
@@ -113,26 +112,6 @@ class IssueResult:
     number: int | None
     issue: dict[str, Any] | None = None
     rate: RateLimit = field(default_factory=RateLimit)
-    error_kind: str | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class AssignResult:
-    """The outcome of a ``PATCH … {assignees}``.
-
-    ``assignees`` is what GitHub reports **after** the write, not what was
-    asked for. The two differ more often than one would like: GitHub accepts
-    a login that cannot be assigned — someone with no access to the
-    repository — and silently drops it from the array, answering ``200`` with
-    the assignees unchanged. Reporting the result set is what lets the caller
-    turn that silent no-op into a visible refusal.
-    """
-
-    ok: bool
-    repo: str | None
-    number: int | None
-    assignees: list[str] = field(default_factory=list)
     error_kind: str | None = None
     error: str | None = None
 
@@ -296,106 +275,6 @@ async def fetch_issue(
             rate,
         )
     return IssueResult(ok=True, repo=slug, number=number, issue=row, rate=rate)
-
-
-async def set_assignees(
-    repo: RepoRef | str,
-    number: int,
-    logins: Sequence[str],
-    *,
-    timeout_s: float = GH_TIMEOUT_S,
-    gh_bin: str = GH_BIN,
-) -> AssignResult:
-    """Replace an issue's assignees. **Never raises.**
-
-    ``logins=[]`` un-assigns, which is the reason for the request body on
-    disk rather than ``-f 'assignees[]=…'`` repeated: there is no way to
-    spell an *empty* array in gh's field syntax, and a ``PUT`` that could set
-    an assignee but never clear one would be half an endpoint. The body is a
-    two-key JSON object with no secret in it; the token travels in the
-    child's environment as always, never in an argument or a file.
-    """
-    ref = repo if isinstance(repo, RepoRef) else _coerce_ref(str(repo or ""))
-    if ref is None:
-        return AssignResult(
-            ok=False, repo=None, number=number, error_kind="bad_remote",
-            error=f"Not a GitHub owner/repo: {repo!r}." if repo
-            else "No repository given.",
-        )
-    slug = ref.slug
-    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
-        return AssignResult(ok=False, repo=slug, number=None,
-                            error_kind="bad_remote",
-                            error="An issue number must be a positive integer.")
-    if not gh_available(gh_bin):
-        return AssignResult(
-            ok=False, repo=slug, number=number, error_kind="no_cli",
-            error="GitHub CLI (`gh`) is not installed on this machine. "
-                  "Assignment is a GitHub assignee, so it needs it.",
-        )
-
-    wanted = [str(login) for login in logins or [] if str(login).strip()]
-    handle, body_path = tempfile.mkstemp(prefix="xo-assignees-", suffix=".json")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            json.dump({"assignees": wanted}, fh)
-        argv = [
-            gh_bin, "api", "-X", "PATCH",
-            f"repos/{ref.owner}/{ref.name}/issues/{number}",
-            "--input", body_path,
-        ]
-        if not ref.is_github_com:
-            argv[2:2] = ["--hostname", ref.host]
-        returncode, stdout, stderr = await _run_gh(argv, timeout_s)
-    finally:
-        try:
-            os.unlink(body_path)
-        except OSError:  # pragma: no cover - the file was already gone
-            pass
-
-    if stderr == "__no_cli__":
-        return AssignResult(ok=False, repo=slug, number=number, error_kind="no_cli",
-                            error="GitHub CLI (`gh`) could not be executed.")
-    if stderr == "__timeout__":
-        return AssignResult(
-            ok=False, repo=slug, number=number, error_kind="timeout",
-            error=f"`gh api` did not answer within {timeout_s:g}s.",
-        )
-    if stderr.startswith("__spawn_failed__"):
-        return AssignResult(
-            ok=False, repo=slug, number=number, error_kind="unknown",
-            error=f"Could not run `gh`: {stderr[len('__spawn_failed__'):].strip()}",
-        )
-
-    payload: Any = None
-    if stdout.strip():
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            payload = None
-
-    if returncode != 0:
-        if isinstance(payload, dict):
-            classified = _classify_rest_error(payload)
-            if classified:
-                return AssignResult(ok=False, repo=slug, number=number,
-                                    error_kind=classified[0], error=classified[1])
-        kind, message = _classify_stderr(stderr, returncode)
-        return AssignResult(ok=False, repo=slug, number=number,
-                            error_kind=kind, error=message)
-
-    if not isinstance(payload, dict):
-        return AssignResult(
-            ok=False, repo=slug, number=number, error_kind="bad_response",
-            error="`gh api` returned no JSON body for the assignment.",
-        )
-
-    assigned: list[str] = []
-    for person in payload.get("assignees") or []:
-        login = person.get("login") if isinstance(person, dict) else None
-        if isinstance(login, str) and login and login not in assigned:
-            assigned.append(login)
-    return AssignResult(ok=True, repo=slug, number=number, assignees=assigned)
 
 
 @dataclass(frozen=True)

@@ -8,9 +8,9 @@ Two naming conventions on purpose:
   aliasing — so the frontend's existing usage-tab client works
   unchanged. See ``routers/openclaw_usage.py``.
 
-* **Visualizer** models (``todos``, ``activity``, ``timeline``) use
-  snake_case field names that match their JSON Schemas under
-  ``services/cowork_agent/visualizer/schema/``.
+* **Visualizer** models (``todos``, ``peers``, ``activity``,
+  ``timeline``) use snake_case field names that match their JSON Schemas
+  under ``services/cowork_agent/visualizer/schema/``.
 
 Every model declares ``extra="forbid"``. An unexpected key surfacing
 from disk fails the route closed with 500 ``scope_unavailable``
@@ -24,6 +24,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from services.cowork_agent.visualizer.peers_store import (
+    VALID_ROLES as _PEER_ROLES,
+)
 from services.cowork_agent.visualizer.todo_status import TodoStatus
 from services.cowork_agent.visualizer.workitems_store import (
     VALID_STATE_REASONS as _WORKITEM_STATE_REASONS,
@@ -334,6 +337,175 @@ class DeleteTodoResponse(_ForbidExtra):
     deleted: bool
 
 
+# ── /peers ────────────────────────────────────────────────────────────────────
+#
+# The wire shape of ``<project>/.xo/peers.json`` — the collaborator
+# roster — and the request bodies for its CRUD surface. It is the todos
+# and workitems dialect again on purpose: same ``{"code", "message"}``
+# 400 bodies, same idempotent DELETE, same "plain ``str`` on the way in,
+# ``Literal`` on the way out" split, so an agent that can drive either of
+# those can drive this one.
+#
+# Two things are deliberately absent and are worth naming, because their
+# absence is a decision rather than an oversight.
+#
+# There is **no ``runtime`` field** on any body here. ``peers.schema.json``
+# is ``additionalProperties: false`` and declares nothing to attribute a
+# roster edit to, so a ``runtime`` this layer accepted would be a value
+# the store had nowhere to put — accepted, validated, and then dropped.
+#
+# There are **no tombstone fields** — no ``deleted_at``, no
+# ``deleted_by``. Removing a peer really removes them. ``peers.json`` is
+# in the synced tier, so a tombstone would carry "this person used to
+# have access" to every Space the project ever reaches; a roster answers
+# who is on the project now, and the record of who was is not this
+# document's job.
+
+
+#: The role vocabulary, *derived* from the store's own frozenset rather
+#: than re-typed here, for the reason ``WorkitemStatus`` is: the store is
+#: already the one definition, so the enum the OpenAPI schema publishes
+#: cannot drift from the one the store validates against. ``sorted`` only
+#: fixes an order for a set that has none.
+PeerRole = Literal[*sorted(_PEER_ROLES)]
+
+
+class Peer(_ForbidExtra):
+    """One collaborator, as served.
+
+    ``user_id`` is the identity — the roster is an array with no separate
+    id, so the ``user_id`` is the path segment, the match key and the
+    thing that makes the roster a set. It is also, deliberately,
+    validated against the same charset as a workitem ``assignee``: a
+    ``user_id`` that is a legal peer is always a legal assignee, which is
+    the point of keeping a roster at all.
+
+    ``added_at`` is server-set at create and is never editable. It
+    records when *this Space* learned of the peer, which is an
+    observation rather than a claim the caller gets to make.
+
+    ``endpoint`` and ``label`` are ``Optional`` because the schema types
+    them nullable, and ``null`` means "not set" for both — unlike the
+    workitem fields where ``null`` can mean "unknown, ask GitHub". There
+    is nothing else to ask.
+    """
+
+    user_id: str
+    # ``Literal`` so the OpenAPI schema carries the enum, and coerced
+    # rather than trusted on the read path (``_coerce_peer_role``): a
+    # synced ``.xo/`` is restored wholesale from somewhere else, so "the
+    # store wrote it" is not the same claim as "this process wrote it",
+    # and one odd row must not take the whole roster down with it.
+    role: PeerRole
+    added_at: Optional[str] = None
+    endpoint: Optional[str] = None
+    label: Optional[str] = None
+
+
+class PeersResponse(_ForbidExtra):
+    """``GET /peers`` — the roster, oldest first.
+
+    ``updated_at`` is the document's own stamp, served beside the list
+    because "when did this roster last change" is a question about the
+    document rather than about any one peer. It is ``null`` for a project
+    whose ``peers.json`` has never been written.
+
+    An empty ``peers`` list is a real answer and the common one: the
+    schema says so in as many words — "Empty list = solo project".
+    """
+
+    project_id: str
+    updated_at: Optional[str] = None
+    peers: list[Peer]
+
+
+class CreatePeerRequest(_ForbidExtra):
+    """POST /api/xo-projects/{id}/peers — add a collaborator.
+
+    ``added_at`` is not a field: the server sets it. Neither is
+    ``runtime`` — see the section comment above.
+
+    ``role`` is a plain ``str``, not :data:`PeerRole`, for the same
+    reason ``CreateTodoRequest.status`` is: the store validates it and
+    the route maps that to the documented ``400 invalid_role``. Typing it
+    as a ``Literal`` would turn the same request into a 422 with a
+    different body.
+    """
+
+    user_id: str
+    role: str
+    label: Optional[str] = None
+    endpoint: Optional[str] = None
+
+
+#: The nullable pair — the fields for which "absent" and "null" are
+#: different requests. ``role`` is not nullable, so absent and null mean
+#: the same thing there. Module level rather than a class attribute so it
+#: is a plain constant and not something Pydantic has to be told to
+#: ignore.
+_PEER_NULLABLE_FIELDS: tuple[str, ...] = ("label", "endpoint")
+
+
+class UpdatePeerRequest(_ForbidExtra):
+    """PATCH /api/xo-projects/{id}/peers/{user_id}.
+
+    **Three-way for two of its fields**, exactly like
+    ``UpdateWorkitemRequest``: ``label`` and ``endpoint`` are nullable,
+    so this model has to express three distinct requests where a plain
+    ``Optional`` expresses two:
+
+    ========================  =========================  ==============
+    request                   meaning                    store kwarg
+    ========================  =========================  ==============
+    key absent                leave it alone             *not passed*
+    ``{"label": null}``       clear it                   ``None``
+    ``{"label": "Ada"}``      set it                     ``"Ada"``
+    ========================  =========================  ==============
+
+    Collapsing the first two would make removing a display name or a sync
+    endpoint impossible over HTTP.
+
+    **``user_id`` is not here, and that is the contract.** It is the
+    identity, so changing it is a delete plus a create — a PATCH that
+    re-keyed a record would silently hand whatever the old id meant to a
+    different person. ``added_at`` is absent for a milder reason: it is
+    an observation this Space made, not a value a caller revises.
+    """
+
+    role: Optional[str] = None
+    label: Optional[str] = None
+    endpoint: Optional[str] = None
+
+    def store_kwargs(self) -> dict:
+        """The keyword arguments to hand ``peers_store.update_peer``.
+
+        A nullable field the caller did not mention is **omitted**, not
+        passed as ``None``: the store's own parameter default is its
+        ``UNSET`` sentinel, so omission is how "not supplied" is spelled
+        and the sentinel never has to cross this layer.
+        """
+        supplied = self.model_fields_set
+        kwargs: dict = {"role": self.role}
+        for field in _PEER_NULLABLE_FIELDS:
+            if field in supplied:
+                kwargs[field] = getattr(self, field)
+        return kwargs
+
+
+class DeletePeerResponse(_ForbidExtra):
+    """DELETE /api/xo-projects/{id}/peers/{user_id} — idempotent
+    (returns ``deleted: false`` when the peer was not on the roster).
+
+    ``deleted: true`` means the record is **gone**, not tombstoned. There
+    is no ``?include_deleted=`` on the list route to read it back,
+    because there is nothing to read back.
+    """
+
+    project_id: str
+    user_id: str
+    deleted: bool
+
+
 # ── /activity ─────────────────────────────────────────────────────────────────
 
 
@@ -439,15 +611,29 @@ class WorkitemLinks(_ForbidExtra):
 class Workitem(_ForbidExtra):
     """One workitem, as served.
 
-    Four fields are ``Optional`` for a reason that is not "they might be
+    Three fields are ``Optional`` for a reason that is not "they might be
     missing": for an adopted item (``source.kind == "github"``) the store
-    does not hold ``status``, ``state_reason``, ``assignee`` or ``body``
-    at all, because GitHub owns them and a stale ``closed`` or a stale
-    assignee is a false statement about who owes what (§5.3). They
-    therefore serialise as ``null`` — *unknown*, not *unset*. Until the
-    mirror lands (W4–W7) that is the whole answer for an adopted item;
-    after it, the projection fills them in from the mirror. A caller
-    tells the two apart by ``source.kind``.
+    does not hold ``status``, ``state_reason`` or ``body`` at all, because
+    GitHub owns them and a stale ``closed`` is a false statement about
+    whether the work is done (§5.3). They therefore serialise as ``null`` —
+    *unknown*, not *unset*; the projection fills them in from the mirror
+    when the poller has seen the issue, and leaves them ``null`` with
+    ``stale: true`` when it has not.
+
+    ``assignee`` is **not** one of them any more (§13, amendment 33 — the
+    reversal of D1). Nothing in this system writes to GitHub, so assignment
+    is a local annotation stored in ``.xo/workitems.json`` for every
+    workitem, adopted or not, and it is served from the file for both kinds.
+    What GitHub thinks is served separately as ``github_assignees``.
+
+    **Two vocabularies for one distinction, on purpose.** ``source.kind`` is
+    what is *on disk* — ``"local"`` | ``"github"`` — and every test, the
+    schema and the store speak it. ``origin`` is the same distinction spelled
+    for a reader of this API: ``"github"`` when the workitem came from a
+    GitHub issue, ``"space"`` when it did not. ``origin: "space"``
+    corresponds **exactly** to ``source.kind: "local"``; the stored value was
+    not renamed because it is a synced on-disk format, and renaming it would
+    have rewritten every document and every test to change a word.
     """
 
     id: str
@@ -462,13 +648,33 @@ class Workitem(_ForbidExtra):
     status: Optional[WorkitemStatus] = None
     state_reason: Optional[WorkitemStateReason] = None
     source: WorkitemSource
+    # Where the workitem came from, in this API's own words. ``"github"``
+    # iff ``source.kind == "github"``; ``"space"`` otherwise — i.e.
+    # ``origin: "space"`` IS ``source.kind: "local"`` on disk. Two words for
+    # one thing, and the class docstring says why the stored one did not
+    # change.
+    origin: Literal["github", "space"] = "space"
+    # Who this Space says owes the work — from ``.xo/workitems.json``, for
+    # both kinds. ``null`` when nobody does.
     assignee: Optional[str] = None
-    # The full answer to "who owes this", and the reason it is a list: an
-    # issue can carry several assignees, and ``assignee`` above is only the
-    # first of them. For a local item it is the single self-assignment, so
-    # a client reads one field for both kinds instead of branching on
-    # ``source.kind`` to find out where the answer lives.
+    # "Is this assigned to anyone or not", so a caller does not have to
+    # null-check an identity to ask a yes/no question. It is exactly
+    # ``assignee is not None`` and nothing else: it says nothing about
+    # ``github_assignees``, because those are not an assignment this system
+    # made.
+    assigned: bool = False
+    # ``assignee`` as a list, at most one long. Kept because it has always
+    # been on the wire; it is the same fact, not a second one. It used to
+    # carry GitHub's assignees for an adopted item — those moved to
+    # ``github_assignees`` when assignment stopped being GitHub's (§13,
+    # amendment 33).
     assignees: list[str] = []
+    # Who **GitHub** has on the issue, flattened to logins. Information,
+    # never assignment: nothing in this system writes it, the poller reads
+    # it once a minute, and it is empty for a workitem that is not adopted
+    # and for one whose issue the mirror cannot speak for. A peer assigning
+    # themselves on GitHub shows up here and nowhere else.
+    github_assignees: list[str] = []
     # "This item is adopted and its issue is not in the mirror" — deleted,
     # transferred, or the poller has never run (§5.3). The item still
     # renders, from the title and labels snapshotted at adoption, with
@@ -729,6 +935,12 @@ class GithubIssue(_ForbidExtra):
     updated_at: Optional[str] = None
     adopted: bool = False
     workitem_id: Optional[str] = None
+    #: Whether an agent is working this issue **right now**, derived from a
+    #: live claim on its workitem (never stored). ``False`` for an issue
+    #: nobody has adopted, because an unadopted issue has no workitem to
+    #: claim. Present here so a caller can render the browse list without
+    #: joining it against ``GET /workitems`` on ``workitem_id``.
+    in_progress: bool = False
 
 
 class GithubMirrorError(_ForbidExtra):
@@ -780,10 +992,12 @@ class AdoptIssueRequest(_ForbidExtra):
     already been keeping — with its todo links and its history — becomes
     the record for the issue rather than being duplicated beside it. It
     is not D8's promotion: nothing is created on GitHub, and the issue
-    being adopted was already public. The local ``status``, ``body`` and
-    ``assignee`` are dropped in the transition, because for an adopted
-    item those four are GitHub's and a kept copy would assert a state
-    nothing maintains.
+    being adopted was already public. The local ``status``,
+    ``state_reason`` and ``body`` are dropped in the transition, because
+    for an adopted item those three are GitHub's and a kept copy would
+    assert a state nothing maintains. ``assignee`` is **kept**: it is a
+    local annotation (§13, amendment 33), and adopting an issue does not
+    change who this Space decided owes the work.
     """
 
     runtime: str
@@ -798,31 +1012,44 @@ class AssignWorkitemRequest(_ForbidExtra):
     the field is required-but-nullable rather than optional — an omitted
     key on a ``PUT`` of one value would have no meaning to give it.
 
-    ``"me"`` resolves to this Space's own identity: its GitHub login for
-    an adopted item, since assignment *is* a GitHub assignee (D1). There
-    is no workspace-to-login mapping table anywhere, and none is needed —
-    each Space only has to recognise itself, and GitHub does the routing
-    (§4).
+    ``"me"`` resolves to this Space's own identity — ``resolve_user_id()``,
+    the same name a local self-assignment has always carried. It needs no
+    network and no credential: assignment is a local annotation now (§13,
+    amendment 33), so there is nothing to route and nobody to ask.
+
+    **Any identity is accepted, for any workitem.** The old
+    ``local_assignee_only`` refusal existed because only GitHub could route
+    work to a peer and a local item could never reach one; with no GitHub
+    write left, that reason is gone. What is also gone is the guarantee it
+    was standing in for: an assignment is stored in ``.xo/``, which is
+    snapshot backup/restore rather than continuous merge, so assigning a
+    peer records an intention **this Space can see** and does not deliver
+    work to them.
     """
 
     assignee: Optional[str]
 
 
 class WorkitemAssignment(_ForbidExtra):
-    """The result of an assignment, with its tense.
+    """The result of an assignment.
 
-    ``pending`` is true when the write went to **GitHub**: it succeeded
-    there, and this Space learns the new assignee back from the next poll
-    of the mirror, up to a minute later. Nothing is written into
-    ``.xo/workitems.json`` for an adopted item — GitHub is authoritative
-    and the store refuses the field outright — so an eagerly-updated
-    local copy is not merely unnecessary, it is the stale value §5.3
-    forbids.
+    ``kind`` is the workitem's ``source.kind`` as stored — ``"local"`` |
+    ``"github"`` — not "where the write went", which is what it used to
+    mean. Since amendment 33 the write always goes to the same place:
+    ``.xo/workitems.json``. (The listing calls the same distinction
+    ``origin``, with ``"space"`` where this says ``"local"``; see
+    :class:`Workitem`.)
 
-    ``assignees`` is what GitHub reports **after** the write. It can be
-    shorter than what was asked for: GitHub accepts a login without
-    access to the repository and silently drops it, so reporting the
-    result is what turns a silent no-op into something a caller can see.
+    ``pending`` is therefore **always false** and is kept only because it
+    was on the wire. It used to mean "GitHub has it and this Space will
+    read it back from the next poll", which was true when an adopted
+    item's assignment was a ``PATCH`` against the issue. Nothing is
+    outstanding now: the response is served from the record that was
+    written.
+
+    ``assignees`` is ``assignee`` as a list, at most one long — this
+    Space's own assignment, never GitHub's. GitHub's assignees are on the
+    workitem itself, as ``github_assignees``.
     """
 
     project_id: str
