@@ -54,7 +54,13 @@ async def cli_login_poll(body: CliSessionBody) -> JSONResponse:
 
     On completion, the token is validated against /user, persisted to
     token.json with `auth_method="cli"`, and the user profile is returned
-    in the same shape as the PAT flow.
+    in the same shape as the PAT flow. Polling is idempotent: a finished
+    session answers the same way on every poll until it expires.
+
+    Every outcome of a *known* session is a 200 — including ``failed``. The
+    failure is the poll's answer, not a transport error; a 5xx here makes the
+    frontend's HTTP client retry, and that retry is what used to surface as
+    "expired". 404 is reserved for a session this process doesn't know.
     """
     result = await github_cli_auth.connect(body.session_id)
 
@@ -78,7 +84,6 @@ async def cli_login_poll(body: CliSessionBody) -> JSONResponse:
 
     return JSONResponse(
         {"status": "failed", "error": result.get("error", "CLI login failed.")},
-        status_code=502,
     )
 
 
