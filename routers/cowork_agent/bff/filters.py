@@ -105,3 +105,11 @@ def is_valid_workspace_id(value: str) -> bool:
     """A recipient workspace id: non-blank after strip, no whitespace, ≤100 chars
     (the swarm column width). The relay never interprets it further."""
     return isinstance(value, str) and bool(_WORKSPACE_ID_RE.match(value.strip()))
+
+
+_ISSUE_STATES = frozenset({"open", "closed", "all"})
+
+
+def is_valid_issue_state(value: str) -> bool:
+    """The `state` filter of the issues list: exactly what `gh issue list --state` takes."""
+    return isinstance(value, str) and value in _ISSUE_STATES
