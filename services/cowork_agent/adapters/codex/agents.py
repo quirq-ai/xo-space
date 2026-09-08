@@ -31,8 +31,16 @@ from services.cowork_agent.project_layout import (
     xo_dir,
     xo_projects_root,
 )
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 
 _BACKEND = "codex"
+
+# Record schema for ``<project>/.xo/agent.json``
+# (docs/syncplan.md §5.4 · ``visualizer/schema/agent.schema.json``). Stamped on
+# records this adapter mints; never back-filled onto an older record, which the
+# schema accepts unversioned.
+_SCHEMA_ID = "xo/agent.schema.json"
+_SCHEMA_VERSION = 1
 
 
 def _meta_path(agent_id: str) -> Path:
@@ -49,10 +57,45 @@ def _load(agent_id: str) -> dict | None:
     return None
 
 
+def _load_owned(agent_id: str) -> dict | None:
+    """``_load`` restricted to records this backend owns.
+
+    Every project-tied adapter reads the SAME ``<project>/.xo/agent.json``, and
+    the ownership routes in ``routers/cowork_agent/agents.py`` take the first
+    non-None over ``list_adapters()`` (alphabetical) — so without this filter
+    whichever adapter sorts first answers for records another one created. A
+    record whose ``backend`` names another backend is not ours.
+
+    A missing or empty ``backend`` stays claimable, deliberately: records
+    written before the tag existed, and projects scaffolded outside the
+    agents contract, must still resolve — so first-adapter-wins is narrowed
+    here rather than eliminated for old data.
+    """
+    meta = _load(agent_id)
+    if meta is None:
+        return None
+    backend = meta.get("backend")
+    if isinstance(backend, str) and backend and backend != _BACKEND:
+        return None
+    return meta
+
+
 def _write(agent_id: str, data: dict) -> None:
-    path = _meta_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    """Write the record to ``<project>/.xo/agent.json``, atomically.
+
+    ``write_json_atomic`` (sibling temp file + ``os.replace``) rather than a
+    bare ``write_text``: a concurrent reader — another adapter's
+    ``_load_owned``, or the sidebar's ``list_agents`` — must never see a
+    half-written record. A torn read here is not cosmetic, because ``_load``
+    swallows the parse error and returns ``None``, which every caller reads as
+    "no such agent".
+
+    A full-document write, not a key-scoped merge: both callers already hold
+    the whole record — ``create_agent`` mints it, and ``patch``
+    read-modify-writes exactly what ``_load_owned`` returned — so there is no
+    foreign key to carry forward.
+    """
+    write_json_atomic(_meta_path(agent_id), data)
 
 
 def _agent_info(agent_id: str, meta: dict) -> dict:
@@ -107,6 +150,8 @@ def create_agent(body) -> dict | JSONResponse:
     try:
         scaffold_project(agent_id, display_name=display_name, description=description)
         meta = {
+            "$schema": _SCHEMA_ID,
+            "schema": _SCHEMA_VERSION,
             "id": agent_id,
             "name": display_name,
             "description": description,
@@ -121,8 +166,9 @@ def create_agent(body) -> dict | JSONResponse:
 
 
 def get_detail(agent_id: str) -> dict | None:
+    """Full agent snapshot if ``agent_id`` is a codex agent, else None."""
     aid = normalize_agent_id(agent_id)
-    meta = _load(aid)
+    meta = _load_owned(aid)
     if meta is None:
         return None
     workspace_path = project_dir(aid)
@@ -154,13 +200,14 @@ def get_detail(agent_id: str) -> dict | None:
 
 
 def patch(agent_id: str, body) -> dict | JSONResponse | None:
+    """Patch a codex agent's name/description; None if not ours."""
     aid = normalize_agent_id(agent_id)
-    if _load(aid) is None:
+    if _load_owned(aid) is None:
         return None
     if not body.model_fields_set:
         detail = get_detail(aid)
         return detail if detail else JSONResponse(status_code=404, content={"detail": "Not found"})
-    meta = _load(aid) or {}
+    meta = _load_owned(aid) or {}
     if body.name is not None:
         meta["name"] = body.name.strip()
     if body.description is not None:

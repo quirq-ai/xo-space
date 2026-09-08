@@ -166,7 +166,7 @@ def workspace_usage_dashboard(
 ) -> dict:
     """Workspace-aggregated ``UsageStats`` (UI-facing shape).
 
-    Aggregated across every project's ``.xo/sessions/sessionslist.json``
+    Aggregated across every project's runtime session index
     (token totals, message counts, per-session view) plus
     ``~/xo-projects/.xo/stats.json`` (per-model rolling window). Same
     field names and nesting as the canonical ``/api/usage`` endpoint

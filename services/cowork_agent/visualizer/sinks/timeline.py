@@ -6,14 +6,28 @@ schema's vocabulary (docs/watcher-design.md §3.8):
 * :class:`SessionFirstSeen`  → ``session.started``
 * :class:`TaskCreated`       → ``todo.added``
 * :class:`TaskStatusChanged` (``completed``) → ``todo.completed``
+* :class:`TaskStatusChanged` (anything else) → ``todo.status_changed``
 * :class:`FileTouched` (created) → ``file.created``
 * :class:`FileTouched` (not created) → ``file.edited``
 
 Other internal events (``MessageObserved``, ``UsageObserved``,
-``ToolUseObserved``, non-``completed`` task status changes) don't
-map to any timeline type and are silently dropped here. Those
-events live on as counters in :mod:`sessions_augment` and aggregates
-in :mod:`stats`.
+``ToolUseObserved``) don't map to any timeline type and are silently
+dropped here. Those events live on as counters in
+:mod:`sessions_augment` and aggregates in :mod:`stats`.
+
+**Where todo events come from.** Not from ingestion any more: the
+todos HTTP API is the single source
+(:mod:`~services.cowork_agent.visualizer.todos_store`, syncplan §7 T7)
+and the watcher drops task events before the fan-out, so a timeline
+line exists exactly when the todo exists in ``todos.json`` — on every
+backend, not just the one runtime whose transcript carried them. The
+consequence for this module is that the API's request thread appends
+here alongside the watcher tick; each append is a single write to an
+``O_APPEND`` handle, so lines interleave but never tear.
+
+Every status transition is carried. Until T7 only ``completed``
+survived, so a todo moving to ``in_progress`` — the transition a
+reader most wants to see live — left no trace at all.
 
 Rotation: when ``timeline.jsonl`` exceeds 8 MB the sink renames it
 to ``timeline.<UTC-iso>.jsonl`` and starts fresh. Older rotations
@@ -68,9 +82,18 @@ def _emit_event(ev: Event) -> Optional[dict]:
             },
         }
     if isinstance(ev, TaskStatusChanged):
+        # ``todo.completed`` is kept as its own type rather than folded
+        # into the generic one: it is the type readers, docs and the
+        # ``?types=`` filter already know, and completion is the
+        # transition worth naming.
         if ev.status == "completed":
             return {**base, "type": "todo.completed", "todo_id": ev.task_id}
-        return None  # only completion is in the schema
+        return {
+            **base,
+            "type": "todo.status_changed",
+            "todo_id": ev.task_id,
+            "status": ev.status,
+        }
     if isinstance(ev, FileTouched):
         return {
             **base,
@@ -80,8 +103,8 @@ def _emit_event(ev: Event) -> Optional[dict]:
     return None
 
 
-def _rotate_if_needed(xo_dir: Path) -> None:
-    path = xo_dir / _TIMELINE_FILE
+def _rotate_if_needed(root: Path) -> None:
+    path = root / _TIMELINE_FILE
     if not path.is_file():
         return
     try:
@@ -110,8 +133,21 @@ def _rotate_if_needed(xo_dir: Path) -> None:
             logger.warning("timeline rotation prune failed for %s: %s", old, exc)
 
 
-def apply(xo_dir: Path, events: Iterable[Event]) -> list[dict]:
+def apply(root: Path, events: Iterable[Event]) -> list[dict]:
     """Append timeline events for this project's events.
+
+    ``root`` is the project's RUNTIME directory since the tier move — the
+    timeline is derived history, not part of what a clone would want
+    (syncplan §2, R-TIER).
+
+    **There is no read-through to the pre-move file, deliberately** (open
+    decision O3, default applied). The other moved documents are single
+    JSON files a reader can fall back to; this one is append-only WITH
+    rotation, so a read-through would have to reconcile the
+    ``timeline.<stamp>.jsonl`` glob across two roots on every read and
+    every prune, and get the interleaving right. Existing history stays
+    on disk in ``.xo/`` until T21's migration removes it; the runtime
+    timeline starts empty.
 
     Returns the list of rendered lines actually appended (empty when
     no event mapped to a schema-vocab type, or when called with an
@@ -122,7 +158,7 @@ def apply(xo_dir: Path, events: Iterable[Event]) -> list[dict]:
     Rotation is checked **before** the write so a tick that pushes us
     over 8 MB starts the next tick on a fresh file.
     """
-    _rotate_if_needed(xo_dir)
+    _rotate_if_needed(root)
 
     lines: list[dict] = []
     for ev in events:
@@ -133,5 +169,5 @@ def apply(xo_dir: Path, events: Iterable[Event]) -> list[dict]:
     if not lines:
         return []
 
-    append_jsonl(xo_dir / _TIMELINE_FILE, lines)
+    append_jsonl(root / _TIMELINE_FILE, lines)
     return lines

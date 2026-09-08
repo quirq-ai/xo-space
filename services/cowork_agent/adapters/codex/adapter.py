@@ -11,47 +11,33 @@ from typing import Any, AsyncIterator
 from services.cowork_agent.adapters.base import BaseAgentAdapter
 from services.cowork_agent.project_layout import (
     project_dir as _xo_project_dir,
-    sessions_dir as _xo_sessions_dir,
     xo_projects_root,
 )
+from services.cowork_agent.engine import sessions_io as _session_index
 
 # ── Module-level native session ID cache (session_key → native_session_id) ───
 
 _native_map: dict[str, str] = {}
 
 
-# ── Index I/O (verbatim from claude_code/adapter.py:29-57) ──────────────────────
+# ── Session index I/O ─────────────────────────────────────────────────────────
+#
+# The index is machine-local and PARTITIONED: one shard file per row, under
+# ``~/.quirq/projects/<key>/sessions/sessionslist.d/`` (syncplan T19). This
+# module never builds that path and never rewrites the whole document — it asks
+# ``engine.sessions_io`` for the merged view and hands back one row at a time,
+# so a concurrent write from another stream (or another backend) in the same
+# project cannot lose this one's row.
 
 
-def _load_index(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _load_agent_index(agent_id: str) -> dict:
+    """Merged ``{key: row}`` for one project. Empty if it has no rows."""
+    return _session_index.read_session_index(agent_id)
 
 
-def _write_index(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _index_path(agent_id: str) -> Path:
-    return _xo_sessions_dir(agent_id) / "sessionslist.json"
-
-
-def _load_agent_index(agent_id: str) -> tuple[dict, Path]:
-    """Return (index_dict, path) for the agent's sessionslist.json in xo-projects."""
-    path = _index_path(agent_id)
-    # Fall back to legacy sessions.json so existing projects keep working.
-    if not path.exists():
-        legacy = _xo_sessions_dir(agent_id) / "sessions.json"
-        if legacy.exists():
-            return _load_index(legacy), legacy
-    return _load_index(path), path
+def _write_agent_row(agent_id: str, session_key: str, row: dict) -> bool:
+    """Publish one row. Returns False when the project folder is gone."""
+    return _session_index.write_session_row(agent_id, session_key, row)
 
 
 # ── Pure helpers ───────────────────────────────────────────────────────────────
@@ -77,7 +63,7 @@ def _agent_id_from_key(session_key: str) -> str:
 
 def find_session_id_by_key(session_key: str) -> str | None:
     agent_id = _agent_id_from_key(session_key)
-    index, _ = _load_agent_index(agent_id)
+    index = _load_agent_index(agent_id)
     meta = index.get(session_key)
     return meta.get("sessionId") if meta else None
 
@@ -87,7 +73,7 @@ def get_native_session_id(session_key: str) -> str | None:
     if cached:
         return cached
     agent_id = _agent_id_from_key(session_key)
-    index, _ = _load_agent_index(agent_id)
+    index = _load_agent_index(agent_id)
     meta = index.get(session_key)
     if meta:
         native = meta.get("nativeSessionId")
@@ -99,7 +85,7 @@ def get_native_session_id(session_key: str) -> str | None:
 
 def get_session_directory(session_key: str) -> str | None:
     agent_id = _agent_id_from_key(session_key)
-    index, _ = _load_agent_index(agent_id)
+    index = _load_agent_index(agent_id)
     meta = index.get(session_key)
     return meta.get("directory") if meta else None
 
@@ -120,11 +106,7 @@ def write_preliminary_entry(
     ``thread.started`` wire event and patched in via _patch_native_session_id.
     """
     agent_id = _agent_id_from_key(session_key)
-    sd = _xo_sessions_dir(agent_id)
-    sd.mkdir(parents=True, exist_ok=True)
-    index_path = sd / "sessionslist.json"
-    index = _load_index(index_path)
-    index[session_key] = {
+    row = {
         "sessionId": session_id,
         "nativeSessionId": native_session_id,
         "directory": cwd,
@@ -132,7 +114,7 @@ def write_preliminary_entry(
         "updatedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
         "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
     }
-    _write_index(index_path, index)
+    _write_agent_row(agent_id, session_key, row)
     if native_session_id:
         _native_map[session_key] = native_session_id
 
@@ -152,9 +134,8 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
     if not session_key or not native_sid:
         return False
     agent_id = _agent_id_from_key(session_key)
-    index, index_path = _load_agent_index(agent_id)
-    meta = index.get(session_key)
-    if not isinstance(meta, dict):
+    meta = dict(_load_agent_index(agent_id).get(session_key) or {})
+    if not meta:
         return False
     existing = meta.get("nativeSessionId") or ""
     if existing == native_sid:
@@ -166,7 +147,7 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
         return False
     meta["nativeSessionId"] = native_sid
     meta["updatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)
-    _write_index(index_path, index)
+    _write_agent_row(agent_id, session_key, meta)
     _native_map[session_key] = native_sid
     return True
 
@@ -174,25 +155,13 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
 def find_session_key_for_session_id(session_id: str) -> str | None:
     """Search xo-projects sessions for a matching session_id.
     (Verbatim from claude_code/adapter.py:177-198 — backend-agnostic.)"""
-    root = xo_projects_root()
-    if not root.exists():
-        return None
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
-            continue
-        sessions_base = entry / ".xo" / "sessions"
-        # Try new name first, then legacy
-        for fname in ("sessionslist.json", "sessions.json"):
-            index_path = sessions_base / fname
-            if not index_path.exists():
-                continue
-            index = _load_index(index_path)
-            for key, meta in index.items():
-                if isinstance(meta, dict) and meta.get("sessionId") == session_id:
-                    native = meta.get("nativeSessionId")
-                    if native:
-                        _native_map[key] = native
-                    return key
+    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+        for key, meta in index.items():
+            if meta.get("sessionId") == session_id:
+                native = meta.get("nativeSessionId")
+                if native:
+                    _native_map[key] = native
+                return key
     return None
 
 
@@ -529,9 +498,8 @@ class CodexAdapter(BaseAgentAdapter):
             # emitted thread.started (crashed before any event).
             if sk and native_session_id:
                 agent_id_for_key = _agent_id_from_key(sk)
-                index, index_path = _load_agent_index(agent_id_for_key)
-                meta = index.get(sk)
-                if isinstance(meta, dict):
+                meta = dict(_load_agent_index(agent_id_for_key).get(sk) or {})
+                if meta:
                     existing_usage = meta.get("usage") or {}
                     if not meta.get("nativeSessionId"):
                         meta["nativeSessionId"] = native_session_id
@@ -543,7 +511,7 @@ class CodexAdapter(BaseAgentAdapter):
                         "cache_creation_input_tokens": existing_usage.get("cache_creation_input_tokens", 0) + delta["cache_creation_input_tokens"],
                         "cache_read_input_tokens": existing_usage.get("cache_read_input_tokens", 0) + delta["cache_read_input_tokens"],
                     }
-                    _write_index(index_path, index)
+                    _write_agent_row(agent_id_for_key, sk, meta)
                 _native_map[sk] = native_session_id
 
         yield {"done": True, "native_session_id": native_session_id}

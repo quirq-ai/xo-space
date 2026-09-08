@@ -1,16 +1,34 @@
-"""``~/xo-projects/.xo/stats.json`` — workspace stats = sum of every
-project's ``stats.json``.
+"""``~/.quirq/workspace/stats.json`` — workspace stats = sum of every
+project's runtime ``stats.json``.
 
 Same schema as per-project ``stats.json``. Recomputed from per-
 project files each tick (no incremental state of its own).
+
+Runtime tier since T20: the file is a pure sum of files that are themselves
+machine-local, so R-TIER puts it beside them under ``~/.quirq/`` rather than
+in the synced ``<XO root>/.xo/``. Nothing migrates — the next tick rebuilds it
+from the per-project totals, and ``views.sweep_abandoned`` removes the copy
+left in the project root.
+
+**Write-on-change (T26).** One of the five once-per-tick workspace writers.
+Every input is a per-project ``stats.json``, and those sinks are event-gated,
+so an idle tick sums the same numbers and writes nothing. The document's
+``updated_at`` therefore stops tracking the tick — the heartbeat
+(``~/.quirq/watcher/heartbeat.json``, T22) is the liveness signal now.
+
+The per-project sink is nondeterministic in two ways syncplan §10 records
+(a random ``p95_sample`` reservoir, and ``rolling`` recomputed against
+``datetime.now()``); that does not leak here, because this module only ever
+sees what that sink actually committed to disk.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
-from services.cowork_agent.project_layout import workspace_xo_dir, xo_dir
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+from services.cowork_agent.project_layout import runtime_read_path, workspace_runtime_dir
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
 
@@ -24,6 +42,19 @@ _BY_DAY_MAX_ENTRIES = 35
 # unbiased enough for a workspace-tier estimate and avoids the
 # complexity of weighted reservoir merging.
 _LATENCY_RESERVOIR_CAP = 100
+
+
+# The payload this process last wrote, per target path — the write-on-change
+# baseline (syncplan §3: held in memory rather than re-read, and sound because
+# this sink owns the whole document). Keyed by path because
+# ``QUIRQ_STATE_ROOT`` is re-read on every call.
+_previous: dict[str, dict] = {}
+_PREVIOUS_MAX = 64
+
+
+def reset_caches() -> None:
+    """Drop the write-on-change baseline. For tests, and for a root switch."""
+    _previous.clear()
 
 
 def _now_iso() -> str:
@@ -126,15 +157,28 @@ def _trim_oldest(buckets: dict, *, max_entries: int) -> dict:
     return {k: buckets[k] for k in keep}
 
 
-def apply() -> bool:
-    """Recompute and write workspace ``stats.json``. Returns ``True``."""
+def apply(project_ids: Sequence[str] | None = None) -> bool:
+    """Recompute workspace ``stats.json``. Returns ``True`` iff it changed.
+
+    ``project_ids``: the tick-wide project list, resolved once by the
+    watcher (docs/syncplan.md §10, T23). ``None`` walks the root.
+
+    The write is skipped when nothing but ``updated_at`` moved (T26).
+    ``project_ids`` arrives sorted from ``list_project_ids()``, which is
+    what keeps the concatenated ``latency.p95_sample`` reservoirs in a
+    fixed order and stops a stable sum reading as a change.
+    """
     rolling = {"7d": _empty_window(), "30d": _empty_window()}
     by_session: dict[str, dict] = {}
     by_runtime: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
 
-    for pid in list_project_ids():
-        st = read_json(xo_dir(pid) / "stats.json")
+    for pid in (project_ids if project_ids is not None else list_project_ids()):
+        # Runtime tier since T19, with a read-through to the pre-move copy so
+        # a project that has not produced an event since the move still
+        # contributes its totals. ``None`` means the project folder is gone.
+        path = runtime_read_path(pid, "stats.json")
+        st = read_json(path) if path is not None else None
         if not isinstance(st, dict):
             continue
         r = st.get("rolling") or {}
@@ -174,5 +218,20 @@ def apply() -> bool:
         "by_runtime": by_runtime,
         "by_day": by_day,
     }
-    write_json_atomic(workspace_xo_dir() / "stats.json", payload)
-    return True
+    target = workspace_runtime_dir() / "stats.json"
+    key = str(target)
+    if key in _previous and target.exists():
+        # Steady state: one ``stat`` and a dict comparison, no read.
+        changed = write_json_atomic_if_changed(
+            target, payload, ("updated_at",), previous=_previous[key]
+        )
+    else:
+        # No baseline yet (first tick of the process), or the file was
+        # removed underneath us — ``rm -rf ~/.quirq`` is a documented clean
+        # reset (syncplan §4) and must repopulate on the next tick, not on
+        # the next content change. The helper takes its baseline from disk.
+        changed = write_json_atomic_if_changed(target, payload, ("updated_at",))
+    if key not in _previous and len(_previous) >= _PREVIOUS_MAX:
+        _previous.clear()
+    _previous[key] = payload
+    return changed

@@ -7,6 +7,7 @@ import asyncio
 import os
 import json
 import datetime
+import logging
 import subprocess
 import sys
 import uuid
@@ -601,6 +602,42 @@ def _write_install_pointer() -> None:
         print(f"⚠️ Could not write install pointer (non-fatal): {e}")
 
 
+_lifespan_logger = logging.getLogger("xo_space.lifespan")
+
+
+def _report_watcher_task_exit(task: "asyncio.Task") -> None:
+    """Surface a watcher task that died, instead of losing it to the GC.
+
+    ``asyncio.create_task`` holds a failure inside the task object: with
+    no done-callback a construction error (or anything that escapes the
+    run loop) only ever appears as a GC-time "Task exception was never
+    retrieved", long after the fact and with no context.
+
+    Cancellation is normal shutdown — ``Watcher.run`` re-raises it
+    deliberately — so it is not reported. This runs on the event loop
+    and must never raise, so every path is guarded.
+    """
+    try:
+        if task.cancelled():
+            return
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:  # pragma: no cover - defensive; a callback may not raise
+        return
+    try:
+        if error is None:
+            _lifespan_logger.warning(
+                "Watcher task exited on its own; no further ticks will run"
+            )
+        else:
+            _lifespan_logger.error(
+                "Watcher task died (non-fatal): %r", error, exc_info=error
+            )
+    except Exception:  # pragma: no cover - logging must not break shutdown
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -718,6 +755,18 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
 
+    # One-time tier migration (docs/syncplan.md §9, T21). Runs HERE — before
+    # the watcher task exists and before the app yields, so no sink and no
+    # request handler can be writing the paths it moves. Idempotent and inert
+    # on an already-migrated machine; never fatal.
+    try:
+        from services.cowork_agent.visualizer.migrate import migrate_runtime_layout
+        _migrated = migrate_runtime_layout()
+        if _migrated:
+            print(f"   Tier migration: updated {_migrated} project(s)")
+    except Exception as e:
+        print(f"⚠️ Tier migration skipped (non-fatal): {e}")
+
     # Visualizer watcher — materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
@@ -729,6 +778,7 @@ async def lifespan(app: FastAPI):
         try:
             from services.cowork_agent.visualizer.watcher import start_watcher
             _watcher_task = asyncio.create_task(start_watcher())
+            _watcher_task.add_done_callback(_report_watcher_task_exit)
             print("   Watcher: background task started")
         except Exception as e:
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")

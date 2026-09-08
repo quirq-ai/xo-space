@@ -1,9 +1,19 @@
 """Advisory file lock helper, used for files written by both the
 watcher and the BFF API endpoints.
 
-Today only ``.xo/todos.json`` has two writers (the todos sink AND
-the agent-facing todos POST/PATCH/DELETE endpoints). Every other
-``.xo/`` file is single-writer.
+Two files need it today, for two different reasons:
+
+* ``sessions/sessions-augment.json`` — genuinely two writers. The
+  watcher tick writes the message / tool counters; the todos API writes
+  the ``taskCount`` ones, on a request thread, now that it is the
+  source of todo lifecycle events (syncplan §7, T7).
+* ``.xo/todos.json`` — one writer, many callers. The watcher's todo
+  sink is gone (T8), so the agent-facing ``POST/PATCH/DELETE /todos``
+  endpoints own the file outright; but two concurrent requests (the
+  FastAPI thread pool, or a second uvicorn worker) are still two
+  read-modify-writes racing for the same document.
+
+Every other ``.xo/`` file is single-writer.
 
 POSIX ``fcntl.flock`` with ``LOCK_EX``. Bounded wait so a wedged
 watcher can never block a user-facing API call indefinitely — the
@@ -75,7 +85,10 @@ def locked(path: Path) -> Iterator[None]:
     :data:`_DEADLINE_S` seconds the context yields anyway (logged
     WARN) — the watcher and the API are both designed for
     non-destructive read-modify-write so the worst case is a single
-    lost update that the next tick / call recovers.
+    lost update that the next tick / call recovers. (For the counters
+    that is literally true — the next event re-derives them; for
+    ``todos.json`` the loss would be one API call's edit, which is why
+    the deadline is generous relative to a write that takes microseconds.)
 
     The lock is released by the kernel on fd close (i.e. on context
     exit), so a crash mid-block can't wedge the file.

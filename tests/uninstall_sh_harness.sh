@@ -36,6 +36,11 @@ make_install() {  # $1 = workspace dir
     echo "PORT=59999" > "$1/xo-space/.env"
     echo keep > "$1/projectA/notes.md"
     echo state > "$1/.quirq/state.json"
+    # The workspace .xo is DURABLE since the tier split (syncplan §9, T21):
+    # space.json and projects.json are records, not watcher output. Every
+    # derived view lives under .quirq now.
+    echo '{"schema":2,"space_id":"s1"}' > "$1/.xo/space.json"
+    echo '{"schema":2,"projects":[]}'   > "$1/.xo/projects.json"
 }
 
 # ---- 1. resolve_repo_dir ---------------------------------------------------
@@ -133,10 +138,14 @@ full="$( cd "$W/ws5" && HOME="$W/home5" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp5"
 state5="$([ -d "$W/ws5/projectA" ] && echo projects || echo lost)"
 state5="$state5|$([ -e "$W/ws5/xo-space" ] && echo checkout || echo nocheckout)"
 state5="$state5|$([ -e "$W/ws5/.quirq" ] && echo quirq || echo noquirq)"
-state5="$state5|$([ -e "$W/ws5/.xo" ] && echo xo || echo noxo)"
+state5="$state5|$([ -f "$W/ws5/.xo/space.json" ] && echo records || echo lostrecords)"
 state5="$state5|$([ -e "$W/home5/.argus" ] && echo argus || echo noargus)"
-check "full run: projects kept; checkout, .quirq, .xo, ~/.argus removed" \
-      "$state5" "projects|nocheckout|noquirq|noxo|noargus"
+# The .xo assertion is the T21 fix: uninstall.sh used to rm -rf the workspace
+# .xo as "watcher output". It now holds space.json and projects.json — durable
+# records describing the projects this run deliberately keeps — so deleting it
+# destroyed data an uninstall promised to leave alone.
+check "full run: projects and Space records kept; checkout, .quirq, ~/.argus removed" \
+      "$state5" "projects|nocheckout|noquirq|records|noargus"
 
 cp "$SRC" "$W/ws5/uninstall-copy.sh"
 again="$( cd "$W/ws5" && HOME="$W/home5" QUIRQ_DAEMON_TMPDIR="$W/tmp5" bash ./uninstall-copy.sh --yes >/dev/null 2>&1 && echo ok || echo err )"

@@ -12,18 +12,53 @@ on the first tick where the project is discovered) this sink:
 * sets ``created_at`` to the current ISO timestamp
 * removes ``_template`` so subsequent ticks no-op
 
+It **owns exactly those five keys plus the removal of ``_template``**
+(see docs/syncplan.md §5.1). Every other key in the document —
+``display_name``/``description`` written by
+``project_layout._upsert_metadata``, ``git`` written by the git
+refresher, a manually curated ``category``, anything a future writer
+adds — is carried forward untouched. Writing a fresh literal here
+instead of merging destroyed those keys on every tick, for every
+project. The merge is delegated to
+:func:`~services.cowork_agent.visualizer.atomic_write.write_json_owned`
+so the ownership set is declared once, in one place, rather than
+re-implemented by hand.
+
 Idempotent. Runs to completion or no-ops; never partially writes.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+from services.cowork_agent.visualizer.atomic_write import (
+    CorruptDocumentError,
+    write_json_owned,
+)
 from services.cowork_agent.visualizer.reader import read_json
+
+logger = logging.getLogger(__name__)
+
+# The keys this sink owns (docs/syncplan.md §5.1). ``_template`` is owned
+# and never supplied in ``values``: under ``write_json_owned`` an owned key
+# that is omitted is *deleted*, which is how the template marker is dropped.
+_OWNS: frozenset[str] = frozenset(
+    {"schema", "pid", "name", "owner_user_id", "created_at", "_template"}
+)
+
+# Record schema version minted for a document that carries none. An existing
+# ``schema`` is carried forward, never rewritten: a v1 document is
+# structurally a valid v2 document (v2 only *declares* keys that were
+# already being written), and silently renumbering someone else's record is
+# not this sink's call to make.
+_SCHEMA_VERSION = 2
+
+# Paths already reported as unreadable, so a corrupt document doesn't emit a
+# warning on every tick (the watcher polls once a second by default).
+_UNREADABLE_WARNED: set[str] = set()
 
 
 def _now_iso() -> str:
@@ -44,6 +79,18 @@ def _resolve_user_id() -> str:
         return "local"
 
 
+def _warn_unreadable_once(path: Path) -> None:
+    key = str(path)
+    if key in _UNREADABLE_WARNED:
+        return
+    _UNREADABLE_WARNED.add(key)
+    logger.warning(
+        "project.json at %s exists but is unreadable; refusing to mint a new "
+        "pid over it. Repair or delete the file to let identity fill run.",
+        path,
+    )
+
+
 def fill_identity(xo_dir: Path, project_id: str) -> bool:
     """Run the one-shot identity fill if needed.
 
@@ -58,18 +105,44 @@ def fill_identity(xo_dir: Path, project_id: str) -> bool:
         return False
 
     path = xo_dir / "project.json"
-    current = read_json(path) or {}
+    current = read_json(path)
+
+    if not isinstance(current, dict):
+        # ``read_json`` returns ``None`` both for "file absent" and for
+        # "file present but unparseable" — and they are not the same thing.
+        # Absent is safe to mint into. Present-but-unreadable is not: the
+        # file may still hold a ``pid``, and the schema promises it is
+        # "generated once on first boot, never regenerated"
+        # (project.schema.json:14). Minting over it silently rewrites the
+        # project's identity, so leave the file alone and no-op instead.
+        if path.exists():
+            _warn_unreadable_once(path)
+            return False
+        current = {}
 
     if not current.get("_template", False) and current.get("pid"):
         # Already filled — no-op.
         return False
 
-    new = {
-        "schema":        1,
-        "pid":           current.get("pid") or str(uuid.uuid4()),
-        "name":          current.get("name") or project_id,
+    # Key-scoped merge (rule R-WRITE): ``or``-default only the five keys
+    # this sink owns and let ``write_json_owned`` carry every other key
+    # forward. ``_template`` is declared owned but never supplied, which is
+    # how an owned key gets deleted — the one key deliberately dropped.
+    values = {
+        "schema": current.get("schema") or _SCHEMA_VERSION,
+        "pid": current.get("pid") or str(uuid.uuid4()),
+        "name": current.get("name") or project_id,
         "owner_user_id": current.get("owner_user_id") or _resolve_user_id(),
-        "created_at":    current.get("created_at") or _now_iso(),
+        "created_at": current.get("created_at") or _now_iso(),
     }
-    write_json_atomic(path, new)
-    return True
+
+    try:
+        # ``volatile=()``: nothing in this document is a per-tick timestamp,
+        # so every difference is a real change.
+        return write_json_owned(path, owns=_OWNS, values=values, volatile=())
+    except CorruptDocumentError:
+        # The file parsed a moment ago and does not now — another writer, or
+        # a truncation, landed in between. Same refusal as above: never mint
+        # a pid over a document that may still hold one.
+        _warn_unreadable_once(path)
+        return False

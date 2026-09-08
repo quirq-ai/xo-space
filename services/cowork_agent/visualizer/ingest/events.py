@@ -200,8 +200,14 @@ class TaskCreated(Event):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TaskStatusChanged(Event):
-    """A ``TaskUpdate`` tool_use. ``status`` ∈ {``pending``,
-    ``in_progress``, ``completed``, ``cancelled``, ``blocked``}.
+    """A ``TaskUpdate`` tool_use.
+
+    ``status`` is the raw tool input, copied verbatim and NOT
+    validated here — a runtime may emit anything. Consumers filter
+    against
+    :data:`~services.cowork_agent.visualizer.todo_status.VALID_TODO_STATUSES`
+    (see ``sinks/sessions_augment.py``), which is the one definition
+    of the vocabulary.
     """
 
     task_id: str

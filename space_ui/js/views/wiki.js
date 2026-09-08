@@ -900,10 +900,10 @@ function installationArticle(){
             <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
             <tbody>
               <tr><td>.</td><td>Your projects root; each project is a subdirectory with its own portable .xo metadata</td></tr>
-              <tr><td>./.xo</td><td>The workspace tier the watcher materialises: space.json, dashboard.json and sessions.json — the three payloads the UI reads over /xo/*.json — plus workspace.json, stats, the sessions/ unions and the workspace timeline. Live presence is not here: it lives under ./.quirq/watcher/activity/</td></tr>
+              <tr><td>./.xo</td><td>The Space tier, and only the durable half of it: space.json (the Space record), projects.json (the projects registry) and xo.json (the frontend manifest). Every derived rollup — the graph, dashboard and sessions payloads the UI reads over /xo/*.json, plus workspace stats, the sessions/ unions and the workspace timeline — is under ./.quirq/workspace/. Live presence is under ./.quirq/watcher/activity/</td></tr>
               <tr><td>./xo-space</td><td>The Quirq source checkout the installer owns and updates</td></tr>
               <tr><td>./xo-space/venv</td><td>The Python environment</td></tr>
-              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, and watcher/ with its offsets, locks and live-presence snapshots</td></tr>
+              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, watcher/ with its offsets, locks and live-presence snapshots, and the runtime tier — projects/&lt;pid&gt;/ per project and workspace/ for the cross-project rollups. All of it is re-derivable; none of it syncs</td></tr>
             </tbody>
           </table>
         </div>
@@ -1088,11 +1088,11 @@ function watcherArticle(){
           <table class="wiki-table">
             <thead><tr><th>Observation</th><th>Retained data</th><th>Destinations</th></tr></thead>
             <tbody>
-              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project, the runtime-reported working directory</td><td>session augment, todos session bucket, stats timing, timeline</td></tr>
+              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project, the runtime-reported working directory</td><td>session augment, stats timing, timeline</td></tr>
               <tr><td>MessageObserved</td><td>role, time and (for assistant turns) the model; no message text</td><td>message counters, daily message buckets, per-role session counters</td></tr>
               <tr><td>UsageObserved</td><td>input/output/cache tokens, model, optional response latency</td><td>stats, per-model rollups, in-memory presence model cache</td></tr>
               <tr><td>ToolUseObserved</td><td>tool name only; no arguments</td><td>tool call counters and per-tool analytics</td></tr>
-              <tr><td>TaskCreated / changed</td><td>id, content, description, active form, status</td><td>todos, task counters, added/completed timeline events</td></tr>
+              <tr><td>TaskCreated / changed</td><td>id, content, description, active form, status</td><td>task counters and todo timeline events. <b>Emitted by the todo API, not by ingestion</b> — every runtime produces them</td></tr>
               <tr><td>FileTouched</td><td>project-relative path and created/edited flag</td><td>unique-file stats and file timeline events</td></tr>
             </tbody>
           </table>
@@ -1105,8 +1105,8 @@ function watcherArticle(){
           <table class="wiki-table wiki-matrix">
             <thead><tr><th>Runtime</th><th>Messages</th><th>Tokens</th><th>Tools</th><th>Files</th><th>Tasks</th><th>Presence</th></tr></thead>
             <tbody>
-              <tr><td>Claude Code</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>native task pairing</td><td>PID session files</td></tr>
-              <tr><td>Codex</td><td>yes</td><td>yes</td><td>name only</td><td>applied patches</td><td>not yet</td><td>not yet</td></tr>
+              <tr><td>Claude Code</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>todo API</td><td>PID session files</td></tr>
+              <tr><td>Codex</td><td>yes</td><td>yes</td><td>name only</td><td>applied patches</td><td>todo API</td><td>not yet</td></tr>
               <tr><td>OpenClaw</td><td>yes</td><td>yes</td><td>yes</td><td>not yet</td><td>todo API</td><td>not yet</td></tr>
               <tr><td>Hermes</td><td>yes</td><td>not exposed</td><td>yes</td><td>not yet</td><td>todo API</td><td>not available</td></tr>
               <tr><td>Antigravity</td><td>yes</td><td>separate usage capability</td><td>yes</td><td>supported write tools</td><td>todo API</td><td>short-lived process</td></tr>
@@ -1115,19 +1115,30 @@ function watcherArticle(){
         </div>
         <p class="wiki-note">An empty value is preferable to invented telemetry.
         Pages and flows should display “not available” separately from a real
-        numeric zero.</p>
+        numeric zero. <b>Tasks are the one column that is identical for every
+        runtime</b>, and deliberately so: they come from the todo API rather
+        than from a transcript. The sink that used to mirror one runtime's
+        native task tool is gone — it made todos work on one backend out of
+        five and gave the file a second, colliding id space. An agent whose
+        runtime has a native todo tool must still call the API; nothing else
+        reaches <code>todos.json</code>.</p>
       </section>
 
       <section class="wiki-section wiki-grid">
         <div>
           <h2>Atomicity and coordination</h2>
           <p>JSON snapshots are written to a temporary sibling, flushed, and
-          replaced. Timelines append complete JSON lines. Because both the
-          watcher and todo API can update <code>todos.json</code>, they share
-          advisory locks under <code>&lt;state root&gt;/watcher/locks/</code> —
-          <code>~/.quirq/watcher/locks/</code> unless
+          replaced. Timelines append complete JSON lines. Two documents take
+          an advisory lock under <code>&lt;state root&gt;/watcher/locks/</code>
+          — <code>~/.quirq/watcher/locks/</code> unless
           <code>QUIRQ_STATE_ROOT</code> moves it, which the native installer
-          does.</p>
+          does. <code>sessions-augment.json</code> genuinely has two writers,
+          the watcher tick and the todo API's counter update.
+          <code>todos.json</code> has one writer and many callers: the API
+          owns the file outright, but two concurrent requests are still two
+          read-modify-writes. Everything else is single-writer, and the
+          session index avoids the question entirely by giving each session
+          its own shard file.</p>
         </div>
         <div>
           <h2>Turning it off</h2>
@@ -1152,8 +1163,11 @@ function watcherArticle(){
 
       <aside class="wiki-callout">
         <b>Ownership rule</b>
-        <p>Agents do not edit watcher files. Use native task tools or the todo
-        API for mutations, and use the visualizer APIs for reads.</p>
+        <p>Agents do not edit service files. The todo API is the only write
+        path for todos — for every runtime, native task tool or not — and the
+        visualizer APIs are the only read path. A todo recorded solely in a
+        runtime's own task tool reaches nothing here: no file, no timeline
+        line, no counter, and no error to say so.</p>
       </aside>
     </article>`;
 }
@@ -1164,13 +1178,21 @@ function xoDataArticle(){
       <header class="wiki-hero">
         <div class="wiki-kicker">Data catalog · Portable metadata</div>
         <h1>Everything in <code>.xo</code></h1>
-        <p>There are two tiers: one <code>.xo</code> inside each project and
-        one at the projects root. The project tier describes one body of work;
-        the workspace tier is a materialized cross-project view.</p>
+        <p>There are two <code>.xo</code> tiers — one inside each project, one
+        at the projects root — and both are now deliberately small. The rule
+        that decides what stays is a single question: <b>would a copy of this
+        folder on another machine want the file?</b> Identity, todos and the
+        peer roster would. Statistics, the session index, the event timeline
+        and sync progress would not — they are re-derivable from this
+        machine's runtime logs, so they moved out of the project tree entirely
+        and live under <code>~/.quirq/</code>. That is a filesystem
+        invariant rather than a <code>.gitignore</code> policy: derived state
+        cannot be committed, tarred or leaked, because it is not in the tree.</p>
         <div class="wiki-facts">
           <span>service-owned</span>
           <span>project tier</span>
           <span>workspace tier</span>
+          <span>durable, not derived</span>
           <span>not a transcript store</span>
         </div>
       </header>
@@ -1200,49 +1222,17 @@ function xoDataArticle(){
           </article>
 
           <article class="wiki-file">
-            <header><code>sessions/sessionslist.json</code><span>adapter-owned</span></header>
-            <p>A flat map keyed by a composite cowork session key. Each row
-            carries <code>sessionId</code>, <code>nativeSessionId</code>,
-            absolute <code>directory</code>, <code>backend</code>,
-            <code>updatedAt</code>, and optional cumulative token/cost usage.</p>
-            <dl><div><dt>Used for</dt><dd>session discovery, resume lookup, usage summaries, mapping runtime logs to projects</dd></div><div><dt>API safety</dt><dd>the absolute directory is not exposed by visualizer presenters</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>sessions/sessions-augment.json</code><span>watcher-owned</span></header>
-            <p>Fields the adapter index does not own: message totals and
-            role split, tool calls, task counts by status, first/last
-            activity, <code>ended_at</code>, and episodic memory references.
-            A private <code>_task_states</code> map preserves correct task
-            transitions across restarts.</p>
-            <dl><div><dt>Join key</dt><dd>the same composite key as sessionslist whenever available</dd></div><div><dt>Read behavior</dt><dd>BFF merges base and augment rows; unmatched augment rows are dropped</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>todos.json</code><span>watcher + todo API</span></header>
+            <header><code>todos.json</code><span>todo API · sole writer</span></header>
             <p>Session buckets containing runtime, optional native source
             path, session start time, and todos. Todo fields include id,
-            content, status, optional description, and optional active form.</p>
-            <dl><div><dt>Status values</dt><dd>pending, in_progress, completed, cancelled, blocked</dd></div><div><dt>API safety</dt><dd>source_file is always returned as null</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>stats.json</code><span>watcher-owned</span></header>
-            <p>Rolling 7-day and 30-day totals plus
-            <code>by_session</code>, <code>by_runtime</code>, and up to about
-            35 UTC days in <code>by_day</code>. Tracks tokens, models, tool
-            counts, files, durations, messages, cache tokens, and bounded
-            response-latency samples when the runtime provides them.</p>
-            <dl><div><dt>Private fields</dt><dd>_session_totals and _by_day_totals make incremental updates restart-safe</dd></div><div><dt>API safety</dt><dd>presenters project only named public fields</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>timeline.jsonl</code><span>watcher-owned</span></header>
-            <p>Append-only, one JSON object per line. Current watcher events
-            include session started, todo added/completed, and file
-            created/edited. Each record has time, type, session id, runtime,
-            and event-specific safe fields.</p>
-            <dl><div><dt>Retention</dt><dd>rotates at 8 MB; keeps five timestamped project rotations</dd></div><div><dt>Read pattern</dt><dd>newest-first API pagination with optional type filters</dd></div></dl>
+            content, status, optional description, optional active form,
+            created/updated timestamps, and a <code>deleted_at</code>
+            tombstone. <b>Every runtime writes here through
+            <code>POST/PATCH/DELETE /api/xo-projects/{id}/todos</code></b>,
+            including runtimes with a native task tool of their own: the sink
+            that used to mirror one runtime's tasks is gone, so a todo that
+            never reaches this API is invisible everywhere.</p>
+            <dl><div><dt>Status values</dt><dd>pending, in_progress, completed, cancelled, blocked</dd></div><div><dt>Deletion</dt><dd>a tombstone, never a removal — <code>?include_deleted=true</code> to see them; <code>cancelled</code> is a lifecycle outcome, not a delete</dd></div><div><dt>API safety</dt><dd>source_file is always returned as null</dd></div></dl>
           </article>
 
           <article class="wiki-file">
@@ -1253,28 +1243,100 @@ function xoDataArticle(){
             <dl><div><dt>Not derived from</dt><dd>runtime logs</dd></div><div><dt>Do not</dt><dd>invent peers from open sessions</dd></div></dl>
           </article>
 
+        </div>
+        <p class="wiki-note">Four documents used to sit in this list and no
+        longer do — the session index, the session augment file,
+        <code>stats.json</code> and <code>timeline.jsonl</code>. They are
+        derived, so they moved to the runtime tier below. A fifth,
+        <code>sync.json</code>, went with them: “what have I pushed to peer X”
+        is a fact about this machine, not about the project.</p>
+      </section>
+
+      <section class="wiki-section">
+        <h2>Project runtime tier · <code>~/.quirq/projects/&lt;pid&gt;/</code></h2>
+        <p>Keyed by the <code>pid</code> in the project's
+        <code>project.json</code>, not by folder name — so renaming a folder
+        keeps its history, and two folders can never collide. Nothing here is
+        authored: every file is recomputed from this machine's runtime logs,
+        which is exactly why it never syncs and why one
+        <code>rm -rf ~/.quirq</code> is a clean reset rather than data loss.
+        Read these through the APIs; the paths are machine-local and the
+        session index is sharded.</p>
+        <div class="wiki-file-list">
+          <article class="wiki-file">
+            <header><code>sessions/sessionslist.d/</code><span>adapter-owned</span></header>
+            <p>The session index, partitioned: <b>one shard file per
+            session</b>, named by a digest of the composite session key and
+            published with an atomic rename. Each row carries
+            <code>sessionId</code>, <code>nativeSessionId</code>, absolute
+            <code>directory</code>, <code>backend</code>,
+            <code>updatedAt</code>, and optional cumulative token/cost usage.
+            It is one file per session because it had fifteen writers and no
+            lock: partitioning removes the lost update a lock could only
+            bound.</p>
+            <dl><div><dt>Used for</dt><dd>session discovery, resume lookup, usage summaries, mapping runtime logs to projects</dd></div><div><dt>Read behavior</dt><dd>readers merge every shard in name order; a malformed shard is skipped, not fatal</dd></div><div><dt>API safety</dt><dd>the absolute directory is not exposed by visualizer presenters</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>sessions/sessions-augment.json</code><span>watcher-owned</span></header>
+            <p>Fields the adapter index does not own: message totals and
+            role split, tool calls, task counts by status, first/last
+            activity, <code>ended_at</code>, and episodic memory references.
+            A private <code>_task_states</code> map preserves correct task
+            transitions across restarts.</p>
+            <dl><div><dt>Join key</dt><dd>the same composite key as the shards whenever available</dd></div><div><dt>Read behavior</dt><dd>BFF merges base and augment rows; unmatched augment rows are dropped</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>stats.json</code><span>watcher-owned</span></header>
+            <p>Rolling 7-day and 30-day totals plus
+            <code>by_session</code>, <code>by_runtime</code>, and up to about
+            35 UTC days in <code>by_day</code>. Tracks tokens, models, tool
+            counts, files, durations, messages, cache tokens, and bounded
+            response-latency samples when the runtime provides them.</p>
+            <dl><div><dt>Private fields</dt><dd>_session_totals and _by_day_totals make incremental updates restart-safe</dd></div><div><dt>Why runtime</dt><dd>it accumulates against a replay cursor, and an accumulator that outlives its cursor double-counts — so both share one root</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>timeline.jsonl</code><span>watcher-owned</span></header>
+            <p>Append-only, one JSON object per line. Current events are
+            session started, todo added/completed, and file created/edited.
+            Each record has time, type, session id, runtime, and
+            event-specific safe fields. The <code>todo.*</code> lines come
+            from the todo API, so they appear for every backend.</p>
+            <dl><div><dt>Retention</dt><dd>rotates at 8 MB; keeps five timestamped project rotations</dd></div><div><dt>Read pattern</dt><dd>newest-first API pagination with optional type filters</dd></div></dl>
+          </article>
+
           <article class="wiki-file">
             <header><code>sync.json</code><span>schema-defined · reserved</span></header>
             <p>Per-peer synchronization state: vector clock, manifest hash,
             last pull/push timestamps, pending outbox count, and overall last
-            sync time. Both peers.json and sync.json are scaffolded empty from
-            the project template today; their shapes are fixed by the bundled
-            schemas, and no service in this build writes them yet.</p>
+            sync time. Its shape is fixed by a bundled schema, and no service
+            in this build writes it yet — the project's
+            <code>peers.json</code> is the scaffolded half of the same pair.</p>
             <dl><div><dt>Used for</dt><dd>conflict-aware project synchronization</dd></div><div><dt>Not activity</dt><dd>it describes replication progress, not current presence</dd></div></dl>
           </article>
         </div>
       </section>
 
       <section class="wiki-section">
-        <h2>Workspace tier · <code>&lt;XO root&gt;/.xo/</code></h2>
+        <h2>Workspace tier · <code>&lt;XO root&gt;/.xo/</code> and
+        <code>~/.quirq/workspace/</code></h2>
         <p>Space reads its data from here, not from the application folder.
-        <code>space.json</code>, <code>dashboard.json</code> and
-        <code>sessions.json</code> are served one for one at
-        <code>GET /xo/space.json</code>, <code>/xo/dashboard.json</code> and
-        <code>/xo/sessions.json</code> — an explicit allowlist rather than a
-        static mount, because this directory also holds the capability
-        manifest, the session index and the workspace timeline. The older
-        <code>/space/data/</code> routes for these three are gone.</p>
+        The same durable/derived split as the project tier applies: three
+        <b>records</b> stay in <code>&lt;XO root&gt;/.xo/</code>, and every
+        <b>rollup</b> the watcher recomputes from a walk of the projects root
+        moved to <code>~/.quirq/workspace/</code>. That move is also what
+        makes the rollups' two unlocked writers — the watcher tick and a
+        request thread rebuilding a stale view — harmless: the worst a lost
+        update can cost is one rebuild.</p>
+        <p><code>GET /xo/space.json</code>, <code>/xo/dashboard.json</code>
+        and <code>/xo/sessions.json</code> are an explicit allowlist rather
+        than a static mount, and all three now read from the runtime half —
+        <code>/xo/space.json</code> serves
+        <code>~/.quirq/workspace/graph.json</code>, so the URL is a name, not
+        a path. The older <code>/space/data/</code> routes for these three are
+        gone.</p>
         <p class="wiki-note">Two numbers govern freshness. The watcher rebuilds
         the three files at most every <code>XO_VIEWS_REFRESH_S</code>
         (default 30s), because the build walks every mapped file in the
@@ -1285,17 +1347,18 @@ function xoDataArticle(){
         them.</p>
         <div class="wiki-table-wrap">
           <table class="wiki-table">
-            <thead><tr><th>File</th><th>What it contains</th><th>How it is produced</th></tr></thead>
+            <thead><tr><th>File</th><th>Where</th><th>What it contains</th><th>How it is produced</th></tr></thead>
             <tbody>
-              <tr><td><code>space.json</code></td><td>The workspace graph the Graph, Tree and Files List read: projects, folders, files, derived ties, git history.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on-demand when a request finds it stale</td></tr>
-              <tr><td><code>dashboard.json</code></td><td>The same scan collapsed into five purpose environments.</td><td>same tick as space.json — one scan feeds both</td></tr>
-              <tr><td><code>sessions.json</code></td><td>Session telemetry merged across every runtime that reports it.</td><td>same tick</td></tr>
-              <tr><td><code>workspace.json</code></td><td>Workspace identity only: schema, update time, the projects root, and the discovered project ids. The derived views sit beside it in their own files — <code>space.json</code>, <code>dashboard.json</code>, <code>sessions.json</code> — so a reader that wants session telemetry does not parse the graph to get it.</td><td>rewritten by the watcher on every tick; cheap (small JSON, one iterdir of the workspace root)</td></tr>
-              <tr><td><code>sessions/sessionslist.json</code></td><td>union of every project’s adapter session rows</td><td>rebuilt every tick</td></tr>
-              <tr><td><code>sessions/sessions-augment.json</code></td><td>union of watcher session enrichments</td><td>rebuilt every tick</td></tr>
-              <tr><td><code>stats.json</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
-              <tr><td><code>timeline.jsonl</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
-              <tr><td><code>xo.json</code></td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
+              <tr><td><code>space.json</code></td><td>.xo</td><td>The Space record: the captured Space id, its label, the two roots, and the agent backends attached to it. Not the graph — the graph it used to hold is derived state and moved to <code>~/.quirq/workspace/graph.json</code>, where <code>GET /xo/space.json</code> still reads it.</td><td>one writer, at most every XO_SPACE_REFRESH_S (60s) and only when something changes</td></tr>
+              <tr><td><code>graph.json</code></td><td><code>~/.quirq/workspace</code></td><td>The workspace graph the Graph, Tree and Files List read: projects, folders, files, derived ties, git history. Served at <code>GET /xo/space.json</code>.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on demand when a request finds it stale</td></tr>
+              <tr><td><code>dashboard.json</code></td><td><code>~/.quirq/workspace</code></td><td>The same scan as the graph, collapsed into five purpose environments.</td><td>same tick as the graph — one scan feeds both</td></tr>
+              <tr><td><code>sessions.json</code></td><td><code>~/.quirq/workspace</code></td><td>Session telemetry merged across every runtime that reports it.</td><td>same tick</td></tr>
+              <tr><td><code>projects.json</code></td><td>.xo</td><td>The projects registry: every project directory the watcher discovered, keyed by directory name, each with its <code>pid</code>, whether it is scaffolded, and its git origin. <code>by_pid</code> is a derived reverse index in the same file; its values are always arrays, so a pid that appears in two folders raises an alarm instead of losing one of them.</td><td>rebuilt every tick and written only when it changes; git origins refresh at most every XO_GIT_PROVENANCE_REFRESH_S (300s)</td></tr>
+              <tr><td><code>sessions/sessionslist.json</code></td><td><code>~/.quirq/workspace</code></td><td>union of every project’s adapter session rows</td><td>rebuilt every tick</td></tr>
+              <tr><td><code>sessions/sessions-augment.json</code></td><td><code>~/.quirq/workspace</code></td><td>union of watcher session enrichments</td><td>rebuilt every tick</td></tr>
+              <tr><td><code>stats.json</code></td><td><code>~/.quirq/workspace</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
+              <tr><td><code>timeline.jsonl</code></td><td><code>~/.quirq/workspace</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
+              <tr><td><code>xo.json</code></td><td>.xo</td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
             </tbody>
           </table>
         </div>
@@ -1304,10 +1367,10 @@ function xoDataArticle(){
       <section class="wiki-section wiki-grid">
         <div>
           <h2>Legacy compatibility</h2>
-          <p>Some session readers accept the former
-          <code>sessions/sessions.json</code> index when
-          <code>sessionslist.json</code> is absent. New writes target
-          <code>sessionslist.json</code>. Project and workspace
+          <p>Pre-move projects keep working: readers fall back to the old
+          <code>&lt;project&gt;/.xo/</code> location for the files that left it,
+          and to the former <code>sessions/sessions.json</code> index, but
+          every <b>write</b> goes to the new one. Project and workspace
           <code>.xo/activity.json</code> files are no longer scaffolded or
           written; live presence lives under
           <code>~/.quirq/watcher/activity/</code>. A leftover copy is detected,
@@ -1340,7 +1403,12 @@ function quirqDataArticle(){
         <h1>Everything in <code>~/.quirq</code></h1>
         <p>This directory helps one Quirq installation operate safely and
         resume efficiently. It is not project memory and is never a source for
-        backup, collaboration, or cross-machine history.</p>
+        backup, collaboration, or cross-machine history. It also holds the
+        <b>runtime tier</b>: every statistic, session index and event log the
+        services derive from this machine's runtime logs. Those are here and
+        not in <code>.xo/</code> because an accumulator and the replay cursor
+        that protects it must share a root — split them and a restore replays
+        history the totals already counted.</p>
         <div class="wiki-facts">
           <span>local only</span>
           <span>contains secrets</span>
@@ -1357,8 +1425,21 @@ function quirqDataArticle(){
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
+├── projects/
+│   └── &lt;pid&gt;/                # per-project runtime tier, keyed by project.json:pid
+│       ├── stats.json
+│       ├── timeline.jsonl      # rotated: timeline.&lt;stamp&gt;.jsonl, five kept
+│       ├── sync.json           # reserved; no writer yet
+│       └── sessions/
+│           ├── sessionslist.d/ # one shard file per session
+│           └── sessions-augment.json
+├── workspace/                  # the derived cross-project rollups
+│   ├── graph.json              # served at GET /xo/space.json
+│   ├── dashboard.json  sessions.json  stats.json  timeline.jsonl
+│   └── sessions/{sessionslist,sessions-augment}.json
 └── watcher/
     ├── offsets.json
+    ├── heartbeat.json            # liveness beat, rewritten every tick
     ├── hermes-offsets.json       # only when the Hermes source is watched
     ├── locks/
     │   └── todos.json.&lt;hash&gt;.lock
@@ -1366,6 +1447,11 @@ function quirqDataArticle(){
         ├── projects/
         │   └── &lt;project-id&gt;.json
         └── workspace.json</pre>
+        <p class="wiki-note">One <code>rm -rf ~/.quirq</code> is a clean total
+        reset: everything under it is re-derivable, and nothing under it is
+        the only copy of anything. That property is the whole point of the
+        split, and it is why the replay cursors live in the same root as the
+        totals they protect.</p>
       </section>
 
       <section class="wiki-section">
@@ -1439,10 +1525,13 @@ function quirqDataArticle(){
 
           <article class="wiki-file">
             <header><code>watcher/locks/*.lock</code><span>coordination sentinels</span></header>
-            <p>Empty advisory lock files for data with multiple writers,
-            currently project <code>todos.json</code>. The filename combines
-            the guarded basename with an eight-character hash of its absolute
-            path, keeping different projects separate.</p>
+            <p>Empty advisory lock files. Two documents take one: the session
+            augment file, which the watcher tick and the todo API's counter
+            update both write, and <code>todos.json</code>, which has a single
+            writer but many callers — two concurrent API requests are still
+            two read-modify-writes. The filename combines the guarded basename
+            with an eight-character hash of its absolute path, keeping
+            different projects separate.</p>
             <dl><div><dt>Lifetime</dt><dd>files may remain; the kernel releases the actual lock when the descriptor closes</dd></div><div><dt>Timeout</dt><dd>bounded wait prevents a stalled writer from wedging an API call</dd></div></dl>
           </article>
 
@@ -2090,7 +2179,7 @@ function flowsArticle(){
         <div class="wiki-recipe">
           <div class="wiki-recipe-step"><small>1</small><b>Read project todos</b><code>GET /api/xo-projects/{id}/todos</code><p>Group todo lists by session and runtime.</p></div>
           <i>→</i>
-          <div class="wiki-recipe-step"><small>2</small><b>Mutate through one lane</b><p>Claude Code uses native task tools; other runtimes use POST/PATCH/DELETE todo endpoints.</p></div>
+          <div class="wiki-recipe-step"><small>2</small><b>Mutate through one lane</b><code>POST/PATCH/DELETE /api/xo-projects/{id}/todos</code><p>Every runtime, including ones with a native task tool. Nothing else writes the file.</p></div>
           <i>→</i>
           <div class="wiki-recipe-step"><small>3</small><b>Reflect lifecycle</b><p>Make pending, in-progress, completed, blocked, and cancelled visually distinct.</p></div>
         </div>

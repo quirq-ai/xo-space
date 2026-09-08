@@ -1,21 +1,29 @@
-"""Project-scope BFF endpoints over ``<project>/.xo/``.
+"""Project-scope BFF endpoints over one project's state.
 
 This module never imports ``os`` or ``pathlib``. All filesystem reads
 happen behind ``services.cowork_agent.scopes.VisualizerScope``, which
-delegates to ``services.cowork_agent.visualizer.reader``.
+knows that a project's state spans two roots since T19 — the durable
+``<project>/.xo/`` and the machine-local ``~/.quirq/projects/<pid>/`` —
+and delegates every read to ``services.cowork_agent.visualizer.reader``.
 
-Endpoints are populated when the watcher has written the backing
-files (``stats.json``, ``sessions-augment.json``, ``todos.json``,
-``activity.json``). Files written under older schema versions
+Most endpoints are populated when the watcher has written the backing
+file (``stats.json``, ``sessions-augment.json``, the session index,
+``timeline.jsonl``, the activity snapshot). ``todos.json`` is the one
+exception and the reason the todo handlers below are writers: it has no
+watcher sink at all, and the ``POST/PATCH/DELETE /todos`` endpoints own
+it outright (syncplan §7, T8). Files written under older schema versions
 degrade gracefully — readers treat missing keys as zero.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+
+logger = logging.getLogger(__name__)
 
 from routers.cowork_agent.bff._visualizer_models import (
     ActivityResponse,
@@ -68,6 +76,7 @@ from routers.cowork_agent.bff._visualizer_presenter import (
     zero_filled_dates as _zero_filled_dates,
 )
 from services.cowork_agent import scopes
+from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES
 
 router = APIRouter()
 
@@ -176,16 +185,23 @@ def project_usage_summary_card(
 # ── /api/xo-projects/{id}/todos ──────────────────────────────────────────────
 
 
-def _shape_todos(project_id: str, raw: Optional[dict]) -> TodosResponse:
+def _shape_todos(
+    project_id: str, raw: Optional[dict], *, include_deleted: bool = False,
+) -> TodosResponse:
     """Convert the on-disk ``todos.json`` shape to the wire shape.
 
     On-disk:  {schema, updated_at, sessions: {sid: {runtime, source_file,
                 session_started_at, todos: [{id, content, status, ...}]}}}
     On wire:  {project_id, updated_at, sessions: {sid: SessionTodos}}
 
+    Deleted todos are tombstones, not rows: the store keeps them
+    forever, and this is the filter that keeps them off both UIs. Ask
+    for them explicitly with ``include_deleted`` when you want the
+    history rather than the work.
+
     Pydantic's ``extra="forbid"`` on ``Todo`` is the wire allowlist —
     unexpected keys raise 500 ``scope_unavailable`` (we'd rather fail
-    closed than leak a watcher mistake).
+    closed than leak a writer's mistake).
     """
     if not raw:
         return TodosResponse(project_id=project_id, updated_at=None, sessions={})
@@ -198,15 +214,9 @@ def _shape_todos(project_id: str, raw: Optional[dict]) -> TodosResponse:
         for t in entry.get("todos") or []:
             if not isinstance(t, dict):
                 continue
-            todos.append(
-                Todo(
-                    id=str(t.get("id", "")),
-                    content=str(t.get("content", "")),
-                    status=str(t.get("status", "pending")),
-                    description=t.get("description"),
-                    active_form=t.get("active_form"),
-                )
-            )
+            if not include_deleted and t.get("deleted_at") is not None:
+                continue
+            todos.append(_make_todo_model(t))
         out_sessions[str(sid)] = SessionTodos(
             runtime=str(entry.get("runtime", "")),
             source_file=None,  # never echo absolute paths back
@@ -225,13 +235,21 @@ def _shape_todos(project_id: str, raw: Optional[dict]) -> TodosResponse:
     "/api/xo-projects/{project_id}/todos",
     response_model=TodosResponse,
 )
-def project_todos(project_id: str) -> TodosResponse:
+def project_todos(
+    project_id: str,
+    include_deleted: bool = Query(
+        False, description="Include soft-deleted todos (tombstones)."
+    ),
+) -> TodosResponse:
     """Per-session task list for one project.
 
-    Empty ``{sessions: {}}`` when the watcher hasn't written
-    ``todos.json`` yet. Adapter-written ``sessionslist.json`` is NOT
-    a source for todos — todos live exclusively in the watcher-derived
-    ``todos.json``.
+    Empty ``{sessions: {}}`` when nothing has written ``todos.json``
+    yet. Adapter-written ``sessionslist.json`` is NOT a source for
+    todos — they live exclusively in ``todos.json``, which the CRUD
+    endpoints below own.
+
+    Deleted todos are hidden by default; ``?include_deleted=true``
+    returns them with their ``deleted_at`` / ``deleted_by`` set.
     """
     scope = _require_project(project_id)
     try:
@@ -242,25 +260,67 @@ def project_todos(project_id: str) -> TodosResponse:
             detail={"code": "scope_unavailable",
                     "message": "todos.json is not readable."},
         ) from exc
-    return _shape_todos(project_id, raw)
+    return _shape_todos(project_id, raw, include_deleted=include_deleted)
 
 
 # ── /api/xo-projects/{id}/todos — CRUD for any runtime ──────────────────────
 #
-# Agents (OpenClaw / Hermes / future runtimes) write todos via this API
-# rather than touching .xo/todos.json directly. The handle's CRUD methods
-# delegate to services.cowork_agent.visualizer.todos_store, which shares
-# a flock with the watcher's todos sink so writes never tear each other.
-# See docs/visualizer-overview.md for the full contract.
+# EVERY agent writes todos through this API rather than touching
+# .xo/todos.json directly — including runtimes with a native todo tool,
+# whose tool calls no longer reach any watcher sink. That is what makes
+# todos.json, the timeline and the per-session taskCount identical
+# whichever backend is active (syncplan §7). The handle's CRUD methods
+# delegate to services.cowork_agent.visualizer.todos_store, the file's
+# only writer, which emits the lifecycle events the timeline and counter
+# sinks render. See docs/visualizer-overview.md for the full contract.
+
+
+#: What an unrecognised on-disk status renders as. ``pending`` is the
+#: least-committal *open* value: the row stays visible and actionable
+#: rather than being hidden or claimed complete.
+_STATUS_FALLBACK = "pending"
+
+
+def _coerce_status(raw: object, *, todo_id: str) -> str:
+    """Map an on-disk status onto the declared vocabulary.
+
+    ``Todo.status`` is a strict ``Literal`` so the OpenAPI schema carries
+    the enum (that is the whole point of T6 — the wire previously
+    declared no enum at all). But the *read* path must tolerate what is
+    already on disk: rows written before the vocabulary was enforced can
+    carry anything, and this model is constructed per row inside
+    :func:`_shape_todos`, which the route calls **outside** its
+    ``try``/``except``. So one legacy row used to 500 the entire
+    project's todo list — including every well-formed row beside it.
+
+    Coerce and log instead. Silently dropping the row would be worse:
+    a work item that vanishes with no signal is the failure mode the
+    tombstone design (§5.5) exists to avoid.
+    """
+    value = str(raw) if raw is not None else ""
+    if value in VALID_TODO_STATUSES:
+        return value
+    logger.warning(
+        "todo %s carries status %r, which is not in the declared "
+        "vocabulary %s; rendering it as %r. Repair the row or delete it.",
+        todo_id or "<no id>", value, sorted(VALID_TODO_STATUSES),
+        _STATUS_FALLBACK,
+    )
+    return _STATUS_FALLBACK
 
 
 def _make_todo_model(d: dict) -> Todo:
+    todo_id = str(d.get("id", ""))
     return Todo(
-        id=str(d.get("id", "")),
+        id=todo_id,
         content=str(d.get("content", "")),
-        status=str(d.get("status", "pending")),
+        status=_coerce_status(d.get("status", _STATUS_FALLBACK), todo_id=todo_id),
         description=d.get("description"),
         active_form=d.get("active_form"),
+        created_at=d.get("created_at"),
+        updated_at=d.get("updated_at"),
+        deleted_at=d.get("deleted_at"),
+        deleted_by=d.get("deleted_by"),
     )
 
 
@@ -306,7 +366,12 @@ def project_todos_create(project_id: str, body: CreateTodoRequest) -> Todo:
     response_model=Todo,
 )
 def project_todos_get(project_id: str, todo_id: str) -> Todo:
-    """Fetch one todo by id."""
+    """Fetch one todo by id.
+
+    A soft-deleted todo is ``404 todo_not_found`` here, matching the
+    list view: the tombstone is history, reachable through
+    ``GET /todos?include_deleted=true``.
+    """
     scope = _require_project(project_id)
     found = scope.get_todo(todo_id)
     if found is None:
@@ -361,8 +426,12 @@ def project_todos_update(
     response_model=DeleteTodoResponse,
 )
 def project_todos_delete(project_id: str, todo_id: str) -> DeleteTodoResponse:
-    """Idempotent delete — returns ``deleted: false`` if the todo
-    was already absent (never 404, matches /api/secrets/{key} pattern)."""
+    """Soft delete — the record is tombstoned (``deleted_at`` set), never
+    removed, so it cannot come back and the history stays readable.
+
+    Idempotent: ``deleted: false`` if the todo was already absent or
+    already tombstoned (never 404, matches the /api/secrets/{key}
+    pattern). The response shape is unchanged."""
     scope = _require_project(project_id)
     try:
         deleted = scope.delete_todo(todo_id)
@@ -884,7 +953,7 @@ def project_timeline(
 ) -> TimelineResponse:
     """Newest-first event stream for one project.
 
-    Reads from ``<project>/.xo/timeline.jsonl``. Empty when the
+    Reads the project's runtime ``timeline.jsonl``. Empty when the
     watcher hasn't emitted any events for this project yet.
     """
     if before is not None:

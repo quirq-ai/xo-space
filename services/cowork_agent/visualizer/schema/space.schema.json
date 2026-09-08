@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/space.schema.json",
+  "title": "xo Space record (<XO root>/.xo/space.json)",
+  "description": "What this Space is: its captured id, its label, its roots and the agent backends attached to it. Written by the single-writer sink services/cowork_agent/visualizer/workspace/space_json.py. Schema 1 at this path was the derived d3 graph, which moved to ~/.quirq/workspace/graph.json and is still served at GET /xo/space.json (syncplan T14) — the route's URL is a name, not a path. The project list is deliberately NOT here: it lives in projects.json, so the two records keep different writers and different write frequencies.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "space_id", "roots", "agents"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": {
+      "type": "integer",
+      "const": 2,
+      "description": "1 was the derived graph that used to occupy this path."
+    },
+    "space_id": {
+      "type": ["string", "null"],
+      "description": "CODER_WORKSPACE_ID — captured from the environment, never minted. Null off Coder (syncplan O1); a locally generated fallback must never be committed, because it would diverge from the externally assigned id the moment the same Space runs on Coder."
+    },
+    "label": {
+      "type": ["string", "null"],
+      "description": "Human name for the Space. Seeded once from CODER_WORKSPACE_NAME and user-editable thereafter — the writing sink does not own this key and carries it forward untouched."
+    },
+    "owner_user_id": {
+      "type": "string",
+      "description": "The auth state's user_id, or \"local\". A resolved id is never downgraded back to \"local\" by a momentarily unreadable auth state."
+    },
+    "created_at": { "type": ["string", "null"], "format": "date-time" },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "roots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects_root", "state_root"],
+      "properties": {
+        "projects_root": { "type": "string", "description": "Absolute path to the xo-projects root." },
+        "state_root": { "type": "string", "description": "Absolute path to the machine-local Quirq state root (~/.quirq)." }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "One row per discovered agent manifest, sorted by name. Discovered, never enumerated in core code.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "active", "binary_available", "capabilities"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "active": { "type": "boolean", "description": "Whether this is the backend AGENT_NAME resolves to." },
+          "binary_available": { "type": "boolean", "description": "Whether the manifest's binary is on PATH." },
+          "capabilities": {
+            "type": "array",
+            "description": "The capability modules present under adapters/<name>/.",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "first_seen_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Set once, the first time this agent appears in the record."
+          },
+          "last_used_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "When this agent was last observed active. Refreshed on a coarse interval (XO_SPACE_AGENT_TOUCH_S, default 1 h) — a per-tick stamp would rewrite this file every second."
+          }
+        }
+      }
+    }
+  }
+}

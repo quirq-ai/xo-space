@@ -110,8 +110,13 @@ async def update_session(session_id: str, request: Request):
         return JSONResponse(status_code=400, content={"detail": "directory must be a non-empty string"})
 
     # Ask each adapter's sessions capability to set the directory; the owning
-    # backend returns a result dict, the rest return None. Mutually exclusive
-    # per session, so order doesn't matter and no backend is named here.
+    # backend returns a result dict, the rest return None. Ownership — not
+    # iteration order — decides: the project-tied adapters share one
+    # sessionslist per project, so each declines any row tagged with another
+    # backend, and the adapters with a native store only ever touch their own.
+    # The one case order still decides is a row with a missing or empty backend
+    # tag, which predates the tag and stays claimable by whoever answers first.
+    # No backend is named here.
     for name in list_adapters():
         mod = try_load_capability("sessions", agent=name)
         fn = getattr(mod, "set_session_directory", None) if mod else None

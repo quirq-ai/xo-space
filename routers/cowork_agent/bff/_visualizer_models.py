@@ -10,7 +10,7 @@ Two naming conventions on purpose:
 
 * **Visualizer** models (``todos``, ``activity``, ``timeline``) use
   snake_case field names that match their JSON Schemas under
-  ``services/cowork_agent/project_template/.xo/schema/``.
+  ``services/cowork_agent/visualizer/schema/``.
 
 Every model declares ``extra="forbid"``. An unexpected key surfacing
 from disk fails the route closed with 500 ``scope_unavailable``
@@ -23,6 +23,8 @@ from __future__ import annotations
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
+
+from services.cowork_agent.visualizer.todo_status import TodoStatus
 
 
 # ── Base config: extra=forbid everywhere ──────────────────────────────────────
@@ -237,11 +239,32 @@ class SessionListResponse(_ForbidExtra):
 class Todo(_ForbidExtra):
     id: str
     content: str
-    status: str
-    # Optional Claude-Code-specific extensions allowed by the schema's
+    # Declared, not just documented: the wire used to accept any string
+    # here, so the one enumeration the OpenAPI consumers see was absent.
+    # ``TodoStatus`` is the shared vocabulary, so this is the same set the
+    # store validates against and the schemas declare. Strictness here is
+    # the wire allowlist this module already applies to keys (see the
+    # module docstring): a status outside the set is a writer's mistake
+    # and fails closed rather than leaking to the UI.
+    status: TodoStatus
+    # Optional runtime-specific extensions allowed by the schema's
     # ``additionalProperties: true`` on the todo definition.
     description: Optional[str] = None
     active_form: Optional[str] = None
+    # Schema 2 (syncplan §5.5). These are ``Optional`` rather than
+    # required because documents written before the store stamped them
+    # are still legal on disk and must render, not 500 — this model
+    # forbids extra keys, so a field the store writes and this class
+    # omits is a guaranteed 500 on the next read.
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    # Soft delete: the tombstone is deliberately NOT a status value.
+    # ``status`` records what we decided about the work; ``deleted_at``
+    # records that the item should not have existed. Collapsing them
+    # would make "everything ever closed" unanswerable. List reads hide
+    # tombstones unless ``?include_deleted=true``.
+    deleted_at: Optional[str] = None
+    deleted_by: Optional[str] = None
 
 
 class SessionTodos(_ForbidExtra):
@@ -276,6 +299,11 @@ class CreateTodoRequest(_ForbidExtra):
     description: Optional[str] = None
     active_form: Optional[str] = None
     session_id: Optional[str] = None
+    # Deliberately a plain string, NOT ``TodoStatus``: the store validates
+    # it and the routes map that to the documented ``400 invalid_status``.
+    # Typing it as a Literal would turn the same request into a 422 with a
+    # different body — a wire change the docs (todos-http-api.md:44) and
+    # every existing client would have to follow.
     status: Optional[str] = None  # defaults to "pending" server-side
 
 

@@ -247,6 +247,9 @@
   .fx-size,.fx-when{font:400 11px var(--mono);color:var(--ink-3);white-space:nowrap}
   .fx-when{min-width:70px;text-align:right}
 
+  /* One chip class per todo status; the set is owned by
+     services/cowork_agent/visualizer/todo_status.py and
+     tests/test_todo_status.py fails if these stop matching it. */
   .tchip{font:500 10px/1 var(--mono);color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:3px 6px;flex:none;white-space:nowrap}
   .tchip.st-in_progress{color:var(--accent);border-color:var(--accent)}
   .tchip.st-pending{color:var(--ink-2)}
