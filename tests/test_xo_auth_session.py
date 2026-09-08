@@ -45,7 +45,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         # The route warms the principal cache after a successful mint. That is a second
         # round trip and never fatal; stub it so these tests only exercise the mint.
         warm = patch(
-            "services.cowork_agent.connectors.composio.state.aprincipal_payload",
+            "services.cowork_agent.connectors.composio.state.aidentity_payload",
             new=AsyncMock(return_value={"principal": f"{ACCOUNT}__ws__{WORKSPACE}"}),
         )
         warm.start()
@@ -108,7 +108,7 @@ class MintTests(_Base):
         with swarm, \
                 patch.object(composio_session, "get_auth_token", return_value="tok"), \
                 patch(
-                    "services.cowork_agent.connectors.composio.state.aprincipal_payload",
+                    "services.cowork_agent.connectors.composio.state.aidentity_payload",
                     new=AsyncMock(side_effect=RuntimeError("swarm hiccup")),
                 ):
             result = await composio_session.xo_auth_session_self()

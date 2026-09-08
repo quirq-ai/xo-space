@@ -59,8 +59,8 @@ async def xo_auth_session_self():
     try:
         workspace_id = state.workspace_id()
     except state.WorkspaceIdentityUnavailable as exc:
-        # Fail closed, and say which half is missing. Falling back to an account-wide
-        # bucket would share one Composio tenant across every workspace of this account.
+        # The swarm requires a workspace id to mint against, and it is also what stamps
+        # this pod's session store. Fail closed and say which half is missing.
         raise HTTPException(
             status_code=401,
             detail={
@@ -139,9 +139,9 @@ async def xo_auth_session_self():
     # Best effort, and never fatal: the mint above already proved the credential and the
     # workspace, so this only warms the cache every later request reads.
     try:
-        await state.aprincipal_payload()
+        await state.aidentity_payload()
     except Exception as exc:
-        log.warning("xo_auth_session: principal cache not warmed: %s", exc)
+        log.warning("xo_auth_session: identity cache not warmed: %s", exc)
 
     return {
         "success": True,

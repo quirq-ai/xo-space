@@ -31,6 +31,7 @@ from unittest.mock import patch
 
 from services.cowork_agent.connectors.composio import mcp
 from services.cowork_agent.connectors.composio import service as composio_service
+from services.cowork_agent.connectors.composio import state as composio_state
 
 PROXY = "http://127.0.0.1:5002/mcp/composio-proxy/u/tok-1"
 
@@ -170,7 +171,7 @@ class ManifestBlockTests(unittest.TestCase):
                 self.assertIsNone(mcp.load_target("a"))
         # A disabled agent is refused by the same name-based path as an absent block.
         with patch.object(mcp, "load_target", return_value=None):
-            result = composio_service.install_into_gateway("user_1__ws__ws-test", "a")
+            result = composio_service.install_into_gateway("a")
         self.assertFalse(result["ok"])
         self.assertIn("enabled 'mcp' block", result["error"])
 
@@ -604,7 +605,12 @@ class GatewayWiringTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
 
-        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(tmp / "quirq")})
+        # The session store is stamped with this pod's workspace, so writing one
+        # requires CODER_WORKSPACE_ID to be set.
+        env = patch.dict(os.environ, {
+            "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
+            composio_state.WORKSPACE_ENV: "ws-test",
+        })
         env.start()
         self.addCleanup(env.stop)
 
@@ -626,8 +632,10 @@ class GatewayWiringTests(unittest.TestCase):
 
     @staticmethod
     def _reset_caches() -> None:
-        composio_service._SESSION_IDS.clear()
+        composio_service._SESSION_ID = None
+        composio_service._STORE_ACCOUNT = None
         composio_service._PROXY_TOKENS.clear()
+        composio_service._ORPHANED_SESSION_IDS.clear()
         composio_service._SESSIONS_LOADED = False
 
     def test_every_agent_with_a_block_is_an_install_target(self) -> None:
@@ -638,7 +646,7 @@ class GatewayWiringTests(unittest.TestCase):
 
     def test_install_into_gateway_passes_a_scoped_proxy_url(self) -> None:
         with patch.object(mcp, "apply", return_value={"ok": True}) as applied:
-            result = composio_service.install_into_gateway("user_1__ws__ws-test", "codex")
+            result = composio_service.install_into_gateway("codex")
         self.assertTrue(result["ok"])
         applied.assert_called_once()
         target, proxy_url = applied.call_args[0]
@@ -646,7 +654,7 @@ class GatewayWiringTests(unittest.TestCase):
         self.assertIn("/mcp/composio-proxy/u/", proxy_url)
 
     def test_an_agent_without_a_block_is_refused_by_name(self) -> None:
-        result = composio_service.install_into_gateway("user_1__ws__ws-test", "antigravity")
+        result = composio_service.install_into_gateway("antigravity")
         self.assertFalse(result["ok"])
         self.assertIn("antigravity", result["error"])
         self.assertIn("manifest.json", result["error"])
@@ -656,9 +664,7 @@ class GatewayWiringTests(unittest.TestCase):
         # agent; an install given the URL must not mint again.
         with patch.object(mcp, "apply", return_value={"ok": True}) as applied, \
                 patch.object(composio_service, "_composio_proxy_url") as minted:
-            result = composio_service.install_into_gateway(
-                "user_1__ws__ws-test", "codex", proxy_url=PROXY,
-            )
+            result = composio_service.install_into_gateway("codex", proxy_url=PROXY)
         self.assertTrue(result["ok"])
         minted.assert_not_called()
         self.assertEqual(applied.call_args[0][1], PROXY)

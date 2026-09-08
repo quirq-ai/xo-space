@@ -465,7 +465,7 @@ const TAB_GUIDES={
     intro:'Connect Gmail, Google Workspace, Notion and Figma through Composio. A connection belongs to one XO account in one workspace, and its tools reach the active agent over a local MCP proxy that keeps the Composio API key on the server.',
     facts:['OAuth2 only','per user, per workspace','per-action control','key never leaves the server'],
     jobs:[
-      ['Connect an app','Authorize a toolkit in a provider popup. The server records the connected account against your workspace-scoped principal, never an account-wide one.'],
+      ['Connect an app','Authorize a toolkit in a provider popup. The connection is recorded against your XO account, so every workspace can use it — but each workspace chooses which connectors it turns on.'],
       ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
       ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
       ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically — at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']

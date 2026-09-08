@@ -2,12 +2,12 @@
 
    Everything else in this UI is same-origin and unauthenticated: the page is
    served from the API's own origin and each fetch forwards the page query
-   string. The Composio routes are the exception — they act as a workspace-scoped
-   principal and 401 without a session, so they need a header.
+   string. The Composio routes are the exception — they act as an XO account and
+   401 without a session, so they need a header.
 
-   The id selects nothing. This backend has exactly one principal, composed by XO
-   from the credential the backend holds plus this workspace's id; the session is
-   only proof that the tab was vouched for by a backend that is signed in.
+   The id selects nothing. This backend has exactly one account id, resolved from
+   the credential the backend holds; the session is only proof that the tab was
+   vouched for by a backend that is signed in.
 
    GET /xo-auth/session/self asks XO to mint an opaque session id against the
    credential the backend already holds (XO_API_KEY, or a consumed browser login);

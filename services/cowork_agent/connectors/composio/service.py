@@ -145,7 +145,7 @@ def multi_account_config() -> Optional[dict[str, Any]]:
     """The session `multi_account` block, or None when the feature is off.
 
     Off is the Composio default: one account per toolkit per session, the most
-    recently connected one. Turning it on lets a principal hold several accounts
+    recently connected one. Turning it on lets an account hold several accounts
     for the same toolkit (work and personal Gmail) inside one session.
     """
     if not _env_flag("COMPOSIO_MULTI_ACCOUNT"):
@@ -325,7 +325,7 @@ def newest_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def list_toolkit_accounts(user_id: str, toolkit_id: str) -> list[dict[str, Any]]:
-    """Every connected account this principal holds for one toolkit.
+    """Every connected account this XO account holds for one toolkit.
 
     Newest first, which is also the order Composio resolves "the default
     account" in when a tool call names none.
@@ -393,7 +393,7 @@ def list_tools(
     # Read the prefs ONCE. This used to be a per-slug lookup inside the loop below, each
     # re-reading the whole store — up to 200 reads per request. Bearable against a local
     # file, unacceptable now the store is remote.
-    disabled = composio_action_prefs.disabled_slugs(user_id, toolkit_id)
+    disabled = composio_action_prefs.disabled_slugs(toolkit_id)
 
     out: list[dict[str, Any]] = []
     for t in tools:
@@ -422,109 +422,169 @@ def list_tools(
 _SESSIONS_PATH = paths.store_dir() / "sessions.json"
 _LEGACY_SESSIONS_PATHS = (paths.legacy_checkout_path("composio_sessions.json"),)
 
-_SESSION_IDS: dict[str, str] = {}
-_PROXY_TOKENS: dict[str, str] = {}
+# v4 dropped the per-principal maps. Composio is addressed by the bare account id and a
+# pod serves exactly one workspace, so there is one session and one account here — the
+# maps only ever held a single row each.
+STORE_VERSION = 4
+
+_SESSION_ID: Optional[str] = None
+_PROXY_TOKENS: set[str] = set()
+_STORE_ACCOUNT: Optional[str] = None
 _SESSIONS_LOADED = False
 
+# Session ids read out of a store this pod will not adopt: a pre-v4 document, or one
+# stamped with another workspace. Composio sessions never expire, so they would linger
+# server-side forever. Drained by the boot sweep — deliberately not by whoever happens to
+# load the store first, because that is the MCP hot path and it must not touch the network.
+_ORPHANED_SESSION_IDS: list[str] = []
 
-def _load_store() -> tuple[Optional[str], dict[str, str], dict[str, str]]:
-    """Read the store, returning ``(owner, sessions, proxy_tokens)``.
 
-    ``owner`` is the principal the document says its rows belong to — v3 records it, v2
-    (which predates the swarm owning the tenant key) does not, and anything older is
-    discarded. It exists so this pod can tell its own rows from another workspace's
-    without composing a principal or asking the network: the MCP hot path runs on every
-    agent tool call and must stay offline.
+class NoToolkitsEnabled(RuntimeError):
+    """This workspace has not enabled any toolkit, so it has no session.
+
+    Not an error condition so much as a state: connections are account-wide and every
+    workspace opts in to the ones it wants (see :mod:`.workspace_scope`). Carried as an
+    exception because the MCP proxy has to answer *something*, and "no connectors are
+    enabled in this workspace" is a far better answer than an empty tool list that looks
+    like a broken integration.
+    """
+
+
+def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]]:
+    """Read the store, returning ``(workspace, account, session_id, proxy_tokens)``.
+
+    ``workspace`` is the stamp: the ``CODER_WORKSPACE_ID`` of the pod that wrote the
+    document. It is what lets this pod tell its own store from one restored out of a
+    backup or another workspace's home directory — with connections now account-wide,
+    adopting a foreign store would mean inheriting that workspace's connector scope.
+
+    Anything below v4 is discarded rather than upgraded. Those rows are keyed by the
+    retired ``<account>__ws__<workspace>`` tenant key and their sessions were minted
+    against it, so every one of them addresses a Composio user that is no longer ours.
+    Their session ids are parked in ``_ORPHANED_SESSION_IDS`` for the boot sweep to
+    delete.
     """
     from services.cowork_agent.visualizer.reader import read_json
 
     paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
     data = read_json(_SESSIONS_PATH)
     if not isinstance(data, dict):
-        return None, {}, {}
+        return None, None, None, set()
     try:
         version = int(data.get("version") or 0)
     except (TypeError, ValueError):
         version = 0
-    if version < 2:
-        # Pre-workspace-scoping rows address an account-wide Composio bucket shared by
-        # every workspace of the account. Ignored, never upgraded.
-        return None, {}, {}
 
-    def _str_map(raw: object) -> dict[str, str]:
-        if not isinstance(raw, dict):
-            return {}
-        return {
-            str(k): str(v)
-            for k, v in raw.items()
-            if isinstance(k, str) and isinstance(v, str) and k and v
-        }
+    if version < STORE_VERSION:
+        sessions = data.get("sessions")
+        if isinstance(sessions, dict):
+            for sid in sessions.values():
+                if isinstance(sid, str) and sid and sid not in _ORPHANED_SESSION_IDS:
+                    _ORPHANED_SESSION_IDS.append(sid)
+        log.info(
+            "composio: discarding a v%d session store. Its sessions were minted against "
+            "the retired workspace-scoped user id; a fresh one is minted on demand.",
+            version,
+        )
+        return None, None, None, set()
 
-    owner = str(data.get("principal") or "").strip() or None
-    return owner, _str_map(data.get("sessions")), _str_map(data.get("proxy_tokens"))
+    workspace = str(data.get("workspace_id") or "").strip() or None
+    account = str(data.get("account_id") or "").strip() or None
+    session_id = str(data.get("session") or "").strip() or None
+    raw_tokens = data.get("proxy_tokens")
+    tokens = {
+        str(t) for t in raw_tokens if isinstance(t, str) and t
+    } if isinstance(raw_tokens, list) else set()
+    return workspace, account, session_id, tokens
 
 
 def _ensure_sessions_loaded() -> None:
-    """Populate the in-memory mirrors from disk, keeping only this pod's own rows.
+    """Populate the in-memory mirrors from disk, if the store is this workspace's.
 
-    A v3 document names its owner, so it classifies itself with no network. A v2 one
-    cannot, so it waits until the principal is known and is then upgraded in place —
-    deliberately *not* discarded, so a pod that boots during a swarm outage keeps its
-    file for a later boot.
+    Classifying the document needs no network: the stamp is compared against this pod's
+    own ``CODER_WORKSPACE_ID``. That matters because proxy-token resolution runs on every
+    agent ``tools/call``.
+
+    A store stamped for another workspace is left alone on disk and simply not adopted —
+    it is somebody's restored backup, and destroying it here would be an odd thing for a
+    read to do. The next write replaces it.
     """
-    global _SESSIONS_LOADED
+    global _SESSIONS_LOADED, _SESSION_ID, _STORE_ACCOUNT
     if _SESSIONS_LOADED:
         return
     try:
-        owner, sessions, tokens = _load_store()
+        workspace, account, session_id, tokens = _load_store()
     except Exception as exc:
         log.warning("composio: could not read session store: %s", exc)
         _SESSIONS_LOADED = True
         return
 
-    if owner:
-        state.adopt_principal(owner)
-        _SESSION_IDS.update({k: v for k, v in sessions.items() if v == owner})
-        _PROXY_TOKENS.update({k: v for k, v in tokens.items() if v == owner})
+    try:
+        mine = state.workspace_id()
+    except state.WorkspaceIdentityUnavailable:
+        # No stamp to compare against. Leave _SESSIONS_LOADED False so a later call
+        # retries once the pod's environment is complete.
+        return
+
+    if workspace and workspace != mine:
+        log.warning(
+            "composio: ignoring a session store stamped for a different workspace. "
+            "It was most likely restored from a backup; this workspace mints its own.",
+        )
+        if session_id and session_id not in _ORPHANED_SESSION_IDS:
+            _ORPHANED_SESSION_IDS.append(session_id)
         _SESSIONS_LOADED = True
         return
 
-    known = state.principal_if_known()
-    if not known:
-        # Leave _SESSIONS_LOADED False so a later call retries once the principal is in.
-        return
-    _SESSION_IDS.update({k: v for k, v in sessions.items() if v == known})
-    _PROXY_TOKENS.update({k: v for k, v in tokens.items() if v == known})
-    _write_store(lambda _s, _t: None, owner=known)   # one-time v2 -> v3 upgrade
+    _SESSION_ID = session_id
+    _PROXY_TOKENS.update(tokens)
+    if account:
+        _STORE_ACCOUNT = account
+        state.adopt_account_id(account)
     _SESSIONS_LOADED = True
 
 
-def _write_store(mutate, *, owner: str) -> None:
-    """Lock, re-read, mutate, atomically replace — stamped with the owning principal.
+def _write_store(mutate) -> None:
+    """Lock, re-read, mutate, atomically replace — stamped with this workspace.
 
-    ``owner`` is explicit rather than looked up: every caller already knows whose rows it
-    is writing, and deriving it here would put a cache read (or worse a network call) on
-    a path that holds a file lock.
+    ``mutate(session_id, tokens) -> (session_id, tokens)`` sees what is on disk, not the
+    in-memory mirror, so two processes sharing a store converge instead of clobbering.
     """
+    global _STORE_ACCOUNT
     from services.cowork_agent.visualizer.atomic_write import write_json_atomic
     from services.cowork_agent.visualizer.flock import locked
 
+    try:
+        workspace = state.workspace_id()
+    except state.WorkspaceIdentityUnavailable as exc:
+        log.warning("composio: refusing to write an unstamped session store: %s", exc)
+        return
+
+    account = _STORE_ACCOUNT or state.account_id_if_known()
     try:
         # Before the lock: its sentinel is keyed on the store's absolute path, so moving
         # the file out from under a held lock would be locking the wrong name.
         paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
         with locked(_SESSIONS_PATH):
-            _existing, sessions, tokens = _load_store()
-            mutate(sessions, tokens)
+            existing_ws, existing_account, session_id, tokens = _load_store()
+            if existing_ws and existing_ws != workspace:
+                # Another workspace's document. Do not merge its rows into ours.
+                session_id, tokens = None, set()
+            elif existing_account:
+                account = account or existing_account
+            session_id, tokens = mutate(session_id, set(tokens))
             write_json_atomic(
                 _SESSIONS_PATH,
                 {
-                    "version": 3,
-                    "principal": owner,
-                    "sessions": sessions,
-                    "proxy_tokens": tokens,
+                    "version": STORE_VERSION,
+                    "workspace_id": workspace,
+                    "account_id": account,
+                    "session": session_id,
+                    "proxy_tokens": sorted(tokens),
                 },
             )
+        if account:
+            _STORE_ACCOUNT = account
         try:
             _SESSIONS_PATH.chmod(0o600)
         except OSError:
@@ -533,18 +593,15 @@ def _write_store(mutate, *, owner: str) -> None:
         log.warning("composio: could not persist session store: %s", exc)
 
 
-def _persist_session_id(user_id: str, session_id: Optional[str]) -> None:
-    def _mutate(sessions: dict[str, str], _tokens: dict[str, str]) -> None:
-        if session_id:
-            sessions[user_id] = session_id
-        else:
-            sessions.pop(user_id, None)
+def _persist_session_id(session_id: Optional[str]) -> None:
+    def _mutate(_existing: Optional[str], tokens: set[str]):
+        return session_id, tokens
 
-    _write_store(_mutate, owner=user_id)
+    _write_store(_mutate)
 
 
-def proxy_token_for_user(user_id: str) -> str:
-    """The stable opaque MCP proxy token for a principal, minting one if needed.
+def proxy_token() -> str:
+    """The stable opaque MCP proxy token for this workspace, minting one if needed.
 
     Idempotent on purpose: the boot-time gateway install calls this on every restart, and
     churning the token would strand agents holding the previous URL.
@@ -553,86 +610,105 @@ def proxy_token_for_user(user_id: str) -> str:
     ``sessions.json``, which is also the only thing that can resolve it. A store that is
     lost takes every agent's proxy URL with it, and the next sweep mints a fresh token and
     rewrites every agent's MCP config.
-
-    Runs on the worker thread of the reconcile sweep as well as on the event loop, so the
-    dict walks below take a snapshot: `user_for_proxy_token_local` can update
-    `_PROXY_TOKENS` from the loop while a sweep iterates it.
     """
-    uid = _require_user_id(user_id, "proxy_token_for_user")
     _ensure_sessions_loaded()
-    for token, owner in list(_PROXY_TOKENS.items()):
-        if owner == uid:
-            return token
+    for token in sorted(_PROXY_TOKENS):
+        return token
 
-    token = secrets.token_urlsafe(32)
-    _PROXY_TOKENS[token] = uid
+    minted = secrets.token_urlsafe(32)
+    chosen: list[str] = []
 
-    def _mutate(_sessions: dict[str, str], tokens: dict[str, str]) -> None:
-        for existing, owner in tokens.items():
-            if owner == uid:
-                _PROXY_TOKENS.pop(token, None)
-                _PROXY_TOKENS[existing] = uid
-                return
-        tokens[token] = uid
+    def _mutate(session_id: Optional[str], tokens: set[str]):
+        # Another process may have minted one between our read and this lock; prefer
+        # whatever is already on disk so both agree.
+        existing = sorted(tokens)
+        if existing:
+            chosen.append(existing[0])
+            return session_id, tokens
+        chosen.append(minted)
+        tokens.add(minted)
+        return session_id, tokens
 
-    _write_store(_mutate, owner=uid)
-    for tok, owner in list(_PROXY_TOKENS.items()):
-        if owner == uid:
-            return tok
+    _write_store(_mutate)
+    token = chosen[0] if chosen else minted
+    _PROXY_TOKENS.add(token)
     return token
 
 
-def user_for_proxy_token_local(token: str) -> Optional[str]:
-    """Resolve a proxy token from this pod's own store. No network."""
+def account_for_proxy_token_local(token: str) -> Optional[str]:
+    """Resolve a proxy token to this workspace's Composio account id. No network."""
     if not token:
         return None
     _ensure_sessions_loaded()
-    user_id = _PROXY_TOKENS.get(token)
-    if not user_id:
+    if token not in _PROXY_TOKENS:
         # A row written by another process since this one last read. _load_store has
-        # already dropped anything that is not ours.
+        # already refused anything stamped for a different workspace.
         try:
-            owner, _sessions, tokens = _load_store()
+            workspace, account, _session, tokens = _load_store()
         except Exception:
             return None
-        if owner:
-            _PROXY_TOKENS.update({k: v for k, v in tokens.items() if v == owner})
-        user_id = _PROXY_TOKENS.get(token)
-    return user_id
+        try:
+            mine = state.workspace_id()
+        except state.WorkspaceIdentityUnavailable:
+            return None
+        if workspace and workspace != mine:
+            return None
+        _PROXY_TOKENS.update(tokens)
+        if account:
+            state.adopt_account_id(account)
+        if token not in _PROXY_TOKENS:
+            return None
+    return _STORE_ACCOUNT or state.account_id_if_known()
 
 
-async def user_for_proxy_token(token: str) -> Optional[str]:
-    """Resolve an MCP proxy token to its owning principal.
+async def account_for_proxy_token(token: str) -> Optional[str]:
+    """Resolve an MCP proxy token to this workspace's Composio account id.
 
-    **Purely local.** This pod's ``sessions.json`` is the only thing that knows who owns a
-    proxy token, so this runs on `initialize`, `tools/list` and every `tools/call` as a
-    dict lookup with no network. A token this pod cannot place is unknown, full stop: the
-    proxy answers 401 and the agent re-reads the config the next sweep rewrites.
+    **Purely local.** This pod's ``sessions.json`` is the only thing that knows a proxy
+    token, so this runs on `initialize`, `tools/list` and every `tools/call` as a set
+    lookup with no network. A token this pod cannot place is unknown, full stop: the proxy
+    answers 401 and the agent re-reads the config the next sweep rewrites.
 
     Async because the MCP proxy awaits it and the lookup is on that hot path; nothing here
     blocks.
     """
-    return user_for_proxy_token_local(token)
+    return account_for_proxy_token_local(token)
 
 
-def _delete_remote_session(session_id: str, user_id: str) -> None:
+def _delete_remote_session(session_id: str) -> None:
     try:
         _composio().sessions.delete(session_id)
-        log.info("composio: deleted session %s for user=%s", session_id, user_id)
+        log.info("composio: deleted session %s", session_id)
     except Exception as exc:
         log.warning(
-            "composio: could not delete session %s for user=%s (it may linger "
-            "server-side): %s", session_id, user_id, exc,
+            "composio: could not delete session %s (it may linger server-side): %s",
+            session_id, exc,
         )
 
 
-def _disabled_tools_config(user_id: str) -> dict[str, dict[str, list[str]]]:
+def drain_orphaned_sessions() -> int:
+    """Delete sessions belonging to a store this pod would not adopt. Returns the count.
+
+    Called from the boot sweep rather than from whoever first reads the store, because
+    that reader is usually the MCP proxy and a network call there would sit on the agent
+    hot path. Best-effort throughout: a session that cannot be deleted is dropped from
+    the queue anyway, since retrying it forever would re-block every boot.
+    """
+    if not _ORPHANED_SESSION_IDS:
+        return 0
+    pending, _ORPHANED_SESSION_IDS[:] = list(_ORPHANED_SESSION_IDS), []
+    for session_id in pending:
+        _delete_remote_session(session_id)
+    return len(pending)
+
+
+def _disabled_tools_config() -> dict[str, dict[str, list[str]]]:
     from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
 
     try:
-        prefs = composio_action_prefs.load_prefs(user_id)
+        prefs = composio_action_prefs.load_prefs()
     except Exception as exc:
-        log.warning("composio: could not read action prefs for user=%s: %s", user_id, exc)
+        log.warning("composio: could not read action prefs: %s", exc)
         prefs = {}
     return {
         toolkit_id: {
@@ -646,110 +722,161 @@ def _disabled_tools_config(user_id: str) -> dict[str, dict[str, list[str]]]:
     }
 
 
-def pinned_connected_accounts(user_id: str) -> dict[str, list[str]]:
-    """Which connected accounts this principal's session may use, per toolkit.
+def max_accounts_per_toolkit() -> int:
+    """How many connected accounts one toolkit may pin in a session.
 
-    With multi-account mode off a session may only carry one account per
-    toolkit, so a principal holding two active Gmail accounts gets the most
-    recently connected one — the same account Composio would pick itself.
-    Pinning both would be rejected at session creation.
+    Composio rejects a session pinning more than this, and a session without
+    multi-account mode accepts exactly one.
     """
-    pinned: dict[str, list[str]] = {}
+    multi = multi_account_config()
+    return int(multi["max_accounts_per_toolkit"]) if multi else 1
+
+
+def prune_scope_to_live_accounts(user_id: str) -> bool:
+    """Drop pinned accounts that no longer exist in Composio. Returns True if any went.
+
+    Runs before every session create and update. Composio requires a pinned connected
+    account to exist and be enabled, and **one stale id fails the entire session**, not
+    just its toolkit. A connection deleted from another workspace cannot reach into this
+    pod's store, so this is what makes that deletion self-heal here.
+    """
+    from services.cowork_agent.connectors.composio import workspace_scope
+
     try:
         rows = list_connections(user_id, statuses=["ACTIVE"])
     except Exception as exc:
-        log.warning("composio: list_connections failed while building pin map for user=%s: %s", user_id, exc)
-        return pinned
+        log.warning(
+            "composio: could not list connections while pruning scope for user=%s: %s",
+            user_id, exc,
+        )
+        return False
+    live = {
+        row.get("connected_account_id")
+        for row in rows
+        if row.get("connected_account_id") and not row.get("is_disabled")
+    }
+    return workspace_scope.prune_to(live)
+
+
+def _session_config(user_id: str) -> dict[str, Any]:
+    """The toolkits/tools/connected_accounts this workspace's session is built from."""
+    from services.cowork_agent.connectors.composio import workspace_scope
+
+    prune_scope_to_live_accounts(user_id)
+    enabled = workspace_scope.enabled_toolkits()
+    if not enabled:
+        raise NoToolkitsEnabled(
+            "No connectors are enabled in this workspace. Connections are shared across "
+            "the account; enable the ones this workspace should use on the Connectors "
+            "tab."
+        )
+    config: dict[str, Any] = {
+        # Checked before Composio looks up a connection, so this is the outer boundary.
+        "toolkits": {"enable": enabled},
+        "tools": _disabled_tools_config(),
+    }
+    pinned = workspace_scope.pins()
+    if pinned:
+        # An exact override with no fallback: without it Composio resolves the most
+        # recently connected account at execution time, so a connection made in another
+        # workspace could silently repoint this one.
+        config["connected_accounts"] = pinned
     multi = multi_account_config()
-    per_toolkit_cap = (
-        int(multi["max_accounts_per_toolkit"]) if multi else 1
-    )
-    for row in newest_first(rows):
-        if (row.get("status") or "").upper() != "ACTIVE":
-            continue
-        if row.get("is_disabled"):
-            continue
-        slug = (row.get("toolkit") or "").lower()
-        cid = row.get("connected_account_id")
-        if not slug or not cid:
-            continue
-        bucket = pinned.setdefault(slug, [])
-        if len(bucket) >= per_toolkit_cap:
-            log.info(
-                "composio: user=%s has more than %d active %s account(s); "
-                "pinning the newest and skipping %s.",
-                user_id, per_toolkit_cap, slug.upper(), cid,
-            )
-            continue
-        bucket.append(cid)
-    return pinned
+    if multi:
+        config["multi_account"] = multi
+    return config
 
 
-def invalidate_session(user_id: str) -> None:
-    if not user_id:
-        return
+def invalidate_session() -> None:
+    global _SESSION_ID
     _ensure_sessions_loaded()
-    session_id = _SESSION_IDS.pop(user_id, None)
-    _persist_session_id(user_id, None)
+    session_id, _SESSION_ID = _SESSION_ID, None
+    _persist_session_id(None)
     if session_id:
-        _delete_remote_session(session_id, user_id)
+        _delete_remote_session(session_id)
 
 
 def sync_session(user_id: str) -> None:
+    """Push this workspace's current scope onto its live session, if it has one."""
     if not user_id:
         return
     _ensure_sessions_loaded()
-    sid = _SESSION_IDS.get(user_id)
+    sid = _SESSION_ID
     if not sid:
         return
     try:
+        config = _session_config(user_id)
+    except NoToolkitsEnabled:
+        # Nothing left enabled here. Drop the session rather than leaving one behind
+        # that still reaches whatever it was last configured with.
+        invalidate_session()
+        return
+    try:
         session = _composio().use(sid)
-        # multi_account is passed even when it is None: that is how a session
-        # minted while the flag was on converges after the operator turns it
-        # off. If the API rejects the shape the except below re-mints, which
-        # reaches the same state by the other road.
+        # multi_account is passed even when it is absent from the config: that is how a
+        # session minted while the flag was on converges after the operator turns it off.
+        # If the API rejects the shape the except below re-mints, which reaches the same
+        # state by the other road.
         session.update(
-            connected_accounts=pinned_connected_accounts(user_id),
-            tools=_disabled_tools_config(user_id),
+            connected_accounts=config.get("connected_accounts", {}),
+            toolkits=config["toolkits"],
+            tools=config["tools"],
             multi_account=multi_account_config(),
         )
-        log.info("composio: updated session %s for user=%s", sid, user_id)
+        log.info("composio: updated session %s", sid)
     except Exception as exc:
         log.warning(
-            "composio: session update failed for user=%s, falling back to re-mint: %s",
-            user_id, exc,
+            "composio: session update failed, falling back to re-mint: %s", exc,
         )
-        invalidate_session(user_id)
+        invalidate_session()
 
 
 def get_session(user_id: str):
+    """This workspace's Composio session, minting one if needed.
+
+    ``user_id`` is the bare account id — connections belong to the account, not to a
+    workspace. What *this* workspace may reach comes from :func:`_session_config`.
+
+    Raises :class:`NoToolkitsEnabled` when the workspace has enabled nothing. Composio's
+    behaviour for an empty ``toolkits`` allowlist is unspecified, and "everything" would
+    be the catastrophic reading of it, so the session is never created in that state.
+    """
+    global _SESSION_ID
     user_id = _require_user_id(user_id, "get_session")
     _ensure_sessions_loaded()
-    sid = _SESSION_IDS.get(user_id)
+    config = _session_config(user_id)          # raises before any network call
+
+    sid = _SESSION_ID
     if sid:
         try:
             return _composio().use(sid)
         except Exception as exc:
-            log.debug("composio: use(%s) failed for user=%s: %s", sid, user_id, exc)
-            _SESSION_IDS.pop(user_id, None)
-            _persist_session_id(user_id, None)
-    create_kwargs: dict[str, Any] = {
-        "user_id": user_id,
-        "tools": _disabled_tools_config(user_id),
-        "mcp": True,
-    }
-    multi = multi_account_config()
-    if multi:
-        create_kwargs["multi_account"] = multi
-    pinned = pinned_connected_accounts(user_id)
-    if pinned:
-        create_kwargs["connected_accounts"] = pinned
-    session = _composio().create(**create_kwargs)
+            log.debug("composio: use(%s) failed: %s", sid, exc)
+            _SESSION_ID = None
+            _persist_session_id(None)
+
+    session = _composio().create(user_id=user_id, mcp=True, **config)
     new_id = getattr(session, "session_id", None) or getattr(session, "id", None)
     if new_id:
-        _SESSION_IDS[user_id] = str(new_id)
-        _persist_session_id(user_id, str(new_id))
+        _SESSION_ID = str(new_id)
+        _persist_session_id(str(new_id))
     return session
+
+
+def legacy_connections(legacy_principal: Optional[str]) -> list[dict[str, Any]]:
+    """Connected accounts still stranded under the retired workspace-scoped user id.
+
+    Read-only, and never pinned into a session: Composio requires a pinned account to
+    belong to the session's ``user_id``, so these are unreachable by construction. The
+    only thing to do with them is tell the user to reconnect, which is why this exists.
+    """
+    if not legacy_principal:
+        return []
+    try:
+        return list_connections(legacy_principal, statuses=["ACTIVE"])
+    except Exception as exc:
+        log.warning("composio: could not list legacy connections: %s", exc)
+        return []
 
 
 def build_mcp_server_entry(user_id: str) -> dict[str, Any]:
@@ -766,27 +893,26 @@ def build_mcp_server_entry(user_id: str) -> dict[str, Any]:
     entry: dict[str, Any] = {"type": "http", "url": str(url)}
     if headers:
         entry["headers"] = dict(headers)
-    log.info(
-        "composio: session %s for user=%s -> %s",
-        _SESSION_IDS.get(user_id, "?"), user_id, url,
-    )
+    log.info("composio: session %s -> %s", _SESSION_ID or "?", url)
     return entry
 
 
-def _composio_proxy_url(user_id: str) -> str:
-    uid = _require_user_id(user_id, "_composio_proxy_url")
+def _composio_proxy_url() -> str:
     port = int(os.getenv("PORT", "5002"))
-    return f"http://127.0.0.1:{port}/mcp/composio-proxy/u/{proxy_token_for_user(uid)}"
+    return f"http://127.0.0.1:{port}/mcp/composio-proxy/u/{proxy_token()}"
 
 
 def install_into_gateway(
-    user_id: str, agent: str, *, proxy_url: Optional[str] = None,
+    agent: str, *, proxy_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Point one agent's config at this workspace's proxy.
 
-    Synchronous, and it may block: minting the proxy URL registers the token with
-    xo-swarm-api (one HTTP round trip). The reconcile sweep therefore mints once and
-    passes ``proxy_url`` in, rather than paying that per agent.
+    Synchronous, and it may block: minting the proxy URL reads and may rewrite this pod's
+    token store. The reconcile sweep therefore mints once and passes ``proxy_url`` in,
+    rather than paying that per agent.
+
+    Takes no identity: the proxy URL carries an opaque token that only this pod can
+    resolve, and the account behind it is whatever ``sessions.json`` is stamped with.
     """
     from services.cowork_agent.connectors.composio import mcp
 
@@ -801,7 +927,7 @@ def install_into_gateway(
         }
     if proxy_url is None:
         try:
-            proxy_url = _composio_proxy_url(user_id)
+            proxy_url = _composio_proxy_url()
         except Exception as exc:
             log.warning("composio: gateway install could not build proxy URL: %s", exc)
             return {"ok": False, "error": str(exc)}
@@ -831,7 +957,7 @@ class GatewaySweep:
 
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
     # None when the sweep ran; otherwise which gate stopped it: "no_agents",
-    # "no_credential", "no_workspace" or "principal_unavailable".
+    # "no_credential", "no_workspace" or "account_unavailable".
     skipped: Optional[str] = None
     # Whether waiting can help. Only an unreachable swarm changes on its own: the XO
     # credential is fixed at boot and the workspace id is injected by the pod.
@@ -901,16 +1027,20 @@ def _report(agent: str, result: dict[str, Any], announce: bool) -> None:
     _LAST_ERRORS[agent] = error
 
 
-def _apply_to_agents(
-    principal: str, agents: list[str], announce: bool,
-) -> dict[str, dict[str, Any]]:
+def _apply_to_agents(agents: list[str], announce: bool) -> dict[str, dict[str, Any]]:
     """The blocking half of a sweep, run off the event loop.
 
     Mints the proxy URL once — that is one read of this pod's token store — then writes
-    every agent.
+    every agent. Also drains any sessions left behind by a store this pod would not
+    adopt; this is the one place a network call for that is safe to make.
     """
     try:
-        proxy_url = _composio_proxy_url(principal)
+        drain_orphaned_sessions()
+    except Exception as exc:
+        log.warning("composio: could not drain orphaned sessions: %s", exc)
+
+    try:
+        proxy_url = _composio_proxy_url()
     except Exception as exc:
         log.warning("composio: gateway install could not build proxy URL: %s", exc)
         results = {agent: {"ok": False, "error": str(exc)} for agent in agents}
@@ -921,7 +1051,7 @@ def _apply_to_agents(
     results: dict[str, dict[str, Any]] = {}
     for agent in agents:
         try:
-            result = install_into_gateway(principal, agent, proxy_url=proxy_url)
+            result = install_into_gateway(agent, proxy_url=proxy_url)
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         results[agent] = result
@@ -933,8 +1063,8 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
     """One idempotent sweep: point every agent whose manifest declares an enabled
     ``mcp`` block at this workspace's Composio proxy.
 
-    Identity: ``install_into_gateway`` wants this workspace's principal, and there is
-    no request to carry one. The backend holds its own XO credential, so it asks
+    Identity: ``install_into_gateway`` wants this account's Composio user id, and there
+    is no request to carry one. The backend holds its own XO credential, so it asks
     xo-swarm-api directly — the same fetch every later request reads from cache, so
     this also warms it.
 
@@ -977,22 +1107,27 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
             except state.WorkspaceIdentityUnavailable as exc:
                 detail = f"{exc} — {state.WORKSPACE_ENV} is injected by the Coder pod"
                 log.warning(
-                    "composio: %s; refusing to install an MCP config bound to an "
-                    "unscoped Composio bucket, which every workspace of this account "
-                    "would share.", detail,
+                    "composio: %s; the session store cannot be stamped, so it could not "
+                    "be told apart from one restored out of another workspace.", detail,
                 )
                 return GatewaySweep(skipped="no_workspace", detail=detail)
 
-            # A store that already names its owner lets the principal fetch fall back
-            # to it during a swarm outage (state.principal_payload), so read it first.
+            # A store that already names its account lets the identity fetch fall
+            # back to it during a swarm outage (state.identity_payload), so read first.
             _ensure_sessions_loaded()
 
+            # The value is not needed to write an agent's config — the proxy URL carries
+            # an opaque token, not an identity. It is fetched anyway because it is the
+            # gate (an account we cannot name is an install we should not do) and because
+            # doing it here warms the cache every later request reads, and records the
+            # account in this pod's store for the offline hot path.
             try:
-                principal = await state.aprincipal()
+                account_id = await state.aaccount_id()
+                state.adopt_account_id(account_id)
             except state.StateUnavailable as exc:
                 retryable = not exc.authoritative
                 detail = (
-                    f"xo-swarm-api could not provide this workspace's principal ({exc})"
+                    f"xo-swarm-api could not provide this account's id ({exc})"
                     if retryable else
                     f"xo-swarm-api rejected this backend's XO credential ({exc})"
                 )
@@ -1002,23 +1137,23 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                     "the next sweep retries" if retryable else "fix it and restart",
                 )
                 return GatewaySweep(
-                    skipped="principal_unavailable", retryable=retryable, detail=detail,
+                    skipped="account_unavailable", retryable=retryable, detail=detail,
                 )
             except Exception as exc:  # network/JSON faults must not break boot
-                detail = f"xo-swarm-api could not provide this workspace's principal ({exc})"
+                detail = f"xo-swarm-api could not provide this account's id ({exc})"
                 log.warning(
                     "composio: %s; skipping MCP install. Agents keep their existing "
                     "config; the next sweep retries.", detail,
                 )
                 return GatewaySweep(
-                    skipped="principal_unavailable", retryable=True, detail=detail,
+                    skipped="account_unavailable", retryable=True, detail=detail,
                 )
 
-            # Now that the principal is known, a pre-ownership store can classify and
-            # upgrade itself — which keeps the proxy serving locally through a later outage.
+            # Now that the account is known, an unstamped store can classify and
+            # rewrite itself — which keeps the proxy serving locally through a later outage.
             _ensure_sessions_loaded()
 
-            results = await asyncio.to_thread(_apply_to_agents, principal, agents, announce)
+            results = await asyncio.to_thread(_apply_to_agents, agents, announce)
             return GatewaySweep(results=results)
         finally:
             _LAST_SWEEP_AT = time.monotonic()
@@ -1039,7 +1174,7 @@ async def gateway_reconcile_loop() -> None:
             sweep = await install_gateways(announce=announce)
         except Exception as exc:  # a bug must not kill the timer; the next tick retries
             log.exception("composio: gateway sweep failed unexpectedly: %s", exc)
-            sweep = GatewaySweep(skipped="principal_unavailable", retryable=True, detail=str(exc))
+            sweep = GatewaySweep(skipped="account_unavailable", retryable=True, detail=str(exc))
         announce = False
 
         if sweep.skipped and not sweep.retryable:

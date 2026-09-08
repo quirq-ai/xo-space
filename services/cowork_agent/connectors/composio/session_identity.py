@@ -4,7 +4,7 @@ The UI needs *some* bearer on the Composio routes, because those are the one par
 server that refuse to act without knowing the request came from a vouched-for tab. It does
 not need an identity: this backend serves exactly one XO account and runs in exactly one
 workspace, so the tenant key is a constant fetched from xo-swarm-api
-(:func:`.state.aprincipal`), not something a session id selects.
+(:func:`.state.aaccount_id`), not something a session id selects.
 
 **The ids are minted by xo-swarm-api** (``POST /auth/session/self``,
 ``auth/session_identity.py`` over there), which is where authentication lives. This module

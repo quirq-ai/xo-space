@@ -10,10 +10,32 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.composio import service as composio_service
+from services.cowork_agent.connectors.composio import state as composio_state
+from services.cowork_agent.connectors.composio import workspace_scope
 from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _legacy_connection_counts() -> list[dict[str, Any]]:
+    """Toolkits still holding connections under the retired workspace-scoped user id.
+
+    Drives the reconnect prompt. Best-effort and never fatal: a swarm that cannot be
+    reached simply means the prompt does not appear this time round.
+    """
+    try:
+        legacy = await composio_state.alegacy_principal()
+    except Exception:
+        return []
+    counts: dict[str, int] = {}
+    for row in composio_service.legacy_connections(legacy):
+        slug = (row.get("toolkit") or "").upper()
+        if slug:
+            counts[slug] = counts.get(slug, 0) + 1
+    return [
+        {"toolkit": slug, "count": count} for slug, count in sorted(counts.items())
+    ]
 
 
 def _status_map_from_rows(
@@ -81,15 +103,18 @@ async def list_toolkits(
     classified = composio_categories.classified_toolkits()
 
     multi = composio_service.multi_account_config()
+    scope = workspace_scope.load()
 
     toolkits: list[dict[str, Any]] = []
     for toolkit_id, meta in composio_service.TOOLKITS.items():
         connection = status_by_slug.get(meta.slug)
+        entry = scope.get(toolkit_id) or {}
         toolkits.append({
             "id": toolkit_id,
             "slug": meta.slug,
             "display_name": meta.display_name,
             "schemes": list(meta.schemes),
+            # Account-wide: whether the account holds a connection at all.
             "status": (connection or {}).get("status", "NEEDS_AUTH"),
             "connected_account_id": (connection or {}).get("connected_account_id"),
             "scheme": (connection or {}).get("scheme"),
@@ -98,10 +123,16 @@ async def list_toolkits(
             # rest reads /{toolkit}/accounts.
             "alias": (connection or {}).get("alias"),
             "account_count": account_counts.get(meta.slug, 0),
+            # Workspace-scoped: a toolkit can be connected on the account and still
+            # be off here. That is the whole point of the split.
+            "workspace_enabled": bool(entry.get("enabled")),
+            "pinned_account_ids": list(entry.get("connected_account_ids") or []),
         })
     return JSONResponse({
         "toolkits": toolkits,
         "multi_account": multi or {"enable": False},
+        "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
+        "legacy_connections": await _legacy_connection_counts(),
     })
 
 
@@ -142,6 +173,22 @@ async def connect_status(
 ) -> JSONResponse:
     result = composio_service.check_connection(connection_request_id)
     if (result.get("status") or "").upper() == "ACTIVE":
+        # The workspace that ran the OAuth flow gets the connection without a second
+        # step. Every *other* workspace of the account starts with it off and opts in —
+        # connections are account-wide now, reach is not.
+        connected_account_id = result.get("connected_account_id")
+        if connected_account_id:
+            try:
+                workspace_scope.adopt_connection(
+                    toolkit,
+                    connected_account_id,
+                    max_accounts=composio_service.max_accounts_per_toolkit(),
+                )
+            except Exception as exc:
+                log.warning(
+                    "composio: could not enable %s in this workspace after connect: %s",
+                    toolkit, exc,
+                )
         composio_service.sync_session(user_id)
     return JSONResponse(result)
 
@@ -152,6 +199,15 @@ async def disconnect(
     body: DisconnectBody,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    """Delete a connected account. **Account-wide** — every workspace loses it.
+
+    Since connections belong to the account, this is destructive well beyond the
+    workspace making the call, and the UI confirms it. To stop using a connection *here*
+    without touching anyone else, use the unlink route below.
+
+    Other workspaces cannot be reached to clean their pins; their next session build
+    prunes the dead id itself (see ``service.prune_scope_to_live_accounts``).
+    """
     owned = {
         r.get("connected_account_id") for r in composio_service.list_connections(user_id)
     }
@@ -163,6 +219,7 @@ async def disconnect(
     ok = composio_service.disconnect(body.connected_account_id)
     if not ok:
         raise HTTPException(status_code=502, detail="Composio disconnect failed.")
+    workspace_scope.unlink_account(toolkit, body.connected_account_id)
     rows = composio_service.list_connections(user_id)
     still_connected = any(
         r.get("connected_account_id") == body.connected_account_id and r.get("status") == "ACTIVE"
@@ -172,16 +229,116 @@ async def disconnect(
     return JSONResponse({"status": "needs_auth" if not still_connected else "connected"})
 
 
+@router.post("/api/connectors/composio/{toolkit}/accounts/{connected_account_id}/unlink")
+async def unlink_account(
+    toolkit: str,
+    connected_account_id: str,
+    user_id: str = Depends(get_composio_user),
+) -> JSONResponse:
+    """Stop using one connected account *in this workspace*. Nothing is deleted.
+
+    The account stays connected on the XO account and in every other workspace that has
+    pinned it. A toolkit left with no pins is switched off here rather than falling back
+    to Composio's most-recently-connected default, which would quietly re-point it.
+    """
+    try:
+        accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if not any(
+        row.get("connected_account_id") == connected_account_id for row in accounts
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="No such connected account for this user and toolkit.",
+        )
+    entry = workspace_scope.unlink_account(toolkit, connected_account_id)
+    composio_service.sync_session(user_id)
+    return JSONResponse({
+        "toolkit": toolkit,
+        "workspace_enabled": bool(entry.get("enabled")),
+        "pinned_account_ids": list(entry.get("connected_account_ids") or []),
+    })
+
+
+class ScopeBody(BaseModel):
+    """This workspace's opinion about one toolkit. Omitted fields are left alone."""
+
+    enabled: Optional[bool] = None
+    connected_account_ids: Optional[list[str]] = None
+
+
+@router.get("/api/connectors/composio/{toolkit}/scope")
+async def get_toolkit_scope(
+    toolkit: str,
+    user_id: str = Depends(get_composio_user),
+) -> JSONResponse:
+    entry = workspace_scope.load().get(toolkit) or {}
+    return JSONResponse({
+        "toolkit": toolkit,
+        "workspace_enabled": bool(entry.get("enabled")),
+        "pinned_account_ids": list(entry.get("connected_account_ids") or []),
+        "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
+    })
+
+
+@router.put("/api/connectors/composio/{toolkit}/scope")
+async def put_toolkit_scope(
+    toolkit: str,
+    body: ScopeBody,
+    user_id: str = Depends(get_composio_user),
+) -> JSONResponse:
+    """Choose what this workspace reaches for one toolkit.
+
+    A pinned account must be one the XO account actually holds — validated here so a
+    typo is a 422 naming the id, rather than a session creation that fails for every
+    toolkit at once.
+    """
+    if toolkit not in composio_service.TOOLKITS:
+        raise HTTPException(status_code=404, detail=f"Unknown toolkit '{toolkit}'.")
+
+    if body.connected_account_ids is not None:
+        owned = {
+            row.get("connected_account_id")
+            for row in composio_service.list_toolkit_accounts(user_id, toolkit)
+        }
+        unknown = [cid for cid in body.connected_account_ids if cid not in owned]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Not a connected account of this user on {toolkit}: "
+                    f"{', '.join(unknown)}."
+                ),
+            )
+
+    entry = workspace_scope.set_toolkit(
+        toolkit,
+        enabled=body.enabled,
+        connected_account_ids=body.connected_account_ids,
+        max_accounts=composio_service.max_accounts_per_toolkit(),
+    )
+    composio_service.sync_session(user_id)
+    return JSONResponse({
+        "toolkit": toolkit,
+        "workspace_enabled": bool(entry.get("enabled")),
+        "pinned_account_ids": list(entry.get("connected_account_ids") or []),
+    })
+
+
 @router.get("/api/connectors/composio/{toolkit}/accounts")
 async def list_toolkit_accounts(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    """Every connected account this principal holds for one toolkit.
+    """Every connected account the XO account holds for one toolkit.
 
-    Newest first. `is_default` marks the account a tool call gets when it names
-    none; `pinned` marks the accounts actually reachable from the agent's
-    session, which is only more than one when multi-account mode is on.
+    Newest first. `pinned` marks the accounts **this workspace** has chosen, which is
+    what the agent's session can actually reach; `is_default` marks the one a tool call
+    gets when it names none.
+
+    The account list is account-wide, so a connection made in a sibling workspace shows
+    up here unpinned — ready to be enabled, not silently in use.
     """
     try:
         accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
@@ -189,9 +346,8 @@ async def list_toolkit_accounts(
         raise HTTPException(status_code=404, detail=str(exc))
 
     slug = composio_service.toolkit_meta(toolkit).slug
-    pinned = set(
-        composio_service.pinned_connected_accounts(user_id).get(slug.lower(), [])
-    )
+    scope_entry = workspace_scope.load().get(toolkit) or {}
+    pinned = set(scope_entry.get("connected_account_ids") or [])
     default_seen = False
     for row in accounts:
         cid = row.get("connected_account_id")
@@ -209,6 +365,8 @@ async def list_toolkit_accounts(
         "toolkit": slug,
         "accounts": accounts,
         "multi_account": multi or {"enable": False},
+        "workspace_enabled": bool(scope_entry.get("enabled")),
+        "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
     })
 
 
@@ -281,7 +439,7 @@ async def get_toolkit_prefs(
 ) -> JSONResponse:
     from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
     return JSONResponse(
-        {"actions": composio_action_prefs.get_toolkit_prefs(toolkit, user_id)}
+        {"actions": composio_action_prefs.get_toolkit_prefs(toolkit)}
     )
 
 
@@ -298,7 +456,7 @@ async def put_toolkit_prefs(
             status_code=404,
             detail=f"Per-action prefs are not configurable for toolkit '{toolkit}' yet.",
         )
-    updated = composio_action_prefs.bulk_set(toolkit, body.actions, user_id)
+    updated = composio_action_prefs.bulk_set(toolkit, body.actions)
     composio_service.sync_session(user_id)
     return JSONResponse({"actions": updated})
 

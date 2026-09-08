@@ -42,8 +42,12 @@
 .conn-card-id h2{font:500 18px var(--serif);margin:0}
 .conn-card-head i{font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;font-style:normal;color:var(--ink-3);white-space:nowrap;padding-top:3px}
 .conn-card-head i.is-good{color:var(--accent-deep)}
+/* Connected on the account but off in this workspace: a deliberate state, not a
+   fault, so it reads as muted rather than as an error. */
+.conn-card-head i.is-idle{color:var(--ink-2)}
 
 .conn-card-body{padding:0 18px}
+.conn-card-note{margin:9px 0 0;font-size:11.5px;line-height:1.45;color:var(--ink-3)}
 .conn-facts{display:flex;flex-wrap:wrap;gap:6px}
 .conn-fact{font:500 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
 

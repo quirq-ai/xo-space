@@ -41,10 +41,10 @@ async def _resolve_user_id(request: Request) -> str | None:
     """Resolve the Composio user_id for an incoming chat request.
 
     The bearer is a gate, not a selector: this backend has exactly one Composio
-    principal, fetched from xo-swarm-api. ``body.user_id`` is still never trusted.
+    account id, fetched from xo-swarm-api. ``body.user_id`` is still never trusted.
     Chat/session storage is unchanged.
 
-    Returns None when the request carries no valid session, or when the principal
+    Returns None when the request carries no valid session, or when the account id
     cannot be resolved. Chat still runs — the agent simply gets no Composio MCP
     server for that turn, which is the only safe answer.
     """

@@ -35,7 +35,7 @@ def _forwarded_headers(incoming: dict[str, str], inject: dict[str, str]) -> dict
 async def _proxy_user(token: str | None) -> str | None:
     if not token:
         return None
-    return await composio_service.user_for_proxy_token(token)
+    return await composio_service.account_for_proxy_token(token)
 
 
 _IDENTITY_REQUIRED = {
@@ -62,6 +62,14 @@ async def _proxy(
 
     try:
         entry = composio_service.build_mcp_server_entry(user_id)
+    except composio_service.NoToolkitsEnabled as exc:
+        # Not a fault: connections are account-wide and this workspace has enabled none
+        # of them. 409 rather than 502 so the agent reports "nothing turned on here"
+        # instead of "Composio is broken".
+        return JSONResponse(
+            status_code=409,
+            content={"error": "composio_no_toolkits_enabled", "detail": str(exc)},
+        )
     except Exception as exc:
         log.exception("mcp_proxy: build_mcp_server_entry failed")
         return JSONResponse(

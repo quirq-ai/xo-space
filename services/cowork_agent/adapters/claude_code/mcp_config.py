@@ -7,11 +7,11 @@ session-level meta-tools (SEARCH_TOOLS, MULTI_EXECUTE_TOOL,
 MANAGE_CONNECTIONS, GET_TOOL_SCHEMAS, REMOTE_WORKBENCH, REMOTE_BASH_TOOL).
 
 The URL written into the file is xo-cowork-api's loopback MCP proxy
-(`composio_service._composio_proxy_url(user_id)` →
+(`composio_service._composio_proxy_url()` →
 `http://127.0.0.1:<PORT>/mcp/composio-proxy/u/<token>`). The proxy resolves that
-opaque token to this session's user and injects the Composio credential
+opaque token to this workspace's Composio account and injects the credential
 server-side at request time. Net: this file holds no Composio credentials — only
-a localhost URL scoped to one user.
+a localhost URL this pod alone can resolve.
 
 The file lives under /tmp/xo-cowork/<session>/mcp.json and is unlinked
 after the subprocess exits.
@@ -57,7 +57,7 @@ def write_session_mcp_config(user_id: Optional[str], session_key: Optional[str])
     # proxy resolves this session's user from the opaque token and injects
     # x-api-key server-side. See services/cowork_agent/composio/mcp_proxy.py.
     try:
-        proxy_url = composio_service._composio_proxy_url(user_id)
+        proxy_url = composio_service._composio_proxy_url()
     except Exception as exc:
         # No user, or the token store is unwritable. Degrade to "no Composio
         # tools this turn" rather than killing the chat.
@@ -69,9 +69,10 @@ def write_session_mcp_config(user_id: Optional[str], session_key: Optional[str])
     session_dir = _MCP_TMP_ROOT / (session_key or uuid.uuid4().hex)
     session_dir.mkdir(parents=True, exist_ok=True)
     config_path = session_dir / "mcp.json"
-    # Key must match adapters/claude_code/mcp_install.SERVER_NAME: --mcp-config is
-    # additive, so a per-turn key that disagreed with the persistent one would
-    # register both servers and duplicate every tool.
+    # Key must match the "composio" entry the manifest-driven writer installs
+    # (connectors/composio/mcp.py): --mcp-config is additive, so a per-turn key that
+    # disagreed with the persistent one would register both servers and duplicate
+    # every tool.
     payload = {"mcpServers": {"composio": server_entry}}
 
     tmp_fd, tmp_path = tempfile.mkstemp(prefix=".mcp.", suffix=".json", dir=str(session_dir))

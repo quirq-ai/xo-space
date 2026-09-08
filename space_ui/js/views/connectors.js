@@ -1,10 +1,16 @@
 /* Connectors tab — Composio toolkits.
 
-   The eight toolkits are OAuth2-only and per-user: identity is a
-   workspace-scoped principal resolved from an X-XO-Session header, so every
-   call here goes through core/session.js. Nothing on this page holds a
-   provider credential; the server keeps the Composio API key and injects it
-   into the MCP proxy, so the browser only ever sees status.
+   The eight toolkits are OAuth2-only. Identity is the XO account id resolved from
+   an X-XO-Session header, so every call here goes through core/session.js. Nothing
+   on this page holds a provider credential; the server keeps the Composio API key
+   and injects it into the MCP proxy, so the browser only ever sees status.
+
+   Two independent states per card, and the UI has to keep them apart:
+     - connected      -> the ACCOUNT holds a connection (shared by every workspace)
+     - enabled here   -> THIS workspace has turned it on
+   A card can be connected and off, which is the normal state for a workspace that
+   did not run the OAuth flow itself. Hence two controls: "Turn off here" edits
+   only this workspace, "Delete connection" removes it account-wide.
 
    Three failure modes are first-class states, not errors to hide:
      - no XO session      -> the backend holds no credential to identify you
@@ -96,6 +102,7 @@ async function loadAll(){
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
+    renderLegacyNotice((list.data&&list.data.legacy_connections)||[]);
     renderGrid();
   }finally{
     loading=false;
@@ -105,7 +112,7 @@ async function loadAll(){
 function renderSignedOut(){
   setAlert('pending',
     'Sign in to XO to use connectors',
-    (sessionError()||'')+' Connections are scoped to this workspace, so this page needs an '
+    (sessionError()||'')+' Connections belong to your XO account, so this page needs an '
       +'identity. Set XO_API_KEY in .env, or sign in from the app, then refresh.');
   root.querySelector('#conn-grid').innerHTML=
     '<div class="conn-empty">No identity &mdash; nothing to show yet.</div>';
@@ -160,6 +167,30 @@ function renderListFailure(res){
 /* ---------- rendering ---------- */
 
 function isConnected(t){return String(t.status||'').toUpperCase()==='ACTIVE';}
+function isEnabledHere(t){return !!t.workspace_enabled;}
+
+/* Connections are account-wide; reach is not. A toolkit connected on the account but
+   not enabled here is the normal state for a workspace that did not run the OAuth
+   flow, so it gets its own label rather than reading as broken. */
+function statusOf(t){
+  if(!isConnected(t))return{text:'Not connected',cls:''};
+  if(!isEnabledHere(t))return{text:'Off in this workspace',cls:'is-idle'};
+  return{text:'On in this workspace',cls:'is-good'};
+}
+
+/* One connection stranded under the retired workspace-scoped identity cannot be
+   reached from an account-scoped session — Composio requires a pinned account to
+   belong to the session's user. Reconnecting is the only fix, so say so plainly. */
+function renderLegacyNotice(rows){
+  if(!rows||!rows.length){setAlert(null);return;}
+  const total=rows.reduce((n,r)=>n+(r.count||0),0);
+  const names=rows.map(r=>esc(r.toolkit)).join(', ');
+  setAlert('pending',
+    total+' connection'+(total===1?'':'s')+' need reconnecting',
+    'These were made under the old per-workspace scheme and are no longer reachable: '
+      +'<b>'+names+'</b>. Connections are now shared across your whole XO account &mdash; '
+      +'reconnect each one once and every workspace can use it.');
+}
 
 function renderGrid(){
   const grid=root.querySelector('#conn-grid');
@@ -172,28 +203,42 @@ function renderGrid(){
 
 function renderCard(t){
   const connected=isConnected(t);
-  const status=connected?'Connected':'Not connected';
+  const enabled=isEnabledHere(t);
+  const status=statusOf(t);
   const open=openToolkit===t.id;
-  return'<article class="conn-card'+(connected?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
+  return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
         +'<span>'+esc(t.slug||'')+'</span>'
         +'<h2>'+esc(t.display_name||t.id)+'</h2>'
       +'</div>'
-      +'<i class="'+(connected?'is-good':'')+'">'+status+'</i>'
+      +'<i class="'+status.cls+'">'+esc(status.text)+'</i>'
     +'</div>'
     +'<div class="conn-card-body">'
       +'<div class="conn-facts">'
         +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).join(', '))+'</span>'
         +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
+        +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
       +'</div>'
+      +(connected&&!enabled
+        ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
+          +'workspace&rsquo;s agent use it.</p>'
+        :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
     +'<div class="conn-card-acts">'
+      +(!connected
+        ?'<button class="conn-primary" data-action="connect">Connect</button>'
+        :(enabled
+          ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
+          :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
+      /* Deleting is account-wide, so it is kept visually apart from the
+         workspace-local toggle above and confirmed before it runs. */
       +(connected
-        ?'<button class="conn-secondary is-danger" data-action="disconnect">Disconnect</button>'
-        :'<button class="conn-primary" data-action="connect">Connect</button>')
-      +(connected&&t.supports_action_prefs
+        ?'<button class="conn-secondary is-danger" data-action="disconnect">'
+          +'Delete connection&hellip;</button>'
+        :'')
+      +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
         :'')
@@ -258,6 +303,8 @@ function handleGridAction(event){
   if(!card)return;
   const id=card.dataset.toolkit;
   if(button.dataset.action==='connect')connect(id,button);
+  else if(button.dataset.action==='enable')setScope(id,true,button);
+  else if(button.dataset.action==='unlink')setScope(id,false,button);
   else if(button.dataset.action==='disconnect')disconnect(id,button);
   else if(button.dataset.action==='actions')toggleDrawer(id);
 }
@@ -325,15 +372,41 @@ async function pollUntilConnected(toolkitId,requestId,popup){
   cardError(toolkitId,'Timed out waiting for authorization. Try again.');
 }
 
+/* Turning a toolkit on or off for THIS workspace only. Nothing is deleted, and no
+   other workspace is affected — the whole reason connections became account-wide. */
+async function setScope(toolkitId,enabled,button){
+  const toolkit=toolkits.find(t=>t.id===toolkitId);
+  if(!toolkit)return;
+  cardError(toolkitId,'');
+  setBusy(button,true);
+  try{
+    const path=BASE+'/'+encodeURIComponent(toolkitId)
+      +(enabled?'/scope':'/accounts/'+encodeURIComponent(toolkit.connected_account_id||'')+'/unlink');
+    const res=enabled
+      ? await apiFetch(path,{method:'PUT',headers:sessionHeaders(),
+          body:{enabled:true,
+                connected_account_ids:[toolkit.connected_account_id].filter(Boolean)}})
+      : await apiFetch(path,{method:'POST',headers:sessionHeaders()});
+    if(!res.ok){cardError(toolkitId,res.error||'Could not save that change.');return;}
+    toast(labelFor(toolkitId)+(enabled?' on in this workspace':' off in this workspace'));
+    if(!enabled&&openToolkit===toolkitId)openToolkit=null;
+    await loadAll();
+  }finally{
+    setBusy(button,false);
+  }
+}
+
 async function disconnect(toolkitId,button){
   const toolkit=toolkits.find(t=>t.id===toolkitId);
   if(!toolkit||!toolkit.connected_account_id)return;
-  /* "remove from this workspace" is the honest verb: the server deletes the
-     connected account at Composio, it does not revoke the grant at the
-     provider. Say so rather than implying a full revoke. */
-  if(!confirm('Disconnect '+labelFor(toolkitId)+'?\n\nThis removes the connection '
-    +'from this workspace. You may also want to remove access in your '
-    +labelFor(toolkitId)+' account settings.'))return;
+  /* Account-wide and irreversible, so the confirm has to say so: this is not the
+     workspace-local "Turn off here" above. It deletes the connected account at
+     Composio; it does not revoke the grant at the provider. */
+  if(!confirm('Delete the '+labelFor(toolkitId)+' connection?\n\n'
+    +'This removes it from EVERY workspace in your XO account, not just this one. '
+    +'To stop using it here only, choose "Turn off here" instead.\n\n'
+    +'You may also want to remove access in your '+labelFor(toolkitId)
+    +' account settings.'))return;
   cardError(toolkitId,'');
   setBusy(button,true);
   try{
@@ -342,8 +415,8 @@ async function disconnect(toolkitId,button){
       body:{connected_account_id:toolkit.connected_account_id},
       headers:sessionHeaders(),
     });
-    if(!res.ok){cardError(toolkitId,res.error||'Disconnect failed.');return;}
-    toast(labelFor(toolkitId)+' disconnected');
+    if(!res.ok){cardError(toolkitId,res.error||'Delete failed.');return;}
+    toast(labelFor(toolkitId)+' connection deleted');
     if(openToolkit===toolkitId)openToolkit=null;
     delete toolsCache[toolkitId];
     await loadAll();
