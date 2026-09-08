@@ -39,9 +39,13 @@
 ## Validation
 
 - The project venv is `venv/bin/python` (system `python3` lacks fastapi).
-- After touching core, run `venv/bin/python scripts/check_agent_modularity.py` (must pass).
-- Import gate + route parity (expect 146 / 149 / 173 for claude_code / openclaw / hermes):
-  `AGENT_NAME=<a> venv/bin/python -c "import server"`.
+- After touching core, uphold the modularity invariant (no agent name in core
+  code; see DEVELOPING.md §6). The AST guard is local dev tooling and is not in
+  this repo — verify by hand against the allowlist in §6 if you do not have it.
+- Import gate + route parity: `venv/bin/python scripts/check_route_parity.py`
+  (must pass). It asserts the invariant — every agent's surface is the shared
+  core plus exactly its own `adapters/<name>/routes.py` — instead of a
+  hardcoded total, which rots on every route added.
 - Validate changes with lints/tests/compile where feasible.
 - Keep edits minimal and targeted to the requested task.
 
