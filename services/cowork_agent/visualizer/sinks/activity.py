@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from services.cowork_agent import coder_identity
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 
 # ── Write-on-change baseline (docs/syncplan.md §10, T26) ─────────────────────
@@ -135,13 +136,14 @@ def _row_sort_key(row: dict) -> tuple[str, str]:
 
 
 def _resolve_user_id() -> str:
-    """Same lookup as :mod:`project_json`. Per docs/watcher-design.md
-    §8.1: ``get_auth_state().get("user_id") or "local"``."""
-    try:
-        from routers.auth.auth import get_auth_state
-        return get_auth_state().get("user_id") or "local"
-    except Exception:
-        return "local"
+    """Same answer as :mod:`project_json` and ``workspace/space_json`` — all
+    three now resolve through :mod:`services.cowork_agent.coder_identity`.
+
+    Consistency is the point: a presence row saying ``user_id: "local"``
+    beside a ``project.json`` saying ``owner_user_id: "ankitdwivedi"`` would
+    describe two different people doing the same work.
+    """
+    return coder_identity.resolve_user_id()
 
 
 def apply(

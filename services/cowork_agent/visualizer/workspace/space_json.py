@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import services.cowork_agent.adapters as _adapters_pkg
+from services.cowork_agent import coder_identity
 from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.project_layout import workspace_xo_dir, xo_projects_root
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
@@ -66,6 +67,7 @@ OWNS = frozenset(
         "$schema",
         "schema",
         "space_id",
+        "coder_workspace_id",
         "owner_user_id",
         "created_at",
         "updated_at",
@@ -113,13 +115,16 @@ def path() -> Path:
 
 
 def space_id() -> Optional[str]:
-    """The externally assigned Space id, or ``None`` off Coder.
+    """The Space id — ``<owner>:<workspace>_<last6>``, ``None`` off Coder.
 
-    Captured, never minted — see the module docstring. The environment is
-    read on every call so a container rebuild that changes the id is
-    picked up without a restart.
+    e.g. ``ankitdwivedi:collabse_07c611``. Minted from Coder's own
+    environment rather than captured verbatim (2026-09-08, reversing
+    syncplan O1); :func:`coder_identity.space_id` carries the reasoning and
+    the graded degradation. The raw ``CODER_WORKSPACE_ID`` is persisted
+    beside it as ``coder_workspace_id``, so nothing has to parse the
+    composite to recover the assigned id.
     """
-    return (os.getenv("CODER_WORKSPACE_ID", "") or "").strip() or None
+    return coder_identity.space_id()
 
 
 def _label() -> Optional[str]:
@@ -127,18 +132,14 @@ def _label() -> Optional[str]:
 
 
 def _resolve_user_id() -> str:
-    """The local user id from the auth state, falling back to ``"local"``.
+    """Auth state, else the Coder workspace owner, else ``"local"``.
 
-    Imported lazily because ``routers.auth`` triggers FastAPI app
-    construction at import time in some test paths. (The same three lines
-    as ``sinks/project_json`` and ``sinks/activity`` — duplicated rather
-    than shared so a sink never imports another sink's privates.)
+    Was three duplicated copies (here, ``sinks/project_json``,
+    ``sinks/activity``) kept apart so a sink never imported another sink's
+    privates. :mod:`services.cowork_agent.coder_identity` is not a sink, so
+    it can hold the answer once and all three can agree on it.
     """
-    try:
-        from routers.auth.auth import get_auth_state
-        return get_auth_state().get("user_id") or "local"
-    except Exception:
-        return "local"
+    return coder_identity.resolve_user_id()
 
 
 def _capabilities(agent: str) -> list[str]:
@@ -242,18 +243,30 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
     if not isinstance(created_at, str) or not created_at:
         created_at = stamp
 
-    # Never downgrade a resolved user id back to the "local" fallback: the
-    # auth state is momentarily unreadable far more often than a Space
-    # actually changes hands.
+    # A stored owner is never overwritten — the same rule ``project.json``
+    # follows, and for the same reason: a Space changing hands is far rarer
+    # than a momentarily unreadable auth state, and reassigning ownership by
+    # accident is not recoverable from the record itself.
+    #
+    # This used to test ``owner == "local"``, which was sufficient only while
+    # "local" was the *only* fallback. Now that an unauthenticated Space
+    # resolves to its Coder owner instead, that test would let the Coder name
+    # overwrite a stored, authenticated id — so the condition is on what is
+    # *stored*, not on what was resolved.
     owner = _resolve_user_id()
     stored_owner = base.get("owner_user_id")
-    if owner == "local" and isinstance(stored_owner, str) and stored_owner:
+    if not coder_identity.is_placeholder_user_id(stored_owner):
         owner = stored_owner
 
     return {
         "$schema": "xo/space.schema.json",
         "schema": SCHEMA,
         "space_id": space_id(),
+        # The id Coder actually assigned, verbatim. ``space_id`` is now a
+        # composite, and the whole point of O1's "captured, never minted"
+        # was that the assigned id must not be lost — so it is kept, not
+        # reconstructed by parsing the composite.
+        "coder_workspace_id": coder_identity.workspace_id(),
         "label": _label(),
         "owner_user_id": owner,
         "created_at": created_at,

@@ -39,6 +39,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services.cowork_agent import coder_identity
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
     write_json_owned,
@@ -71,17 +72,11 @@ def _now_iso() -> str:
 
 
 def _resolve_user_id() -> str:
-    """Pull the local user id from the auth state, falling back to
-    ``"local"`` (see docs/watcher-design.md §8.1).
-
-    Imported lazily because ``routers.auth`` triggers FastAPI app
-    construction at import time in some test paths.
+    """The owning user: auth state, else the Coder workspace owner, else
+    ``"local"``. Resolution lives in :mod:`services.cowork_agent.coder_identity`
+    so all three records that carry an identity agree on it.
     """
-    try:
-        from routers.auth.auth import get_auth_state
-        return (get_auth_state().get("user_id") or "local")
-    except Exception:
-        return "local"
+    return coder_identity.resolve_user_id()
 
 
 def _warn_unreadable_once(path: Path) -> None:
@@ -96,10 +91,22 @@ def _warn_unreadable_once(path: Path) -> None:
     )
 
 
-def fill_identity(xo_dir: Path, project_id: str) -> bool:
+def fill_identity(
+    xo_dir: Path, project_id: str, *, upgrade_placeholder_owner: bool = True
+) -> bool:
     """Run the one-shot identity fill if needed.
 
     Returns ``True`` iff ``project.json`` was rewritten.
+
+    ``upgrade_placeholder_owner=False`` restores the strict "no-op once the
+    pid is minted" behaviour. ``visualizer/migrate.py`` needs it: it calls
+    this only to guarantee a pid exists before it has a stable runtime key
+    to move files to, and its contract is that the **synced tree is left
+    untouched** (``test_migrate.test_the_synced_contract_is_left_alone``).
+    A layout migration quietly rewriting identity as a side effect is
+    exactly the kind of unasked-for write that contract exists to forbid.
+    The upgrade still lands — on the watcher's next tick, which calls this
+    for every project anyway.
     """
     if not xo_dir.parent.is_dir():
         # The folder *is* the project (see
@@ -125,9 +132,25 @@ def fill_identity(xo_dir: Path, project_id: str) -> bool:
             return False
         current = {}
 
+    # Resolved once: the guard below needs it, and so does ``values``.
+    resolved_owner = _resolve_user_id()
+    owner_is_upgradable = (
+        upgrade_placeholder_owner
+        and coder_identity.is_placeholder_user_id(current.get("owner_user_id"))
+        and not coder_identity.is_placeholder_user_id(resolved_owner)
+    )
+
     if not current.get("_template", False) and current.get("pid"):
-        # Already filled — no-op.
-        return False
+        # Already filled — no-op, with one exception. Every project minted
+        # before an identity was available carries ``owner_user_id: "local"``
+        # frozen in, and this early return is what would keep it there
+        # forever: the fill never runs again on a project that has a pid. So
+        # the placeholder gets one upgrade, and only when there is a real
+        # answer to replace it with (off Coder and unauthenticated there is
+        # not, and this stays a no-op rather than rewriting "local" over
+        # "local" on every tick).
+        if not owner_is_upgradable:
+            return False
 
     # Key-scoped merge (rule R-WRITE): ``or``-default only the five keys
     # this sink owns and let ``write_json_owned`` carry every other key
@@ -137,7 +160,15 @@ def fill_identity(xo_dir: Path, project_id: str) -> bool:
         "schema": current.get("schema") or _SCHEMA_VERSION,
         "pid": current.get("pid") or str(uuid.uuid4()),
         "name": current.get("name") or project_id,
-        "owner_user_id": current.get("owner_user_id") or _resolve_user_id(),
+        # A stored owner is never overwritten — that would silently take
+        # someone else's project. ``"local"`` is the one exception: it
+        # identifies nobody and every unauthenticated Space wrote the same
+        # value, so it is treated as unset and upgraded once (2026-09-08).
+        "owner_user_id": (
+            resolved_owner
+            if owner_is_upgradable
+            else (current.get("owner_user_id") or resolved_owner)
+        ),
         "created_at": current.get("created_at") or _now_iso(),
     }
 

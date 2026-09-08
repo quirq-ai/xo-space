@@ -191,7 +191,10 @@ def _migrate_one(name: str) -> bool:
     # project.json it cannot read (so a corrupt file is a deferral, never a
     # rewritten identity).
     try:
-        project_json.fill_identity(synced, name)
+        # ``upgrade_placeholder_owner=False``: this call exists only to mint a
+        # pid, and the migration must not rewrite the synced tree for any
+        # other reason. The owner upgrade lands on the watcher's next tick.
+        project_json.fill_identity(synced, name, upgrade_placeholder_owner=False)
     except Exception:
         logger.exception("migrate: identity fill failed for %s", name)
 

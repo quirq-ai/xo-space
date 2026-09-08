@@ -15,7 +15,11 @@
     },
     "space_id": {
       "type": ["string", "null"],
-      "description": "CODER_WORKSPACE_ID — captured from the environment, never minted. Null off Coder (syncplan O1); a locally generated fallback must never be committed, because it would diverge from the externally assigned id the moment the same Space runs on Coder."
+      "description": "`<owner>:<workspace>_<last 6 of CODER_WORKSPACE_ID>`, e.g. `ankitdwivedi:collabse_07c611`. Null off Coder. Minted from Coder's own environment (2026-09-08), reversing syncplan O1's \"captured, never minted\" — a bare UUID is unreadable in a UI, a log line or an assignment. O1's actual concern, losing the externally assigned id, is met by persisting it verbatim as `coder_workspace_id` rather than by making readers parse this string. Degrades: no owner/name yields the raw id; no workspace id yields null."
+    },
+    "coder_workspace_id": {
+      "type": ["string", "null"],
+      "description": "CODER_WORKSPACE_ID verbatim — the id Coder assigned, captured and never minted. Null off Coder. This is the field to compare against anything Coder-side; `space_id` is the human-facing composite."
     },
     "label": {
       "type": ["string", "null"],

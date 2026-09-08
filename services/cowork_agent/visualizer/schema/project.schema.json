@@ -14,7 +14,7 @@
     "name":        { "type": ["string", "null"], "description": "Folder name at mint time. NOT the lookup key — every consumer keys on the directory name, which this may have drifted from after a rename." },
     "display_name": { "type": ["string", "null"], "description": "Human-readable name the user typed at creation. Written by `project_layout._upsert_metadata`; defaults to the project id when the caller supplies none." },
     "description": { "type": ["string", "null"], "description": "One-line summary the user typed at creation. Written by `project_layout._upsert_metadata`; empty string when the caller supplies none. The projects list falls back to the project's own docs when this is empty." },
-    "owner_user_id": { "type": ["string", "null"], "description": "Stable user identifier of the project owner." },
+    "owner_user_id": { "type": ["string", "null"], "description": "Stable user identifier of the project owner: the authenticated user_id, else CODER_WORKSPACE_OWNER_NAME, else \"local\". Never overwritten once a real value is stored — that would silently reassign someone else's project. The single exception is the \"local\" placeholder, which identifies nobody and was written identically by every unauthenticated Space; it is upgraded once, when a real identity becomes available (2026-09-08)." },
     "created_at":  { "type": ["string", "null"], "format": "date-time", "description": "ISO 8601 UTC timestamp of first boot." },
     "git": {
       "type": "object",

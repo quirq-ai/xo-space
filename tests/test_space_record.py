@@ -37,10 +37,23 @@ def _workspace(tmp: str) -> Path:
 
 
 def _env(tmp: str, **extra: str) -> dict:
+    """A patch dict that is **hermetic in the Coder variables**.
+
+    ``patch.dict(..., clear=False)`` leaves the developer's own environment
+    in place, and ``space_id`` is now composed from three Coder variables
+    rather than one. Without blanking them here, a run on a real Coder
+    workspace composes the developer's own owner and workspace name into the
+    result and every id assertion below fails — while the same checkout
+    passes off Coder. That is the R5 failure mode (a suite whose result
+    depends on the machine it runs on), and it is cheaper to prevent than to
+    diagnose. Empty string reads as absent, so the default is "off Coder".
+    """
     return {
         "XO_PROJECTS_ROOT": str(Path(tmp) / "projects"),
         "QUIRQ_STATE_ROOT": str(Path(tmp) / ".quirq"),
         "HOME": tmp,
+        "CODER_WORKSPACE_OWNER_NAME": "",
+        "CODER_WORKSPACE_NAME": "",
         **extra,
     }
 
