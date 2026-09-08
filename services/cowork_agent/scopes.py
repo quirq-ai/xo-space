@@ -14,7 +14,8 @@ Visualizer scopes are read-only handles over **three** roots, not one
 (docs/syncplan.md §9, T19 / Appendix A.2):
 
 * the **synced** root — ``<project>/.xo/`` — ``todos.json`` and the four
-  todo CRUD methods, plus the workspace registry;
+  todo CRUD methods, ``workitems.json`` and its seven (five CRUD plus the
+  adopt/unadopt transitions), plus the workspace registry;
 * the **runtime** root — ``~/.quirq/projects/<key>/`` per project, and
   ``~/.quirq/workspace/`` for the workspace rollups (T20) — ``stats.json``,
   ``timeline.jsonl`` and the session index, which are machine-local
@@ -29,14 +30,18 @@ opens visualizer state files. See docs/watcher-design.md §6.0.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.engine import sessions_io as session_index
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.visualizer import reader as visualizer_reader
 from services.cowork_agent.visualizer import state as watcher_state
+
+logger = logging.getLogger(__name__)
 
 
 class ScopeNotFound(Exception):
@@ -204,7 +209,8 @@ class VisualizerScope(_XoReader):
     a second clamp here (`bff-overview.md` §"Security properties").
 
     Exposes a small CRUD surface over ``.xo/todos.json`` for the
-    agent-facing ``POST/PATCH/DELETE /todos`` endpoints. Those endpoints
+    agent-facing ``POST/PATCH/DELETE /todos`` endpoints, and the same
+    over ``.xo/workitems.json`` for ``/workitems`` (workitems-plan §7.1). Those endpoints
     are the file's **only** writer, for every backend — the watcher's
     todos sink is gone (syncplan §7, T8). The CRUD helpers still take
     :func:`visualizer.flock.locked`, but against themselves: two
@@ -280,6 +286,254 @@ class VisualizerScope(_XoReader):
         from services.cowork_agent.visualizer import todos_store
         return todos_store.delete_todo(self._todos_path(), todo_id, **kwargs)
 
+    # ── Workitems CRUD (delegates to visualizer.workitems_store) ──────
+    #
+    # The sibling of the todos block above and deliberately the same
+    # shape: ``workitems.json`` is the other authored document in the
+    # synced tier, the routes are its only writer, and the store it
+    # delegates to raises the same ``(code, message)`` error type. Every
+    # method forwards ``**kwargs`` for the O-A reason spelled out above —
+    # ``delete_workitem``'s ``deleted_by`` is the exact field that was
+    # unreachable for todos, and a signature that named its arguments
+    # here would reintroduce the defect on a second document.
+
+    def _workitems_path(self):
+        # Path stays behind the handle so route files never import
+        # pathlib (P2 grep stays clean), same as ``_todos_path``.
+        from services.cowork_agent.visualizer import workitems_store  # noqa: F401
+        return self._xo_root / "workitems.json"
+
+    def create_workitem(self, **kwargs) -> dict:
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.create_workitem(self._workitems_path(), **kwargs)
+
+    def get_workitem(self, workitem_id: str, **kwargs):
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.get_workitem(
+            self._workitems_path(), workitem_id, **kwargs
+        )
+
+    def list_workitems(self, **kwargs) -> list[dict]:
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.list_workitems(self._workitems_path(), **kwargs)
+
+    def update_workitem(self, workitem_id: str, **kwargs) -> dict:
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.update_workitem(
+            self._workitems_path(), workitem_id, **kwargs
+        )
+
+    def delete_workitem(self, workitem_id: str, **kwargs) -> bool:
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.delete_workitem(
+            self._workitems_path(), workitem_id, **kwargs
+        )
+
+    def adopt_workitem(self, **kwargs) -> tuple[dict, bool]:
+        """Track a GitHub issue. Returns ``(record, created)``.
+
+        A *state transition*, not a field edit — ``source.kind`` decides
+        which fields the record may carry at all — which is why it is a
+        method of its own rather than another ``update_workitem`` call
+        (workitems-plan §13, amendment 8).
+        """
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.adopt_workitem(self._workitems_path(), **kwargs)
+
+    def unadopt_workitem(self, workitem_id: str, **kwargs) -> dict:
+        """Stop mirroring the issue, keep the workitem.
+
+        The four GitHub-owned fields are materialised in the same write
+        that drops ``source.github``: the schema *requires* ``status`` on
+        a local record and forbids it on an adopted one, so the two
+        halves cannot be separate calls without leaving an invalid
+        document in between.
+        """
+        from services.cowork_agent.visualizer import workitems_store
+        return workitems_store.unadopt_workitem(
+            self._workitems_path(), workitem_id, **kwargs
+        )
+
+    # ── The GitHub mirror (runtime tier; read-only here) ──────────────
+    #
+    # The other half of the read-time projection (§5.3). The poller is the
+    # mirror's single writer and this handle deliberately exposes no way
+    # to change that: a route that wrote a freshly-assigned login into the
+    # mirror to save a UI 60 seconds of staleness would make the document
+    # two-writer, and the merge rules in ``github_mirror`` assume it is
+    # not. The honest answer to "the mirror has not caught up yet" is to
+    # say so, not to forge the row.
+
+    def read_github_mirror(self) -> Optional[dict]:
+        """The project's GitHub issue mirror, or ``None``.
+
+        ``None`` covers every unusable state — never polled, no runtime
+        home, unreadable bytes, a schema this revision does not write —
+        because they are one state to a reader: GitHub has told us
+        nothing, so adopted items project as stale.
+        """
+        from services.cowork_agent.visualizer import github_mirror
+        try:
+            return github_mirror.read_mirror(self.project_id)
+        except Exception:
+            logger.warning(
+                "could not read the github mirror for project %s; adopted "
+                "workitems will render stale", self.project_id, exc_info=True,
+            )
+            return None
+
+    def github_repo(self) -> Optional[str]:
+        """``owner/name`` for this project's git remote, or ``None``.
+
+        Read from the durable ``project.json:git.remote_url`` — the same
+        input the poller uses, so a project the poller polls and a project
+        the adoption route can reach are the same set by construction.
+        ``None`` for no remote, an unparseable one, or a host that is not
+        github.com: an Enterprise or GitLab remote is not a repository any
+        of these calls could resolve, and saying so costs nothing.
+        """
+        from services.cowork_agent.connectors.github_issues import parse_remote_url
+        meta = project_layout.load_project(self.project_id)
+        git = meta.get("git") if isinstance(meta, dict) else None
+        url = git.get("remote_url") if isinstance(git, dict) else None
+        ref = parse_remote_url(url)
+        if ref is None or not ref.is_github_com:
+            return None
+        return ref.slug
+
+    # ── Workitem claims (runtime tier; derived in_progress) ───────────
+    #
+    # The third tier this handle spans, and the one that must not be
+    # confused with the second: ``workitems.json`` is authored state in
+    # the SYNCED root, while a claim is machine-local, disposable
+    # runtime state (workitems-plan §5.4, rule R-TIER). Resolving the
+    # path here — through ``runtime_dir_for_project``, never by hand —
+    # is what keeps a claim structurally incapable of reaching ``.xo/``,
+    # and it is also why two Spaces working the same GitHub issue each
+    # see only their own agent's progress.
+
+    def _claims_path(self, *, create: bool = False):
+        from services.cowork_agent.visualizer import workitem_claims
+        root = self._runtime_root
+        if root is None and create:
+            # The runtime home is resolved once at construction and can
+            # legitimately be ``None`` (a project whose pid has not been
+            # minted yet). A read answers empty for that; a write asks
+            # for it to be created rather than silently dropping a claim.
+            root = project_layout.runtime_dir_for_project(
+                self.project_id, create=True
+            )
+        if root is None:
+            return None
+        return workitem_claims.claims_path_for(root)
+
+    def read_claims(self) -> dict:
+        """Every claim on this project's workitems, or ``{}``.
+
+        Total by construction — an unwritable or unreadable claims file
+        reads as "nothing is claimed" rather than raising, because this
+        feeds a derived display field and not a decision.
+        """
+        from services.cowork_agent.visualizer import workitem_claims
+        path = self._claims_path()
+        if path is None:
+            return {}
+        return workitem_claims.read_claims_quiet(path)
+
+    def claim_workitem(self, workitem_id: str, **kwargs) -> dict:
+        from services.cowork_agent.visualizer import workitem_claims
+        path = self._claims_path(create=True)
+        if path is None:
+            raise workitem_claims.WorkitemClaimsError(
+                "scope_unavailable",
+                "this project has no runtime home, so a claim cannot be "
+                "recorded; it is created on first write and could not be.",
+            )
+        return workitem_claims.claim_workitem(path, workitem_id, **kwargs)
+
+    def release_workitem(self, workitem_id: str) -> bool:
+        from services.cowork_agent.visualizer import workitem_claims
+        path = self._claims_path()
+        if path is None:
+            return False
+        return workitem_claims.release_workitem(path, workitem_id)
+
+    def release_workitem_quiet(self, workitem_id: str) -> bool:
+        """The implicit release — closing or deleting a workitem.
+
+        Never raises: the workitem write has already happened, and a
+        claim left behind lapses with its session anyway.
+        """
+        from services.cowork_agent.visualizer import workitem_claims
+        path = self._claims_path()
+        if path is None:
+            return False
+        return workitem_claims.release_workitem_quiet(path, workitem_id)
+
+    def in_progress_workitem_ids(self) -> frozenset[str]:
+        """The workitems an agent is working **right now**, derived.
+
+        Nothing is stored and nothing is cleaned up: a claim whose
+        session has left ``open_sessions`` simply stops being reported,
+        which is why killing the agent process clears ``in_progress``
+        with no cleanup path to write, forget, or get wrong.
+
+        Total — any failure answers "none in progress", because this is
+        one field on a list that must keep rendering.
+        """
+        from services.cowork_agent.visualizer import workitem_claims
+        try:
+            claims = self.read_claims()
+            if not claims:
+                return frozenset()
+            live = workitem_claims.live_session_ids(self.read_activity())
+            found = workitem_claims.in_progress_ids(claims, live_sessions=live)
+            if len(found) < len(claims):
+                # Presence rows carry the runtime's *native* session id,
+                # but a claim may name the composite cowork key instead
+                # (``links.session_ids`` uses that form, and so does the
+                # plan's own example). Widen the live set through the
+                # session index only when some claim went unmatched, so
+                # the common case still costs one JSON read.
+                widened = self._live_session_handles(live)
+                if widened != live:
+                    found = workitem_claims.in_progress_ids(
+                        claims, live_sessions=widened
+                    )
+            return found
+        except Exception:
+            logger.warning(
+                "could not derive in_progress for project %s; reporting none",
+                self.project_id, exc_info=True,
+            )
+            return frozenset()
+
+    def _live_session_handles(self, live: frozenset[str]) -> frozenset[str]:
+        """``live`` plus every alternate handle for the same sessions.
+
+        ``read_one_session`` already treats the composite key, the
+        ``nativeSessionId`` and the inner ``sessionId`` as three handles
+        on one session; a claim naming any of them must resolve to the
+        same liveness answer as a claim naming the native id.
+        """
+        if not live:
+            return live
+        try:
+            rows = self.read_sessionslist()
+        except Exception:
+            return live
+        widened = set(live)
+        for key, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            native = row.get("nativeSessionId")
+            if native in live or key in live or row.get("sessionId") in live:
+                widened.add(key)
+                for handle in (native, row.get("sessionId")):
+                    if isinstance(handle, str) and handle:
+                        widened.add(handle)
+        return frozenset(widened)
+
 
 class WorkspaceVisualizerScope(_XoReader):
     """Read-only handle over the workspace tier (aggregate of all projects).
@@ -332,6 +586,173 @@ class WorkspaceVisualizerScope(_XoReader):
         """Deprecated alias for :meth:`read_projects`. ``workspace.json``
         was renamed to ``projects.json`` and reshaped (syncplan §5.2)."""
         return self.read_projects()
+
+    # ── The workspace rollup (workitems-plan §7.3, W9) ────────────────
+
+    def rollup_workitems(
+        self,
+        *,
+        assignees: Optional[Iterable[str]] = None,
+        status: Optional[str] = None,
+    ) -> "WorkitemRollup":
+        """Every project's workitems, **projected first and filtered after**.
+
+        This is the one thing the per-project route deliberately cannot do.
+        ``workitems_store.list_workitems``'s ``status`` and ``assignee``
+        filters read what is *stored*, so an adopted item never matches
+        either — it stores neither field, because GitHub owns both (§5.3).
+        Filtering there would silently drop every adopted item, which is
+        why it does not try. Here the join runs **before** the predicate:
+        each project's records are read, joined with that project's GitHub
+        mirror through :mod:`visualizer.workitem_projection`, and the
+        *result* is filtered. An adopted item therefore matches on the
+        mirror's status and the mirror's assignees, which is the only place
+        those two facts exist.
+
+        **No network, ever.** The mirror is a local JSON file the poller
+        owns; nothing here fetches, and nothing here writes. A project the
+        poller has never reached simply projects stale, and a stale row
+        carries ``status`` / ``assignee`` ``None`` — so it matches neither
+        ``?status=`` nor ``?assignee=``, and appears only in an unfiltered
+        rollup. Absent beats wrong (§5.3), applied to a predicate.
+
+        **Cost per call**: one scan of the projects root — the scan
+        :func:`list_project_ids` already makes, asked for its pid
+        projection instead, so both identities come out of it for the
+        price of one — and then, per project, one ``project.json`` read to
+        resolve the runtime home, one ``.xo/workitems.json`` read and one
+        ``github/issues.json`` read. The claim and presence reads behind
+        ``in_progress`` are taken **only for a project that still has a
+        matching row** after filtering, so a narrow query does not pay for
+        the whole workspace. The projection itself is pure — no I/O at
+        all, and no network anywhere on the path.
+
+        **Totality is the point.** This is what an agent polls, so one
+        malformed project must not take the answer down. A project whose
+        ``workitems.json`` is corrupt, whose schema is from the future, or
+        whose directory has gone away between the walk and the read is
+        recorded in :attr:`WorkitemRollup.skipped` and left out of
+        ``rows`` — never raised. ``skipped`` carries the store's own code
+        and message so the caller can decide how loudly to say so;
+        rendering it is the route's job, and so is keeping the absolute
+        path in the message out of the response.
+
+        ``assignees`` matches case-insensitively against the *projected*
+        ``assignees`` list (and the singular ``assignee``): GitHub logins
+        are unique case-insensitively and a caller typing ``@Octocat``
+        means the same person GitHub spells ``octocat``. ``None`` means no
+        assignee filter; an **empty** iterable is a filter nothing can
+        match, which is the honest answer when "me" resolved to nobody.
+        """
+        from services.cowork_agent.visualizer import workitem_projection
+        from services.cowork_agent.visualizer.workspace_index import (
+            list_project_pids,
+        )
+
+        wanted: Optional[frozenset[str]] = None
+        if assignees is not None:
+            wanted = frozenset(
+                value.casefold()
+                for value in assignees
+                if isinstance(value, str) and value
+            )
+
+        # One scan, both identities: the keys are the directory names
+        # ``list_project_ids`` would return and the values are the pids.
+        # ``project_index_scope`` is deliberately *not* entered — its
+        # contract is a per-tick memo for code that asks several times, and
+        # this asks once, so it would memoize a scan that already happens
+        # exactly once while making a request-path caller reason about
+        # staleness it does not otherwise have.
+        pids = list_project_pids()
+        rows: list[dict] = []
+        skipped: list[dict] = []
+        for project_id in sorted(pids):
+            pid = pids.get(project_id)
+            try:
+                project = VisualizerScope(project_id)
+                stored = project.list_workitems()
+            except Exception as exc:
+                skipped.append({
+                    "project_id": project_id,
+                    "pid": pid,
+                    "code": getattr(exc, "code", None) or "unavailable",
+                    # The store's text names the absolute path. It is carried
+                    # for the caller to log, never to serve — the route blanks
+                    # it for the same reason ``_shape_todos`` blanks
+                    # ``source_file``.
+                    "detail": str(exc),
+                })
+                continue
+            issues = workitem_projection.mirror_issues(
+                project.read_github_mirror()
+            )
+            matched = [
+                record
+                for record in workitem_projection.project_workitems(
+                    stored, issues=issues
+                )
+                if _workitem_matches(record, assignees=wanted, status=status)
+            ]
+            if not matched:
+                continue
+            live = project.in_progress_workitem_ids()
+            for record in matched:
+                record["_project_id"] = project_id
+                record["_pid"] = pid
+                record["_in_progress"] = record.get("id") in live
+                rows.append(record)
+        return WorkitemRollup(rows=rows, projects=len(pids), skipped=skipped)
+
+
+@dataclass(frozen=True)
+class WorkitemRollup:
+    """What :meth:`WorkspaceVisualizerScope.rollup_workitems` answers.
+
+    ``rows`` is a **flat list**, never a map keyed by anything: O-C was a
+    cross-project union keyed by a constant that silently kept one
+    project's row and lost the rest, and a list has no union key, so that
+    class of defect cannot occur here at all (§7.3, D4). Each row is a
+    projected record tagged with ``_project_id``, ``_pid`` and
+    ``_in_progress`` — underscore-prefixed because they are not fields of
+    the stored document and must not be mistaken for them.
+
+    ``projects`` counts what was *walked*, not what answered, so
+    ``projects`` minus ``len(skipped)`` is what was actually read.
+    """
+
+    rows: list[dict]
+    projects: int
+    skipped: list[dict]
+
+
+def _workitem_matches(
+    record: dict, *, assignees: Optional[frozenset[str]], status: Optional[str],
+) -> bool:
+    """The rollup's predicate, applied to a **projected** record.
+
+    Reads ``status`` and ``assignees`` as the projection left them: the
+    mirror's answer for an adopted item, the file's for a local one. A
+    record whose status is ``None`` — an adopted item the mirror cannot
+    speak for — matches no ``status`` filter, because "unknown" is not
+    "open" and guessing would be the stale-state lie §5.3 forbids.
+    """
+    if status is not None and record.get("status") != status:
+        return False
+    if assignees is None:
+        return True
+    found = {
+        value.casefold()
+        for value in record.get("assignees") or []
+        if isinstance(value, str) and value
+    }
+    single = record.get("assignee")
+    if isinstance(single, str) and single:
+        # The projection fills ``assignees`` for both kinds, so this is
+        # belt and braces — and it is what keeps the predicate correct on a
+        # record that never went through the projection at all.
+        found.add(single.casefold())
+    return bool(found & assignees)
 
 
 # ── Resolver ──────────────────────────────────────────────────────────────────

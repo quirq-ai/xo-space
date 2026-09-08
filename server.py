@@ -785,6 +785,26 @@ async def lifespan(app: FastAPI):
     else:
         print("   Watcher: disabled by runtime configuration")
 
+    # GitHub issue poller — refreshes the runtime issue mirror for the
+    # projects that need it (docs/workitems-plan.md §6). Deliberately NOT a
+    # watcher sink: a watcher tick must never touch the network, so this is
+    # its own task with its own interval, exactly like the usage sync above.
+    # Off switch: XO_GITHUB_POLL_ENABLED=false (the task returns immediately).
+    _github_poll_task = None
+    try:
+        from services.cowork_agent.github_poller import (
+            poll_interval_seconds,
+            poller_enabled,
+            start_github_poller,
+        )
+        if poller_enabled():
+            _github_poll_task = asyncio.create_task(start_github_poller())
+            print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
+        else:
+            print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
+    except Exception as e:
+        print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
+
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
     yield
@@ -812,6 +832,13 @@ async def lifespan(app: FastAPI):
         _watcher_task.cancel()
         try:
             await _watcher_task
+        except asyncio.CancelledError:
+            pass
+
+    if _github_poll_task:
+        _github_poll_task.cancel()
+        try:
+            await _github_poll_task
         except asyncio.CancelledError:
             pass
 

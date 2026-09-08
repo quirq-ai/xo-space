@@ -26,6 +26,7 @@ http://${HOST:-localhost}:${PORT:-5002}
 Read this file top to bottom on first contact — the four parts below are all here in full, including todo discipline, which every session needs. Two reference files hold detail you only reach for situationally:
 
 - **`references/todos-http-api.md`** — the todo HTTP endpoint schemas. Every runtime needs this, including runtimes with a native todo tool of their own; read it the first time you record a todo in a session (Part 3).
+- **`references/workitems-http-api.md`** — the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. Read it when the task involves work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
 - **`references/backup-restore.md`** — the GitHub-backed backup/restore/sync API. Read it when the user asks to back up, save, snapshot, sync, push, restore, pull, download, recover, or migrate projects.
 
 Keeping these out of the main file means a routine session doesn't drag endpoint schemas or the entire backup API into context.

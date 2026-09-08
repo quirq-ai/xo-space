@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/workitems.schema.json",
+  "title": "xo workitems — durable, authored units of work",
+  "description": "Written only by services/cowork_agent/visualizer/workitems_store.py, so the document is identical whichever runtime is active (docs/workitems-plan.md §5.1). This is the SYNCED tier: it holds authored state and adoption records only. It must not cache anything GitHub owns, because a file that mirrored GitHub would churn at GitHub's rate inside the tier that syncs (§3, rule R-TIER). A workitem is coarse and durable — a todo is an agent's step list inside one session (§9); the two are distinct records joined by `links.todo_ids`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "items"],
+  "properties": {
+    "$schema":    { "type": "string", "description": "Editor hint — this schema's own `$id`, never a filesystem path (the dangling `.xo/schema/` pointer syncplan T16 removed)." },
+    "schema":     { "type": "integer", "const": 1 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time", "description": "Document-level stamp. Volatile: a call that changes no workitem rewrites nothing, so this does not advance on a no-op." },
+    "items": {
+      "type": "object",
+      "description": "Map of workitem id → record. The key IS the record's `id`. Draft-07 cannot express key-equals-a-field-of-its-value, so `propertyNames` pins the key's *shape* here and workitems_store enforces the equality: it refuses to read a document where a key and its record's `id` disagree, rather than trusting the key (the O-C lesson — a key that is not unique by construction silently loses rows in a cross-project union).",
+      "propertyNames": { "$ref": "#/definitions/uuid4" },
+      "additionalProperties": { "$ref": "#/definitions/workitem" }
+    }
+  },
+  "definitions": {
+    "uuid4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Canonical lowercase UUID v4. A full UUID rather than a short id because the workspace rollup (§7.3) is a cross-project query and a key used in one must be unique BY CONSTRUCTION — that is the O-C defect, where a constant key (`_project`) collided across projects and the union kept one row. It also avoids depending on `pid`, which does not exist during the pre-mint window."
+    },
+    "workitem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "source", "links", "created_at", "updated_at", "created_by"],
+      "properties": {
+        "id":     { "$ref": "#/definitions/uuid4" },
+        "title":  { "type": "string", "minLength": 1, "maxLength": 1000,
+                    "description": "Authored for a local item. For `source.kind == \"github\"` it is a ONE-TIME snapshot taken at adoption and never refreshed (§5.3): adoption is a human act, a GitHub rename is not, so snapshotting the title keeps this file quiet while still giving a readable fallback when the mirror is gone. Without it a stale adopted item renders as `repo#42`, which is not a work item anyone can act on." },
+        "body":   { "type": ["string", "null"],
+                    "description": "Local items only — see the conditional below. Absent for an adopted item: the mirror has the issue body." },
+        "labels": { "type": "array", "maxItems": 50,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+                    "description": "Local labels. Permitted on an adopted item too — labels are fetched lazily at adoption rather than in the poll query, because a nested `labels` connection was measured to double the poll's GraphQL cost and halve the project ceiling (§6.2)." },
+        "status": { "type": "string", "enum": ["open", "closed"],
+                    "description": "`open` | `closed` and nothing else — GitHub's own two values, so the two can never disagree and there is no overlay to reconcile (§5.4, D7). There is deliberately no `in_progress`: a workitem is in progress iff an agent is currently working it, which is DERIVED at read time from a live claim plus session liveness and is never written to either document. A stored in-progress flag lies the moment the process holding it dies. `cancelled` is not invented either — it is `closed` + `state_reason: not_planned`." },
+        "state_reason": { "type": ["string", "null"], "enum": ["completed", "not_planned", "reopened", null],
+                    "description": "Mirrors GitHub's vocabulary exactly. Local items only." },
+        "source": { "$ref": "#/definitions/source" },
+        "assignee": { "type": ["string", "null"],
+                    "description": "Local-only assignment. Absent for an adopted item: assignment IS a GitHub assignee (D1), and the mirror is authoritative. A local item is assignable only to yourself, permanently — there is no promotion of a local item to a GitHub issue (D8), so work that needs a peer is created as an issue from the start." },
+        "links":  { "$ref": "#/definitions/links" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time",
+                    "description": "Stamped only when a field actually changes, so an idempotent PATCH leaves the document byte-identical." },
+        "created_by": { "type": "string", "minLength": 1, "maxLength": 200,
+                    "description": "The runtime that created it — the same vocabulary `todos.json` uses, so an agent that can drive todos can drive workitems without learning a second dialect." },
+        "deleted_at": { "type": ["string", "null"], "format": "date-time",
+                    "description": "Tombstone. Non-null means deleted: the record is kept forever and hidden from reads unless the caller asks for it. Separate from `status` on purpose — `closed`/`not_planned` is a decision about the work, deleted means the workitem should not have existed." },
+        "deleted_by": { "type": ["string", "null"], "description": "The runtime that deleted it, when the caller supplied one." }
+      },
+      "allOf": [
+        {
+          "description": "The asymmetry of §5.3, and the whole design in one rule. For an adopted item GitHub is authoritative for state and assignment, so this file does NOT snapshot them: a stale title is a cosmetic inaccuracy, but a stale `closed` or a stale assignee is a false statement about who owes what. Absent beats wrong. An adopted item whose issue has vanished from the mirror therefore renders as its snapshotted title plus the issue reference, flagged stale, with state and assignee unknown — never a 404.",
+          "if": {
+            "type": "object",
+            "required": ["source"],
+            "properties": {
+              "source": { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "github" } } }
+            }
+          },
+          "then": {
+            "allOf": [
+              { "properties": { "source": { "required": ["github"] } } },
+              { "not": { "required": ["status"] } },
+              { "not": { "required": ["state_reason"] } },
+              { "not": { "required": ["assignee"] } },
+              { "not": { "required": ["body"] } }
+            ]
+          },
+          "else": {
+            "required": ["status"],
+            "properties": { "source": { "not": { "required": ["github"] } } }
+          }
+        }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind":   { "type": "string", "enum": ["local", "github"] },
+        "github": { "$ref": "#/definitions/github_ref" }
+      }
+    },
+    "github_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "number", "node_id", "url"],
+      "description": "Present iff `source.kind == \"github\"` — enforced by the conditional on `workitem`.",
+      "properties": {
+        "repo":    { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
+        "number":  { "type": "integer", "minimum": 1, "description": "The human handle; it is what appears in the URL. Matching is on `node_id`, not on this." },
+        "node_id": { "type": "string", "minLength": 1, "maxLength": 200,
+                     "description": "Stable across a repo rename or transfer, which `repo`/`number` are not. Stored alongside them and used as the match key." },
+        "url":     { "type": "string", "pattern": "^https://", "maxLength": 2000 }
+      }
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["todo_ids", "session_ids"],
+      "description": "The join to the fine-grained records (§9, D3). An agent working a workitem creates todos under it; `todo_ids` is the join to `todos.json`. Ids are not validated for existence — a todo may be tombstoned while the link survives as history.",
+      "properties": {
+        "todo_ids":    { "type": "array", "maxItems": 500, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+        "session_ids": { "type": "array", "maxItems": 500, "items": { "type": "string", "minLength": 1, "maxLength": 200 } }
+      }
+    }
+  }
+}

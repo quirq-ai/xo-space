@@ -76,6 +76,16 @@ _PROJECT_OUTPUT_CONTRACT = (
         "used_by": "Projects",
     },
     {
+        "path": "workitems.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Workitems API (the routes are the file's only writer)",
+        "purpose": (
+            "Authored work items and GitHub adoption records, with deletion "
+            "tombstones"
+        ),
+        "used_by": "Workitems",
+    },
+    {
         "path": "stats.json",
         "tier": _TIER_RUNTIME,
         "producer": "Watcher statistics sink",
@@ -88,6 +98,33 @@ _PROJECT_OUTPUT_CONTRACT = (
         "producer": "Watcher timeline sink",
         "purpose": "Append-only normalized history of sessions, files, tools, and tasks",
         "used_by": "Projects",
+    },
+    # The workitems surface spans both tiers on purpose (workitems-plan §3).
+    # The authored half above is durable and travels; these two are not. The
+    # mirror is re-fetched every 60 s and the claims file is one machine's
+    # live process state, so either one written into ``.xo/`` would churn the
+    # synced tier at a poller's rate — the exact thing T19/T20 removed. They
+    # hang off the runtime root, and a row that said otherwise would render
+    # "0 present" while the files sat somewhere else entirely.
+    {
+        "path": "github/issues.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "GitHub issue poller",
+        "purpose": (
+            "Re-fetchable snapshot of the project repo's issues: state, "
+            "assignees, poll budget, and last error"
+        ),
+        "used_by": "Workitems (adopted items)",
+    },
+    {
+        "path": "workitems/claims.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "Workitem claim API",
+        "purpose": (
+            "Which agent session is working which workitem; the only input "
+            "to the derived in_progress"
+        ),
+        "used_by": "Workitems",
     },
 )
 
@@ -200,6 +237,12 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Derived workspace views, recomputed from a walk of the projects root"
         if relative_path.endswith("/sessionslist.d"):
             return "Session index shards, one file per session"
+        # The two runtime-tier workitems directories, for the same reason the
+        # tiers above are named: they would otherwise be anonymous rows.
+        if relative_path.endswith("/github"):
+            return "GitHub issue mirror, re-fetched by the poller"
+        if relative_path.endswith("/workitems"):
+            return "Live workitem claims for this machine"
         return "Directory"
     name = Path(relative_path).name
     if name == "state.json":

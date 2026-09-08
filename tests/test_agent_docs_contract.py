@@ -21,9 +21,19 @@ Three things rot independently, and all three are silent when they do:
    matching contract entry renders "0 present" against a directory nothing
    writes any more, which looks exactly like "you have no data".
 
-Nothing here touches the real ``~/xo-projects`` or ``~/.quirq``: the
-catalog test redirects both roots into a temp dir, and both helpers
-re-read the environment on every call.
+The catalog is checked twice, and the second check is the one that
+matters. :class:`QuirqCatalogReflectsTheRealFileSetTests` materialises
+each row where the catalog says it lives and asserts the catalog finds
+it — self-consistency, which cannot see a row whose tier disagrees with
+the real sink (``docs/OUTSTANDING.md``, **O-J**).
+:class:`CatalogAgreesWithTheWritersTests` closes that: it runs the real
+writers — a scaffold, a ``Watcher.tick()``, the manifest builder and the
+three request-path stores — and asserts every published row lands on
+what they actually wrote.
+
+Nothing here touches the real ``~/xo-projects`` or ``~/.quirq``: both
+catalog tests redirect both roots into a temp dir, and every helper
+re-reads the environment on every call.
 """
 
 from __future__ import annotations
@@ -51,6 +61,10 @@ SKILL = ROOT / ".agents" / "skills" / "xo-projects" / "SKILL.md"
 TODO_API_DOC = (
     ROOT / ".agents" / "skills" / "xo-projects" / "references" / "todos-http-api.md"
 )
+WORKITEMS_API_DOC = (
+    ROOT / ".agents" / "skills" / "xo-projects" / "references"
+    / "workitems-http-api.md"
+)
 TEMPLATE = ROOT / "services" / "cowork_agent" / "project_template"
 
 #: Every agent-facing doc the plan lists for T10, plus the two template
@@ -58,6 +72,7 @@ TEMPLATE = ROOT / "services" / "cowork_agent" / "project_template"
 AGENT_DOCS = (
     SKILL,
     TODO_API_DOC,
+    WORKITEMS_API_DOC,
     TEMPLATE / "AGENTS.md",
     TEMPLATE / "OBJECTIVES.md",
     TEMPLATE / "PLAN.md",
@@ -200,7 +215,14 @@ class QuirqCatalogReflectsTheRealFileSetTests(unittest.TestCase):
 
     The test writes one file for every row the catalog declares, at the
     location the catalog itself publishes, and asserts the catalog finds
-    all of them. A row whose tier is wrong cannot pass.
+    all of them — so it catches a row the *reader* resolves differently
+    from the way it is published (a bad ``location`` string, a tier the
+    lookup has no base for).
+
+    It cannot catch a row whose tier disagrees with the writer, because
+    it created the file in the wrong place too. That is O-J, and
+    :class:`CatalogAgreesWithTheWritersTests` below is where it is
+    checked.
     """
 
     PID = "demo-pid-0001"
@@ -311,6 +333,230 @@ class QuirqCatalogReflectsTheRealFileSetTests(unittest.TestCase):
             "there is no watcher todo sink", ""
         ))
         self.assertIn("Todo API", rows["todos.json"]["producer"])
+
+
+class _FakeSource:
+    """One backend's source, replaying a fixed batch.
+
+    Named for the agent the environment below pins only because the
+    watcher asserts a source's name matches its manifest — the same
+    concession ``tests/test_workspace_tier_invariant.py`` makes.
+    """
+
+    name = "claude_code"
+
+    def __init__(self, events):
+        self._events = events
+
+    def poll_events(self):
+        return list(self._events)
+
+    def poll_presence(self):
+        return []
+
+
+class CatalogAgreesWithTheWritersTests(unittest.TestCase):
+    """**O-J.** The catalog is compared against what the writers do.
+
+    The class above proves the catalog is self-consistent. This one
+    proves it is *true*: nothing here is allowed to place a file. Every
+    document is produced by the code that owns it in production — the
+    project scaffold, a real ``Watcher.tick()``, the ``xo.json`` manifest
+    builder, and the three request-path stores (todos, workitems, the
+    GitHub mirror and workitem claims) — and only then is each published
+    row resolved and required to land on the result.
+
+    The tier roots come from :mod:`project_layout`, which owns the
+    synced-vs-runtime decision (T18), never from the catalog: a row with
+    the wrong tier must not be allowed to move the place it is compared
+    against.
+
+    :meth:`test_no_row_is_also_satisfiable_from_the_other_tier` is what
+    stops the whole thing being vacuous — if a document existed under
+    both roots, "found at the declared tier" would prove nothing.
+    """
+
+    PROJECT = "Demo Project"
+    TS = "2026-09-07T12:00:00Z"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        tmp = Path(self._tmp.name)
+        self.xo_root = tmp / "xo-projects"
+        self.xo_root.mkdir(parents=True)
+        self.state_root = tmp / "quirq"
+        self.state_root.mkdir(parents=True)
+        env = patch.dict(os.environ, {
+            "XO_PROJECTS_ROOT": str(self.xo_root),
+            "QUIRQ_STATE_ROOT": str(self.state_root),
+            "XO_PROJECT_TEMPLATE": "",
+            "AGENT_NAME": _FakeSource.name,
+            # The telemetry view scans the session stores under $HOME.
+            "HOME": str(tmp),
+        }, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        project_layout._ROOT_RESOLUTION_CACHE.clear()
+        self.addCleanup(project_layout._ROOT_RESOLUTION_CACHE.clear)
+
+        project_layout.scaffold_project(self.PROJECT)
+        self.project = project_layout.resolve_project_dirname(self.PROJECT)
+        self._drive_every_writer()
+
+    # ── the writers ──────────────────────────────────────────────────
+
+    def _events(self):
+        from services.cowork_agent.visualizer.ingest.events import (
+            MessageObserved,
+            SessionFirstSeen,
+            UsageObserved,
+        )
+
+        common = {
+            "ts": self.TS,
+            "project_id": self.project,
+            "native_session_id": "native-1",
+            "runtime": _FakeSource.name,
+        }
+        return [
+            SessionFirstSeen(cwd=str(self.xo_root / self.project), **common),
+            MessageObserved(role="assistant", **common),
+            UsageObserved(input_tokens=10, output_tokens=5, model="m", **common),
+        ]
+
+    def _drive_every_writer(self) -> None:
+        """Produce every declared document the way production does."""
+        import asyncio
+
+        from services import xo_manifest
+        from services.cowork_agent import scopes
+        from services.cowork_agent.engine import sessions_io as session_index
+        from services.cowork_agent.visualizer import github_mirror
+        from services.cowork_agent.visualizer import watcher as watcher_module
+        from services.cowork_agent.visualizer.workspace import space_json, views
+
+        # The session index is adapter-written, not watcher-written, so the
+        # per-project shard and the workspace union have nothing to roll up
+        # unless a row exists first.
+        session_index.write_session_row(
+            self.project,
+            f"{_FakeSource.name}:native-1",
+            {"sessionId": "sess-1", "nativeSessionId": "native-1",
+             "backend": _FakeSource.name},
+        )
+        # The request path: four documents whose only writer is a route.
+        scope = scopes.VisualizerScope(self.project)
+        scope.create_todo(runtime=_FakeSource.name, content="a todo")
+        item = scope.create_workitem(runtime=_FakeSource.name, title="a workitem")
+        scope.claim_workitem(
+            item["id"], session_id="sess-1", runtime=_FakeSource.name
+        )
+        # An empty page list is a legitimate poll of a quiet repo and still
+        # writes the mirror, so no GitHub response has to be invented.
+        github_mirror.record_pages(
+            self.project, repo="owner/repo", pages=[], complete=False
+        )
+        # xo.json is seeded at server startup, not by the tick.
+        asyncio.run(xo_manifest.write_static_manifest())
+
+        # Both workspace sinks self-throttle on module state, and the views
+        # sink also remembers which roots it has swept. All of it outlives one
+        # test, so a tick driven without this reset silently does nothing.
+        views._last_build = 0.0
+        views._SWEPT.clear()
+        space_json._last_build = 0.0
+        watcher = watcher_module.Watcher.__new__(watcher_module.Watcher)
+        watcher.sources = [_FakeSource(self._events())]
+        watcher.model_by_session = {}
+        watcher.tick_count = 0
+        watcher.tick()
+
+    # ── the two contracts, and the roots their tiers name ────────────
+
+    def _contracts(self):
+        from services.cowork_agent.quirq_catalog import _WORKSPACE_OUTPUT_CONTRACT
+
+        return (
+            (
+                "project",
+                _PROJECT_OUTPUT_CONTRACT,
+                {
+                    _TIER_SYNCED: project_layout.xo_dir(self.project),
+                    _TIER_RUNTIME: project_layout.runtime_dir_for_project(
+                        self.project
+                    ),
+                },
+            ),
+            (
+                "workspace",
+                _WORKSPACE_OUTPUT_CONTRACT,
+                {
+                    _TIER_SYNCED: project_layout.workspace_xo_dir(),
+                    _TIER_RUNTIME: project_layout.workspace_runtime_dir(),
+                },
+            ),
+        )
+
+    @staticmethod
+    def _present(path: Path) -> bool:
+        """``sessionslist.d`` is a directory of shards, so "present" is
+        "holds a file" for it and "is a file" for everything else — the
+        same rule ``quirq_catalog._measure`` applies."""
+        if path.is_file():
+            return True
+        return path.is_dir() and any(child.is_file() for child in path.iterdir())
+
+    # ── the invariant ────────────────────────────────────────────────
+
+    def test_every_row_is_declared_at_the_tier_its_writer_wrote_to(self) -> None:
+        for label, contract, roots in self._contracts():
+            for definition in contract:
+                with self.subTest(contract=label, path=definition["path"]):
+                    base = roots[definition["tier"]]
+                    self.assertIsNotNone(base, "the tier has no root at all")
+                    self.assertTrue(
+                        self._present(base / definition["path"]),
+                        f"the {label} row {definition['path']!r} is declared "
+                        f"{definition['tier']}, but after running every real "
+                        f"writer nothing is at {base / definition['path']}. "
+                        f"Either the row's tier disagrees with its writer — "
+                        f"the row renders '0 present' forever — or this test "
+                        f"no longer drives the writer that produces it.",
+                    )
+
+    def test_no_row_is_also_satisfiable_from_the_other_tier(self) -> None:
+        """Without this the test above could pass on a document that
+        happens to exist under both roots, which is what a half-finished
+        tier move looks like — and what T19/T20 had to sweep."""
+        for label, contract, roots in self._contracts():
+            for definition in contract:
+                other = (
+                    _TIER_RUNTIME if definition["tier"] == _TIER_SYNCED
+                    else _TIER_SYNCED
+                )
+                with self.subTest(contract=label, path=definition["path"]):
+                    stale = roots[other] / definition["path"]
+                    self.assertFalse(
+                        stale.exists(),
+                        f"the {label} document {definition['path']!r} exists "
+                        f"in both tiers ({stale} is the one nothing should "
+                        f"write), so its declared tier cannot be checked",
+                    )
+
+    def test_the_catalog_reports_every_row_present_after_real_writes(self) -> None:
+        """The user-visible end of it: ``quirq.js`` prints ``present_count``
+        verbatim, so this is what the Quirq view actually shows."""
+        outputs = quirq_catalog()["project_outputs"]
+        for key in ("project_contract", "workspace_contract"):
+            for row in outputs[key]:
+                with self.subTest(contract=key, path=row["path"]):
+                    self.assertEqual(
+                        row["present_count"], 1,
+                        f"{row['location']} renders '0 present' even though a "
+                        f"real writer just produced it",
+                    )
+                    self.assertIsNotNone(row["updated_at"])
 
 
 if __name__ == "__main__":
