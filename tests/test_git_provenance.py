@@ -226,17 +226,53 @@ class GitProvenanceTests(unittest.TestCase):
         self.assertNotIn("alice", url)
 
     def test_userless_and_ssh_urls_survive_verbatim(self) -> None:
+        """No credential, no rewrite — including the SSH username.
+
+        ``ssh://git@…`` used to come back as ``ssh://github.com/…``: the
+        sanitiser stripped the whole userinfo field, and ``git@`` there is
+        the SSH *username*, not a secret. The stripped form is not
+        clone-able (SSH falls back to the local login name), and since
+        ``project.json:git`` is the copy that survives a restore — the
+        tarball drops ``.git`` and keeps ``project.json`` — the mangled
+        URL would be the only one left. See ``sanitize_remote_url``.
+        """
         for name, url in (
             ("plain-https", "https://github.com/owner/repo.git"),
             ("scp-ssh", "git@github.com:owner/repo.git"),
             ("ssh-url", "ssh://git@github.com/owner/repo.git"),
+            ("ssh-url-port", "ssh://git@github.com:2222/owner/repo.git"),
+            ("git+ssh", "git+ssh://git@github.com/owner/repo.git"),
+            ("ssh-no-user", "ssh://github.com/owner/repo.git"),
         ):
             with self.subTest(name):
                 pdir = self.repo(name)
                 git(pdir, "remote", "add", "origin", url)
-                expect = ("ssh://github.com/owner/repo.git"
-                          if name == "ssh-url" else url)
-                self.assertEqual(git_provenance(pdir)["remote_url"], expect)
+                self.assertEqual(git_provenance(pdir)["remote_url"], url)
+
+    def test_credentials_are_stripped_whatever_shape_they_take(self) -> None:
+        """The SSH carve-out must not open a hole.
+
+        A bare ``https://<token>@host/…`` is a real GitHub auth form, so
+        "keep userinfo that has no colon" would leak it. The rule is
+        scheme-based, not colon-based, and an ssh URL carrying a password
+        still loses the password.
+        """
+        for name, url, expect in (
+            ("https-user-pass", "https://alice:ghp_sekrit@github.com/o/r.git",
+             "https://github.com/o/r.git"),
+            ("https-bare-token", "https://ghp_sekrit@github.com/o/r.git",
+             "https://github.com/o/r.git"),
+            ("ssh-with-password", "ssh://git:ghp_sekrit@github.com/o/r.git",
+             "ssh://git@github.com/o/r.git"),
+            ("unknown-scheme", "weird://alice:ghp_sekrit@host/o/r.git",
+             "weird://host/o/r.git"),
+        ):
+            with self.subTest(name):
+                pdir = self.repo(name)
+                git(pdir, "remote", "add", "origin", url)
+                got = git_provenance(pdir)["remote_url"]
+                self.assertEqual(got, expect)
+                self.assertNotIn("ghp_sekrit", got)
 
     # --- git itself unavailable ------------------------------------------
 

@@ -452,7 +452,16 @@ def delete_todo(
     and ``deleted_by`` are set alongside the unchanged ``status``, so
     "we decided not to do this" (``cancelled``) and "this should not
     have existed" stay distinguishable forever.
+
+    ``deleted_by`` carries the calling **runtime**, the same vocabulary
+    ``create_todo`` already requires, and is validated against the same
+    charset: it is persisted into ``todos.json``, which is a synced
+    document, so it may not become a channel for arbitrary caller text.
+    ``None`` when the caller did not say — attribution is optional, and
+    an unattributed tombstone is still a tombstone.
     """
+    if deleted_by is not None:
+        _validate_safe_key(deleted_by, "runtime")
     with locked(todos_path):
         current, sessions = _read_sessions(todos_path)
         found = _find(sessions, todo_id)

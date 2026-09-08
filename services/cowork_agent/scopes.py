@@ -272,9 +272,13 @@ class VisualizerScope(_XoReader):
         from services.cowork_agent.visualizer import todos_store
         return todos_store.update_todo(self._todos_path(), todo_id, **kwargs)
 
-    def delete_todo(self, todo_id: str) -> bool:
+    def delete_todo(self, todo_id: str, **kwargs) -> bool:
+        # ``**kwargs`` like its three siblings above, and for the same
+        # reason: the store takes ``deleted_by``, and a signature that
+        # dropped it made the tombstone's attribution structurally
+        # unreachable over HTTP — the field existed, nothing could set it.
         from services.cowork_agent.visualizer import todos_store
-        return todos_store.delete_todo(self._todos_path(), todo_id)
+        return todos_store.delete_todo(self._todos_path(), todo_id, **kwargs)
 
 
 class WorkspaceVisualizerScope(_XoReader):

@@ -52,6 +52,7 @@ than merged into.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -64,7 +65,10 @@ from services.cowork_agent.project_layout import workspace_xo_dir, xo_projects_r
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 from services.cowork_agent.visualizer.git_provenance import git_provenance, is_git_repo
 from services.cowork_agent.visualizer.reader import read_json
+from services.cowork_agent.visualizer.sinks.project_json import refresh_git
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
+
+logger = logging.getLogger(__name__)
 
 #: The registry, and the file it replaces. Readers keep the fallback for
 #: one release (``scopes.WorkspaceVisualizerScope.read_projects``).
@@ -165,6 +169,14 @@ def _git_block(key: tuple[str, str], pdir: Path) -> dict:
     ``is_repo`` is answered from a single ``stat`` every time — it is what
     flips when a user runs ``git init`` — while the two fields that cost a
     subprocess are reused until the interval expires.
+
+    The refresh path is also where the **durable** copy is written, into
+    ``<project>/.xo/project.json`` (syncplan §5.1 assigns ``git`` there to
+    "the git refresher"; only the cache half was ever wired). Hanging it
+    off the cache miss is what keeps it free: no extra ``git`` spawn, and
+    at most one key-scoped merge per project per TTL rather than one per
+    tick. ``refresh_git`` declines to create the file, so an unscaffolded
+    folder stays unscaffolded.
     """
     repo = is_git_repo(pdir)
     now = time.monotonic()
@@ -187,6 +199,13 @@ def _git_block(key: tuple[str, str], pdir: Path) -> dict:
     else:
         block = {"is_repo": False, "remote_url": None, "default_branch": None}
     _git_cache[key] = (now, block)
+    try:
+        refresh_git(pdir / ".xo", block["remote_url"], block["default_branch"])
+    except Exception:  # pragma: no cover - the cache must not depend on it
+        # The registry is the caller's product; a failed durable write must
+        # not cost it its tick. ``refresh_git`` already swallows the corrupt
+        # case, so reaching here means something rarer (a read-only tree).
+        logger.warning("could not persist git provenance for %s", pdir, exc_info=True)
     return block
 
 

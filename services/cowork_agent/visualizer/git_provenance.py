@@ -22,14 +22,16 @@ Three deliberate, non-obvious choices, each verified on git 2.55.0:
   ``.exists()`` and not ``.is_dir()``, because ``.git`` is a *file* in a
   linked worktree or a submodule.
 
-* **Credentials are stripped before the URL is returned.** A user-created
-  repository may carry ``https://user:token@github.com/…`` in
-  ``.git/config``, and ``config --get`` returns it verbatim; callers persist
-  this value. The sanitiser is the repo's only one,
-  ``self_update._URL_USERINFO_RE``, imported rather than copied so a fix
-  lands in one place. (Repos this system creates are already clean —
-  ``xo_projects_sync/github.py`` injects the token per command instead of
-  into the remote.)
+* **Credentials are stripped before the URL is returned, but the SSH
+  username is not.** A user-created repository may carry
+  ``https://user:token@github.com/…`` in ``.git/config``, and ``config
+  --get`` returns it verbatim; callers persist this value. Stripping the
+  *whole* userinfo field — which is what ``self_update._URL_USERINFO_RE``
+  does — is right for that case and wrong for ``ssh://git@github.com/…``,
+  where ``git@`` is the SSH **username**, not a secret: dropping it yields
+  a URL that is not clone-able, because SSH then falls back to the local
+  login name. See :func:`sanitize_remote_url` for the scheme-aware split
+  and why this module does not reuse the stderr scrubber.
 
 Everything here is offline. ``git ls-remote --symref`` would answer the
 default-branch question authoritatively, but it hits the network, which a
@@ -46,6 +48,65 @@ from services.cowork_agent.self_update import _URL_USERINFO_RE
 # Same bound ``space_index._git_facts`` uses: a wedged git must not stall
 # the caller's tick.
 _GIT_TIMEOUT_S = 5
+
+# Schemes whose userinfo is a **username**, not a credential. For these the
+# user is kept and only a ``:password`` is dropped; for everything else the
+# whole userinfo field goes. The list is deliberately short and explicit —
+# an unrecognised scheme falls through to the strip-everything branch, so a
+# new scheme fails closed (a mangled URL, never a leaked token).
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
+
+
+def sanitize_remote_url(url: str) -> str:
+    """Strip credentials from a git remote URL, keeping the SSH username.
+
+    Three shapes reach this function and they need three answers:
+
+    ``https://user:token@github.com/o/r.git``
+        Userinfo is a credential. Strip it whole. **A bare
+        ``https://ghp_token@github.com/…`` is also a credential** — GitHub
+        accepts a token as the username with no password — which is why
+        this cannot simply be "keep userinfo that has no colon".
+
+    ``ssh://git@github.com/o/r.git``
+        Userinfo is the SSH username. Keep it. Stripping ``git@`` (what
+        ``self_update._URL_USERINFO_RE`` alone does, and what this module
+        used to persist) produces ``ssh://github.com/o/r.git``, which is
+        not clone-able: SSH falls back to the local login name and GitHub
+        only accepts ``git``. A ``:password`` in an ssh URL is still
+        dropped — it is a credential wherever it appears.
+
+    ``git@github.com:o/r.git``
+        The scp-short form. It has no ``//``, so there is no userinfo
+        *field* to parse — ``git@`` here is part of the syntax. Returned
+        untouched, which is also what the old regex did, by accident of
+        its ``//`` anchor rather than by intent.
+
+    Why not fix ``self_update._URL_USERINFO_RE`` in place, per the usual
+    "fix the primitive, not the caller" rule: that regex is applied to git
+    **stderr** (``self_update.py:99,162``), which is arbitrary text with no
+    scheme to parse. Scrubbing every ``//…@`` there is the correct, blunt
+    answer. The two jobs only look alike — one sanitises a structured URL,
+    the other redacts free text — so they are deliberately kept apart.
+    (Repos this system creates are already clean:
+    ``xo_projects_sync/github.py`` injects the token per command rather
+    than into the remote.)
+    """
+    if not url or "//" not in url:
+        return url                          # scp-short form, or not a URL
+    scheme, _, rest = url.partition("://")
+    if not rest:                            # no scheme: fail closed
+        return _URL_USERINFO_RE.sub("//", url)
+    authority, sep, tail = rest.partition("/")
+    if "@" not in authority:
+        return url                          # no userinfo at all
+    userinfo, _, host = authority.rpartition("@")
+    if scheme.lower() not in _SSH_SCHEMES:
+        return f"{scheme}://{host}{sep}{tail}"
+    user = userinfo.partition(":")[0]       # keep the user, drop any password
+    if not user:
+        return f"{scheme}://{host}{sep}{tail}"
+    return f"{scheme}://{user}@{host}{sep}{tail}"
 
 
 def is_git_repo(pdir: Path) -> bool:
@@ -93,7 +154,7 @@ def git_provenance(pdir: Path) -> dict[str, str | None]:
     # ``--short`` yields "origin/<branch>"; drop only the remote name, so a
     # default branch containing "/" ("release/2.x") survives intact.
     default = head.split("/", 1)[1] if "/" in head else head
-    out["remote_url"] = _URL_USERINFO_RE.sub("//", url) or None
+    out["remote_url"] = sanitize_remote_url(url) or None
     out["default_branch"] = (
         default or _git_out(pdir, "branch", "--show-current") or None
     )

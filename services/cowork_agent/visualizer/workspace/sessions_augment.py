@@ -6,6 +6,27 @@ id, depending on whether an adapter row exists at the project tier).
 
 Runtime tier since T20, via ``project_layout.workspace_sessions_dir()`` — the
 write below is unchanged because that chokepoint is what moved.
+
+**One key in that union is not a session id.** The union is flat — a later
+project's row simply overwrites an earlier one under the same key — which is
+sound for as long as every key is globally unique, and real keys are: a
+composite key carries its agent and a session-derived suffix, a native id is
+a UUID. Then T7 moved todo ingestion to the HTTP API and
+``todos_store.PROJECT_SESSION`` introduced ``"_project"`` as the pseudo-session
+for a todo created without one. That is a *constant*, not an identifier, so
+every project holding an API-created todo emitted a row under the identical
+key and the union kept whichever project sorted last — the rest lost their
+``taskCount`` from the aggregate.
+
+The pseudo-session is therefore namespaced by the project's **pid** here (see
+:func:`_union_key`), and only the pseudo-session is: real keys must survive
+verbatim, because ``reader.merge_sessionslist`` joins this file to the
+workspace ``sessionslist.json`` by key and drops any augment row it cannot
+match. Renaming them all would silently empty the merge.
+
+Re-keying needs no migration. This file is wholly derived and rebuilt from the
+per-project files every tick, so a pid minted after the fact just produces a
+different key on the next pass.
 """
 
 from __future__ import annotations
@@ -16,7 +37,11 @@ from datetime import datetime, timezone
 from services.cowork_agent.project_layout import runtime_read_path, workspace_sessions_dir
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 from services.cowork_agent.visualizer.reader import read_json
-from services.cowork_agent.visualizer.workspace_index import list_project_ids
+from services.cowork_agent.visualizer.todos_store import PROJECT_SESSION
+from services.cowork_agent.visualizer.workspace_index import (
+    list_project_ids,
+    list_project_pids,
+)
 
 
 # Relative to the project's runtime root (and, for the read-through, to its
@@ -41,21 +66,48 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _union_key(key: str, name: str, pid: str | None) -> str:
+    """The key this row takes in the union.
+
+    Identity, not the folder name, is the qualifier: ``pid`` survives a
+    rename and the directory name does not, so a renamed project keeps its
+    aggregate row instead of appearing to be a new one. The folder name is
+    the fallback for the pre-mint window — a brand-new project whose
+    identity the watcher has not filled in yet. Either way the result is
+    *some* per-project qualifier, which is all the collision needs.
+
+    Only the pseudo-session is qualified. Real session keys are already
+    globally unique and are the join key for
+    ``reader.merge_sessionslist``; rewriting them would break that join.
+    """
+    if key != PROJECT_SESSION:
+        return key
+    return f"{pid or name}/{key}"
+
+
 def apply(project_ids: Sequence[str] | None = None) -> bool:
     """Rebuild the union. Returns ``True`` iff the file changed (T26).
 
     ``project_ids``: the tick-wide project list, resolved once by the
     watcher (docs/syncplan.md §10, T23). ``None`` walks the root."""
     sessions: dict[str, dict] = {}
-    for pid in (project_ids if project_ids is not None else list_project_ids()):
+    # ``project_ids`` are directory NAMES — that is what every path helper
+    # takes, and what ``list_project_ids`` returns. ``pids`` is the separate
+    # identity projection (same walk, same parse: see
+    # ``workspace_index.list_project_pids``), used only to qualify the
+    # pseudo-session key.
+    names = project_ids if project_ids is not None else list_project_ids()
+    pids = list_project_pids()
+    for name in names:
         # Runtime tier since T19, read-through to the pre-move copy.
-        path = runtime_read_path(pid, _AUGMENT_RELATIVE)
+        path = runtime_read_path(name, _AUGMENT_RELATIVE)
         aug = read_json(path) if path is not None else None
         if not isinstance(aug, dict):
             continue
+        pid = pids.get(name)
         for key, row in (aug.get("sessions") or {}).items():
             if isinstance(row, dict):
-                sessions[key] = row
+                sessions[_union_key(key, name, pid)] = row
 
     payload = {
         "schema": 2,

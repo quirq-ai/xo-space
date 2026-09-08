@@ -12,8 +12,13 @@ on the first tick where the project is discovered) this sink:
 * sets ``created_at`` to the current ISO timestamp
 * removes ``_template`` so subsequent ticks no-op
 
-It **owns exactly those five keys plus the removal of ``_template``**
-(see docs/syncplan.md §5.1). Every other key in the document —
+This module also carries the second of ``project.json``'s three writers,
+:func:`refresh_git`, which owns the ``git`` block and nothing else (see
+docs/syncplan.md §5.1). The two are kept in one module because they write
+one file; their ownership sets are disjoint and each merges key-scoped.
+
+``fill_identity`` **owns exactly those five keys plus the removal of
+``_template``**. Every other key in the document —
 ``display_name``/``description`` written by
 ``project_layout._upsert_metadata``, ``git`` written by the git
 refresher, a manually curated ``category``, anything a future writer
@@ -144,5 +149,64 @@ def fill_identity(xo_dir: Path, project_id: str) -> bool:
         # The file parsed a moment ago and does not now — another writer, or
         # a truncation, landed in between. Same refusal as above: never mint
         # a pid over a document that may still hold one.
+        _warn_unreadable_once(path)
+        return False
+
+
+# ── The git block (docs/syncplan.md §5.1: "the git refresher owns ``git``") ──
+
+_GIT_OWNS: frozenset[str] = frozenset({"git"})
+
+
+def refresh_git(
+    xo_dir: Path, remote_url: str | None, default_branch: str | None
+) -> bool:
+    """Persist git provenance into ``project.json``. ``True`` iff written.
+
+    This is the **durable** half of the provenance pair. The other half,
+    ``projects.json:git``, is a machine-local cache rebuilt from disk on
+    every tick and excluded from every snapshot; this one travels, and it
+    is the only copy that survives the operation it exists to describe:
+    ``xo_projects_sync/tarball.py`` excludes ``.git`` from every archive
+    but **includes** ``.xo/project.json``, so a restore destroys the
+    repository the URL was read from while preserving this file.
+
+    Which is exactly why a null block is never written over a stored one.
+    On a freshly restored project ``.git`` is absent, so the refresher
+    reads "not a repo" — and writing that answer through would erase the
+    remote URL at the one moment it is the only record left. So:
+
+    * both fields ``None`` → **no write**, whatever is on disk stays;
+    * otherwise → the block is replaced.
+
+    The cost of that choice is a remote *deletion* going unrecorded here
+    (the folder stops being a repo, the durable block keeps the last URL
+    it saw). That is the right way round: a stale URL is recoverable
+    information, an erased one is not, and ``projects.json:git.is_repo``
+    still reports the live answer for anything that needs it.
+
+    Never creates the file. An absent ``project.json`` means the project
+    is not scaffolded, and minting one here would write a document with a
+    ``git`` block and no identity — plus ``mkdir -p`` a ghost project, the
+    same hazard :func:`fill_identity` guards at its own entry.
+    """
+    if remote_url is None and default_branch is None:
+        return False
+    path = xo_dir / "project.json"
+    if not path.exists():
+        return False
+    try:
+        return write_json_owned(
+            path,
+            owns=_GIT_OWNS,
+            values={"git": {
+                "remote_url": remote_url,
+                "default_branch": default_branch,
+            }},
+            volatile=(),
+        )
+    except CorruptDocumentError:
+        # Same refusal as fill_identity: never write through a document
+        # that may still hold identity we cannot see.
         _warn_unreadable_once(path)
         return False

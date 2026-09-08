@@ -114,14 +114,22 @@ adds the tombstoned records back in, each with `deleted_at` / `deleted_by` set. 
 | `created_at` | server | ISO-8601 UTC, stamped on create |
 | `updated_at` | server | ISO-8601 UTC, restamped only on a call that actually changes something |
 | `deleted_at` | server | `null` until `DELETE`; then the tombstone timestamp |
-| `deleted_by` | server | always `null` over HTTP today — `DELETE` carries no identity; the field is reserved for an attributed delete |
+| `deleted_by` | server | the `runtime` passed to `DELETE`, or `null` when the caller passed none |
 
 ## Delete
 
 ```json
-DELETE /api/xo-projects/{project_id}/todos/{todo_id}
+DELETE /api/xo-projects/{project_id}/todos/{todo_id}?runtime=<your-runtime-identifier>
 → 200 { "project_id": "<id>", "todo_id": "<id>", "deleted": true }
+→ 400 invalid_runtime
 ```
+
+`runtime` is **optional** and records who tombstoned the todo, in `deleted_by`.
+Pass the same identifier you use on create. Omit it and the delete still
+succeeds, unattributed — but pass it when you can: a tombstone whose author is
+unknown cannot be told apart from one nobody remembers making. Same charset as
+create (`[A-Za-z0-9_:\-\.]`, 1..200 chars); a value outside it is a `400` and
+writes nothing.
 
 **Delete is a tombstone, not an erasure.** The record stays in the file with `deleted_at` / `deleted_by` set and its `status` untouched; it simply stops being returned. That is what makes a deleted todo unable to come back, and it keeps "everything ever closed" answerable.
 

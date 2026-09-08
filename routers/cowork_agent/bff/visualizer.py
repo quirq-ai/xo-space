@@ -425,17 +425,44 @@ def project_todos_update(
     "/api/xo-projects/{project_id}/todos/{todo_id}",
     response_model=DeleteTodoResponse,
 )
-def project_todos_delete(project_id: str, todo_id: str) -> DeleteTodoResponse:
+def project_todos_delete(
+    project_id: str,
+    todo_id: str,
+    runtime: Optional[str] = Query(
+        default=None,
+        description=(
+            "Calling runtime, recorded as the tombstone's `deleted_by`. "
+            "Optional; the todo is tombstoned either way. Same charset as "
+            "the required `runtime` on create."
+        ),
+    ),
+) -> DeleteTodoResponse:
     """Soft delete — the record is tombstoned (``deleted_at`` set), never
     removed, so it cannot come back and the history stays readable.
 
     Idempotent: ``deleted: false`` if the todo was already absent or
     already tombstoned (never 404, matches the /api/secrets/{key}
-    pattern). The response shape is unchanged."""
+    pattern). The response shape is unchanged.
+
+    ``runtime`` is what fills ``deleted_by``. The field has been in the
+    tombstone design since syncplan §5.5 but was structurally unreachable
+    over HTTP — the store parameter existed and no route could set it — so
+    every tombstone recorded a null author. It is a query parameter rather
+    than a body because DELETE bodies are widely dropped in transit, and
+    optional so existing callers are unaffected: no ``runtime``, no
+    attribution, same 200."""
     scope = _require_project(project_id)
     try:
-        deleted = scope.delete_todo(todo_id)
+        deleted = scope.delete_todo(todo_id, deleted_by=runtime)
     except Exception as exc:
+        # An invalid ``runtime`` is a caller error, not a write failure.
+        # Without this branch the shared 500 below would report
+        # "todos.json write failed" for a request that never reached disk.
+        if getattr(exc, "code", None) == "invalid_runtime":
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "invalid_runtime", "message": str(exc)},
+            ) from exc
         raise HTTPException(
             status_code=500,
             detail={"code": "scope_unavailable", "message": "todos.json write failed."},
