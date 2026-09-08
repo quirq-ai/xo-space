@@ -549,7 +549,10 @@ Composio secrets of its own, and a rotation is one change on the swarm.
 `COMPOSIO_CALLBACK_URL` **stays here** — it is this deployment's public origin. Since
 the auth configs are now org-wide, every origin that will connect must be registered
 as an allowed callback on them in the dashboard; miss that and `/connect` succeeds
-while the OAuth redirect fails, which surfaces late, in the popup.
+while the OAuth redirect fails, which surfaces late, in the popup. It is **required
+and has no default** (the old `http://127.0.0.1:5002/...` fallback was exactly that
+late failure in code form): unset, `_callback_url()` raises and `/connect` returns a
+422 whose detail names the variable, which the Connectors tab matches on.
 
 > This centralises *management*, not secrecy. xo-space runs in the user's own Coder
 > workspace, so anything it can fetch, the workspace owner can fetch with the same

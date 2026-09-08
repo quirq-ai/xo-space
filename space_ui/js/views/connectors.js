@@ -319,6 +319,16 @@ async function connect(toolkitId,button){
 
 function connectErrorText(res,toolkitId){
   if(res.status===422){
+    /* /connect answers 422 for every unconfigured-server case, so match the
+       detail before falling through to the auth-config wording. The literal
+       COMPOSIO_CALLBACK_URL is load-bearing on the server side, like
+       COMPOSIO_API_KEY above. */
+    if(String(res.error||'').includes('COMPOSIO_CALLBACK_URL')){
+      return'This server has no OAuth callback URL configured. Set '
+        +'COMPOSIO_CALLBACK_URL to this deployment’s public callback URL '
+        +'and register that origin as an allowed callback on the Composio auth '
+        +'configs in the dashboard.';
+    }
     return'This toolkit has no auth config on the server. Create one in the '
       +'Composio dashboard and set COMPOSIO_AUTH_CONFIG_'
       +String(toolkitId).toUpperCase()+' where this install reads its Composio '

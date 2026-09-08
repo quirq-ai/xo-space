@@ -109,6 +109,12 @@ class _ComposioBase(unittest.TestCase):
                 state.WORKSPACE_ENV: WORKSPACE,
                 "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
                 "COMPOSIO_API_KEY": "test-key",
+                # Required with no default since the loopback fallback was
+                # dropped, and patch.dict does not clear the ambient env — pinned
+                # here so a developer's .env cannot decide whether these pass.
+                "COMPOSIO_CALLBACK_URL": (
+                    "https://test.example/api/connectors/composio/callback"
+                ),
                 # Hermetic: the credentials provider must never reach for
                 # xo-swarm-api here. Pinning `env` also keeps every existing
                 # `patch.dict(os.environ, ...)` test in this file meaningful,
@@ -1000,6 +1006,44 @@ class MultiAccountTests(_ComposioBase):
             set(seen[0]), {"user_id", "auth_config_id", "callback_url"}
         )
 
+    # ---- the callback url is required ----
+
+    def test_a_missing_callback_url_raises_before_composio_is_called(self) -> None:
+        # No loopback guess: minting an auth_url against a callback this
+        # deployment does not own only fails later, in the popup.
+        seen: list[dict] = []
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(
+                link=lambda **kw: seen.append(kw) or SimpleNamespace(
+                    redirect_url="https://composio.example/auth", id="cr_1"
+                ),
+            )
+        )
+        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1",
+                                     "COMPOSIO_CALLBACK_URL": ""}), \
+                patch.object(service, "_composio", return_value=client):
+            with self.assertRaises(RuntimeError) as raised:
+                service.initiate_connection(ACCOUNT, "gmail")
+        self.assertIn("COMPOSIO_CALLBACK_URL", str(raised.exception))
+        self.assertEqual(seen, [])
+
+    def test_an_explicit_redirect_uri_does_not_need_the_env_var(self) -> None:
+        seen: list[dict] = []
+        client = self._fake_client(
+            connected_accounts=SimpleNamespace(
+                link=lambda **kw: seen.append(kw) or SimpleNamespace(
+                    redirect_url="https://composio.example/auth", id="cr_1"
+                ),
+            )
+        )
+        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1",
+                                     "COMPOSIO_CALLBACK_URL": ""}), \
+                patch.object(service, "_composio", return_value=client):
+            service.initiate_connection(
+                ACCOUNT, "gmail", redirect_uri="https://caller.example/cb",
+            )
+        self.assertEqual(seen[0]["callback_url"], "https://caller.example/cb")
+
     # ---- listing ----
 
     def test_accounts_are_listed_newest_first(self) -> None:
@@ -1604,6 +1648,17 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
                 await router_mod.connect("notion", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 422)
         self.assertIn("COMPOSIO_AUTH_CONFIG_NOTION", raised.exception.detail)
+
+    async def test_a_missing_callback_url_is_a_422_naming_the_var(self) -> None:
+        # The Connectors tab matches the detail on COMPOSIO_CALLBACK_URL to tell
+        # this apart from the missing-auth-config 422; keep the literal in it.
+        body = router_mod.ConnectBody()
+        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_NOTION": "ac_1",
+                                     "COMPOSIO_CALLBACK_URL": ""}):
+            with self.assertRaises(HTTPException) as raised:
+                await router_mod.connect("notion", body, user_id=ACCOUNT)
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn("COMPOSIO_CALLBACK_URL", raised.exception.detail)
 
     async def test_an_unreachable_swarm_still_yields_a_422_on_connect(self) -> None:
         # Pins the DEVELOPING.md §10.3 degradation contract end to end now that the

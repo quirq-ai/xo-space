@@ -116,10 +116,22 @@ def _attr(obj: Any, *names: str, default: Any = None) -> Any:
 
 
 def _callback_url() -> str:
-    return os.getenv(
-        "COMPOSIO_CALLBACK_URL",
-        "http://127.0.0.1:5002/api/connectors/composio/callback",
-    ).strip()
+    """This deployment's public OAuth callback. Required; there is no default.
+
+    Fails closed on purpose. A wrong-origin callback is accepted by /connect and
+    only breaks later, inside the popup, when the provider refuses the redirect —
+    so guessing loopback here buys a 200 that lies. Read per call, so a test or a
+    reload sees the current value.
+    """
+    url = os.getenv("COMPOSIO_CALLBACK_URL", "").strip()
+    if not url:
+        raise RuntimeError(
+            "COMPOSIO_CALLBACK_URL is not set. Set it to this deployment's public "
+            "callback URL (e.g. https://<origin>/api/connectors/composio/callback) "
+            "and register that origin as an allowed callback on the Composio auth "
+            "configs in the dashboard."
+        )
+    return url
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
