@@ -1,8 +1,7 @@
 """What this workspace may reach — the per-workspace half of connector isolation.
 
-Composio connections are **account-wide**: connect Gmail once and every workspace of that
-account can see it. That is the point (no more re-running OAuth per workspace), but it
-means "which workspace is this?" no longer answers "what can it touch?". This store does.
+Composio connections are **account-wide**, so "which workspace is this?" does not answer
+"what can it touch?". This store does.
 
 Two decisions per toolkit, both scoped to this workspace:
 
@@ -15,19 +14,12 @@ Two decisions per toolkit, both scoped to this workspace:
 
 **Fail closed.** A toolkit with no entry here is off. Without a pin Composio resolves the
 *most recently connected* active account at execution time, so connecting a second Gmail
-in some other workspace would silently repoint this one — the drift the pin exists to
-prevent. The one concession to ergonomics is the OAuth callback: it runs in this pod, so
-the workspace that performed the connect enables and pins it immediately. Every *other*
-workspace starts empty and opts in.
-
-The document is flat — a pod is one workspace, so the stores are already isolated by the
-filesystem, and ``sessions.json`` carries the stamp that proves it (see :mod:`.state`).
-Modelled on :mod:`.action_prefs`, which answers the finer-grained "which actions of an
-enabled toolkit are off?" question and uses the same store directory and file primitives.
+in another workspace would silently repoint this one. The exception is the OAuth callback:
+it runs in this pod, so the workspace that performed the connect enables and pins it
+immediately; every other workspace starts empty and opts in.
 
 **Pod-local, and therefore not durable.** A rebuilt workspace comes back with nothing
-enabled and the user re-picks. That is the safe direction, and making it durable means a
-table in xo-swarm-api.
+enabled and the user re-picks.
 """
 from __future__ import annotations
 
@@ -234,8 +226,7 @@ def adopt_connection(toolkit_id: str, connected_account_id: str, *,
         load().get(toolkit_id, {}).get("connected_account_ids") or []
     )
     if connected_account_id not in existing:
-        # Newest first: with a cap of one this replaces the previous pin, which is what
-        # "I just connected this" should mean.
+        # Newest first: with a cap of one this replaces the previous pin.
         existing.insert(0, connected_account_id)
     return set_toolkit(
         toolkit_id,

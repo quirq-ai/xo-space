@@ -363,10 +363,10 @@ There is no auth subsystem in this repo. xo-swarm-api owns authentication — it
 Clerk credentials, runs the browser OAuth handshake, and mints the session ids the UI
 carries. What lives here is one credential and one pass-through route.
 
-**Composio is addressed by the bare Clerk account id.** It used to be addressed by a
+**Composio is addressed by the bare Clerk account id.** It was once addressed by a
 composed `<account_id>__ws__<CODER_WORKSPACE_ID>` key. That gave hard workspace
 isolation at a price nobody wanted: a connected account belonged to one workspace only,
-so you re-ran the OAuth dance per workspace, per toolkit, forever. Connections are now
+so you re-ran the OAuth dance per workspace, per toolkit, forever. Connections are
 **account-wide**, and workspaces are separated inside the Composio tool-router session
 instead — see §10.2.
 
@@ -386,12 +386,12 @@ therefore carry no account id, and `connectors/composio/state.py` composes no id
 all. If you find yourself adding a `SEPARATOR` constant back to xo-space, you are
 re-creating the scheme this design removed. `tests/test_composio.py` asserts it stays gone.
 
-The swarm still returns the retired key as `legacy_principal`, for exactly one purpose:
-listing the connections stranded under it so the UI can prompt a reconnect
-(`service.legacy_connections`). It can never be used for real work — Composio requires a
-pinned connected account to belong to the session's `user_id`, so those rows are
-unreachable by construction. Delete it, and `xo-swarm-api/auth/principal.py` with it,
-once the prompt is retired.
+The retired key is gone from both repos — nothing composes it and nothing reads it. During
+the migration the swarm kept returning it as `legacy_principal` so the UI could list the
+connections stranded under it and prompt a reconnect; that probe, and
+`xo-swarm-api/auth/principal.py` with it, has been deleted. Connections made under the old
+scheme are still in Composio and still unreachable — a pinned connected account must belong
+to the session's `user_id` — so the user simply reconnects the toolkit once.
 
 **Why not several humans per backend?** Because this backend never holds anyone's XO
 token but its own, it cannot forward another caller's credential, and the swarm composes
@@ -626,7 +626,7 @@ workspace silently regaining reach it was never granted — but making it durabl
 table in xo-swarm-api, and that is a deliberate follow-up rather than an oversight.
 
 The one thing xo-swarm-api still answers is this pod's **identity**:
-`GET /auth/workspace-principal` returns `{account_id, workspace_id, legacy_principal}`
+`GET /auth/workspace-principal` returns `{account_id, workspace_id}`
 (§10.1). That is a pure identity lookup — it reads no database — and
 `connectors/composio/state.py` is its client. It caches the answer for the life of the
 pod, serves a stale one during a transient outage, and falls back to the account recorded

@@ -1,13 +1,11 @@
 """Where the Composio credentials come from.
 
-xo-swarm-api owns one global Composio credential set — the API key and the eight
-auth-config ids — and serves it over ``GET /connectors/composio/credentials`` to any
-install that can authenticate with its XO credential. This module is the only place in
-xo-space that knows that; ``service.py`` asks for a key and an id and does not care
-which side of the wire they came from.
+xo-swarm-api owns one global Composio credential set and serves it over
+``GET /connectors/composio/credentials``. This module is the only place in xo-space that
+knows that.
 
-Nothing here is ever logged. The bundle is a secret; the only things that reach the log
-are the source, the status code, and the *names* of the configured auth configs.
+Nothing here is ever logged: only the source, the status code, and the *names* of the
+configured auth configs.
 
 Two failures must stay distinguishable, and the cache turns on it:
 

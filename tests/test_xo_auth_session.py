@@ -42,11 +42,12 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         env.start()
         self.addCleanup(env.stop)
 
-        # The route warms the principal cache after a successful mint. That is a second
+        # The route warms the identity cache after a successful mint. That is a second
         # round trip and never fatal; stub it so these tests only exercise the mint.
         warm = patch(
             "services.cowork_agent.connectors.composio.state.aidentity_payload",
-            new=AsyncMock(return_value={"principal": f"{ACCOUNT}__ws__{WORKSPACE}"}),
+            new=AsyncMock(return_value={"account_id": ACCOUNT,
+                                        "workspace_id": WORKSPACE}),
         )
         warm.start()
         self.addCleanup(warm.stop)

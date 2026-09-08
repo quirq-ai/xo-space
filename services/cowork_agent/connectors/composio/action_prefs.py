@@ -1,9 +1,7 @@
 """Which individual Composio actions this workspace has switched off.
 
 One document per pod, and a pod is one workspace — so there is no user or workspace level
-in the shape. The v2 document had a ``users`` map because prefs were keyed by the
-composed ``<account>__ws__<workspace>`` tenant key; that key is retired (see
-:mod:`.state`) and the map only ever held one row, so v3 drops it.
+in the shape. v3 dropped the v2 ``users`` map, which only ever held one row.
 
 Only *disabled* slugs are ever stored, which is what makes an action added to a toolkit
 later default to on.
@@ -25,7 +23,6 @@ from services.cowork_agent.visualizer.reader import read_json
 
 log = logging.getLogger(__name__)
 
-# Outside the checkout, alongside the sessions store — see paths.py.
 _PREFS_PATH = paths.store_dir() / "action_prefs.json"
 _LEGACY_PREFS_PATHS = (paths.legacy_checkout_path("composio_action_prefs.json"),)
 
@@ -123,8 +120,7 @@ def disabled_slugs(toolkit_id: str) -> frozenset[str]:
 
 
 def bulk_set(toolkit_id: str, updates: Dict[str, bool]) -> Dict[str, bool]:
-    # Before the lock, for the same reason as the sessions store: the lock sentinel is
-    # keyed on the absolute path.
+    # Before the lock: the lock sentinel is keyed on the absolute path.
     _migrate()
     path = _store_path()
     with locked(path):

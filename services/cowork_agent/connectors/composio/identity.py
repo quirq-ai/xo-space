@@ -1,29 +1,17 @@
 """Per-request identity for Composio.
 
-**One backend, one account.** This process holds exactly one XO credential
-(``routers.auth.auth.get_auth_token`` takes no arguments), so there is exactly one
-Composio ``user_id`` for its whole lifetime. This module used to resolve a bearer to an
-account id and compose a principal per request; that apparatus always produced the same
-constant, and it is gone.
+**One backend, one account.** This process holds exactly one XO credential, so there is
+exactly one Composio ``user_id`` for its whole lifetime.
 
-What remains is a **gate**, not a resolver:
+This is a **gate**, not a resolver:
 
 1. does the request carry a live session id? — so the browser tab has been vouched for
    by a backend that holds a working XO credential;
 2. hand back the pod's account id, fetched from xo-swarm-api and cached in :mod:`.state`.
 
-The account id is the whole tenant key. Connected accounts are account-wide: connect
-Gmail once and every workspace of that account can reach it. Which of them a *particular*
-workspace may actually use is decided later, when the Composio session is built — see
-:mod:`.workspace_scope`. That is a property of the session, not of the caller's identity,
-so it is deliberately not this module's business.
-
-Note what is **not** checked here any more. This gate used to 401 when
-``CODER_WORKSPACE_ID`` was unset, to avoid "falling back to an account-wide Composio
-bucket". The account-wide bucket is now the intended design, so that check had inverted
-from a protection into an outage and was removed. The workspace id still matters — it
-stamps this pod's session store — but a missing one is the store's problem to report,
-not a reason to refuse an authenticated request.
+Which connections a *particular* workspace may use is a property of the Composio session,
+decided in :mod:`.workspace_scope`, not here. A missing ``CODER_WORKSPACE_ID`` is not
+checked here either.
 """
 
 from __future__ import annotations

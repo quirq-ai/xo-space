@@ -102,7 +102,6 @@ async function loadAll(){
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
-    renderLegacyNotice((list.data&&list.data.legacy_connections)||[]);
     renderGrid();
   }finally{
     loading=false;
@@ -176,20 +175,6 @@ function statusOf(t){
   if(!isConnected(t))return{text:'Not connected',cls:''};
   if(!isEnabledHere(t))return{text:'Off in this workspace',cls:'is-idle'};
   return{text:'On in this workspace',cls:'is-good'};
-}
-
-/* One connection stranded under the retired workspace-scoped identity cannot be
-   reached from an account-scoped session — Composio requires a pinned account to
-   belong to the session's user. Reconnecting is the only fix, so say so plainly. */
-function renderLegacyNotice(rows){
-  if(!rows||!rows.length){setAlert(null);return;}
-  const total=rows.reduce((n,r)=>n+(r.count||0),0);
-  const names=rows.map(r=>esc(r.toolkit)).join(', ');
-  setAlert('pending',
-    total+' connection'+(total===1?'':'s')+' need reconnecting',
-    'These were made under the old per-workspace scheme and are no longer reachable: '
-      +'<b>'+names+'</b>. Connections are now shared across your whole XO account &mdash; '
-      +'reconnect each one once and every workspace can use it.');
 }
 
 function renderGrid(){

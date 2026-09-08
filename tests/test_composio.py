@@ -52,9 +52,8 @@ from services.cowork_agent.connectors.composio import workspace_scope
 
 WORKSPACE = "ws-test"
 ACCOUNT = "user_abc123"
-# The retired tenant key. A literal, not composed: this repo never owned the format and
-# now has no use for it beyond the migration probe. xo-swarm-api's
-# tests/test_auth_workspace.py is what pins it.
+# The retired tenant key, kept as a fixture standing in for "some user_id that is not
+# ours". A literal, not composed: nothing in either repo composes this any more.
 LEGACY_PRINCIPAL = "user_abc123__ws__ws-test"
 PROXY_URL = "http://127.0.0.1:5002/mcp/composio-proxy/u/tok-test"
 
@@ -150,7 +149,6 @@ class _ComposioBase(unittest.TestCase):
             {
                 "account_id": ACCOUNT,
                 "workspace_id": WORKSPACE,
-                "legacy_principal": LEGACY_PRINCIPAL,
             },
         )
         state.adopt_account_id(ACCOUNT)
@@ -410,12 +408,21 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     """
 
     def test_the_local_composer_has_not_come_back(self) -> None:
-        for gone in ("SEPARATOR", "scoped_principal", "is_scoped", "aprincipal"):
+        # `alegacy_principal` joins the list now that the migration probe is retired:
+        # its return would mean the swarm had started composing the key again.
+        for gone in ("SEPARATOR", "scoped_principal", "is_scoped", "aprincipal",
+                     "alegacy_principal"):
             self.assertFalse(
                 hasattr(state, gone),
                 f"state.{gone} is back — workspaces are separated by Composio session "
                 "config now, not by carving the user_id namespace.",
             )
+        self.assertFalse(
+            hasattr(service, "legacy_connections"),
+            "service.legacy_connections is back. Nothing may read the retired "
+            "workspace-scoped user id; a connection under it is unreachable from an "
+            "account-scoped session by construction.",
+        )
 
     async def test_the_account_id_is_passed_through_byte_for_byte(self) -> None:
         # No strip, no case folding, no normalisation: Composio stores these bytes
@@ -426,14 +433,14 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
                 patch.object(state, "_request", return_value={"account_id": weird}):
             self.assertEqual(await state.aaccount_id(), weird)
 
-    async def test_the_legacy_principal_is_read_but_never_used_as_the_user_id(self) -> None:
-        # It exists only to find connections stranded under the old scheme.
+    async def test_an_extra_field_from_an_older_swarm_is_ignored(self) -> None:
+        # A swarm that has not been redeployed still ships `legacy_principal`. It must be
+        # inert: the user id is the account id and nothing else reads the payload.
         state.invalidate()
         payload = {"account_id": ACCOUNT, "legacy_principal": LEGACY_PRINCIPAL}
         with patch("routers.auth.auth.get_auth_token", return_value="tok"), \
                 patch.object(state, "_request", return_value=payload):
             self.assertEqual(await state.aaccount_id(), ACCOUNT)
-            self.assertEqual(await state.alegacy_principal(), LEGACY_PRINCIPAL)
 
     async def test_it_is_fetched_once_and_cached(self) -> None:
         state.invalidate()
@@ -2215,31 +2222,27 @@ class WorkspaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         rows = [{"toolkit": "GMAIL", "connected_account_id": "ca_1",
                  "status": "ACTIVE", "alias": None, "created_at": None}]
         with patch.object(service, "list_connections", return_value=rows), \
-                patch.object(service, "kick_gateway_sweep"), \
-                patch.object(router_mod, "_legacy_connection_counts", return_value=[]):
+                patch.object(service, "kick_gateway_sweep"):
             response = await router_mod.list_toolkits(user_id=ACCOUNT)
         gmail = next(t for t in json.loads(response.body)["toolkits"]
                      if t["id"] == "gmail")
         self.assertEqual(gmail["status"], "ACTIVE")
         self.assertFalse(gmail["workspace_enabled"])
 
-    async def test_the_reconnect_prompt_counts_stranded_legacy_connections(self) -> None:
-        legacy_rows = [
-            {"toolkit": "GMAIL", "connected_account_id": "ca_legacy"},
-            {"toolkit": "NOTION", "connected_account_id": "ca_legacy2"},
-        ]
+    async def test_the_route_never_looks_up_a_foreign_user_id(self) -> None:
+        # The reconnect prompt is retired. Listing toolkits must query this account and
+        # nothing else — an extra round trip under the retired key is the regression.
+        seen: list[str] = []
 
         def _list(user_id, **kw):
-            # Only the retired key still holds anything; the account id holds nothing.
-            return legacy_rows if user_id == LEGACY_PRINCIPAL else []
+            seen.append(user_id)
+            return []
 
         with patch.object(service, "list_connections", side_effect=_list), \
                 patch.object(service, "kick_gateway_sweep"):
             response = await router_mod.list_toolkits(user_id=ACCOUNT)
-        self.assertEqual(
-            json.loads(response.body)["legacy_connections"],
-            [{"toolkit": "GMAIL", "count": 1}, {"toolkit": "NOTION", "count": 1}],
-        )
+        self.assertEqual(set(seen), {ACCOUNT})
+        self.assertNotIn("legacy_connections", json.loads(response.body))
 
     async def test_a_legacy_connection_is_never_pinned(self) -> None:
         # Composio requires a pinned account to belong to the session's user_id, so a

@@ -3,25 +3,17 @@
 The UI has no XO login of its own, and the connector routes refuse to act without knowing
 the request came from a vouched-for tab. This route is how a tab gets its bearer.
 
-**It no longer mints anything.** Minting moved to xo-swarm-api
-(``POST /auth/session/self``, ``auth/session_identity.py``), which is where authentication
-lives: the swarm verifies this backend's XO credential, validates the workspace id this
-pod supplies, and composes the tenant key. A backend whose credential has been revoked
-therefore fails *here*, at sign-in, rather than rendering "signed in" and 401ing every
-route afterwards — exactly the property the old in-process route had, now enforced by the
-service that owns the credential rather than by a copy of the rule shipped to every pod.
+**Nothing is minted here.** Minting lives in xo-swarm-api (``POST /auth/session/self``),
+which verifies this backend's XO credential and validates the workspace id this pod
+supplies. A backend whose credential has been revoked therefore fails *here*, at sign-in,
+rather than rendering "signed in" and 401ing every route afterwards.
 
-The path is unchanged on purpose: ``space_ui/js/core/session.js`` calls it, and the tab
-must keep going through this backend — it holds the XO credential, and the browser does
-not.
+The path must not change: ``space_ui/js/core/session.js`` calls it, and the tab has to
+keep going through this backend — it holds the XO credential, the browser does not.
 
-The id the swarm hands back is recorded locally by
+The id the swarm hands back is recorded in
 :mod:`services.cowork_agent.connectors.composio.session_identity`, so validating it on the
-next request stays a dict lookup. See that module for what the local record does and does
-not know.
-
-The tenant key is deliberately not returned; no consumer needs it and it does not belong
-in a browser. ``user_id`` is the bare XO **account** id, for display.
+next request stays a dict lookup. ``user_id`` is the bare XO account id, for display.
 """
 
 from __future__ import annotations
@@ -59,8 +51,6 @@ async def xo_auth_session_self():
     try:
         workspace_id = state.workspace_id()
     except state.WorkspaceIdentityUnavailable as exc:
-        # The swarm requires a workspace id to mint against, and it is also what stamps
-        # this pod's session store. Fail closed and say which half is missing.
         raise HTTPException(
             status_code=401,
             detail={
@@ -80,8 +70,8 @@ async def xo_auth_session_self():
                 json={"workspace_id": workspace_id},
             )
     except Exception as exc:
-        # Unreachable is not a sign-in problem, and telling the user to sign in would
-        # send them at the wrong thing.
+        # 503, not 401: unreachable is not a sign-in problem, and "sign in" would send
+        # the user at the wrong thing.
         raise HTTPException(
             status_code=503,
             detail={"error": f"xo-swarm-api could not be reached at {url}: {exc}"},
@@ -136,8 +126,7 @@ async def xo_auth_session_self():
 
     session_identity.remember(session_id, ttl_seconds=result.get("expires_in"))
 
-    # Best effort, and never fatal: the mint above already proved the credential and the
-    # workspace, so this only warms the cache every later request reads.
+    # Never fatal: the mint already proved the credential, so this only warms a cache.
     try:
         await state.aidentity_payload()
     except Exception as exc:

@@ -2,32 +2,20 @@
 
 Composio is addressed by the **bare Clerk account id**. This module is the client for
 ``GET /auth/workspace-principal``, a pure identity lookup that reads no database on either
-side; it answers ``{account_id, workspace_id, legacy_principal}``.
+side; it answers ``{account_id, workspace_id}``.
 
-It used to be addressed by a composed ``<account_id>__ws__<workspace_id>`` key, which
-isolated workspaces at the cost of binding every connected account to exactly one of them:
-connect Gmail in one workspace and every other workspace saw nothing. **Connections are
-account-wide now**, and workspaces are separated inside the Composio tool-router session
-instead — a per-workspace ``toolkits`` allowlist plus explicitly pinned
-``connected_accounts``. See :mod:`.workspace_scope`.
-
-``legacy_principal`` is that retired key, recomposed by the swarm for one purpose only:
-listing the connected accounts still stranded under it, so the UI can tell the user to
-reconnect them. Never pin one into a session — Composio requires a pinned account to
-belong to the session's ``user_id``, so they are unreachable by construction.
+**Connections are account-wide**, and workspaces are separated inside the Composio
+tool-router session — see :mod:`.workspace_scope`. Never compose the account and workspace
+into one key: an account connected under such a key is unreachable from an account-scoped
+session, because Composio requires a pinned account to belong to the session's ``user_id``.
 
 **The workspace half never leaves this pod.** It comes from ``CODER_WORKSPACE_ID``
-(:func:`workspace_id`), and its only consumer is the ownership stamp on ``sessions.json``
-— proof that a store found on disk was written by *this* workspace and not restored from
-another. Session ids, MCP proxy tokens and the per-workspace connector scope all live in
-that 0600 store under :mod:`.paths`; there is no remote mirror, and a store that is lost
-is re-minted locally on the next sweep.
+(:func:`workspace_id`) and its only consumer is the ownership stamp on ``sessions.json``,
+which is what stops a store restored from another workspace being adopted.
 
-The account id is a constant for the life of the pod, so it is cached. A swarm that cannot
-be reached falls back first to the cached value and then to the account recorded in this
-pod's own store (:func:`adopt_account_id`) — which is what lets a pod that has booted once
-keep serving the agent hot path through an outage. An *authoritative* refusal never falls
-back: "the owner said no" is a real answer.
+The account id is cached for the life of the pod. A swarm that cannot be reached falls
+back to the cached value, then to the account recorded in this pod's own store
+(:func:`adopt_account_id`). An *authoritative* refusal never falls back.
 
 Never log a token.
 """
@@ -46,9 +34,8 @@ import httpx
 log = logging.getLogger(__name__)
 
 
-# The env key keeps its old name, and so does the route: xo-space treats a 404 here as
-# "this swarm predates the route", so renaming the path would read as an outage on every
-# workspace that has not been redeployed yet.
+# Do not rename: a 404 here reads as "this swarm predates the route", so a rename would
+# look like an outage on every workspace that has not been redeployed yet.
 IDENTITY_PATH = os.getenv("XO_PRINCIPAL_PATH", "/auth/workspace-principal")
 
 _TTL = float(os.getenv("COMPOSIO_STATE_TTL", "900"))
@@ -74,8 +61,8 @@ class StateUnavailable(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.authoritative = authoritative
-        # A 404 on the identity path means "this swarm predates the route" — a deploy
-        # ordering slip, not a refusal. The caller decides what to do about it.
+        # A 404 on the identity path is a deploy-ordering slip, not a refusal: the swarm
+        # predates the route. The caller decides what to do about it.
         self.not_found = not_found
 
 
@@ -143,8 +130,6 @@ def _request(*, params: Optional[dict] = None) -> Any:
 
 def _interpret(resp: httpx.Response, url: str) -> Any:
     if resp.status_code == 404:
-        # Not a refusal: the swarm predates this route, which is equally a "do not
-        # retry the same deploy" answer.
         raise StateUnavailable("not found", authoritative=True, not_found=True)
     if resp.status_code in (401, 403):
         raise StateUnavailable(
@@ -172,11 +157,10 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         ) from exc
 
 
-# Injected by the Coder pod. One Coder workspace = one pod = one home directory, so this
-# is not a namespace key — the local stores are already isolated by the filesystem. Its
-# one job is stamping ``sessions.json`` with the workspace that wrote it, so a store
-# restored from a *different* workspace is discarded rather than adopted along with that
-# workspace's connector scope. Never sent to Composio.
+# Injected by the Coder pod. Not a namespace key — the local stores are already isolated
+# by the filesystem. Its one job is stamping ``sessions.json``, so a store restored from a
+# *different* workspace is discarded rather than adopted along with that workspace's
+# connector scope. Never sent to Composio.
 WORKSPACE_ENV = "CODER_WORKSPACE_ID"
 
 
@@ -236,7 +220,7 @@ def account_id_if_known() -> Optional[str]:
 
 
 def identity_payload() -> dict:
-    """This pod's identity from xo-swarm-api: account, workspace, legacy principal.
+    """This pod's identity from xo-swarm-api: account and workspace.
 
     The account id is a constant for the life of the pod, so the answer is cached. The
     workspace id is echoed back for symmetry only — this pod already knows its own, and
@@ -256,9 +240,7 @@ def identity_payload() -> dict:
     try:
         payload = _request(params={"workspace_id": _workspace()})
     except StateUnavailable as exc:
-        # A 404 here is not "no", it is "this swarm predates the route" — a deploy
-        # ordering slip, which must not take Composio down when the store already
-        # names its owner.
+        # A deploy gap must not take Composio down when the store already names its owner.
         deploy_gap = exc.not_found
         if deploy_gap:
             log.error(
@@ -281,11 +263,7 @@ def identity_payload() -> dict:
                 "composio_state: identity unavailable (%s); using the account recorded "
                 "in this pod's own store.", exc,
             )
-            # No legacy_principal: the store does not record one, and inventing it here
-            # would mean composing the retired key locally. The reconnect prompt simply
-            # does not appear until the swarm is reachable again.
-            return {"account_id": _ACCOUNT_FROM_STORE, "workspace_id": None,
-                    "legacy_principal": None}
+            return {"account_id": _ACCOUNT_FROM_STORE, "workspace_id": None}
         raise
 
     # Verbatim — no strip, no normalisation. Composio stores this string against every
@@ -321,16 +299,3 @@ async def aidentity_payload() -> dict:
 async def aaccount_id() -> str:
     """This pod's Composio ``user_id``, for the identity and proxy paths."""
     return (await aidentity_payload())["account_id"]
-
-
-async def alegacy_principal() -> Optional[str]:
-    """The retired ``<account>__ws__<workspace>`` key, for the migration probe only.
-
-    None when the swarm could not be reached (the cached-store fallback does not record
-    one) or when it has already dropped the field. Callers use it to *list* the connected
-    accounts stranded under the old scheme so the UI can prompt a reconnect — never to
-    address Composio for real work, and never to pin a session: Composio requires a
-    pinned account to belong to the session's ``user_id``, so those accounts are
-    unreachable by construction.
-    """
-    return (await aidentity_payload()).get("legacy_principal") or None

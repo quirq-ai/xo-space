@@ -10,32 +10,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import state as composio_state
 from services.cowork_agent.connectors.composio import workspace_scope
 from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def _legacy_connection_counts() -> list[dict[str, Any]]:
-    """Toolkits still holding connections under the retired workspace-scoped user id.
-
-    Drives the reconnect prompt. Best-effort and never fatal: a swarm that cannot be
-    reached simply means the prompt does not appear this time round.
-    """
-    try:
-        legacy = await composio_state.alegacy_principal()
-    except Exception:
-        return []
-    counts: dict[str, int] = {}
-    for row in composio_service.legacy_connections(legacy):
-        slug = (row.get("toolkit") or "").upper()
-        if slug:
-            counts[slug] = counts.get(slug, 0) + 1
-    return [
-        {"toolkit": slug, "count": count} for slug, count in sorted(counts.items())
-    ]
 
 
 def _status_map_from_rows(
@@ -71,9 +50,8 @@ def _account_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 class ConnectBody(BaseModel):
     auth_scheme: str = "OAUTH2"
     redirect_uri: Optional[str] = None
-    # Multi-account: `alias` labels the account being connected ("work-gmail"),
-    # and `allow_multiple` is what makes this a second account rather than a
-    # replacement of the existing one.
+    # `alias` labels the account ("work-gmail"); `allow_multiple` is what makes this a
+    # second account rather than a replacement of the existing one.
     alias: Optional[str] = None
     allow_multiple: bool = False
 
@@ -91,8 +69,8 @@ async def list_toolkits(
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
     from services.cowork_agent.connectors.composio import categories as composio_categories
-    # The tab loading (or its Refresh) is the moment a user used to press "Reinstall
-    # MCP gateway"; the sweep now runs itself here, in the background, rate-limited.
+    # Loading the tab (or its Refresh) is what installs the agent's MCP wiring: the
+    # sweep runs here, in the background, rate-limited.
     composio_service.kick_gateway_sweep()
     # One fetch feeds both the primary-account map and the per-toolkit counts.
     rows = composio_service.newest_first(
@@ -123,8 +101,7 @@ async def list_toolkits(
             # rest reads /{toolkit}/accounts.
             "alias": (connection or {}).get("alias"),
             "account_count": account_counts.get(meta.slug, 0),
-            # Workspace-scoped: a toolkit can be connected on the account and still
-            # be off here. That is the whole point of the split.
+            # Workspace-scoped: a toolkit can be connected on the account and off here.
             "workspace_enabled": bool(entry.get("enabled")),
             "pinned_account_ids": list(entry.get("connected_account_ids") or []),
         })
@@ -132,7 +109,6 @@ async def list_toolkits(
         "toolkits": toolkits,
         "multi_account": multi or {"enable": False},
         "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
-        "legacy_connections": await _legacy_connection_counts(),
     })
 
 
@@ -174,8 +150,8 @@ async def connect_status(
     result = composio_service.check_connection(connection_request_id)
     if (result.get("status") or "").upper() == "ACTIVE":
         # The workspace that ran the OAuth flow gets the connection without a second
-        # step. Every *other* workspace of the account starts with it off and opts in —
-        # connections are account-wide now, reach is not.
+        # step. Every *other* workspace starts with it off and opts in: connections are
+        # account-wide, reach is not.
         connected_account_id = result.get("connected_account_id")
         if connected_account_id:
             try:

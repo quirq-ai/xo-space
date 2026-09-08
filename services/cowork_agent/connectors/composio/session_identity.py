@@ -1,28 +1,12 @@
 """Session ids this pod has been handed — a local record, not a mint.
 
-The UI needs *some* bearer on the Composio routes, because those are the one part of this
-server that refuse to act without knowing the request came from a vouched-for tab. It does
-not need an identity: this backend serves exactly one XO account and runs in exactly one
-workspace, so the tenant key is a constant fetched from xo-swarm-api
-(:func:`.state.aaccount_id`), not something a session id selects.
+Ids are minted by xo-swarm-api (``POST /auth/session/self``); this records what
+``GET /xo-auth/session/self`` was handed so the MCP proxy's hot path can check one with a
+dict lookup instead of a round trip.
 
-**The ids are minted by xo-swarm-api** (``POST /auth/session/self``,
-``auth/session_identity.py`` over there), which is where authentication lives. This module
-records what the proxy route ``GET /xo-auth/session/self`` was handed, so that checking an
-id on the *next* request stays a dict lookup — the check runs on the MCP proxy's hot path,
-on ``initialize``, ``tools/list`` and every ``tools/call``, and must not become a round
-trip to the swarm.
-
-What that costs, stated plainly: this record is a cache with a TTL, so an id revoked at
-the swarm keeps working here until it expires. The bound is the TTL, and the swarm remains
-the authority — ``GET /auth/session/resolve`` answers definitively for anything that needs
-a definitive answer.
-
-The table is in-memory and per-process on purpose. Persisting an id would outlive the
-process whose credential vouched for it, and an id minted for one workspace must not mean
-anything in another.
-
-The raw XO token is never stored here, and never was.
+A cache with a TTL, so an id revoked at the swarm keeps working here until it expires;
+``GET /auth/session/resolve`` is the authority when that matters. In-memory and
+per-process on purpose. The raw XO token is never stored here.
 """
 
 from __future__ import annotations

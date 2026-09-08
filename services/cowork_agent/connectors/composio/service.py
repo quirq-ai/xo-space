@@ -57,9 +57,8 @@ def _auth_config_id_for(toolkit_id: str, scheme: str) -> str:
             f"Toolkit {meta.slug} does not support auth scheme {scheme!r}. "
             f"Supported: {meta.schemes}"
         )
-    # May raise CredentialsUnavailable (a RuntimeError) when the whole bundle is
-    # missing; the router maps that to 422 on /connect, which is the documented
-    # "no API key => /connect 422s" behaviour, unchanged.
+    # May raise CredentialsUnavailable when the whole bundle is missing; the router
+    # maps that to 422 on /connect.
     value = credentials.auth_config_id(env_key)
     if not value:
         raise RuntimeError(
@@ -72,13 +71,11 @@ def _auth_config_id_for(toolkit_id: str, scheme: str) -> str:
 
 
 _client: Any = None
-# The api key `_client` was built with. Keying the memo on the credential itself is
-# what makes a rotation self-invalidating: when credentials.api_key() starts returning
-# a new value the old client is dropped and rebuilt, with no cross-module wiring.
+# The api key `_client` was built with. Keying the memo on the credential is what makes
+# a rotation self-invalidating, with no cross-module wiring.
 #
-# Existing Composio sessions are deliberately *not* purged here. A rotation within the
-# same Composio project keeps them valid, and if the new key points somewhere else,
-# get_session already drops a session id whose `use()` raises and mints a fresh one.
+# Existing sessions are deliberately *not* purged: a rotation within the same Composio
+# project keeps them valid, and get_session already re-mints one whose `use()` raises.
 _client_key: str = ""
 
 
@@ -132,8 +129,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-# Composio rejects a max outside this range, so the env value is clamped rather
-# than forwarded: an operator typo must not make every session creation 400.
+# Composio rejects a max outside this range; clamped so an operator typo cannot 400
+# every session creation.
 MULTI_ACCOUNT_MIN_MAX = 2
 MULTI_ACCOUNT_MAX_MAX = 10
 MULTI_ACCOUNT_DEFAULT_MAX = 5
@@ -168,9 +165,8 @@ def multi_account_config() -> Optional[dict[str, Any]]:
     return {
         "enable": True,
         "max_accounts_per_toolkit": clamped,
-        # When true and a toolkit has more than one active account, the agent
-        # must name one via the tool call's `account` parameter (id or alias)
-        # instead of silently getting the most recent.
+        # When true, an agent must name an account via the tool call's `account`
+        # parameter instead of silently getting the most recent.
         "require_explicit_selection": _env_flag(
             "COMPOSIO_MULTI_ACCOUNT_REQUIRE_SELECTION"
         ),
@@ -230,9 +226,8 @@ def initiate_connection(
     alias: Optional[str] = None,
     allow_multiple: bool = False,
 ) -> dict[str, Any]:
-    # Every toolkit in TOOLKITS is OAUTH2-only, so _auth_config_id_for raises
-    # for any other scheme before we get here. Re-add an API_KEY branch (via
-    # connected_accounts.initiate) if an API_KEY toolkit is ever registered.
+    # OAUTH2-only: _auth_config_id_for raises for any other scheme before we get here.
+    # Add an API_KEY branch (connected_accounts.initiate) if such a toolkit is registered.
     scheme = auth_scheme.upper()
     auth_config_id = _auth_config_id_for(toolkit_id, scheme)
     callback = redirect_uri or _callback_url()
@@ -305,9 +300,8 @@ def list_connections(
             "connected_account_id": _attr(it, "id"),
             "status": _attr(it, "status", default="UNKNOWN"),
             "scheme": _attr(it, "auth_scheme", default=None),
-            # Multi-account fields. `alias` is the human label an agent can pass
-            # as a tool call's `account`; `created_at` is what "most recently
-            # connected" means when no account is named.
+            # `alias` is what an agent passes as a tool call's `account`; `created_at`
+            # is what "most recently connected" means when no account is named.
             "alias": _attr(it, "alias", default=None),
             "created_at": _attr(it, "created_at", default=None),
             "is_disabled": bool(_attr(it, "is_disabled", default=False)),
@@ -334,8 +328,8 @@ def list_toolkit_accounts(user_id: str, toolkit_id: str) -> list[dict[str, Any]]
     rows = [
         row
         for row in list_connections(user_id, toolkit_slugs=[meta.slug])
-        # The slug filter is server-side, but an SDK that ignores the parameter
-        # would otherwise leak other toolkits' accounts into this list.
+        # Belt and braces: an SDK that ignored the server-side slug filter would
+        # otherwise leak other toolkits' accounts into this list.
         if (row.get("toolkit") or "").upper() == meta.slug
     ]
     return newest_first(rows)
@@ -390,9 +384,8 @@ def list_tools(
     from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
     from services.cowork_agent.connectors.composio import categories as composio_categories
 
-    # Read the prefs ONCE. This used to be a per-slug lookup inside the loop below, each
-    # re-reading the whole store — up to 200 reads per request. Bearable against a local
-    # file, unacceptable now the store is remote.
+    # Read the prefs ONCE, not per slug inside the loop: that is up to 200 reads of the
+    # whole store per request.
     disabled = composio_action_prefs.disabled_slugs(toolkit_id)
 
     out: list[dict[str, Any]] = []
@@ -416,15 +409,13 @@ def list_tools(
 
 
 # The store lives in the user's config directory, never the checkout — see paths.py.
-# Resolved once at import, and every use site below reads this module global rather than
-# re-resolving, which is what keeps `patch.object(service, "_SESSIONS_PATH", ...)` a
-# working test seam.
+# Resolved once at import; use sites read this global rather than re-resolving, which is
+# what keeps `patch.object(service, "_SESSIONS_PATH", ...)` a working test seam.
 _SESSIONS_PATH = paths.store_dir() / "sessions.json"
 _LEGACY_SESSIONS_PATHS = (paths.legacy_checkout_path("composio_sessions.json"),)
 
-# v4 dropped the per-principal maps. Composio is addressed by the bare account id and a
-# pod serves exactly one workspace, so there is one session and one account here — the
-# maps only ever held a single row each.
+# v4 dropped the per-principal maps: a pod serves one workspace and Composio is addressed
+# by the bare account id, so there is exactly one session and one account here.
 STORE_VERSION = 4
 
 _SESSION_ID: Optional[str] = None
@@ -432,10 +423,9 @@ _PROXY_TOKENS: set[str] = set()
 _STORE_ACCOUNT: Optional[str] = None
 _SESSIONS_LOADED = False
 
-# Session ids read out of a store this pod will not adopt: a pre-v4 document, or one
-# stamped with another workspace. Composio sessions never expire, so they would linger
-# server-side forever. Drained by the boot sweep — deliberately not by whoever happens to
-# load the store first, because that is the MCP hot path and it must not touch the network.
+# Session ids from a store this pod will not adopt. Composio sessions never expire, so
+# they would linger server-side forever. Drained by the boot sweep, never by whoever loads
+# the store first — that is the MCP hot path and it must not touch the network.
 _ORPHANED_SESSION_IDS: list[str] = []
 
 
@@ -562,8 +552,7 @@ def _write_store(mutate) -> None:
 
     account = _STORE_ACCOUNT or state.account_id_if_known()
     try:
-        # Before the lock: its sentinel is keyed on the store's absolute path, so moving
-        # the file out from under a held lock would be locking the wrong name.
+        # Before the lock: the sentinel is keyed on the store's absolute path.
         paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
         with locked(_SESSIONS_PATH):
             existing_ws, existing_account, session_id, tokens = _load_store()
@@ -813,10 +802,8 @@ def sync_session(user_id: str) -> None:
         return
     try:
         session = _composio().use(sid)
-        # multi_account is passed even when it is absent from the config: that is how a
-        # session minted while the flag was on converges after the operator turns it off.
-        # If the API rejects the shape the except below re-mints, which reaches the same
-        # state by the other road.
+        # Passed even when absent from the config: that is how a session minted while
+        # the flag was on converges after an operator turns it off.
         session.update(
             connected_accounts=config.get("connected_accounts", {}),
             toolkits=config["toolkits"],
@@ -861,22 +848,6 @@ def get_session(user_id: str):
         _SESSION_ID = str(new_id)
         _persist_session_id(str(new_id))
     return session
-
-
-def legacy_connections(legacy_principal: Optional[str]) -> list[dict[str, Any]]:
-    """Connected accounts still stranded under the retired workspace-scoped user id.
-
-    Read-only, and never pinned into a session: Composio requires a pinned account to
-    belong to the session's ``user_id``, so these are unreachable by construction. The
-    only thing to do with them is tell the user to reconnect, which is why this exists.
-    """
-    if not legacy_principal:
-        return []
-    try:
-        return list_connections(legacy_principal, statuses=["ACTIVE"])
-    except Exception as exc:
-        log.warning("composio: could not list legacy connections: %s", exc)
-        return []
 
 
 def build_mcp_server_entry(user_id: str) -> dict[str, Any]:
@@ -942,13 +913,11 @@ def gateway_install_agents() -> list[str]:
 
 # ── The reconcile sweep ─────────────────────────────────────────────────────
 #
-# Installing the MCP gateway into agents is automatic and has no manual path. There
-# used to be a `POST /api/connectors/composio/refresh-gateway` behind a button on the
-# Connectors tab, for the cases the one-shot boot install silently gave up on: XO
-# unreachable at boot, an agent config file that did not exist yet, an agent that
-# rewrote its config and dropped the entry, a token the swarm never recorded. Every
-# one of those is closed by running the same idempotent sweep again — at boot with
-# backoff, on a timer, and when the Connectors tab loads — so the button went.
+# Installing the MCP gateway into agents is automatic and has no manual path. The sweep
+# is idempotent and runs at boot with backoff, on a timer, and when the Connectors tab
+# loads — which between them close every case a one-shot boot install would miss: XO
+# unreachable at boot, an agent config that did not exist yet, an agent that rewrote its
+# config and dropped the entry, a token the swarm never recorded.
 
 
 @dataclass(frozen=True)
@@ -1008,9 +977,8 @@ def reconcile_interval() -> float:
 
 
 def _report(agent: str, result: dict[str, Any], announce: bool) -> None:
-    # print, not log.info: the boot summary is the only place anyone looks, and
-    # `services.*` loggers are not wired to a handler. Same convention as
-    # skill_installer. Later sweeps print only what changed, or an error not yet seen.
+    # print, not log.info: `services.*` loggers are not wired to a handler, and the boot
+    # summary is the only place anyone looks. Later sweeps print only what changed.
     if result.get("ok"):
         _LAST_ERRORS.pop(agent, None)
         if result.get("changed") is False:
@@ -1116,11 +1084,10 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
             # back to it during a swarm outage (state.identity_payload), so read first.
             _ensure_sessions_loaded()
 
-            # The value is not needed to write an agent's config — the proxy URL carries
-            # an opaque token, not an identity. It is fetched anyway because it is the
-            # gate (an account we cannot name is an install we should not do) and because
-            # doing it here warms the cache every later request reads, and records the
-            # account in this pod's store for the offline hot path.
+            # Not needed to write the config — the proxy URL carries an opaque token,
+            # not an identity. Fetched anyway because it is the gate (an account we
+            # cannot name is an install we should not do), and because it warms the
+            # cache and records the account for the offline hot path.
             try:
                 account_id = await state.aaccount_id()
                 state.adopt_account_id(account_id)

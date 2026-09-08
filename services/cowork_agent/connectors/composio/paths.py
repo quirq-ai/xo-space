@@ -1,23 +1,7 @@
-"""Where Composio's two local stores live: ``sessions.json`` and ``action_prefs.json``.
+"""Where Composio's local stores live: ``sessions.json`` and ``action_prefs.json``.
 
-Both sit in the user's config directory, never the checkout — the same rule
-:mod:`services.cowork_agent.connectors.token_store` follows for ``token.json``, and for
-the same reason. ``sessions.json`` holds live MCP proxy tokens in plaintext; a store that
-dies with a fresh clone, a redeploy or an ``uninstall`` leaves every agent holding a token
-this pod can no longer resolve, and they all 401 until their config is rewritten.
-
-``COMPOSIO_STORE_DIR`` moves the pair in one variable — a mounted volume, ``~/.composio``,
-wherever. Deliberately *not* named ``COMPOSIO_STATE_*``: that family belongs to the
-xo-swarm-api identity client in :mod:`.state`, and tunes a cache rather than a path.
-
-The default is ``~/.config/composio/`` rather than ``~/.composio/`` because the Composio
-SDK owns the latter — it caches downloads in ``~/.composio/files`` and treats
-``~/.composio/temp`` as its default allowlisted upload directory. A 0600 credential does
-not belong in a directory a third-party library manages as scratch space.
-
-This module owns the directory and the one-shot move out of the checkout, and nothing
-else. Each store's filename, on-disk shape and read/write semantics stay with its own
-owner — :mod:`.service` for the sessions document, :mod:`.action_prefs` for the prefs one.
+Overridable with ``COMPOSIO_STORE_DIR``. The default is ``~/.config/composio/``, not
+``~/.composio/``, which the Composio SDK owns as scratch space.
 """
 
 from __future__ import annotations
@@ -31,8 +15,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_STORE_DIR = Path.home() / ".config" / "composio"
 
-# connectors/composio/ → connectors/ → cowork_agent/ → services/ → repo root. The only
-# remaining reason this package knows where the checkout is: finding what to migrate.
+# connectors/composio/ → connectors/ → cowork_agent/ → services/ → repo root.
 _CHECKOUT_DATA_DIR = Path(__file__).resolve().parents[4] / "data"
 
 
@@ -52,13 +35,8 @@ def migrate_legacy(
 ) -> None:
     """Move a store left at an older location to ``target``, once.
 
-    No-op when the store is already in place or nothing was left behind. A legacy path
-    that ``target`` itself points at is skipped, so an override aimed at the old location
-    keeps working. ``mode`` is applied after the move for a store that is a credential;
-    prefs pass None and keep the default.
-
-    A failure here is logged, never raised: the caller then sees an empty store — the
-    same degradation as a store that was never written — rather than a crashed connector.
+    No-op when the store is already in place or nothing was left behind. Failures are
+    logged, never raised.
     """
     if target.exists():
         return
@@ -71,6 +49,6 @@ def migrate_legacy(
             if mode is not None:
                 os.chmod(target, mode)
             log.info("Moved Composio store %s -> %s", legacy, target)
-        except OSError as exc:  # e.g. a mount that ignores chmod, or a read-only checkout
+        except OSError as exc:
             log.warning("Could not move %s to %s: %s", legacy, target, exc)
         return
