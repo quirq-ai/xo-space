@@ -767,24 +767,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Tier migration skipped (non-fatal): {e}")
 
-    # Visualizer watcher — materialises portable project metadata from the
-    # active runtime's native session store. Non-fatal: BFF endpoints keep
-    # serving whatever is already on disk.
-    _watcher_enabled = (
-        os.getenv("QUIRQ_WATCHER_ENABLED", "true").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
-    if _watcher_enabled:
-        try:
-            from services.cowork_agent.visualizer.watcher import start_watcher
-            _watcher_task = asyncio.create_task(start_watcher())
-            _watcher_task.add_done_callback(_report_watcher_task_exit)
-            print("   Watcher: background task started")
-        except Exception as e:
-            print(f"⚠️ Watcher failed to start (non-fatal): {e}")
-    else:
-        print("   Watcher: disabled by runtime configuration")
-
     # GitHub issue poller — refreshes the runtime issue mirror for the
     # projects that need it (docs/workitems-plan.md §6). Deliberately NOT a
     # watcher sink: a watcher tick must never touch the network, so this is
@@ -804,6 +786,24 @@ async def lifespan(app: FastAPI):
             print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
     except Exception as e:
         print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
+
+    # Visualizer watcher — materialises portable project metadata from the
+    # active runtime's native session store. Non-fatal: BFF endpoints keep
+    # serving whatever is already on disk.
+    _watcher_enabled = (
+        os.getenv("QUIRQ_WATCHER_ENABLED", "true").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if _watcher_enabled:
+        try:
+            from services.cowork_agent.visualizer.watcher import start_watcher
+            _watcher_task = asyncio.create_task(start_watcher())
+            _watcher_task.add_done_callback(_report_watcher_task_exit)
+            print("   Watcher: background task started")
+        except Exception as e:
+            print(f"⚠️ Watcher failed to start (non-fatal): {e}")
+    else:
+        print("   Watcher: disabled by runtime configuration")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
@@ -835,13 +835,6 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    if _github_poll_task:
-        _github_poll_task.cancel()
-        try:
-            await _github_poll_task
-        except asyncio.CancelledError:
-            pass
-
     if _startup_skills_task and not _startup_skills_task.done():
         _startup_skills_task.cancel()
         try:
@@ -855,6 +848,13 @@ async def lifespan(app: FastAPI):
             await _xo_status_task
         except asyncio.CancelledError:
             pass
+    if _github_poll_task:
+        _github_poll_task.cancel()
+        try:
+            await _github_poll_task
+        except asyncio.CancelledError:
+            pass
+
     print("👋 Shutting down XO Space API Server...")
 
 
