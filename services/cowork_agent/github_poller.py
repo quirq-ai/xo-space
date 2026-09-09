@@ -72,6 +72,7 @@ from services.cowork_agent.connectors.github_issues import (
     gh_available,
     parse_remote_url,
 )
+from services.cowork_agent.visualizer import github_interest
 from services.cowork_agent.visualizer import github_mirror
 from services.cowork_agent.visualizer import state as watcher_state
 from services.cowork_agent.visualizer.reader import read_json
@@ -187,12 +188,29 @@ def interest_ttl_seconds() -> float:
 # ── "Being looked at" ────────────────────────────────────────────────────────
 #
 # D9's other half. There is no viewing signal in this codebase — nothing
-# records which project a user has open — so this is the seam for one, kept
-# deliberately small: an in-process map of project id to expiry. It is
-# machine-local and disposable by construction (a restart forgets it), which
-# is the correct tier for "what is on someone's screen right now".
+# records which project a user has open — so this is the seam for one, and the
+# read routes (W7) call it when someone asks for a project's issues.
+#
+# **It used to be an in-process dict, and that was the I2 defect.** The
+# reasoning was that "what is on someone's screen right now" is transient, so
+# a restart may as well forget it. That holds for a *warm* Space and fails
+# completely for a fresh one, because of how the other two reasons behave:
+# ``.xo/workitems.json`` is synced, so a restored project brings its adopted
+# items and enrols itself on the first tick, while a fresh project has no
+# workitems file at all and a live session is transient by definition. So on a
+# fresh workspace the only durable enrolment signal was a mark that died with
+# the process — and the one screen that sets it is the screen that cannot show
+# anything until something has been polled.
+#
+# The mark now lives in the runtime tier beside the mirror
+# (``visualizer/github_interest.py``), which is still machine-local and still
+# disposable — it just outlives the process, which is the whole point.
 
-_interest: dict[str, float] = {}
+#: Ceiling on how many projects one sweep will consider interesting. The
+#: durable marks are read per project rather than enumerated, so this is not
+#: about memory any more; it is the same protection the dict's cap gave —
+#: one machine cannot enrol an unbounded number of repositories into a
+#: points-limited budget.
 _INTEREST_MAX = 512
 
 
@@ -200,37 +218,59 @@ def note_interest(project_id: str) -> None:
     """Mark a project as being looked at, for :func:`interest_ttl_seconds`.
 
     The hook a read route calls when a user opens a project, so its issues
-    are fresh while they are looking and not otherwise. Cheap, idempotent and
-    safe to call from a request thread: it touches no file and never raises.
+    are fresh while they are looking and not otherwise. Safe to call from a
+    request thread: one small atomic write in the runtime tier, and it never
+    raises — a mark that cannot be written costs a background refresh and
+    nothing else.
     """
     name = (project_id or "").strip()
     if not name:
         return
-    ttl = interest_ttl_seconds()
-    if ttl <= 0:
+    if interest_ttl_seconds() <= 0:
         return
-    if len(_interest) >= _INTEREST_MAX:
-        _expire_interest()
-        if len(_interest) >= _INTEREST_MAX:
-            _interest.clear()
-    _interest[name] = time.monotonic() + ttl
+    github_interest.note_interest(name)
 
 
-def _expire_interest() -> None:
-    now = time.monotonic()
-    for name in [key for key, expiry in _interest.items() if expiry <= now]:
-        _interest.pop(name, None)
+def is_interested(project_id: str) -> bool:
+    """Whether ``project_id`` carries an unexpired interest mark.
+
+    Per project rather than "give me the set", because the durable marks are
+    one file each: asking about the project already in hand is one read,
+    while enumerating would mean reading every project's file to build a set
+    the caller then does a single lookup in.
+    """
+    return github_interest.is_interesting(
+        project_id, ttl=interest_ttl_seconds()
+    )
 
 
 def interested_projects() -> set[str]:
-    """Project ids currently marked as being looked at."""
-    _expire_interest()
-    return set(_interest)
+    """Every project currently marked as being looked at.
+
+    Kept because it is the readable way to ask the question in a test and in
+    a diagnostic, but the poller itself uses :func:`is_interested` — see
+    there for why. Bounded by :data:`_INTEREST_MAX`.
+    """
+    out: set[str] = set()
+    for name in list_project_ids():
+        if len(out) >= _INTEREST_MAX:
+            break
+        if is_interested(name):
+            out.add(name)
+    return out
 
 
-def clear_interest() -> None:
-    """Forget every interest mark. For tests and for a root switch."""
-    _interest.clear()
+def clear_interest(project_id: Optional[str] = None) -> None:
+    """Forget interest marks. For tests and for a root switch.
+
+    With no argument, forgets every mark under the current root; with one,
+    just that project's.
+    """
+    if project_id is not None:
+        github_interest.clear_interest(project_id)
+        return
+    for name in list_project_ids():
+        github_interest.clear_interest(name)
 
 
 # ── The global budget ────────────────────────────────────────────────────────
@@ -363,7 +403,11 @@ def reset_state() -> None:
     _pending_global_failure = None
     _cooldowns.clear()
     _warned.clear()
-    _interest.clear()
+    _inflight.clear()
+    # Interest marks are durable now (I2), so they live on disk under the
+    # runtime root rather than in this module. A test that switches roots
+    # gets a fresh set for free; one that needs them gone calls
+    # ``clear_interest()``.
 
 
 def budget_snapshot() -> dict:
@@ -469,13 +513,16 @@ def candidates() -> list[Candidate]:
     is deliberate: a deterministic shortfall is diagnosable and the warning
     below names it.
     """
-    interested = interested_projects()
     out: list[Candidate] = []
     for project in list_project_ids():
         ref = _remote_ref(project)
         if ref is None:
             continue
-        if project in interested:
+        # Asked per project rather than against a prebuilt set: the marks are
+        # one small file each in the runtime tier, so this is one read for the
+        # project already in hand, where building the set would read every
+        # project's file to answer a single lookup.
+        if is_interested(project):
             reason = "interest"
         elif _has_adopted_items(project):
             reason = "adopted"
@@ -506,7 +553,9 @@ def _apply_cooldown(repo: str, kind: Optional[str]) -> None:
         _cooldowns[repo] = time.monotonic() + seconds
 
 
-async def poll_project(candidate: Candidate) -> int:
+async def poll_project(
+    candidate: Candidate, *, max_pages_override: Optional[int] = None
+) -> int:
     """Refresh one project's mirror. Returns the points this poll spent.
 
     The two-query rule of §6.3, applied here and nowhere else:
@@ -526,7 +575,13 @@ async def poll_project(candidate: Candidate) -> int:
     Never raises. Every failure the client can report is a state, and the
     mirror keeps its last good rows through all of them.
     """
-    cap = max_pages()
+    # ``max_pages_override`` is how a request path asks for one page: a
+    # browse view shows the first page anyway, and a one-page result reports
+    # ``complete=False``, which ``record_pages`` already handles by merging
+    # rather than replacing and by declining to advance the high-water mark.
+    # So a partial on-demand seed is finished by the background loop later,
+    # with no new merge rule and nothing stranded.
+    cap = max_pages() if max_pages_override is None else max(1, int(max_pages_override))
     state = github_mirror.load_state(candidate.project, repo=candidate.repo)
     since = state.since
     include_closed = since is not None
@@ -573,7 +628,9 @@ async def poll_project(candidate: Candidate) -> int:
         github_mirror.record_pages(
             candidate.project, repo=candidate.repo, pages=pages, complete=complete
         )
-        if not complete and failure is None:
+        if not complete and failure is None and max_pages_override is None:
+            # Suppressed for a deliberate one-page poll: not fitting is the
+            # expected outcome there, not a misconfiguration worth a warning.
             _warn_once(
                 f"pages:{candidate.repo}",
                 "github poller: %s did not fit in %d page(s); the high-water "
@@ -631,6 +688,135 @@ def _record_global_failure(rows: Sequence[Candidate], result: IssuesResult) -> N
                 "github poller: could not record %s for %s",
                 result.error_kind, candidate.project, exc_info=True,
             )
+
+
+# ── One poll, on demand (issuesplan Phase 1 + 2) ─────────────────────────────
+
+
+@dataclass(frozen=True)
+class PollOutcome:
+    """What :func:`poll_project_now` did. Never an exception."""
+
+    #: ``True`` iff a poll actually ran (it may still have failed against
+    #: GitHub — that is recorded in the mirror, not here).
+    polled: bool
+    #: Why it did not, when it did not: ``disabled``, ``no_remote``,
+    #: ``paused``, ``no_cli``, ``cooldown``, ``in_flight``, ``timeout`` or
+    #: ``failed``. ``None`` when it polled.
+    reason: Optional[str] = None
+    #: GraphQL points spent. Zero for every skip.
+    points: int = 0
+
+
+#: One lock per project, so N concurrent cold requests cost one poll rather
+#: than N. Created lazily and never evicted: the key set is bounded by the
+#: number of projects on the machine, and a lock is a few dozen bytes.
+_inflight: dict[str, asyncio.Lock] = {}
+
+
+def _project_lock(project: str) -> asyncio.Lock:
+    lock = _inflight.get(project)
+    if lock is None:
+        lock = asyncio.Lock()
+        _inflight[project] = lock
+    return lock
+
+
+async def poll_project_now(
+    project_id: str,
+    *,
+    max_pages_override: Optional[int] = None,
+    timeout: Optional[float] = None,
+) -> PollOutcome:
+    """Poll one project **now**, applying every guard the loop applies.
+
+    This exists because the guards used to live inside :func:`poll_once`'s
+    loop body, so they protected the tick and nothing else. Anything that
+    polled outside the loop — the adopt route, and now the browse route —
+    spent points without accounting and ignored the per-repo cool-down. That
+    was catalogued as **I5** and it is benign only while nothing on a request
+    path polls; the moment one does, a browse loop becomes a way to hammer a
+    dead repository once per request, past the 900 s back-off that exists to
+    stop exactly that.
+
+    So the guards live here, in the order the loop applied them — poller
+    disabled, budget paused, no ``gh``, repo cooling down, no github.com
+    remote — and :func:`poll_once` calls this too. One implementation, so the
+    tick and the request path cannot drift.
+
+    Two things it adds that the loop does not need:
+
+    * **Single flight.** Concurrent callers for one project queue on a lock,
+      and the ones that arrive while a poll is in flight return
+      ``in_flight`` immediately rather than waiting or duplicating it. A
+      browse view polling every 30 s must not stack up polls.
+    * **A timeout.** A request path cannot wait on ``gh`` indefinitely. On
+      expiry the answer is ``timeout`` and the caller serves whatever the
+      mirror already holds — degrading to the behaviour it had before this
+      function existed, never to an error.
+
+    Never raises, for the same reason ``poll_project`` does not: every
+    failure GitHub can produce is a state the mirror records, and a caller on
+    a read path must always be able to fall through to serving the file.
+    """
+    name = (project_id or "").strip()
+    if not name:
+        return PollOutcome(False, "no_remote")
+    if not poller_enabled():
+        return PollOutcome(False, "disabled")
+    if _budget.paused:
+        return PollOutcome(False, "paused")
+
+    ref = _remote_ref(name)
+    if ref is None:
+        return PollOutcome(False, "no_remote")
+    if _cooldown(ref.slug):
+        return PollOutcome(False, "cooldown")
+    if not gh_available():
+        return PollOutcome(False, "no_cli")
+
+    lock = _project_lock(name)
+    if lock.locked():
+        # Someone is already polling this project. Returning immediately is
+        # the point: the caller serves the mirror as it stands, and the poll
+        # in flight will have updated it by their next request.
+        return PollOutcome(False, "in_flight")
+
+    async with lock:
+        # Re-checked inside the lock: a poll that completed while we were
+        # acquiring it may have paused the budget or started a cool-down.
+        if _budget.paused:
+            return PollOutcome(False, "paused")
+        if _cooldown(ref.slug):
+            return PollOutcome(False, "cooldown")
+        candidate = Candidate(project=name, ref=ref, reason="request")
+        try:
+            if timeout is not None:
+                spent = await asyncio.wait_for(
+                    poll_project(candidate, max_pages_override=max_pages_override),
+                    timeout=timeout,
+                )
+            else:
+                spent = await poll_project(
+                    candidate, max_pages_override=max_pages_override
+                )
+        except asyncio.TimeoutError:
+            # The gh call is still running and will finish (or be reaped) on
+            # its own; the mirror is either updated by it or left as it was.
+            logger.info(
+                "github: on-demand poll of %s exceeded %.1fs; serving the "
+                "mirror as it stands", name, timeout or 0.0,
+            )
+            return PollOutcome(False, "timeout")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "github: on-demand poll of %s failed unexpectedly",
+                name, exc_info=True,
+            )
+            return PollOutcome(False, "failed")
+        return PollOutcome(True, None, spent)
 
 
 async def poll_once() -> dict:

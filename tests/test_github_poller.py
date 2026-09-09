@@ -40,6 +40,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent import github_poller
+from services.cowork_agent.visualizer import github_interest
 from services.cowork_agent.connectors import github_issues
 from services.cowork_agent.connectors.github_issues import (
     ISSUES_QUERY,
@@ -732,6 +733,201 @@ class TierTests(_PollerCase):
         written = [key for key in self.snapshot(self.state)
                    if key.endswith("github/issues.json")]
         self.assertEqual(len(written), 1, written)
+
+
+class DurableInterestTests(_PollerCase):
+    """I2: an interest mark must outlive the process that recorded it.
+
+    It used to be a dict in the poller module, so a restart forgot every
+    mark. That is invisible on a warm machine and fatal on a fresh one: the
+    other two reasons are adopted workitems (which a fresh project has none
+    of, because the template ships no ``workitems.json``) and a live session
+    (transient), so the only durable enrolment signal died with the process —
+    and the one screen that sets it cannot show anything until something has
+    been polled.
+    """
+
+    async def test_a_mark_survives_losing_every_in_process_cache(self) -> None:
+        self.make_project("demo")
+        github_poller.note_interest("demo")
+        self.assertEqual([c.reason for c in github_poller.candidates()], ["interest"])
+
+        # What a restart does to this module: every global is rebuilt.
+        github_poller.reset_state()
+
+        self.assertEqual(
+            [c.reason for c in github_poller.candidates()], ["interest"],
+            "the mark did not survive; a restarted Space polls nothing",
+        )
+
+    async def test_a_fresh_project_is_polled_after_one_browse(self) -> None:
+        """The I2 loop, end to end: no adopted items, no session, and a
+        restart in the middle."""
+        self.make_project("demo")
+        self.assertEqual(github_poller.candidates(), [], "nothing to poll yet")
+
+        github_poller.note_interest("demo")
+        github_poller.reset_state()
+
+        fake = self.fake_gh([_ok([_node(1)])])
+        summary = await github_poller.poll_once()
+        self.assertEqual(summary["polled"], 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(list(self.mirror("demo")["issues"]), ["I_node1"])
+
+    async def test_the_mark_expires_on_its_own(self) -> None:
+        self.make_project("demo")
+        github_poller.note_interest("demo")
+        with patch.dict(os.environ, {"XO_GITHUB_POLL_INTEREST_TTL_S": "0.0001"}):
+            self.assertEqual(github_poller.candidates(), [])
+
+    async def test_expiry_is_read_from_the_ttl_at_read_time(self) -> None:
+        """The stored value is an absolute timestamp, so lowering the TTL
+        applies to marks already on disk rather than only to new ones."""
+        self.make_project("demo")
+        github_poller.note_interest("demo")
+        self.assertTrue(github_poller.is_interested("demo"))
+        with patch.dict(os.environ, {"XO_GITHUB_POLL_INTEREST_TTL_S": "0"}):
+            self.assertFalse(
+                github_poller.is_interested("demo"),
+                "TTL=0 must switch the signal off for existing marks too",
+            )
+
+    async def test_a_corrupt_mark_is_not_interest_and_does_not_raise(self) -> None:
+        self.make_project("demo")
+        github_poller.note_interest("demo")
+        path = github_interest.interest_path("demo")
+        self.assertIsNotNone(path)
+        path.write_text("{not json", encoding="utf-8")  # type: ignore[union-attr]
+        self.assertFalse(github_poller.is_interested("demo"))
+        self.assertEqual(github_poller.candidates(), [])
+
+    async def test_the_mark_lands_in_the_runtime_tier_not_the_project(self) -> None:
+        """R-TIER. "This machine's user was looking at this" is the
+        definition of machine-scoped, and syncing it would enrol every Space
+        the project is ever restored into."""
+        self.make_project("demo")
+        before = self.snapshot(self.root)
+        github_poller.note_interest("demo")
+        self.assertEqual(self.snapshot(self.root), before, "wrote into .xo/")
+        written = [key for key in self.snapshot(self.state)
+                   if key.endswith("github/interest.json")]
+        self.assertEqual(len(written), 1, written)
+
+
+class OnDemandPollTests(_PollerCase):
+    """Phase 1: the guards belong to the poll, not to the loop (I5)."""
+
+    async def test_it_polls_and_reports_what_it_spent(self) -> None:
+        self.make_project("demo")
+        fake = self.fake_gh([_ok([_node(1)])])
+        outcome = await github_poller.poll_project_now("demo")
+        self.assertTrue(outcome.polled)
+        self.assertIsNone(outcome.reason)
+        self.assertEqual(outcome.points, 1)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(list(self.mirror("demo")["issues"]), ["I_node1"])
+
+    async def test_a_project_with_no_github_remote_is_not_polled(self) -> None:
+        self.make_project("demo", remote=None)
+        fake = self.fake_gh([_ok([_node(1)])])
+        outcome = await github_poller.poll_project_now("demo")
+        self.assertFalse(outcome.polled)
+        self.assertEqual(outcome.reason, "no_remote")
+        self.assertEqual(fake.calls, [])
+
+    async def test_a_cooling_down_repo_is_refused(self) -> None:
+        """The guard that mattered most: without it a browse loop would
+        hammer a deleted repository once per request, past the 900s back-off
+        that exists to stop exactly that."""
+        self.make_project("demo")
+        fake = self.fake_gh([(0, _graphql_error("Could not resolve", "NOT_FOUND"), "")])
+        first = await github_poller.poll_project_now("demo")
+        self.assertTrue(first.polled)
+
+        second = await github_poller.poll_project_now("demo")
+        self.assertFalse(second.polled)
+        self.assertEqual(second.reason, "cooldown")
+        self.assertEqual(len(fake.calls), 1, "the cool-down was bypassed")
+
+    async def test_a_paused_budget_is_refused(self) -> None:
+        self.make_project("demo")
+        fake = self.fake_gh([_ok([_node(1)])])
+        github_poller._budget.pause(600.0, "test")
+        outcome = await github_poller.poll_project_now("demo")
+        self.assertFalse(outcome.polled)
+        self.assertEqual(outcome.reason, "paused")
+        self.assertEqual(fake.calls, [])
+
+    async def test_no_gh_is_refused_without_spawning_it(self) -> None:
+        self.make_project("demo")
+        fake = self.fake_gh([_ok([_node(1)])])
+        with patch.object(github_poller, "gh_available", lambda *a, **k: False):
+            outcome = await github_poller.poll_project_now("demo")
+        self.assertFalse(outcome.polled)
+        self.assertEqual(outcome.reason, "no_cli")
+        self.assertEqual(fake.calls, [])
+
+    async def test_a_disabled_poller_refuses_the_on_demand_path_too(self) -> None:
+        """The off switch is an operator promise: nothing on a timer *and*
+        nothing on a request may reach the network once it is set."""
+        self.make_project("demo")
+        fake = self.fake_gh([_ok([_node(1)])])
+        with patch.dict(os.environ, {"XO_GITHUB_POLL_ENABLED": "false"}):
+            outcome = await github_poller.poll_project_now("demo")
+        self.assertFalse(outcome.polled)
+        self.assertEqual(outcome.reason, "disabled")
+        self.assertEqual(fake.calls, [])
+
+    async def test_concurrent_callers_cause_exactly_one_poll(self) -> None:
+        """Single flight. A browse view polling every 30s across a few open
+        tabs must not stack up polls of one repository."""
+        self.make_project("demo")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow(argv, timeout_s):
+            started.set()
+            await release.wait()
+            return _ok([_node(1)])
+
+        with patch.object(github_issues, "_run_gh", slow):
+            first = asyncio.create_task(github_poller.poll_project_now("demo"))
+            await started.wait()
+            others = await asyncio.gather(*[
+                github_poller.poll_project_now("demo") for _ in range(3)
+            ])
+            release.set()
+            outcome = await first
+
+        self.assertTrue(outcome.polled)
+        self.assertEqual([o.reason for o in others], ["in_flight"] * 3)
+
+    async def test_a_timeout_leaves_the_mirror_alone_and_says_so(self) -> None:
+        self.make_project("demo")
+
+        async def hang(argv, timeout_s):
+            await asyncio.sleep(30)
+            return _ok([])
+
+        with patch.object(github_issues, "_run_gh", hang):
+            outcome = await github_poller.poll_project_now("demo", timeout=0.05)
+        self.assertFalse(outcome.polled)
+        self.assertEqual(outcome.reason, "timeout")
+        self.assertIsNone(github_mirror.read_mirror("demo"))
+
+    async def test_one_page_is_a_real_seed_that_does_not_strand_anything(self) -> None:
+        """A one-page on-demand poll reports ``complete=False``, so the
+        mirror merges rather than replaces and the high-water mark does not
+        advance — the rule that already existed for a truncated background
+        poll, reused rather than duplicated."""
+        self.make_project("demo")
+        self.fake_gh([_ok([_node(1)], has_next=True, cursor="c1")])
+        outcome = await github_poller.poll_project_now("demo", max_pages_override=1)
+        self.assertTrue(outcome.polled)
+        doc = self.mirror("demo")
+        self.assertEqual(list(doc["issues"]), ["I_node1"])
+        self.assertIsNone(doc["since"], "an incomplete poll must not advance the mark")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1241,6 +1241,22 @@ def project_workitems_release(
 # is in.
 
 
+#: The cold-mirror fetch's bounds (issuesplan I1/Phase 2).
+#:
+#: **One page**, because a browse view shows the first page and a one-page
+#: seed is completed by the background loop on its next tick — no new merge
+#: rule, nothing stranded.
+_COLD_FETCH_PAGES = 1
+
+#: **Eight seconds**, chosen against the two facts that bound it: the poller
+#: runs on a 60 s interval, so a caller who times out here waits at most one
+#: tick for the same data to arrive anyway; and the ``gh`` client carries its
+#: own timeout, so this is the ceiling on the *request*, not on the
+#: subprocess. On expiry the mirror is served exactly as it would have been
+#: before this fetch existed.
+_COLD_FETCH_TIMEOUT_S = 8.0
+
+
 #: Every kind in ``connectors/github_issues.ERROR_KINDS``, mapped onto the
 #: answer it deserves. A table rather than a chain of ``if``s because the
 #: vocabulary is closed and a test asserts this covers it — a new failure kind
@@ -1427,7 +1443,16 @@ def _issue_model(
     "/api/xo-projects/{project_id}/github/issues",
     response_model=GithubIssuesResponse,
 )
-def project_github_issues(project_id: str) -> GithubIssuesResponse:
+async def project_github_issues(
+    project_id: str,
+    refresh: bool = Query(
+        default=False,
+        description=(
+            "Force a refresh before answering, even when the mirror is warm. "
+            "The cold-mirror fetch below happens without it."
+        ),
+    ),
+) -> GithubIssuesResponse:
     """The GitHub issue mirror for this project, and what is untracked.
 
     A read of the **runtime** tier — ``~/.quirq/projects/<pid>/github/
@@ -1454,11 +1479,47 @@ def project_github_issues(project_id: str) -> GithubIssuesResponse:
     on an old repository.
     """
     scope = _require_project(project_id)
-    # D9's hook, and the whole "being looked at" signal. Cheap, idempotent,
-    # touches no file, and cannot raise — safe on a request thread.
+    # D9's hook, and the whole "being looked at" signal. One small atomic
+    # write in the runtime tier, idempotent, and it cannot raise — safe on a
+    # request thread. It is durable rather than in-process (I2): a mark that
+    # died with the server meant a restarted Space polled nothing at all,
+    # because the only other durable reason — adopted workitems — cannot be
+    # reached until something has been polled first.
     github_poller.note_interest(project_id)
 
     mirror = scope.read_github_mirror()
+
+    # **The cold-mirror fetch (I1).** Before this, the first request for a
+    # project's issues could only ever answer "nothing": the mirror is
+    # written by the background loop, so data appeared on a *later* request,
+    # >=60s on, and >=80s after a restart. A caller who asks once and reads
+    # the result concludes the feature is broken — which is what it looks
+    # like, while behaving exactly as designed.
+    #
+    # So a cold mirror fetches inline, bounded, once. Three things keep it
+    # from costing the properties this endpoint exists to have:
+    #
+    # * **Cold only**, not stale. A warm mirror is served from disk exactly
+    #   as before, so the offline/rate-limit/fast guarantees hold for every
+    #   request after the first. ``?refresh=1`` is the explicit opt-in for a
+    #   manual refresh button.
+    # * **One page.** A browse shows the first page anyway, and a one-page
+    #   seed reports ``complete=False``, which the mirror's existing merge
+    #   rules already handle without stranding anything.
+    # * **Bounded, and degrading to the old behaviour.** On timeout, no
+    #   ``gh``, a paused budget, a cooling-down repo or a poll already in
+    #   flight, the answer is whatever the mirror holds — the pre-existing
+    #   behaviour, never an error. ``poll_project_now`` applies every guard
+    #   the background loop applies, so a browse cannot spend unaccounted
+    #   points or bypass a back-off (I5).
+    if refresh or not (mirror or {}).get("fetched_at"):
+        outcome = await github_poller.poll_project_now(
+            project_id,
+            max_pages_override=_COLD_FETCH_PAGES,
+            timeout=_COLD_FETCH_TIMEOUT_S,
+        )
+        if outcome.polled:
+            mirror = scope.read_github_mirror()
     issues = _projection.mirror_issues(mirror)
     try:
         records = scope.list_workitems()

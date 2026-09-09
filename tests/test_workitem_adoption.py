@@ -637,6 +637,49 @@ class StoreUnadoptionTests(_StoreCase):
                 self.assertEqual(caught.exception.code, "workitem_not_found")
 
 
+def _gh_node(number: int, *, state: str = "OPEN",
+             title: str | None = None,
+             updated_at: str = "2026-09-08T12:00:00Z") -> dict:
+    """One GraphQL issue node, in the poll query's own shape."""
+    return {
+        "id": f"I_node{number}", "number": number,
+        "title": title or f"issue {number}",
+        "url": f"https://github.com/{REPO}/issues/{number}",
+        "state": state, "stateReason": None, "updatedAt": updated_at,
+        "assignees": {"nodes": []},
+    }
+
+
+def _gh_ok(nodes, *, has_next: bool = False, cursor: str | None = None,
+           cost: int = 1) -> tuple[int, str, str]:
+    """A successful ``gh api graphql`` reply for the issues poll."""
+    return (0, json.dumps({
+        "data": {
+            "rateLimit": {"limit": 5000, "cost": cost, "remaining": 4900,
+                          "resetAt": "2026-09-08T13:00:00Z"},
+            "repository": {"issues": {
+                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                "nodes": list(nodes),
+            }},
+        }
+    }), "")
+
+
+class _FakeGh:
+    """``github_issues._run_gh`` with the subprocess taken out — the same
+    seam ``tests/test_github_poller.py`` replaces, kept local so this file
+    stays runnable on its own."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls: list[list[str]] = []
+
+    async def __call__(self, argv, timeout_s):
+        self.calls.append(list(argv))
+        index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[index]
+
+
 # ── The routes ──────────────────────────────────────────────────────────────
 
 
@@ -685,6 +728,16 @@ class _RoutedCase(unittest.TestCase):
         )
         token.start()
         self.addCleanup(token.stop)
+
+        # The same rule, applied to the second path that can now reach the
+        # network: ``GET /github/issues`` fetches inline when the mirror is
+        # cold (issuesplan I1), so a case that does not stub ``gh`` would
+        # shell out to the real binary and, on a developer machine that
+        # happens to be logged in, poll a real repository. Closed by
+        # default, opened deliberately by ``ColdMirrorFetchTests``.
+        no_gh = patch.object(github_poller, "gh_available", lambda *a, **k: False)
+        no_gh.start()
+        self.addCleanup(no_gh.stop)
 
         app = FastAPI()
         from routers.cowork_agent.bff.visualizer import router
@@ -1522,6 +1575,111 @@ class ErrorTableTests(unittest.TestCase):
             with self.subTest(kind):
                 self.assertIn(status, (400, 403, 404, 502, 503))
                 self.assertTrue(code)
+
+
+class ColdMirrorFetchTests(_RoutedCase):
+    """I1: the first request for a project's issues must return issues.
+
+    Before this, the browse route was a pure mirror read and the mirror was
+    written only by the background loop, so the first call could only ever
+    answer "nothing" — real data appeared on a *later* request, >=60s on and
+    >=80s after a restart. A caller who asks once and reads the result
+    concludes the feature is broken, which is exactly what it looks like
+    while behaving as designed.
+
+    These cases open the ``gh`` seam the base class closes, because the whole
+    point is that this route can now reach the network — once, bounded, and
+    only when it has nothing to serve.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        available = patch.object(github_poller, "gh_available", lambda *a, **k: True)
+        available.start()
+        self.addCleanup(available.stop)
+        client_available = patch.object(
+            github_issues, "gh_available", lambda *a, **k: True
+        )
+        client_available.start()
+        self.addCleanup(client_available.stop)
+
+    def fake_gh(self, responses):
+        fake = _FakeGh(responses)
+        runner = patch.object(github_issues, "_run_gh", fake)
+        runner.start()
+        self.addCleanup(runner.stop)
+        return fake
+
+    def test_a_cold_mirror_serves_issues_on_the_very_first_request(self) -> None:
+        """The defect, stated as the behaviour it should have had."""
+        fake = self.fake_gh([_gh_ok([_gh_node(1)])])
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(len(fake.calls), 1, "the cold mirror did not fetch")
+        self.assertEqual([row["number"] for row in body["issues"]], [1])
+        self.assertIsNotNone(body["fetched_at"])
+        self.assertEqual(body["untracked"], 1)
+
+    def test_a_warm_mirror_is_served_from_disk_without_touching_gh(self) -> None:
+        """The property the mirror exists for: after the first fetch this
+        endpoint is local, fast, offline-capable and un-rate-limitable."""
+        self.write_mirror(_mirror_row())
+        fake = self.fake_gh([_gh_ok([_gh_node(1)])])
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(fake.calls, [], "a warm mirror must not hit the network")
+        self.assertEqual(len(body["issues"]), 1)
+
+    def test_refresh_forces_a_fetch_even_when_the_mirror_is_warm(self) -> None:
+        self.write_mirror(_mirror_row())
+        fake = self.fake_gh([_gh_ok([_gh_node(2, title="fresher")])])
+        body = self.client.get(f"{self.base}/github/issues?refresh=1").json()
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn(2, [row["number"] for row in body["issues"]])
+
+    def test_no_gh_is_still_an_empty_200_not_an_error(self) -> None:
+        """Degrading to the old behaviour is the contract: every way the
+        fetch can fail leaves the caller with whatever the mirror holds."""
+        with patch.object(github_poller, "gh_available", lambda *a, **k: False):
+            res = self.client.get(f"{self.base}/github/issues")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["issues"], [])
+        self.assertIsNone(body["fetched_at"])
+        self.assertEqual(body["repo"], REPO)
+
+    def test_a_failing_fetch_surfaces_the_error_it_recorded(self) -> None:
+        self.fake_gh([(1, "", "dial tcp: lookup api.github.com: no such host")])
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["issues"], [])
+        self.assertEqual(body["error"]["kind"], "network")
+
+    def test_a_project_with_no_remote_never_reaches_the_network(self) -> None:
+        (self.xo / "project.json").write_text(json.dumps({
+            "schema": 2, "pid": PID, "name": self.PROJECT,
+            "owner_user_id": "local", "created_at": "2026-01-01T00:00:00Z",
+        }), encoding="utf-8")
+        fake = self.fake_gh([_gh_ok([_gh_node(1)])])
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(fake.calls, [])
+        self.assertIsNone(body["repo"])
+        self.assertEqual(body["issues"], [])
+
+    def test_the_fetch_is_one_page_not_the_full_ten(self) -> None:
+        """A browse shows the first page. Ten would make the first request
+        pay for a thousand issues nobody scrolled to."""
+        fake = self.fake_gh([_gh_ok([_gh_node(1)], has_next=True, cursor="c1")])
+        self.client.get(f"{self.base}/github/issues")
+        self.assertEqual(len(fake.calls), 1, "more than one page was fetched")
+
+    def test_the_browse_marks_interest_durably(self) -> None:
+        """I2 from the route's side: the mark that enrols this project in
+        background polling has to survive the process that set it."""
+        self.fake_gh([_gh_ok([])])
+        self.client.get(f"{self.base}/github/issues")
+        github_poller.reset_state()
+        self.assertTrue(
+            github_poller.is_interested(self.PROJECT),
+            "the browse did not durably enrol the project",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
