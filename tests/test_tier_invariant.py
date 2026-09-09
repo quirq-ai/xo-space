@@ -53,6 +53,28 @@ MOVED = ("stats.json", "timeline.jsonl", "sync.json", "sessions")
 TS = "2026-09-07T12:00:00Z"
 
 
+def _snapshot(base) -> dict:
+    """Every file under ``base`` with its bytes. Content, not mtimes: the
+    question is whether authored state changed, and a rewrite with identical
+    bytes has not changed it."""
+    return {
+        str(p.relative_to(base)): p.read_bytes()
+        for p in sorted(base.rglob("*")) if p.is_file()
+    }
+
+
+def _failed_issues_result():
+    """One failed poll, without going near a subprocess."""
+    from services.cowork_agent.connectors.github_issues import IssuesResult
+
+    return IssuesResult(
+        ok=False, repo="o/r", fetched_at=TS,
+        error_kind="network", error="no such host",
+    )
+
+
+
+
 class _FakeSource:
     """One backend's source, replaying a fixed batch. Named ``claude_code``
     only because the watcher asserts a source's name matches its manifest."""
@@ -164,6 +186,90 @@ class TickInvariantTests(_TickCase):
             str(p.relative_to(self.xo)) for p in self.xo.rglob("*") if p.is_file()
         )
         self.assertEqual(xo_files, ["peers.json", "project.json", "todos.json"])
+
+    def test_the_contract_covers_documents_a_tick_never_creates(self) -> None:
+        """``workitems.json`` is in the synced tier and the tick above cannot
+        see it (issuesplan I7).
+
+        The whitelist over a tick is a real invariant, but it only ever
+        observes what a *sink* writes. ``workitems.json`` is written by a
+        store, on a route, when a human acts — so the one synced document
+        carrying cross-Space-sensitive state was the one document this file
+        never checked. Not a failing test: a hole in the guard.
+
+        So it is created the way it is really created, and then the two
+        properties that matter are asserted together: it belongs to the
+        synced tier (a clone wants your work items), and a subsequent tick
+        must neither remove it nor write anything beside it.
+        """
+        from services.cowork_agent.visualizer.workitems_store import create_workitem
+
+        self.tick()  # mint the pid first; the store does not scaffold
+        create_workitem(
+            self.xo / "workitems.json",
+            runtime="claude_code",
+            title="a unit of work",
+        )
+
+        xo_files = sorted(
+            str(p.relative_to(self.xo)) for p in self.xo.rglob("*") if p.is_file()
+        )
+        self.assertEqual(
+            xo_files,
+            ["peers.json", "project.json", "todos.json", "workitems.json"],
+            "the synced contract changed; a document that travels with a "
+            "project must be a deliberate entry on this list",
+        )
+
+        before = _snapshot(self.xo)
+        self.tick()
+        self.assertEqual(
+            _snapshot(self.xo), before,
+            "a tick touched authored state it does not own",
+        )
+
+    def test_the_runtime_half_of_the_workitems_feature_stays_out(self) -> None:
+        """Its mirror, its claims and its interest mark are runtime.
+
+        The complement of the case above, and the reason the split is not
+        arbitrary: ``workitems.json`` is what a human authored and it
+        travels; what GitHub said, which agent is holding a claim, and
+        whether this machine's user was recently looking at the project are
+        all re-derivable and machine-scoped, so none of them may appear in
+        the project tree.
+        """
+        from services.cowork_agent.visualizer import github_interest, github_mirror
+        from services.cowork_agent.visualizer import workitem_claims
+
+        self.tick()
+        before = _snapshot(self.xo)
+
+        github_interest.note_interest(self.dirname)
+        github_mirror.record_failure(
+            self.dirname, repo="o/r",
+            result=_failed_issues_result(),
+        )
+        runtime_root = project_layout.runtime_dir_for_project(
+            self.dirname, create=True
+        )
+        self.assertIsNotNone(runtime_root)
+        workitem_claims.claim_workitem(
+            workitem_claims.claims_path_for(runtime_root),
+            "w1", session_id="s1", runtime="claude_code",
+        )
+
+        self.assertEqual(
+            _snapshot(self.xo), before,
+            "a runtime writer reached into the synced tier",
+        )
+        runtime = project_layout.runtime_dir_for_project(self.dirname)
+        self.assertIsNotNone(runtime)
+        for rel in ("github/issues.json", "github/interest.json",
+                    "workitems/claims.json"):
+            with self.subTest(rel=rel):
+                self.assertTrue(
+                    (runtime / rel).is_file(), f"{rel} did not land in runtime"
+                )
 
     def test_a_tick_never_writes_into_the_project_tree_twice(self) -> None:
         """A second tick with no new events must not touch the synced tier at

@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -636,19 +637,78 @@ class DegradationTests(_PollerCase):
         self.assertEqual(summary["skipped"], 1)
 
     async def test_a_network_failure_keeps_the_last_good_mirror(self) -> None:
-        """"A failed poll is not evidence that the issues went away." """
+        """"A failed poll is not evidence that the issues went away."
+
+        ``fetched_at`` means "when the poll that produced these rows
+        completed", so a failure must leave it exactly where the last
+        *success* put it — the mirror carries ``error.at`` separately so a
+        UI can say both "refreshed 09:00" and "tried 09:05, unreachable".
+
+        The assertion is that the value is **unchanged**, read from the
+        document after the success and compared after the failure. It used
+        to be ``doc["fetched_at"][:10] == "2026-09-08"`` — a hardcoded date
+        against ``_utc_now()``, so it passed on the single day it was
+        written and failed on every day after (catalogued as I6). Worse
+        than the red: pinning the date does not test the property at all. A
+        regression that restamped ``fetched_at`` on failure would have kept
+        passing right up until midnight.
+        """
         self.make_project("demo", adopted=True)
         fake = self.fake_gh([
             _ok([_node(1, updated_at="2026-09-08T10:00:00Z")]),
             (1, "", "dial tcp: lookup api.github.com: no such host"),
         ])
+
+        # The clock is driven, not observed. ``_utc_now`` has one-second
+        # granularity and both polls run in well under a second, so a
+        # regression that restamped ``fetched_at`` on failure would write
+        # the *same string* and hide inside the timing — which is how the
+        # original assertion could pin a date and still catch nothing.
+        # Mutation-verified: injecting that regression fails this test.
+        stamps = iter([
+            "2026-09-08T10:00:00Z",   # the successful poll
+            "2026-09-08T11:30:00Z",   # the failed one, deliberately later
+        ])
+        clock = patch.object(
+            github_mirror, "_utc_now",
+            lambda: next(stamps, "2026-09-08T23:59:59Z"),
+        )
+        clock.start()
+        self.addCleanup(clock.stop)
+
         await github_poller.poll_once()
+        after_success = self.mirror("demo")["fetched_at"]
+        self.assertEqual(after_success, "2026-09-08T10:00:00Z")
+
         await github_poller.poll_once()
         doc = self.mirror("demo")
         self.assertEqual(list(doc["issues"]), ["I_node1"])
         self.assertEqual(doc["error"]["kind"], "network")
-        self.assertEqual(doc["fetched_at"][:10], "2026-09-08")
+        self.assertEqual(
+            doc["fetched_at"], after_success,
+            "a failed poll moved fetched_at; it means when the rows were "
+            "fetched, and the failure fetched none",
+        )
         self.assertEqual(len(fake.calls), 2)
+
+    async def test_no_assertion_in_this_suite_pins_a_wall_clock_date(self) -> None:
+        """The guard on I6 itself.
+
+        The defect was not one bad line, it was a *shape*: comparing a value
+        derived from ``_utc_now()`` against a literal date. Fixtures may
+        carry dates freely — ``_node(updated_at=...)`` is data the fake
+        returns — but an assertion that slices a timestamp the code just
+        generated and compares it to a hardcoded day is a test that expires.
+        """
+        source = Path(__file__).read_text(encoding="utf-8")
+        offenders = [
+            (n, line.strip())
+            for n, line in enumerate(source.splitlines(), 1)
+            if "fetched_at" in line
+            and "assert" in line
+            and re.search(r'"20\d\d-\d\d', line)
+        ]
+        self.assertEqual(offenders, [], "a wall-clock date is pinned again")
 
     async def test_a_transient_failure_gets_no_cooldown(self) -> None:
         """``network`` and ``timeout`` are not stable states, so they are
