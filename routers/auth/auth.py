@@ -7,27 +7,20 @@ import os
 import threading
 from typing import Optional, Dict, Any
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.swarm_api import auth as swarm_auth
 
-# External Chat API base URL (xo-swarm-api or similar)
-CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.builders")
 
 # Clerk user API key (long-lived). When set, used as Bearer token for all chat API calls;
 # no consume flow. When not set, auth uses XO_AUTH_SESSION_ID + XO_POLL_TOKEN and consume.
 # Requires xo-swarm-api to verify Clerk API keys (Bearer ak_xxx).
 XO_API_KEY = os.getenv("XO_API_KEY", "").strip() or None
 
-# XO backend browser-auth endpoints (new flow)
-XO_AUTH_START_PATH = os.getenv("XO_AUTH_START_PATH", "/auth/browser/start")
-XO_AUTH_STATUS_PATH = os.getenv("XO_AUTH_STATUS_PATH", "/auth/browser/status")
-XO_AUTH_CONSUME_PATH = os.getenv("XO_AUTH_CONSUME_PATH", "/auth/browser/consume")
-XO_GET_USER_ID_PATH = os.getenv("XO_GET_USER_ID_PATH", "/get-user-id")
-
-# HTTP client timeout settings
-HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+# The browser-auth handshake and token validation calls live in
+# services/swarm_api/auth.py (the one swarm door); this module owns the
+# token STATE and the /xo-auth routes.
 
 
 auth_lock = threading.Lock()
@@ -146,44 +139,36 @@ async def consume_auth_flow(auth_session_id: str, poll_token: str) -> Dict[str, 
     """
     Call XO consume endpoint and store returned access token in-memory.
     """
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{XO_AUTH_CONSUME_PATH}"
-    payload = {"auth_session_id": auth_session_id, "poll_token": poll_token}
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await client.post(url, json=payload)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={"error": "Failed to consume auth flow", "upstream": response.text},
-            )
-
-        result = response.json()
-        access_token = result.get("access_token")
-        if not access_token:
-            raise HTTPException(
-                status_code=500, detail={"error": "No access token in consume response"}
-            )
-
-        set_auth_token(
-            access_token=access_token,
-            refresh_token=result.get("refresh_token"),
-            expires_in=result.get("expires_in"),
-            user_id=result.get("user_id"),
-            auth_session_id=result.get("auth_session_id"),
-        )
-        return {
-            "success": True,
-            "message": "Authentication completed and token stored",
-            "user_id": result.get("user_id"),
-            "expires_in": result.get("expires_in"),
-            "scope": result.get("scope"),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
+    res = await swarm_auth.browser_auth_consume(auth_session_id, poll_token)
+    if res.offline or res.unauthenticated:
         raise HTTPException(
-            status_code=500, detail={"error": f"Failed to consume auth flow: {str(e)}"}
+            status_code=500, detail={"error": f"Failed to consume auth flow: {res.detail}"}
         )
+    if not res.ok:
+        raise HTTPException(
+            status_code=res.status,
+            detail={"error": "Failed to consume auth flow", "upstream": res.text},
+        )
+    result = res.data if isinstance(res.data, dict) else {}
+    access_token = result.get("access_token")
+    if not access_token:
+        raise HTTPException(
+            status_code=500, detail={"error": "No access token in consume response"}
+        )
+    set_auth_token(
+        access_token=access_token,
+        refresh_token=result.get("refresh_token"),
+        expires_in=result.get("expires_in"),
+        user_id=result.get("user_id"),
+        auth_session_id=result.get("auth_session_id"),
+    )
+    return {
+        "success": True,
+        "message": "Authentication completed and token stored",
+        "user_id": result.get("user_id"),
+        "expires_in": result.get("expires_in"),
+        "scope": result.get("scope"),
+    }
 
 
 @router.post("/start")
@@ -192,47 +177,33 @@ async def xo_auth_start(data: XOAuthStartRequest):
     Start XO backend browser auth flow.
     Returns authorize_url + auth_session_id + poll_token.
     """
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{XO_AUTH_START_PATH}"
-    payload = {
-        "scopes": data.scopes,
-        "client_reference": data.client_reference,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await client.post(url, json=payload)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={"error": "Failed to start auth flow", "upstream": response.text},
-            )
-        return response.json()
-    except HTTPException:
-        raise
-    except Exception as e:
+    res = await swarm_auth.browser_auth_start(data.scopes, data.client_reference)
+    if res.offline or res.unauthenticated:
         raise HTTPException(
-            status_code=500, detail={"error": f"Failed to start auth flow: {str(e)}"}
+            status_code=500, detail={"error": f"Failed to start auth flow: {res.detail}"}
         )
+    if not res.ok:
+        raise HTTPException(
+            status_code=res.status,
+            detail={"error": "Failed to start auth flow", "upstream": res.text},
+        )
+    return res.data
 
 
 @router.get("/status/{auth_session_id}")
 async def xo_auth_status(auth_session_id: str, poll_token: str):
     """Poll XO backend auth flow status."""
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{XO_AUTH_STATUS_PATH}/{auth_session_id}"
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await client.get(url, params={"poll_token": poll_token})
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={"error": "Failed to check auth status", "upstream": response.text},
-            )
-        return response.json()
-    except HTTPException:
-        raise
-    except Exception as e:
+    res = await swarm_auth.browser_auth_status(auth_session_id, poll_token)
+    if res.offline or res.unauthenticated:
         raise HTTPException(
-            status_code=500, detail={"error": f"Failed to check auth status: {str(e)}"}
+            status_code=500, detail={"error": f"Failed to check auth status: {res.detail}"}
         )
+    if not res.ok:
+        raise HTTPException(
+            status_code=res.status,
+            detail={"error": "Failed to check auth status", "upstream": res.text},
+        )
+    return res.data
 
 
 @router.post("/consume")
@@ -255,33 +226,25 @@ async def xo_auth_whoami():
     """
     Validate stored token against XO backend /get-user-id endpoint.
     """
-    token = get_auth_token()
-    if not token:
+    if not get_auth_token():
         raise HTTPException(
             status_code=401,
             detail={"error": "No stored access token. Complete /xo-auth flow first."},
         )
-
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{XO_GET_USER_ID_PATH}"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await client.get(url, headers=headers)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={"error": "Token validation failed", "upstream": response.text},
-            )
-        data = response.json()
-        with auth_lock:
-            auth_state["user_id"] = data.get("user_id")
-        return {"success": True, "user_id": data.get("user_id")}
-    except HTTPException:
-        raise
-    except Exception as e:
+    res = await swarm_auth.get_user_id()
+    if res.offline or res.unauthenticated:
         raise HTTPException(
-            status_code=500, detail={"error": f"Failed to validate token: {str(e)}"}
+            status_code=500, detail={"error": f"Failed to validate token: {res.detail}"}
         )
+    if not res.ok:
+        raise HTTPException(
+            status_code=res.status,
+            detail={"error": "Token validation failed", "upstream": res.text},
+        )
+    data = res.data if isinstance(res.data, dict) else {}
+    with auth_lock:
+        auth_state["user_id"] = data.get("user_id")
+    return {"success": True, "user_id": data.get("user_id")}
 
 
 @router.get("/state")

@@ -14,6 +14,12 @@
 - Every external command runs through `utils/commands.py` (`run` / `run_spec` over an
   argv list, `safe_arg` for untrusted values). No `shell=True`, no command strings;
   `tests/test_command_executor.py` enforces it and holds the migration backlog.
+- Every call to xo-swarm-api goes through `services/swarm_api/` (one transport in
+  `_http.py`, one module per feature). No other module reads `CHAT_API_BASE_URL`
+  or builds a swarm URL; `tests/test_swarm_api.py` enforces it.
+- Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free code:
+  `config.py` is its only env reader, `service.py` its only router-facing surface,
+  and per-repo bookmarks live under `~/.quirq/project_sharing/`, never in a project's `.xo/`.
 
 ## Agent-modular architecture (read before touching core)
 
