@@ -11,7 +11,7 @@ its ``__init__``, so callers import the connector, not its internals::
     github/    GitHub                (common.py + pat.py + cli_auth.py)
     vercel/    Vercel                (oauth.py + api.py + connector.py)
     manus/     Manus                 (connector.py — API key)
-    composio/  Composio              (service.py + credentials.py + identity.py
+    composio/  Composio              (service.py + swarm_client.py + identity.py
                                        + session_identity.py + mcp.py + categories.py
                                        + action_prefs.py + paths.py)
 

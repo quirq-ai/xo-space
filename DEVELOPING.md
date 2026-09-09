@@ -531,61 +531,63 @@ re-add an entry removed by hand); nothing already written is removed.
 > at that pod's only principal. It does mean per-user isolation on a shared host would
 > require one process per user, which is exactly how xo-space is deployed.
 
-### 10.4 Operator setup
+### 10.4 Operator setup — and full containment
 
 Two things must be created **by hand** in the Composio dashboard; nothing in this
-repo creates them (`auth_configs.create` is never called):
+repo (or xo-swarm-api) creates them (`auth_configs.create` is never called):
 
 1. an API key → `COMPOSIO_API_KEY`
 2. one *auth config* per toolkit → `COMPOSIO_AUTH_CONFIG_<TOOLKIT>`
 
-**Both go in xo-swarm-api's environment, not this repo's.** This server holds the
-connector but not its credentials: `connectors/composio/credentials.py` fetches them
-from `GET ${CHAT_API_BASE_URL}/connectors/composio/credentials` with the same XO
-credential (`XO_API_KEY`) already used for `/get-user-id` and `/usage/report`, and
-caches them for `COMPOSIO_CREDENTIALS_TTL` (300 s). A workspace therefore needs no
-Composio secrets of its own, and a rotation is one change on the swarm.
+**Both live only in xo-swarm-api's environment, and never leave it.** This repo holds
+no Composio credential of any kind and never has one in memory: every Composio SDK call
+— `connected_accounts.link/get/list/update/delete`, `tools.get_raw_composio_tools`,
+`composio.create`/`.use`/`session.update`, `sessions.delete` — runs inside xo-swarm-api
+(`routes/composio_connections.py`, backed by `utils/composio_client.py`), authenticated
+as the caller by `Depends(get_current_user)` there — never by a `user_id` this repo
+sends it. `services/cowork_agent/connectors/composio/swarm_client.py` is the one place
+in this repo that calls those routes; `service.py` no longer imports the `composio`
+package at all, and there is no local Composio client to point at another project. The
+retired `credentials.py` — which used to fetch `{api_key, auth_configs}` verbatim over
+`GET ${CHAT_API_BASE_URL}/connectors/composio/credentials` and hand the raw key to a
+local SDK client — is gone, and with it the `COMPOSIO_CREDENTIALS_SOURCE=env` escape
+hatch (a self-hosted install with its own Composio project now needs its own
+xo-swarm-api, not a local override).
 
-`COMPOSIO_CALLBACK_URL` **stays here** — it is this deployment's public origin. Since
-the auth configs are now org-wide, every origin that will connect must be registered
-as an allowed callback on them in the dashboard; miss that and `/connect` succeeds
-while the OAuth redirect fails, which surfaces late, in the popup. It is **required
-and has no default** (the old `http://127.0.0.1:5002/...` fallback was exactly that
-late failure in code form): unset, `_callback_url()` raises and `/connect` returns a
-422 whose detail names the variable, which the Connectors tab matches on.
+> Earlier revisions of this section noted that xo-space handed the org-wide API key to
+> any authenticated workspace, and called moving the SDK calls into xo-swarm-api "a
+> design change, not done here." That move is what §10 now describes throughout — a
+> leaked or misused credential from one workspace can no longer read or write another
+> account's Composio connections, because no workspace ever holds the credential at all.
 
-> This centralises *management*, not secrecy. xo-space runs in the user's own Coder
-> workspace, so anything it can fetch, the workspace owner can fetch with the same
-> `XO_API_KEY`. Hiding the key from workspace users would mean moving the Composio SDK
-> calls themselves into xo-swarm-api.
-
-Source precedence is explicit, never automatic — `COMPOSIO_CREDENTIALS_SOURCE`:
-
-| Value | Behaviour |
-|---|---|
-| `swarm` (default) | xo-swarm-api only. A 503 or 401 from it is **authoritative**: never masked by a local `COMPOSIO_API_KEY`, never served from a stale cache |
-| `env` | read `COMPOSIO_API_KEY` / `COMPOSIO_AUTH_CONFIG_*` from this process, as before. For self-hosted installs with their own Composio project, and for the test suite |
-
-There is no automatic fallback on purpose. `registry/agent_env.py` lets the Setup tab
-write into this process's environment, so a silent fallback would let a local value
-override the organisation's credential and redirect every future OAuth grant.
+`COMPOSIO_CALLBACK_URL` **stays here** — it is this deployment's public origin, and
+`initiate_connection` resolves it locally before calling xo-swarm-api's `/connect`
+route (`redirect_uri` is a required field on that call; xo-swarm-api never guesses a
+callback for a deployment it doesn't run). Since the auth configs are org-wide, every
+origin that will connect must be registered as an allowed callback on them in the
+dashboard; miss that and `/connect` succeeds while the OAuth redirect fails, which
+surfaces late, in the popup. It is **required and has no default**: unset,
+`_callback_url()` raises before any network call and `/connect` returns a 422 whose
+detail names the variable, which the Connectors tab matches on.
 
 Degradation is per-scope, and worth knowing when reading a bug report:
 
 | Missing / broken | Effect |
 |---|---|
-| `COMPOSIO_API_KEY` on xo-swarm-api (503) | every Composio route 500s (`/connect` 422s); the rest of the server is unaffected — unchanged shape |
-| one `COMPOSIO_AUTH_CONFIG_*` on xo-swarm-api | that toolkit is listed but 422s on `/connect`; others work |
-| xo-swarm-api unreachable, cache warm | nothing user-visible for up to `COMPOSIO_CREDENTIALS_STALE_MAX` (1 h), one WARNING per `COMPOSIO_CREDENTIALS_ERROR_TTL` (30 s) |
-| xo-swarm-api unreachable, cache cold | same as a missing API key; self-heals once it is reachable |
-| xo-swarm-api rejects the XO credential (401) | authoritative — cache dropped. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
+| `COMPOSIO_API_KEY` on xo-swarm-api (503) | every Composio route on this repo fails — `/connect` 422s (the retired-`_composio()` message shape, reproduced by `swarm_client`'s classification), `/toolkits` and the MCP proxy hot path 500 |
+| one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
+| xo-swarm-api unreachable | every Composio operation fails immediately — there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
+| xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
 | `CODER_WORKSPACE_ID` | every Composio route 401s |
 | XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
 
-Every failure raised from `credentials.py` carries the literal string
-`COMPOSIO_API_KEY`. That is load-bearing, not decoration: `connectors.js` matches on
+Every authoritative failure raised from `swarm_client.py` carries the literal string
+`COMPOSIO_API_KEY`, reproduced from the identical wording xo-swarm-api's own
+`utils/composio_client.py` uses for its 503 — one classification rule applies across
+every route (`/connect`, `/connections`, `/toolkits/.../tools`, `/sessions`), not one
+per endpoint. That string is load-bearing, not decoration: `connectors.js` matches on
 it to show "Composio is not configured" instead of a raw error, and
-`tests/test_composio.py` pins it from the Python side.
+`tests/test_composio_swarm_client.py` pins it from the Python side.
 
 ### 10.5 State: a local store
 

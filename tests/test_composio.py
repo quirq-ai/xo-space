@@ -44,10 +44,10 @@ from starlette.requests import Request
 from routers.cowork_agent.connectors import composio as router_mod
 from routers.cowork_agent.connectors import composio_mcp_proxy as mcp_proxy
 from services.cowork_agent.connectors.composio import action_prefs, categories
-from services.cowork_agent.connectors.composio import credentials
 from services.cowork_agent.connectors.composio import identity as identity_mod
 from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.connectors.composio import service, session_identity, state
+from services.cowork_agent.connectors.composio import swarm_client
 from services.cowork_agent.connectors.composio import workspace_scope
 
 WORKSPACE = "ws-test"
@@ -108,19 +108,12 @@ class _ComposioBase(unittest.TestCase):
             {
                 state.WORKSPACE_ENV: WORKSPACE,
                 "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
-                "COMPOSIO_API_KEY": "test-key",
                 # Required with no default since the loopback fallback was
                 # dropped, and patch.dict does not clear the ambient env — pinned
                 # here so a developer's .env cannot decide whether these pass.
                 "COMPOSIO_CALLBACK_URL": (
                     "https://test.example/api/connectors/composio/callback"
                 ),
-                # Hermetic: the credentials provider must never reach for
-                # xo-swarm-api here. Pinning `env` also keeps every existing
-                # `patch.dict(os.environ, ...)` test in this file meaningful,
-                # since env mode is deliberately uncached and read per call.
-                # CredentialsTests below covers the swarm path on its own.
-                "COMPOSIO_CREDENTIALS_SOURCE": "env",
             },
         )
         env.start()
@@ -161,11 +154,9 @@ class _ComposioBase(unittest.TestCase):
 
     @staticmethod
     def _reset_caches() -> None:
-        service._client = None
-        service._client_key = ""
-        credentials.invalidate()
         state.invalidate()
         service._SESSION_ID = None
+        service._session_mcp_cache = None
         service._STORE_ACCOUNT = None
         service._PROXY_TOKENS.clear()
         service._ORPHANED_SESSION_IDS.clear()
@@ -178,34 +169,6 @@ class _ComposioBase(unittest.TestCase):
         service._LAST_ERRORS.clear()
         session_identity._SESSIONS.clear()
 
-    @staticmethod
-    def _fake_client(**overrides):
-        """A Composio SDK stand-in. `service._attr` walks attributes or dicts."""
-        base = SimpleNamespace(
-            connected_accounts=SimpleNamespace(
-                link=lambda **kw: SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-                get=lambda cid: SimpleNamespace(status="ACTIVE", id=cid),
-                list=lambda **kw: SimpleNamespace(items=[]),
-                delete=lambda cid: None,
-                update=lambda cid, **kw: SimpleNamespace(id=cid),
-            ),
-            tools=SimpleNamespace(get_raw_composio_tools=lambda **kw: []),
-            sessions=SimpleNamespace(delete=lambda sid: None),
-            use=lambda sid: SimpleNamespace(
-                update=lambda **kw: None,
-                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
-            ),
-            create=lambda **kw: SimpleNamespace(
-                session_id="sess_1",
-                mcp=SimpleNamespace(url="https://mcp.example/s", headers={"x-a": "b"}),
-            ),
-        )
-        for key, value in overrides.items():
-            setattr(base, key, value)
-        return base
-
 
 class ToolkitRegistryTests(_ComposioBase):
     def test_unknown_toolkit_is_rejected_by_name(self) -> None:
@@ -216,194 +179,18 @@ class ToolkitRegistryTests(_ComposioBase):
     def test_toolkit_lookup_is_case_insensitive(self) -> None:
         self.assertEqual(service.toolkit_meta("GMAIL").slug, "GMAIL")
 
-    def test_missing_auth_config_names_the_env_key_to_set(self) -> None:
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_NOTION": ""}):
-            with self.assertRaises(RuntimeError) as raised:
-                service._auth_config_id_for("notion", "OAUTH2")
-        self.assertIn("COMPOSIO_AUTH_CONFIG_NOTION", str(raised.exception))
-
-    def test_unsupported_scheme_is_a_value_error_not_a_runtime_error(self) -> None:
-        # The router maps both to 422, but only RuntimeError means "operator must
-        # configure something" — keep them distinguishable.
-        with self.assertRaises(ValueError):
-            service._auth_config_id_for("notion", "API_KEY")
+    def test_unsupported_scheme_is_a_value_error_before_any_network_call(self) -> None:
+        # Auth-config resolution moved to xo-swarm-api entirely, but the toolkit/scheme
+        # check still fails fast, locally, before swarm_client is ever touched.
+        with patch.object(swarm_client, "connect") as connect:
+            with self.assertRaises(ValueError):
+                service.initiate_connection(ACCOUNT, "notion", auth_scheme="API_KEY")
+        connect.assert_not_called()
 
     def test_every_registered_toolkit_has_action_categories(self) -> None:
         # Pins the `supports_action_prefs` flag the /toolkits route emits: a
         # toolkit added to one table and not the other silently loses prefs.
         self.assertEqual(categories.classified_toolkits(), frozenset(service.TOOLKITS))
-
-    def test_missing_api_key_is_reported_as_such(self) -> None:
-        with patch.dict(os.environ, {"COMPOSIO_API_KEY": ""}):
-            with self.assertRaises(RuntimeError) as raised:
-                service._composio()
-        self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
-
-
-class CredentialsTests(_ComposioBase):
-    """The provider that fetches the Composio credentials from xo-swarm-api.
-
-    `_ComposioBase` pins COMPOSIO_CREDENTIALS_SOURCE=env so the rest of the file
-    never touches the network; every test here that exercises the swarm path
-    flips it back explicitly with `_swarm()`.
-    """
-
-    SECRET = "ak_do_not_log_me"
-
-    @staticmethod
-    def _swarm():
-        return patch.dict(os.environ, {"COMPOSIO_CREDENTIALS_SOURCE": "swarm"})
-
-    @staticmethod
-    def _response(status: int, payload: dict | None = None) -> httpx.Response:
-        if payload is None:
-            return httpx.Response(status, text="")
-        return httpx.Response(status, json=payload)
-
-    def _ok(self, api_key: str | None = None) -> httpx.Response:
-        return self._response(200, {
-            "api_key": api_key or self.SECRET,
-            "auth_configs": {"COMPOSIO_AUTH_CONFIG_NOTION": "ac_notion"},
-        })
-
-    def test_env_mode_makes_no_http_call(self) -> None:
-        # The escape hatch has to be genuinely offline, or a self-hosted install
-        # would still need XO to be reachable.
-        with patch.object(credentials, "_get") as get:
-            self.assertEqual(credentials.api_key(), "test-key")
-        get.assert_not_called()
-
-    def test_the_bundle_is_fetched_once_and_cached(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()) as get:
-            self.assertEqual(credentials.api_key(), self.SECRET)
-            self.assertEqual(credentials.auth_config_id(
-                "COMPOSIO_AUTH_CONFIG_NOTION"), "ac_notion")
-        self.assertEqual(get.call_count, 1)
-
-    def test_it_calls_the_same_channel_usage_sync_uses(self) -> None:
-        from services import swarm_api
-
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()) as get:
-            credentials.api_key()
-
-        url, headers = get.call_args[0]
-        self.assertEqual(
-            url,
-            f"{swarm_api.base_url()}/connectors/composio/credentials",
-        )
-        self.assertEqual(headers, {"Authorization": "Bearer tok"})
-
-    def test_an_unknown_auth_config_is_none_not_an_error(self) -> None:
-        # service._auth_config_id_for owns that message: it is the only caller
-        # that knows the toolkit slug and the auth scheme.
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            self.assertIsNone(
-                credentials.auth_config_id("COMPOSIO_AUTH_CONFIG_FIGMA"))
-
-    def test_no_xo_credential_is_reported_against_the_key_name(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value=None):
-            with self.assertRaises(RuntimeError) as raised:
-                credentials.api_key()
-        self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
-
-    def test_a_503_is_authoritative_and_a_local_key_cannot_override_it(self) -> None:
-        # The security regression guard. COMPOSIO_API_KEY is set in this process
-        # (setUp does it, and the Setup tab can too), so a fallback here would let
-        # anyone who can write this environment point the connector at their own
-        # Composio project and harvest every subsequent OAuth grant.
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._response(503)):
-            with self.assertRaises(credentials.CredentialsUnavailable) as raised:
-                credentials.api_key()
-        self.assertTrue(raised.exception.authoritative)
-        self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
-
-    def test_a_401_drops_the_cache_rather_than_serving_stale(self) -> None:
-        # A revoked credential must stop working, not linger for an hour.
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            credentials.api_key()
-        with self._swarm(), \
-                patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._response(401)):
-            with self.assertRaises(credentials.CredentialsUnavailable) as raised:
-                credentials.api_key()
-        self.assertTrue(raised.exception.authoritative)
-
-    def test_an_unreachable_swarm_serves_the_cached_bundle(self) -> None:
-        # A swarm restart must not take every connector down with it.
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            credentials.api_key()
-        with self._swarm(), \
-                patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get",
-                             side_effect=httpx.ConnectError("refused")):
-            self.assertEqual(credentials.api_key(), self.SECRET)
-
-    def test_a_stale_bundle_eventually_expires(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            credentials.api_key()
-        with self._swarm(), \
-                patch.object(credentials, "_NEXT_ATTEMPT", 0.0), \
-                patch.object(credentials, "_STALE_MAX", 0.0), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get",
-                             side_effect=httpx.ConnectError("refused")):
-            with self.assertRaises(credentials.CredentialsUnavailable):
-                credentials.api_key()
-
-    def test_an_empty_key_from_the_swarm_is_not_accepted(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._response(
-                    200, {"api_key": "  ", "auth_configs": {}})):
-            with self.assertRaises(credentials.CredentialsUnavailable) as raised:
-                credentials.api_key()
-        self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
-
-    def test_a_rotated_key_rebuilds_the_sdk_client(self) -> None:
-        built: list[str] = []
-
-        class _Fake:
-            def __init__(self, api_key: str) -> None:
-                built.append(api_key)
-
-        with patch.object(credentials, "api_key", side_effect=["k1", "k1", "k2"]), \
-                patch("composio.Composio", _Fake):
-            first = service._composio()
-            second = service._composio()
-            third = service._composio()
-
-        # Same key => the memoized client is reused; a new key rebuilds it.
-        self.assertIs(first, second)
-        self.assertIsNot(second, third)
-        self.assertEqual(built, ["k1", "k2"])
-
-    def test_the_credential_never_reaches_the_log(self) -> None:
-        with self._swarm(), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get", return_value=self._ok()):
-            with self.assertLogs(credentials.log, level="INFO") as captured:
-                credentials.api_key()
-        joined = "\n".join(captured.output)
-        self.assertNotIn(self.SECRET, joined)
-        # The names are safe and are what an operator actually needs.
-        self.assertIn("COMPOSIO_AUTH_CONFIG_NOTION", joined)
 
 
 class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
@@ -541,10 +328,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertIn("trs_old", service._ORPHANED_SESSION_IDS)
 
         deleted: list[str] = []
-        client = self._fake_client(
-            sessions=SimpleNamespace(delete=lambda sid: deleted.append(sid)),
-        )
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "delete_session", side_effect=deleted.append):
             self.assertEqual(service.drain_orphaned_sessions(), 1)
         self.assertEqual(deleted, ["trs_old"])
         # Drained, not retried forever — a session that cannot be deleted must not
@@ -729,49 +513,69 @@ class MigrationTests(_ComposioBase):
 
 
 class ServiceDegradationTests(_ComposioBase):
-    """The read paths swallow SDK faults; the MCP entry deliberately does not."""
+    """The read paths swallow a transient swarm fault; an authoritative one (no key
+    configured, credential rejected) still propagates. The MCP entry deliberately
+    does not swallow anything."""
 
-    def _boom(self, *_a, **_kw):
-        raise RuntimeError("composio is down")
-
-    def test_check_connection_reports_failure_instead_of_raising(self) -> None:
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(get=self._boom)
-        )
-        with patch.object(service, "_composio", return_value=client):
+    def test_check_connection_passes_through_the_swarm_s_own_degraded_answer(self) -> None:
+        # xo-swarm-api's own /connection-requests/{id} route already turns an internal
+        # Composio failure into this FAILED shape; check_connection is a pure
+        # passthrough now, so there is nothing left for it to catch.
+        failed = {"status": "FAILED", "connected_account_id": None, "error": "composio is down"}
+        with patch.object(swarm_client, "connection_status", return_value=failed):
             result = service.check_connection("cr_1")
-        self.assertEqual(result["status"], "FAILED")
-        self.assertIn("composio is down", result["error"])
+        self.assertEqual(result, failed)
 
-    def test_list_connections_degrades_to_empty(self) -> None:
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(list=self._boom)
-        )
-        with patch.object(service, "_composio", return_value=client):
+    def test_list_connections_degrades_to_empty_on_a_transient_failure(self) -> None:
+        with patch.object(
+            swarm_client, "list_connections",
+            side_effect=swarm_client.SwarmComposioError("composio is down"),
+        ):
             self.assertEqual(service.list_connections(ACCOUNT), [])
 
+    def test_list_connections_propagates_an_authoritative_failure(self) -> None:
+        # The security-critical case: a caller must never see "no connections" when
+        # the real answer is "Composio is not configured" or "credential rejected".
+        with patch.object(
+            swarm_client, "list_connections",
+            side_effect=swarm_client.SwarmComposioError("no key", authoritative=True),
+        ):
+            with self.assertRaises(swarm_client.SwarmComposioError):
+                service.list_connections(ACCOUNT)
+
     def test_disconnect_reports_false_instead_of_raising(self) -> None:
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(delete=self._boom)
-        )
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "disconnect",
+            side_effect=swarm_client.SwarmComposioError("composio is down"),
+        ):
             self.assertFalse(service.disconnect("ca_1"))
 
+    def test_disconnect_not_owned_raises_value_error(self) -> None:
+        # Ownership now lives on xo-swarm-api; a 404 from there is the only thing
+        # that can tell "not yours" apart from "gone", and it must not be swallowed
+        # into a plain False the way a generic failure is.
+        with patch.object(
+            swarm_client, "disconnect",
+            side_effect=swarm_client.SwarmComposioNotFound("no such account"),
+        ):
+            with self.assertRaises(ValueError):
+                service.disconnect("ca_1")
+
     def test_list_tools_degrades_to_empty(self) -> None:
-        client = self._fake_client(
-            tools=SimpleNamespace(get_raw_composio_tools=self._boom)
-        )
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "list_tools",
+            side_effect=swarm_client.SwarmComposioError("composio is down"),
+        ):
             self.assertEqual(service.list_tools(ACCOUNT, "gmail"), [])
 
     def test_listing_many_tools_reads_the_prefs_once(self) -> None:
         # This ran per-tool, so a 200-tool toolkit meant 200 reads of the whole prefs
         # store. Tolerable against a local file; not once the store is remote.
-        tools = [SimpleNamespace(slug=f"GMAIL_ACTION_{i}", name="") for i in range(200)]
-        client = self._fake_client(
-            tools=SimpleNamespace(get_raw_composio_tools=lambda **kw: tools)
-        )
-        with patch.object(service, "_composio", return_value=client), \
+        tools = [
+            {"slug": f"GMAIL_ACTION_{i}", "name": "", "description": "", "parameters": {}}
+            for i in range(200)
+        ]
+        with patch.object(swarm_client, "list_tools", return_value=tools), \
                 patch.object(
                     action_prefs, "load_prefs", return_value={}
                 ) as load_prefs:
@@ -779,31 +583,12 @@ class ServiceDegradationTests(_ComposioBase):
         self.assertEqual(len(out), 200)
         self.assertEqual(load_prefs.call_count, 1)
 
-    def test_connection_rows_are_normalised_across_sdk_shapes(self) -> None:
-        rows = SimpleNamespace(items=[
-            SimpleNamespace(
-                toolkit=SimpleNamespace(slug="gmail"),
-                id="ca_1", status="ACTIVE", auth_scheme="OAUTH2",
-            ),
-            {"toolkit_slug": "notion", "id": "ca_2", "status": "INITIATED"},
-        ])
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(list=lambda **kw: rows)
-        )
-        with patch.object(service, "_composio", return_value=client):
-            out = service.list_connections(ACCOUNT)
-        self.assertEqual([r["toolkit"] for r in out], ["GMAIL", "NOTION"])
-        self.assertEqual(out[0]["connected_account_id"], "ca_1")
-
     def test_disabled_actions_are_hidden_unless_explicitly_included(self) -> None:
-        tools = [SimpleNamespace(
-            slug="GMAIL_SEND_EMAIL", name="Send", description="", input_parameters={},
-        )]
-        client = self._fake_client(
-            tools=SimpleNamespace(get_raw_composio_tools=lambda **kw: tools)
-        )
+        tools = [{
+            "slug": "GMAIL_SEND_EMAIL", "name": "Send", "description": "", "parameters": {},
+        }]
         action_prefs.bulk_set("gmail", {"GMAIL_SEND_EMAIL": False})
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_tools", return_value=tools):
             self.assertEqual(service.list_tools(ACCOUNT, "gmail"), [])
             shown = service.list_tools(ACCOUNT, "gmail", include_disabled=True)
         self.assertEqual(len(shown), 1)
@@ -812,38 +597,43 @@ class ServiceDegradationTests(_ComposioBase):
     def test_mcp_entry_refuses_a_session_with_no_url(self) -> None:
         # Without the guard the entry would carry the literal string "None", which
         # is truthy and fails much later as an opaque connection error.
-        client = self._fake_client(
-            create=lambda **kw: SimpleNamespace(
-                session_id="s1", mcp=SimpleNamespace(url=None, headers=None)
-            )
-        )
         _enable("gmail")
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "create_session",
+            return_value={"session_id": "s1", "mcp": {"url": None}},
+        ):
             with self.assertRaises(RuntimeError) as raised:
                 service.build_mcp_server_entry(ACCOUNT)
         self.assertIn("no MCP url", str(raised.exception))
 
     def test_mcp_entry_carries_url_and_headers(self) -> None:
         _enable("gmail")
-        with patch.object(service, "_composio", return_value=self._fake_client()):
+        with patch.object(
+            swarm_client, "create_session",
+            return_value={
+                "session_id": "sess_1",
+                "mcp": {"url": "https://mcp.example/s", "headers": {"x-a": "b"}},
+            },
+        ):
             entry = service.build_mcp_server_entry(ACCOUNT)
         self.assertEqual(entry["type"], "http")
         self.assertEqual(entry["url"], "https://mcp.example/s")
         self.assertEqual(entry["headers"], {"x-a": "b"})
 
 
-def _account(cid, slug="gmail", *, status="ACTIVE", alias=None, created_at=None,
-             is_disabled=False):
-    """A connected-account row in the SDK's list shape."""
-    return SimpleNamespace(
-        id=cid,
-        toolkit=SimpleNamespace(slug=slug),
-        status=status,
-        alias=alias,
-        created_at=created_at,
-        is_disabled=is_disabled,
-        auth_scheme="OAUTH2",
-    )
+def _row(cid, slug="gmail", *, status="ACTIVE", alias=None, created_at=None,
+         is_disabled=False):
+    """A connected-account row in the shape swarm_client.list_connections returns —
+    already flat JSON, matching what xo-swarm-api's /connections route answers."""
+    return {
+        "toolkit": slug.upper(),
+        "connected_account_id": cid,
+        "status": status,
+        "scheme": "OAUTH2",
+        "alias": alias,
+        "created_at": created_at,
+        "is_disabled": is_disabled,
+    }
 
 
 class MultiAccountTests(_ComposioBase):
@@ -854,24 +644,6 @@ class MultiAccountTests(_ComposioBase):
     COMPOSIO_MULTI_ACCOUNT decides whether more than one of them can reach a
     session at the same time.
     """
-
-    def _client_listing(self, items, *, capture=None):
-        def _list(**kw):
-            if capture is not None:
-                capture.append(kw)
-            return SimpleNamespace(items=items)
-
-        return self._fake_client(
-            connected_accounts=SimpleNamespace(
-                list=_list,
-                link=lambda **kw: SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-                update=lambda cid, **kw: SimpleNamespace(id=cid),
-                get=lambda cid: SimpleNamespace(status="ACTIVE", id=cid),
-                delete=lambda cid: None,
-            )
-        )
 
     # ---- configuration ----
 
@@ -920,8 +692,10 @@ class MultiAccountTests(_ComposioBase):
             service.normalize_alias("x" * (service.ALIAS_MAX_LENGTH + 1))
 
     def test_duplicate_alias_is_caught_locally_and_names_the_holder(self) -> None:
-        client = self._client_listing([_account("ca_1", alias="Work-Gmail")])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "list_connections",
+            return_value=[_row("ca_1", alias="Work-Gmail")],
+        ):
             with self.assertRaises(service.AliasInUseError) as raised:
                 # Composio's uniqueness is per user and toolkit; casing must not
                 # be a way around it.
@@ -929,42 +703,46 @@ class MultiAccountTests(_ComposioBase):
         self.assertIn("ca_1", str(raised.exception))
 
     def test_renaming_an_account_to_its_own_alias_is_not_a_collision(self) -> None:
-        client = self._client_listing([_account("ca_1", alias="work-gmail")])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "list_connections",
+            return_value=[_row("ca_1", alias="work-gmail")],
+        ):
             service.assert_alias_free(
                 ACCOUNT, "gmail", "work-gmail", except_account_id="ca_1",
             )
 
     def test_alias_only_collides_within_the_same_toolkit(self) -> None:
-        capture: list[dict] = []
-        client = self._client_listing([], capture=capture)
-        with patch.object(service, "_composio", return_value=client):
-            service.assert_alias_free(ACCOUNT, "notion", "shared-name")
-        self.assertEqual(capture[0]["toolkit_slugs"], ["notion"])
+        captured: dict = {}
 
-    def test_set_alias_clears_with_an_empty_string_not_none(self) -> None:
-        # connected_accounts.update(alias=None) leaves the alias alone; "" is
-        # what actually clears it.
-        seen: list[dict] = []
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(
-                update=lambda cid, **kw: seen.append({"id": cid, **kw}),
-            )
-        )
-        with patch.object(service, "_composio", return_value=client):
+        def _list(**kw):
+            captured.update(kw)
+            return []
+
+        with patch.object(swarm_client, "list_connections", side_effect=_list):
+            service.assert_alias_free(ACCOUNT, "notion", "shared-name")
+        # toolkit_meta("notion").slug is uppercase; lowercasing for Composio now
+        # happens on xo-swarm-api's side of this call, not here.
+        self.assertEqual(captured["toolkit_slugs"], ["NOTION"])
+
+    def test_set_alias_normalizes_before_calling_the_swarm(self) -> None:
+        # Clearing sends None, not "" — turning that into the empty string
+        # Composio's update() actually needs to clear an alias is now
+        # xo-swarm-api's job (routes/composio_connections.py), not this
+        # module's.
+        seen: list[tuple[str, object]] = []
+        with patch.object(
+            swarm_client, "set_alias",
+            side_effect=lambda cid, alias: seen.append((cid, alias)),
+        ):
             self.assertIsNone(service.set_alias("ca_1", "  "))
-            self.assertEqual(service.set_alias("ca_1", "work"), "work")
-        self.assertEqual(seen[0], {"id": "ca_1", "alias": ""})
-        self.assertEqual(seen[1], {"id": "ca_1", "alias": "work"})
+            self.assertEqual(service.set_alias("ca_1", "  work  "), "work")
+        self.assertEqual(seen, [("ca_1", None), ("ca_1", "work")])
 
     def test_failed_alias_write_raises_rather_than_reporting_success(self) -> None:
-        def _boom(*_a, **_kw):
-            raise RuntimeError("composio is down")
-
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(update=_boom)
-        )
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(
+            swarm_client, "set_alias",
+            side_effect=swarm_client.SwarmComposioError("composio is down"),
+        ):
             with self.assertRaises(RuntimeError):
                 service.set_alias("ca_1", "work")
 
@@ -972,16 +750,17 @@ class MultiAccountTests(_ComposioBase):
 
     def test_connect_forwards_alias_and_allow_multiple(self) -> None:
         seen: list[dict] = []
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(
-                list=lambda **kw: SimpleNamespace(items=[]),
-                link=lambda **kw: seen.append(kw) or SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-            )
-        )
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1"}), \
-                patch.object(service, "_composio", return_value=client):
+
+        def _connect(toolkit_id, **kw):
+            seen.append(kw)
+            return {
+                "auth_url": "https://composio.example/auth",
+                "connection_request_id": "cr_1",
+                "alias": kw.get("alias"),
+            }
+
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "connect", side_effect=_connect):
             result = service.initiate_connection(
                 ACCOUNT, "gmail", alias=" work-gmail ", allow_multiple=True,
             )
@@ -989,98 +768,85 @@ class MultiAccountTests(_ComposioBase):
         self.assertTrue(seen[0]["allow_multiple"])
         self.assertEqual(result["alias"], "work-gmail")
 
-    def test_a_plain_connect_sends_neither_alias_nor_allow_multiple(self) -> None:
-        # The single-account flow must keep its exact previous request shape.
+    def test_a_plain_connect_sends_no_alias_or_allow_multiple(self) -> None:
         seen: list[dict] = []
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(
-                link=lambda **kw: seen.append(kw) or SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-            )
-        )
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1"}), \
-                patch.object(service, "_composio", return_value=client):
+
+        def _connect(toolkit_id, **kw):
+            seen.append(kw)
+            return {
+                "auth_url": "https://composio.example/auth",
+                "connection_request_id": "cr_1",
+                "alias": None,
+            }
+
+        with patch.object(swarm_client, "connect", side_effect=_connect):
             service.initiate_connection(ACCOUNT, "gmail")
-        self.assertEqual(
-            set(seen[0]), {"user_id", "auth_config_id", "callback_url"}
-        )
+        self.assertIsNone(seen[0]["alias"])
+        self.assertFalse(seen[0]["allow_multiple"])
 
     # ---- the callback url is required ----
 
     def test_a_missing_callback_url_raises_before_composio_is_called(self) -> None:
         # No loopback guess: minting an auth_url against a callback this
         # deployment does not own only fails later, in the popup.
-        seen: list[dict] = []
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(
-                link=lambda **kw: seen.append(kw) or SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-            )
-        )
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1",
-                                     "COMPOSIO_CALLBACK_URL": ""}), \
-                patch.object(service, "_composio", return_value=client):
+        with patch.dict(os.environ, {"COMPOSIO_CALLBACK_URL": ""}), \
+                patch.object(swarm_client, "connect") as connect:
             with self.assertRaises(RuntimeError) as raised:
                 service.initiate_connection(ACCOUNT, "gmail")
         self.assertIn("COMPOSIO_CALLBACK_URL", str(raised.exception))
-        self.assertEqual(seen, [])
+        connect.assert_not_called()
 
     def test_an_explicit_redirect_uri_does_not_need_the_env_var(self) -> None:
         seen: list[dict] = []
-        client = self._fake_client(
-            connected_accounts=SimpleNamespace(
-                link=lambda **kw: seen.append(kw) or SimpleNamespace(
-                    redirect_url="https://composio.example/auth", id="cr_1"
-                ),
-            )
-        )
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_GMAIL": "ac_1",
-                                     "COMPOSIO_CALLBACK_URL": ""}), \
-                patch.object(service, "_composio", return_value=client):
+
+        def _connect(toolkit_id, **kw):
+            seen.append(kw)
+            return {
+                "auth_url": "https://composio.example/auth",
+                "connection_request_id": "cr_1",
+                "alias": None,
+            }
+
+        with patch.dict(os.environ, {"COMPOSIO_CALLBACK_URL": ""}), \
+                patch.object(swarm_client, "connect", side_effect=_connect):
             service.initiate_connection(
                 ACCOUNT, "gmail", redirect_uri="https://caller.example/cb",
             )
-        self.assertEqual(seen[0]["callback_url"], "https://caller.example/cb")
+        self.assertEqual(seen[0]["redirect_uri"], "https://caller.example/cb")
 
     # ---- listing ----
 
     def test_accounts_are_listed_newest_first(self) -> None:
-        client = self._client_listing([
-            _account("ca_old", created_at="2026-01-01T00:00:00Z"),
-            _account("ca_new", created_at="2026-06-01T00:00:00Z"),
-        ])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[
+            _row("ca_old", created_at="2026-01-01T00:00:00Z"),
+            _row("ca_new", created_at="2026-06-01T00:00:00Z"),
+        ]):
             rows = service.list_toolkit_accounts(ACCOUNT, "gmail")
         self.assertEqual(
             [r["connected_account_id"] for r in rows], ["ca_new", "ca_old"]
         )
 
     def test_a_row_with_no_timestamp_sorts_last_instead_of_crashing(self) -> None:
-        client = self._client_listing([
-            _account("ca_undated"),
-            _account("ca_dated", created_at="2026-01-01T00:00:00Z"),
-        ])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[
+            _row("ca_undated"),
+            _row("ca_dated", created_at="2026-01-01T00:00:00Z"),
+        ]):
             rows = service.list_toolkit_accounts(ACCOUNT, "gmail")
         self.assertEqual(
             [r["connected_account_id"] for r in rows], ["ca_dated", "ca_undated"]
         )
 
     def test_foreign_toolkit_rows_are_dropped_even_if_the_api_ignores_the_filter(self) -> None:
-        client = self._client_listing([
-            _account("ca_1", "gmail"), _account("ca_2", "notion"),
-        ])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[
+            _row("ca_1", "gmail"), _row("ca_2", "notion"),
+        ]):
             rows = service.list_toolkit_accounts(ACCOUNT, "gmail")
         self.assertEqual([r["connected_account_id"] for r in rows], ["ca_1"])
 
     def test_alias_and_created_at_reach_the_caller(self) -> None:
-        client = self._client_listing([
-            _account("ca_1", alias="work", created_at="2026-01-01T00:00:00Z"),
-        ])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[
+            _row("ca_1", alias="work", created_at="2026-01-01T00:00:00Z"),
+        ]):
             row = service.list_connections(ACCOUNT)[0]
         self.assertEqual(row["alias"], "work")
         self.assertEqual(row["created_at"], "2026-01-01T00:00:00Z")
@@ -1091,23 +857,17 @@ class MultiAccountTests(_ComposioBase):
     # Pins are now the workspace's explicit choice, not a heuristic. The old behaviour —
     # "pin whatever is newest and active" — is precisely what this replaces: with
     # account-wide connections it would let a connect performed in a sibling workspace
-    # silently repoint this one.
+    # silently repoint this one. workspace_scope.pins()/enabled_toolkits() are purely
+    # local, so most of these need no swarm_client patch at all.
 
     def test_a_pin_is_the_workspace_s_choice_not_the_newest_account(self) -> None:
-        client = self._client_listing([
-            _account("ca_old", created_at="2026-01-01T00:00:00Z"),
-            _account("ca_new", created_at="2026-06-01T00:00:00Z"),
-        ])
         _enable("gmail", "ca_old")
-        with patch.object(service, "_composio", return_value=client):
-            self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_old"]})
+        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_old"]})
 
     def test_an_unenabled_toolkit_is_never_pinned_even_when_connected(self) -> None:
         # The account holds a Gmail connection; this workspace has not opted in.
-        client = self._client_listing([_account("ca_1")])
-        with patch.object(service, "_composio", return_value=client):
-            self.assertEqual(workspace_scope.pins(), {})
-            self.assertEqual(workspace_scope.enabled_toolkits(), [])
+        self.assertEqual(workspace_scope.pins(), {})
+        self.assertEqual(workspace_scope.enabled_toolkits(), [])
 
     def test_pinning_never_exceeds_the_configured_maximum(self) -> None:
         # Composio rejects a session pinning more than the cap, and that failure would
@@ -1127,8 +887,7 @@ class MultiAccountTests(_ComposioBase):
         # The connection was deleted from a sibling workspace, which cannot reach this
         # pod's store. One stale id fails the WHOLE session, so this must self-heal.
         _enable("gmail", "ca_gone")
-        client = self._client_listing([_account("ca_live")])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[_row("ca_live")]):
             self.assertTrue(service.prune_scope_to_live_accounts(ACCOUNT))
         self.assertEqual(workspace_scope.pins(), {})
         # And with nothing left pinned the toolkit goes off, rather than falling back
@@ -1137,48 +896,47 @@ class MultiAccountTests(_ComposioBase):
 
     def test_a_disabled_account_counts_as_gone_for_pruning(self) -> None:
         _enable("gmail", "ca_off")
-        client = self._client_listing([
-            _account("ca_off", is_disabled=True), _account("ca_on"),
-        ])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[
+            _row("ca_off", is_disabled=True), _row("ca_on"),
+        ]):
             service.prune_scope_to_live_accounts(ACCOUNT)
         self.assertEqual(workspace_scope.pins(), {})
 
     def test_pruning_leaves_a_healthy_scope_untouched(self) -> None:
         _enable("gmail", "ca_1")
-        client = self._client_listing([_account("ca_1")])
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[_row("ca_1")]):
             self.assertFalse(service.prune_scope_to_live_accounts(ACCOUNT))
         self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_1"]})
 
     # ---- the session ----
 
-    def _capturing_client(self, seen: list[dict]):
-        return self._fake_client(
-            create=lambda **kw: seen.append(kw) or SimpleNamespace(
-                session_id="sess_1",
-                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
-            ),
-            connected_accounts=SimpleNamespace(
-                list=lambda **kw: SimpleNamespace(items=[]),
-            ),
-        )
+    @staticmethod
+    def _capture_create(seen: list[dict]):
+        def _create(config):
+            seen.append(config)
+            return {
+                "session_id": "sess_1",
+                "mcp": {"url": "https://mcp.example/s", "headers": {}},
+            }
+        return _create
 
     def test_a_session_is_addressed_by_the_bare_account_id(self) -> None:
-        # The whole point of the change: no "__ws__" suffix reaches Composio, so a
-        # connection made in any workspace of this account is reachable from all.
+        # The whole point of the change: xo-swarm-api resolves user_id from this
+        # backend's own bearer token, so the session config never carries one at
+        # all any more — not even the bare account id, let alone a "__ws__" suffix.
         seen: list[dict] = []
         _enable("gmail")
-        with patch.object(service, "_composio", return_value=self._capturing_client(seen)):
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
-        self.assertEqual(seen[0]["user_id"], ACCOUNT)
-        self.assertNotIn("__ws__", seen[0]["user_id"])
+        self.assertNotIn("user_id", seen[0])
 
     def test_a_session_carries_this_workspace_s_toolkit_allowlist(self) -> None:
         seen: list[dict] = []
         _enable("gmail")
         _enable("notion")
-        with patch.object(service, "_composio", return_value=self._capturing_client(seen)):
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         # Composio checks the allowlist before it looks up a connection, so this is the
         # outer boundary of what the workspace can reach.
@@ -1187,27 +945,24 @@ class MultiAccountTests(_ComposioBase):
     def test_a_session_carries_the_workspace_s_pins(self) -> None:
         seen: list[dict] = []
         _enable("gmail", "ca_chosen")
-        client = self._capturing_client(seen)
-        client.connected_accounts = SimpleNamespace(
-            list=lambda **kw: SimpleNamespace(items=[_account("ca_chosen")]),
-        )
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[_row("ca_chosen")]), \
+                patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         self.assertEqual(seen[0]["connected_accounts"], {"gmail": ["ca_chosen"]})
 
     def test_a_workspace_with_nothing_enabled_gets_no_session_at_all(self) -> None:
         # Composio's behaviour for an empty allowlist is unspecified and "everything"
         # would be the catastrophic reading, so the session is never created.
-        seen: list[dict] = []
-        with patch.object(service, "_composio", return_value=self._capturing_client(seen)):
+        with patch.object(swarm_client, "create_session") as create:
             with self.assertRaises(service.NoToolkitsEnabled):
                 service.get_session(ACCOUNT)
-        self.assertEqual(seen, [], "no session may be created with an empty allowlist")
+        create.assert_not_called()
 
     def test_session_creation_omits_multi_account_when_the_flag_is_off(self) -> None:
         seen: list[dict] = []
         _enable("gmail")
-        with patch.object(service, "_composio", return_value=self._capturing_client(seen)):
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         self.assertNotIn("multi_account", seen[0])
 
@@ -1215,8 +970,8 @@ class MultiAccountTests(_ComposioBase):
         seen: list[dict] = []
         _enable("gmail")
         with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}), \
-                patch.object(service, "_composio",
-                             return_value=self._capturing_client(seen)):
+                patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         self.assertTrue(seen[0]["multi_account"]["enable"])
 
@@ -1224,43 +979,41 @@ class MultiAccountTests(_ComposioBase):
         # multi_account is sent as None rather than omitted: a session minted
         # while the flag was on must stop being a multi-account session.
         seen: list[dict] = []
-        client = self._fake_client(
-            use=lambda sid: SimpleNamespace(
-                update=lambda **kw: seen.append(kw),
-                mcp=SimpleNamespace(url="https://mcp.example/s", headers={}),
-            )
-        )
+
+        def _update(sid, config):
+            seen.append(config)
+            return {"session_id": sid, "mcp": {"url": "https://mcp.example/s", "headers": {}}}
+
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(swarm_client, "update_session", side_effect=_update):
             service.sync_session(ACCOUNT)
         self.assertIsNone(seen[0]["multi_account"])
         self.assertEqual(seen[0]["toolkits"], {"enable": ["gmail"]})
 
     def test_a_rejected_session_update_falls_back_to_a_re_mint(self) -> None:
-        def _boom(**_kw):
-            raise RuntimeError("unsupported field")
-
-        client = self._fake_client(
-            use=lambda sid: SimpleNamespace(update=_boom),
-        )
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(
+                    swarm_client, "update_session",
+                    side_effect=swarm_client.SwarmComposioError("unsupported field"),
+                ), \
+                patch.object(swarm_client, "delete_session"):
             service.sync_session(ACCOUNT)
         self.assertIsNone(service._SESSION_ID)
 
     def test_disabling_the_last_toolkit_drops_the_session(self) -> None:
         # Leaving a live session behind would keep it reaching whatever it was last
         # configured with, which is exactly what turning everything off must prevent.
-        client = self._fake_client()
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
         workspace_scope.set_toolkit("gmail", enabled=False)
-        with patch.object(service, "_composio", return_value=client):
+        with patch.object(swarm_client, "delete_session"):
             service.sync_session(ACCOUNT)
         self.assertIsNone(service._SESSION_ID)
 
@@ -1642,8 +1395,16 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(by_slug["GMAIL"]["connected_account_id"], "ca_1")
 
     async def test_unconfigured_toolkit_is_a_422_not_a_500(self) -> None:
+        # Auth-config resolution now happens entirely on xo-swarm-api; this pins the
+        # router's mapping of that RuntimeError to a 422 naming the missing env var.
         body = router_mod.ConnectBody()
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_NOTION": ""}):
+        with patch.object(
+            swarm_client, "connect",
+            side_effect=swarm_client.SwarmComposioError(
+                "Composio auth config for NOTION/OAUTH2 is not configured. Set "
+                "COMPOSIO_AUTH_CONFIG_NOTION in xo-swarm-api's environment."
+            ),
+        ):
             with self.assertRaises(HTTPException) as raised:
                 await router_mod.connect("notion", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 422)
@@ -1651,41 +1412,48 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
     async def test_a_missing_callback_url_is_a_422_naming_the_var(self) -> None:
         # The Connectors tab matches the detail on COMPOSIO_CALLBACK_URL to tell
-        # this apart from the missing-auth-config 422; keep the literal in it.
+        # this apart from the missing-auth-config 422; keep the literal in it. This
+        # check is local and fires before swarm_client.connect is ever called.
         body = router_mod.ConnectBody()
-        with patch.dict(os.environ, {"COMPOSIO_AUTH_CONFIG_NOTION": "ac_1",
-                                     "COMPOSIO_CALLBACK_URL": ""}):
+        with patch.dict(os.environ, {"COMPOSIO_CALLBACK_URL": ""}), \
+                patch.object(swarm_client, "connect") as connect:
             with self.assertRaises(HTTPException) as raised:
                 await router_mod.connect("notion", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 422)
         self.assertIn("COMPOSIO_CALLBACK_URL", raised.exception.detail)
+        connect.assert_not_called()
 
     async def test_an_unreachable_swarm_still_yields_a_422_on_connect(self) -> None:
-        # Pins the DEVELOPING.md §10.3 degradation contract end to end now that the
-        # credentials come over the wire: a swarm outage must land on the same 422
-        # shape as a missing key, carrying a detail the Connectors tab can match.
+        # Pins the degradation contract end to end: whatever fails inside
+        # xo-swarm-api's Composio call, initiate_connection surfaces it as a
+        # RuntimeError and the router still lands on the same 422 shape, carrying a
+        # detail the Connectors tab can match.
         body = router_mod.ConnectBody()
-        with patch.dict(os.environ, {"COMPOSIO_CREDENTIALS_SOURCE": "swarm"}), \
-                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
-                patch.object(credentials, "_get",
-                             side_effect=httpx.ConnectError("refused")):
+        with patch.object(
+            swarm_client, "connect",
+            side_effect=swarm_client.SwarmComposioError(
+                "COMPOSIO_API_KEY could not be reached at .../connect: refused."
+            ),
+        ):
             with self.assertRaises(HTTPException) as raised:
                 await router_mod.connect("notion", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 422)
         self.assertIn("COMPOSIO_API_KEY", raised.exception.detail)
 
     async def test_disconnecting_an_account_you_do_not_own_is_a_404(self) -> None:
+        # Ownership is checked by xo-swarm-api now, not by a pre-list here.
         body = router_mod.DisconnectBody(connected_account_id="ca_someone_else")
-        with patch.object(service, "list_connections", return_value=[]):
+        with patch.object(
+            swarm_client, "disconnect",
+            side_effect=swarm_client.SwarmComposioNotFound("no such account"),
+        ):
             with self.assertRaises(HTTPException) as raised:
                 await router_mod.disconnect("gmail", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 404)
 
     async def test_failed_disconnect_is_a_502(self) -> None:
-        rows = [{"connected_account_id": "ca_1", "toolkit": "GMAIL", "status": "ACTIVE"}]
         body = router_mod.DisconnectBody(connected_account_id="ca_1")
-        with patch.object(service, "list_connections", return_value=rows), \
-                patch.object(service, "disconnect", return_value=False):
+        with patch.object(service, "disconnect", return_value=False):
             with self.assertRaises(HTTPException) as raised:
                 await router_mod.disconnect("gmail", body, user_id=ACCOUNT)
         self.assertEqual(raised.exception.status_code, 502)

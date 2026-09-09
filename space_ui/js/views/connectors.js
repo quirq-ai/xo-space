@@ -2,8 +2,9 @@
 
    The eight toolkits are OAuth2-only. Identity is the XO account id resolved from
    an X-XO-Session header, so every call here goes through core/session.js. Nothing
-   on this page holds a provider credential; the server keeps the Composio API key
-   and injects it into the MCP proxy, so the browser only ever sees status.
+   on this page — or on this server — holds a provider credential; xo-swarm-api
+   keeps the Composio API key and runs every Composio call itself, so the browser
+   only ever sees status.
 
    Two independent states per card, and the UI has to keep them apart:
      - connected      -> the ACCOUNT holds a connection (shared by every workspace)
@@ -120,14 +121,15 @@ function renderSignedOut(){
 /* The /toolkits route is the only source of the toolkit list, so when it fails
    there are no tiles to draw. Say precisely which of the two causes it was. */
 function renderListFailure(res){
-  /* CredentialsUnavailable's message always contains the literal
-     "COMPOSIO_API_KEY" (service.py), so matching it names the cause with
-     confidence. A bare 500 is *not* proof of one: every server-side fault in
-     the route — a missing `composio` package, a Composio outage — is rendered
-     by FastAPI as the same plain-text 500 with no detail to match on. Blaming
-     credentials for all of them sends the operator off to verify keys that are
-     already correct, so an unmatched 500 points at the log instead, where the
-     traceback says which it was. */
+  /* SwarmComposioError's message always contains the literal "COMPOSIO_API_KEY"
+     (swarm_client.py) for an authoritative failure — no key configured on
+     xo-swarm-api, or this backend's XO credential rejected — so matching it
+     names the cause with confidence. A bare 500 is *not* proof of one: any
+     other server-side fault in the route (a Composio outage, an unreachable
+     xo-swarm-api) is rendered by FastAPI as the same plain-text 500 with no
+     detail to match on. Blaming credentials for all of them sends the operator
+     off to verify keys that are already correct, so an unmatched 500 points at
+     the log instead, where the traceback says which it was. */
   const notConfigured=/COMPOSIO_API_KEY/i.test(res.error||'');
   const serverFault=!notConfigured&&res.status===500;
   let note;
@@ -139,21 +141,18 @@ function renderListFailure(res){
     note='Your session is no longer valid.';
   }else if(notConfigured){
     setAlert('pending','Composio is not configured on this server',
-      'Composio credentials come from your XO account, not from this workspace. '
+      'Composio credentials live only on xo-swarm-api, never on this workspace. '
       +'Check that this server is signed in (XO_API_KEY) and that COMPOSIO_API_KEY '
-      +'plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app are set on the XO side '
-      +'&mdash; both are created in the Composio dashboard. A self-hosted install '
-      +'with its own Composio project can set them locally with '
-      +'COMPOSIO_CREDENTIALS_SOURCE=env.');
-    note='No connectors to show until the server has a Composio API key.';
+      +'plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app are set on '
+      +'xo-swarm-api &mdash; both are created in the Composio dashboard.');
+    note='No connectors to show until xo-swarm-api has a Composio API key.';
   }else if(serverFault){
     setAlert('error','Listing connectors failed on this server',
       'The server errored while listing toolkits and returned no detail, so the '
       +'reason is only in the xo-space server log &mdash; read the traceback there '
-      +'first. The usual causes are the <code>composio</code> package missing from '
-      +'the venv (install it from requirements.txt) or credentials this server '
-      +'cannot fetch (XO_API_KEY plus a reachable CHAT_API_BASE_URL, or '
-      +'COMPOSIO_CREDENTIALS_SOURCE=env for a self-hosted install).');
+      +'first. The usual causes are xo-swarm-api being unreachable (check '
+      +'CHAT_API_BASE_URL), this server&#39;s XO_API_KEY being rejected, or a '
+      +'Composio-side outage on xo-swarm-api itself.');
     note='Connectors are unavailable until the server-side error is cleared.';
   }else{
     setAlert('error','Could not list connectors',esc(res.error||''));

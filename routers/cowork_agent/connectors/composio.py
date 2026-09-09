@@ -183,16 +183,15 @@ async def disconnect(
 
     Other workspaces cannot be reached to clean their pins; their next session build
     prunes the dead id itself (see ``service.prune_scope_to_live_accounts``).
+
+    Ownership is checked by xo-swarm-api now, not here — it is the only thing that
+    actually knows which account this connection belongs to. ``disconnect`` raises
+    ``ValueError`` when it says "not yours, or gone".
     """
-    owned = {
-        r.get("connected_account_id") for r in composio_service.list_connections(user_id)
-    }
-    if body.connected_account_id not in owned:
-        raise HTTPException(
-            status_code=404,
-            detail="No such connected account for this user.",
-        )
-    ok = composio_service.disconnect(body.connected_account_id)
+    try:
+        ok = composio_service.disconnect(body.connected_account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=502, detail="Composio disconnect failed.")
     workspace_scope.unlink_account(toolkit, body.connected_account_id)

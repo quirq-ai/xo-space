@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from services.cowork_agent.connectors.composio import credentials, paths, state
+from services.cowork_agent.connectors.composio import paths, state, swarm_client
 
 log = logging.getLogger(__name__)
 
@@ -27,18 +27,17 @@ class ToolkitMeta:
     slug: str
     display_name: str
     schemes: tuple[str, ...]
-    auth_env_keys: dict[str, str]
 
 
 TOOLKITS: dict[str, ToolkitMeta] = {
-    "gmail":           ToolkitMeta("GMAIL",           "Gmail",            ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GMAIL"}),
-    "googlecalendar":  ToolkitMeta("GOOGLECALENDAR",  "Google Calendar",  ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GOOGLECALENDAR"}),
-    "notion":          ToolkitMeta("NOTION",          "Notion",           ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_NOTION"}),
-    "googlesheets":    ToolkitMeta("GOOGLESHEETS",    "Google Sheets",    ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GOOGLESHEETS"}),
-    "googledocs":      ToolkitMeta("GOOGLEDOCS",      "Google Docs",      ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GOOGLEDOCS"}),
-    "googleslides":    ToolkitMeta("GOOGLESLIDES",    "Google Slides",    ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GOOGLESLIDES"}),
-    "googlemeet":      ToolkitMeta("GOOGLEMEET",      "Google Meet",      ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_GOOGLEMEET"}),
-    "figma":           ToolkitMeta("FIGMA",           "Figma",            ("OAUTH2",),            {"OAUTH2": "COMPOSIO_AUTH_CONFIG_FIGMA"}),
+    "gmail":           ToolkitMeta("GMAIL",           "Gmail",            ("OAUTH2",)),
+    "googlecalendar":  ToolkitMeta("GOOGLECALENDAR",  "Google Calendar",  ("OAUTH2",)),
+    "notion":          ToolkitMeta("NOTION",          "Notion",           ("OAUTH2",)),
+    "googlesheets":    ToolkitMeta("GOOGLESHEETS",    "Google Sheets",    ("OAUTH2",)),
+    "googledocs":      ToolkitMeta("GOOGLEDOCS",      "Google Docs",      ("OAUTH2",)),
+    "googleslides":    ToolkitMeta("GOOGLESLIDES",    "Google Slides",    ("OAUTH2",)),
+    "googlemeet":      ToolkitMeta("GOOGLEMEET",      "Google Meet",      ("OAUTH2",)),
+    "figma":           ToolkitMeta("FIGMA",           "Figma",            ("OAUTH2",)),
 }
 
 
@@ -47,56 +46,6 @@ def toolkit_meta(toolkit_id: str) -> ToolkitMeta:
     if meta is None:
         raise ValueError(f"Unknown toolkit: {toolkit_id!r}. Known: {sorted(TOOLKITS)}")
     return meta
-
-
-def _auth_config_id_for(toolkit_id: str, scheme: str) -> str:
-    meta = toolkit_meta(toolkit_id)
-    env_key = meta.auth_env_keys.get(scheme.upper())
-    if not env_key:
-        raise ValueError(
-            f"Toolkit {meta.slug} does not support auth scheme {scheme!r}. "
-            f"Supported: {meta.schemes}"
-        )
-    # May raise CredentialsUnavailable when the whole bundle is missing; the router
-    # maps that to 422 on /connect.
-    value = credentials.auth_config_id(env_key)
-    if not value:
-        raise RuntimeError(
-            f"Composio auth config for {meta.slug}/{scheme} is not configured. "
-            f"Set {env_key} where this install reads its Composio credentials — "
-            f"xo-swarm-api's environment, or locally with "
-            f"COMPOSIO_CREDENTIALS_SOURCE=env (see Composio dashboard)."
-        )
-    return value
-
-
-_client: Any = None
-# The api key `_client` was built with. Keying the memo on the credential is what makes
-# a rotation self-invalidating, with no cross-module wiring.
-#
-# Existing sessions are deliberately *not* purged: a rotation within the same Composio
-# project keeps them valid, and get_session already re-mints one whose `use()` raises.
-_client_key: str = ""
-
-
-def _composio():
-    global _client, _client_key
-    # Raises CredentialsUnavailable (a RuntimeError) whose message always contains the
-    # literal "COMPOSIO_API_KEY" — the string the Connectors tab matches on.
-    api_key = credentials.api_key()
-    if _client is not None and _client_key == api_key:
-        return _client
-    try:
-        from composio import Composio
-    except ImportError as exc:
-        raise RuntimeError(
-            "The `composio` Python package is not installed. "
-            "Install it from requirements.txt (pinned to >=0.18,<0.19 — the "
-            "0.7.x range carries GHSA-3mwv-j45g-vp3w; do not install it)."
-        ) from exc
-    _client = Composio(api_key=api_key)
-    _client_key = api_key
-    return _client
 
 
 def _attr(obj: Any, *names: str, default: Any = None) -> Any:
@@ -238,47 +187,41 @@ def initiate_connection(
     alias: Optional[str] = None,
     allow_multiple: bool = False,
 ) -> dict[str, Any]:
-    # OAUTH2-only: _auth_config_id_for raises for any other scheme before we get here.
-    # Add an API_KEY branch (connected_accounts.initiate) if such a toolkit is registered.
+    # OAUTH2-only today: a new scheme needs a row here (`meta.schemes`) and a matching
+    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`.
+    meta = toolkit_meta(toolkit_id)
     scheme = auth_scheme.upper()
-    auth_config_id = _auth_config_id_for(toolkit_id, scheme)
+    if scheme not in meta.schemes:
+        raise ValueError(
+            f"Toolkit {meta.slug} does not support auth scheme {scheme!r}. "
+            f"Supported: {meta.schemes}"
+        )
     callback = redirect_uri or _callback_url()
     alias = normalize_alias(alias)
     if alias:
         assert_alias_free(user_id, toolkit_id, alias)
 
-    link_kwargs: dict[str, Any] = {
-        "user_id": user_id,
-        "auth_config_id": auth_config_id,
-        "callback_url": callback,
-    }
-    if alias:
-        link_kwargs["alias"] = alias
-    if allow_multiple:
-        # Without this Composio reuses/replaces the existing account for this
-        # user + auth config instead of adding a second one.
-        link_kwargs["allow_multiple"] = True
-
-    request = _composio().connected_accounts.link(**link_kwargs)
+    # user_id is never sent: xo-swarm-api resolves it from this backend's own bearer
+    # token and only ever acts as the caller, never as a user_id it was handed.
+    request = swarm_client.connect(
+        toolkit_id,
+        auth_scheme=scheme,
+        redirect_uri=callback,
+        alias=alias,
+        allow_multiple=allow_multiple,
+    )
     return {
-        "auth_url": _attr(request, "redirect_url"),
-        "connection_request_id": _attr(request, "id"),
+        "auth_url": request.get("auth_url"),
+        "connection_request_id": request.get("connection_request_id"),
         "alias": alias,
     }
 
 
 def check_connection(connection_request_id: str) -> dict[str, Any]:
-    client = _composio()
-    try:
-        record = client.connected_accounts.get(connection_request_id)
-    except Exception as exc:
-        log.warning("composio: check_connection failed: %s", exc)
-        return {"status": "FAILED", "connected_account_id": None, "error": str(exc)}
-
-    return {
-        "status": _attr(record, "status", default="PENDING"),
-        "connected_account_id": _attr(record, "id"),
-    }
+    # xo-swarm-api's own /connection-requests/{id} route already degrades an internal
+    # Composio failure to this same FAILED shape; only a swarm-unavailable failure
+    # (COMPOSIO_API_KEY missing, network down) propagates uncaught here, same as before.
+    return swarm_client.connection_status(connection_request_id)
 
 
 def list_connections(
@@ -287,38 +230,16 @@ def list_connections(
     statuses: Optional[list[str]] = None,
     toolkit_slugs: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
-    client = _composio()
-    list_kwargs: dict[str, Any] = {"user_ids": [user_id]}
-    if statuses:
-        list_kwargs["statuses"] = statuses
-    if toolkit_slugs:
-        list_kwargs["toolkit_slugs"] = [s.lower() for s in toolkit_slugs]
+    # `user_ids=[user_id]` scoping now happens on xo-swarm-api, resolved from this
+    # backend's own bearer token — the entire point of the migration. The response is
+    # already shaped exactly like the `out` list this function used to build itself.
     try:
-        page = client.connected_accounts.list(**list_kwargs)
-    except Exception as exc:
+        return swarm_client.list_connections(statuses=statuses, toolkit_slugs=toolkit_slugs)
+    except swarm_client.SwarmComposioError as exc:
+        if exc.authoritative:
+            raise
         log.warning("composio: list_connections failed for user=%s: %s", user_id, exc)
         return []
-
-    items = _attr(page, "items", default=page) or []
-    out: list[dict[str, Any]] = []
-    for it in items:
-        toolkit = (
-            _attr(it, "toolkit", "slug", default="")
-            or _attr(it, "toolkit_slug", default="")
-            or _attr(it, "app", default="")
-        )
-        out.append({
-            "toolkit": str(toolkit).upper() or None,
-            "connected_account_id": _attr(it, "id"),
-            "status": _attr(it, "status", default="UNKNOWN"),
-            "scheme": _attr(it, "auth_scheme", default=None),
-            # `alias` is what an agent passes as a tool call's `account`; `created_at`
-            # is what "most recently connected" means when no account is named.
-            "alias": _attr(it, "alias", default=None),
-            "created_at": _attr(it, "created_at", default=None),
-            "is_disabled": bool(_attr(it, "is_disabled", default=False)),
-        })
-    return out
 
 
 def newest_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -356,10 +277,11 @@ def set_alias(connected_account_id: str, alias: Optional[str]) -> Optional[str]:
     """
     normalized = normalize_alias(alias)
     try:
-        _composio().connected_accounts.update(
-            connected_account_id, alias=normalized or "",
-        )
-    except Exception as exc:
+        swarm_client.set_alias(connected_account_id, normalized)
+    except swarm_client.SwarmComposioError as exc:
+        # No special-casing of "not owned" (a 404 from xo-swarm-api) here on purpose —
+        # the router has never distinguished it from any other alias-update failure,
+        # so both keep mapping to the same 502.
         log.warning(
             "composio: set_alias failed for account=%s: %s", connected_account_id, exc,
         )
@@ -368,11 +290,16 @@ def set_alias(connected_account_id: str, alias: Optional[str]) -> Optional[str]:
 
 
 def disconnect(connected_account_id: str) -> bool:
-    client = _composio()
+    """Delete a connected account. Raises ValueError if it is not this user's — that
+    ownership check now lives on xo-swarm-api, the only thing that can tell "not
+    yours" apart from "already gone". Any other failure still degrades to False.
+    """
     try:
-        client.connected_accounts.delete(connected_account_id)
+        swarm_client.disconnect(connected_account_id)
         return True
-    except Exception as exc:
+    except swarm_client.SwarmComposioNotFound as exc:
+        raise ValueError(str(exc)) from exc
+    except swarm_client.SwarmComposioError as exc:
         log.warning("composio: disconnect failed: %s", exc)
         return False
 
@@ -384,12 +311,11 @@ def list_tools(
     include_disabled: bool = False,
 ) -> list[dict[str, Any]]:
     meta = toolkit_meta(toolkit_id)
-    client = _composio()
     try:
-        tools = client.tools.get_raw_composio_tools(
-            toolkits=[meta.slug], limit=200,
-        )
-    except Exception as exc:
+        tools = swarm_client.list_tools(toolkit_id)
+    except swarm_client.SwarmComposioError as exc:
+        if exc.authoritative:
+            raise
         log.warning("composio: list_tools failed (toolkit=%s): %s", meta.slug, exc)
         return []
 
@@ -402,15 +328,15 @@ def list_tools(
 
     out: list[dict[str, Any]] = []
     for t in tools:
-        slug = _attr(t, "slug", default="") or _attr(t, "name", default="")
+        slug = t.get("slug", "") or t.get("name", "")
         enabled = slug not in disabled
         if not include_disabled and not enabled:
             continue
         entry: dict[str, Any] = {
             "slug": slug,
-            "name": _attr(t, "name", default=""),
-            "description": _attr(t, "description", default=""),
-            "parameters": _attr(t, "input_parameters", default={}),
+            "name": t.get("name", ""),
+            "description": t.get("description", ""),
+            "parameters": t.get("parameters", {}),
             "enabled": enabled,
         }
         category = composio_categories.classify(toolkit_id, slug)
@@ -678,9 +604,9 @@ async def account_for_proxy_token(token: str) -> Optional[str]:
 
 def _delete_remote_session(session_id: str) -> None:
     try:
-        _composio().sessions.delete(session_id)
+        swarm_client.delete_session(session_id)
         log.info("composio: deleted session %s", session_id)
-    except Exception as exc:
+    except swarm_client.SwarmComposioError as exc:
         log.warning(
             "composio: could not delete session %s (it may linger server-side): %s",
             session_id, exc,
@@ -789,16 +715,45 @@ def _session_config(user_id: str) -> dict[str, Any]:
 
 
 def invalidate_session() -> None:
-    global _SESSION_ID
+    global _SESSION_ID, _session_mcp_cache
     _ensure_sessions_loaded()
     session_id, _SESSION_ID = _SESSION_ID, None
+    _session_mcp_cache = None
     _persist_session_id(None)
     if session_id:
         _delete_remote_session(session_id)
 
 
+# xo-swarm-api exposes use()+update() as one call (PUT /sessions/{id}), not a separate
+# cheap "just reuse, don't push config" primitive — every session read is now a network
+# hop. This short-TTL cache is what keeps the MCP proxy hot path (build_mcp_server_entry
+# runs on every agent tool call) from paying that hop on every single request; see
+# DEVELOPING.md §10.3.
+_SESSION_MCP_CACHE_TTL = float(os.getenv("COMPOSIO_SESSION_MCP_CACHE_TTL", "5"))
+_session_mcp_cache: Optional[tuple[str, dict[str, Any], float]] = None  # (sid, session, expires_at)
+
+
+def _update_payload(config: dict[str, Any]) -> dict[str, Any]:
+    """``config`` (from :func:`_session_config`), shaped for an *update* rather than a
+    create.
+
+    ``session.update()`` is a patch — a field left out is left alone — so turning
+    multi-account mode off, or clearing every pin, must be sent as an explicit
+    empty/None rather than an absent key, or a session minted with either on would
+    never converge after an operator turns it off. ``_session_config`` omits both keys
+    when they're off/empty (correct for `.create()`, which should never send them at
+    all in that case), so the two keys this call cares about are always forced present
+    here instead of relying on it.
+    """
+    payload = dict(config)
+    payload.setdefault("connected_accounts", {})
+    payload.setdefault("multi_account", None)
+    return payload
+
+
 def sync_session(user_id: str) -> None:
     """Push this workspace's current scope onto its live session, if it has one."""
+    global _session_mcp_cache
     if not user_id:
         return
     _ensure_sessions_loaded()
@@ -813,15 +768,8 @@ def sync_session(user_id: str) -> None:
         invalidate_session()
         return
     try:
-        session = _composio().use(sid)
-        # Passed even when absent from the config: that is how a session minted while
-        # the flag was on converges after an operator turns it off.
-        session.update(
-            connected_accounts=config.get("connected_accounts", {}),
-            toolkits=config["toolkits"],
-            tools=config["tools"],
-            multi_account=multi_account_config(),
-        )
+        session = swarm_client.update_session(sid, _update_payload(config))
+        _session_mcp_cache = (sid, session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
         log.info("composio: updated session %s", sid)
     except Exception as exc:
         log.warning(
@@ -830,35 +778,47 @@ def sync_session(user_id: str) -> None:
         invalidate_session()
 
 
-def get_session(user_id: str):
-    """This workspace's Composio session, minting one if needed.
+def get_session(user_id: str) -> dict[str, Any]:
+    """This workspace's Composio session, minting or refreshing one as needed.
 
     ``user_id`` is the bare account id — connections belong to the account, not to a
     workspace. What *this* workspace may reach comes from :func:`_session_config`.
+
+    Returns the plain dict xo-swarm-api answers with (``{"session_id":, "mcp": {...}}``)
+    rather than a live SDK object — :func:`build_mcp_server_entry`'s ``_attr()`` calls
+    already handle either shape.
 
     Raises :class:`NoToolkitsEnabled` when the workspace has enabled nothing. Composio's
     behaviour for an empty ``toolkits`` allowlist is unspecified, and "everything" would
     be the catastrophic reading of it, so the session is never created in that state.
     """
-    global _SESSION_ID
+    global _SESSION_ID, _session_mcp_cache
     user_id = _require_user_id(user_id, "get_session")
     _ensure_sessions_loaded()
-    config = _session_config(user_id)          # raises before any network call
 
     sid = _SESSION_ID
+    now = time.monotonic()
+    if sid and _session_mcp_cache and _session_mcp_cache[0] == sid and _session_mcp_cache[2] > now:
+        return _session_mcp_cache[1]
+
+    config = _session_config(user_id)          # raises before any network call
+
     if sid:
         try:
-            return _composio().use(sid)
-        except Exception as exc:
-            log.debug("composio: use(%s) failed: %s", sid, exc)
+            session = swarm_client.update_session(sid, _update_payload(config))
+            _session_mcp_cache = (sid, session, now + _SESSION_MCP_CACHE_TTL)
+            return session
+        except swarm_client.SwarmComposioError as exc:
+            log.debug("composio: update_session(%s) failed: %s", sid, exc)
             _SESSION_ID = None
             _persist_session_id(None)
 
-    session = _composio().create(user_id=user_id, mcp=True, **config)
-    new_id = getattr(session, "session_id", None) or getattr(session, "id", None)
+    session = swarm_client.create_session(config)
+    new_id = session.get("session_id")
     if new_id:
         _SESSION_ID = str(new_id)
         _persist_session_id(str(new_id))
+        _session_mcp_cache = (str(new_id), session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
     return session
 
 
