@@ -19,10 +19,10 @@ UI — that history was never part of the project's address space.
 from __future__ import annotations
 
 import re
-from utils.commands import CommandResult, run_sync
 from pathlib import Path
 
 from services.cowork_agent.project_layout import project_dir, read_project_file
+from utils.commands import CommandResult, run_sync
 
 GIT_TIMEOUT_SECONDS = 10
 # One version's content — same ceiling as the live file preview

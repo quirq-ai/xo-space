@@ -15,10 +15,10 @@ backups silently.
 
 from __future__ import annotations
 
-import asyncio
-from utils.commands import run
 import shutil
 from pathlib import Path
+
+from utils.commands import run
 
 from .config import CHUNK_SIZE_BYTES
 

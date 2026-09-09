@@ -250,15 +250,21 @@ Every subprocess xo-space starts goes through `utils/commands.py`:
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
 argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
 described as data (the skill catalog, manifests, future automation). The
-spec is `{"argv": [...], "cwd", "env", "timeout"}`; there is deliberately no
-`command` string that reaches a shell, and `split_command()` refuses `&&`,
-`|`, `;`, redirections and `$()` outright. Untrusted values (a repo name, a
-branch, a path from a request) go into **one** argv slot via `safe_arg()`,
-which rejects anything starting with `-` so it cannot become a flag
-(argument injection, the quieter cousin of command injection, CWE-78).
+spec is `{"argv": [...], "cwd", "env", "timeout"}`; a `command` string is
+accepted for hand-written config but is split by `split_command()` with
+POSIX quoting, never handed to a shell, and refused outright when it holds
+`&&`, `|`, `;`, a redirection or `$()`. The skill catalog is the one
+data-driven consumer today: `_normalize` builds a `CommandSpec` per step, so
+cwd and timeout are validated once, by the spec, and `install` runs each
+step with `run_spec`. Untrusted values (a repo name, a branch, a path from a
+request) go into **one** argv slot via `safe_arg()`, which rejects anything
+starting with `-` so it cannot become a flag (argument injection, the
+quieter cousin of command injection, CWE-78).
 
 `tests/test_command_executor.py` enforces this: no shell form may appear
-anywhere, and a direct `subprocess` / `create_subprocess_exec` call is
+anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
+`os.exec*`/`os.spawn*`/`posix_spawn` family, `pty.spawn`), and both a direct
+`subprocess` / `create_subprocess_exec` call and an `import subprocess` are
 allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
 only shrink. Converting a file means removing it from that list.
 

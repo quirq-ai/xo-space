@@ -11,9 +11,10 @@ the running server keeps executing the old version until restarted.
 from __future__ import annotations
 
 import re
-from utils.commands import CommandResult, run_sync
 from pathlib import Path
 from typing import Optional
+
+from utils.commands import CommandResult, run_sync
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -46,9 +46,10 @@ input never reaches a shell interpreter.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -58,9 +59,10 @@ from typing import Any, Mapping, Sequence
 class CommandResult:
     """Outcome of one subprocess run.
 
-    `returncode` is -1 when the process was killed by the runner (timeout,
-    binary-not-found, or another local exception) — check `ok` rather
-    than testing for 0 directly when you want "finished cleanly".
+    `returncode` is -1 when no process ran or its code is unknown (binary not
+    found, a local exception). On a timeout it is what `subprocess` reports
+    for the kill, e.g. -9, with `timed_out` set. Check `ok` rather than
+    testing for 0 directly when you want "finished cleanly".
     """
 
     argv: list[str]
@@ -222,11 +224,15 @@ async def run(
         else:
             stdout, stderr = await proc.communicate(input=input)
     except asyncio.TimeoutError:
-        proc.kill()
+        # The child can exit in the instant between the timeout firing and
+        # the kill; asyncio then raises ProcessLookupError from kill(), which
+        # a runner that promises never to raise has to swallow.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
         await proc.communicate()
         result = CommandResult(
             argv=argv_list,
-            returncode=-1,
+            returncode=proc.returncode if proc.returncode is not None else -1,
             output=f"[timed out after {timeout}s]",
             duration_seconds=asyncio.get_event_loop().time() - started,
             timed_out=True,
@@ -381,11 +387,13 @@ async def run_chain(
 #     {"argv": ["npm", "install", "-g", "@okxweb3/a2a-node"],
 #      "cwd": "/home/coder", "env": {"CI": "1"}, "timeout": 300}
 #
-# `argv` is the only way to say what runs. There is no "command string" key
-# and never will be: a string is what a shell parses, and a shell is where
-# command injection (CWE-78) happens. A value that must come from user input
-# goes into ONE argv slot via `safe_arg`, which refuses anything that a
-# program would read as an option (argument injection).
+# `argv` is the preferred form. A `command` string is accepted only as a
+# convenience for hand-written config (the skill catalog): `split_command`
+# turns it into an argv with POSIX quoting and refuses `&&`, `|`, `;`,
+# redirections and `$()`, so it never reaches a shell — which is where command
+# injection (CWE-78) happens. A value that must come from user input goes into
+# ONE argv slot via `safe_arg`, which refuses anything that a program would
+# read as an option (argument injection).
 
 SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$(", "\n")
 
@@ -494,13 +502,15 @@ class CommandSpec:
                            timeout=self.timeout, log_path=self.log_path, log_label=self.log_label)
 
 
-async def run_spec(spec: CommandSpec) -> CommandResult:
+async def run_spec(spec: CommandSpec, **options: Any) -> CommandResult:
     """Run a validated spec. Config-driven callers (catalog, manifests) come
-    through here; Python callers with a literal argv may call `run` directly."""
+    through here; Python callers with a literal argv may call `run` directly.
+    `options` are the runner's capture switches (`separate_stderr`, `input`,
+    `inherit_output`): how to capture, never what to run."""
     return await run(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
-                     log_path=spec.log_path, log_label=spec.log_label)
+                     log_path=spec.log_path, log_label=spec.log_label, **options)
 
 
-def run_spec_sync(spec: CommandSpec) -> CommandResult:
+def run_spec_sync(spec: CommandSpec, **options: Any) -> CommandResult:
     return run_sync(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
-                    log_path=spec.log_path, log_label=spec.log_label)
+                    log_path=spec.log_path, log_label=spec.log_label, **options)

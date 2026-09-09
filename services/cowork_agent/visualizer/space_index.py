@@ -14,11 +14,12 @@ from __future__ import annotations
 import math
 import os
 import re
-from utils.commands import run_sync
 import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
+
+from utils.commands import run_sync
 
 from services.cowork_agent.project_layout import (
     list_projects,

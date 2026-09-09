@@ -26,8 +26,6 @@ persistent staging directory.
 
 from __future__ import annotations
 
-import asyncio
-from utils.commands import run
 import base64
 import shutil
 from dataclasses import dataclass
@@ -37,6 +35,7 @@ from typing import Any
 import httpx
 
 from services.cowork_agent.connectors import github as github_connector
+from utils.commands import run
 
 from .config import BACKUP_REPO_PREFIX, ENV_GITHUB_PAT
 

@@ -55,7 +55,9 @@ async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -
             log.flush()
             result = await run(argv, cwd=str(_AGENT.cwd))
             if result.binary_missing or result.exception is not None:
-                log.write(f"[exception] {result.output}\n[chain aborted]\n")
+                # result.output already carries the "[exception] " prefix on that path
+                reason = result.output if result.output.startswith("[exception]") else f"[exception] {result.output}"
+                log.write(f"{reason}\n[chain aborted]\n")
                 return
             log.write(result.output)
             log.write(f"[exit {result.returncode}]\n")

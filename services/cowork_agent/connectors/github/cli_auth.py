@@ -18,7 +18,6 @@ Caveats (intentional, per Option B):
 from __future__ import annotations
 
 import asyncio
-from utils.commands import run
 import logging
 import os
 import re
@@ -27,6 +26,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+from utils.commands import run
 
 from .common import (
     configure_git_identity,

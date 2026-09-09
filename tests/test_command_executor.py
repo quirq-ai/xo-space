@@ -5,8 +5,9 @@ import re
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
+import utils.commands as commands
 from utils.commands import (
     CommandResult,
     CommandSpec,
@@ -130,6 +131,45 @@ class RunSpecTests(unittest.TestCase):
         missing = spawn_detached(["definitely-not-a-binary-xyz"])
         self.assertTrue(missing.binary_missing)
 
+    def test_kill_race_after_timeout_is_a_result_not_an_exception(self) -> None:
+        """If the child exits in the instant between the timeout and the kill,
+        asyncio raises ProcessLookupError from kill(); the runner must swallow
+        it and still report the timeout."""
+        class RacyProc:
+            returncode = -9
+            calls = 0
+
+            async def communicate(self, input=None):
+                self.calls += 1
+                if self.calls == 1:
+                    await asyncio.sleep(3600)        # the first read outlives the timeout
+                return b"", b""
+
+            def kill(self):
+                raise ProcessLookupError()           # already gone
+
+        async def fake_exec(*argv, **kwargs):
+            return RacyProc()
+
+        with patch.object(commands.asyncio, "create_subprocess_exec", new=fake_exec):
+            res = run(commands.run(["anything"], timeout=0.01))
+        self.assertTrue(res.timed_out)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.returncode, -9)         # the kill signal, as subprocess reports it
+
+    def test_run_spec_passes_capture_options_through(self) -> None:
+        seen = {}
+
+        async def fake_run(argv, **kw):
+            seen.update(argv=list(argv), **kw)
+            return CommandResult(argv=list(argv), returncode=0, output="", duration_seconds=0.0)
+
+        spec = CommandSpec.from_json({"argv": ["x"], "cwd": "/tmp", "timeout": 3})
+        with patch.object(commands, "run", new=fake_run):
+            run(run_spec(spec, separate_stderr=True))
+        self.assertEqual((seen["argv"], seen["cwd"], seen["timeout"], seen["separate_stderr"]),
+                         (["x"], "/tmp", 3.0, True))
+
 
 class SkillCatalogArgvTests(unittest.TestCase):
     def test_entries_resolve_to_argv_lists(self) -> None:
@@ -141,49 +181,89 @@ class SkillCatalogArgvTests(unittest.TestCase):
         self.assertIsNone(sc._normalize({"name": "x", "commands": [["npm", 3]]}))
         self.assertIsNone(sc._normalize({"name": "x", "commands": []}))
 
-    def test_install_runs_each_step_as_argv_with_placeholders_per_token(self) -> None:
+    def test_entries_are_validated_by_the_spec_not_by_the_catalog(self) -> None:
+        """The one door: cwd/timeout rules come from CommandSpec.from_json, so a
+        bad value is rejected by the same code that rejects it everywhere else."""
         from services.cowork_agent import skill_catalog as sc
 
-        entry = sc._normalize({"name": "demo", "commands": ["tool --dir {skills_dir}", ["echo", "done"]], "timeout_seconds": 7})
+        entry = sc._normalize({"name": "x", "command": "a", "cwd": "/tmp", "timeout_seconds": 9})
+        self.assertIsInstance(entry["specs"][0], CommandSpec)
+        self.assertEqual((entry["specs"][0].cwd, entry["specs"][0].timeout), ("/tmp", 9.0))
+        self.assertEqual((entry["cwd"], entry["timeout_seconds"]), ("/tmp", 9.0))
+        for bad in ({"cwd": 5}, {"cwd": ""}, {"timeout_seconds": 0}, {"timeout_seconds": True}, {"timeout_seconds": "3"}):
+            with self.subTest(bad=bad):
+                self.assertIsNone(sc._normalize({"name": "x", "command": "a", **bad}))
+
+    def test_install_runs_each_step_as_a_spec_with_placeholders_per_token(self) -> None:
+        from services.cowork_agent import skill_catalog as sc
+
+        entry = sc._normalize({"name": "demo", "commands": ["tool --dir {skills_dir}", ["echo", "done"]],
+                               "timeout_seconds": 7, "cwd": "/work"})
         seen = []
 
-        async def fake_run(argv, *, cwd=None, timeout=None, env=None, log_path=None, log_label=""):
-            seen.append((list(argv), cwd, timeout))
-            return CommandResult(argv=list(argv), returncode=0, output="ok\n", duration_seconds=0.01)
+        async def fake_run_spec(spec, **kw):
+            seen.append((spec.argv, spec.cwd, spec.timeout, kw.get("separate_stderr")))
+            return CommandResult(argv=spec.argv, returncode=0, output="ok\n", duration_seconds=0.01)
 
         with patch.object(sc, "load_catalog", return_value={"demo": entry}), \
              patch.object(sc, "_expand_placeholders", side_effect=lambda t: t.replace("{skills_dir}", "/home/x y/skills")), \
-             patch.object(sc, "run", new=fake_run):
+             patch.object(sc, "run_spec", new=fake_run_spec):
             result = run(sc.install("demo"))
         self.assertTrue(result["ok"])
-        self.assertEqual(seen, [(["tool", "--dir", "/home/x y/skills"], None, 7), (["echo", "done"], None, 7)])
+        self.assertEqual(seen, [(["tool", "--dir", "/home/x y/skills"], "/work", 7.0, True),
+                                (["echo", "done"], "/work", 7.0, True)])
 
-    def test_install_stops_at_first_failed_step(self) -> None:
+    def test_install_stops_at_first_failed_step_and_keeps_both_streams(self) -> None:
         from services.cowork_agent import skill_catalog as sc
 
         entry = sc._normalize({"name": "demo", "commands": [["a"], ["b"]]})
         calls = []
 
-        async def fake_run(argv, **kw):
-            calls.append(argv[0])
-            return CommandResult(argv=list(argv), returncode=1, output="nope", duration_seconds=0.0)
+        async def fake_run_spec(spec, **kw):
+            calls.append(spec.argv[0])
+            return CommandResult(argv=spec.argv, returncode=1, output="partial out", stderr="nope",
+                                 duration_seconds=0.0)
 
-        with patch.object(sc, "load_catalog", return_value={"demo": entry}), patch.object(sc, "run", new=fake_run):
+        with patch.object(sc, "load_catalog", return_value={"demo": entry}), patch.object(sc, "run_spec", new=fake_run_spec):
             result = run(sc.install("demo"))
         self.assertFalse(result["ok"])
         self.assertEqual(calls, ["a"])
-        self.assertEqual(result["steps"][0]["stderr"], "nope")
+        step = result["steps"][0]
+        # the response contract predates the executor: stdout AND stderr, exit code as reported
+        self.assertEqual((step["stdout"], step["stderr"], step["exit_code"]), ("partial out", "nope", 1))
+
+    def test_a_step_that_cannot_start_or_times_out_keeps_the_old_shape(self) -> None:
+        from services.cowork_agent import skill_catalog as sc
+
+        entry = sc._normalize({"name": "demo", "command": "x"})
+        outcomes = iter([
+            CommandResult(argv=["x"], returncode=-1, output="x not found in PATH", duration_seconds=0.0, binary_missing=True),
+            CommandResult(argv=["x"], returncode=-9, output="[timed out after 1s]", duration_seconds=1.0, timed_out=True),
+        ])
+
+        async def fake_run_spec(spec, **kw):
+            return next(outcomes)
+
+        with patch.object(sc, "load_catalog", return_value={"demo": entry}), patch.object(sc, "run_spec", new=fake_run_spec):
+            missing = run(sc.install("demo"))["steps"][0]
+            timed = run(sc.install("demo"))["steps"][0]
+        self.assertEqual((missing["exit_code"], missing["stderr"]), (None, "failed to start command: x not found in PATH"))
+        self.assertEqual((timed["timed_out"], timed["exit_code"], timed["stdout"], timed["stderr"]), (True, -9, "", ""))
 
 
 class OneExecutorTests(unittest.TestCase):
-    """Architecture guard. Two rules:
+    """Architecture guard (a fitness function for the one-executor rule). Three rules:
 
     1. No shell, anywhere: no `shell=True`, `create_subprocess_shell`,
-       `os.system` or `os.popen` outside the runner's own docstring.
+       `os.system` / `os.popen`, the `os.exec*` / `os.spawn*` / `posix_spawn`
+       family, or `pty.spawn` outside the runner's own docstring.
     2. Direct `subprocess` / `create_subprocess_exec` calls are allowed only in
        `utils/commands.py` and in the files listed in MIGRATION_BACKLOG. That
        list may only shrink: converting a file to `utils.commands` means
        removing it here. Adding a new direct call anywhere fails this test.
+    3. The same for `import subprocess` / `from subprocess import ...`: a regex
+       over call sites misses `from subprocess import Popen; Popen(...)`, so the
+       import itself is the thing that is fenced.
     """
 
     SKIP_DIRS = {"venv", ".venv", "node_modules", ".git", "tests", "tests2", "docs", ".claude"}
@@ -211,7 +291,11 @@ class OneExecutorTests(unittest.TestCase):
         "services/cowork_agent/connectors/rclone/connector.py",
     }
     DIRECT = re.compile(r"subprocess\.(run|Popen|check_output|check_call|call)\(|create_subprocess_exec\(")
-    SHELL = re.compile(r"shell\s*=\s*True|create_subprocess_shell\(|os\.system\(|os\.popen\(")
+    IMPORTS = re.compile(r"^\s*(import subprocess\b|from subprocess import\b)", re.MULTILINE)
+    SHELL = re.compile(
+        r"shell\s*=\s*True|create_subprocess_shell\(|os\.system\(|os\.popen\("
+        r"|os\.(exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?)\(|pty\.spawn\("
+    )
 
     def _files(self):
         for p in ROOT.rglob("*.py"):
@@ -228,6 +312,11 @@ class OneExecutorTests(unittest.TestCase):
         offenders = [rel for rel, txt in self._files()
                      if rel != self.RUNNER and rel not in self.MIGRATION_BACKLOG and self.DIRECT.search(txt)]
         self.assertEqual(offenders, [], "new code must call utils.commands.run / run_spec, not subprocess directly")
+
+    def test_subprocess_is_not_imported_outside_the_runner_or_the_backlog(self) -> None:
+        offenders = [rel for rel, txt in self._files()
+                     if rel != self.RUNNER and rel not in self.MIGRATION_BACKLOG and self.IMPORTS.search(txt)]
+        self.assertEqual(offenders, [], "import subprocess only in utils/commands.py (or a backlog file)")
 
     def test_backlog_entries_still_need_migrating(self) -> None:
         # A file that no longer calls subprocess directly must leave the list,

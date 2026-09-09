@@ -23,7 +23,6 @@ daemon, no port held open except rclone's transient :53682 OAuth callback).
 """
 
 import asyncio
-from utils.commands import run
 import json
 import logging
 import os
@@ -39,6 +38,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Optional
 
 import httpx
+
+from utils.commands import run
 
 from .oauth_lock import (
     cancel_all_active_oauth,

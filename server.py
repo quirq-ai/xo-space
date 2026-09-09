@@ -24,7 +24,7 @@ import uvicorn
 from config.models.claude_code import ClaudeCodeClient
 from config.models.codex import CodexCodeClient
 from utils.local_port import LocalPortsUnavailableError, resolve_server_port
-from utils.commands import run_sync, spawn_detached
+from utils.commands import run, run_sync, spawn_detached
 
 # Load environment variables. Keys already exported by the shell (or by
 # docker -e / compose) are recorded first: they outrank every file below,
@@ -845,13 +845,13 @@ async def gateway_restart():
     Resolves the script from the active ``AGENT_NAME`` rather than hardcoding a
     backend; agents without an ``agent.sh`` (e.g. claude_code) return 404.
     """
-    import subprocess
     from services.xo_manifest import resolve_agent_name
     agent = resolve_agent_name()
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")
-    result = run_sync([str(script), "restart"], timeout=30, separate_stderr=True)
+    # await, not run_sync: a 30 s restart must not stall every other request
+    result = await run([str(script), "restart"], timeout=30, separate_stderr=True)
     if result.timed_out:
         return {"status": "error", "error": "Restart timed out after 30s"}
     if result.binary_missing or result.exception is not None:
@@ -866,7 +866,6 @@ async def gateway_restart():
 @app.post("/app/restart")
 async def app_restart():
     """Restart the XO Space API app process via cowork-api.sh."""
-    import subprocess
     # Timestamped marker: a restart kills every in-flight subprocess (e.g. a
     # pending auth login) — correlate this line with mid-flow failures.
     print(f"[app] restart requested at {datetime.datetime.now().isoformat()} — killing process tree")
@@ -885,7 +884,6 @@ async def app_restart():
 @app.post("/app/update")
 async def app_update():
     """Pull latest code safely via cowork-update.sh in background."""
-    import subprocess
     script = (Path(__file__).resolve().parent / "cowork-update.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App update script not found")

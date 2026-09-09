@@ -24,8 +24,6 @@ Three things live here so the per-agent adapters can stay tiny:
 
 from __future__ import annotations
 
-import asyncio
-from utils.commands import run
 import json
 import os
 import shutil
@@ -34,6 +32,7 @@ from typing import Any, Callable
 
 from services.cowork_agent.project_layout import xo_projects_root
 from services.xo_manifest import build_static_manifest
+from utils.commands import run
 
 CLAUDE_BIN_ENV = "CLAUDE_CLI_PATH"
 DEFAULT_CLAUDE_BIN = "claude"

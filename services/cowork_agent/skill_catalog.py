@@ -39,10 +39,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from utils.commands import CommandSpecError, run, split_command
-
 from services.cowork_agent.registry import agent_registry
 from services.cowork_agent.registry.settings import load_agent_config
+from utils.commands import CommandSpec, CommandSpecError, run_spec
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = _REPO_ROOT / "config" / "skills" / "catalog.json"
@@ -109,9 +108,9 @@ async def install(name: str) -> dict:
     async with lock:
         steps: list[dict] = []
         ok = True
-        for index, argv in enumerate(entry["commands"]):
+        for index, spec in enumerate(entry["specs"]):
             try:
-                rendered = [_expand_placeholders(token) for token in argv]
+                rendered = spec.with_argv([_expand_placeholders(token) for token in spec.argv])
             except Exception as exc:
                 steps.append(_step_result(index, ok=False, exit_code=None, stdout="",
                                           stderr=f"placeholder expansion failed: {exc}",
@@ -119,7 +118,7 @@ async def install(name: str) -> dict:
                 print(f"⚠️ skill install {name!r} step {index + 1}: placeholder expansion failed: {exc}")
                 ok = False
                 break
-            step = await _run_step(index, rendered, entry["timeout_seconds"], entry["cwd"])
+            step = await _run_step(index, rendered)
             steps.append(step)
             if not step["ok"]:
                 detail = step["stderr"].strip() or step["stdout"].strip()
@@ -256,24 +255,33 @@ def _lock_for(name: str) -> asyncio.Lock:
     return _locks.setdefault(name, asyncio.Lock())
 
 
-def _to_argv(step) -> list[str] | None:
-    """A catalog step is an argv list, or a string split without a shell.
-    None means the step is invalid (and so is its entry)."""
+def _to_spec(step, cwd, timeout) -> CommandSpec | None:
+    """One catalog step as a validated CommandSpec: an argv list, or a string
+    split without a shell. The entry's cwd and timeout ride on every step, so
+    the runner gets them from the spec and they are validated once, by the
+    same rules as every other data-driven command. None means the step is
+    invalid (and so is its entry)."""
     if isinstance(step, list):
-        if step and all(isinstance(t, str) and t for t in step):
-            return list(step)
+        obj: dict = {"argv": step}
+    elif isinstance(step, str):
+        obj = {"command": step}
+    else:
         return None
-    if isinstance(step, str):
-        try:
-            return split_command(step)
-        except CommandSpecError as exc:
-            print(f"⚠️ skill catalog: rejected command {step!r}: {exc}")
-            return None
-    return None
+    if cwd is not None:
+        obj["cwd"] = cwd
+    obj["timeout"] = timeout
+    try:
+        return CommandSpec.from_json(obj)
+    except CommandSpecError as exc:
+        print(f"⚠️ skill catalog: rejected command {step!r}: {exc}")
+        return None
 
 
 def _normalize(entry) -> dict | None:
-    """Validate one raw catalog entry; None means invalid (skip it)."""
+    """Validate one raw catalog entry; None means invalid (skip it).
+
+    `specs` is what runs; `commands`, `cwd` and `timeout_seconds` are the same
+    facts read back out of the specs for callers and tests that want plain data."""
     if not isinstance(entry, dict):
         return None
     name = entry.get("name")
@@ -287,19 +295,18 @@ def _normalize(entry) -> dict | None:
         raw_steps = list(commands)
     else:
         return None
-    resolved: list[list[str]] = []
-    for step in raw_steps:
-        argv = _to_argv(step)
-        if argv is None:
-            return None
-        resolved.append(argv)
 
     timeout = entry.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-        return None
     cwd = entry.get("cwd")
-    if cwd is not None and not isinstance(cwd, str):
-        return None
+    if timeout is None:
+        return None  # an explicit null is a broken entry, not "use the default"
+    specs: list[CommandSpec] = []
+    for step in raw_steps:
+        spec = _to_spec(step, cwd, timeout)
+        if spec is None:
+            return None
+        specs.append(spec)
+
     success_message = entry.get("success_message")
     if success_message is not None and not isinstance(success_message, str):
         return None
@@ -307,26 +314,36 @@ def _normalize(entry) -> dict | None:
     return {
         "name": name.strip(),
         "description": entry.get("description") or "",
-        "commands": resolved,
-        "timeout_seconds": timeout,
-        "cwd": cwd,
+        "specs": specs,
+        "commands": [s.argv for s in specs],
+        "timeout_seconds": specs[0].timeout,
+        "cwd": specs[0].cwd,
         "success_message": success_message,
     }
 
 
-async def _run_step(index: int, argv: list[str], timeout_seconds: float, cwd: str | None) -> dict:
-    """One catalog step through the shared runner: argv, no shell. The runner
-    merges stdout and stderr, so the step reports them as one stream."""
-    result = await run(argv, cwd=cwd, timeout=timeout_seconds)
-    output = result.output[:_OUTPUT_CAP]
+async def _run_step(index: int, spec: CommandSpec) -> dict:
+    """One catalog step through the shared runner: a validated spec, no
+    shell, streams kept apart so the response keeps the stdout / stderr /
+    exit_code shape it has always had."""
+    result = await run_spec(spec, separate_stderr=True)
+    if result.binary_missing or result.exception is not None:
+        reason = result.exception or result.output
+        return _step_result(index, ok=False, exit_code=None, stdout="",
+                            stderr=f"failed to start command: {reason}",
+                            duration=result.duration_seconds, timed_out=False)
+    if result.timed_out:
+        # nothing usable was captured; exit_code is the kill signal (e.g. -9)
+        return _step_result(index, ok=False, exit_code=result.returncode, stdout="", stderr="",
+                            duration=result.duration_seconds, timed_out=True)
     return _step_result(
         index,
         ok=result.ok,
-        exit_code=None if result.binary_missing or result.exception else result.returncode,
-        stdout=output if result.ok else "",
-        stderr="" if result.ok else output,
+        exit_code=result.returncode,
+        stdout=result.output[:_OUTPUT_CAP],
+        stderr=result.stderr[:_OUTPUT_CAP],
         duration=result.duration_seconds,
-        timed_out=result.timed_out,
+        timed_out=False,
     )
 
 

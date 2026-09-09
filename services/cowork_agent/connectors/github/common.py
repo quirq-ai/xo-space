@@ -17,13 +17,13 @@ that is the ``auth_method`` field carried alongside it for display purposes.
 Token file: ~/.config/token.json  (see connectors/token_store.py)
 """
 
-import asyncio
-from utils.commands import run
 import logging
 import shutil
 from typing import Any, Literal
 
 import httpx
+
+from utils.commands import run
 
 from ..token_store import TOKEN_FILE, delete_entry, get_entry, set_entry
 

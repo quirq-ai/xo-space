@@ -23,12 +23,12 @@ Two decisions worth understanding before editing:
 
 from __future__ import annotations
 
-import asyncio
-from utils.commands import run
 import fnmatch
 import os
 import tarfile
 from pathlib import Path
+
+from utils.commands import run
 
 
 # Path-component names that always cause a file or directory to be skipped.
