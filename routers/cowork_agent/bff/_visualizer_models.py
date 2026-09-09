@@ -978,6 +978,32 @@ class GithubIssuesResponse(_ForbidExtra):
     issues: list[GithubIssue] = []
     untracked: int = 0
     tracked: int = 0
+    # **Which empty this is** (issuesplan I3). Four different situations
+    # used to answer identically — ``error: null, issues: []`` — and only
+    # one of them was documented, so a client could do nothing but render
+    # "No issues found" for all four, which is false in three:
+    #
+    #   ``no_remote``        the project has no github.com remote at all;
+    #                        there is nothing to poll and never will be
+    #                        until someone sets one
+    #   ``never_polled``     nothing has succeeded yet — a real, transient
+    #                        state, and the one the cold fetch now usually
+    #                        skips past on the first request
+    #   ``issues_disabled``  the tracker is switched off on the repository.
+    #                        A *successful* poll, no error, no issues —
+    #                        indistinguishable from ``empty`` until
+    #                        ``hasIssuesEnabled`` was added to the query
+    #   ``empty``            polled fine, genuinely nothing open
+    #   ``error``            the last poll failed; ``error`` says how
+    #   ``ok``               there are rows
+    #
+    # Derived on every read, never stored — the same discipline
+    # ``in_progress`` follows. Every field beside it keeps its meaning, so
+    # this is purely additive: a client that ignores it behaves exactly as
+    # it did before.
+    state: Literal[
+        "ok", "empty", "never_polled", "issues_disabled", "no_remote", "error"
+    ] = "never_polled"
 
 
 class AdoptIssueRequest(_ForbidExtra):

@@ -45,6 +45,7 @@ from services.cowork_agent.connectors import github_issues as gh_issues
 from services.cowork_agent.connectors.github_issues import (
     ERROR_KINDS,
     ISSUES_QUERY,
+    ISSUES_QUERY_WITH_CLOSED,
     MAX_QUERY_COST,
     IssuesResult,
     RateLimit,
@@ -508,6 +509,34 @@ class CostContractTests(unittest.TestCase):
         expected tuple wrong from the start."""
         self.assertIn("$first: Int!", ISSUES_QUERY)
         self.assertNotIn("query", [name for name, _ in query_connections()])
+
+    def test_a_scalar_field_is_free_and_the_guard_knows_it(self) -> None:
+        """``hasIssuesEnabled`` was added to both queries (issuesplan I4) and
+        the cost did **not** move.
+
+        This is the distinction the guard exists to encode: connections cost
+        points, plain scalars do not. Measured on ``cjpais/Handy``,
+        2026-09-09 — ``rateLimit.cost`` was 1 with the scalar and 1 without,
+        86 rows either way. So a scalar must not appear in this tuple, and a
+        future reader must not "fix" its absence.
+        """
+        for query in (ISSUES_QUERY, ISSUES_QUERY_WITH_CLOSED):
+            self.assertIn("hasIssuesEnabled", query)
+            self.assertNotIn(
+                "hasIssuesEnabled",
+                [name for name, _ in query_connections(query)],
+                "a scalar was counted as a connection; the guard would now "
+                "fire on edits that cost nothing",
+            )
+        self.assertEqual(query_connections(ISSUES_QUERY), EXPECTED_CONNECTIONS)
+
+    def test_the_closed_query_carries_the_same_connections(self) -> None:
+        """The two queries differ only in ``states:``, so they must cost the
+        same. A scalar added to one and not the other would make the steady
+        state answer a different question from the seed."""
+        self.assertEqual(
+            query_connections(ISSUES_QUERY_WITH_CLOSED), EXPECTED_CONNECTIONS
+        )
 
     def test_labels_are_not_in_the_poll_query(self) -> None:
         """Stated separately from the connection tuple because this is the

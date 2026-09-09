@@ -1369,6 +1369,53 @@ def _github_budget_gate() -> None:
         )
 
 
+def _issues_state(
+    *,
+    repo: Optional[str],
+    mirror: Optional[dict],
+    error: Optional[GithubMirrorError],
+    rows: int,
+) -> str:
+    """Which of the empty states this answer is (issuesplan I3).
+
+    Ordered by what a caller can *act* on, which is not the same as the
+    order the facts arrive in:
+
+    1. **No remote** outranks everything. There is nothing to poll, so
+       "never polled" would be true but useless — the remedy is to set an
+       origin, not to wait.
+    2. **Rows win over a stale error.** The mirror keeps its last good rows
+       through a failure by design, so a page with issues on it is not an
+       error state; the ``error`` field still carries the failure and a UI
+       can show both "here they are" and "the last refresh failed".
+    3. **An error beats a guess** about why the list is empty.
+    4. **Issues disabled** beats plain "empty", because it is the one empty
+       a user can do something about and the one they cannot otherwise
+       discover: the poll *succeeds* on such a repository (verified on
+       ``dwivedi-ai/xo-cowork-api``), so nothing else in the answer differs
+       from a healthy repo with no open issues.
+    5. **Never polled** beats "empty" only when nothing has succeeded yet —
+       ``fetched_at`` is the discriminator, and it is null for exactly that.
+
+    ``issues_enabled`` is read as a tri-state on purpose: ``False`` is the
+    claim, and ``None`` — no poll has established it, or the document
+    predates the field — must fall through to the ordinary answers rather
+    than assert the tracker is on.
+    """
+    if not repo:
+        return "no_remote"
+    if rows:
+        return "ok"
+    if error is not None:
+        return "error"
+    doc = mirror or {}
+    if doc.get("issues_enabled") is False:
+        return "issues_disabled"
+    if not doc.get("fetched_at"):
+        return "never_polled"
+    return "empty"
+
+
 def _issue_number(row: dict) -> int:
     """A row's issue number, or ``0`` when it does not have a usable one.
 
@@ -1561,18 +1608,22 @@ async def project_github_issues(
         )
 
     fetched_at = (mirror or {}).get("fetched_at")
+    repo = scope.github_repo()
     return GithubIssuesResponse(
         project_id=project_id,
         # The project's own remote, not the mirror's ``repo``: they differ
         # exactly when the remote has changed under a mirror the poller has
         # not reseeded yet, and the honest answer to "which repo is this
         # project" is the project's.
-        repo=scope.github_repo(),
+        repo=repo,
         fetched_at=fetched_at if isinstance(fetched_at, str) else None,
         error=error,
         issues=models,
         untracked=untracked,
         tracked=sum(1 for row in models if row.adopted),
+        state=_issues_state(
+            repo=repo, mirror=mirror, error=error, rows=len(models),
+        ),
     )
 
 

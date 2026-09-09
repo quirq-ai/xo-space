@@ -1682,5 +1682,118 @@ class ColdMirrorFetchTests(_RoutedCase):
         )
 
 
+class EmptyStateTests(_RoutedCase):
+    """I3/I4: four different situations used to answer identically.
+
+    ``error: null, issues: []`` was the response for *no GitHub remote*,
+    *never polled*, *polled fine but nothing open*, and *the repository has
+    issues switched off* — and only the second was documented. A client
+    could do nothing but render "No issues found" for all four, which is
+    false in three of them. ``state`` says which.
+    """
+
+    def test_no_remote_says_so_rather_than_no_issues(self) -> None:
+        (self.xo / "project.json").write_text(json.dumps({
+            "schema": 2, "pid": PID, "name": self.PROJECT,
+            "owner_user_id": "local", "created_at": "2026-01-01T00:00:00Z",
+        }), encoding="utf-8")
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "no_remote")
+        self.assertIsNone(body["repo"])
+
+    def test_never_polled_is_distinct_from_empty(self) -> None:
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "never_polled")
+        self.assertIsNone(body["fetched_at"])
+
+    def test_a_successful_poll_with_nothing_open_is_empty(self) -> None:
+        self.write_mirror()  # fetched_at set, no rows
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "empty")
+        self.assertIsNotNone(body["fetched_at"])
+
+    def test_issues_disabled_is_its_own_answer(self) -> None:
+        """The state that was completely invisible. A repository with its
+        tracker off answers a *successful* poll — no error, no rows —
+        exactly like a healthy repository with nothing open. Verified live
+        against ``dwivedi-ai/xo-cowork-api``, which is that repository."""
+        path = self.write_mirror()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["issues_enabled"] = False
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "issues_disabled")
+        self.assertEqual(body["issues"], [])
+        self.assertIsNone(body["error"], "it is not a failure; the poll worked")
+
+    def test_a_failure_is_reported_as_an_error_state(self) -> None:
+        self.write_mirror(error={
+            "kind": "not_authenticated", "message": "gh auth login",
+            "at": "2026-09-08T12:05:00Z",
+        }, fetched_at=None)
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "error")
+        self.assertEqual(body["error"]["kind"], "not_authenticated")
+
+    def test_rows_beat_a_stale_error(self) -> None:
+        """The mirror keeps its last good rows through a failure by design,
+        so a page with issues on it is not an error state — the ``error``
+        field still carries the failure so a UI can show both."""
+        self.write_mirror(_mirror_row(), error={
+            "kind": "network", "message": "no such host",
+            "at": "2026-09-08T12:05:00Z",
+        })
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "ok")
+        self.assertEqual(body["error"]["kind"], "network")
+
+    def test_unknown_is_not_a_claim_that_the_tracker_is_on(self) -> None:
+        """A document written before ``issues_enabled`` existed reads as
+        ``None``, which must fall through to the ordinary answers rather
+        than assert anything about the repository."""
+        path = self.write_mirror()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc.pop("issues_enabled", None)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "empty")
+
+    def test_no_remote_outranks_never_polled(self) -> None:
+        """Ordering matters: "never polled" would be true of a project with
+        no remote, and useless — the remedy is to set an origin, not wait."""
+        (self.xo / "project.json").write_text(json.dumps({
+            "schema": 2, "pid": PID, "name": self.PROJECT,
+            "owner_user_id": "local", "created_at": "2026-01-01T00:00:00Z",
+        }), encoding="utf-8")
+        body = self.client.get(f"{self.base}/github/issues").json()
+        self.assertEqual(body["state"], "no_remote")
+
+    def test_every_state_is_reachable_and_they_are_all_different(self) -> None:
+        """The guard on the guard: a discriminator that cannot produce all
+        of its values is not discriminating anything."""
+        seen = set()
+
+        seen.add(self.client.get(f"{self.base}/github/issues").json()["state"])
+        self.write_mirror()
+        seen.add(self.client.get(f"{self.base}/github/issues").json()["state"])
+        self.write_mirror(_mirror_row())
+        seen.add(self.client.get(f"{self.base}/github/issues").json()["state"])
+        self.write_mirror(error={"kind": "network", "message": "x"},
+                          fetched_at=None)
+        seen.add(self.client.get(f"{self.base}/github/issues").json()["state"])
+
+        path = self.write_mirror()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["issues_enabled"] = False
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        seen.add(self.client.get(f"{self.base}/github/issues").json()["state"])
+
+        self.assertEqual(
+            seen, {"never_polled", "empty", "ok", "error", "issues_disabled"},
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

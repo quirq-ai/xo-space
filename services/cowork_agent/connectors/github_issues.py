@@ -108,6 +108,7 @@ ISSUES_QUERY = """
 query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
   rateLimit { limit cost remaining resetAt }
   repository(owner: $owner, name: $name) {
+    hasIssuesEnabled
     issues(
       first: $first
       after: $after
@@ -172,6 +173,7 @@ ISSUES_QUERY_WITH_CLOSED = """
 query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
   rateLimit { limit cost remaining resetAt }
   repository(owner: $owner, name: $name) {
+    hasIssuesEnabled
     issues(
       first: $first
       after: $after
@@ -479,6 +481,18 @@ class IssuesResult:
     error: str | None = None
     has_next_page: bool = False
     end_cursor: str | None = None
+    #: ``repository.hasIssuesEnabled`` — whether the issue tracker is turned
+    #: on for this repository at all. ``None`` when the poll failed, because
+    #: a failure establishes nothing about the repository's settings.
+    #:
+    #: It is on the query because a repository with issues disabled answers
+    #: a *successful* poll with an empty issue set, byte-identical to a
+    #: healthy repository that simply has no open issues (verified on
+    #: ``dwivedi-ai/xo-cowork-api``). Without this the two are
+    #: indistinguishable and the empty state has to guess. It is a scalar,
+    #: not a connection, so it is free: measured on ``cjpais/Handy``,
+    #: ``rateLimit.cost`` is 1 with and without it.
+    issues_enabled: bool | None = None
 
     @property
     def high_water_mark(self) -> str | None:
@@ -924,6 +938,13 @@ async def fetch_open_issues(
         rate=rate,
         has_next_page=bool(info.get("hasNextPage")),
         end_cursor=cursor if isinstance(cursor, str) else None,
+        # Absent (an older cached response, or a schema that stopped
+        # offering it) reads as ``None`` — "unknown" — never as ``False``,
+        # which would claim the tracker is off.
+        issues_enabled=(
+            bool(repository.get("hasIssuesEnabled"))
+            if isinstance(repository.get("hasIssuesEnabled"), bool) else None
+        ),
     )
 
 

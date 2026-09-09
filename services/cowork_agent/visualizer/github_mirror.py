@@ -396,6 +396,7 @@ def _document(
     rate: Optional[dict],
     error: Optional[dict],
     issues: dict[str, dict],
+    issues_enabled: Optional[bool] = None,
 ) -> dict:
     """The §5.2 document, in the schema's key order.
 
@@ -412,6 +413,14 @@ def _document(
         "since": since,
         "rate": rate,
         "error": error,
+        # Whether the repository has its issue tracker turned on
+        # (issuesplan I4). Written only when a poll established it; ``None``
+        # means unknown, which is what a failed poll and a pre-existing
+        # document both are. Without it a repository with issues *disabled*
+        # is byte-identical on the wire to a healthy one with no open
+        # issues — a successful poll, no error, an empty issue map — and
+        # the empty state has no way to say which.
+        "issues_enabled": issues_enabled,
         "issues": dict(sorted(issues.items())),
     }
 
@@ -489,6 +498,18 @@ def record_pages(
             if mark and (since is None or mark > since):
                 since = mark
 
+        # From the newest page that answered — every page of one poll
+        # reports the same repository setting, and a poll that fetched no
+        # page at all leaves it unknown rather than guessing.
+        enabled: Optional[bool] = None
+        for page in pages:
+            if page.issues_enabled is not None:
+                enabled = page.issues_enabled
+        if enabled is None and isinstance(previous.get("issues_enabled"), bool):
+            # Nothing new to say: keep what the last poll established rather
+            # than downgrading a known answer to unknown.
+            enabled = bool(previous["issues_enabled"])
+
         payload = _document(
             repo=repo,
             fetched_at=fetched_at,
@@ -496,6 +517,7 @@ def record_pages(
             rate=_rate_document(pages),
             error=None,
             issues=issues,
+            issues_enabled=enabled,
         )
         return _write(path, payload)
 
@@ -549,6 +571,14 @@ def record_failure(project: str, *, repo: Optional[str], result: IssuesResult) -
             rate=rate,
             error=error,
             issues=issues,
+            # A failed poll establishes nothing about the repository's
+            # settings, so the last known answer is carried through for the
+            # same reason ``rate`` and the rows are: unchanged, not unknown.
+            issues_enabled=(
+                bool(previous["issues_enabled"])
+                if same_repo and isinstance(previous.get("issues_enabled"), bool)
+                else None
+            ),
         )
         return _write(path, payload)
 
