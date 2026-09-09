@@ -47,7 +47,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -147,6 +149,24 @@ def _write_log(log_path: Path, entry: str) -> None:
         f.write(entry)
 
 
+def _kill_tree(proc) -> None:
+    """Kill the child and, on POSIX, everything it spawned.
+
+    `run` starts each child in its own session, so its pid is also its process
+    group id and one signal reaches the grandchildren too. Without that, a
+    killed `npx` or `git` can leave a helper process holding the stdout pipe,
+    and `communicate()` then waits for that helper instead of honouring the
+    timeout (measured: 7.5 s of a 0.5 s timeout). ProcessLookupError means the
+    tree is already gone, which is the outcome we wanted.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        pid = getattr(proc, "pid", None)
+        if os.name == "posix" and pid:
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            proc.kill()
+
+
 async def run(
     argv: Sequence[str],
     *,
@@ -194,6 +214,10 @@ async def run(
             stdout=None if inherit_output else asyncio.subprocess.PIPE,
             stderr=None if inherit_output
                    else (asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT),
+            # own session => own process group, so a timeout can kill the
+            # whole tree (see _kill_tree). Trade-off: a child no longer dies
+            # with the server on Ctrl+C, so long-running calls pass a timeout.
+            start_new_session=(os.name == "posix"),
         )
     except FileNotFoundError:
         result = CommandResult(
@@ -224,11 +248,10 @@ async def run(
         else:
             stdout, stderr = await proc.communicate(input=input)
     except asyncio.TimeoutError:
-        # The child can exit in the instant between the timeout firing and
-        # the kill; asyncio then raises ProcessLookupError from kill(), which
-        # a runner that promises never to raise has to swallow.
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        # Kill the whole tree; _kill_tree swallows the ProcessLookupError that
+        # asyncio raises when the child exited in the instant between the
+        # timeout firing and the kill (the runner promises never to raise).
+        _kill_tree(proc)
         await proc.communicate()
         result = CommandResult(
             argv=argv_list,

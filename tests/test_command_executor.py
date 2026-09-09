@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -130,6 +132,16 @@ class RunSpecTests(unittest.TestCase):
         self.assertTrue(ok.ok)
         missing = spawn_detached(["definitely-not-a-binary-xyz"])
         self.assertTrue(missing.binary_missing)
+
+    @unittest.skipIf(os.name != "posix", "process groups are POSIX")
+    def test_timeout_kills_the_whole_process_group(self) -> None:
+        """`sh` here exits only when its background child does. Killing just
+        `sh` leaves the child holding the stdout pipe, and the runner would
+        wait for it (30 s) instead of honouring the 0.5 s timeout."""
+        started = time.monotonic()
+        res = run(commands.run(["sh", "-c", "sleep 30 & wait"], timeout=0.5))
+        self.assertTrue(res.timed_out)
+        self.assertLess(time.monotonic() - started, 5.0)
 
     def test_kill_race_after_timeout_is_a_result_not_an_exception(self) -> None:
         """If the child exits in the instant between the timeout and the kill,
