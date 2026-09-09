@@ -6,21 +6,22 @@ the remote-tracking ref git itself updates after `git push`, so a machine can
 notice its own push without a network call."""
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
+
+from utils.commands import run
 
 _SEP = "\x1f"  # unit separator: cannot appear in git subjects/authors
 
 
 async def _run(repo_dir, *args) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(repo_dir), *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+    """`git -C <repo_dir> <args>` through the one executor. (code, stdout, stderr);
+    a missing git binary or a runner exception is a non-zero code with the
+    reason in stderr, so every caller's failure branch already covers it."""
+    res = await run(["git", "-C", str(repo_dir), *args], separate_stderr=True)
+    if res.binary_missing or res.exception:
+        return res.returncode, "", res.output
+    return res.returncode, res.stdout, res.stderr
 
 
 async def origin_url(repo_dir) -> str | None:
@@ -112,26 +113,16 @@ async def clone(url: str, dest, *, config_args: list[str] | None = None,
     Returns (ok, stderr, timed_out). `config_args` carry `-c` credential
     overrides so the token never appears in the URL or in .git/config."""
     argv = ["git", *(config_args or []), "clone", "--", url, str(dest)]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(cwd) if cwd is not None else None,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-    except FileNotFoundError:
-        return False, "git not found in PATH", False
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc), False
-    try:
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
+    # The runner closes stdin, so with GIT_TERMINAL_PROMPT=0 git can never
+    # block on a credential prompt; a private repo fails fast instead.
+    res = await run(argv, cwd=cwd, timeout=timeout,
+                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    separate_stderr=True)
+    if res.timed_out:
         return False, f"timed out after {timeout}s", True
-    return proc.returncode == 0, err.decode(errors="replace"), False
+    if res.binary_missing or res.exception:
+        return False, res.output, False
+    return res.ok, res.stderr, False
 
 
 async def behind_count(repo_dir, branch: str) -> int | None:
