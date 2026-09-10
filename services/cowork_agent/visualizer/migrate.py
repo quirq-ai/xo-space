@@ -26,7 +26,9 @@ _RUNTIME_FILES: tuple[str, ...] = (
 _RUNTIME_GLOBS: tuple[str, ...] = ("timeline*.jsonl",)
 
 # Lines a project ``.gitignore`` may carry that hide the whole synced tier.
-_BLANKET_IGNORE_LINES = frozenset({".xo", ".xo/", "/.xo", "/.xo/"})
+_BLANKET_IGNORE_LINES = frozenset({
+    ".xo", ".xo/", "/.xo", "/.xo/", "**/.xo", "**/.xo/", ".xo/*", ".xo/**",
+})
 
 
 def _drop(path: Path) -> None:
@@ -73,29 +75,21 @@ def _pending_sources(synced: Path) -> list[Path]:
     return pending
 
 
-def _narrow_gitignore(name: str) -> bool:
-    """Stop a project ``.gitignore`` from ignoring all of its synced tier."""
+def _warn_if_gitignored(name: str) -> None:
     gitignore = project_layout.project_dir(name) / ".gitignore"
     try:
         if not gitignore.is_file():
-            return False
+            return
         lines = gitignore.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
-        return False
-    kept = [line for line in lines if line.strip() not in _BLANKET_IGNORE_LINES]
-    if len(kept) == len(lines):
-        return False
-    try:
-        gitignore.write_text(
-            "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8"
+        return
+    hits = sorted({s for s in (ln.strip() for ln in lines) if s in _BLANKET_IGNORE_LINES})
+    if hits:
+        logger.warning(
+            "migrate: %s/.gitignore hides the synced project tier (%s); backups "
+            "force-include .xo/, but your own commits will not carry project.json",
+            name, ", ".join(hits),
         )
-    except OSError:
-        logger.warning("migrate: could not rewrite %s", gitignore)
-        return False
-    logger.info(
-        "migrate: %s/.gitignore no longer hides the synced project tier", name
-    )
-    return True
 
 
 def _migrate_one(name: str) -> bool:
@@ -104,11 +98,11 @@ def _migrate_one(name: str) -> bool:
     if not synced.is_dir():
         return False
 
-    changed = _narrow_gitignore(name)
+    _warn_if_gitignored(name)
 
     pending = _pending_sources(synced)
     if not pending:
-        return changed
+        return False
 
     # The runtime home is keyed by ``project.json:pid``, so the identity has to
     # exist before there is a stable place to move anything to.
@@ -124,12 +118,12 @@ def _migrate_one(name: str) -> bool:
     if meta.get("_template") or not meta.get("pid"):
         # No stable key yet.
         logger.info("migrate: %s has no pid yet; deferring the tier move", name)
-        return changed
+        return False
 
     runtime = project_layout.runtime_dir_for_project(name, create=True)
     if runtime is None:
         logger.warning("migrate: %s has no resolvable runtime home; skipping", name)
-        return changed
+        return False
 
     for src in pending:
         _relocate(src, runtime / src.relative_to(synced))
