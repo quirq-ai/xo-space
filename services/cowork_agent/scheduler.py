@@ -377,3 +377,214 @@ def list_runs(job_id: str, limit: int = 20) -> list[dict]:
         except json.JSONDecodeError:
             continue  # a torn line; the rest of the history is still good
     return list(reversed(records[-max(1, int(limit)):]))
+
+
+# ── Launch and harvest ───────────────────────────────────────────────────────
+
+
+def _launch(job: Mapping[str, Any], trigger: str, now: datetime) -> None:
+    """Start the job's thread. Lock held; state.json already says it is running.
+
+    The thread calls the executor's synchronous runner, which enforces the
+    timeout and never raises; the try/except is belt and braces so a bug in
+    the runner can never leave a run without a result.
+    """
+    job_id = str(job["id"])
+    # The log destination is part of the spec (`run_spec_sync` forwards only
+    # capture options), so build one spec that carries the command and its log.
+    spec = CommandSpec.from_json(
+        {**job["command"], "log_path": str(log_file(job_id)), "log_label": job_id}
+    )
+    run = _Run(job_id=job_id, trigger=trigger, started_at=now)
+
+    def target() -> None:
+        try:
+            run.result = run_spec_sync(spec)
+        except Exception as exc:  # noqa: BLE001
+            run.result = CommandResult(
+                argv=spec.argv, returncode=-1, output=f"[exception] {exc}",
+                duration_seconds=0.0, exception=str(exc),
+            )
+        run.finished_at = now_utc()
+
+    run.thread = threading.Thread(target=target, name=f"scheduler:{job_id}", daemon=True)
+    _running[job_id] = run
+    run.thread.start()
+
+
+def _status_of(result: CommandResult) -> str:
+    if result.ok:
+        return "ok"
+    if result.timed_out:
+        return "timed_out"
+    if result.binary_missing:
+        return "missing_binary"
+    if result.exception is not None:
+        return "error"
+    return "failed"
+
+
+def _record(run: _Run) -> dict:
+    result = run.result or CommandResult(argv=[], returncode=-1, output="[no result]",
+                                         duration_seconds=0.0, exception="no result")
+    return {
+        "started_at": stamp(run.started_at),
+        "finished_at": stamp(run.finished_at or now_utc()),
+        "trigger": run.trigger,
+        "status": _status_of(result),
+        "returncode": result.returncode,
+        "duration_seconds": round(result.duration_seconds, 3),
+        "output_tail": result.output[-OUTPUT_TAIL_CHARS:],
+    }
+
+
+def _harvest(state: dict) -> list[str]:
+    """Record every run whose thread has ended. Lock held."""
+    finished: list[str] = []
+    for job_id, run in list(_running.items()):
+        if run.thread is None or run.thread.is_alive():
+            continue
+        del _running[job_id]
+        record = _record(run)
+        _append_run(job_id, record)
+        entry = state["jobs"].get(job_id)
+        if entry is not None:  # deleted mid-run: history is kept, state is gone
+            entry["last_run"] = record["started_at"]
+            entry["last_result"] = record
+            entry["running_since"] = None
+        finished.append(job_id)
+    return finished
+
+
+def _sweep(state: dict, now: datetime) -> list[str]:
+    """A job the file says is running but this process is not tracking was
+    running when the server stopped. Record it as lost and clear it. Runs
+    every tick, so it needs no startup hook. Lock held."""
+    lost: list[str] = []
+    for job_id, entry in state["jobs"].items():
+        if entry.get("running_since") and job_id not in _running:
+            record = {
+                "started_at": entry["running_since"], "finished_at": stamp(now),
+                "trigger": None, "status": "lost", "returncode": None,
+                "duration_seconds": None, "output_tail": "",
+                "reason": "the server stopped while this run was in progress",
+            }
+            _append_run(job_id, record)
+            entry["running_since"] = None
+            entry["last_result"] = record
+            lost.append(job_id)
+    return lost
+
+
+# ── The tick ─────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class TickReport:
+    """What one tick did. Ids only — nothing from a job's output."""
+
+    enabled: bool = True
+    started: list[str] = field(default_factory=list)
+    finished: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    deferred: list[str] = field(default_factory=list)
+    lost: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def quiet(self) -> bool:
+        return not (self.started or self.finished or self.skipped
+                    or self.deferred or self.lost or self.errors)
+
+    def as_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "started": list(self.started), "finished": list(self.finished),
+            "skipped": list(self.skipped), "deferred": list(self.deferred),
+            "lost": list(self.lost), "errors": list(self.errors),
+        }
+
+
+def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickReport) -> bool:
+    """Decide one job. Returns True when ``state`` changed in memory and still
+    needs writing (a launch writes the file itself, before the process
+    exists, and returns False). Lock held."""
+    job_id = str(job["id"])
+    if not job.get("enabled", True):
+        return False
+    entry = state["jobs"].get(job_id)
+    if entry is None:
+        # Added to jobs.json by hand: adopt it, first run one interval out.
+        state["jobs"][job_id] = _initial_state(job, now)
+        return True
+    try:
+        next_run = parse_stamp(entry["next_run"])
+    except (KeyError, TypeError, ValueError):
+        entry.update(_initial_state(job, now))
+        return True
+    if now < next_run:
+        return False
+    every = int(job["every_seconds"])
+    if job_id in _running:
+        record = {
+            "started_at": stamp(now), "finished_at": stamp(now), "trigger": "schedule",
+            "status": "skipped", "returncode": None, "duration_seconds": None,
+            "output_tail": "", "reason": "previous run still in progress",
+        }
+        _append_run(job_id, record)
+        entry["last_result"] = record
+        entry["next_run"] = stamp(advance(next_run, every, now))
+        report.skipped.append(job_id)
+        return True
+    if len(_running) >= max_concurrent():
+        report.deferred.append(job_id)  # next_run untouched: still due next tick
+        return False
+    entry["running_since"] = stamp(now)
+    entry["next_run"] = stamp(advance(next_run, every, now))
+    _write_doc(state_file(), state)  # on disk BEFORE the process exists (idempotency)
+    try:
+        _launch(job, "schedule", now)
+    except Exception as exc:  # noqa: BLE001 — a hand-edited definition the executor refuses
+        entry["running_since"] = None
+        report.errors.append(f"{job_id}: {exc}")
+        return True
+    report.started.append(job_id)
+    return False
+
+
+def tick(now: Optional[datetime] = None) -> TickReport:
+    """One pass: harvest finished runs, sweep lost ones, launch what is due.
+
+    Synchronous and thread-safe; call it from any thread once per tick. Cheap
+    when nothing is due (two small JSON reads). Never raises for a job's
+    sake: per-job problems land in ``report.errors``.
+    """
+    now = _resolve_now(now)
+    if not scheduler_enabled():
+        return TickReport(enabled=False)
+    report = TickReport()
+    with _lock:
+        try:
+            state = _read_doc(state_file())
+        except SchedulerError as exc:
+            report.errors.append(str(exc))
+            return report
+        report.finished.extend(_harvest(state))
+        report.lost.extend(_sweep(state, now))
+        changed = bool(report.finished or report.lost)
+        try:
+            jobs = _read_doc(jobs_file())["jobs"]
+        except SchedulerError as exc:
+            report.errors.append(str(exc))
+            jobs = {}
+        for job_id in sorted(jobs):
+            try:
+                if _consider(jobs[job_id], state, now, report):
+                    changed = True
+                elif job_id in report.started:
+                    changed = False  # _consider wrote the file; earlier changes went with it
+            except Exception as exc:  # noqa: BLE001 — one bad job must not stop the others
+                report.errors.append(f"{job_id}: {exc}")
+        if changed:
+            _write_doc(state_file(), state)
+    return report

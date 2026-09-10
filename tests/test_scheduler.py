@@ -173,6 +173,110 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(scheduler.advance(nr, 60, _at(210)), _at(240))  # three slots missed → next future slot
         self.assertEqual(scheduler.advance(nr, 60, _at(240)), _at(300))  # landing on a slot counts as due
 
+    # ── Task 2: the tick ──
+
+    def test_tick_is_quiet_before_the_slot_and_starts_the_job_on_it(self) -> None:
+        job = scheduler.create_job(_job("j", 60), now=T0)
+        early = scheduler.tick(now=_at(59))
+        self.assertTrue(early.quiet)
+        self.assertEqual(early.as_dict()["started"], [])
+
+        due = scheduler.tick(now=_at(61))
+        self.assertEqual(due.started, [job["id"]])
+        self.assertTrue(due.enabled)
+        state = self._state(job["id"])
+        self.assertEqual(state["running_since"], "2026-09-11T10:01:01Z")
+        self.assertEqual(state["next_run"], "2026-09-11T10:02:00Z")   # grid, not now + 60
+        scheduler._running[job["id"]].thread.join(10)
+
+    def test_tick_is_idempotent_for_the_same_now(self) -> None:
+        # A blocking job, so the run is provably still in progress on the
+        # second call: idempotency must hold while the process exists.
+        job = self._blocking_job("j", 60)
+        first = scheduler.tick(now=_at(60))
+        second = scheduler.tick(now=_at(60))
+        self.assertEqual(first.started, [job["id"]])
+        self.assertTrue(second.quiet)
+        self.assertEqual(self._state(job["id"])["next_run"], "2026-09-11T10:02:00Z")
+        self.assertEqual(self._state(job["id"])["running_since"], "2026-09-11T10:01:00Z")
+        self._release(job["id"])
+
+    def test_state_is_on_disk_before_the_process_is_launched(self) -> None:
+        job = scheduler.create_job(_job("j", 60), now=T0)
+        seen: dict = {}
+
+        def fake_launch(job_def, trigger, now):
+            seen["running_since"] = self._state(job_def["id"])["running_since"]
+            seen["next_run"] = self._state(job_def["id"])["next_run"]
+            seen["trigger"] = trigger
+
+        with patch.object(scheduler, "_launch", fake_launch):
+            report = scheduler.tick(now=_at(60))
+        self.assertEqual(report.started, [job["id"]])
+        self.assertEqual(seen, {"running_since": "2026-09-11T10:01:00Z",
+                                "next_run": "2026-09-11T10:02:00Z", "trigger": "schedule"})
+
+    def test_catch_up_runs_once_and_resumes_from_the_next_future_slot(self) -> None:
+        job = scheduler.create_job(_job("daily", 86400), now=T0)
+        three_days_late = T0 + timedelta(days=4, hours=2)
+        report = scheduler.tick(now=three_days_late)
+        self.assertEqual(report.started, [job["id"]])
+        self.assertEqual(self._state(job["id"])["next_run"], "2026-09-16T10:00:00Z")
+        scheduler._running[job["id"]].thread.join(10)
+        self.assertTrue(scheduler.tick(now=three_days_late + timedelta(seconds=1)).finished)
+
+    def test_disabled_job_and_disabled_scheduler_start_nothing(self) -> None:
+        off = scheduler.create_job(_job("off", 60, enabled=False), now=T0)
+        on = scheduler.create_job(_job("on", 60), now=T0)
+        with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
+            report = scheduler.tick(now=_at(120))
+        self.assertFalse(report.enabled)
+        self.assertEqual(report.started, [])
+        self.assertIsNone(self._state(on["id"])["running_since"])
+
+        report = scheduler.tick(now=_at(120))
+        self.assertEqual(report.started, [on["id"]])
+        self.assertIsNone(self._state(off["id"])["running_since"])
+        scheduler._running[on["id"]].thread.join(10)
+
+    def test_corrupt_jobs_file_is_reported_and_nothing_runs(self) -> None:
+        scheduler.jobs_file().parent.mkdir(parents=True)
+        scheduler.jobs_file().write_text("[]", encoding="utf-8")
+        report = scheduler.tick(now=T0)
+        self.assertEqual(report.started, [])
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("jobs.json", report.errors[0])
+        self.assertEqual(scheduler.jobs_file().read_text(encoding="utf-8"), "[]")
+
+    def test_hand_added_job_is_adopted_one_interval_out(self) -> None:
+        # jobs.json edited directly: no state entry yet. The tick seeds one and
+        # does not run the job on the spot.
+        scheduler._write_doc(scheduler.jobs_file(), {"schema": 1, "jobs": {
+            "manual-000000": {"id": "manual-000000", "name": "manual", "project_id": None,
+                              "command": _cmd(), "every_seconds": 60, "enabled": True,
+                              "created_at": "2026-09-11T10:00:00Z", "updated_at": "2026-09-11T10:00:00Z"}}})
+        report = scheduler.tick(now=_at(500))
+        self.assertEqual(report.started, [])
+        self.assertEqual(self._state("manual-000000")["next_run"], "2026-09-11T10:09:20Z")
+        self.assertEqual(scheduler.tick(now=_at(560)).started, ["manual-000000"])
+        scheduler._running["manual-000000"].thread.join(10)
+
+    def test_a_definition_the_executor_refuses_is_an_error_not_a_crash(self) -> None:
+        scheduler._write_doc(scheduler.jobs_file(), {"schema": 1, "jobs": {
+            "bad-000000": {"id": "bad-000000", "name": "bad", "project_id": None,
+                           "command": {"argv": [], "timeout": 5}, "every_seconds": 60, "enabled": True,
+                           "created_at": "2026-09-11T10:00:00Z", "updated_at": "2026-09-11T10:00:00Z"}}})
+        scheduler._write_doc(scheduler.state_file(), {"schema": 1, "jobs": {
+            "bad-000000": {"next_run": "2026-09-11T10:01:00Z", "last_run": None,
+                           "running_since": None, "last_result": None}}})
+        report = scheduler.tick(now=_at(60))
+        self.assertEqual(report.started, [])
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("bad-000000", report.errors[0])
+        state = self._state("bad-000000")
+        self.assertIsNone(state["running_since"])
+        self.assertEqual(state["next_run"], "2026-09-11T10:02:00Z")  # advanced: one error per slot, not per tick
+
 
 if __name__ == "__main__":
     unittest.main()
