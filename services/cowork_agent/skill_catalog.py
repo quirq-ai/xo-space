@@ -3,18 +3,22 @@ On-demand skill install catalog.
 
 Backs ``GET /api/skills/catalog`` and ``POST /api/skills/install``. The catalog
 file (``config/skills/catalog.json``) is the server-side source of truth
-mapping a skill name to one or more shell commands; clients only ever send a
+mapping a skill name to one or more commands; clients only ever send a
 name, and command text is never returned to them (entries may embed tokens or
-host paths). Distinct from ``skill_installer.py``, which copies repo-bundled
+host paths). Commands run through ``utils.commands`` as argv lists — there is
+no shell, so a catalog entry can never chain, pipe or redirect. Distinct from ``skill_installer.py``, which copies repo-bundled
 skills at startup.
 
 Catalog entry shape (one of ``command``/``commands`` is required):
 
     name             required, unique
     description      optional
-    command          single shell command string
-    commands         non-empty list of shell command strings, run
-                     sequentially, stopping at the first failure
+    command          one command: an argv list (preferred) or a string that
+                     is split with POSIX quoting and no shell
+    commands         non-empty list of such commands, run sequentially,
+                     stopping at the first failure; a string containing a
+                     shell operator (&&, |, ;, >, <, `, $() makes the entry
+                     invalid
     timeout_seconds  optional, default 300 — applies per command
     cwd              optional working directory for every command
     success_message  optional human-authored line returned as ``summary`` on
@@ -32,12 +36,12 @@ boot-time skills, declared per agent in
 """
 
 import asyncio
-import contextlib
 import json
 from pathlib import Path
 
 from services.cowork_agent.registry import agent_registry
 from services.cowork_agent.registry.settings import load_agent_config
+from utils.commands import CommandSpec, CommandSpecError, run_spec
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = _REPO_ROOT / "config" / "skills" / "catalog.json"
@@ -104,9 +108,9 @@ async def install(name: str) -> dict:
     async with lock:
         steps: list[dict] = []
         ok = True
-        for index, command in enumerate(entry["commands"]):
+        for index, spec in enumerate(entry["specs"]):
             try:
-                rendered = _expand_placeholders(command)
+                rendered = spec.with_argv([_expand_placeholders(token) for token in spec.argv])
             except Exception as exc:
                 steps.append(_step_result(index, ok=False, exit_code=None, stdout="",
                                           stderr=f"placeholder expansion failed: {exc}",
@@ -114,7 +118,7 @@ async def install(name: str) -> dict:
                 print(f"⚠️ skill install {name!r} step {index + 1}: placeholder expansion failed: {exc}")
                 ok = False
                 break
-            step = await _run_step(index, rendered, entry["timeout_seconds"], entry["cwd"])
+            step = await _run_step(index, rendered)
             steps.append(step)
             if not step["ok"]:
                 detail = step["stderr"].strip() or step["stdout"].strip()
@@ -251,8 +255,33 @@ def _lock_for(name: str) -> asyncio.Lock:
     return _locks.setdefault(name, asyncio.Lock())
 
 
+def _to_spec(step, cwd, timeout) -> CommandSpec | None:
+    """One catalog step as a validated CommandSpec: an argv list, or a string
+    split without a shell. The entry's cwd and timeout ride on every step, so
+    the runner gets them from the spec and they are validated once, by the
+    same rules as every other data-driven command. None means the step is
+    invalid (and so is its entry)."""
+    if isinstance(step, list):
+        obj: dict = {"argv": step}
+    elif isinstance(step, str):
+        obj = {"command": step}
+    else:
+        return None
+    if cwd is not None:
+        obj["cwd"] = cwd
+    obj["timeout"] = timeout
+    try:
+        return CommandSpec.from_json(obj)
+    except CommandSpecError as exc:
+        print(f"⚠️ skill catalog: rejected command {step!r}: {exc}")
+        return None
+
+
 def _normalize(entry) -> dict | None:
-    """Validate one raw catalog entry; None means invalid (skip it)."""
+    """Validate one raw catalog entry; None means invalid (skip it).
+
+    `specs` is what runs; `commands`, `cwd` and `timeout_seconds` are the same
+    facts read back out of the specs for callers and tests that want plain data."""
     if not isinstance(entry, dict):
         return None
     name = entry.get("name")
@@ -260,24 +289,24 @@ def _normalize(entry) -> dict | None:
         return None
 
     command, commands = entry.get("command"), entry.get("commands")
-    if isinstance(command, str) and command.strip() and commands is None:
-        resolved = [command]
-    elif (
-        command is None
-        and isinstance(commands, list)
-        and commands
-        and all(isinstance(c, str) and c.strip() for c in commands)
-    ):
-        resolved = list(commands)
+    if command is not None and commands is None:
+        raw_steps = [command]
+    elif command is None and isinstance(commands, list) and commands:
+        raw_steps = list(commands)
     else:
         return None
 
     timeout = entry.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
-        return None
     cwd = entry.get("cwd")
-    if cwd is not None and not isinstance(cwd, str):
-        return None
+    if timeout is None:
+        return None  # an explicit null is a broken entry, not "use the default"
+    specs: list[CommandSpec] = []
+    for step in raw_steps:
+        spec = _to_spec(step, cwd, timeout)
+        if spec is None:
+            return None
+        specs.append(spec)
+
     success_message = entry.get("success_message")
     if success_message is not None and not isinstance(success_message, str):
         return None
@@ -285,47 +314,36 @@ def _normalize(entry) -> dict | None:
     return {
         "name": name.strip(),
         "description": entry.get("description") or "",
-        "commands": resolved,
-        "timeout_seconds": timeout,
-        "cwd": cwd,
+        "specs": specs,
+        "commands": [s.argv for s in specs],
+        "timeout_seconds": specs[0].timeout,
+        "cwd": specs[0].cwd,
         "success_message": success_message,
     }
 
 
-async def _run_step(index: int, command: str, timeout_seconds: float, cwd: str | None) -> dict:
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
-    except Exception as exc:
+async def _run_step(index: int, spec: CommandSpec) -> dict:
+    """One catalog step through the shared runner: a validated spec, no
+    shell, streams kept apart so the response keeps the stdout / stderr /
+    exit_code shape it has always had."""
+    result = await run_spec(spec, separate_stderr=True)
+    if result.binary_missing or result.exception is not None:
+        reason = result.exception or result.output
         return _step_result(index, ok=False, exit_code=None, stdout="",
-                            stderr=f"failed to start command: {exc}",
-                            duration=loop.time() - started, timed_out=False)
-
-    timed_out = False
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
-        timed_out = True
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
-        stdout_b, stderr_b = b"", b""
-
-    exit_code = proc.returncode
+                            stderr=f"failed to start command: {reason}",
+                            duration=result.duration_seconds, timed_out=False)
+    if result.timed_out:
+        # nothing usable was captured; exit_code is the kill signal (e.g. -9)
+        return _step_result(index, ok=False, exit_code=result.returncode, stdout="", stderr="",
+                            duration=result.duration_seconds, timed_out=True)
     return _step_result(
         index,
-        ok=(not timed_out and exit_code == 0),
-        exit_code=exit_code,
-        stdout=stdout_b.decode(errors="replace")[:_OUTPUT_CAP],
-        stderr=stderr_b.decode(errors="replace")[:_OUTPUT_CAP],
-        duration=loop.time() - started,
-        timed_out=timed_out,
+        ok=result.ok,
+        exit_code=result.returncode,
+        stdout=result.output[:_OUTPUT_CAP],
+        stderr=result.stderr[:_OUTPUT_CAP],
+        duration=result.duration_seconds,
+        timed_out=False,
     )
 
 
