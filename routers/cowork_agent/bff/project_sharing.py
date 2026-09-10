@@ -5,6 +5,8 @@
   GET  /api/xo-projects/{id}/members          proxy to swarm
   POST /api/xo-projects/{id}/share            proxy to swarm, body {workspace_id}
   POST /api/xo-projects/{id}/revoke           proxy to swarm, body {workspace_id}
+  POST /api/xo-projects/{id}/apply            git merge --ff-only origin/<branch> (the Apply button)
+  POST /api/project-sharing/check             nudge the poller: next tick now (the Check now button)
 
 Declarative over services.cowork_agent.project_sharing.service (typed errors →
 HTTP here). No os/pathlib in this module (BFF rule P2). The browser never
@@ -41,6 +43,19 @@ def _workspace_id_or_422(body: ShareBody, what: str) -> str:
 @router.get("/api/project-sharing/status")
 def relay_status() -> dict:
     return service.status_snapshot()
+
+
+@router.post("/api/project-sharing/check")
+def relay_check() -> dict:
+    return service.check_now()
+
+
+@router.post("/api/xo-projects/{project_id}/apply")
+async def apply_project(project_id: str) -> dict:
+    try:
+        return await service.apply(project_id)
+    except service.RelayError as exc:
+        raise _http(exc)
 
 
 @router.get("/api/xo-projects/{project_id}/commits")

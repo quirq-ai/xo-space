@@ -1,10 +1,10 @@
 /* The Files lens switch.
 
-   Files is one tab with three lenses — List, Graph and Tree — and the switch
-   between them belongs to the tab, not to any one lens. It used to be
-   rendered three times: an overlay pinned to the canvas in Graph, and a
-   header child in List and in Tree. Three renderers meant three positions, so
-   the control jumped as you used it.
+   Files is one tab with four lenses — List, Graph, Tree and Sharing — and
+   the switch between them belongs to the tab, not to any one lens. It used
+   to be rendered per lens: an overlay pinned to the canvas in Graph, and a
+   header child in List and in Tree. Three renderers meant three positions,
+   so the control jumped as you used it.
 
    Here it is one element in the stage (index.html), shown whenever the active
    view belongs to the Files tab and hidden otherwise.
@@ -16,7 +16,7 @@
    whose switchTo silently does nothing. The registry already listens for
    hashchange, and the hash is the app's real route. */
 
-const LENSES = ['projects', 'graph', 'tree'];
+const LENSES = ['projects', 'graph', 'tree', 'sharing'];
 
 export function initLensSwitch(){
   const el = document.getElementById('fileslens');

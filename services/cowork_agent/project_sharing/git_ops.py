@@ -125,6 +125,26 @@ async def clone(url: str, dest, *, config_args: list[str] | None = None,
     return res.ok, res.stderr, False
 
 
+async def head_sha(repo_dir) -> str | None:
+    code, out, _ = await _run(repo_dir, "rev-parse", "HEAD")
+    out = out.strip()
+    return out if code == 0 and out else None
+
+
+async def apply_ff(repo_dir, branch: str) -> tuple[bool, str]:
+    """`git merge --ff-only origin/<branch>`: the one write the relay ever
+    makes to a working tree, and only the write a person would make by hand
+    with the command the UI shows. --ff-only means it can never create a
+    merge commit or touch a diverged branch; git refuses and we report why
+    (first meaningful stderr line, trimmed)."""
+    code, _, err = await _run(repo_dir, "merge", "--ff-only", f"origin/{branch}")
+    if code == 0:
+        return True, ""
+    lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+    detail = " ".join(lines)[:300] if lines else f"git merge exited with {code}"
+    return False, detail
+
+
 async def behind_count(repo_dir, branch: str) -> int | None:
     """Commits on origin/<branch> not yet in HEAD: 'fetched, not applied'."""
     code, out, _ = await _run(repo_dir, "rev-list", "--count", f"HEAD..origin/{branch}")

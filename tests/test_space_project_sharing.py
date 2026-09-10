@@ -13,102 +13,132 @@ def read(rel: str) -> str:
 
 
 class SpaceProjectSharingCompositionTests(unittest.TestCase):
-    """The sharing surfaces are composed into the Files tab (projects view)
-    through explicit seams: a PANELS entry, two HTML blocks in render(), the
-    panel bind hook, and a stylesheet link. These assertions pin those seams
-    so a refactor of projects.js cannot silently drop a surface."""
+    """Project sharing in the Space UI is ONE surface: the Sharing lens of the
+    Files tab (views/sharing.js painting, views/sharing_data.js talking to the
+    BFF). The List lens carries none of it. These assertions pin the seams so
+    a refactor cannot quietly grow a second sharing surface, drop a control,
+    or route a call around the BFF."""
 
-    def test_sharing_module_is_imported_with_a_cache_buster(self) -> None:
+    def test_list_lens_carries_no_sharing_surface(self) -> None:
         projects = read("js/views/projects.js")
-        m = re.search(r"from '\./projects_sharing\.js\?v=([\w-]+)'", projects)
-        self.assertIsNotNone(m, "projects.js must import projects_sharing.js with ?v=")
-        app = read("js/app.js")
-        self.assertIn("./views/projects.js?v=20260907-sharing7", app)
+        for needle in ("sharing_data.js", "projects_sharing.js", "sharingPanel", "shr-",
+                       "sharingStripHTML", "sharedWithYouHTML", "startSharingPoll", "data-shr-row"):
+            self.assertNotIn(needle, projects, needle)
+        # the one hand-off stays: a Sharing row's "Open in List" opens the drawer
+        self.assertIn("space:open-project", projects)
+        self.assertFalse((UI / "js" / "views" / "projects_sharing.js").exists())
 
-    def test_panel_is_registered_and_bind_hook_is_called(self) -> None:
-        projects = read("js/views/projects.js")
-        self.assertIn("sharingPanel,", projects)
-        self.assertIn("pn.bind(el,id)", projects)
-        # a failed fetch must never wire controls onto an error message
-        self.assertIn("if(res.ok&&typeof pn.bind==='function')", projects)
-
-    def test_strip_and_inbox_render_in_both_paint_paths(self) -> None:
-        projects = read("js/views/projects.js")
-        self.assertIn("+sharingStripHTML()", projects)
-        self.assertEqual(projects.count("sharedWithYouHTML()"), 3)  # render, renderRows, refreshSharingUI
-        self.assertIn("startSharingPoll(refreshSharingUI)", projects)
-
-    def test_module_talks_only_to_the_bff_routes(self) -> None:
-        mod = read("js/views/projects_sharing.js")
+    def test_data_module_talks_only_to_the_bff_routes(self) -> None:
+        mod = read("js/views/sharing_data.js")
         for path in (
             "/api/project-sharing/status",
+            "/api/project-sharing/check",
+            "/api/xo-projects",
             "/members",
             "/share",
             "/revoke",
-            "/commits?limit=5",
+            "/apply",
+            "/commits?limit=",
         ):
             self.assertIn(path, mod)
-        self.assertNotIn("/commits/poll", mod)  # the browser never talks to swarm
-
-    def test_unapplied_commits_are_marked_and_the_merge_command_is_offered(self) -> None:
-        mod = read("js/views/projects_sharing.js")
-        self.assertIn("i<behind?' is-new':''", mod)
-        self.assertIn("merge --ff-only origin/", mod)
-        self.assertIn("up to date", mod)
-        css = read("css/sharing.css")
-        self.assertIn(".prj-li.is-new", css)
-        self.assertIn(".shr-apply", css)
-
-    def test_inbox_reflects_auto_clone_states_and_hands_off_to_setup(self) -> None:
-        mod = read("js/views/projects_sharing.js")
-        for state in ("cloning", "needs_auth", "no_access", "exists", "error"):
-            self.assertIn("st==='" + state + "'", mod)
-        # only the no-token state sends people to Setup; no-access does not
-        self.assertEqual(mod.count("data-connect-github>Connect GitHub"), 1)
-        self.assertIn("data-connect-github", mod)
-        self.assertIn("navTo('secrets')", mod)
-        self.assertIn("projects-sharing-fast", mod)   # faster poll only while cloning
-        projects = read("js/views/projects.js")
-        self.assertIn("setSharingNav(ctx.switchTo)", projects)
-        self.assertIn("if(consumeNewClone())loadList();", projects)
-        self.assertEqual(projects.count("bindSharingActions("), 3)  # render, renderRows, refreshSharingUI
-
-    def test_project_rows_carry_a_shared_chip_from_the_snapshot(self) -> None:
-        mod = read("js/views/projects_sharing.js")
-        self.assertIn("export function sharingRowChip(projectId)", mod)
-        self.assertIn("auto-cloned", mod)
-        self.assertIn("cloned by XO Space on", mod)
-        projects = read("js/views/projects.js")
-        self.assertIn("data-shr-row=", projects)                 # in the row template
-        self.assertIn("[data-shr-row]", projects)                # repainted on status refresh
-        self.assertIn(".prj-shr:empty{display:none}", read("css/sharing.css"))
-
-    def test_shared_chips_drop_when_only_the_owner_is_left(self) -> None:
-        # the owner row is irrevocable, so "shared" must come from the member
-        # count (others = members - 1), and an absent count must still say shared
-        mod = read("js/views/projects_sharing.js")
-        self.assertIn("function others(e)", mod)
-        self.assertIn("typeof m==='number'", mod)
-        self.assertIn("if(n===0)return'';", mod)                          # row chip
-        self.assertIn("nobody else can see it\">not shared", mod)         # drawer chip
-        self.assertIn("r.shared&&others(r)!==0", mod)                      # strip count
-        self.assertIn("' with '+n", mod)
-
-    def test_clone_command_targets_the_reported_projects_root(self) -> None:
-        mod = read("js/views/projects_sharing.js")
-        self.assertIn("status.projects_root", mod)
-        # the literal default is only a fallback for a missing snapshot
-        self.assertIn("||'~/xo-projects'", mod)
+        self.assertNotIn("/commits/poll", mod)   # the browser never talks to swarm
+        self.assertNotIn("document.", mod)       # data half: no DOM
+        # the pane never fetches on its own
+        pane = read("js/views/sharing.js")
+        self.assertNotIn("apiFetch(", pane)
+        self.assertNotIn("fetch(", pane)
+        self.assertIn("from './sharing_data.js?v=", pane)
 
     def test_relay_status_is_the_only_source_of_shared(self) -> None:
-        mod = read("js/views/projects_sharing.js")
-        self.assertIn("if(memberState(id)==='live')fillMembers(id);", mod)
+        mod = read("js/views/sharing_data.js")
+        self.assertIn("export function memberState(projectId)", mod)
         for state in ("unknown", "disabled", "solo", "live"):
             self.assertIn("'" + state + "'", mod)
+        self.assertIn("function others(e)", mod)
+        self.assertIn("typeof m==='number'", mod)
+        # the owner row never leaves the swarm group: a repo whose last
+        # member was revoked still reads shared with a count of 1, and that
+        # is "not shared" to a person — it must leave the rail
+        self.assertIn("mine:!!r.project&&!!r.shared&&others(r)!==0", mod)
+        pane = read("js/views/sharing.js")
+        self.assertIn("if(memberState(id)==='live'&&!members.has(id))loadMembers(id);", pane)
+        self.assertIn("if(st!=='live')return", pane)
 
-    def test_stylesheet_is_linked(self) -> None:
+    def test_pane_is_rail_plus_detail_with_the_composer_swapped_in(self) -> None:
+        """Direction A: rail (inbox + shared projects, work waiting first) and
+        a detail panel; the share composer takes the panel's place."""
+        pane = read("js/views/sharing.js")
+        css = read("css/sharing.css")
+        for fn in ("function railHTML", "function inboxRow", "function railRow",
+                   "function detailHTML", "function composerHTML", "function emptyCardsHTML"):
+            self.assertIn(fn, pane)
+        self.assertIn("composer?composerHTML():r?detailHTML(r)", pane)
+        self.assertIn("data-act=\"select\"", pane)
+        self.assertIn("urgency(b)-urgency(a)", pane)   # work waiting first
+        for cls in (".shl-split", ".shl-rail", ".shl-inbox", ".shl-row.is-sel", ".shl-detail",
+                    ".shl-composer", ".shl-pick", ".shl-empty-card", ".shr-strip"):
+            self.assertIn(cls, css)
+        # every state the inbox can be in has a row
+        for state in ("needs_auth", "no_access", "exists", "cloning", "available"):
+            self.assertIn("'" + state + "'", pane)
+        self.assertEqual(pane.count("data-act=\"connect\""), 1)
+
+    def test_seamless_sync_controls(self) -> None:
+        """Apply (fast-forward), Check now, copy invite: the three controls
+        that turn a copy-pasted command and a chat back-and-forth into one
+        click each."""
+        pane = read("js/views/sharing.js")
+        data = read("js/views/sharing_data.js")
+        self.assertIn("data-act=\"apply\"", pane)
+        self.assertIn("async function doApply(id)", pane)
+        self.assertIn("'applied '+plural(n,'commit')", pane)
+        self.assertIn("data-act=\"check\"", pane)
+        self.assertIn("async function doCheck(btn)", pane)
+        self.assertIn("copy invite", pane)
+        self.assertIn("export function inviteText()", data)
+        self.assertIn("export function applyCmd(path,branch)", data)
+        self.assertIn("merge --ff-only origin/", data)
+        # the by-hand command never leaves: Apply can be refused by git
+        self.assertIn("or by hand", pane)
+
+    def test_members_are_polished(self) -> None:
+        pane = read("js/views/sharing.js")
+        row = pane.split("function memberRow")[1].split("function membersHTML")[0]
+        self.assertIn(">you<", row)
+        self.assertNotIn("this workspace", row)
+        self.assertIn("data-copy=", row)
+        self.assertIn("shortId(m.workspace_id)", row)
+        self.assertIn('title="\'+esc(m.workspace_id)', row)
+        self.assertIn("memberRank", pane)                 # owner first
+        self.assertIn("shr-confirm-yes", row)             # inline revoke confirm
+        self.assertIn("data-act=\"revoke-no\"", row)
+        self.assertIn("Not shared with anyone yet", pane)
+        self.assertIn("prj-skel", pane)                   # shaped loading state
+
+    def test_clone_command_targets_the_reported_projects_root(self) -> None:
+        mod = read("js/views/sharing_data.js")
+        self.assertIn("status.projects_root", mod)
+        self.assertIn("||'~/xo-projects'", mod)
+
+    def test_poll_is_shared_and_edit_safe(self) -> None:
+        data = read("js/views/sharing_data.js")
+        pane = read("js/views/sharing.js")
+        self.assertIn("const subscribers=new Set()", data)
+        self.assertIn("projects-sharing-fast", data)      # faster poll only while cloning
+        # a poll tick never wipes a half-typed composer or a pending revoke
+        self.assertIn("const editing=()=>!!composer||!!confirmRevoke;", pane)
+        self.assertIn("if(editing()){", pane)
+
+    def test_stylesheet_and_module_are_cache_busted(self) -> None:
         html = read("index.html")
         self.assertIn('href="css/sharing.css?v=', html)
-        css = read("css/sharing.css")
-        for cls in (".shr-strip", ".shr-inbox", ".shr-panel", ".tchip.st-shared", ".tchip.st-available"):
-            self.assertIn(cls, css)
+        app = read("js/app.js")
+        m = re.search(r"from '\./views/sharing\.js\?v=([\w-]+)'", app)
+        self.assertIsNotNone(m, "app.js must import sharing.js with ?v=")
+        pane = read("js/views/sharing.js")
+        m2 = re.search(r"from '\./sharing_data\.js\?v=([\w-]+)'", pane)
+        self.assertIsNotNone(m2, "sharing.js must import sharing_data.js with ?v=")
+
+
+if __name__ == "__main__":
+    unittest.main()

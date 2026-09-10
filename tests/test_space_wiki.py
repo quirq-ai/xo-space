@@ -362,7 +362,7 @@ class SpaceWikiTests(unittest.TestCase):
         # One renderer, one position. Three copies in three containers is
         # what made the control jump when you used it, so the views must not
         # render it at all.
-        for lens in ("projects", "graph", "tree"):
+        for lens in ("projects", "graph", "tree", "sharing"):
             self.assertIn(f'data-files-lens="{lens}"', index)
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
@@ -399,14 +399,72 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("is-growing", tree)
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
-        # Wiki Files guide must stay aligned with the three-lens UI (drift here
-        # is how "two lenses" docs survive after Tree ships).
-        self.assertIn("three lenses", wiki)
-        self.assertIn("List | Graph | Tree", wiki)
+        # Wiki Files guide must stay aligned with the four-lens UI (drift here
+        # is how "two lenses" docs survive after Tree ships, or "three" after
+        # Sharing).
+        self.assertIn("four lenses", wiki)
+        self.assertIn("List | Graph | Tree | Sharing", wiki)
         self.assertIn("#/tree", wiki)
         self.assertIn("/api/xo-projects/{id}/tree", wiki)
         self.assertNotIn("one home, two lenses", wiki)
+        self.assertNotIn("one home, three lenses", wiki)
         self.assertNotIn("'List | Graph lens switch'", wiki)
+        self.assertNotIn("'List | Graph | Tree lens switch'", wiki)
+
+    def test_sharing_lens_is_the_fourth_files_lens(self) -> None:
+        """Sharing is a lens of the Files tab (issue #83) and the whole of
+        project sharing in the UI: rail (inbox + shared projects) and detail
+        (commits + Apply, members + share/revoke). The List lens carries no
+        sharing surface; tests/test_space_project_sharing.py pins the pane's
+        own seams."""
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
+        switcher = (
+            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+        ).read_text(encoding="utf-8")
+        sharing = (
+            ROOT / "space_ui" / "js" / "views" / "sharing.js"
+        ).read_text(encoding="utf-8")
+        data = (
+            ROOT / "space_ui" / "js" / "views" / "sharing_data.js"
+        ).read_text(encoding="utf-8")
+        projects = (
+            ROOT / "space_ui" / "js" / "views" / "projects.js"
+        ).read_text(encoding="utf-8")
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
+            encoding="utf-8"
+        )
+
+        # registered as a nav-less child of Files, like Tree
+        self.assertIn("import sharingView from './views/sharing.js?v=", app)
+        self.assertIn("registerView(sharingView);", app)
+        contract = view_contract("sharing")
+        self.assertIn("id:'sharing',label:'Sharing'", contract)
+        self.assertIn("nav:false", contract)
+        self.assertIn("parent:'projects'", contract)
+        # the pill is shell chrome: index.html + lens-switch.js know the lens,
+        # the view itself never renders a switch
+        self.assertIn('data-files-lens="sharing"', index)
+        self.assertIn("'sharing'", switcher)
+        self.assertNotIn('data-files-lens="', sharing)
+        # one source of truth: the status snapshot, read by the data module
+        self.assertIn("from './sharing_data.js?v=", sharing)
+        self.assertNotIn("apiFetch(", sharing)
+        self.assertIn("apiFetch(API_BASE+'/api/project-sharing/status'", data)
+        # "Open in List" opens that project's drawer (views never import each
+        # other: switchTo + an event the List listens for)
+        self.assertIn("space:open-project", sharing)
+        self.assertIn("space:open-project", projects)
+        # the List lens carries no sharing surface any more
+        self.assertNotIn("sharing_data.js", projects)
+        self.assertNotIn("sharingPanel", projects)
+        # the wiki keeps the lens facts true
+        self.assertIn("#/sharing", wiki)
+        self.assertIn("/api/project-sharing/status", wiki)
+        self.assertIn("Apply", wiki)
+        self.assertIn("Check now", wiki)
+        self.assertIn("copy invite", wiki)
+        self.assertNotIn("Sharing panel", wiki.split("files:{")[1].split("timeline:{")[0])
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
         """The Files drawer browses a project folder by folder, and the wire

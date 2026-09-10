@@ -34,6 +34,10 @@ class WorkspaceUnconfigured(RelayError):
     status, code, message = 409, "workspace_unconfigured", "This workspace has no XO_SPACE_ID configured; sharing is disabled."
 
 
+class ApplyFailed(RelayError):
+    status, code, message = 409, "apply_failed", "Could not fast-forward: the branch has diverged or has local changes."
+
+
 class SwarmError(RelayError):
     """A swarm 4xx passes through; anything else (network, 5xx, 0) is a 502."""
 
@@ -82,6 +86,36 @@ async def project_commits(project_id: str, limit: int) -> dict:
     behind = await git_ops.behind_count(d, branch)
     return {"project_id": project_id, "branch": branch, "source": source,
             "behind": behind, "commits": commits, "path": str(d)}
+
+
+async def apply(project_id: str) -> dict:
+    """Fast-forward HEAD to origin/<branch>: the "Apply" button. The relay
+    fetches on its own; this is the one step that was a copy-pasted command.
+    Only ever --ff-only, so a diverged branch or dirty tree is refused by git
+    and surfaces as apply_failed with git's own reason."""
+    if not project_dir_exists(project_id):
+        raise ProjectNotFound()
+    d = project_dir(project_id)
+    branch = config.watch_branch()
+    behind = await git_ops.behind_count(d, branch)
+    if behind is None:
+        raise ApplyFailed(f"origin/{branch} is not known here yet — nothing has been fetched.")
+    if behind == 0:
+        return {"project_id": project_id, "branch": branch, "applied": 0,
+                "head": await git_ops.head_sha(d)}
+    ok, detail = await git_ops.apply_ff(d, branch)
+    if not ok:
+        raise ApplyFailed(detail or None)
+    poller.nudge()   # the behind count in the next status snapshot drops to 0
+    return {"project_id": project_id, "branch": branch, "applied": behind,
+            "head": await git_ops.head_sha(d)}
+
+
+def check_now() -> dict:
+    """The "Check now" button: run the relay's next tick as soon as possible
+    instead of waiting out the minute. Harmless while parked."""
+    poller.nudge()
+    return {"ok": True, "cadence": status.snapshot().get("cadence")}
 
 
 async def members(project_id: str) -> dict:

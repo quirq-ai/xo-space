@@ -69,7 +69,7 @@ const PAGES=[
     id:'tab-files',
     section:'Tab guides',
     title:'Files tab',
-    summary:'One home for the workspace: List for ops and browsing, Graph for relationships, Tree for hierarchy — three lenses, one tab.'
+    summary:'One home for the workspace: List for ops and browsing, Graph for relationships, Tree for hierarchy, Sharing for what is synced with other workspaces — four lenses, one tab.'
   },
   {
     id:'tab-timeline',
@@ -245,10 +245,11 @@ const TAB_GUIDES={
     tab:'projects',
     name:'Files',
     kicker:'Tab guide · Workspace map and project state',
-    title:'Files: one home, three lenses',
-    intro:'Files is one top-level tab with three lenses behind a List | Graph | Tree pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, and recent events. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy — folders as columns, files stacked beside their parent. All three lenses are read-only.',
-    facts:['lands on List','List | Graph | Tree lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','portable .xo history','live .quirq presence','read-only'],
+    title:'Files: one home, four lenses',
+    intro:'Files is one top-level tab with four lenses behind a List | Graph | Tree | Sharing pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, and recent events. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy — folders as columns, files stacked beside their parent. Sharing is the whole of project sharing: a rail with the “shared with you” inbox and every project shared from this machine, and a detail panel with the commits waiting on origin, an Apply button, the members, and the share form. List, Graph and Tree are read-only; Sharing is where a project is shared, a member revoked, and new commits applied.',
+    facts:['lands on List','List | Graph | Tree | Sharing lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','Sharing: rail + detail, Apply, Check now, copy invite','portable .xo history','live .quirq presence','read-only except Sharing'],
     jobs:[
+      ['Share and sync a project','Open the Sharing lens. “+ Share a project” swaps a composer into the panel: pick a project with a git origin, paste the recipient’s workspace id, Share. The rail lists every project shared from here, work waiting first, each with one sync state (N new · not applied / in sync / fetch failed); the “Shared with you” inbox above it shows incoming repos and their auto-clone state with the one thing to click when only you can move it on (Connect GitHub, clone by hand). Select a row for its commits, members and share form; Apply fast-forwards to origin in one click; “Check now” asks the relay to check instead of waiting out the minute; “copy invite” puts your workspace id and what to click on the clipboard as one line.'],
       ['Find an artifact','In Graph, search by title, tag, project, or cluster and fly to the matching node. In Tree, expand folders and filter by name; click a file to open it in the previewer, then use the previewer’s Graph button if you want that leaf focused on the map.'],
       ['Understand relationships','Select a Graph node to inspect its neighborhood and follow parent, cluster, and cross-project ties.'],
       ['Read the hierarchy','Use Tree when the question is “what is in there”: workspace root on the left, one column per depth, files stacked beside their folder (not one column per file). The pane is a canvas, not a scroller: drag to pan, wheel to zoom around the cursor, Reset view to return.'],
@@ -264,17 +265,24 @@ const TAB_GUIDES={
       ['GET /api/xo-projects','Names, descriptions, and created dates for every direct child of the XO root. The List pairs it with GET /api/xo-projects/activity and GET /api/xo-projects/timeline?limit=200 for the live and last-active columns: four workspace-wide requests in total, whatever the project count.','List lens catalog'],
       ['GET /api/xo-projects/{id}/tree?relative_path=…','Bounded, path-safe folder listing for the List drawer’s Files panel: one folder at a time, each row carrying is_dir, size_bytes, modified_at, and — for a folder — how many entries it holds.','List drawer explorer'],
       ['GET /api/xo-projects/{id}/todos|activity|timeline','Portable todos, machine-local live presence, and recent normalized events. Each drawer panel fetches independently.','List drawer panels'],
-      ['GET /api/xo-projects/{id}/file?relative_path=…','One text file for the previewer drawer: 256 KB cap, suffix allowlist, and a kind of markdown, html, or text. An unsupported suffix returns 415 and the drawer says so.','File previewer']
+      ['GET /api/xo-projects/{id}/file?relative_path=…','One text file for the previewer drawer: 256 KB cap, suffix allowlist, and a kind of markdown, html, or text. An unsupported suffix returns 415 and the drawer says so.','File previewer'],
+      ['GET /api/project-sharing/status · POST …/check','The relay’s in-memory snapshot: parked or running and why, this workspace id, the watched branch, and one entry per repo it knows — cloned here or shared with you, member count, last fetch, clone state. One poll a minute feeds the strip and the rail; it restarts empty, so a missing entry means “unknown”, never “not shared”. POST …/check nudges the relay to run its next tick now (the Check now button).','Sharing lens'],
+      ['GET /api/xo-projects/{id}/commits · /members · POST …/share · …/revoke · …/apply','Per project: recent commits on origin/&lt;branch&gt; with the behind count (the rail asks limit=5 per project), the member list from the swarm, the two swarm writes, and apply — git merge --ff-only origin/&lt;branch&gt;, the one write the relay ever makes to a working tree. A diverged branch or local changes make git refuse, and the pane shows git’s reason; the by-hand command stays beside the button.','Sharing detail panel']
     ],
     steps:[
-      ['Pick a lens','Files opens in List; switch with the List | Graph | Tree pill. #/projects, #/graph, and #/tree deep-link each lens.'],
+      ['Pick a lens','Files opens in List; switch with the List | Graph | Tree | Sharing pill. #/projects, #/graph, #/tree, and #/sharing deep-link each lens.'],
       ['Search','Press / for the top-bar search (it is global, on every tab). List has its own “Filter projects…” box and sorts by Activity, Name, Files or Created; Tree has a name filter in its header.'],
       ['Focus','Click a Graph node; double-click clusters to expand or collapse. In Tree, click folders to expand columns; click a file to preview it — the tree keeps its camera and its expansion state, and the previewer’s Graph button is the explicit way to move.'],
       ['Expand one row','In List each drawer panel loads independently, so one failed data source does not hide the others.'],
       ['Browse files','In the Files panel, use breadcrumbs and folder rows to change cwd; browsing state is remembered per project for the session.'],
-      ['Follow time','Choose “Show on timeline” to carry the selected run into Timeline.']
+      ['Follow time','Choose “Show on timeline” to carry the selected run into Timeline.'],
+      ['Share a project','In Sharing, press “+ Share a project”, pick the project, paste the recipient’s workspace id (they copy theirs from the strip at the top of their own Sharing pane, or send you an invite), press Share. Or select an already-shared project and use the share form under its members. Members list owner first, each with a short id, the full id on hover, and a copy button; you are marked “you”. Revoke asks for confirmation in the row before anything is sent.'],
+      ['Apply new commits','A rail row with “N new · not applied” has an Apply button, and so does the detail panel. Apply is git merge --ff-only origin/&lt;branch&gt;: it cannot create a merge commit or touch a diverged branch, and if git refuses (local changes, diverged history) the toast carries git’s reason and the by-hand command is still there to copy.']
     ],
     checks:[
+      ['Sharing lens shows two cards and no rail','Nothing is shared yet: “Share one of your projects” opens the composer; “Receive a project” copies your invite. With “sharing parked” in the strip, the reason is named there (no XO_SPACE_ID, not signed in, or switched off) and both buttons are disabled until it is fixed.'],
+      ['Row says “fetch failed”','The relay could not fetch that repo on its last check; hover for the git error. It retries every minute on its own, or press Check now.'],
+      ['Apply failed','git refused the fast-forward: local changes in the way, or the branch has diverged from origin. Resolve it in the project (stash or commit, then merge or rebase by hand) — XO Space never merges for you.'],
       ['Empty graph or tree','Confirm the XO root in Setup and verify GET /xo/space.json — the file lives at &lt;XO root&gt;/.xo/space.json.'],
       ['Project missing from the List','Verify the XO root and ensure the folder is a direct child of it.'],
       ['Unscaffolded badge','The folder exists but lacks canonical project metadata.'],
