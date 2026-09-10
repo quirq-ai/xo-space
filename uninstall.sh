@@ -330,6 +330,13 @@ purge_projects() {
         names+=("$entry")
         count=$((count + 1))
     done
+    # The workspace records (.xo/space.json, .xo/projects.json) describe those
+    # projects, so they go with them — but only here, under the typed
+    # confirmation. A normal uninstall keeps them: see main().
+    if [ -e "${PROJECTS_ROOT}/.xo" ]; then
+        names+=("${PROJECTS_ROOT}/.xo")
+        count=$((count + 1))
+    fi
     if [ "$count" -eq 0 ]; then
         SKIPPED+=("projects: none under ${PROJECTS_ROOT}")
         return
@@ -382,6 +389,8 @@ print_summary() {
     printf '\nKept:\n'
     printf '    your project folders under %s%s\n' "$PROJECTS_ROOT" \
         "$([ "$PURGE_PROJECTS" -eq 1 ] && echo ' (purged on request)' || echo '')"
+    [ "$PURGE_PROJECTS" -eq 1 ] ||
+        printf '    the Space records in %s/.xo (space.json, projects.json)\n' "$PROJECTS_ROOT"
     printf '    uv (~/.local/bin/uv), a general-purpose tool — remove it yourself if unwanted\n'
     for line in "${KEPT[@]:-}"; do [ -n "$line" ] && printf '    %s\n' "$line"; done
     if [ "${#SKIPPED[@]}" -gt 0 ]; then
@@ -404,7 +413,13 @@ main() {
     stop_server
     docker_down
 
-    remove_path "workspace .xo (watcher output)" "${PROJECTS_ROOT}/.xo"
+    # ${PROJECTS_ROOT}/.xo is deliberately NOT removed. It used to hold only
+    # watcher output, which is why this line used to delete it; since the tier
+    # split (docs/syncplan.md §9) it holds the durable Space records —
+    # space.json and projects.json — which describe the projects we are keeping.
+    # Every derived view moved to the state root, removed on the next line but
+    # one, so nothing machine-local survives here. --purge-projects still takes
+    # it, along with the projects it describes.
     remove_checkout
     remove_path "Quirq state root" "$STATE_ROOT"
     remove_path "daemon pid file" "${DAEMON_TMP}/xo-space.pid"

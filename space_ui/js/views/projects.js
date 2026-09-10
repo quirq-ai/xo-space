@@ -28,7 +28,10 @@ function panelFail(res){
   return'<div class="prj-note">'+esc(res.error)+'</div>';
 }
 
-/* status display order + chip class per todo status */
+/* status display order + chip class per todo status. The status vocabulary
+   itself is defined once, in Python — services/cowork_agent/visualizer/
+   todo_status.py — and tests/test_todo_status.py fails if the keys below stop
+   matching it. Only the ORDER is a UI decision (in_progress first). */
 const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
 const stChip=st=>'<span class="tchip st-'+esc(st)+'">'+esc(st.replace('_',' '))+'</span>';
 

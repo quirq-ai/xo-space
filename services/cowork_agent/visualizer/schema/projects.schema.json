@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/projects.schema.json",
+  "title": "xo projects registry (<XO root>/.xo/projects.json)",
+  "description": "Authoritative list of the projects under `projects_root`, written by the watcher's workspace tier (services/cowork_agent/visualizer/workspace/projects_json.py). Replaces the retired `workspace.json`, whose payload was a bare array of directory names. One entry per directory `list_project_ids()` reports — scaffolded or not — keyed by the directory name, which is the id every route, graph node and backup repository already uses. `pid` is a first-class field rather than the key: a JSON object cannot have a null key and every project is pid-less at birth, and duplicate pids are a real, silent state (`cp -r`, and restore, both copy `.xo/project.json` verbatim).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "projects_root", "projects", "by_pid"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": {
+      "type": "integer",
+      "const": 2,
+      "description": "1 was the workspace.json array shape."
+    },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "projects_root": {
+      "type": "string",
+      "description": "Absolute path to the xo-projects root (typically ~/xo-projects). Stored for the watcher; stripped before any BFF response."
+    },
+    "projects": {
+      "type": "object",
+      "description": "AUTHORITATIVE. Keyed by directory name.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pid", "scaffolded", "git"],
+        "properties": {
+          "pid": {
+            "type": ["string", "null"],
+            "description": "The identity that survives a rename, a clone and a restore. Null until the watcher's identity fill mints one, and permanently null for a folder that is never scaffolded."
+          },
+          "scaffolded": {
+            "type": "boolean",
+            "description": "Whether <project>/.xo/project.json exists."
+          },
+          "git": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["is_repo", "remote_url", "default_branch"],
+            "properties": {
+              "is_repo": {
+                "type": "boolean",
+                "description": "Whether the folder is the root of its OWN repository. A plain folder nested inside a larger checkout is false — it must not inherit the enclosing repository's remote."
+              },
+              "remote_url": {
+                "type": ["string", "null"],
+                "description": "remote.origin.url with any userinfo stripped. Null when there is no repository, no remote, or no git."
+              },
+              "default_branch": {
+                "type": ["string", "null"],
+                "description": "Read offline from refs/remotes/origin/HEAD, falling back to the current branch. Null on a detached HEAD with no origin HEAD."
+              }
+            }
+          }
+        }
+      }
+    },
+    "by_pid": {
+      "type": "object",
+      "description": "DERIVED reverse index, rebuilt from `projects` in the same pass — never edited independently. Values are ALWAYS arrays: one pid in two folders is a real, reachable state and losing a folder is not an option, so a length above 1 IS the duplicate-pid alarm. A null pid, or one that fails the key charset clamp, is simply absent.",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

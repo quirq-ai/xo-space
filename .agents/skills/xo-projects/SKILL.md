@@ -1,6 +1,6 @@
 ---
 name: xo-projects
-description: Use whenever an agent creates, operates inside, or manages an xo-project. Covers scaffolding a new xo-project via the xo-cowork-api; the boot ritual, canonical file map, and closing conventions for a project folder (AGENTS.md is the operating contract); recording and updating todos across a session; and backing up, restoring, syncing, snapshotting, or migrating xo-projects through the GitHub-backed sync API. Trigger this for any mention of xo-projects, .xo/, xo-cowork-api, or AGENTS.md, and for requests to back up / restore / sync / snapshot / migrate project state — even when the user doesn't name the skill explicitly. Four hard constraints — new xo-projects are created only via the xo-cowork-api; the agent never writes to .xo/ (a watcher service owns that directory); backups and restores happen only through the sync API (never via local tar, zip, cp, rsync, or pushing to an external git remote); and when this skill covers a task, the skill is the way to do it — no improvising with shell commands or ad-hoc copies because the proper tool feels heavy.
+description: Use whenever an agent creates, operates inside, or manages an xo-project. Covers scaffolding a new xo-project via the xo-cowork-api; the boot ritual, canonical file map, and closing conventions for a project folder (AGENTS.md is the operating contract); recording and updating todos across a session; and backing up, restoring, syncing, snapshotting, or migrating xo-projects through the GitHub-backed sync API. Trigger this for any mention of xo-projects, .xo/, xo-cowork-api, or AGENTS.md, and for requests to back up / restore / sync / snapshot / migrate project state — even when the user doesn't name the skill explicitly. Four hard constraints — new xo-projects are created only via the xo-cowork-api; the agent never writes to .xo/ (Quirq services own that directory, and todos go through the todo HTTP API — a native todo tool does not reach it); backups and restores happen only through the sync API (never via local tar, zip, cp, rsync, or pushing to an external git remote); and when this skill covers a task, the skill is the way to do it — no improvising with shell commands or ad-hoc copies because the proper tool feels heavy.
 ---
 
 # xo-projects
@@ -9,11 +9,11 @@ This skill covers the whole lifecycle of an xo-project. It does three things:
 
 1. **Four hard constraints** (enforced outside the agent's judgment):
    - New xo-projects are created via the xo-cowork-api only.
-   - The agent does not write to `.xo/` — a watcher service tails runtime logs and owns the entire directory.
+   - The agent does not write to `.xo/` — Quirq services own the entire directory. Todos are the one thing an agent *drives*, and they go through the todo HTTP API (Part 3), for every runtime; a native todo tool does not reach `.xo/todos.json`.
    - **Backups and restores happen only through `/api/xo-projects-sync/*`.** Never `tar`, `zip`, `cp`, `rsync`, or `git push` the project to a local archive or external remote — even when the user just says "back this up" or "save this somewhere safe." Local copies miss the encryption, the manifest, and the secret excludes the API enforces, and they can't be discovered or restored by `GET /projects`.
    - **When this skill covers a task, the skill is the way to do it.** Creating a project, recording todos, backing up, restoring — use the documented endpoints and native tools. Don't substitute shell commands, ad-hoc file copies, or local approximations because the proper tool feels heavy. If a documented tool fails, surface the failure to the human; don't silently roll your own.
 2. **A guide to every file in an xo-project:** what it's for, how it lives across the session, and the reasoning behind the conventions — so the agent can apply judgment when an edge case appears.
-3. **Pointers to two reference files** for situational, API-heavy detail — the todos HTTP API (only non-Claude-Code runtimes need it) and the backup/restore API — so they load only when the task actually calls for them.
+3. **Pointers to two reference files** for situational, API-heavy detail — the todo HTTP API (**every** runtime records todos through it) and the backup/restore API — so they load only when the task actually calls for them.
 
 ## Base URL
 
@@ -25,10 +25,15 @@ http://${HOST:-localhost}:${PORT:-5002}
 
 Read this file top to bottom on first contact — the four parts below are all here in full, including todo discipline, which every session needs. Two reference files hold detail you only reach for situationally:
 
-- **`references/todos-http-api.md`** — the todo HTTP endpoint schemas. Only non-Claude-Code runtimes need this; read it when you reach the "other runtimes → HTTP API" branch of Part 3.
+- **`references/todos-http-api.md`** — the todo HTTP endpoint schemas. Every runtime needs this, including runtimes with a native todo tool of their own; read it the first time you record a todo in a session (Part 3).
 - **`references/backup-restore.md`** — the GitHub-backed backup/restore/sync API. Read it when the user asks to back up, save, snapshot, sync, push, restore, pull, download, recover, or migrate projects.
 
 Keeping these out of the main file means a routine session doesn't drag endpoint schemas or the entire backup API into context.
+
+Two further surfaces are documented in the xo-cowork-api repo rather than in this skill, under `docs/`. Read them there when the task calls for them:
+
+- **`docs/workitems-http-api.md`** — the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. For work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
+- **`docs/peers-http-api.md`** — the peers HTTP endpoints: the roster of humans a project is shared with, kept in `.xo/peers.json`. For who a project is shared with, adding or removing a collaborator, or "who else is on this". An empty roster means the project is solo — say so rather than guessing. Removing a peer is a hard delete: unlike a todo or a workitem, nothing is left behind.
 
 ---
 
@@ -86,7 +91,7 @@ The skill defers to AGENTS.md for all of these — read the section there rather
 
 Two guardrails to internalize **before** opening AGENTS.md, since they apply from the moment the folder exists:
 
-1. **Never write to `.xo/`.** A background watcher service tails the runtime's native session logs (Claude Code's `~/.claude/projects/…`, OpenClaw's `~/.openclaw/agents/…`, etc.) and your in-flight todos, then writes session events, list/timeline entries, todos, stats, and activity heartbeats on your behalf. Any agent write conflicts with the watcher, gets overwritten, or corrupts sync state. This applies even to `.xo/project.json` on first boot — the watcher clears its `_template: true` flag itself.
+1. **Never write to `.xo/` — record todos through the HTTP API instead.** A background watcher service tails the runtime's native session logs (Claude Code's `~/.claude/projects/…`, OpenClaw's `~/.openclaw/agents/…`, etc.) and writes session events, timeline entries, stats, and activity heartbeats on your behalf. It does **not** read your todos from anywhere — `.xo/todos.json` has exactly one writer, the todo HTTP API in Part 3. Any agent write to `.xo/` conflicts with a service writer, gets overwritten, or corrupts sync state. This applies even to `.xo/project.json` on first boot — the watcher clears its `_template: true` flag itself.
 2. **Work lives in the project folder.** Outputs scattered into `~/`, `/tmp/`, or sibling projects become orphaned from the project's memory, plan, and history — they don't get narrated in `PROGRESS.md`, don't get committed, and the next agent can't find them. If something genuinely must live outside, surface that to the user instead of doing it silently.
 
 ---
@@ -103,14 +108,24 @@ Two guardrails to internalize **before** opening AGENTS.md, since they apply fro
 
 This is the mechanics behind the coworking discipline at the top of this file.
 
-**`<project>/.xo/todos.json` is the live, cross-session view of what's in flight** — it's what the human sees in the UI, what other agents read before they start, and what you yourself rely on when you come back to the project tomorrow. The frontend, the watcher, and peers all read from it, so **every agent keeps it accurate continuously** — not just once at boot. Every concrete step becomes a todo before you take it; flip status as work moves; close each one deliberately.
+**`<project>/.xo/todos.json` is the live, cross-session view of what's in flight** — it's what the human sees in the UI, what other agents read before they start, and what you yourself rely on when you come back to the project tomorrow. The frontend and peers read from it, so **every agent keeps it accurate continuously** — not just once at boot. Every concrete step becomes a todo before you take it; flip status as work moves; close each one deliberately.
 
-**Two write paths — pick the one for your runtime, never mix them:**
+**One write path — the HTTP API — whatever your runtime is:**
 
-- **Claude Code agents → native todo tool.** Use the runtime's native `TaskCreate` / `TaskUpdate` / `TaskList`. The watcher tails Claude Code's session log and mirrors those todos into `.xo/todos.json` for you. Do **not** call the HTTP endpoints — you'd write every todo twice and the mirrored entries would conflict.
-- **OpenClaw, Hermes, Codex, and every other runtime → HTTP API.** See **`references/todos-http-api.md`** for the endpoint schemas, the `runtime` / `session_id` conventions, and the conventional runtime values. Read it once when you hit this branch.
+```
+GET    /api/xo-projects/{project_id}/todos
+POST   /api/xo-projects/{project_id}/todos
+PATCH  /api/xo-projects/{project_id}/todos/{todo_id}
+DELETE /api/xo-projects/{project_id}/todos/{todo_id}
+```
 
-**Lifecycle (both paths):**
+See **`references/todos-http-api.md`** for the schemas, the `runtime` / `session_id` conventions, and the conventional runtime values. Read it the first time you record a todo.
+
+**If your runtime has a native todo tool, it is not enough — call the API as well.** There used to be a watcher sink that tailed one runtime's session log and mirrored its native todos into `.xo/todos.json`. It is gone. It only ever worked for a single backend, it minted a second, colliding id space, and it gave `todos.json` two writers. Removing it did **not** stop a native `TaskCreate` from firing — your runtime's own todo list still works exactly as before. What it stopped is anyone **seeing** the result: a todo that only exists in the native tool is invisible to the human's UI, to the project timeline, to the per-session task counters, and to the next agent. Nothing errors and nothing warns; the todo simply never leaves your process.
+
+So: use the native tool if it helps you think, but a step is not recorded until the API call returns. Practically, treat the API call as the todo and the native entry as a private note.
+
+**Lifecycle:**
 
 - **At session start** — list todos. Open work from previous sessions is the backlog you inherit.
 - **As you plan** — one todo per concrete step; keep the content line short.

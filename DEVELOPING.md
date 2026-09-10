@@ -199,12 +199,10 @@ local deployments — the environment contract that selects behavior — is §9.
 **Validation playbook — run before every commit:**
 
 ```bash
-# 1. Import gate + route parity under each agent. Counts differ per agent by
-#    design and drift with every route added — read them, don't assert a number.
-for a in claude_code codex openclaw hermes antigravity; do
-  AGENT_NAME=$a venv/bin/python -c "import server; \
-    print('$a', len(server.app.openapi()['paths']))"
-done
+# 1. Import gate + route parity under every agent, in one command. Asserts the
+#    invariant (core + own routes.py, nothing leaked) rather than a count —
+#    per-agent totals differ by design and drift with every route added.
+venv/bin/python scripts/check_route_parity.py     # --list to dump the sets
 
 # 2. Modularity invariant (§6) — no agent name in core code. Upheld in review;
 #    a local AST guard can verify it if you have it (kept out of the repo, §6).

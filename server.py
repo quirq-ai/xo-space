@@ -7,6 +7,7 @@ import asyncio
 import os
 import json
 import datetime
+import logging
 import sys
 import uuid
 import shutil
@@ -527,6 +528,32 @@ def _write_install_pointer() -> None:
         print(f"⚠️ Could not write install pointer (non-fatal): {e}")
 
 
+_lifespan_logger = logging.getLogger("xo_space.lifespan")
+
+
+def _report_watcher_task_exit(task: "asyncio.Task") -> None:
+    """Surface a watcher task that died, instead of losing it to the GC."""
+    try:
+        if task.cancelled():
+            return
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:  # pragma: no cover - defensive; a callback may not raise
+        return
+    try:
+        if error is None:
+            _lifespan_logger.warning(
+                "Watcher task exited on its own; no further ticks will run"
+            )
+        else:
+            _lifespan_logger.error(
+                "Watcher task died (non-fatal): %r", error, exc_info=error
+            )
+    except Exception:  # pragma: no cover - logging must not break shutdown
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -674,6 +701,32 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
 
+    # One-time tier migration (docs/syncplan.md §9, T21).
+    try:
+        from services.cowork_agent.visualizer.migrate import migrate_runtime_layout
+        _migrated = migrate_runtime_layout()
+        if _migrated:
+            print(f"   Tier migration: updated {_migrated} project(s)")
+    except Exception as e:
+        print(f"⚠️ Tier migration skipped (non-fatal): {e}")
+
+    # GitHub issue poller — refreshes the runtime issue mirror for the projects
+    # that need it (docs/workitems-plan.md §6).
+    _github_poll_task = None
+    try:
+        from services.cowork_agent.github_poller import (
+            poll_interval_seconds,
+            poller_enabled,
+            start_github_poller,
+        )
+        if poller_enabled():
+            _github_poll_task = asyncio.create_task(start_github_poller())
+            print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
+        else:
+            print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
+    except Exception as e:
+        print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
+
     # Visualizer watcher — materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
@@ -685,6 +738,7 @@ async def lifespan(app: FastAPI):
         try:
             from services.cowork_agent.visualizer.watcher import start_watcher
             _watcher_task = asyncio.create_task(start_watcher())
+            _watcher_task.add_done_callback(_report_watcher_task_exit)
             print("   Watcher: background task started")
         except Exception as e:
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
@@ -750,6 +804,13 @@ async def lifespan(app: FastAPI):
         _xo_status_task.cancel()
         try:
             await _xo_status_task
+        except asyncio.CancelledError:
+            pass
+
+    if _github_poll_task:
+        _github_poll_task.cancel()
+        try:
+            await _github_poll_task
         except asyncio.CancelledError:
             pass
 

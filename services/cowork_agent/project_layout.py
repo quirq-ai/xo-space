@@ -1,39 +1,24 @@
-"""
-Canonical project layout for ~/xo-projects/<name>/.
-
-A project is just a folder. It is backend-agnostic: any agent (claude_code,
-openclaw, future tools) can launch against it. The on-disk shape is what
-makes the agent perform well — this module owns it.
-
-    ~/xo-projects/<name>/
-    ├── AGENTS.md            stable prefix, universal contract
-    ├── OBJECTIVES.md        north-star outcomes
-    ├── WORKSPACE.md         current state of play
-    ├── CLAUDE.md            one-line pointer to AGENTS.md
-    └── .xo/
-        ├── project.json     {name, display_name, description, created_at}
-        ├── memory/{semantic,episodic,procedural,working}/
-        ├── sessions/        sessionslist.json (metadata only) + compressed/ + index.md
-        ├── artifacts/{drafts,final}/
-        ├── state/           SOUL.md, STATUS.md, IDENTITY.md, USER.md
-        ├── skills/{user-built,learned}/
-        └── context/         config.json, cache.md
-
-Concerns:
-- path resolution (env-driven root, every subfolder)
-- idempotent scaffolding (re-running fills in missing pieces, never clobbers)
-- project metadata read/write
-- filesystem-driven listing (no backend coupling)
-"""
+"""Canonical project layout for ~/xo-projects/<name>/."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.helpers import normalize_agent_id
+from services.cowork_agent.local_state import quirq_state_dir
+from services.cowork_agent.visualizer.atomic_write import (
+    CorruptDocumentError,
+    write_json_atomic,
+    write_json_owned,
+)
+
+logger = logging.getLogger(__name__)
 
 # ── Template source ────────────────────────────────────────────────────────────
 
@@ -73,6 +58,31 @@ def _copy_template(src: Path, dst: Path) -> None:
 # ── Roots ─────────────────────────────────────────────────────────────────────
 
 
+# Memo for the realpath walk inside :func:`xo_projects_root`. Keyed on
+# everything the resolution depends on, so an env change is a miss, not a stale
+# hit.
+_ROOT_RESOLUTION_CACHE: dict[tuple[str, str, str], Path] = {}
+_ROOT_RESOLUTION_CACHE_MAX = 64
+
+
+def _resolved_root(raw: str) -> Path:
+    """``Path(raw).expanduser().resolve()``, with the realpath walk memoized."""
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        return expanded.resolve()
+    key = (raw, os.environ.get("HOME", ""), os.environ.get("USERPROFILE", ""))
+    hit = _ROOT_RESOLUTION_CACHE.get(key)
+    if hit is not None:
+        return hit
+    resolved = expanded.resolve()
+    # Bounded: a long-lived process only ever sees one or two roots; a test
+    # suite churns through temp dirs.
+    if len(_ROOT_RESOLUTION_CACHE) >= _ROOT_RESOLUTION_CACHE_MAX:
+        _ROOT_RESOLUTION_CACHE.clear()
+    _ROOT_RESOLUTION_CACHE[key] = resolved
+    return resolved
+
+
 def xo_projects_root() -> Path:
     """User-facing projects directory.
 
@@ -80,20 +90,264 @@ def xo_projects_root() -> Path:
     Created on read so callers never have to guard for first-run.
     """
     raw = (os.getenv("XO_PROJECTS_ROOT", "") or "").strip() or "~/xo-projects"
-    root = Path(raw).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root = _resolved_root(raw)
+    # Create-on-read is a contract other callers depend on, so the check stays
+    # on every call — but it is now a single stat instead of a mkdir that fails
+    # with EEXIST *plus* the is_dir() stat pathlib does to decide whether
+    # EEXIST was acceptable.
+    if not root.is_dir():
+        root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def workspace_xo_dir() -> Path:
-    """Workspace-tier ``.xo/`` directory at ``~/xo-projects/.xo/``.
-
-    Mirrors the per-project ``.xo/`` shape but aggregates across all
-    projects. Materialised by the watcher's workspace tier (see
-    docs/watcher-design.md §3.2). Does not auto-create on read — the
-    watcher creates it explicitly on its first tick.
-    """
+    """Workspace-tier ``.xo/`` directory at ``~/xo-projects/.xo/``."""
     return xo_projects_root() / ".xo"
+
+
+def workspace_runtime_dir() -> Path:
+    """``~/.quirq/workspace/`` — the derived workspace views (syncplan T20)."""
+    return quirq_state_dir() / "workspace"
+
+
+def workspace_sessions_dir() -> Path:
+    """``~/.quirq/workspace/sessions/`` — the workspace-tier session views."""
+    return workspace_runtime_dir() / "sessions"
+
+
+# ── Runtime home (machine-local; never synced) ─────────────────────────────────
+# Machine-local telemetry lives OUTSIDE every project tree, in the Quirq state
+# home keyed by ``project.json:pid`` (docs/syncplan.md §4).
+
+
+def xo_runtime_root() -> Path:
+    """Per-project runtime home, ``~/.quirq/projects/`` by default."""
+    return _resolved_root(str(quirq_state_dir())) / "projects"
+
+
+# The runtime key is a single path segment joined straight into the runtime
+# home, and it comes from ``project.json`` — which is the SYNCED tier.
+
+_SAFE_RUNTIME_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _truncate(value: str, limit: int = 64) -> str:
+    """Shorten an untrusted value for log/error output (it may be huge)."""
+    return value if len(value) <= limit else value[:limit] + "...(truncated)"
+
+
+def _is_safe_runtime_key(value: str) -> bool:
+    """True iff ``value`` is safe to use as a single runtime path segment."""
+    if not value:
+        return False
+    if any(bad in value for bad in ("/", "\\", "\x00")):
+        return False
+    if "." in value:  # covers "." and ".." as well as any dotted segment
+        return False
+    return bool(_SAFE_RUNTIME_KEY.fullmatch(value))
+
+
+def runtime_dir(pid: str) -> Path:
+    """Per-project runtime directory ``~/.quirq/projects/<pid>/`` (pid-keyed)."""
+    root = xo_runtime_root()
+    key = str(pid)
+    if not _is_safe_runtime_key(key):
+        raise ValueError(
+            f"unsafe runtime key {_truncate(key)!r}: expected a single "
+            "[A-Za-z0-9_-]{1,64} path segment (resolve untrusted pids via runtime_key)"
+        )
+    target = (root / key).resolve()
+    # Belt and braces.
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"runtime key {_truncate(key)!r} resolves outside the runtime home {root}"
+        ) from None
+    return target
+
+
+def runtime_sessions_dir(pid: str) -> Path:
+    """Per-project runtime sessions dir ``~/.quirq/projects/<pid>/sessions/``."""
+    return runtime_dir(pid) / "sessions"
+
+
+# ── Name → runtime key resolution (the one place that reads project.json) ──────
+
+
+def runtime_key(name: str) -> str:
+    """Resolve a project folder name to its runtime-store key."""
+    meta = load_project(name)
+    if isinstance(meta, dict):
+        pid = meta.get("pid")
+        if pid and not meta.get("_template", False):
+            key = str(pid)
+            if _is_safe_runtime_key(key):
+                return key
+            logger.warning(
+                "project %s: ignoring unsafe pid %r in .xo/project.json; "
+                "keying runtime by folder name instead",
+                name,
+                _truncate(key),
+            )
+    return normalize_agent_id(name)
+
+
+def project_runtime_dir(name: str) -> Path:
+    """Runtime directory for a project given its folder name."""
+    return runtime_dir(runtime_key(name))
+
+
+def project_runtime_sessions_dir(name: str) -> Path:
+    """Runtime sessions directory for a project given its folder name."""
+    return runtime_sessions_dir(runtime_key(name))
+
+
+# ── The T19 runtime tier: resolution, sub-paths, and the read-through ─────────
+# ``stats.json``, ``timeline.jsonl``, ``sync.json`` and everything under
+# ``sessions/`` moved out of ``<project>/.xo/`` and into
+# ``~/.quirq/projects/<key>/`` (syncplan §9, T19).
+
+# Sub-paths *below* a project's runtime directory.
+RUNTIME_SESSIONS_SUBDIR = Path("sessions")
+
+# The partitioned session index (syncplan T19, inherited from T4).
+RUNTIME_SESSION_SHARDS_SUBDIR = RUNTIME_SESSIONS_SUBDIR / "sessionslist.d"
+
+# Pre-T19 home of the moved files, still read (never written) so a project that
+# predates the move keeps serving its history.
+LEGACY_SESSIONS_SUBDIR = Path("sessions")
+
+
+def _project_dirname_if_present(name: str) -> str | None:
+    """Resolved directory name for ``name``, or ``None`` if no such folder."""
+    dirname = resolve_project_dirname(name)
+    if not _is_safe_segment(dirname):
+        return None
+    try:
+        if not (xo_projects_root() / dirname).is_dir():
+            return None
+    except OSError:
+        return None
+    return dirname
+
+
+# Pre-mint homes already adopted by this process, so the check below costs one
+# ``is_dir()`` the first time a project is resolved and nothing after that.
+_PREMINT_ADOPTED: set[str] = set()
+_PREMINT_ADOPTED_MAX = 256
+
+
+def _remember_adopted(marker: str) -> None:
+    if len(_PREMINT_ADOPTED) >= _PREMINT_ADOPTED_MAX:
+        _PREMINT_ADOPTED.clear()
+    _PREMINT_ADOPTED.add(marker)
+
+
+def _merge_runtime_tree(src: Path, dst: Path) -> None:
+    """Move every file under ``src`` into ``dst``, never overwriting."""
+    for path in sorted(src.rglob("*")):
+        if not path.is_file():
+            continue
+        target = dst / path.relative_to(src)
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(path, target)
+
+
+def _adopt_premint_runtime(dirname: str, target: Path) -> None:
+    """Fold a pre-mint runtime home into the pid-keyed one, once."""
+    premint = xo_runtime_root() / normalize_agent_id(dirname)
+    marker = str(premint)
+    if marker in _PREMINT_ADOPTED:
+        return
+    try:
+        if not premint.is_dir():
+            _remember_adopted(marker)
+            return
+        try:
+            premint.rename(target)
+        except OSError:
+            # The pid-keyed home already exists (or the rename raced another
+            # process doing the same thing). Merge instead.
+            _merge_runtime_tree(premint, target)
+            shutil.rmtree(premint, ignore_errors=True)
+    except OSError:
+        logger.warning(
+            "project %s: could not adopt pre-mint runtime dir %s", dirname, premint
+        )
+        return
+    logger.info("project %s: adopted pre-mint runtime state into %s", dirname, target)
+    _remember_adopted(marker)
+
+
+def runtime_dir_for_project(name: str, *, create: bool = False) -> Path | None:
+    """``~/.quirq/projects/<key>/`` for a project, or ``None`` to skip."""
+    dirname = _project_dirname_if_present(name)
+    if dirname is None:
+        return None
+    key = runtime_key(dirname)
+    try:
+        target = runtime_dir(key)
+    except ValueError:
+        # ``runtime_key`` sanitises, so this is only reachable through a
+        # symlinked <root>/<key> pointing out of the runtime home.
+        logger.warning("project %s: runtime directory unresolvable", dirname)
+        return None
+    if key != normalize_agent_id(dirname):
+        # A pid is in play, so a pre-mint home may exist alongside it.
+        _adopt_premint_runtime(dirname, target)
+    if create:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning("project %s: could not create runtime dir %s", dirname, target)
+            return None
+    return target
+
+
+def runtime_sessions_dir_for_project(name: str, *, create: bool = False) -> Path | None:
+    """``~/.quirq/projects/<key>/sessions/``, or ``None`` to skip."""
+    root = runtime_dir_for_project(name)
+    if root is None:
+        return None
+    target = root / RUNTIME_SESSIONS_SUBDIR
+    if create:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+    return target
+
+
+def runtime_read_roots(name: str) -> tuple[Path | None, Path | None]:
+    """``(runtime root, pre-move root)`` for one project, resolved once."""
+    dirname = _project_dirname_if_present(name)
+    if dirname is None:
+        return None, None
+    return runtime_dir_for_project(dirname), xo_dir(dirname)
+
+
+def runtime_read_path(name: str, relative: str | Path) -> Path | None:
+    """Where to READ one per-project runtime file from."""
+    root, legacy_root = runtime_read_roots(name)
+    if root is None:
+        return None
+    target = root / relative
+    try:
+        if target.exists():
+            return target
+    except OSError:
+        return target
+    if legacy_root is not None:
+        legacy = legacy_root / relative
+        try:
+            if legacy.exists():
+                return legacy
+        except OSError:
+            pass
+    return target
 
 
 # ── Per-project paths ─────────────────────────────────────────────────────────
@@ -111,59 +365,75 @@ def _is_safe_segment(value: str) -> bool:
     return Path(value).name == value
 
 
-def resolve_project_dirname(name: str) -> str:
-    """Map a caller-supplied project name onto the **actual** directory
-    name under ``xo_projects_root()``.
+# Cache of the root's directory listing, keyed on the resolved root path.
+_DIRNAMES_CACHE: dict[str, tuple[tuple, tuple[str, ...]]] = {}
+_DIRNAMES_CACHE_MAX = 64
 
-    The directory name is the project id (see :func:`list_projects`), and
-    discovery hands that literal name to every other helper here. But not
-    every folder a user drops into the root is already in
-    ``normalize_agent_id`` form: ``Agno-RAG-Tester`` normalises to
-    ``agno-rag-tester``. Normalising unconditionally therefore pointed
-    every write at a *different* path than the one discovery found, and
-    the first write conjured an empty ghost folder holding nothing but
-    ``.xo/`` next to the real project — which then registered as a second,
-    empty project of its own.
 
-    Resolution order:
+def _root_stamp(root: Path) -> tuple | None:
+    """Cheap change signature for a directory: one ``stat``."""
+    try:
+        st = root.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_nlink, st.st_size)
 
-    1. the literal name, when it is a safe segment exactly matching an
-       existing dir
-    2. an existing dir that normalises to the same id (the reverse lookup,
-       for callers holding an already-normalised id)
-    3. the normalised name — the canonical id for a project that does not
-       exist yet (new-project creation keeps its old behaviour)
 
-    Existence is checked against the directory *listing*, never with a
-    bare ``is_dir()`` probe: on a case-insensitive filesystem
-    (macOS/Windows) probing ``agno-rag-tester`` succeeds when only
-    ``Agno-RAG-Tester`` exists, which would hand back an id that names no
-    on-disk entry. Matching listed names keeps the returned id identical
-    to what discovery reports on every platform.
-
-    Cases 1-2 only ever return the name of a directory that exists in the
-    root, and case 3 is sanitised, so the result is always a safe leaf:
-    callers get the traversal defence ``normalize_agent_id`` gave them.
-    """
-    root = xo_projects_root()
-    normalized = normalize_agent_id(name)
+def _root_dirnames(root: Path, *, force: bool = False) -> tuple[tuple[str, ...], bool]:
+    """Return ``(sorted non-hidden dirnames, served_from_cache)``."""
+    key = str(root)
+    stamp = _root_stamp(root)
+    if not force and stamp is not None:
+        hit = _DIRNAMES_CACHE.get(key)
+        if hit is not None and hit[0] == stamp:
+            return hit[1], True
 
     try:
         entries = sorted(root.iterdir())
     except OSError:
         entries = []
-    dirnames = [
+    names = tuple(
         e.name for e in entries if e.is_dir() and not e.name.startswith(".")
-    ]
+    )
 
+    if stamp is not None:
+        if len(_DIRNAMES_CACHE) >= _DIRNAMES_CACHE_MAX:
+            _DIRNAMES_CACHE.clear()
+        # Store the stamp taken *before* the walk: if the root changed while we
+        # were listing it, the next call's stat differs and we re-list, instead
+        # of caching a half-seen listing as current.
+        _DIRNAMES_CACHE[key] = (stamp, names)
+    return names, False
+
+
+def _match_dirname(name: str, normalized: str, dirnames: tuple[str, ...]) -> str | None:
+    """
+    Cases 1-2 of :func:`resolve_project_dirname`, or ``None`` for "no directory
+    in the root answers to this name".
+    """
     if _is_safe_segment(name) and name in dirnames:
         return name
-
     for dirname in dirnames:
         if normalize_agent_id(dirname) == normalized:
             return dirname
+    return None
 
-    return normalized
+
+def resolve_project_dirname(name: str) -> str:
+    """
+    Map a caller-supplied project name onto the **actual** directory name under
+    ``xo_projects_root()``.
+    """
+    root = xo_projects_root()
+    normalized = normalize_agent_id(name)
+
+    dirnames, from_cache = _root_dirnames(root)
+    resolved = _match_dirname(name, normalized, dirnames)
+    if resolved is None and from_cache:
+        dirnames, _ = _root_dirnames(root, force=True)
+        resolved = _match_dirname(name, normalized, dirnames)
+
+    return resolved if resolved is not None else normalized
 
 
 def project_dir(name: str) -> Path:
@@ -172,10 +442,6 @@ def project_dir(name: str) -> Path:
 
 def xo_dir(name: str) -> Path:
     return project_dir(name) / ".xo"
-
-
-def sessions_dir(name: str) -> Path:
-    return xo_dir(name) / "sessions"
 
 
 def memory_dir(name: str) -> Path:
@@ -211,18 +477,7 @@ def scaffold_project(
     display_name: str | None = None,
     description: str | None = None,
 ) -> dict:
-    """Create or fill in the canonical project tree from the template.
-
-    Copies every file from the template directory (``~/ultimate-work`` or
-    ``XO_PROJECT_TEMPLATE`` env var) into the project folder. Idempotent:
-    existing files are never overwritten; missing files and directories are
-    added.
-
-    ``sessions/sessions.json`` is always ensured — it is a system requirement
-    not present in the user template.
-
-    Returns the project metadata dict (created or already present).
-    """
+    """Create or fill in the canonical project tree from the template."""
     pid = resolve_project_dirname(name)
     pdir = project_dir(pid)
     xdir = xo_dir(pid)
@@ -231,14 +486,6 @@ def scaffold_project(
     xdir.mkdir(parents=True, exist_ok=True)
 
     _copy_template(_template_dir(), pdir)
-
-    # sessionslist.json is a system file the harness reads/writes; not in the template.
-    # It holds session metadata only — messages stay in the provider's own storage.
-    sessions_dir = xdir / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    sessions_json = sessions_dir / "sessionslist.json"
-    if not sessions_json.exists():
-        sessions_json.write_text("{}\n", encoding="utf-8")
 
     return _upsert_metadata(pid, display_name=display_name, description=description)
 
@@ -249,50 +496,78 @@ def _upsert_metadata(
     display_name: str | None,
     description: str | None,
 ) -> dict:
-    """Read .xo/project.json, fill in any missing fields, optionally update
-    display_name/description, write back, return the result."""
+    """
+    Read .xo/project.json, fill in any missing fields, optionally update
+    display_name/description, write back, return the result.
+    """
     meta_path = project_metadata_path(pid)
+    corrupt = False
+    meta: dict = {}
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if not isinstance(meta, dict):
-                meta = {}
+            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
-            meta = {}
-    else:
-        meta = {}
+            corrupt = True
+        else:
+            if isinstance(loaded, dict):
+                meta = loaded
+            else:
+                corrupt = True
 
-    changed = False
+    # ``values`` carries every key this call writes; ``owns`` is exactly those
+    # plus any key being deleted.
+    values: dict = {}
 
-    if "name" not in meta:
-        meta["name"] = pid
-        changed = True
+    if meta.get("name") is None:
+        values["name"] = pid
 
-    if "created_at" not in meta:
-        meta["created_at"] = datetime.now(timezone.utc).isoformat()
-        changed = True
+    if meta.get("created_at") is None:
+        # Same format the identity sink writes — one format per field.
+        values["created_at"] = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
 
     if display_name is not None:
-        if meta.get("display_name") != display_name:
-            meta["display_name"] = display_name
-            changed = True
-    elif "display_name" not in meta:
-        meta["display_name"] = pid
-        changed = True
+        values["display_name"] = display_name
+    elif meta.get("display_name") is None:
+        values["display_name"] = pid
+    else:
+        # Re-declared at its current value rather than omitted: under
+        # ``write_json_owned`` an owned key with no value is a *deletion*.
+        values["display_name"] = meta["display_name"]
 
     if description is not None:
-        if meta.get("description") != description:
-            meta["description"] = description
-            changed = True
-    elif "description" not in meta:
-        meta["description"] = ""
-        changed = True
+        values["description"] = description
+    elif meta.get("description") is None:
+        values["description"] = ""
+    else:
+        values["description"] = meta["description"]
 
-    if changed:
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    # Drop the template marker as soon as a real project is written.
+    owns = set(values)
+    if "_template" in meta:
+        owns.add("_template")
 
-    return dict(meta)
+    result = {k: v for k, v in meta.items() if k != "_template"}
+    result.update(values)
+
+    if corrupt:
+        # Unparseable: there is no merge base, so there is nothing to carry
+        # forward and ``write_json_owned`` would (correctly) refuse.
+        write_json_atomic(meta_path, result)
+    else:
+        try:
+            # Atomic and key-scoped: the watcher thread writes this file
+            # concurrently and there is no lock, so a bare write_text exposed a
+            # torn read and a full-payload write dropped the watcher's keys.
+            write_json_owned(
+                meta_path, owns=frozenset(owns), values=values, volatile=()
+            )
+        except CorruptDocumentError:
+            # Readable a moment ago, not now — a concurrent truncation.
+            write_json_atomic(meta_path, result)
+
+    return result
 
 
 # ── Read / list ───────────────────────────────────────────────────────────────

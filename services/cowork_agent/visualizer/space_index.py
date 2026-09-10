@@ -15,7 +15,7 @@ import math
 import os
 import re
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -370,6 +370,11 @@ def _build_ties(leaves: list[dict], commits_by_pid: dict[str, list[list[str]]]) 
     return [{"s": s, "t": t, "label": label} for _, s, t, label in cands[:MAX_TIES]]
 
 
+def _now_iso() -> str:
+    """The document's own freshness stamp, UTC, ISO-8601 with a ``Z``."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def build_space_data() -> dict:
     root = xo_projects_root()
     projects = list_projects()
@@ -450,6 +455,9 @@ def build_space_data() -> dict:
             "title": "Space",
             "tagline": "an xo-projects knowledge graph",
             "mappedOn": today.strftime("%d %B %Y"),
+            # Machine-readable freshness; ``mappedOn`` above is the human one
+            # and is only accurate to the day (syncplan T25).
+            "generated_at": _now_iso(),
             "workspace": str(root),
         },
         "categories": categories,

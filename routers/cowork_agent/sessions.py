@@ -110,8 +110,7 @@ async def update_session(session_id: str, request: Request):
         return JSONResponse(status_code=400, content={"detail": "directory must be a non-empty string"})
 
     # Ask each adapter's sessions capability to set the directory; the owning
-    # backend returns a result dict, the rest return None. Mutually exclusive
-    # per session, so order doesn't matter and no backend is named here.
+    # backend returns a result dict, the rest return None.
     for name in list_adapters():
         mod = try_load_capability("sessions", agent=name)
         fn = getattr(mod, "set_session_directory", None) if mod else None

@@ -29,6 +29,11 @@ def watcher_state_dir() -> Path:
     return quirq_state_dir() / "watcher"
 
 
+def watcher_heartbeat_path() -> Path:
+    """Return the watcher's once-per-tick liveness beat."""
+    return watcher_state_dir() / "heartbeat.json"
+
+
 def legacy_watcher_state_dir() -> Path:
     """Return the former watcher root for read-only cursor migration."""
     return legacy_state_dir() / "watcher"
