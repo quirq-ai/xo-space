@@ -20,6 +20,12 @@ Files, all under ``<quirq state>/scheduler/`` (mode 0600 where supported):
 Two files, two owners: a re-registration cannot clobber a ``next_run`` and a
 tick cannot clobber a definition. The scheduler never imports the watcher
 and never imports the visualizer package; it only takes a timestamp.
+
+This is the scheduling half of the command utility (the executor is the
+package ``__init__``). ``utils/`` sits below ``services/`` and must not import
+it, so the Quirq state root is resolved here from ``QUIRQ_STATE_ROOT`` the
+same way ``services.cowork_agent.local_state.quirq_state_dir`` does;
+``tests/test_scheduler.py`` pins that the two agree.
 """
 
 from __future__ import annotations
@@ -35,10 +41,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from services.cowork_agent.local_state import quirq_state_dir
 from utils.commands import CommandResult, CommandSpec, run_spec_sync
 
 logger = logging.getLogger(__name__)
+
+ENV_STATE_ROOT = "QUIRQ_STATE_ROOT"
+
+
+def quirq_state_dir() -> Path:
+    """``~/.quirq/`` or ``$QUIRQ_STATE_ROOT`` — mirrors ``local_state`` (see
+    the module docstring for why it is not imported)."""
+    configured = (os.getenv(ENV_STATE_ROOT, "") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".quirq"
 
 SCHEMA = 1
 ENV_ENABLED = "XO_SCHEDULER_ENABLED"

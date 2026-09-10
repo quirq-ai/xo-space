@@ -1,7 +1,8 @@
 """``/api/schedules*`` — fixed-interval command jobs (local Quirq).
 
-Thin handlers over ``services/cowork_agent/scheduler.py``: parse → call the
-service → map its typed errors to HTTP. Same auth posture as the other local
+Thin handlers over ``utils/commands/scheduler.py`` (the scheduling half of
+the command utility): parse → call it → map its typed errors to HTTP. Same
+auth posture as the other local
 Quirq routes (``/api/runtime-config``, ``/api/quirq``): nothing beyond what
 the server applies globally.
 
@@ -17,8 +18,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from services.cowork_agent import scheduler
-from services.cowork_agent.scheduler import (
+from utils.commands import scheduler
+from utils.commands.scheduler import (
     JobRunningError,
     SchedulerError,
     UnknownJobError,

@@ -1,4 +1,4 @@
-"""Service tests for services/cowork_agent/scheduler.py.
+"""Tests for utils/commands/scheduler.py.
 
 Hermetic: QUIRQ_STATE_ROOT points at a temp dir, `now` is injected, jobs are
 `sys.executable -c ...` one-liners so they are real subprocesses that finish
@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cowork_agent import scheduler
+from services.cowork_agent.local_state import quirq_state_dir
+from utils.commands import scheduler
 
 PY = sys.executable
 T0 = datetime(2026, 9, 11, 10, 0, 0, tzinfo=timezone.utc)
@@ -78,6 +79,13 @@ class SchedulerTests(unittest.TestCase):
         return json.loads(scheduler.state_file().read_text(encoding="utf-8"))["jobs"][job_id]
 
     # ── Task 1: validation and the store ──
+
+    def test_state_root_agrees_with_local_state(self) -> None:
+        # utils/ must not import services/, so the scheduler resolves the
+        # Quirq state root itself. This pins that it resolves it the same way.
+        self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": ""}):
+            self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
 
     def test_create_validates_writes_both_files_and_schedules_one_interval_out(self) -> None:
         job = scheduler.create_job(_job("Pull issues", 3600, project_id="blackhole"), now=T0)

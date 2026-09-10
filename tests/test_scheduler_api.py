@@ -18,7 +18,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services.cowork_agent import scheduler
+from utils.commands import scheduler
 
 try:
     from routers.cowork_agent.schedules import router

@@ -270,7 +270,7 @@ class OneExecutorTests(unittest.TestCase):
        `os.system` / `os.popen`, the `os.exec*` / `os.spawn*` / `posix_spawn`
        family, or `pty.spawn` outside the runner's own docstring.
     2. Direct `subprocess` / `create_subprocess_exec` calls are allowed only in
-       `utils/commands.py` and in the files listed in MIGRATION_BACKLOG. That
+       `utils/commands/__init__.py` and in the files listed in MIGRATION_BACKLOG. That
        list may only shrink: converting a file to `utils.commands` means
        removing it here. Adding a new direct call anywhere fails this test.
     3. The same for `import subprocess` / `from subprocess import ...`: a regex
@@ -279,7 +279,7 @@ class OneExecutorTests(unittest.TestCase):
     """
 
     SKIP_DIRS = {"venv", ".venv", "node_modules", ".git", "tests", "tests2", "docs", ".claude"}
-    RUNNER = "utils/commands.py"
+    RUNNER = "utils/commands/__init__.py"
     MIGRATION_BACKLOG = {
         # streaming / PTY runtimes — need a live pipe, migrate last
         "config/models/claude_code/client.py",
@@ -328,7 +328,7 @@ class OneExecutorTests(unittest.TestCase):
     def test_subprocess_is_not_imported_outside_the_runner_or_the_backlog(self) -> None:
         offenders = [rel for rel, txt in self._files()
                      if rel != self.RUNNER and rel not in self.MIGRATION_BACKLOG and self.IMPORTS.search(txt)]
-        self.assertEqual(offenders, [], "import subprocess only in utils/commands.py (or a backlog file)")
+        self.assertEqual(offenders, [], "import subprocess only in utils/commands/__init__.py (or a backlog file)")
 
     def test_backlog_entries_still_need_migrating(self) -> None:
         # A file that no longer calls subprocess directly must leave the list,
