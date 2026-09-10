@@ -407,7 +407,7 @@ class ActivityResponse(_ForbidExtra):
 
 
 class TimelineEvent(_ForbidExtra):
-    """One line from ``.xo/timeline.jsonl``. Permissive shape because
+    """One line from the project's runtime ``timeline.jsonl``. Permissive because
     the schema's ``oneOf`` lets each event type carry its own extras —
     a strict union here would require 12 subclasses. The schema-side
     ``oneOf`` is the canonical validator; the route-side check is the

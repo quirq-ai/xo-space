@@ -668,8 +668,8 @@ def workspace_timeline(
 ) -> TimelineResponse:
     """Multiplexed workspace timeline. Each event tagged with ``project_id``.
 
-    Reads from ``~/xo-projects/.xo/timeline.jsonl``. Empty if the
-    workspace tier hasn't materialised it yet.
+    Reads ``~/.quirq/workspace/timeline.jsonl`` — the runtime tier, since
+    T20. Empty if the watcher has not materialised it yet.
     """
     if before is not None:
         try:

@@ -66,20 +66,24 @@ def graph_path() -> Path:
 
 
 # ── The T20 sweep of the abandoned workspace views ────────────────────────────
-# What T20 moved is pure derived state, so there is nothing to migrate: the
-# next tick rebuilds every one of these files in the runtime tier.
+# Snapshots are deleted, history is moved. Everything below is derived state
+# the next tick rebuilds in the runtime tier — except the timeline, which is
+# append-only and is fed only by the live tick, so deleting it would drop every
+# event recorded before the upgrade with nothing able to put them back. It is
+# relocated instead, on the same "destination wins" rule the project-tier
+# migration uses (T21).
 
 _ABANDONED_FILES = (
     "dashboard.json",
     "sessions.json",
     "stats.json",
-    "timeline.jsonl",
     "activity.json",
 )
 
-# The rotated timeline segments (``sinks/timeline.py`` renames to
-# ``timeline.<stamp>.jsonl``). Same argument as the live file.
-_ABANDONED_GLOBS = ("timeline.*.jsonl",)
+#: Append-only history: moved into the runtime tier, never unlinked. The live
+#: file and the segments ``sinks/timeline.py`` rotated to
+#: ``timeline.<stamp>.jsonl``.
+_RELOCATED_GLOBS = ("timeline.jsonl", "timeline.*.jsonl")
 
 # Wholly derived, and now written under ``workspace_sessions_dir()``.
 _ABANDONED_DIRS = ("sessions",)
@@ -87,6 +91,27 @@ _ABANDONED_DIRS = ("sessions",)
 # Roots already swept by this process.
 _SWEPT: set[str] = set()
 _SWEPT_MAX = 64
+
+
+def _relocate_history(src: Path) -> Optional[str]:
+    """
+    Move one pre-T20 timeline file into the runtime tier. The destination
+    wins — a runtime file of the same name is the newer log, so the stale
+    source is dropped rather than merged. Returns what to report, or ``None``.
+    """
+    try:
+        if not src.is_file():
+            return None
+        dst = workspace_runtime_dir() / src.name
+        if dst.exists():
+            src.unlink()
+            return f"{src.name} (superseded)"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+        return f"{src.name} -> runtime tier"
+    except OSError:
+        logger.warning("workspace views: could not relocate %s", src)
+        return None
 
 
 def sweep_abandoned(*, force: bool = False) -> list[str]:
@@ -103,9 +128,12 @@ def sweep_abandoned(*, force: bool = False) -> list[str]:
             # record into it, and a restore can put a pre-T20 tree there later
             # in the life of this process.
             return removed
+        for pattern in _RELOCATED_GLOBS:
+            for path in sorted(root.glob(pattern)):
+                moved = _relocate_history(path)
+                if moved:
+                    removed.append(moved)
         candidates = [root / name for name in _ABANDONED_FILES]
-        for pattern in _ABANDONED_GLOBS:
-            candidates.extend(sorted(root.glob(pattern)))
         for path in candidates:
             try:
                 if path.is_file():

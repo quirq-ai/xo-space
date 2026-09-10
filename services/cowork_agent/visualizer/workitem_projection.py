@@ -15,6 +15,7 @@ from services.cowork_agent.visualizer.workitems_store import (
 
 logger = logging.getLogger(__name__)
 
+
 def mirror_issues(mirror: object) -> dict[str, dict]:
     """The ``issues`` map of a mirror document, or ``{}``."""
     if not isinstance(mirror, Mapping):

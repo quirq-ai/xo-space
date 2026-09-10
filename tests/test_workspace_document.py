@@ -196,6 +196,12 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
     telemetry travelling to every other machine and every restore, which is
     exactly what R-TIER exists to prevent. A frozen ``dashboard.json`` sitting
     where a reader used to look is the other failure: silent, and indefinite.
+
+    Snapshots are deleted; **history is moved**. ``timeline.jsonl`` is
+    append-only and is fed only by the live watcher tick, so unlinking it would
+    drop every event recorded before the upgrade with nothing able to rebuild
+    them — the project tier relocates the same file (T21) and the workspace
+    tier now matches it.
     """
 
     def _dot_xo(self, tmp: str) -> Path:
@@ -235,8 +241,11 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
         # activity.json is named by T20 explicitly: nothing has written it
         # since workspace_activity_path() moved to ~/.quirq/watcher/activity/.
         self.assertIn("activity.json", removed)
-        self.assertIn("timeline.20260825T120000Z.jsonl", removed)
         self.assertIn("sessions/", removed)
+        # Moved, not unlinked — reported as such so a reader of the log can
+        # tell the two outcomes apart.
+        self.assertIn("timeline.20260825T120000Z.jsonl -> runtime tier", removed)
+        self.assertIn("timeline.jsonl -> runtime tier", removed)
 
     def test_a_tick_sweeps_and_the_records_survive_it(self) -> None:
         """``apply`` is the watcher's entry point, so the sweep has to happen
@@ -257,6 +266,36 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
 
         self.assertEqual(left, ["projects.json", "space.json", "xo.json"])
         self.assertEqual(record["pid"], "keep-me")
+
+    def test_the_sweep_moves_history_instead_of_dropping_it(self) -> None:
+        """The regression this guards: ``timeline.jsonl`` was swept with the
+        snapshots. Nothing rebuilds the workspace timeline — the watcher only
+        appends events as they happen — so deleting it silently truncated
+        every pre-upgrade event out of ``GET /api/xo-projects/timeline``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _workspace(tmp)
+            xo = self._pre_t20_tree(tmp)
+            (xo / "timeline.jsonl").write_text(
+                json.dumps({"ts": "2026-01-01T00:00:00Z", "type": "session.first_seen"})
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, _env(tmp), clear=False):
+                views._SWEPT.discard(str(xo))
+                views.sweep_abandoned(force=True)
+                moved = views.workspace_runtime_dir() / "timeline.jsonl"
+                self.assertTrue(moved.is_file(), "history was dropped, not moved")
+                self.assertIn("2026-01-01T00:00:00Z", moved.read_text(encoding="utf-8"))
+                self.assertFalse((xo / "timeline.jsonl").exists())
+
+                # Destination wins, exactly as the project-tier migration does:
+                # a stale copy reappearing must not overwrite the newer log.
+                (xo / "timeline.jsonl").write_text(
+                    json.dumps({"ts": "stale", "type": "x"}) + "\n", encoding="utf-8"
+                )
+                views.sweep_abandoned(force=True)
+                self.assertNotIn("stale", moved.read_text(encoding="utf-8"))
+                self.assertFalse((xo / "timeline.jsonl").exists())
 
     def test_the_sweep_is_idempotent_and_runs_once_per_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

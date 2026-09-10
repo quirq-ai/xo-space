@@ -25,8 +25,11 @@ _OWNS: frozenset[str] = frozenset(
 _SCHEMA_VERSION = 2
 
 # Paths already reported as unreadable, so a corrupt document doesn't emit a
-# warning on every tick (the watcher polls once a second by default).
+# warning on every tick (the watcher polls once a second by default). Capped
+# like every other remember-once set in this tree: bounded by project count in
+# practice, but a bound that is stated cannot drift.
 _UNREADABLE_WARNED: set[str] = set()
+_UNREADABLE_WARNED_MAX = 256
 
 
 def _now_iso() -> str:
@@ -47,6 +50,8 @@ def _warn_unreadable_once(path: Path) -> None:
     key = str(path)
     if key in _UNREADABLE_WARNED:
         return
+    if len(_UNREADABLE_WARNED) >= _UNREADABLE_WARNED_MAX:
+        _UNREADABLE_WARNED.clear()
     _UNREADABLE_WARNED.add(key)
     logger.warning(
         "project.json at %s exists but is unreadable; refusing to mint a new "
