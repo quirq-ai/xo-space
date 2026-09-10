@@ -8,6 +8,8 @@ per feature, all on the same transport:
     usage.py          daily usage report (and the key probe before it)
     project_sharing.py  the commit relay: report / poll / share / revoke / members
     chat.py           Plane-A chat storage (push / fetch messages)
+    composio.py       Composio proxy routes (connect / sessions / tools / connections) —
+                       synchronous and raises, unlike the modules above; see its docstring
 
 Nothing outside this package builds a swarm URL or reads CHAT_API_BASE_URL;
 tests/test_swarm_api.py enforces that.

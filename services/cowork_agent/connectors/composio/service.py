@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from services.cowork_agent.connectors.composio import paths, state, swarm_client
+from services.cowork_agent.connectors.composio import paths, state
+from services.swarm_api import composio as swarm_client
 
 log = logging.getLogger(__name__)
 

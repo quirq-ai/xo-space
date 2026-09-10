@@ -1,4 +1,5 @@
-"""Unit tests for swarm_client.py — the HTTP transport to xo-swarm-api's Composio routes.
+"""Unit tests for services/swarm_api/composio.py — the HTTP transport to xo-swarm-api's
+Composio routes.
 
 Mirrors the retired credentials.py's CredentialsTests in style: `_send` is the one seam
 patched (mimicking how those tests patched `credentials._get`), so nothing here touches
@@ -15,7 +16,7 @@ from unittest.mock import patch
 
 import httpx
 
-from services.cowork_agent.connectors.composio import swarm_client
+from services.swarm_api import composio as swarm_client
 
 
 def _response(status: int, payload: dict | None = None) -> httpx.Response:

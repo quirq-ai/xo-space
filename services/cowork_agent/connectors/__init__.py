@@ -11,9 +11,11 @@ its ``__init__``, so callers import the connector, not its internals::
     github/    GitHub                (common.py + pat.py + cli_auth.py)
     vercel/    Vercel                (oauth.py + api.py + connector.py)
     manus/     Manus                 (connector.py — API key)
-    composio/  Composio              (service.py + swarm_client.py + identity.py
-                                       + session_identity.py + mcp.py + categories.py
-                                       + action_prefs.py + paths.py)
+    composio/  Composio              (service.py + identity.py + session_identity.py
+                                       + mcp.py + categories.py + action_prefs.py + paths.py;
+                                       the swarm HTTP transport lives in
+                                       services/swarm_api/composio.py alongside the rest of
+                                       the swarm clients)
 
 Two shared pieces sit alongside them, deliberately not connectors:
 

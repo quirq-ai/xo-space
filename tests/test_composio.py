@@ -47,8 +47,8 @@ from services.cowork_agent.connectors.composio import action_prefs, categories
 from services.cowork_agent.connectors.composio import identity as identity_mod
 from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.connectors.composio import service, session_identity, state
-from services.cowork_agent.connectors.composio import swarm_client
 from services.cowork_agent.connectors.composio import workspace_scope
+from services.swarm_api import composio as swarm_client
 
 WORKSPACE = "ws-test"
 ACCOUNT = "user_abc123"

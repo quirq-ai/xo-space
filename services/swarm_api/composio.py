@@ -6,9 +6,11 @@ every operation service.py used to run against `Composio(api_key=...)` directly 
 one call here.
 
 Kept synchronous and styled on the retired `credentials.py`'s `_fetch_from_swarm()`/`_get()`
-(same timeout, same `get_auth_token()` + `swarm_api.base_url()` pattern) so every caller in
-`service.py` keeps calling these functions the same way it called the SDK — no router or
-call-site signature changes.
+(same timeout, same `get_auth_token()` + `base_url()` pattern) so every caller in
+`connectors/composio/service.py` keeps calling these functions the same way it called the
+SDK — no router or call-site signature changes. Unlike this package's other feature
+modules, this one stays synchronous and raises instead of returning a `SwarmResult` —
+`service.py` is not async and its callers expect exceptions, same as the SDK it replaced.
 
 Every message this module raises for an authoritative failure (no key configured on
 xo-swarm-api, or this backend's XO credential rejected) contains the literal string
@@ -21,6 +23,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import httpx
+
+from ._http import base_url
 
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
@@ -109,10 +113,10 @@ def _request(
     json: Optional[dict] = None,
     params: Optional[dict] = None,
 ) -> Any:
-    # Deferred imports: this package and routers.auth import each other lazily to avoid a
-    # load cycle (same reason the retired credentials.py deferred them).
+    # Deferred import: routers.auth imports services.swarm_api at module scope, so this
+    # package and routers.auth import each other lazily to avoid a load cycle (same
+    # reason _http.py's own auth_token() defers it, and the retired credentials.py did).
     from routers.auth.auth import get_auth_token
-    from services import swarm_api
 
     token = get_auth_token()
     if not token:
@@ -122,7 +126,7 @@ def _request(
             authoritative=True,
         )
 
-    url = f"{swarm_api.base_url()}{path}"
+    url = f"{base_url()}{path}"
     try:
         resp = _send(method, url, {"Authorization": f"Bearer {token}"}, json=json, params=params)
     except Exception as exc:
