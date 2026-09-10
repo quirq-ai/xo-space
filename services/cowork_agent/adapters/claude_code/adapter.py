@@ -214,7 +214,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             "--output-format", fmt,
         ]
         if stream:
-            cmd.append("--verbose")
+            # --include-partial-messages makes the CLI emit text deltas as they
+            # are generated (wrapped as `stream_event` lines) instead of one
+            # complete `assistant` message per turn, so the SSE stream is live.
+            cmd += ["--verbose", "--include-partial-messages"]
         if mcp_config_path is not None:
             cmd += ["--mcp-config", str(mcp_config_path)]
         # --resume and --session-id are mutually exclusive at the CLI.
@@ -444,6 +447,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             result_text: str = ""
             usage: dict = {}
             model_id = ""
+            # With --include-partial-messages the CLI streams a text block as
+            # deltas and THEN repeats it as a complete `assistant` message.
+            # Forward the deltas; skip the repeat so the text is not sent twice.
+            saw_partial = False
 
             async for raw_line in proc.stdout:
                 event = parse_stream_line(raw_line)
@@ -474,6 +481,11 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                     continue
 
                 if event.get("type") == "token":
+                    if event.get("partial"):
+                        saw_partial = True
+                    elif saw_partial:
+                        saw_partial = False
+                        continue  # this block already went out as deltas
                     response_parts.append(event.get("token", ""))
 
                 yield event
