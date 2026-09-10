@@ -277,6 +277,136 @@ class SchedulerTests(unittest.TestCase):
         self.assertIsNone(state["running_since"])
         self.assertEqual(state["next_run"], "2026-09-11T10:02:00Z")  # advanced: one error per slot, not per tick
 
+    # ── Task 3: harvest, overlap, cap, lost, run-now ──
+
+    def test_finished_run_is_harvested_into_state_and_history(self) -> None:
+        job = scheduler.create_job(_job("j", 60, "import sys; print('hello'); sys.exit(3)"), now=T0)
+        scheduler.tick(now=_at(60))
+        scheduler._running[job["id"]].thread.join(10)
+        report = scheduler.tick(now=_at(61))
+        self.assertEqual(report.finished, [job["id"]])
+        self.assertNotIn(job["id"], scheduler._running)
+
+        state = self._state(job["id"])
+        self.assertIsNone(state["running_since"])
+        self.assertEqual(state["last_run"], "2026-09-11T10:01:00Z")
+        self.assertEqual(state["last_result"]["status"], "failed")
+        self.assertEqual(state["last_result"]["returncode"], 3)
+        self.assertEqual(state["last_result"]["trigger"], "schedule")
+        self.assertIn("hello", state["last_result"]["output_tail"])
+
+        runs = scheduler.list_runs(job["id"])
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "failed")
+        self.assertTrue(scheduler.log_file(job["id"]).exists())   # the executor's full log
+        self.assertFalse(scheduler.get_job(job["id"])["running"])
+
+    def test_status_mapping_ok_timeout_missing_binary(self) -> None:
+        ok = scheduler.create_job(_job("ok", 60, "pass"), now=T0)
+        slow = scheduler.create_job(
+            {"name": "slow", "command": {"argv": [PY, "-c", "import time; time.sleep(30)"], "timeout": 0.5},
+             "every_seconds": 60}, now=T0)
+        missing = scheduler.create_job(
+            {"name": "missing", "command": {"argv": ["definitely-not-a-binary-xyz"], "timeout": 5},
+             "every_seconds": 60}, now=T0)
+        scheduler.tick(now=_at(60))
+        for j in (ok, slow, missing):
+            scheduler._running[j["id"]].thread.join(15)
+        scheduler.tick(now=_at(61))
+        self.assertEqual(self._state(ok["id"])["last_result"]["status"], "ok")
+        self.assertEqual(self._state(slow["id"])["last_result"]["status"], "timed_out")
+        self.assertEqual(self._state(missing["id"])["last_result"]["status"], "missing_binary")
+
+    def test_overlap_is_skipped_not_queued_and_no_second_process_starts(self) -> None:
+        job = self._blocking_job("block", 60)
+        self.assertEqual(scheduler.tick(now=_at(60)).started, [job["id"]])
+        first_thread = scheduler._running[job["id"]].thread
+
+        report = scheduler.tick(now=_at(120))
+        self.assertEqual(report.skipped, [job["id"]])
+        self.assertEqual(report.started, [])
+        self.assertIs(scheduler._running[job["id"]].thread, first_thread)
+        state = self._state(job["id"])
+        self.assertEqual(state["next_run"], "2026-09-11T10:03:00Z")
+        self.assertEqual(state["last_result"]["status"], "skipped")
+        self.assertEqual(state["running_since"], "2026-09-11T10:01:00Z")
+
+        self._release(job["id"])
+        after = scheduler.tick(now=_at(121))
+        self.assertEqual(after.finished, [job["id"]])
+        runs = scheduler.list_runs(job["id"])
+        self.assertEqual([r["status"] for r in runs], ["ok", "skipped"])   # newest first
+
+    def test_concurrency_cap_defers_without_advancing_next_run(self) -> None:
+        a = self._blocking_job("a", 60)
+        b = self._blocking_job("b", 60)
+        with patch.dict(os.environ, {"XO_SCHEDULER_MAX_CONCURRENT": "1"}):
+            report = scheduler.tick(now=_at(60))
+            self.assertEqual(report.started, [a["id"]])
+            self.assertEqual(report.deferred, [b["id"]])
+            self.assertEqual(self._state(b["id"])["next_run"], "2026-09-11T10:01:00Z")   # still due
+            self.assertIsNone(self._state(b["id"])["running_since"])
+
+            self._release(a["id"])
+            report = scheduler.tick(now=_at(61))
+            self.assertEqual(report.finished, [a["id"]])
+            self.assertEqual(report.started, [b["id"]])
+        self._release(b["id"])
+
+    def test_lost_run_is_recorded_and_cleared(self) -> None:
+        job = scheduler.create_job(_job("j", 60), now=T0)
+        state = json.loads(scheduler.state_file().read_text(encoding="utf-8"))
+        state["jobs"][job["id"]]["running_since"] = "2026-09-11T09:59:00Z"   # a previous process
+        scheduler._write_doc(scheduler.state_file(), state)
+
+        report = scheduler.tick(now=_at(10))
+        self.assertEqual(report.lost, [job["id"]])
+        entry = self._state(job["id"])
+        self.assertIsNone(entry["running_since"])
+        self.assertEqual(entry["last_result"]["status"], "lost")
+        self.assertEqual(entry["last_result"]["started_at"], "2026-09-11T09:59:00Z")
+        self.assertEqual(scheduler.list_runs(job["id"])[0]["status"], "lost")
+
+    def test_run_now_is_manual_single_flight_and_leaves_next_run_alone(self) -> None:
+        job = self._blocking_job("block", 3600)
+        view = scheduler.run_now(job["id"], now=_at(5))
+        self.assertTrue(view["running"])
+        self.assertEqual(view["running_since"], "2026-09-11T10:00:05Z")
+        self.assertEqual(view["next_run"], "2026-09-11T11:00:00Z")
+        with self.assertRaises(scheduler.JobRunningError):
+            scheduler.run_now(job["id"], now=_at(6))
+        with self.assertRaises(scheduler.UnknownJobError):
+            scheduler.run_now("nope-000000", now=_at(6))
+
+        self._release(job["id"])
+        report = scheduler.tick(now=_at(7))
+        self.assertEqual(report.finished, [job["id"]])
+        self.assertEqual(self._state(job["id"])["last_result"]["trigger"], "manual")
+        self.assertEqual(self._state(job["id"])["next_run"], "2026-09-11T11:00:00Z")
+
+    def test_run_now_works_for_a_disabled_job(self) -> None:
+        job = scheduler.create_job(_job("off", 60, enabled=False), now=T0)
+        scheduler.run_now(job["id"], now=T0)
+        scheduler._running[job["id"]].thread.join(10)
+        self.assertEqual(scheduler.tick(now=_at(1)).finished, [job["id"]])
+
+    def test_delete_while_running_keeps_the_history(self) -> None:
+        job = self._blocking_job("block", 60)
+        scheduler.tick(now=_at(60))
+        scheduler.delete_job(job["id"])
+        self._release(job["id"])
+        report = scheduler.tick(now=_at(61))
+        self.assertEqual(report.finished, [job["id"]])
+        self.assertTrue(scheduler.runs_file(job["id"]).exists())
+        self.assertNotIn(job["id"], json.loads(scheduler.state_file().read_text(encoding="utf-8"))["jobs"])
+
+    def test_list_runs_limit_and_order(self) -> None:
+        job = scheduler.create_job(_job("j", 60), now=T0)
+        for i in range(5):
+            scheduler._append_run(job["id"], {"status": "ok", "started_at": f"2026-09-11T10:0{i}:00Z"})
+        runs = scheduler.list_runs(job["id"], limit=3)
+        self.assertEqual([r["started_at"][-6:-1] for r in runs], ["04:00", "03:00", "02:00"])
+
 
 if __name__ == "__main__":
     unittest.main()

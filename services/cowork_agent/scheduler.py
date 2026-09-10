@@ -588,3 +588,31 @@ def tick(now: Optional[datetime] = None) -> TickReport:
         if changed:
             _write_doc(state_file(), state)
     return report
+
+
+# ── Run now ──────────────────────────────────────────────────────────────────
+
+
+def run_now(job_id: str, *, now: Optional[datetime] = None) -> dict:
+    """Start the job immediately (``trigger: manual``). Ignores ``enabled`` —
+    a manual run is how an agent tests a job before trusting it — and the
+    concurrency cap, and does not touch ``next_run``. Single-flight still
+    holds: a job that is running raises ``JobRunningError``."""
+    now = _resolve_now(now)
+    with _lock:
+        job = _read_doc(jobs_file())["jobs"].get(job_id)
+        if job is None:
+            raise UnknownJobError(job_id)
+        if job_id in _running:
+            raise JobRunningError(f"{job_id} already has a run in progress")
+        state = _read_doc(state_file())
+        entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
+        entry["running_since"] = stamp(now)
+        _write_doc(state_file(), state)
+        try:
+            _launch(job, "manual", now)
+        except Exception:
+            entry["running_since"] = None
+            _write_doc(state_file(), state)
+            raise
+        return _view(job, entry)
