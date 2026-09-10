@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Sequence
 
 from services.cowork_agent import project_layout
+from services.cowork_agent.connectors.github.common import get_github_token
 from services.cowork_agent.connectors.github.issues import (
     IssuesResult,
     RateLimit,
@@ -191,6 +194,22 @@ class _Budget:
         seconds = _parse_reset(rate.reset_at or self.reset_at)
         self.pause(seconds if seconds is not None else 300.0, reason)
 
+    def resume_if_caused_by(self, kinds: frozenset[str]) -> bool:
+        """Lift a pause whose cause is in ``kinds``. ``True`` iff one was lifted.
+
+        ``_handle_failure`` writes the reason as ``"<kind>: <detail>"``, so the
+        kind is recoverable from it and there is no second copy of the state to
+        keep in sync.
+        """
+        if not self.paused:
+            return False
+        kind = self._pause_reason.split(":", 1)[0].strip()
+        if kind not in kinds:
+            return False
+        self._paused_until = 0.0
+        self._pause_reason = ""
+        return True
+
     def can_spend(self) -> bool:
         """Whether another page may be fetched right now."""
         if self.paused:
@@ -220,9 +239,10 @@ _pending_global_failure: Optional[IssuesResult] = None
 
 def reset_state() -> None:
     """Drop every in-process poller cache. For tests."""
-    global _budget, _pending_global_failure
+    global _budget, _pending_global_failure, _auth_state
     _budget = _Budget()
     _pending_global_failure = None
+    _auth_state = None
     _cooldowns.clear()
     _warned.clear()
     _inflight.clear()
@@ -247,6 +267,142 @@ def _warn_once(key: str, message: str, *args: object) -> None:
         return
     _warned[key] = now
     logger.warning(message, *args)
+
+
+# ── Credential changes ───────────────────────────────────────────────────────
+# A poll that fails with ``not_authenticated`` pauses the whole poller for
+# ``_GLOBAL_PAUSE_S``. That is right while no credential exists and wrong the
+# moment one arrives, so signing in is *detected* rather than waited out —
+# otherwise a sign-in is followed by up to ten more minutes of the error it
+# just fixed.
+
+
+#: Reacting to a new credential can be turned off without turning off polling.
+ENV_AUTH_DETECT = "XO_GITHUB_POLL_AUTH_DETECT"
+
+#: The pause reasons a fresh credential invalidates. A rate limit is not fixed
+#: by signing in, and neither is a missing ``gh``; those are left to expire.
+_AUTH_PAUSE_KINDS = frozenset({"not_authenticated"})
+
+#: ``None`` until the first observation. A process that starts up already
+#: authenticated must read as "no change" rather than "just signed in", or
+#: every restart would clear backoff it has not earned.
+_auth_state: Optional[tuple[bool, str]] = None
+
+
+def auth_detect_enabled() -> bool:
+    return _flag(ENV_AUTH_DETECT, True)
+
+
+def _digest(secret: str) -> str:
+    """A short, non-reversible stand-in for a secret."""
+    return hashlib.sha256(secret.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _gh_hosts_file() -> Path:
+    """Where ``gh`` keeps its own session, honouring its config-dir overrides."""
+    override = (os.getenv("GH_CONFIG_DIR", "") or "").strip()
+    if override:
+        return Path(override) / "hosts.yml"
+    xdg = (os.getenv("XDG_CONFIG_HOME", "") or "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "gh" / "hosts.yml"
+
+
+def _auth_signature() -> tuple[bool, str]:
+    """``(a credential exists, a non-secret digest of it)``.
+
+    The digest is what makes *swapping* identities count as a change and not
+    only acquiring one: a different account can see a different set of
+    repositories, so the same backoff deserves clearing. Tokens are hashed —
+    never held, never logged — because this runs every tick in the same process
+    as the log handlers.
+
+    The three sources are the three a poll would actually use, in the order
+    ``issues._subprocess_env`` resolves them: an injected environment token, the
+    stored connector token, then ``gh``'s own session.
+    """
+    material: list[str] = []
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = (os.getenv(name, "") or "").strip()
+        if value:
+            material.append(f"env:{_digest(value)}")
+    try:
+        stored = get_github_token()
+    except Exception:
+        # An unreadable token store is not this loop's to report: it reads as
+        # "no stored credential", which is what a poll would conclude too.
+        stored = None
+    if stored:
+        material.append(f"store:{_digest(stored)}")
+    try:
+        # Stamped with its mtime, not just its presence: re-running
+        # ``gh auth login`` over an expired session rewrites this file without
+        # creating it, and that re-login is exactly the event worth catching.
+        # gh rewriting it for its own reasons costs one extra poll, which is
+        # the cheaper side of the trade.
+        stamp = _gh_hosts_file().stat().st_mtime_ns
+        material.append(f"cli:{stamp}")
+    except OSError:
+        # Absent, or unreadable — either way there is no session to report.
+        pass
+    return bool(material), "|".join(material)
+
+
+def note_auth_change() -> bool:
+    """Clear the backoff that a missing or different credential caused.
+
+    Safe to call from a request thread: it touches in-process state only, never
+    the network. Returns ``True`` iff a global pause was lifted.
+    """
+    lifted = _budget.resume_if_caused_by(_AUTH_PAUSE_KINDS)
+    # Every per-repo verdict was reached under the old credential, so none of
+    # them outlive it. ``bad_remote`` is the one a new token cannot fix, and
+    # re-testing it costs a single poll — cheaper than maintaining a second
+    # index of *why* each repo is resting.
+    _cooldowns.clear()
+    # The next failure should be able to speak again rather than being
+    # swallowed as a repeat of the one that was just resolved.
+    for key in [k for k in _warned if k.startswith("repo:") or k == "no_cli"]:
+        _warned.pop(key, None)
+    return lifted
+
+
+def detect_auth_change() -> bool:
+    """Notice a credential that appeared or changed since the last tick.
+
+    This is the half that covers a sign-in the API never saw — ``gh auth login``
+    run in a terminal. A sign-in *through* the connector does not wait for it:
+    ``save_github_token`` calls :func:`note_auth_change` directly.
+    """
+    global _auth_state
+    if not auth_detect_enabled():
+        return False
+    try:
+        current = _auth_signature()
+    except Exception:  # pragma: no cover - reading the state must not end a tick
+        logger.debug(
+            "github poller: could not read the credential state", exc_info=True
+        )
+        return False
+    previous, _auth_state = _auth_state, current
+    if previous is None or current == previous:
+        return False
+    present_now, _ = current
+    was_present, _ = previous
+    if not present_now:
+        # Signed out. The next poll fails and backs off on its own, which is
+        # the right answer — there is nothing to clear.
+        logger.info("github poller: the GitHub credential went away")
+        return False
+    lifted = note_auth_change()
+    logger.info(
+        "github poller: the GitHub credential %s; %s",
+        "appeared" if not was_present else "changed",
+        "backoff cleared, polling resumes this tick" if lifted
+        else "per-repo backoff cleared",
+    )
+    return True
 
 
 # ── Which projects to poll ───────────────────────────────────────────────────
@@ -492,6 +648,10 @@ async def poll_project_now(
 async def poll_once() -> dict:
     """One tick: poll every project that has one, and summarise. Never raises."""
     summary = {"projects": 0, "polled": 0, "skipped": 0, "points": 0, "paused": False}
+
+    # Ahead of the pause check, not after it: a credential that arrived during
+    # the backoff is precisely what makes that backoff stale.
+    detect_auth_change()
 
     if _budget.paused:
         summary["paused"] = True
