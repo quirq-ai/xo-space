@@ -56,6 +56,10 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
             self.assertIn("'" + state + "'", mod)
         self.assertIn("function others(e)", mod)
         self.assertIn("typeof m==='number'", mod)
+        # the owner row never leaves the swarm group: a repo whose last
+        # member was revoked still reads shared with a count of 1, and that
+        # is "not shared" to a person — it must leave the rail
+        self.assertIn("mine:!!r.project&&!!r.shared&&others(r)!==0", mod)
         pane = read("js/views/sharing.js")
         self.assertIn("if(memberState(id)==='live'&&!members.has(id))loadMembers(id);", pane)
         self.assertIn("if(st!=='live')return", pane)

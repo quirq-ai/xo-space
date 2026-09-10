@@ -23,7 +23,7 @@ import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
   cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260910-sharingpane1';
+  checkNow,failText} from './sharing_data.js?v=20260911-sharingfix1';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 const dtfmt=iso=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'—';
@@ -419,8 +419,10 @@ function bodyHTML(m){
 function pickChip(p){
   const e=entryFor(p.id);
   if(e&&e.shared){
+    /* a group nobody else can see (last member revoked) is not "shared";
+       the picker shows it as a plain project you can share again */
     const n=typeof e.members==='number'?Math.max(0,e.members-1):null;
-    return n===0?'<span class="tchip">only you</span>':'<span class="tchip st-shared">shared'+(n?' with '+n:'')+'</span>';
+    if(n!==0)return'<span class="tchip st-shared">shared'+(n?' with '+n:'')+'</span>';
   }
   return p.unscaffolded?'<span class="tchip st-blocked">unscaffolded</span>':'';
 }

@@ -127,7 +127,11 @@ export function entryFor(projectId){
   return null;
 }
 /* Every repo the relay knows, normalised for the pane:
-     mine      cloned here (has a project id) and known to the swarm
+     mine      cloned here (has a project id) and someone OTHER than this
+               workspace can see it — the swarm keeps the group (and the
+               owner row) after the last member is revoked, so `shared`
+               alone would list a repo nobody else can see; others()===0 is
+               "not shared" to a person and leaves the rail
      incoming  shared with this workspace, not cloned here yet
    Per-repo timestamps and the last fetch error ride along; the behind count
    does not live in the snapshot — the pane asks /commits per project. */
@@ -135,7 +139,7 @@ export function repos(){
   if(!status)return[];
   return Object.entries(status.repos||{}).map(([repo,r])=>({
     repo,project:r.project||null,shared:!!r.shared,
-    mine:!!r.project&&!!r.shared,
+    mine:!!r.project&&!!r.shared&&others(r)!==0,
     incoming:!r.project&&!!r.available&&!!r.shared,
     others:others(r),
     lastFetchAt:r.last_fetch_at||null,lastError:r.last_error||null,
