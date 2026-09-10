@@ -1,80 +1,110 @@
-  /* ---------------- project sharing (Files → List lens) ----------------
-     Strip above the list, "shared with you" inbox at the top of the list,
-     and the Sharing drawer panel. Reuses the Files tab's .tchip / .prj-note /
-     .prj-list vocabulary so it reads as part of the same surface. */
+  /* ---------------- project sharing (Files → Sharing lens) ----------------
+     The whole of project sharing lives on this lens: a status strip, a rail
+     (the "shared with you" inbox + every project shared from here) and a
+     detail panel (commits + apply, members + share/revoke) that the share
+     composer swaps into. Reuses the Files tab's .tchip / .prj-note /
+     .prj-list / .prj-empty vocabulary so it reads as the same surface. */
+  #view-sharing{overflow-y:auto}
 
-  /* strip */
+  /* strip: parked reason or on/last check · your id + copy + copy invite */
   .shr-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    margin:-6px 0 14px;padding:8px 12px;background:var(--bg-2);
+    margin:-6px 0 18px;padding:8px 12px;background:var(--bg-2);
     border:1px solid var(--line-soft);border-radius:10px;font-size:12px}
   .shr-left,.shr-right{display:flex;align-items:center;gap:8px;min-width:0}
   .shr-muted{color:var(--ink-3);font-size:11.5px}
+  .shr-muted.is-warn,.is-warn{color:#e0b04c}
   .shr-id{font:500 11px var(--mono);color:var(--ink-2);background:var(--bg-3);
-    border:1px solid var(--line-soft);border-radius:6px;padding:2px 7px}
+    border:1px solid var(--line-soft);border-radius:6px;padding:2px 7px;white-space:nowrap}
   .shr-copy{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
     color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:3px 9px;
-    transition:all .16s var(--ease)}
+    white-space:nowrap;transition:all .16s var(--ease)}
   .shr-copy:hover{color:var(--accent);border-color:var(--accent)}
+  .shr-copy.is-accent{color:var(--accent);border-color:var(--accent)}
+  .shr-copy.is-accent:hover{color:var(--accent-deep);border-color:var(--accent-deep)}
 
-  /* row chip beside the project name (empty span when not shared) */
-  .prj-shr{display:inline-flex;align-items:center}
-  .prj-shr:empty{display:none}
-  .prj-shr-chip{margin-left:6px}
+  /* buttons added to the Files vocabulary: the one primary action per
+     surface (Share, Apply) and a smaller size for row-level actions */
+  .shl-primary{color:#14100a;background:var(--accent);border-color:var(--accent);font-weight:500}
+  .shl-primary:hover{color:#14100a;background:var(--accent-deep);border-color:var(--accent-deep)}
+  .sess-refresh.is-sm{font-size:12px;padding:4px 10px;border-radius:7px}
+  .sess-refresh[disabled]{opacity:.5;cursor:default}
+  .sess-refresh[disabled]:hover{color:var(--ink-2);border-color:var(--line)}
+  .shl-primary[disabled]:hover{color:#14100a;background:var(--accent);border-color:var(--accent)}
 
   /* chips added to the shared vocabulary */
   .tchip.st-shared{color:var(--accent);border-color:var(--accent)}
   .tchip.st-available{color:#e0b04c;border-color:#e0b04c}
+  .tchip.st-quiet{color:var(--ink-3)}
+
+  /* rail | detail */
+  .shl-split{display:grid;grid-template-columns:372px minmax(0,1fr);gap:18px;align-items:start}
+  .shl-rail{display:flex;flex-direction:column;gap:16px;min-width:0}
+  .shl-main{min-width:0}
+  .shl-sec{display:flex;flex-direction:column;gap:8px}
+  .shl-sec-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 2px}
+  .shl-sec-head .prj-ptitle{margin-bottom:0}
 
   /* inbox: repos shared with this workspace, not cloned here */
-  .shr-inbox{background:var(--bg-2);border:1px dashed var(--line);border-radius:12px;
-    padding:12px 14px;margin-bottom:10px}
-  .shr-inbox .prj-ptitle{margin-bottom:8px}
-  .shr-inbox-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;
-    border-top:1px solid var(--line-soft)}
-  .shr-inbox-row:first-of-type{border-top:0;padding-top:0}
-  .shr-repo{display:flex;align-items:center;gap:8px;font-size:13px}
-  .shr-hint{color:var(--ink-3);font-size:11.5px}
-  .shr-actions{display:flex;gap:8px}
-  .shr-connect{font-size:12px;padding:5px 11px}
-  .shr-inbox-row[data-clone-state="cloning"] .shr-repo b{color:var(--ink-2)}
-  .shr-cmd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .shr-cmd code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
-    border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;
-    overflow-x:auto;max-width:100%}
+  .shl-inbox{display:flex;flex-direction:column;gap:8px;padding:12px 14px;
+    background:var(--bg-2);border:1px dashed var(--line);border-radius:12px}
+  .shl-inbox .prj-ptitle{margin-bottom:2px}
+  .shl-inbox-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-top:1px solid var(--line-soft)}
+  .shl-inbox-row:first-of-type{border-top:0;padding-top:0}
+  .shl-inbox-top{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+  .shl-inbox-top b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-inbox-acts{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .shl-prog{display:block;height:3px;width:120px;border-radius:2px;background:var(--line-soft);overflow:hidden}
+  .shl-prog i{display:block;height:100%;width:38%;background:var(--accent);animation:shlprog 1.4s var(--ease) infinite}
+  @keyframes shlprog{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
+  @media (prefers-reduced-motion:reduce){.shl-prog i{animation:none}}
 
-  /* drawer panel */
-  .shr-panel{display:flex;flex-direction:column;gap:12px}
-  .shr-sec-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-  .shr-sec-title{font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;
-    color:var(--ink-3)}
+  /* rail rows: same 12px cards as the List; the selected one is lit and
+     work waiting carries the accent bar the drawer used for new commits */
+  .shl-rows{display:flex;flex-direction:column;gap:8px}
+  .shl-row{display:flex;align-items:stretch;background:var(--bg-2);border:1px solid var(--line-soft);
+    border-radius:12px;transition:border-color .16s var(--ease),background .16s var(--ease)}
+  .shl-row:hover{border-color:var(--line)}
+  .shl-row.is-need{box-shadow:inset 2px 0 0 var(--accent)}
+  .shl-row.is-sel{background:var(--bg-3);border-color:#2c3240;box-shadow:inset 2px 0 0 var(--accent)}
+  .shl-row-head{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;text-align:left;
+    padding:12px 17px;border-radius:12px;color:var(--ink)}
+  .shl-row-head:hover .shl-row-top b{color:var(--accent)}
+  .shl-row-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .shl-row-top,.shl-row-sub{display:flex;align-items:center;gap:8px;min-width:0}
+  .shl-row-top b{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-row-sub em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .shl-row-sub .shr-muted{white-space:nowrap}
+  .shl-row-acts{display:flex;align-items:center;padding-right:12px;flex:none}
+
+  /* detail panel */
+  .shl-detail{display:flex;flex-direction:column;gap:14px;padding:18px 20px 20px;
+    background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px}
+  .shl-detail-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
+  .shl-detail-title{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .shl-name{font:500 22px/1.15 var(--serif);color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-detail-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .shl-detail-meta em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3)}
+  .shl-rule{height:1px;background:var(--line-soft)}
   .shr-hash{font:500 11px var(--mono);color:var(--ink-3);flex:none}
   .shr-subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shr-rows{display:flex;flex-direction:column;gap:6px}
-  .shr-row{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
-  .shr-row.is-revoked .shr-id{text-decoration:line-through;color:var(--ink-3)}
-  .shr-revoke{margin-left:auto;font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
-    color:#e07a5f;border:1px solid transparent;border-radius:999px;padding:3px 9px}
-  .shr-revoke:hover{border-color:#e07a5f}
-  .shr-revoke:disabled{opacity:.5}
-  .shr-form{display:flex;gap:8px;align-items:center;margin-top:10px}
-  .shr-input{width:auto;flex:1;min-width:0}
-  .shr-form button[disabled]{opacity:.5;cursor:default}
-
   /* unapplied commits: accent bar + tag; the rest read as history */
-  .shr-panel .prj-li{padding-left:8px;border-left:2px solid transparent;border-radius:0 6px 6px 0}
-  .shr-panel .prj-li.is-new{border-left-color:var(--accent);background:var(--bg-3)}
-  .shr-panel .prj-li:not(.is-new) .shr-subject{color:var(--ink-2)}
+  .shl-detail .prj-li{padding:5px 8px;border-left:2px solid transparent;border-radius:0 6px 6px 0}
+  .shl-detail .prj-li.is-new{border-left-color:var(--accent);background:var(--bg-3);color:var(--ink)}
+  .shl-detail .prj-li:not(.is-new) .shr-subject{color:var(--ink-2)}
   .shr-newtag{flex:none}
   .shr-apply{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
   .shr-apply code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;overflow-x:auto;max-width:100%}
 
-  /* drawer panel polish (issue #83): the loading skeleton's second line,
-     the member row's action slot, the inline revoke confirmation and the
-     shaped empty state */
-  .prj-skel.is-sm.is-short{max-width:min(100%,300px)}
+  /* members */
+  .shr-rows{display:flex;flex-direction:column;gap:6px}
+  .shr-row{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
+  .shr-row.is-revoked .shr-id{text-decoration:line-through;color:var(--ink-3)}
   .shr-act{margin-left:auto;display:flex;align-items:center}
-  .shr-row .shr-revoke{margin-left:0}
+  .shr-revoke{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:#e07a5f;border:1px solid transparent;border-radius:999px;padding:3px 9px}
+  .shr-revoke:hover{border-color:#e07a5f}
   .shr-confirm{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .shr-confirm-yes{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
     color:#14100a;background:#e07a5f;border-radius:999px;padding:4px 10px}
@@ -87,47 +117,37 @@
     border-radius:10px;background:var(--bg-3);margin-bottom:8px}
   .shr-empty b{display:block;font:500 13.5px var(--serif);color:var(--ink);margin-bottom:4px}
   .shr-empty p{font-size:12px;color:var(--ink-3);margin:0;line-height:1.5}
+  .shr-form{display:flex;gap:8px;align-items:center;margin-top:10px}
+  .shr-input{width:auto;flex:1;min-width:0}
+  .shr-form button[disabled]{opacity:.5;cursor:default}
+  .prj-skel.is-sm.is-short{max-width:min(100%,300px)}
 
-  /* ---------------- Sharing lens (Files → Sharing) ----------------
-     Same centred column, header and row cards as the List, so the pill
-     switch feels like turning the same page over. Columns: project ·
-     origin/branch with the behind chip · members · last check. */
-  #view-sharing{overflow-y:auto}
-  .shl .shr-strip{margin-top:-4px}
-  .shl-cols,.shl-row{display:grid;grid-template-columns:minmax(0,1fr) 200px 130px 150px;
-    gap:14px;align-items:center}
-  .shl-cols{padding:0 17px 7px;font:600 10px var(--mono);letter-spacing:.16em;
-    text-transform:uppercase;color:var(--ink-3)}
-  .shl-row{width:100%;text-align:left;padding:12px 17px;background:var(--bg-2);
-    border:1px solid var(--line-soft);border-radius:12px;color:var(--ink);
+  /* composer: swaps into the detail panel */
+  .shl-composer{display:flex;flex-direction:column;gap:18px;padding:18px 20px 20px;
+    background:var(--bg-3);border:1px solid #2c3240;border-radius:12px}
+  .shl-composer-title{display:flex;flex-direction:column;gap:4px}
+  .shl-composer-title b{font:500 20px/1.15 var(--serif);color:var(--ink)}
+  .shl-step{font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+  .shl-picks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-height:320px;overflow-y:auto;padding-right:2px}
+  .shl-pick{display:flex;align-items:center;gap:10px;padding:9px 12px;text-align:left;min-width:0;
+    border:1px solid var(--line-soft);border-radius:9px;background:var(--bg);font-size:13px;color:var(--ink);
     transition:border-color .16s var(--ease),background .16s var(--ease)}
-  .shl-row:hover{border-color:var(--line)}
-  .shl-row:hover .shl-name b{color:var(--accent)}
-  .shl-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  /* work waiting: the same accent bar the drawer puts on unapplied commits */
-  .shl-row.is-behind{border-left:2px solid var(--accent)}
-  .shl-name{display:flex;flex-direction:column;gap:2px;min-width:0}
-  .shl-name b{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shl-name em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3);
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shl-cell{display:flex;align-items:center;gap:8px;min-width:0;font:400 11px var(--mono);
-    color:var(--ink-2);white-space:nowrap}
-  .shl-branch{color:var(--ink-3)}
-  .shl-muted{color:var(--ink-3);font:400 11px var(--mono);overflow:hidden;text-overflow:ellipsis}
-  .shl-when{font-size:10.5px;letter-spacing:.04em;color:var(--ink-3)}
-  .shl-when.is-err{color:#e0b04c}
-  .shl-when.is-none{color:var(--ink-4)}
-  .tchip.st-quiet{color:var(--ink-3)}
-  /* a span inside the row button: block it so the skeleton has a height */
-  .prj-skel.is-cell{display:inline-block;margin:0;width:120px}
-  .shl-link{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
-  .shl-link:hover{color:var(--accent-deep)}
-  @media (max-width:900px){
-    .shl-cols{display:none}
-    .shl-row{grid-template-columns:minmax(0,1fr) auto;
-      grid-template-areas:'n b' 'm w';row-gap:6px}
-    .shl-name{grid-area:n}
-    .shl-branch-cell{grid-area:b}
-    .shl-members{grid-area:m}
-    .shl-when{grid-area:w;justify-content:flex-end}
+  .shl-pick:hover{border-color:var(--line)}
+  .shl-pick:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .shl-pick.is-sel{border-color:var(--accent);background:var(--bg-2)}
+  .shl-pick b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-pick em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-dot{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ink-4);flex:none;transition:all .16s var(--ease)}
+  .shl-pick.is-sel .shl-dot{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 3px rgba(168,217,79,.14)}
+
+  /* nothing shared yet: two ways in, side by side */
+  .shl-empty{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+  .shl-empty-card{display:flex;flex-direction:column;gap:10px;padding:34px 28px;
+    border:1px dashed var(--line);border-radius:12px;background:var(--bg-2)}
+  .shl-empty-card b{font:500 20px/1.2 var(--serif);color:var(--ink)}
+  .shl-empty-card p{font-size:12.5px;color:var(--ink-3);line-height:1.6;margin:0;max-width:52ch}
+  .shl-empty-card>div{display:flex;align-items:center;gap:8px;margin-top:6px}
+
+  @media (max-width:1000px){
+    .shl-split,.shl-empty,.shl-picks{grid-template-columns:minmax(0,1fr)}
   }

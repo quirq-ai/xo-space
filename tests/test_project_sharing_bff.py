@@ -83,6 +83,86 @@ class RelayRoutesTests(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertEqual(r.json()["detail"]["message"], "not a member")
 
+    def test_apply_passes_through_and_maps_apply_failed(self) -> None:
+        """The Apply button: a fast-forward is a 200 with the count; git's
+        refusal (diverged branch, dirty tree) is a 409 carrying git's reason,
+        never a 5xx the frontend client would retry."""
+        with patch.object(service, "apply", new=AsyncMock(return_value={"project_id": "p", "branch": "main", "applied": 2, "head": "abc"})) as ap:
+            r = client().post("/api/xo-projects/p/apply")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["applied"], 2)
+        ap.assert_awaited_once_with("p")
+        with patch.object(service, "apply", new=AsyncMock(side_effect=service.ApplyFailed("fatal: Not possible to fast-forward, aborting."))):
+            r = client().post("/api/xo-projects/p/apply")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["detail"]["code"], "apply_failed")
+        self.assertIn("fast-forward", r.json()["detail"]["message"])
+
+    def test_check_now_nudges_the_poller(self) -> None:
+        with patch.object(service, "check_now", return_value={"ok": True, "cadence": "running"}) as ck:
+            r = client().post("/api/project-sharing/check")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        ck.assert_called_once_with()
+
     def test_router_is_registered_in_bff_aggregate(self) -> None:
         from routers.cowork_agent.bff import bff_routers
         self.assertIn(relay_routes.router, bff_routers)
+
+
+class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
+    """service.apply is --ff-only and nothing else: it merges only when
+    behind, refuses when origin/<branch> is unknown, and relays git's own
+    reason when git refuses."""
+
+    async def test_apply_fast_forwards_only_when_behind(self) -> None:
+        from services.cowork_agent.project_sharing import git_ops, poller
+        with patch.object(service, "project_dir_exists", return_value=True), \
+             patch.object(service, "project_dir", return_value="/tmp/p"), \
+             patch.object(service.config, "watch_branch", return_value="main"), \
+             patch.object(git_ops, "behind_count", new=AsyncMock(return_value=2)), \
+             patch.object(git_ops, "apply_ff", new=AsyncMock(return_value=(True, ""))) as ff, \
+             patch.object(git_ops, "head_sha", new=AsyncMock(return_value="abc")), \
+             patch.object(poller, "nudge") as nudge:
+            out = await service.apply("p")
+        self.assertEqual(out, {"project_id": "p", "branch": "main", "applied": 2, "head": "abc"})
+        ff.assert_awaited_once_with("/tmp/p", "main")
+        nudge.assert_called_once_with()
+
+    async def test_apply_is_a_no_op_when_up_to_date(self) -> None:
+        from services.cowork_agent.project_sharing import git_ops
+        with patch.object(service, "project_dir_exists", return_value=True), \
+             patch.object(service, "project_dir", return_value="/tmp/p"), \
+             patch.object(service.config, "watch_branch", return_value="main"), \
+             patch.object(git_ops, "behind_count", new=AsyncMock(return_value=0)), \
+             patch.object(git_ops, "apply_ff", new=AsyncMock()) as ff, \
+             patch.object(git_ops, "head_sha", new=AsyncMock(return_value="abc")):
+            out = await service.apply("p")
+        self.assertEqual(out["applied"], 0)
+        ff.assert_not_awaited()
+
+    async def test_apply_surfaces_gits_refusal(self) -> None:
+        from services.cowork_agent.project_sharing import git_ops
+        with patch.object(service, "project_dir_exists", return_value=True), \
+             patch.object(service, "project_dir", return_value="/tmp/p"), \
+             patch.object(service.config, "watch_branch", return_value="main"), \
+             patch.object(git_ops, "behind_count", new=AsyncMock(return_value=1)), \
+             patch.object(git_ops, "apply_ff", new=AsyncMock(return_value=(False, "fatal: Not possible to fast-forward, aborting."))):
+            with self.assertRaises(service.ApplyFailed) as cm:
+                await service.apply("p")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Not possible to fast-forward", cm.exception.message)
+
+    async def test_apply_refuses_when_origin_branch_is_unknown(self) -> None:
+        from services.cowork_agent.project_sharing import git_ops
+        with patch.object(service, "project_dir_exists", return_value=True), \
+             patch.object(service, "project_dir", return_value="/tmp/p"), \
+             patch.object(service.config, "watch_branch", return_value="main"), \
+             patch.object(git_ops, "behind_count", new=AsyncMock(return_value=None)):
+            with self.assertRaises(service.ApplyFailed):
+                await service.apply("p")
+
+    async def test_apply_404s_a_missing_project(self) -> None:
+        with patch.object(service, "project_dir_exists", return_value=False):
+            with self.assertRaises(service.ProjectNotFound):
+                await service.apply("nope")
