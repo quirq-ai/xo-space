@@ -1,159 +1,177 @@
-"""
-REST routes for the Vercel connector.
+"""HTTP surface for the Vercel connector.
 
-Endpoints:
-  POST /api/connectors/vercel/token                — validate & store API token
-  GET  /api/connectors/vercel/status               — current connection status
-  POST /api/connectors/vercel/disconnect           — delete stored token
-  POST /api/connectors/vercel/reconnect            — re-validate stored token
-  GET  /api/connectors/vercel/oauth/start          — initiate OAuth 2.1 PKCE flow
-  GET  /callback                                    — OAuth 2.1 callback (matches registered redirect_uri)
-  GET  /.well-known/oauth-protected-resource        — RFC 9728 resource server metadata
-  OPTIONS /.well-known/oauth-protected-resource     — CORS preflight
+  POST /api/connectors/vercel/token            — store a pasted API token
+  GET  /api/connectors/vercel/status           — current connection state
+  POST /api/connectors/vercel/disconnect       — forget the stored credentials
+  POST /api/connectors/vercel/reconnect        — re-check what's stored
+  GET  /api/connectors/vercel/oauth/start      — begin Sign in with Vercel
+  POST /api/connectors/vercel/oauth/exchange   — finish it from a pasted URL
+  GET  /callback                               — finish it from Vercel's redirect
+  GET/OPTIONS /.well-known/oauth-protected-resource — RFC 9728 metadata
+
+``vercel_oauth_callback`` is imported by the MagicPath router, which owns the
+shared ``/callback`` path and delegates Vercel-shaped requests here; its name
+and parameters are that contract.
 """
 
+import html
+import json
 import logging
-import os
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from services.cowork_agent.connectors.vercel_connector import (
-    delete_vercel_token,
-    ensure_oauth_client,
-    exchange_code_for_tokens,
-    get_oauth_client,
+from services.cowork_agent.connectors.vercel import (
+    Connection,
+    complete_authorization,
+    connect_with_api_token,
+    disconnect,
     get_status,
-    get_valid_access_token,
-    save_vercel_token,
-    start_oauth_flow,
-    validate_token,
+    start_authorization,
 )
+from services.cowork_agent.connectors.vercel.oauth import VercelOAuthError
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-# Must match exactly the redirect_uri registered in vercel_client.redirect_uris.
-_DEFAULT_REDIRECT_URI = os.getenv("VERCEL_OAUTH_REDIRECT_URI", "http://127.0.0.1/callback")
-
 
 class TokenBody(BaseModel):
-    token: str
+    token: str = Field(max_length=4096)
 
 
-class OAuthExchangeBody(BaseModel):
-    code: str
-    state: str
+class ExchangeBody(BaseModel):
+    """The finish step. `callback_url` is the whole URL from the address bar;
+    `code` accepts one too, since that is the field people paste into."""
+
+    code: str | None = Field(default=None, max_length=8192)
+    state: str | None = Field(default=None, max_length=4096)
+    callback_url: str | None = Field(default=None, max_length=8192)
 
 
-# ---------------------------------------------------------------------------
-# API-token endpoints
-# ---------------------------------------------------------------------------
+def _respond(connection: Connection) -> JSONResponse:
+    status_code = {"connected": 200, "needs_auth": 200, "failed": 502}.get(
+        connection.status, 200
+    )
+    return JSONResponse(connection.as_dict(), status_code=status_code)
+
 
 @router.post("/api/connectors/vercel/token")
-async def submit_vercel_token(body: TokenBody) -> JSONResponse:
-    token = body.token.strip()
-    if not token:
-        raise HTTPException(400, detail="Token is required.")
-
-    result = await validate_token(token)
-    if not result.get("valid"):
-        raise HTTPException(422, detail=result.get("error", "Invalid token."))
-
-    save_vercel_token(
-        token,
-        username=result.get("username", ""),
-        name=result.get("name", ""),
-    )
-    return JSONResponse({
-        "status": "connected",
-        "username": result.get("username", ""),
-        "name": result.get("name", ""),
-        "auth_method": "api_token",
-    })
+async def submit_token(body: TokenBody) -> JSONResponse:
+    connection = await connect_with_api_token(body.token)
+    if connection.status != "connected":
+        raise HTTPException(422, detail=connection.error or "Vercel rejected the token.")
+    return _respond(connection)
 
 
 @router.get("/api/connectors/vercel/status")
-async def vercel_status() -> JSONResponse:
-    return JSONResponse(await get_status())
+async def status() -> JSONResponse:
+    return _respond(await get_status())
+
+
+@router.post("/api/connectors/vercel/reconnect")
+async def reconnect() -> JSONResponse:
+    """Re-check the stored credentials, refreshing an OAuth token if due."""
+    return _respond(await get_status())
 
 
 @router.post("/api/connectors/vercel/disconnect")
 async def disconnect_vercel() -> JSONResponse:
-    delete_vercel_token()
-    return JSONResponse({"status": "needs_auth"})
+    return _respond(await disconnect())
 
-
-@router.post("/api/connectors/vercel/reconnect")
-async def reconnect_vercel() -> JSONResponse:
-    token = await get_valid_access_token()
-    if not token:
-        return JSONResponse({"status": "needs_auth", "error": "No token stored."})
-
-    result = await validate_token(token)
-    if result.get("valid"):
-        return JSONResponse({
-            "status": "connected",
-            "username": result.get("username", ""),
-            "name": result.get("name", ""),
-            "auth_method": result.get("auth_method", "api_token"),
-        })
-    return JSONResponse(
-        {"status": result["status"], "error": result.get("error", "")},
-        status_code=502,
-    )
-
-
-# ---------------------------------------------------------------------------
-# OAuth 2.1 Authorization Code + PKCE flow
-# ---------------------------------------------------------------------------
 
 @router.get("/api/connectors/vercel/oauth/start")
-async def vercel_oauth_start(
-    redirect_uri: str = Query(default=None, description="Override the registered redirect URI"),
+async def oauth_start(
+    redirect_uri: str = Query(default=None, description="Override the callback URL"),
 ) -> JSONResponse:
-    """
-    Initiate the Vercel OAuth 2.1 PKCE flow.
+    """Start an authorization.
 
-    Returns {"auth_url": "...", "state": "..."}.
-    The frontend should open auth_url (e.g. in a popup) and listen for the
-    postMessage from /callback to know when the flow completes.
+    The response says whether the callback will complete on its own
+    (`reachable_callback`) and, when it won't, how to finish by pasting the URL
+    (`instructions`, `exchange_url`).
     """
-    effective_redirect = redirect_uri or _DEFAULT_REDIRECT_URI
-
     try:
-        # Auto-register the OAuth client via Vercel's DCR endpoint on first
-        # use, so a fresh checkout works without manual mcp-tokens.json setup.
-        await ensure_oauth_client(effective_redirect)
-        flow = start_oauth_flow(redirect_uri=effective_redirect)
-    except (RuntimeError, ValueError) as exc:
-        raise HTTPException(500, detail=str(exc))
+        authorization = await start_authorization(redirect_uri)
+    except VercelOAuthError as exc:
+        raise HTTPException(502, detail=str(exc)) from exc
+    return JSONResponse(authorization.as_dict())
 
-    return JSONResponse({
-        "auth_url": flow["auth_url"],
-        "state": flow["state"],
-    })
+
+def _split_pasted(body: ExchangeBody) -> tuple[str, str]:
+    """Pull (code, state) out of separate fields or a pasted callback URL."""
+    code = (body.code or "").strip()
+    state = (body.state or "").strip()
+
+    pasted = (body.callback_url or "").strip()
+    if not pasted and code.lower().startswith(("http://", "https://")):
+        pasted, code = code, ""
+
+    if pasted:
+        query = parse_qs(urlparse(pasted).query)
+        error = (query.get("error") or [""])[0].strip()
+        if error:
+            description = (query.get("error_description") or [""])[0].strip()
+            raise HTTPException(422, detail=description or error)
+        code = (query.get("code") or [code])[0].strip()
+        state = (query.get("state") or [state])[0].strip()
+
+    if not code or not state:
+        raise HTTPException(
+            400,
+            detail=(
+                "Send the full callback URL from the browser's address bar as "
+                "callback_url, or code and state separately."
+            ),
+        )
+    return code, state
 
 
 @router.post("/api/connectors/vercel/oauth/exchange")
-async def vercel_oauth_exchange(body: OAuthExchangeBody) -> JSONResponse:
-    """
-    REST alternative to the /callback redirect — for environments where
-    http://127.0.0.1/callback is unreachable (remote workspaces, containers).
+async def oauth_exchange(body: ExchangeBody) -> JSONResponse:
+    """Finish an authorization without a working redirect."""
+    code, state = _split_pasted(body)
+    connection = await complete_authorization(code=code, state=state)
+    if connection.status != "connected":
+        raise HTTPException(422, detail=connection.error or "Could not complete sign-in.")
+    return _respond(connection)
 
-    The frontend pastes the full callback URL; it extracts code+state and
-    POSTs them here to complete the token exchange without a browser redirect.
-    """
-    result = await exchange_code_for_tokens(code=body.code.strip(), state=body.state.strip())
-    if not result.get("valid"):
-        raise HTTPException(422, detail=result.get("error", "Token exchange failed."))
-    return JSONResponse({
-        "status": "connected",
-        "username": result.get("username", ""),
-        "name": result.get("name", ""),
-        "auth_method": "oauth",
-    })
+
+_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+  body {{ font: 15px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         place-items: center; min-height: 100vh; background: #0b0b0c; color: #ededef; }}
+  main {{ max-width: 32rem; padding: 2rem; text-align: center; }}
+  h1 {{ font-size: 1.25rem; margin: 0 0 .5rem; }}
+  p {{ margin: 0; color: #a1a1a6; }}
+</style>
+</head>
+<body>
+<main><h1>{title}</h1><p>{message}</p></main>
+<script>
+  if (window.opener) {{
+    window.opener.postMessage({payload}, "*");
+    window.close();
+  }}
+</script>
+</body>
+</html>
+"""
+
+
+def _page(title: str, message: str, payload: dict, status_code: int) -> HTMLResponse:
+    return HTMLResponse(
+        _PAGE.format(
+            title=html.escape(title),
+            message=html.escape(message),
+            payload=json.dumps(payload),
+        ),
+        status_code=status_code,
+    )
 
 
 @router.get("/callback")
@@ -163,121 +181,75 @@ async def vercel_oauth_callback(
     error: str = Query(default=None),
     error_description: str = Query(default=None),
 ) -> HTMLResponse:
-    """
-    OAuth 2.1 callback — Vercel redirects here after user authorization.
+    """Where Vercel sends the browser after the user approves or denies.
 
-    Registered redirect_uri: http://127.0.0.1/callback (or VERCEL_OAUTH_REDIRECT_URI).
-    On success, posts a vercel_oauth_success message to the opener and closes.
-    On failure, posts vercel_oauth_error.
+    Reports the outcome to whoever opened the window via postMessage
+    (`vercel_oauth_success` / `vercel_oauth_error`) and closes itself.
     """
     if error:
-        desc = error_description or error
-        html = f"""<!DOCTYPE html>
-<html><head><title>Vercel Authorization Failed</title></head>
-<body>
-<h2>Vercel Authorization Failed</h2>
-<p>{desc}</p>
-<script>
-  if (window.opener) {{
-    window.opener.postMessage(
-      {{ type: 'vercel_oauth_error', error: {repr(str(desc))} }},
-      '*'
-    );
-    window.close();
-  }}
-</script>
-</body></html>"""
-        return HTMLResponse(content=html, status_code=400)
-
-    if not code or not state:
-        return HTMLResponse(
-            content="<h2>Missing code or state parameter.</h2>",
-            status_code=400,
+        detail = error_description or error
+        return _page(
+            "Vercel authorization failed",
+            detail,
+            {"type": "vercel_oauth_error", "error": detail},
+            400,
         )
 
-    result = await exchange_code_for_tokens(code=code, state=state)
+    if not code or not state:
+        detail = "The callback was missing its code or state. Start the connection again."
+        return _page(
+            "Vercel authorization incomplete",
+            detail,
+            {"type": "vercel_oauth_error", "error": detail},
+            400,
+        )
 
-    if not result.get("valid"):
-        err = result.get("error", "Unknown error")
-        html = f"""<!DOCTYPE html>
-<html><head><title>Vercel Token Exchange Failed</title></head>
-<body>
-<h2>Token Exchange Failed</h2>
-<p>{err}</p>
-<script>
-  if (window.opener) {{
-    window.opener.postMessage(
-      {{ type: 'vercel_oauth_error', error: {repr(str(err))} }},
-      '*'
-    );
-    window.close();
-  }}
-</script>
-</body></html>"""
-        return HTMLResponse(content=html, status_code=502)
+    connection = await complete_authorization(code=code, state=state)
+    if connection.status != "connected":
+        detail = connection.error or "Vercel would not issue a token."
+        return _page(
+            "Vercel authorization failed",
+            detail,
+            {"type": "vercel_oauth_error", "error": detail},
+            502,
+        )
 
-    username = result.get("username", "")
-    name = result.get("name", "") or username
-    html = f"""<!DOCTYPE html>
-<html><head><title>Vercel Connected</title></head>
-<body>
-<h2>Vercel Connected</h2>
-<p>Welcome, {name}! You can close this window.</p>
-<script>
-  if (window.opener) {{
-    window.opener.postMessage(
-      {{
-        type: 'vercel_oauth_success',
-        username: {repr(username)},
-        name: {repr(name)},
-      }},
-      '*'
-    );
-    window.close();
-  }}
-</script>
-</body></html>"""
-    return HTMLResponse(content=html)
+    who = (connection.identity.name or connection.identity.username) if connection.identity else ""
+    return _page(
+        "Vercel connected",
+        f"Signed in as {who}. You can close this window." if who
+        else "You can close this window.",
+        {
+            "type": "vercel_oauth_success",
+            "username": connection.identity.username if connection.identity else "",
+            "name": who,
+        },
+        200,
+    )
 
 
-# ---------------------------------------------------------------------------
-# RFC 9728 — OAuth Protected Resource Metadata
-# ---------------------------------------------------------------------------
+_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
+
 
 @router.get("/.well-known/oauth-protected-resource")
-async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
-    """
-    OAuth 2.0 Protected Resource Metadata per RFC 9728 and the MCP authorization spec.
-
-    Allows MCP clients (e.g. Manus) to discover which authorization server issues
-    valid tokens for this resource server and what scopes are supported.
-    """
-    base_url = str(request.base_url).rstrip("/")
+async def protected_resource_metadata(request: Request) -> JSONResponse:
+    """Tell MCP clients which authorization server issues tokens for us."""
     return JSONResponse(
-        content={
-            "resource": base_url,
+        {
+            "resource": str(request.base_url).rstrip("/"),
             "authorization_servers": ["https://vercel.com"],
-            "scopes_supported": ["read:projects", "deploy:projects"],
+            "scopes_supported": ["openid", "email", "profile", "offline_access"],
             "bearer_methods_supported": ["header"],
             "resource_documentation": "https://vercel.com/docs/rest-api",
         },
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Cache-Control": "no-store",
-        },
+        headers={**_CORS, "Cache-Control": "no-store"},
     )
 
 
 @router.options("/.well-known/oauth-protected-resource")
-async def oauth_protected_resource_cors() -> JSONResponse:
-    """CORS preflight for the OAuth protected resource metadata endpoint."""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-    )
+async def protected_resource_preflight() -> JSONResponse:
+    return JSONResponse({}, headers=_CORS)

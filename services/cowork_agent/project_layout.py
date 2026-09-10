@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.helpers import normalize_agent_id
 from services.cowork_agent.local_state import quirq_state_dir
@@ -640,6 +640,26 @@ def list_projects() -> list[dict]:
 def project_dir_exists(name: str) -> bool:
     """True iff the project root directory exists (scaffolded or not)."""
     return project_dir(name).is_dir()
+
+
+def git_repo_dirs() -> list[Path]:
+    """Immediate subdirs of xo-projects that are git repos (have a ``.git`` dir).
+
+    Same visibility rules as ``list_projects``: hidden names are skipped and the
+    directory name is the project id. Used by the commit relay; callers decide
+    what to do when a repo appears more than once.
+    """
+    root = xo_projects_root()
+    out: list[Path] = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir() and not entry.name.startswith(".") and (entry / ".git").is_dir():
+            out.append(entry)
+    return out
+
+
+def relative_path_suffix(relative_path: str) -> str:
+    """Return a project-relative path's final suffix without filesystem access."""
+    return PurePosixPath(relative_path).suffix
 
 
 def list_project_tree(name: str, relative_path: str = "") -> dict | None:

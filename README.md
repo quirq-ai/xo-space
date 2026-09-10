@@ -196,6 +196,10 @@ Nothing, by default. A self-hosted install binds to loopback, needs no account, 
 
 If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. It never includes prompts, responses, file contents or paths. Leave the key unset to stay signed out.
 
+To see what your install decided: the status is the first thing on the Setup tab's **Agent and watcher** card (`/space/#/secrets`), and every decision the server makes is in the log — `grep usage_sync ~/.quirq/quirq.log`. The installer prints both pointers on every run.
+
+If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
+
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
 ---
@@ -275,7 +279,7 @@ We'd love your help. Found a bug 🐛, want a runtime that isn't here 🧩, or h
 <div align="center">
 
 <a href="https://github.com/quirq-ai/xo-space/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=quirq-ai/xo-space" alt="Contributors" />
+  <img src="https://contrib.rocks/image?repo=quirq-ai/xo-space&max=100" alt="Contributors" />
 </a>
 
 </div>

@@ -3,7 +3,7 @@
     "enabled": true,
     "oauth": {
       "claude_code": { "enabled": false },
-      "codex": { "enabled": true }
+      "codex": { "enabled": false }
     },
     "api_keys": {
       "enabled": true,

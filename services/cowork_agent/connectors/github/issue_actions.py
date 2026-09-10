@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from .github_issues import (
+from .issues import (
     GH_BIN,
     GH_TIMEOUT_S,
     RateLimit,
@@ -148,20 +148,19 @@ async def fetch_issue(
     if not ref.is_github_com:
         argv[3:3] = ["--hostname", ref.host]
 
-    returncode, stdout, stderr = await _run_gh(argv, timeout_s)
-    if stderr == "__no_cli__":
+    result = await _run_gh(argv, timeout_s)
+    if result.binary_missing:
         return _failure_issue(slug, number, "no_cli",
                               "GitHub CLI (`gh`) could not be executed.")
-    if stderr == "__timeout__":
+    if result.timed_out:
         return _failure_issue(
             slug, number, "timeout",
             f"`gh api graphql` did not answer within {timeout_s:g}s.",
         )
-    if stderr.startswith("__spawn_failed__"):
-        return _failure_issue(
-            slug, number, "unknown",
-            f"Could not run `gh`: {stderr[len('__spawn_failed__'):].strip()}",
-        )
+    if result.exception:
+        return _failure_issue(slug, number, "unknown",
+                              f"Could not run `gh`: {result.exception}")
+    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
 
     payload: Any = None
     if stdout.strip():
@@ -223,20 +222,19 @@ async def authenticated_login(
             ok=False, error_kind="no_cli",
             error="GitHub CLI (`gh`) is not installed on this machine.",
         )
-    returncode, stdout, stderr = await _run_gh([gh_bin, "api", "user"], timeout_s)
-    if stderr == "__no_cli__":
+    result = await _run_gh([gh_bin, "api", "user"], timeout_s)
+    if result.binary_missing:
         return LoginResult(ok=False, error_kind="no_cli",
                            error="GitHub CLI (`gh`) could not be executed.")
-    if stderr == "__timeout__":
+    if result.timed_out:
         return LoginResult(
             ok=False, error_kind="timeout",
             error=f"`gh api user` did not answer within {timeout_s:g}s.",
         )
-    if stderr.startswith("__spawn_failed__"):
-        return LoginResult(
-            ok=False, error_kind="unknown",
-            error=f"Could not run `gh`: {stderr[len('__spawn_failed__'):].strip()}",
-        )
+    if result.exception:
+        return LoginResult(ok=False, error_kind="unknown",
+                           error=f"Could not run `gh`: {result.exception}")
+    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
     payload: Any = None
     if stdout.strip():
         try:

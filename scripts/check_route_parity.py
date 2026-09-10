@@ -6,12 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# Runnable as `python scripts/check_route_parity.py`, where sys.path[0] is
+# scripts/ — the repo root has to go on the path before `utils` resolves.
+sys.path.insert(0, str(REPO))
+
+from utils.commands import run_sync  # noqa: E402
 
 # Emitted inside the subprocess: the app's OpenAPI paths plus whatever this
 # agent's own routes.py contributes, so the parent can check one against the
@@ -50,11 +54,11 @@ def probe(agent: str, roots: Path) -> dict:
         "STARTUP_WARMUP_ENABLED": "false",
         "PYTHONWARNINGS": "ignore",
     }
-    out = subprocess.run(
+    out = run_sync(
         [sys.executable, "-c", _PROBE],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=180,
+        cwd=REPO, env=env, timeout=180, separate_stderr=True,
     )
-    if out.returncode != 0:
+    if not out.ok:
         raise SystemExit(
             f"import gate FAILED for AGENT_NAME={agent}\n"
             f"{out.stderr.strip()[-2000:]}"

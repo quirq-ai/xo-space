@@ -2,7 +2,7 @@
 Google Drive connector via rclone (CLI mode — no daemon, no port).
 
 The generic rclone plumbing and the OAuth-flow engine live in
-:mod:`services.cowork_agent.connectors.rclone_connector`. This module supplies only the
+:mod:`services.cowork_agent.connectors.rclone`. This module supplies only the
 Drive-specific descriptor (backend ``drive`` with ``drive.file`` scope, the
 Google auth-URL pattern, and the rclone.conf section shape) plus the Drive
 file operations (upload / mkdir / list / delete) that its router exposes.
@@ -12,14 +12,14 @@ import json
 import re
 from typing import AsyncIterator, Optional
 
-from .rclone_connector import (
+from ..rclone.connector import (
     RCLONE_CONFIG_PATH,  # noqa: F401  (kept for backward-compat imports)
     RcloneConnector,
     RcloneProvider,
     RcloneSession,  # noqa: F401  (exported for callers that type-hint sessions)
     _rclone_cli,
     _rclone_cli_stdin_stream,
-    _rc_post,  # noqa: F401  (re-exported: onedrive_rclone + tests import it here historically)
+    _rc_post,  # noqa: F401  (re-exported: onedrive.provider + tests import it here historically)
     ensure_rclone_running,  # noqa: F401  (re-exported; server.py imports it from here)
     rclone_available,  # noqa: F401  (re-exported for the gdrive router)
 )

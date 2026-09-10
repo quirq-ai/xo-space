@@ -1,13 +1,13 @@
 """
-GitHub connector — `gh auth login` (CLI device-flow) approach.
+GitHub connector — `gh auth login` (CLI device-flow) acquisition.
 
 Spawns `gh auth login --web` as a subprocess, parses the one-time device code
 from its output, and waits asynchronously for the user to authorize on
 github.com. Once `gh` exits successfully, the resulting token is read with
-`gh auth token` and exported into mcp-tokens.json by the caller.
+`gh auth token` and exported into token.json by `connect()`.
 
-This sits alongside the PAT flow (github_connector.py) — the two methods
-share the same storage and validation; only the *acquisition* differs.
+This sits alongside the PAT flow (github_pat.py) — the two methods share the
+same storage and validation (common.py); only the *acquisition* differs.
 
 Caveats (intentional, per Option B):
   - In-memory session state. A FastAPI worker restart drops in-progress logins.
@@ -27,7 +27,18 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.commands import run
+
+from .common import (
+    configure_git_identity,
+    connection_payload,
+    save_github_token,
+    validate_token,
+)
+
 log = logging.getLogger(__name__)
+
+AUTH_METHOD = "cli"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -173,19 +184,13 @@ async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
 
 async def _read_gh_token() -> str | None:
     """Fetch the active github.com token via `gh auth token`."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
-        log.warning("Failed to read gh token: %s", exc)
+    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], timeout=10, separate_stderr=True)
+    if res.timed_out or res.binary_missing or res.exception is not None:
+        log.warning("Failed to read gh token: %s", res.output.strip())
         return None
-    if proc.returncode != 0:
+    if res.returncode != 0:
         return None
-    token = stdout.decode("utf-8", errors="replace").strip()
+    token = res.output.strip()
     return token or None
 
 
@@ -224,21 +229,11 @@ async def start_login() -> dict[str, Any]:
         # Clear any prior `gh` session for github.com — `gh auth login` refuses
         # to start a fresh device flow when an account is already logged in.
         # Errors here are non-fatal (e.g. "not logged in" exits non-zero).
-        try:
-            logout = await asyncio.create_subprocess_exec(
-                GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME,
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(logout.wait(), timeout=5)
-        except (asyncio.TimeoutError, FileNotFoundError, OSError):
-            pass
+        await run([GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME], env=env, timeout=5)
 
         # `--insecure-storage` writes the token to a plain file under
         # ~/.config/gh — fine here because we immediately export it into
-        # mcp-tokens.json and never depend on gh's local store after that.
+        # token.json and never depend on gh's local store after that.
         proc = await asyncio.create_subprocess_exec(
             GH_BIN, "auth", "login",
             "--web",
@@ -308,6 +303,43 @@ async def poll_login(session_id: str) -> dict[str, Any]:
             "status": session.status,
             "error": session.error or "Login failed.",
         }
+
+
+async def connect(session_id: str) -> dict[str, Any]:
+    """
+    Poll a login session and, once `gh` hands us a token, validate + store it.
+
+    Mirrors ``github_pat.connect``, so both flows converge on the same stored
+    entry and the same response body. Returns:
+        {"ok": True,  "payload": <connection body>}      login finished
+        {"ok": False, "status": "pending", ...}          user hasn't authorized yet
+        {"ok": False, "status": "not_found"}             unknown/expired session
+        {"ok": False, "status": "failed", "error": ...}  login or validation failed
+    """
+    result = await poll_login(session_id)
+    status = result.get("status")
+
+    if status != "completed":
+        return {"ok": False, **result}
+
+    token = result["token"]
+    validation = await validate_token(token)
+    if not validation.get("valid"):
+        return {
+            "ok": False,
+            "status": "failed",
+            "error": validation.get(
+                "error",
+                "GitHub CLI login completed but the token failed validation.",
+            ),
+        }
+
+    save_github_token(token, auth_method=AUTH_METHOD)
+    # This flow leaves a live `gh` session behind, so git can borrow it for
+    # HTTPS auth as well as take its identity from it.
+    await configure_git_identity(validation, setup_credential_helper=True)
+    log.info("GitHub connected as @%s (via gh CLI)", validation.get("username"))
+    return {"ok": True, "payload": connection_payload(validation, AUTH_METHOD)}
 
 
 async def cancel_login(session_id: str) -> dict[str, Any]:

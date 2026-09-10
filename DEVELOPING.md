@@ -53,6 +53,9 @@ routers/                          broker routes only — NO agent branching
 
 services/
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
+  swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
+                                    timeouts, SwarmResult) + one module per feature: auth usage
+                                    project_sharing chat. Nothing else builds a swarm URL.
   cowork_agent/
     adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
       base.py loader.py cli_status.py usage_common.py   contract + shared helpers
@@ -60,9 +63,17 @@ services/
                                     routes.py paths.py models.py *_status.py store/state_db …
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
-    connectors/                   external services: gdrive/onedrive/github/vercel/manus/rclone_*/token_store
+    connectors/                   one package per external service: gdrive/ onedrive/ github/
+                                    vercel/ manus/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
+    project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
+                                    state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
+
+utils/
+  commands.py                     THE ONE EXECUTOR for external commands: run/run_spec over an argv list,
+                                    CommandSpec.from_json, safe_arg; never a shell (see §7)
+  local_port.py                   deterministic local port selection
 ```
 
 The **only** two trees an agent author touches are `config/agents/<name>/` and
@@ -101,7 +112,9 @@ mod = load_capability("usage", agent="hermes")   # target a specific agent
 
 A **capability** is just a module `adapters/<name>/<capability>.py`. A core
 router asks for a capability and forwards to it; it never branches on the agent
-name. A missing capability is normal — the router returns its empty/501 shape.
+name. A missing capability module is normal — the router returns its empty/501
+shape. An import error inside an existing capability is an implementation error
+and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 
@@ -229,6 +242,31 @@ exceptions:
 
 ## 7. Conventions
 
+### One executor for external commands
+
+Every subprocess xo-space starts goes through `utils/commands.py`:
+`run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
+argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
+described as data (the skill catalog, manifests, future automation). The
+spec is `{"argv": [...], "cwd", "env", "timeout"}`; a `command` string is
+accepted for hand-written config but is split by `split_command()` with
+POSIX quoting, never handed to a shell, and refused outright when it holds
+`&&`, `|`, `;`, a redirection or `$()`. The skill catalog is the one
+data-driven consumer today: `_normalize` builds a `CommandSpec` per step, so
+cwd and timeout are validated once, by the spec, and `install` runs each
+step with `run_spec`. Untrusted values (a repo name, a branch, a path from a
+request) go into **one** argv slot via `safe_arg()`, which rejects anything
+starting with `-` so it cannot become a flag (argument injection, the
+quieter cousin of command injection, CWE-78).
+
+`tests/test_command_executor.py` enforces this: no shell form may appear
+anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
+`os.exec*`/`os.spawn*`/`posix_spawn` family, `pty.spawn`), and both a direct
+`subprocess` / `create_subprocess_exec` call and an `import subprocess` are
+allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
+only shrink. Converting a file means removing it from that list.
+
+
 - **Thin routers, logic in services.** Endpoints live in `routers/` via
   `APIRouter`; business logic lives in `services/`. `server.py` is the only file
   that wires both planes.
@@ -311,6 +349,8 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
+| `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py` |
+| `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
 | `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
 

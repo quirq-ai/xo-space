@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+from utils.commands import run_sync
 
 from services.cowork_agent.self_update import _URL_USERINFO_RE
 
@@ -44,15 +45,11 @@ def is_git_repo(pdir: Path) -> bool:
 
 def _git_out(pdir: Path, *args: str) -> str:
     """One git read. Empty string on any failure — never raises, never logs."""
-    try:
-        res = subprocess.run(
-            ["git", "-C", str(pdir), *args],
-            capture_output=True, text=True, errors="replace",
-            timeout=_GIT_TIMEOUT_S,
-        )
-    except Exception:
-        return ""
-    return res.stdout.strip() if res.returncode == 0 else ""
+    res = run_sync(
+        ["git", "-C", str(pdir), *args],
+        timeout=_GIT_TIMEOUT_S, separate_stderr=True,
+    )
+    return res.stdout.strip() if res.ok else ""
 
 
 def git_provenance(pdir: Path) -> dict[str, str | None]:

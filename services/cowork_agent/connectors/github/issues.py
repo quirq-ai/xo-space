@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import shutil
-import signal
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .github_connector import get_github_token
+from utils.commands import CommandResult, run
+
+from .common import get_github_token
 
 GH_BIN = "gh"
 
@@ -360,54 +360,15 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
-def _kill_tree(proc: "asyncio.subprocess.Process") -> None:
-    """SIGKILL the timed-out process **and its children**."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        return
-    except Exception:
-        pass
-    try:
-        proc.kill()
-    except Exception:
-        pass
+async def _run_gh(argv: list[str], timeout_s: float) -> CommandResult:
+    """One ``gh`` invocation, through the one executor (DEVELOPING.md §7).
 
-
-async def _run_gh(argv: list[str], timeout_s: float) -> tuple[int | None, str, str]:
-    """One ``gh`` invocation. Returns ``(returncode, stdout, stderr)``."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=_subprocess_env(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # Its own process group, so a timeout can kill the whole tree.
-            start_new_session=True,
-        )
-    except FileNotFoundError:
-        return None, "", "__no_cli__"
-    except Exception as exc:  # OSError: no fork, no exec, no permission
-        return None, "", f"__spawn_failed__ {exc}"
-
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except (asyncio.TimeoutError, TimeoutError):
-        _kill_tree(proc)
-        try:
-            # ``communicate`` rather than ``wait``: it reaps the process AND
-            # closes the three pipes.
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
-            pass
-        return None, "", "__timeout__"
-    except Exception as exc:
-        return None, "", f"__spawn_failed__ {exc}"
-
-    return (
-        proc.returncode,
-        stdout.decode("utf-8", errors="replace") if stdout else "",
-        stderr.decode("utf-8", errors="replace") if stderr else "",
+    ``separate_stderr`` because this parses stdout as JSON while gh writes its
+    warnings to stderr. The runner closes stdin, so gh can never block on a
+    prompt, and a timeout kills the whole process group.
+    """
+    return await run(
+        argv, timeout=timeout_s, env=_subprocess_env(), separate_stderr=True,
     )
 
 
@@ -583,20 +544,18 @@ async def fetch_open_issues(
     if after:
         argv += ["-f", f"after={after}"]
 
-    returncode, stdout, stderr = await _run_gh(argv, timeout_s)
+    result = await _run_gh(argv, timeout_s)
 
-    if stderr == "__no_cli__":
+    if result.binary_missing:
         return _failure(slug, "no_cli", "GitHub CLI (`gh`) could not be executed.")
-    if stderr == "__timeout__":
+    if result.timed_out:
         return _failure(
             slug, "timeout",
             f"`gh api graphql` did not answer within {timeout_s:g}s.",
         )
-    if stderr.startswith("__spawn_failed__"):
-        return _failure(
-            slug, "unknown",
-            f"Could not run `gh`: {stderr[len('__spawn_failed__'):].strip()}",
-        )
+    if result.exception:
+        return _failure(slug, "unknown", f"Could not run `gh`: {result.exception}")
+    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
 
     payload: Any = None
     if stdout.strip():

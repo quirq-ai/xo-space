@@ -282,6 +282,7 @@ enable_channels() {
             '{
                 gateway: {
                     mode: "local",
+                    trustedProxies: ["127.0.0.1"],
                     controlUi: {
                         dangerouslyDisableDeviceAuth: true
                     },
@@ -375,6 +376,7 @@ enable_channels() {
 {
   "gateway": {
     "mode": "local",
+    "trustedProxies": ["127.0.0.1"],
     "controlUi": {
       "allowedOrigins": ["${control_ui_origin}"],
       "dangerouslyDisableDeviceAuth": true
@@ -415,6 +417,7 @@ EOJSON
 {
   "gateway": {
     "mode": "local",
+    "trustedProxies": ["127.0.0.1"],
     "controlUi": {
       "dangerouslyDisableDeviceAuth": true
     },
@@ -548,6 +551,49 @@ install_cli() {
         log_error "OpenClaw CLI not found in PATH after install"
         exit 1
     fi
+}
+
+# ==============================================================
+# Setup: Install first-party OpenClaw plugins (codex, slack, ...)
+#
+# Runs right after install_cli on every `setup`. `openclaw plugins install`
+# refuses a plugin id that is already installed (it points at
+# `plugins update` instead), so probe `openclaw plugins list --json` first
+# and skip when the plugin is present. A failed install is a warning, not
+# fatal — the gateway must still start without the plugin.
+#
+# install_openclaw_plugin <full-plugin-id> <bare-id-for-list-match>
+#   e.g. install_openclaw_plugin "@openclaw/codex" "codex"
+# ==============================================================
+install_openclaw_plugin() {
+    local plugin_id="$1" bare_id="$2"
+
+    if ! command -v openclaw &>/dev/null; then
+        log_warn "openclaw CLI not found — skipping ${plugin_id} plugin install"
+        return 0
+    fi
+
+    local listing
+    listing="$(openclaw plugins list --json 2>/dev/null || true)"
+    if printf '%s' "$listing" | grep -Eq "\"($plugin_id|$bare_id)\""; then
+        log "${plugin_id} plugin already installed — skipping"
+        return 0
+    fi
+
+    log "Installing ${plugin_id} plugin..."
+    if openclaw plugins install "$plugin_id" --accept-capabilities; then
+        log_success "${plugin_id} plugin installed"
+    else
+        log_warn "Failed to install ${plugin_id} plugin — continuing without it"
+    fi
+}
+
+install_codex_plugin() {
+    install_openclaw_plugin "@openclaw/codex" "codex"
+}
+
+install_slack_plugin() {
+    install_openclaw_plugin "@openclaw/slack" "slack"
 }
 
 # ==============================================================
@@ -927,6 +973,8 @@ run_setup() {
     install_env
     enable_channels
     install_cli
+    install_codex_plugin
+    install_slack_plugin
     configure_openrouter
     install_openclaw_peer_deps
     log "Running config doctor..."

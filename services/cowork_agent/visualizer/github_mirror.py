@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.connectors.github_issues import IssuesResult, RateLimit
+from services.cowork_agent.connectors.github.issues import IssuesResult, RateLimit
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 from services.cowork_agent.visualizer.flock import locked
 

@@ -85,7 +85,8 @@ from routers.cowork_agent.bff._visualizer_presenter import (
     zero_filled_dates as _zero_filled_dates,
 )
 from services.cowork_agent import coder_identity, github_poller, scopes
-from services.cowork_agent.connectors import github_connector, github_issue_actions
+from services.cowork_agent.connectors import github as github_connector
+from services.cowork_agent.connectors.github import issue_actions as github_issue_actions
 from services.cowork_agent.visualizer import workitem_projection as _projection
 from services.cowork_agent.visualizer.peers_store import VALID_ROLES as _PEER_ROLES
 from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES

@@ -2,7 +2,7 @@
 Microsoft OneDrive connector via rclone (rclone backend type `onedrive`).
 
 The generic rclone plumbing and the OAuth-flow engine live in
-:mod:`services.cowork_agent.connectors.rclone_connector`. This module supplies only the
+:mod:`services.cowork_agent.connectors.rclone`. This module supplies only the
 OneDrive-specific descriptor:
 
   1. Subprocess: `rclone authorize --auth-no-open-browser onedrive`
@@ -28,7 +28,7 @@ from typing import Optional
 
 import httpx
 
-from .rclone_connector import (
+from ..rclone.connector import (
     RcloneConnector,
     RcloneProvider,
     RcloneSession,  # noqa: F401  (exported for callers that type-hint sessions)

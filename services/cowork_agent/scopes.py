@@ -303,7 +303,7 @@ class VisualizerScope(_XoReader):
 
     def github_repo(self) -> Optional[str]:
         """``owner/name`` for this project's git remote, or ``None``."""
-        from services.cowork_agent.connectors.github_issues import parse_remote_url
+        from services.cowork_agent.connectors.github.issues import parse_remote_url
         meta = project_layout.load_project(self.project_id)
         git = meta.get("git") if isinstance(meta, dict) else None
         url = git.get("remote_url") if isinstance(git, dict) else None

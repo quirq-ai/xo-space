@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.connectors.github_issues import (
+from services.cowork_agent.connectors.github.issues import (
     IssuesResult,
     RateLimit,
     RepoRef,
