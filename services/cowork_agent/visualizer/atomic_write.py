@@ -28,65 +28,37 @@ def write_json_atomic(path: Path, data: Any) -> None:
 
 
 def append_jsonl(path: Path, lines: list[dict]) -> None:
-    """Append one or more JSON objects as JSONL lines, then ``fsync``.
+    """Append JSON objects as JSONL lines, then ``fsync``.
 
-    Used by both timeline sinks — the per-project ``sinks/timeline.py``
-    and the multiplexed ``workspace/timeline.py``.
+    Used by both timeline sinks — per-project ``sinks/timeline.py`` and the
+    multiplexed ``workspace/timeline.py``.
 
-    **This file has many writers, and the contract below is what a new
-    one may rely on.** It is spelled out in full because the previous
-    version of this docstring asserted *"exactly one writer — the
-    watcher"*, which stopped being true when the todos HTTP API became
-    the todo event source (syncplan §7, T7) and was catalogued as defect
-    **O-D**. The appenders to a project ``timeline.jsonl`` today are the
-    watcher tick, :mod:`~services.cowork_agent.visualizer.todos_store`,
-    :mod:`~services.cowork_agent.visualizer.workitems_store` and
-    :mod:`~services.cowork_agent.visualizer.workitem_claims` — one tick
-    thread and three request threads — and the count has only ever gone
-    up. Do not re-narrow this claim; widen the list.
+    **This file has many writers**: the watcher tick, plus the request threads
+    behind ``todos_store``, ``workitems_store`` and ``workitem_claims``. The
+    count has only gone up — do not re-narrow this claim, widen the list.
+    (Defect **O-D** was a docstring here that said "exactly one writer".)
 
-    **Guaranteed.**
+    **Guaranteed.** No writer loses another's bytes: the handle is ``"a"``
+    (``O_APPEND``), so every ``write(2)`` seeks to end-of-file and lands
+    indivisibly, in some order, with no lock needed. Whole lines, at the batch
+    sizes anything here writes: a batch that reaches the kernel as one
+    ``write(2)`` cannot be split, so a line-by-line reader never sees half an
+    event. Durability on return: ``flush`` + ``fsync`` before returning.
 
-    * *No writer loses another's bytes.* The handle is opened ``"a"``
-      (``O_APPEND``), so each ``write(2)`` on it seeks to end-of-file
-      and writes as one indivisible step. Concurrent appends land one
-      after another in some order; none can overwrite another or write
-      at a stale offset. No lock is taken here and none is needed for
-      this property.
-    * *Whole lines, at the batch sizes anything in this system writes.*
-      A batch small enough to reach the kernel as a single ``write(2)``
-      cannot be split, so a reader parsing line-by-line never sees half
-      an event.
-    * *Durability on return.* ``flush`` + ``fsync`` before returning, so
-      an event this call has returned for survives both a process crash
-      and a machine crash.
+    **Not guaranteed — do not build on these.** *Order between writers*: file
+    order is the order the kernel saw the writes, not ``ts`` order, so a reader
+    needing chronology sorts by ``ts``. *That one caller's batch stays
+    contiguous*: another writer's may land in the middle of it. *Line integrity
+    above the stream buffer*: Python splits a payload over ~8 KiB into several
+    ``write(2)`` calls at byte, not line, boundaries, so a concurrent appender
+    can tear a line inside such a batch — a caller appending megabytes must
+    batch it itself. *Anything about a concurrent rotation*: ``sinks/timeline``
+    renames past 8 MB, and an append that resolved the old inode lands in the
+    rotated file.
 
-    **Not guaranteed — do not build on these.**
-
-    * *Order between writers.* File order is the order the kernel saw
-      the writes, not ``ts`` order: an event stamped earlier by one
-      thread can sit below one stamped later by another. A reader that
-      needs chronology sorts by ``ts``.
-    * *That one caller's batch stays contiguous.* Another writer's batch
-      may land in the middle of it, so no caller may encode meaning in
-      two lines being adjacent.
-    * *Line integrity for a batch larger than the stream buffer.*
-      Python's buffered writer splits a payload bigger than the buffer
-      (~8 KiB) into several ``write(2)`` calls, at byte boundaries
-      rather than line boundaries — so a concurrent appender can tear a
-      line *inside* such a batch. Every caller today is far below that
-      (one event is a few hundred bytes, a batch a handful of events); a
-      caller wanting to append megabytes in one go must split it into
-      batches itself.
-    * *Anything about a concurrent rotation.* ``sinks/timeline.py``
-      renames the file past 8 MB. An append that resolved the old inode
-      lands in the rotated file: nothing is lost, but the last lines of
-      an epoch can end up on the far side of the rename.
-
-    Lines are serialised with ``ensure_ascii=False`` (UTF-8 on disk,
-    matching :func:`write_json_atomic`) and each is newline-terminated,
-    including the last, so the next append starts a line rather than
-    extending one.
+    Lines are serialised with ``ensure_ascii=False`` (UTF-8 on disk, matching
+    :func:`write_json_atomic`) and each is newline-terminated, including the
+    last, so the next append starts a line rather than extending one.
     """
     if not lines:
         return
