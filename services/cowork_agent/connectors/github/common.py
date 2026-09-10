@@ -60,6 +60,10 @@ def save_github_token(token: str, *, auth_method: str = "pat") -> None:
     """Save a GitHub access token to token.json.
 
     auth_method is "pat" (user-pasted PAT) or "cli" (from `gh auth login`).
+
+    Both acquisition flows converge here, so this is also where the issue
+    poller learns its backoff is stale: a poller resting ten minutes on
+    ``not_authenticated`` must not outlive the sign-in that fixed it.
     """
     set_entry("github", {
         "access_token": token,
@@ -70,6 +74,21 @@ def save_github_token(token: str, *, auth_method: str = "pat") -> None:
         "auth_method": auth_method,
     })
     log.info("GitHub token saved to %s (method=%s)", TOKEN_FILE, auth_method)
+    _notify_issue_poller()
+
+
+def _notify_issue_poller() -> None:
+    """Tell the GitHub issue poller a new credential is in play. Never raises."""
+    try:
+        # Imported here rather than at module scope: the poller imports this
+        # package, so a top-level import would close the cycle.
+        from services.cowork_agent import github_poller
+
+        github_poller.note_auth_change()
+    except Exception:
+        # Storing the token is the caller's actual business; a poller that
+        # misses the hint still recovers on its own next tick.
+        log.debug("could not notify the GitHub issue poller", exc_info=True)
 
 
 def delete_github_token() -> None:
