@@ -20,11 +20,7 @@ from services.cowork_agent.connectors.github.issues import (
     gh_available,
     parse_remote_url,
 )
-from services.cowork_agent.visualizer import github_interest
 from services.cowork_agent.visualizer import github_mirror
-from services.cowork_agent.visualizer import state as watcher_state
-from services.cowork_agent.visualizer.reader import read_json
-from services.cowork_agent.visualizer.workitems_store import list_workitems
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
 
 logger = logging.getLogger(__name__)
@@ -36,7 +32,6 @@ ENV_ENABLED = "XO_GITHUB_POLL_ENABLED"
 ENV_INTERVAL = "XO_GITHUB_POLL_INTERVAL_S"
 ENV_MAX_PAGES = "XO_GITHUB_POLL_MAX_PAGES"
 ENV_WARN_REPOS = "XO_GITHUB_POLL_WARN_REPOS"
-ENV_INTEREST_TTL = "XO_GITHUB_POLL_INTEREST_TTL_S"
 
 DEFAULT_INTERVAL_S = 60.0
 
@@ -53,9 +48,6 @@ WARN_BUDGET_FRACTION = 0.8
 
 #: Stop spending when GitHub says this little is left.
 BUDGET_RESERVE_POINTS = 250
-
-#: How long a project stays "being looked at" after :func:`note_interest`.
-DEFAULT_INTEREST_TTL_S = 300.0
 
 #: Per-repo cool-down after a failure that a retry in 60 s cannot fix.
 _COOLDOWN_S: dict[str, float] = {
@@ -111,54 +103,6 @@ def max_pages() -> int:
 
 def warn_repo_threshold() -> int:
     return int(_number(ENV_WARN_REPOS, DEFAULT_WARN_REPOS, minimum=1))
-
-
-def interest_ttl_seconds() -> float:
-    return _number(ENV_INTEREST_TTL, DEFAULT_INTEREST_TTL_S, minimum=0.0)
-
-
-# ── "Being looked at" ────────────────────────────────────────────────────────
-# D9's other half.
-
-#: Ceiling on how many projects one sweep will consider interesting.
-_INTEREST_MAX = 512
-
-
-def note_interest(project_id: str) -> None:
-    """Mark a project as being looked at, for :func:`interest_ttl_seconds`."""
-    name = (project_id or "").strip()
-    if not name:
-        return
-    if interest_ttl_seconds() <= 0:
-        return
-    github_interest.note_interest(name)
-
-
-def is_interested(project_id: str) -> bool:
-    """Whether ``project_id`` carries an unexpired interest mark."""
-    return github_interest.is_interesting(
-        project_id, ttl=interest_ttl_seconds()
-    )
-
-
-def interested_projects() -> set[str]:
-    """Every project currently marked as being looked at."""
-    out: set[str] = set()
-    for name in list_project_ids():
-        if len(out) >= _INTEREST_MAX:
-            break
-        if is_interested(name):
-            out.add(name)
-    return out
-
-
-def clear_interest(project_id: Optional[str] = None) -> None:
-    """Forget interest marks. For tests and for a root switch."""
-    if project_id is not None:
-        github_interest.clear_interest(project_id)
-        return
-    for name in list_project_ids():
-        github_interest.clear_interest(name)
 
 
 # ── The global budget ────────────────────────────────────────────────────────
@@ -269,8 +213,8 @@ _cooldowns: dict[str, float] = {}
 #: warning key → monotonic time of its last emission.
 _warned: dict[str, float] = {}
 
-#: A machine-wide failure seen during this tick, published into every
-#: candidate's mirror once the tick is over rather than during it.
+#: A machine-wide failure seen during this tick, published into every polled
+#: project's mirror once the tick is over rather than during it.
 _pending_global_failure: Optional[IssuesResult] = None
 
 
@@ -282,8 +226,6 @@ def reset_state() -> None:
     _cooldowns.clear()
     _warned.clear()
     _inflight.clear()
-    # Interest marks are durable now (I2), so they live on disk under the
-    # runtime root rather than in this module.
 
 
 def budget_snapshot() -> dict:
@@ -307,20 +249,7 @@ def _warn_once(key: str, message: str, *args: object) -> None:
     logger.warning(message, *args)
 
 
-# ── Which projects to poll (D9) ──────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Candidate:
-    """One project worth a point of budget, and why."""
-
-    project: str
-    ref: RepoRef
-    reason: str
-
-    @property
-    def repo(self) -> str:
-        return self.ref.slug
+# ── Which projects to poll ───────────────────────────────────────────────────
 
 
 def _remote_ref(project: str) -> Optional[RepoRef]:
@@ -335,47 +264,6 @@ def _remote_ref(project: str) -> Optional[RepoRef]:
     if ref is None or not ref.is_github_com:
         return None
     return ref
-
-
-def _has_adopted_items(project: str) -> bool:
-    """Whether the project holds workitems adopted from GitHub (D2)."""
-    path = project_layout.xo_dir(project) / "workitems.json"
-    try:
-        return bool(list_workitems(path, kind="github"))
-    except Exception:
-        return False
-
-
-def _has_live_session(project: str) -> bool:
-    """Whether an agent is currently working in the project."""
-    doc = read_json(watcher_state.project_activity_path(project))
-    if not isinstance(doc, dict):
-        return False
-    sessions = doc.get("open_sessions")
-    return isinstance(sessions, list) and bool(sessions)
-
-
-def candidates() -> list[Candidate]:
-    """Every project worth polling this tick, and why (D9)."""
-    out: list[Candidate] = []
-    for project in list_project_ids():
-        ref = _remote_ref(project)
-        if ref is None:
-            continue
-        # Asked per project rather than against a prebuilt set: the marks are
-        # one small file each in the runtime tier, so this is one read for the
-        # project already in hand, where building the set would read every
-        # project's file to answer a single lookup.
-        if is_interested(project):
-            reason = "interest"
-        elif _has_adopted_items(project):
-            reason = "adopted"
-        elif _has_live_session(project):
-            reason = "active"
-        else:
-            continue
-        out.append(Candidate(project=project, ref=ref, reason=reason))
-    return out
 
 
 # ── One poll ─────────────────────────────────────────────────────────────────
@@ -398,15 +286,16 @@ def _apply_cooldown(repo: str, kind: Optional[str]) -> None:
 
 
 async def poll_project(
-    candidate: Candidate, *, max_pages_override: Optional[int] = None
+    project: str, ref: RepoRef, *, max_pages_override: Optional[int] = None
 ) -> int:
     """Refresh one project's mirror. Returns the points this poll spent."""
+    repo = ref.slug
     # ``max_pages_override`` is how a request path asks for one page: a browse
     # view shows the first page anyway, and a one-page result reports
     # ``complete=False``, which ``record_pages`` already handles by merging
     # rather than replacing and by declining to advance the high-water mark.
     cap = max_pages() if max_pages_override is None else max(1, int(max_pages_override))
-    state = github_mirror.load_state(candidate.project, repo=candidate.repo)
+    state = github_mirror.load_state(project, repo=repo)
     since = state.since
     include_closed = since is not None
 
@@ -423,11 +312,11 @@ async def poll_project(
                 "github poller: GraphQL budget exhausted (%s spent in the last "
                 "hour, GitHub reports %s remaining); %s will finish on a later "
                 "tick",
-                _budget.spent_last_hour, _budget.remaining, candidate.repo,
+                _budget.spent_last_hour, _budget.remaining, repo,
             )
             break
         result = await fetch_open_issues(
-            candidate.ref,
+            ref,
             since=since,
             after=after,
             include_closed=include_closed,
@@ -450,60 +339,58 @@ async def poll_project(
     # it was — which is the correct answer, not a missing one.
     if pages:
         github_mirror.record_pages(
-            candidate.project, repo=candidate.repo, pages=pages, complete=complete
+            project, repo=repo, pages=pages, complete=complete
         )
         if not complete and failure is None and max_pages_override is None:
             # Suppressed for a deliberate one-page poll: not fitting is the
             # expected outcome there, not a misconfiguration worth a warning.
             _warn_once(
-                f"pages:{candidate.repo}",
+                f"pages:{repo}",
                 "github poller: %s did not fit in %d page(s); the high-water "
                 "mark is held back so nothing is stranded, but it will not "
                 "settle into an incremental poll until it does",
-                candidate.repo, cap,
+                repo, cap,
             )
     if failure is not None:
         # Ordered after ``record_pages`` deliberately: the rows that *did*
         # arrive are real and are kept, and the error is then stamped over the
         # top so the UI shows both "refreshed at" and "but the last try
         # failed".
-        github_mirror.record_failure(
-            candidate.project, repo=candidate.repo, result=failure
-        )
-        _handle_failure(candidate, failure)
+        github_mirror.record_failure(project, repo=repo, result=failure)
+        _handle_failure(repo, failure)
     return spent
 
 
-def _handle_failure(candidate: Candidate, result: IssuesResult) -> None:
+def _handle_failure(repo: str, result: IssuesResult) -> None:
     """Turn one failed poll into a backoff decision. Never raises."""
     global _pending_global_failure
     kind = result.error_kind or "unknown"
     if kind == "rate_limited":
-        _budget.pause_until_reset(result.rate, f"rate limited on {candidate.repo}")
+        _budget.pause_until_reset(result.rate, f"rate limited on {repo}")
         return
     if kind in _GLOBAL_KINDS:
         _budget.pause(_GLOBAL_PAUSE_S, f"{kind}: {result.error or kind}")
         _pending_global_failure = result
         return
-    _apply_cooldown(candidate.repo, kind)
+    _apply_cooldown(repo, kind)
     _warn_once(
-        f"repo:{candidate.repo}:{kind}",
+        f"repo:{repo}:{kind}",
         "github poller: %s failed (%s): %s",
-        candidate.repo, kind, result.error or "",
+        repo, kind, result.error or "",
     )
 
 
-def _record_global_failure(rows: Sequence[Candidate], result: IssuesResult) -> None:
-    """Publish a machine-wide failure into every candidate's mirror."""
-    for candidate in rows:
+def _record_global_failure(
+    rows: Sequence[tuple[str, RepoRef]], result: IssuesResult
+) -> None:
+    """Publish a machine-wide failure into every polled project's mirror."""
+    for project, ref in rows:
         try:
-            github_mirror.record_failure(
-                candidate.project, repo=candidate.repo, result=result
-            )
+            github_mirror.record_failure(project, repo=ref.slug, result=result)
         except Exception:  # pragma: no cover - a mirror write must not stop the loop
             logger.warning(
                 "github poller: could not record %s for %s",
-                result.error_kind, candidate.project, exc_info=True,
+                result.error_kind, project, exc_info=True,
             )
 
 
@@ -573,16 +460,15 @@ async def poll_project_now(
             return PollOutcome(False, "paused")
         if _cooldown(ref.slug):
             return PollOutcome(False, "cooldown")
-        candidate = Candidate(project=name, ref=ref, reason="request")
         try:
             if timeout is not None:
                 spent = await asyncio.wait_for(
-                    poll_project(candidate, max_pages_override=max_pages_override),
+                    poll_project(name, ref, max_pages_override=max_pages_override),
                     timeout=timeout,
                 )
             else:
                 spent = await poll_project(
-                    candidate, max_pages_override=max_pages_override
+                    name, ref, max_pages_override=max_pages_override
                 )
         except asyncio.TimeoutError:
             # The gh call is still running and will finish (or be reaped) on
@@ -604,19 +490,27 @@ async def poll_project_now(
 
 
 async def poll_once() -> dict:
-    """One tick: choose the repos, poll them, return a summary. Never raises."""
-    summary = {"candidates": 0, "polled": 0, "skipped": 0, "points": 0, "paused": False}
+    """One tick: poll every project that has one, and summarise. Never raises."""
+    summary = {"projects": 0, "polled": 0, "skipped": 0, "points": 0, "paused": False}
 
     if _budget.paused:
         summary["paused"] = True
         return summary
 
+    # Membership is the remote and nothing else: every project under the XO
+    # root whose ``project.json:git.remote_url`` points at github.com is polled,
+    # every tick. The budget and the per-repo cool-downs below bound the cost —
+    # there is no selection step.
+    rows: list[tuple[str, RepoRef]] = []
     try:
-        rows = candidates()
+        for project in list_project_ids():
+            ref = _remote_ref(project)
+            if ref is not None:
+                rows.append((project, ref))
     except Exception:
         logger.warning("github poller: could not enumerate projects", exc_info=True)
         return summary
-    summary["candidates"] = len(rows)
+    summary["projects"] = len(rows)
     if not rows:
         return summary
 
@@ -643,24 +537,23 @@ async def poll_once() -> dict:
             len(rows), threshold, poll_interval_seconds(),
         )
 
-    for candidate in rows:
+    for project, ref in rows:
         if _budget.paused:
             summary["paused"] = True
             summary["skipped"] += 1
             continue
-        if _cooldown(candidate.repo):
+        if _cooldown(ref.slug):
             summary["skipped"] += 1
             continue
         try:
-            spent = await poll_project(candidate)
+            spent = await poll_project(project, ref)
         except asyncio.CancelledError:
             raise
         except Exception:
             # The client promises never to raise; the mirror can still fail on
             # a full disk. One project must not cost the others their tick.
             logger.warning(
-                "github poller: %s failed unexpectedly",
-                candidate.project, exc_info=True,
+                "github poller: %s failed unexpectedly", project, exc_info=True,
             )
             summary["skipped"] += 1
             continue

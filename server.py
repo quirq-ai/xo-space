@@ -710,8 +710,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Tier migration skipped (non-fatal): {e}")
 
-    # GitHub issue poller — refreshes the runtime issue mirror for the projects
-    # that need it (docs/workitems-plan.md §6).
+    # GitHub issue poller — refreshes the runtime issue mirror for every
+    # project with a github.com remote (docs/workitems-plan.md §6).
     _github_poll_task = None
     try:
         from services.cowork_agent.github_poller import (
