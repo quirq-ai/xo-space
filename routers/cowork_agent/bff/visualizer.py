@@ -1040,11 +1040,6 @@ async def project_github_issues(
 ) -> GithubIssuesResponse:
     """The GitHub issue mirror for this project, and what is untracked."""
     scope = _require_project(project_id)
-    # D9's hook, and the whole "being looked at" signal. One small atomic write
-    # in the runtime tier, idempotent, and it cannot raise — safe on a request
-    # thread.
-    github_poller.note_interest(project_id)
-
     mirror = scope.read_github_mirror()
 
     # **The cold-mirror fetch (I1).** Before this, the first request for a
