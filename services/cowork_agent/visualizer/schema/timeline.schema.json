@@ -5,6 +5,7 @@
   "description": "Append-only event log. The file is JSONL — one JSON object per line, newline-terminated. This schema describes a single event. Validators should run line-by-line.",
   "type": "object",
   "required": ["ts", "type"],
+  "propertyNames": { "enum": ["agent", "assignee", "files", "issue", "kind", "outcome", "path", "peer_user_id", "peers", "project_id", "runtime", "session_id", "state_reason", "status", "title", "todo", "todo_id", "ts", "type", "user_id", "workitem_id"] },
   "properties": {
     "ts":           { "type": "string", "format": "date-time", "description": "ISO 8601 UTC." },
     "type":         { "type": "string", "description": "Dotted event name, e.g. `session.started`, `file.edited`." },

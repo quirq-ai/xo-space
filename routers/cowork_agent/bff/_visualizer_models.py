@@ -407,21 +407,27 @@ class ActivityResponse(_ForbidExtra):
 
 
 class TimelineEvent(_ForbidExtra):
-    """One line from the project's runtime ``timeline.jsonl``. Permissive because
-    the schema's ``oneOf`` lets each event type carry its own extras —
-    a strict union here would require 12 subclasses. The schema-side
-    ``oneOf`` is the canonical validator; the route-side check is the
-    backstop (path-bearing events get a relative-path assertion at
-    serialise time)."""
-
-    model_config = ConfigDict(extra="allow")  # see docstring
-
     ts: str
     type: str
     session_id: Optional[str] = None
     runtime: Optional[str] = None
-    # workspace scope tags events with project_id; project scope omits.
     project_id: Optional[str] = None
+    user_id: Optional[str] = None
+    agent: Optional[str] = None
+    outcome: Optional[str] = None
+    todo: Optional[dict] = None
+    todo_id: Optional[str] = None
+    status: Optional[str] = None
+    path: Optional[str] = None
+    peer_user_id: Optional[str] = None
+    files: Optional[list[str]] = None
+    peers: Optional[list[str]] = None
+    workitem_id: Optional[str] = None
+    title: Optional[str] = None
+    kind: Optional[str] = None
+    issue: Optional[dict] = None
+    assignee: Optional[str] = None
+    state_reason: Optional[str] = None
 
 
 class TimelineResponse(_ForbidExtra):

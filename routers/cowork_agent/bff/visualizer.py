@@ -1946,6 +1946,7 @@ def project_usage_one_session(
 @router.get(
     "/api/xo-projects/{project_id}/timeline",
     response_model=TimelineResponse,
+    response_model_exclude_unset=True,
 )
 def project_timeline(
     project_id: str,
@@ -1969,7 +1970,7 @@ def project_timeline(
         try:
             out.append(TimelineEvent(**ev))
         except Exception:
-            # malformed event line — already logged by reader; skip
+            logger.warning("timeline: dropping an event that failed validation")
             continue
 
     next_cursor = out[-1].ts if len(out) == limit else None

@@ -660,6 +660,7 @@ def workspace_activity() -> ActivityResponse:
 @router.get(
     "/api/xo-projects/timeline",
     response_model=TimelineResponse,
+    response_model_exclude_unset=True,
 )
 def workspace_timeline(
     limit: int = Query(100, ge=1, le=500),
@@ -686,6 +687,7 @@ def workspace_timeline(
         try:
             out.append(TimelineEvent(**ev))
         except Exception:
+            logger.warning("timeline: dropping an event that failed validation")
             continue
 
     next_cursor = out[-1].ts if len(out) == limit else None
