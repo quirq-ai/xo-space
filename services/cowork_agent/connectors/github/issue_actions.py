@@ -11,15 +11,12 @@ from .issues import (
     GH_TIMEOUT_S,
     RateLimit,
     RepoRef,
-    _classify_graphql_errors,
-    _classify_rest_error,
-    _classify_stderr,
     _coerce_ref,
-    _parse_rate,
-    _run_gh,
     _STATE_REASONS,
     _STATES,
     gh_available,
+    run_graphql,
+    run_rest,
 )
 
 #: The pinned single-issue query.
@@ -148,48 +145,12 @@ async def fetch_issue(
     if not ref.is_github_com:
         argv[3:3] = ["--hostname", ref.host]
 
-    result = await _run_gh(argv, timeout_s)
-    if result.binary_missing:
-        return _failure_issue(slug, number, "no_cli",
-                              "GitHub CLI (`gh`) could not be executed.")
-    if result.timed_out:
-        return _failure_issue(
-            slug, number, "timeout",
-            f"`gh api graphql` did not answer within {timeout_s:g}s.",
-        )
-    if result.exception:
-        return _failure_issue(slug, number, "unknown",
-                              f"Could not run `gh`: {result.exception}")
-    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
+    answer = await run_graphql(argv, timeout_s=timeout_s)
+    if not answer.ok:
+        return _failure_issue(slug, number, answer.kind, answer.message, answer.rate)
+    rate = answer.rate
 
-    payload: Any = None
-    if stdout.strip():
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            payload = None
-    rate = _parse_rate(payload)
-
-    if isinstance(payload, dict):
-        errors = payload.get("errors")
-        if isinstance(errors, list) and errors:
-            classified = _classify_graphql_errors(errors)
-            if classified:
-                return _failure_issue(slug, number, classified[0], classified[1], rate)
-        if "data" not in payload:
-            classified = _classify_rest_error(payload)
-            if classified:
-                return _failure_issue(slug, number, classified[0], classified[1], rate)
-
-    if returncode != 0:
-        kind, message = _classify_stderr(stderr, returncode)
-        return _failure_issue(slug, number, kind, message, rate)
-    if not isinstance(payload, dict):
-        return _failure_issue(slug, number, "bad_response",
-                              "`gh api graphql` returned no JSON body.", rate)
-
-    data = payload.get("data")
-    repository = data.get("repository") if isinstance(data, dict) else None
+    repository = (answer.data or {}).get("repository")
     node = repository.get("issue") if isinstance(repository, dict) else None
     row = _issue_row(node, repo=slug)
     if row is None:
@@ -222,33 +183,12 @@ async def authenticated_login(
             ok=False, error_kind="no_cli",
             error="GitHub CLI (`gh`) is not installed on this machine.",
         )
-    result = await _run_gh([gh_bin, "api", "user"], timeout_s)
-    if result.binary_missing:
-        return LoginResult(ok=False, error_kind="no_cli",
-                           error="GitHub CLI (`gh`) could not be executed.")
-    if result.timed_out:
-        return LoginResult(
-            ok=False, error_kind="timeout",
-            error=f"`gh api user` did not answer within {timeout_s:g}s.",
-        )
-    if result.exception:
-        return LoginResult(ok=False, error_kind="unknown",
-                           error=f"Could not run `gh`: {result.exception}")
-    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
-    payload: Any = None
-    if stdout.strip():
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            payload = None
-    if returncode != 0:
-        if isinstance(payload, dict):
-            classified = _classify_rest_error(payload)
-            if classified:
-                return LoginResult(ok=False, error_kind=classified[0],
-                                   error=classified[1])
-        kind, message = _classify_stderr(stderr, returncode)
-        return LoginResult(ok=False, error_kind=kind, error=message)
+    answer = await run_rest([gh_bin, "api", "user"], timeout_s=timeout_s,
+                            label="gh api user")
+    if not answer.ok:
+        return LoginResult(ok=False, error_kind=answer.kind, error=answer.message)
+    payload = answer.data
+
     login = payload.get("login") if isinstance(payload, dict) else None
     if not isinstance(login, str) or not login:
         return LoginResult(

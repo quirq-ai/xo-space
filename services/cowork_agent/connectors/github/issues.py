@@ -454,6 +454,117 @@ def _classify_stderr(stderr: str, returncode: int | None) -> tuple[str, str]:
     return "unknown", text or f"`gh api graphql` exited with status {returncode}."
 
 
+@dataclass(frozen=True)
+class GhResult:
+    """
+    One ``gh api`` call, already classified. ``ok`` carries ``data``, else
+    ``kind``/``message`` (the :data:`ERROR_KINDS` vocabulary). ``rate`` is set
+    on both paths — a failed call still spent the point the budget tracks.
+    """
+
+    ok: bool
+    data: dict[str, Any] | None = None
+    kind: str = ""
+    message: str = ""
+    rate: RateLimit = field(default_factory=RateLimit)
+
+
+def _spawn_failure(result: CommandResult, timeout_s: float, label: str):
+    """The three ways a ``gh`` call fails before it ever answers."""
+    if result.binary_missing:
+        return GhResult(False, kind="no_cli",
+                        message="GitHub CLI (`gh`) could not be executed.")
+    if result.timed_out:
+        return GhResult(False, kind="timeout",
+                        message=f"`{label}` did not answer within {timeout_s:g}s.")
+    if result.exception:
+        return GhResult(False, kind="unknown",
+                        message=f"Could not run `gh`: {result.exception}")
+    return None
+
+
+def _parse_json(text: str) -> Any:
+    """``gh``'s stdout as JSON, or ``None``: an unreadable body is classified
+    further down, never raised here."""
+    if not text.strip():
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _exit_failure(result: CommandResult, payload: Any, rate: RateLimit):
+    """A non-zero exit, read from the REST error body if there is one, else
+    from stderr."""
+    if result.returncode == 0:
+        return None
+    if isinstance(payload, dict):
+        classified = _classify_rest_error(payload)
+        if classified:
+            return GhResult(False, kind=classified[0], message=classified[1], rate=rate)
+    kind, message = _classify_stderr(result.stderr, result.returncode)
+    return GhResult(False, kind=kind, message=message, rate=rate)
+
+
+async def run_graphql(argv: list[str], *, timeout_s: float) -> GhResult:
+    """
+    One GraphQL query, with every way it can fail classified in one place: an
+    unrunnable binary, a timeout, a GraphQL ``errors`` array, a REST-shaped
+    error body, a bare non-zero exit, or a reply that is not JSON.
+    """
+    result = await _run_gh(argv, timeout_s)
+    failed = _spawn_failure(result, timeout_s, "gh api graphql")
+    if failed is not None:
+        return failed
+
+    payload = _parse_json(result.stdout)
+    rate = _parse_rate(payload)
+
+    if isinstance(payload, dict):
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            classified = _classify_graphql_errors(errors)
+            if classified:
+                return GhResult(False, kind=classified[0],
+                                message=classified[1], rate=rate)
+        if "data" not in payload:
+            classified = _classify_rest_error(payload)
+            if classified:
+                return GhResult(False, kind=classified[0],
+                                message=classified[1], rate=rate)
+
+    failed = _exit_failure(result, payload, rate)
+    if failed is not None:
+        return failed
+
+    if not isinstance(payload, dict):
+        return GhResult(False, kind="bad_response",
+                        message="`gh api graphql` returned no JSON body.", rate=rate)
+
+    data = payload.get("data")
+    return GhResult(True, data=data if isinstance(data, dict) else {}, rate=rate)
+
+
+async def run_rest(argv: list[str], *, timeout_s: float, label: str) -> GhResult:
+    """``gh api <endpoint>`` — a bare JSON object, no ``data`` envelope and no
+    budget in the body. Same failure vocabulary as :func:`run_graphql`."""
+    result = await _run_gh(argv, timeout_s)
+    failed = _spawn_failure(result, timeout_s, label)
+    if failed is not None:
+        return failed
+
+    payload = _parse_json(result.stdout)
+    failed = _exit_failure(result, payload, RateLimit())
+    if failed is not None:
+        return failed
+
+    if not isinstance(payload, dict):
+        return GhResult(False, kind="bad_response",
+                        message=f"`{label}` returned no JSON body.")
+    return GhResult(True, data=payload)
+
+
 def _issue_row(node: Any) -> dict[str, Any] | None:
     """One GraphQL issue node → one mirror row, or ``None`` if unusable."""
     if not isinstance(node, dict):
@@ -544,51 +655,12 @@ async def fetch_open_issues(
     if after:
         argv += ["-f", f"after={after}"]
 
-    result = await _run_gh(argv, timeout_s)
+    answer = await run_graphql(argv, timeout_s=timeout_s)
+    if not answer.ok:
+        return _failure(slug, answer.kind, answer.message, answer.rate)
+    rate = answer.rate
 
-    if result.binary_missing:
-        return _failure(slug, "no_cli", "GitHub CLI (`gh`) could not be executed.")
-    if result.timed_out:
-        return _failure(
-            slug, "timeout",
-            f"`gh api graphql` did not answer within {timeout_s:g}s.",
-        )
-    if result.exception:
-        return _failure(slug, "unknown", f"Could not run `gh`: {result.exception}")
-    returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
-
-    payload: Any = None
-    if stdout.strip():
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, ValueError):
-            payload = None
-
-    rate = _parse_rate(payload)
-
-    if isinstance(payload, dict):
-        errors = payload.get("errors")
-        if isinstance(errors, list) and errors:
-            classified = _classify_graphql_errors(errors)
-            if classified:
-                return _failure(slug, classified[0], classified[1], rate)
-        if "data" not in payload:
-            classified = _classify_rest_error(payload)
-            if classified:
-                return _failure(slug, classified[0], classified[1], rate)
-
-    if returncode != 0:
-        kind, message = _classify_stderr(stderr, returncode)
-        return _failure(slug, kind, message, rate)
-
-    if not isinstance(payload, dict):
-        return _failure(
-            slug, "bad_response",
-            "`gh api graphql` returned no JSON body.", rate,
-        )
-
-    data = payload.get("data")
-    repository = data.get("repository") if isinstance(data, dict) else None
+    repository = (answer.data or {}).get("repository")
     if repository is None:
         return _failure(
             slug, "not_found",
