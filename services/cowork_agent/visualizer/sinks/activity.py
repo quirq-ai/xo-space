@@ -8,19 +8,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 from services.cowork_agent import coder_identity
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
+from services.cowork_agent.visualizer.atomic_write import ChangeGate
 
 # ── Write-on-change baseline (docs/syncplan.md §10, T26) ─────────────────────
-# The payload this process last wrote, per target path.
-_previous: dict[str, dict] = {}
-
-#: A project that is deleted leaves its entry behind.
-_PREVIOUS_MAX = 4096
+#: One entry per project; a project that is deleted leaves its entry behind.
+_gate = ChangeGate(limit=4096)
 
 
 def reset_caches() -> None:
     """Drop the write-on-change baseline."""
-    _previous.clear()
+    _gate.reset()
 
 
 def _now_iso() -> str:
@@ -115,21 +112,4 @@ def apply(
         "updated_at": _now_iso(),
         "open_sessions": open_sessions,
     }
-    key = str(activity_path)
-    if key in _previous and activity_path.exists():
-        # Steady state: one ``stat`` and a dict comparison, no read.
-        changed = write_json_atomic_if_changed(
-            activity_path, payload, ("updated_at",), previous=_previous[key]
-        )
-    else:
-        # No baseline yet (first tick after a restart), or the file was removed
-        # underneath us — ``rm -rf ~/.quirq`` is a documented clean reset
-        # (syncplan §4), and a cached baseline alone would keep the file
-        # missing until its content happened to change.
-        changed = write_json_atomic_if_changed(
-            activity_path, payload, ("updated_at",)
-        )
-    if key not in _previous and len(_previous) >= _PREVIOUS_MAX:
-        _previous.clear()
-    _previous[key] = payload
-    return changed
+    return _gate.publish(activity_path, payload)

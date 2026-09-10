@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import os
 import re
@@ -13,6 +12,8 @@ from typing import Any, Iterable, Optional
 
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
+    read_stamped_document,
+    unsupported_schema_message,
     write_json_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
@@ -122,29 +123,17 @@ def _corrupt(path: Path, reason: str) -> WorkitemClaimsError:
 
 def read_claims(path: Path) -> dict[str, dict]:
     """The ``claims`` map, deep-copied. Raises on a document it cannot read."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    state, value = read_stamped_document(path, schema=CLAIMS_SCHEMA)
+    if state == "absent":
         return {}
-    except (OSError, UnicodeDecodeError) as exc:
-        raise _corrupt(path, f"unreadable: {exc}") from exc
-    if not text.strip():
-        raise _corrupt(path, "empty file")
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise _corrupt(path, f"invalid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise _corrupt(path, f"top-level {type(parsed).__name__}, expected object")
-
-    version = parsed.get("schema")
-    if version is not None and (isinstance(version, bool) or version != CLAIMS_SCHEMA):
+    if state == "fault":
+        raise _corrupt(path, value)
+    if state == "schema":
         raise WorkitemClaimsError(
             "unsupported_schema",
-            f"{path} declares schema {version!r}; this module writes schema "
-            f"{CLAIMS_SCHEMA} and will not rewrite a document it cannot fully "
-            f"represent.",
+            unsupported_schema_message(path, value, CLAIMS_SCHEMA),
         )
+    parsed = value
 
     raw = parsed.get("claims")
     if raw is None:

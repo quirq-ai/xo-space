@@ -484,7 +484,8 @@ class Workitem(_ForbidExtra):
     state_reason: Optional[WorkitemStateReason] = None
     source: WorkitemSource
     # Where the workitem came from, in this API's own words. ``"github"`` iff
-    # ``source.kind == "github"``; ``"space"`` otherwise — i.e.
+    # ``source.kind == "github"``; ``"space"`` otherwise — i.e. ``origin:
+    # "space"`` IS ``source.kind: "local"`` on disk.
     origin: Literal["github", "space"] = "space"
     # Who this Space says owes the work — from ``.xo/workitems.json``, for both
     # kinds. ``null`` when nobody does.

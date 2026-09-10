@@ -192,6 +192,32 @@ def _read_document(path: Path) -> tuple[str, Any]:
         return ("fault", f"invalid JSON: {exc}")
 
 
+def read_stamped_document(path: Path, *, schema: int) -> tuple[str, Any]:
+    """
+    Read a schema-stamped JSON object, classifying the outcome for a store that
+    must refuse rather than guess: ``("absent", None)``, ``("ok", parsed)``,
+    ``("fault", reason)`` or ``("schema", found)``.
+    """
+    state, value = _read_document(path)
+    if state != "ok":
+        return (state, value)
+    if not isinstance(value, dict):
+        return ("fault", f"top-level {type(value).__name__}, expected object")
+    found = value.get("schema")
+    if found is not None and (isinstance(found, bool) or found != schema):
+        return ("schema", found)
+    return ("ok", value)
+
+
+def unsupported_schema_message(path: Path, found: Any, expected: int) -> str:
+    """Why a document stamped by a newer writer is refused, not rewritten."""
+    return (
+        f"{path} declares schema {found!r}; this Space writes schema "
+        f"{expected} and will not rewrite a document it cannot fully "
+        f"represent."
+    )
+
+
 # ── The two write primitives (syncplan §3, rule R-WRITE) ──────────────────────
 
 
@@ -271,3 +297,45 @@ def write_json_atomic_if_changed(
             return False
     write_json_atomic(path, payload)
     return True
+
+
+class ChangeGate:
+    """
+    Write-on-change publishing over :func:`write_json_atomic_if_changed`,
+    holding the payload this process last wrote per target path (syncplan §3,
+    T26). Sound only for a writer that owns the whole document.
+    """
+
+    __slots__ = ("_previous", "_limit")
+
+    def __init__(self, limit: int = 64) -> None:
+        self._previous: dict[str, dict] = {}
+        self._limit = limit
+
+    def reset(self) -> None:
+        """Drop the baselines. For tests, and for a root switch."""
+        self._previous.clear()
+
+    def publish(
+        self,
+        target: Path,
+        payload: dict,
+        volatile: tuple[str, ...] = ("updated_at",),
+    ) -> bool:
+        """Write ``payload`` iff it differs. ``True`` when the file changed."""
+        key = str(target)
+        if key in self._previous and target.exists():
+            # Steady state: one ``stat`` and a dict comparison, no read.
+            changed = write_json_atomic_if_changed(
+                target, payload, volatile, previous=self._previous[key]
+            )
+        else:
+            # No baseline yet (first tick of the process), or the file was
+            # removed underneath us — ``rm -rf ~/.quirq`` is a documented clean
+            # reset (syncplan §4) and must repopulate on the next tick, not on
+            # the next content change.
+            changed = write_json_atomic_if_changed(target, payload, volatile)
+        if key not in self._previous and len(self._previous) >= self._limit:
+            self._previous.clear()
+        self._previous[key] = payload
+        return changed

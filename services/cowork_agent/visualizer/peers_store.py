@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +10,8 @@ from typing import Any, Optional
 
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
+    read_stamped_document,
+    unsupported_schema_message,
     write_json_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
@@ -149,29 +150,17 @@ def _corrupt(path: Path, reason: str) -> PeersStoreError:
 
 def _read_document(path: Path) -> tuple[Optional[str], list[dict]]:
     """Return ``(updated_at, peers)``, deep-copied."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    state, value = read_stamped_document(path, schema=PEERS_SCHEMA)
+    if state == "absent":
         return (None, [])
-    except (OSError, UnicodeDecodeError) as exc:
-        raise _corrupt(path, f"unreadable: {exc}") from exc
-    if not text.strip():
-        raise _corrupt(path, "empty file")
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise _corrupt(path, f"invalid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise _corrupt(path, f"top-level {type(parsed).__name__}, expected object")
-
-    version = parsed.get("schema")
-    if version is not None and (isinstance(version, bool) or version != PEERS_SCHEMA):
+    if state == "fault":
+        raise _corrupt(path, value)
+    if state == "schema":
         raise PeersStoreError(
             "unsupported_schema",
-            f"{path} declares schema {version!r}; this store writes schema "
-            f"{PEERS_SCHEMA} and will not rewrite a document it cannot fully "
-            f"represent.",
+            unsupported_schema_message(path, value, PEERS_SCHEMA),
         )
+    parsed = value
 
     raw = parsed.get("peers")
     if raw is None:

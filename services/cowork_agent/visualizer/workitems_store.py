@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import re
 import uuid
@@ -14,6 +13,8 @@ from typing import Any, Iterable, Optional
 from services.cowork_agent import project_layout
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
+    read_stamped_document,
+    unsupported_schema_message,
     write_json_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
@@ -335,31 +336,17 @@ def _corrupt(path: Path, reason: str) -> WorkitemsStoreError:
 
 def _read_document(path: Path) -> dict:
     """Return the document's items map, deep-copied."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    state, value = read_stamped_document(path, schema=WORKITEMS_SCHEMA)
+    if state == "absent":
         return {}
-    except (OSError, UnicodeDecodeError) as exc:
-        raise _corrupt(path, f"unreadable: {exc}") from exc
-    if not text.strip():
-        raise _corrupt(path, "empty file")
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise _corrupt(path, f"invalid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise _corrupt(path, f"top-level {type(parsed).__name__}, expected object")
-
-    version = parsed.get("schema")
-    if version is not None and (
-        isinstance(version, bool) or version != WORKITEMS_SCHEMA
-    ):
+    if state == "fault":
+        raise _corrupt(path, value)
+    if state == "schema":
         raise WorkitemsStoreError(
             "unsupported_schema",
-            f"{path} declares schema {version!r}; this store writes schema "
-            f"{WORKITEMS_SCHEMA} and will not rewrite a document it cannot "
-            f"fully represent.",
+            unsupported_schema_message(path, value, WORKITEMS_SCHEMA),
         )
+    parsed = value
 
     raw = parsed.get("items")
     if raw is None:

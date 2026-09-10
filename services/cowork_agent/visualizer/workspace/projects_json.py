@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from services.cowork_agent.project_layout import workspace_xo_dir, xo_projects_root
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
+from services.cowork_agent.visualizer.atomic_write import ChangeGate
 from services.cowork_agent.visualizer.git_provenance import git_provenance, is_git_repo
 from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.sinks.project_json import refresh_git
@@ -40,11 +40,7 @@ _GIT_REFRESH_DEFAULT_S = 300.0
 _git_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 # key -> (project.json stat signature, pid)
 _identity_cache: dict[tuple[str, str], tuple[tuple, Optional[str]]] = {}
-# The payload this process last wrote, per target path — the write-on-change
-# baseline (syncplan §3: held in memory rather than re-read, and sound because
-# this sink owns the whole document).
-_previous: dict[str, dict] = {}
-_PREVIOUS_MAX = 64
+_gate = ChangeGate()
 
 
 def _now_iso() -> str:
@@ -72,7 +68,7 @@ def reset_caches() -> None:
     """Drop every in-process cache. For tests, and for a root switch."""
     _git_cache.clear()
     _identity_cache.clear()
-    _previous.clear()
+    _gate.reset()
 
 
 def _identity(key: tuple[str, str], pdir: Path) -> tuple[Optional[str], bool]:
@@ -177,16 +173,4 @@ def build(project_ids: Sequence[str] | None = None) -> dict:
 def apply(project_ids: Sequence[str] | None = None) -> bool:
     """Refresh ``projects.json``. Returns ``True`` iff the file changed."""
     payload = build(project_ids)
-    target = path()
-    key = str(target)
-    if key in _previous and target.exists():
-        # Steady state: one ``stat`` and a dict comparison, no read.
-        changed = write_json_atomic_if_changed(target, payload, previous=_previous[key])
-    else:
-        # First write of this process: the baseline has to come off disk,
-        # otherwise a restart rewrites an identical file.
-        changed = write_json_atomic_if_changed(target, payload)
-    if key not in _previous and len(_previous) >= _PREVIOUS_MAX:
-        _previous.clear()
-    _previous[key] = payload
-    return changed
+    return _gate.publish(path(), payload)

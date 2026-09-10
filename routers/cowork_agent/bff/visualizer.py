@@ -526,6 +526,24 @@ def _make_workitem_source(d: dict, *, workitem_id: str) -> WorkitemSource:
     return WorkitemSource(kind="github")
 
 
+def _require_workitem(
+    scope: scopes.VisualizerScope, workitem_id: str, *, include_deleted: bool = False,
+) -> dict:
+    """The stored record, or the 404/4xx the store's failure deserves."""
+    try:
+        found = scope.get_workitem(workitem_id, include_deleted=include_deleted)
+    except Exception as exc:
+        raise _workitem_error(
+            exc, failure="workitems.json is not readable.",
+        ) from exc
+    if found is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "workitem_not_found", "message": "Workitem not found."},
+        )
+    return found
+
+
 def _in_progress_ids(scope: scopes.VisualizerScope) -> frozenset[str]:
     """The derived set of workitems an agent is working right now (§5.4)."""
     return scope.in_progress_workitem_ids()
@@ -682,17 +700,7 @@ def project_workitems_create(
 def project_workitems_get(project_id: str, workitem_id: str) -> Workitem:
     """Fetch one workitem by id."""
     scope = _require_project(project_id)
-    try:
-        found = scope.get_workitem(workitem_id)
-    except Exception as exc:
-        raise _workitem_error(
-            exc, failure="workitems.json is not readable.",
-        ) from exc
-    if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "workitem_not_found", "message": "Workitem not found."},
-        )
+    found = _require_workitem(scope, workitem_id)
     return _make_workitem_model(
         _projection.project_workitem(found, issues=_mirror_issues(scope)),
         in_progress=workitem_id in _in_progress_ids(scope),
@@ -775,17 +783,7 @@ def project_workitems_claim(
 ) -> WorkitemClaim:
     """Record that a session is working this workitem."""
     scope = _require_project(project_id)
-    try:
-        found = scope.get_workitem(workitem_id)
-    except Exception as exc:
-        raise _workitem_error(
-            exc, failure="workitems.json is not readable.",
-        ) from exc
-    if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "workitem_not_found", "message": "Workitem not found."},
-        )
+    _require_workitem(scope, workitem_id)
     try:
         claim = scope.claim_workitem(
             workitem_id, session_id=body.session_id, runtime=body.runtime,
@@ -815,17 +813,7 @@ def project_workitems_release(
 ) -> ReleaseWorkitemClaimResponse:
     """Drop the claim — the explicit half of "stopped working on this"."""
     scope = _require_project(project_id)
-    try:
-        found = scope.get_workitem(workitem_id, include_deleted=True)
-    except Exception as exc:
-        raise _workitem_error(
-            exc, failure="workitems.json is not readable.",
-        ) from exc
-    if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "workitem_not_found", "message": "Workitem not found."},
-        )
+    _require_workitem(scope, workitem_id, include_deleted=True)
     try:
         released = scope.release_workitem(workitem_id)
     except Exception as exc:
@@ -840,7 +828,11 @@ def project_workitems_release(
 
 
 # ── /api/xo-projects/{id}/github/* — the mirror, and adoption ───────────────
-# §7.2, tasks W7 and W8. Three facts shape everything below. **1.
+# §7.2, tasks W7 and W8. Three facts shape everything below. (1) GitHub is
+# read-only to this system: assignment writes a local annotation into
+# ``.xo/workitems.json``, never an issue. (2) Adoption is explicit — the mirror
+# holds every issue in the repo, ``.xo/workitems.json`` only what someone chose
+# to track. (3) The poller is the mirror's only writer; these routes read it.
 
 
 #: The cold-mirror fetch's bounds (issuesplan I1/Phase 2).
@@ -1175,17 +1167,7 @@ async def project_github_issue_adopt(
 def project_workitem_unadopt(project_id: str, workitem_id: str) -> Workitem:
     """Stop mirroring the issue. **Keep the workitem** (§7.2)."""
     scope = _require_project(project_id)
-    try:
-        found = scope.get_workitem(workitem_id)
-    except Exception as exc:
-        raise _workitem_error(
-            exc, failure="workitems.json is not readable.",
-        ) from exc
-    if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "workitem_not_found", "message": "Workitem not found."},
-        )
+    found = _require_workitem(scope, workitem_id)
 
     projected = _projection.project_workitem(found, issues=_mirror_issues(scope))
     try:
@@ -1205,7 +1187,10 @@ def project_workitem_unadopt(project_id: str, workitem_id: str) -> Workitem:
 
 
 # ── /api/xo-projects/{id}/workitems/{id}/assignee — W8, amended ─────────────
-# **This endpoint used to write to GitHub.
+# **This endpoint used to write to GitHub. It does not any more.**
+# GitHub is read-only to this system (workitems-plan §13, amendment 33):
+# assignment is a local annotation in ``.xo/workitems.json``, for adopted
+# and local items alike.
 
 
 #: The spellings of "me", resolved to this Space's own identity. §4 is why no
@@ -1253,17 +1238,7 @@ async def project_workitem_assign(
 ) -> WorkitemAssignment:
     """Set (or clear) who owes this workitem. **Always a local write.**"""
     scope = _require_project(project_id)
-    try:
-        found = scope.get_workitem(workitem_id)
-    except Exception as exc:
-        raise _workitem_error(
-            exc, failure="workitems.json is not readable.",
-        ) from exc
-    if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "workitem_not_found", "message": "Workitem not found."},
-        )
+    _require_workitem(scope, workitem_id)
 
     wanted = (body.assignee or "").strip() or None
     if wanted is None:
