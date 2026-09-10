@@ -68,3 +68,66 @@
   .shr-apply{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
   .shr-apply code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;overflow-x:auto;max-width:100%}
+
+  /* drawer panel polish (issue #83): the loading skeleton's second line,
+     the member row's action slot, the inline revoke confirmation and the
+     shaped empty state */
+  .prj-skel.is-sm.is-short{max-width:min(100%,300px)}
+  .shr-act{margin-left:auto;display:flex;align-items:center}
+  .shr-row .shr-revoke{margin-left:0}
+  .shr-confirm{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .shr-confirm-yes{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:#14100a;background:#e07a5f;border-radius:999px;padding:4px 10px}
+  .shr-confirm-yes:hover{background:#eb8f77}
+  .shr-confirm-no{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:3px 9px}
+  .shr-confirm-no:hover{color:var(--ink);border-color:var(--line)}
+  .shr-confirm button:disabled{opacity:.5;cursor:default}
+  .shr-empty{padding:14px 16px;text-align:center;border:1px dashed var(--line);
+    border-radius:10px;background:var(--bg-3);margin-bottom:8px}
+  .shr-empty b{display:block;font:500 13.5px var(--serif);color:var(--ink);margin-bottom:4px}
+  .shr-empty p{font-size:12px;color:var(--ink-3);margin:0;line-height:1.5}
+
+  /* ---------------- Sharing lens (Files → Sharing) ----------------
+     Same centred column, header and row cards as the List, so the pill
+     switch feels like turning the same page over. Columns: project ·
+     origin/branch with the behind chip · members · last check. */
+  #view-sharing{overflow-y:auto}
+  .shl .shr-strip{margin-top:-4px}
+  .shl-cols,.shl-row{display:grid;grid-template-columns:minmax(0,1fr) 200px 130px 150px;
+    gap:14px;align-items:center}
+  .shl-cols{padding:0 17px 7px;font:600 10px var(--mono);letter-spacing:.16em;
+    text-transform:uppercase;color:var(--ink-3)}
+  .shl-row{width:100%;text-align:left;padding:12px 17px;background:var(--bg-2);
+    border:1px solid var(--line-soft);border-radius:12px;color:var(--ink);
+    transition:border-color .16s var(--ease),background .16s var(--ease)}
+  .shl-row:hover{border-color:var(--line)}
+  .shl-row:hover .shl-name b{color:var(--accent)}
+  .shl-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  /* work waiting: the same accent bar the drawer puts on unapplied commits */
+  .shl-row.is-behind{border-left:2px solid var(--accent)}
+  .shl-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .shl-name b{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-name em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-cell{display:flex;align-items:center;gap:8px;min-width:0;font:400 11px var(--mono);
+    color:var(--ink-2);white-space:nowrap}
+  .shl-branch{color:var(--ink-3)}
+  .shl-muted{color:var(--ink-3);font:400 11px var(--mono);overflow:hidden;text-overflow:ellipsis}
+  .shl-when{font-size:10.5px;letter-spacing:.04em;color:var(--ink-3)}
+  .shl-when.is-err{color:#e0b04c}
+  .shl-when.is-none{color:var(--ink-4)}
+  .tchip.st-quiet{color:var(--ink-3)}
+  /* a span inside the row button: block it so the skeleton has a height */
+  .prj-skel.is-cell{display:inline-block;margin:0;width:120px}
+  .shl-link{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+  .shl-link:hover{color:var(--accent-deep)}
+  @media (max-width:900px){
+    .shl-cols{display:none}
+    .shl-row{grid-template-columns:minmax(0,1fr) auto;
+      grid-template-areas:'n b' 'm w';row-gap:6px}
+    .shl-name{grid-area:n}
+    .shl-branch-cell{grid-area:b}
+    .shl-members{grid-area:m}
+    .shl-when{grid-area:w;justify-content:flex-end}
+  }

@@ -8,7 +8,30 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js';
 import {sharingPanel,sharingStripHTML,sharedWithYouHTML,bindSharingCopies,bindSharingActions,
   refreshSharingStatus,startSharingPoll,syncSharingPanel,setSharingNav,consumeNewClone,sharingRowChip}
-  from './projects_sharing.js?v=20260907-sharing7';
+  from './projects_sharing.js?v=20260910-sharinglens1';
+
+/* The Sharing lens hands off here: "open this project's drawer". The
+   request is parked until the catalog is loaded, the same way the Graph
+   parks space:focus-project until it has booted. */
+let pendingOpen=null;
+addEventListener('space:open-project',e=>{
+  pendingOpen=String(e.detail||'');
+  if(items)openPending();
+});
+function openPending(){
+  if(!pendingOpen||!items)return;
+  const id=pendingOpen;
+  pendingOpen=null;
+  if(!items.some(p=>p.id===id))return;
+  /* a filter that hides the row would make the jump land on nothing */
+  if(filter&&!visible().some(p=>p.id===id))filter='';
+  if(expanded!==id){expanded=id;render();}
+  const row=document.getElementById('prj-row-'+id);
+  if(row){
+    row.scrollIntoView({block:'start',behavior:'smooth'});
+    row.querySelector('.prj-row-head').focus({preventScroll:true});
+  }
+}
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dtfmt=iso=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'—';
@@ -219,6 +242,7 @@ async function loadList(){
   /* Refresh must not close what you were reading. */
   if(expanded&&!items.some(p=>p.id===expanded))expanded=null;
   render();
+  openPending();
 }
 
 const filesOf=id=>counts.get(id)?.files??null;

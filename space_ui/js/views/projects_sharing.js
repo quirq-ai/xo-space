@@ -1,13 +1,17 @@
-/* Project sharing inside the Files tab (List lens). Not a view: a helper the
-   projects view imports, the way it imports core modules. Three surfaces:
+/* Project sharing inside the Files tab. Not a view: a helper that the List
+   lens (projects.js) and the Sharing lens (sharing.js) both import, the way
+   they import core modules. Four surfaces:
 
-     sharingStripHTML()     one line above the list — parked reason or
-                            "running · last check", plus this workspace's id
-                            with a copy button (the only place a user finds
-                            the id to hand to a sharer)
+     sharingStripHTML()     one line — parked reason or "running · last
+                            check", plus this workspace's id with a copy
+                            button (the only place a user finds the id to
+                            hand to a sharer). Above the List; the Sharing
+                            lens's header.
      sharedWithYouHTML()    repos the relay reports as shared with this
                             workspace but not cloned here, each with a
                             copy-able clone command
+     sharedProjects()       the rows of the Sharing lens: repos cloned here
+                            and shared with someone else
      sharingPanel           a drawer PANELS entry: recent commits + behind
                             count, members, share/revoke
 
@@ -40,7 +44,18 @@ const short=h=>String(h||'').slice(0,10);
 /* ── status snapshot ──────────────────────────────────────────────────────── */
 let status=null;      /* last good snapshot */
 let statusRes=null;   /* last response, good or not, for the strip's wording */
-let onUpdate=()=>{};  /* projects view repaints its sharing surfaces */
+/* Views that repaint their sharing surfaces after each read. Two lenses
+   share one poll, so this is a set, not a single callback — a second
+   subscriber must never silently replace the first. */
+const subscribers=new Set();
+function notify(){
+  for(const fn of subscribers){
+    try{fn();}catch(err){console.error('sharing subscriber failed:',err);}
+  }
+}
+export function sharingStatus(){return status;}
+export function sharingStatusRes(){return statusRes;}
+export const sharingRel=rel;
 
 export async function refreshSharingStatus(){
   const res=await apiFetch(API_BASE+'/api/project-sharing/status');
@@ -49,10 +64,14 @@ export async function refreshSharingStatus(){
   return res;
 }
 /* 60 s matches the relay's own cadence; a faster UI poll would only re-read
-   the same tick. Share/revoke refresh explicitly (see below). */
+   the same tick. Share/revoke refresh explicitly (see below). Slotted by
+   name, so the second lens to mount joins the poll instead of doubling it. */
+let polling=false;
 export function startSharingPoll(update){
-  onUpdate=update||(()=>{});
-  const tick=async()=>{await refreshSharingStatus();onUpdate();syncFastPoll();};
+  if(typeof update==='function')subscribers.add(update);
+  if(polling)return;
+  polling=true;
+  const tick=async()=>{await refreshSharingStatus();notify();syncFastPoll();};
   setSlottedInterval('projects-sharing',tick,60000);
   syncFastPoll();
 }
@@ -64,7 +83,7 @@ function syncFastPoll(){
   const want=anyCloning();
   if(want&&!fastPolling){
     fastPolling=true;
-    setSlottedInterval('projects-sharing-fast',async()=>{await refreshSharingStatus();onUpdate();syncFastPoll();},3000);
+    setSlottedInterval('projects-sharing-fast',async()=>{await refreshSharingStatus();notify();syncFastPoll();},3000);
   }else if(!want&&fastPolling){
     fastPolling=false;
     clearSlottedInterval('projects-sharing-fast');
@@ -72,7 +91,7 @@ function syncFastPoll(){
 }
 /* after a write the relay is nudged and ticks within ~1 s; re-read shortly
    after so the strip and chips flip without waiting for the minute */
-function refreshSoon(){setTimeout(async()=>{await refreshSharingStatus();onUpdate();},1500);}
+function refreshSoon(){setTimeout(async()=>{await refreshSharingStatus();notify();},1500);}
 
 function entryFor(projectId){
   if(!status||!status.repos)return null;
@@ -221,6 +240,24 @@ function others(e){
   const m=e&&e.members;
   return(typeof m==='number')?Math.max(0,m-1):null;
 }
+/* The Sharing lens's rows: every repo cloned here (it has a project) that
+   someone else can see. Same rule as the row chip, so the lens and the List
+   never disagree about what counts as shared. Per-repo timestamps and the
+   last fetch error ride along from the snapshot; the behind count does not
+   live there — the lens asks /commits per row. */
+export function sharedProjects(){
+  if(!status)return[];
+  return Object.entries(status.repos||{})
+    .filter(([,r])=>r.shared&&r.project&&others(r)!==0)
+    .map(([repo,r])=>({repo,project:r.project,others:others(r),
+      lastFetchAt:r.last_fetch_at||null,lastError:r.last_error||null,
+      autoClonedAt:r.auto_cloned_at||null}));
+}
+/* How many repos sit in the "shared with you" inbox (for the lens eyebrow). */
+export function sharedWithYouCount(){
+  if(!status||status.cadence==='parked')return 0;
+  return Object.values(status.repos||{}).filter(r=>r.available&&r.shared).length;
+}
 export function sharingRowChip(projectId){
   const e=entryFor(projectId);
   if(!e||!e.shared)return'';
@@ -282,7 +319,7 @@ function panelHTML(id,d){
     +'<div class="shr-sec">'+commitsHTML(d)+'</div>'
     +'<div class="shr-sec"><div class="shr-sec-head"><span class="shr-sec-title">Members</span>'+chip(id)+clonedNote(id)+'</div>'
       +'<div class="shr-members" id="shr-members-'+esc(id)+'" data-state="'+st+'">'
-        +'<div class="prj-note">'+(st==='live'?'loading…':IDLE_NOTE[st])+'</div></div>'
+        +(st==='live'?loadingHTML():'<div class="prj-note">'+IDLE_NOTE[st]+'</div>')+'</div>'
       +'<form class="shr-form" data-project="'+esc(id)+'">'
         +'<input class="tv-filter shr-input" name="ws" placeholder="recipient workspace id" '
           +'autocomplete="off" spellcheck="false" aria-label="Recipient workspace id">'
@@ -290,6 +327,38 @@ function panelHTML(id,d){
       +'</form>'
     +'</div></div>';
 }
+/* Loading is a shape, not a word — the same skeleton lines the other drawer
+   panels show while their fetch is in flight. */
+const loadingHTML=()=>'<div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div>';
+/* A workspace id is long and opaque; rows only need enough of it to tell
+   members apart. The full id is the hover title and the copy payload. */
+function shortId(id){
+  const s=String(id||'');
+  return s.length<=14?s:s.slice(0,7)+'…'+s.slice(-4);
+}
+/* owner first, then active members, then the revoked history */
+const memberRank=m=>m.role==='owner'?0:m.status==='revoked'?2:1;
+function memberRow(m,own,iOwn,id){
+  const canRevoke=iOwn&&m.role!=='owner'&&m.status==='active';
+  return'<div class="shr-row'+(m.status==='revoked'?' is-revoked':'')+'" data-ws="'+esc(m.workspace_id)+'">'
+    +'<code class="shr-id" title="'+esc(m.workspace_id)+'">'+esc(shortId(m.workspace_id))+'</code>'
+    +'<button class="shr-copy" type="button" data-copy="'+esc(m.workspace_id)+'" title="Copy workspace id">copy</button>'
+    +'<span class="tchip">'+esc(m.role)+'</span>'
+    +(m.workspace_id===own?'<span class="tchip st-shared">you</span>':'')
+    +(m.status==='revoked'?'<span class="tchip st-blocked">revoked</span>':'')
+    +(m.bound===false&&m.status==='active'?'<span class="shr-muted" title="that workspace has not checked in yet">not seen yet</span>':'')
+    +(canRevoke?'<span class="shr-act">'+revokeButtonHTML(id,m.workspace_id)+'</span>':'')
+    +'</div>';
+}
+const revokeButtonHTML=(id,ws)=>'<button class="shr-revoke" type="button" data-id="'+esc(id)+'" data-ws="'+esc(ws)+'">Revoke</button>';
+/* Revoke asks first, in the row: the button becomes a question with Confirm
+   and Cancel. No browser dialog, nothing is sent until Confirm. */
+const revokeConfirmHTML=(id,ws)=>'<span class="shr-confirm" role="group" aria-label="Confirm revoke">'
+  +'<span class="shr-muted">revoke '+esc(shortId(ws))+'?</span>'
+  +'<button class="shr-confirm-yes" type="button" data-id="'+esc(id)+'" data-ws="'+esc(ws)+'">Confirm</button>'
+  +'<button class="shr-confirm-no" type="button" data-id="'+esc(id)+'" data-ws="'+esc(ws)+'">Cancel</button></span>';
+const emptyMembersHTML=()=>'<div class="shr-empty"><b>Not shared with anyone yet</b>'
+  +'<p>Enter another workspace’s id below. They find theirs in the strip at the top of the Sharing lens.</p></div>';
 async function fillMembers(id){
   const box=document.getElementById('shr-members-'+id);
   if(!box)return;
@@ -302,19 +371,37 @@ async function fillMembers(id){
     still.innerHTML='<div class="prj-note">'+(res.offline?'xo-space is unreachable':esc(res.error))+'</div>';
     return;
   }
-  const own=res.data.own_workspace_id,ms=res.data.members||[];
+  const own=res.data.own_workspace_id,ms=(res.data.members||[]).slice();
   const iOwn=ms.some(m=>m.role==='owner'&&m.workspace_id===own);
-  still.innerHTML=ms.length?'<div class="shr-rows">'+ms.map(m=>'<div class="shr-row'+(m.status==='revoked'?' is-revoked':'')+'">'
-      +'<code class="shr-id">'+esc(m.workspace_id)+'</code>'
-      +'<span class="tchip">'+esc(m.role)+'</span>'
-      +(m.workspace_id===own?'<span class="tchip st-shared">this workspace</span>':'')
-      +(m.status==='revoked'?'<span class="tchip st-blocked">revoked</span>':'')
-      +(m.bound===false&&m.status==='active'?'<span class="shr-muted" title="that workspace has not checked in yet">not seen yet</span>':'')
-      +(iOwn&&m.role!=='owner'&&m.status==='active'
-        ?'<button class="shr-revoke" type="button" data-id="'+esc(id)+'" data-ws="'+esc(m.workspace_id)+'">Revoke</button>':'')
-      +'</div>').join('')+'</div>'
-    :'<div class="prj-note">not shared with anyone yet</div>';
-  still.querySelectorAll('.shr-revoke').forEach(b=>b.addEventListener('click',()=>revoke(b)));
+  /* "shared" means someone other than the owner can see it. A group that
+     holds only you (or only revoked rows) is the empty state, with the
+     revoked history kept underneath so a revoke does not vanish. */
+  const others=ms.filter(m=>m.status==='active'&&!(m.role==='owner'&&m.workspace_id===own));
+  const shown=others.length?ms:ms.filter(m=>m.status==='revoked');
+  shown.sort((a,b)=>memberRank(a)-memberRank(b));
+  still.innerHTML=(others.length?'':emptyMembersHTML())
+    +(shown.length?'<div class="shr-rows">'+shown.map(m=>memberRow(m,own,iOwn,id)).join('')+'</div>':'');
+  bindSharingCopies(still);
+  /* one delegated listener per box: the box outlives its rows, which are
+     rebuilt on every refresh */
+  if(!still.dataset.bound){
+    still.dataset.bound='1';
+    still.addEventListener('click',onMembersClick);
+  }
+}
+function onMembersClick(e){
+  const b=e.target.closest('button');
+  if(!b)return;
+  const slot=b.closest('.shr-act');
+  if(b.classList.contains('shr-revoke')&&slot){
+    slot.innerHTML=revokeConfirmHTML(b.dataset.id,b.dataset.ws);
+    slot.querySelector('.shr-confirm-yes').focus();
+  }else if(b.classList.contains('shr-confirm-no')&&slot){
+    slot.innerHTML=revokeButtonHTML(b.dataset.id,b.dataset.ws);
+    slot.querySelector('.shr-revoke').focus();
+  }else if(b.classList.contains('shr-confirm-yes')&&slot){
+    revoke(b.dataset.id,b.dataset.ws,slot);
+  }
 }
 async function share(form){
   const id=form.dataset.project;
@@ -336,12 +423,16 @@ async function share(form){
   else fillMembers(id);
   refreshSoon();
 }
-async function revoke(btn){
-  const id=btn.dataset.id,ws=btn.dataset.ws;
-  btn.disabled=true;
+async function revoke(id,ws,slot){
+  slot.querySelectorAll('button').forEach(b=>{b.disabled=true;});
   const res=await apiFetch(API_BASE+'/api/xo-projects/'+encodeURIComponent(id)+'/revoke',{method:'POST',body:{workspace_id:ws}});
-  if(!res.ok){btn.disabled=false;toast('revoke failed: '+(res.offline?'xo-space is unreachable':res.error));return;}
-  toast('revoked '+ws);
+  if(!res.ok){
+    /* back to the plain button; the toast carries the reason */
+    if(slot.isConnected)slot.innerHTML=revokeButtonHTML(id,ws);
+    toast('revoke failed: '+(res.offline?'xo-space is unreachable':res.error));
+    return;
+  }
+  toast('revoked '+shortId(ws));
   fillMembers(id);
   refreshSoon();
 }
