@@ -321,14 +321,6 @@ def runtime_sessions_dir_for_project(name: str, *, create: bool = False) -> Path
     return target
 
 
-def legacy_runtime_dir_for_project(name: str) -> Path | None:
-    """The project's ``.xo/`` — where the moved files used to live."""
-    dirname = _project_dirname_if_present(name)
-    if dirname is None:
-        return None
-    return xo_dir(dirname)
-
-
 def runtime_read_roots(name: str) -> tuple[Path | None, Path | None]:
     """``(runtime root, pre-move root)`` for one project, resolved once."""
     dirname = _project_dirname_if_present(name)

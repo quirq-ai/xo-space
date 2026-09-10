@@ -15,10 +15,6 @@ from services.cowork_agent.visualizer.workitems_store import (
 
 logger = logging.getLogger(__name__)
 
-#: The keys the projection adds to a stored record on its way to the wire.
-PROJECTED_KEYS: tuple[str, ...] = ("assignees", "github_assignees", "stale")
-
-
 def mirror_issues(mirror: object) -> dict[str, dict]:
     """The ``issues`` map of a mirror document, or ``{}``."""
     if not isinstance(mirror, Mapping):

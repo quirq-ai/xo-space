@@ -5,16 +5,18 @@ from __future__ import annotations
 import copy
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from services.cowork_agent.visualizer.atomic_write import (
-    CorruptDocumentError,
     read_stamped_document,
     unsupported_schema_message,
-    write_json_owned,
+)
+from services.cowork_agent.visualizer.store_common import (
+    SAFE_KEY_RE as _SAFE_KEY_RE,
+    StoreError,
+    write_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.ingest.events import Event, WorkitemEvent
@@ -33,12 +35,6 @@ CLAIMS_RELPATH = "workitems/claims.json"
 #: Top-level keys this module owns, for :func:`write_json_owned`.
 _OWNS: frozenset[str] = frozenset({"schema", "updated_at", "claims"})
 
-#: Same charset as ``workitems_store`` and ``todos_store``: permissive enough
-#: for the colon-separated composite session keys and realistic runtime keys,
-#: restrictive enough to reject traversal and anything that could turn a
-#: document key into arbitrary caller text.
-_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_:\-\.]{1,200}$")
-
 #: The floor on the grace window, in seconds.
 CLAIM_GRACE_SECONDS = 60.0
 
@@ -47,13 +43,8 @@ _TICK_MIN_S = 0.25
 _TICK_MAX_S = 60.0
 
 
-class WorkitemClaimsError(Exception):
-    """``(code, message)``, exactly the shape ``WorkitemsStoreError`` has."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+class WorkitemClaimsError(StoreError):
+    """A claims-document failure, carrying the route's ``detail.code``."""
 
 
 def _now() -> datetime:
@@ -162,18 +153,16 @@ def read_claims_quiet(path: Path) -> dict[str, dict]:
 
 
 def _write(path: Path, claims: dict) -> None:
-    try:
-        write_json_owned(
-            path,
-            owns=_OWNS,
-            values={
-                "schema": CLAIMS_SCHEMA,
-                "updated_at": _iso(_now()),
-                "claims": claims,
-            },
-        )
-    except CorruptDocumentError as exc:
-        raise _corrupt(path, exc.reason) from exc
+    write_owned(
+        path,
+        owns=_OWNS,
+        values={
+            "schema": CLAIMS_SCHEMA,
+            "updated_at": _iso(_now()),
+            "claims": claims,
+        },
+        corrupt=_corrupt,
+    )
 
 
 # ── Lifecycle events ───────────────────────────────────────────────────────

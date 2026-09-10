@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import copy
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from services.cowork_agent.visualizer.atomic_write import (
-    CorruptDocumentError,
     read_stamped_document,
     unsupported_schema_message,
-    write_json_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
+from services.cowork_agent.visualizer.store_common import (
+    SAFE_KEY_RE as _SAFE_KEY_RE,
+    UNSET,
+    Unset as _Unset,
+    StoreError,
+    corrupt_message,
+    now_iso as _now_iso,
+    ordered as _ordered_by,
+    write_owned,
+)
 
 
 #: On-disk revision of ``peers.json``, matching ``peers.schema.json``'s
@@ -32,9 +39,6 @@ _OWNS: frozenset[str] = frozenset({"$schema", "schema", "updated_at", "peers"})
 #: The three roles ``peers.schema.json`` enumerates, and no others.
 VALID_ROLES: frozenset[str] = frozenset({"owner", "collaborator", "viewer"})
 
-# The assignee charset, byte for byte.
-_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_:\-\.]{1,200}$")
-
 # A label is human text (a display name may carry spaces, accents,
 # punctuation), so only control characters are excluded — the same rule
 # ``workitems_store`` applies to a GitHub label.
@@ -51,33 +55,8 @@ _MAX_PEERS = 1000
 _KEY_ORDER: tuple[str, ...] = ("user_id", "role", "added_at", "endpoint", "label")
 
 
-class _Unset:
-    """Sentinel: "the caller did not supply this field"."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return "<unset>"
-
-
-UNSET = _Unset()
-
-
-class PeersStoreError(Exception):
-    """
-    Base for all store failures. ``code`` is the BFF error code the route maps
-    to ``detail.code`` — same shape as ``WorkitemsStoreError`` and
-    ``TodosStoreError``.
-    """
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+class PeersStoreError(StoreError):
+    """A peers-document failure, carrying the route's ``detail.code``."""
 
 
 # ── Validation ─────────────────────────────────────────────────────────────
@@ -138,13 +117,12 @@ def _validate_endpoint(value: object) -> Optional[str]:
 
 
 def _corrupt(path: Path, reason: str) -> PeersStoreError:
-    """The O-E refusal, in one place."""
     return PeersStoreError(
         "corrupt_document",
-        f"{path} is not a readable peers document ({reason}); refusing to "
-        f"read or write it. Treating it as empty would discard every "
-        f"collaborator it lists (docs/OUTSTANDING.md O-E). Repair or move "
-        f"the file.",
+        corrupt_message(
+            path, reason, document="peers",
+            loss="every collaborator it lists",
+        ),
     )
 
 
@@ -193,28 +171,22 @@ def _read_document(path: Path) -> tuple[Optional[str], list[dict]]:
 
 def _write(path: Path, peers: list[dict]) -> None:
     """Persist the roster, refusing a document that went unreadable."""
-    try:
-        write_json_owned(
-            path,
-            owns=_OWNS,
-            values={
-                "$schema": _SCHEMA_REF,
-                "schema": PEERS_SCHEMA,
-                "updated_at": _now_iso(),
-                "peers": peers,
-            },
-        )
-    except CorruptDocumentError as exc:
-        raise _corrupt(path, exc.reason) from exc
+    write_owned(
+        path,
+        owns=_OWNS,
+        values={
+            "$schema": _SCHEMA_REF,
+            "schema": PEERS_SCHEMA,
+            "updated_at": _now_iso(),
+            "peers": peers,
+        },
+        corrupt=_corrupt,
+    )
 
 
 def _ordered(record: dict) -> dict:
-    """``record`` with its keys in :data:`_KEY_ORDER`, extras kept at the end."""
-    out = {key: record[key] for key in _KEY_ORDER if key in record}
-    for key, value in record.items():
-        if key not in out:
-            out[key] = value
-    return out
+    """``record`` with its keys in :data:`_KEY_ORDER`."""
+    return _ordered_by(record, _KEY_ORDER)
 
 
 def _index_of(peers: list[dict], user_id: str) -> Optional[int]:

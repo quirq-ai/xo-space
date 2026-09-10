@@ -6,16 +6,23 @@ import copy
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.visualizer.atomic_write import (
-    CorruptDocumentError,
     read_stamped_document,
     unsupported_schema_message,
-    write_json_owned,
+)
+from services.cowork_agent.visualizer.store_common import (
+    SAFE_KEY_RE as _SAFE_KEY_RE,
+    UNSET,
+    StoreError,
+    Unset as _Unset,
+    corrupt_message,
+    now_iso as _now_iso,
+    ordered as _ordered_by,
+    write_owned,
 )
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.ingest.events import Event, WorkitemEvent
@@ -50,12 +57,6 @@ GITHUB_OWNED_FIELDS: tuple[str, ...] = ("status", "state_reason", "body")
 
 _DEFAULT_STATUS = "open"
 
-# Same charset as ``todos_store``: permissive enough for realistic adapter keys
-# and composite session ids, restrictive enough to reject path traversal and
-# anything that could turn a synced document into a channel for arbitrary
-# caller text.
-_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_:\-\.]{1,200}$")
-
 # A label is human text (GitHub allows spaces, colons, emoji), so only control
 # characters are excluded.
 _LABEL_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,100}$")
@@ -73,32 +74,8 @@ _MAX_LABELS = 50
 _MAX_LINKS = 500
 
 
-class _Unset:
-    """Sentinel: "the caller did not supply this field"."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return "<unset>"
-
-
-UNSET = _Unset()
-
-
-class WorkitemsStoreError(Exception):
-    """
-    Base for all store failures. ``code`` is the BFF error code the route maps
-    to ``detail.code`` — same shape as ``TodosStoreError``.
-    """
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+class WorkitemsStoreError(StoreError):
+    """A workitems-document failure, carrying the route's ``detail.code``."""
 
 
 # ── Lifecycle events (plan §8, W10) ────────────────────────────────────────
@@ -325,12 +302,11 @@ def _refuse_github_owned(supplied: dict[str, Any]) -> None:
 
 
 def _corrupt(path: Path, reason: str) -> WorkitemsStoreError:
-    """The O-E refusal, in one place."""
     return WorkitemsStoreError(
         "corrupt_document",
-        f"{path} is not a readable workitems document ({reason}); refusing to "
-        f"read or write it. Treating it as empty would discard every workitem "
-        f"it holds (docs/OUTSTANDING.md O-E). Repair or move the file.",
+        corrupt_message(
+            path, reason, document="workitems", loss="every workitem it holds",
+        ),
     )
 
 
@@ -369,19 +345,17 @@ def _read_document(path: Path) -> dict:
 
 def _write(path: Path, items: dict) -> None:
     """Persist the items map, refusing a document that went unreadable."""
-    try:
-        write_json_owned(
-            path,
-            owns=_OWNS,
-            values={
-                "$schema": _SCHEMA_REF,
-                "schema": WORKITEMS_SCHEMA,
-                "updated_at": _now_iso(),
-                "items": items,
-            },
-        )
-    except CorruptDocumentError as exc:
-        raise _corrupt(path, exc.reason) from exc
+    write_owned(
+        path,
+        owns=_OWNS,
+        values={
+            "$schema": _SCHEMA_REF,
+            "schema": WORKITEMS_SCHEMA,
+            "updated_at": _now_iso(),
+            "items": items,
+        },
+        corrupt=_corrupt,
+    )
 
 
 def _visible(item: dict, include_deleted: bool) -> bool:
@@ -400,12 +374,8 @@ _KEY_ORDER: tuple[str, ...] = (
 
 
 def _ordered(record: dict) -> dict:
-    """``record`` with its keys in :data:`_KEY_ORDER`, extras kept at the end."""
-    out = {key: record[key] for key in _KEY_ORDER if key in record}
-    for key, value in record.items():
-        if key not in out:
-            out[key] = value
-    return out
+    """``record`` with its keys in :data:`_KEY_ORDER`."""
+    return _ordered_by(record, _KEY_ORDER)
 
 
 def _new_record(

@@ -64,7 +64,7 @@ from routers.cowork_agent.bff._visualizer_presenter import (
 # than restating them (workitems-plan §7.3, W9).
 from routers.cowork_agent.bff.visualizer import (
     _SELF_ALIASES,
-    _WORKITEM_DOCUMENT_ERRORS,
+    _DOCUMENT_ERRORS,
     _make_workitem_model,
     _self_github_login,
     _self_identities,
@@ -812,7 +812,7 @@ def _skipped_model(entry: dict) -> SkippedProject:
             "workspace rollup skipped project %s (%s): %s",
             project_id, code, detail,
         )
-    template = _WORKITEM_DOCUMENT_ERRORS.get(code, _SKIPPED_FALLBACK)
+    template = _DOCUMENT_ERRORS.get(code, _SKIPPED_FALLBACK)
     pid = entry.get("pid")
     return SkippedProject(
         project_id=project_id,

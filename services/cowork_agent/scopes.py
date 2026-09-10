@@ -10,7 +10,11 @@ from typing import Iterable, Optional, Union
 from services.cowork_agent import project_layout
 from services.cowork_agent.engine import sessions_io as session_index
 from services.cowork_agent.registry import agent_env
+from services.cowork_agent.visualizer import peers_store
 from services.cowork_agent.visualizer import reader as visualizer_reader
+from services.cowork_agent.visualizer import todos_store
+from services.cowork_agent.visualizer import workitem_claims
+from services.cowork_agent.visualizer import workitems_store
 from services.cowork_agent.visualizer import state as watcher_state
 
 logger = logging.getLogger(__name__)
@@ -193,19 +197,15 @@ class VisualizerScope(_XoReader):
     def _todos_path(self):
         # Path is hidden behind this handle so route files don't need
         # to import pathlib (P2 grep stays clean).
-        from services.cowork_agent.visualizer import todos_store  # noqa: F401
         return self._xo_root / "todos.json"
 
     def create_todo(self, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import todos_store
         return todos_store.create_todo(self._todos_path(), **kwargs)
 
     def get_todo(self, todo_id: str):
-        from services.cowork_agent.visualizer import todos_store
         return todos_store.get_todo(self._todos_path(), todo_id)
 
     def update_todo(self, todo_id: str, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import todos_store
         return todos_store.update_todo(self._todos_path(), todo_id, **kwargs)
 
     def delete_todo(self, todo_id: str, **kwargs) -> bool:
@@ -213,7 +213,6 @@ class VisualizerScope(_XoReader):
         # the store takes ``deleted_by``, and a signature that dropped it made
         # the tombstone's attribution structurally unreachable over HTTP — the
         # field existed, nothing could set it.
-        from services.cowork_agent.visualizer import todos_store
         return todos_store.delete_todo(self._todos_path(), todo_id, **kwargs)
 
     # ── Workitems CRUD (delegates to visualizer.workitems_store) ──────
@@ -225,43 +224,35 @@ class VisualizerScope(_XoReader):
     def _workitems_path(self):
         # Path stays behind the handle so route files never import pathlib (P2
         # grep stays clean), same as ``_todos_path``.
-        from services.cowork_agent.visualizer import workitems_store  # noqa: F401
         return self._xo_root / "workitems.json"
 
     def create_workitem(self, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.create_workitem(self._workitems_path(), **kwargs)
 
     def get_workitem(self, workitem_id: str, **kwargs):
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.get_workitem(
             self._workitems_path(), workitem_id, **kwargs
         )
 
     def list_workitems(self, **kwargs) -> list[dict]:
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.list_workitems(self._workitems_path(), **kwargs)
 
     def update_workitem(self, workitem_id: str, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.update_workitem(
             self._workitems_path(), workitem_id, **kwargs
         )
 
     def delete_workitem(self, workitem_id: str, **kwargs) -> bool:
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.delete_workitem(
             self._workitems_path(), workitem_id, **kwargs
         )
 
     def adopt_workitem(self, **kwargs) -> tuple[dict, bool]:
         """Track a GitHub issue. Returns ``(record, created)``."""
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.adopt_workitem(self._workitems_path(), **kwargs)
 
     def unadopt_workitem(self, workitem_id: str, **kwargs) -> dict:
         """Stop mirroring the issue, keep the workitem."""
-        from services.cowork_agent.visualizer import workitems_store
         return workitems_store.unadopt_workitem(
             self._workitems_path(), workitem_id, **kwargs
         )
@@ -274,32 +265,25 @@ class VisualizerScope(_XoReader):
     def _peers_path(self):
         # Path stays behind the handle so route files never import pathlib (P2
         # grep stays clean), same as ``_todos_path``.
-        from services.cowork_agent.visualizer import peers_store  # noqa: F401
         return self._xo_root / "peers.json"
 
     def create_peer(self, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.create_peer(self._peers_path(), **kwargs)
 
     def read_peer_roster(self, **kwargs) -> tuple:
         """``(updated_at, peers)`` — both in one read."""
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.read_roster(self._peers_path(), **kwargs)
 
     def list_peers(self, **kwargs) -> list:
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.list_peers(self._peers_path(), **kwargs)
 
     def get_peer(self, user_id: str, **kwargs):
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.get_peer(self._peers_path(), user_id, **kwargs)
 
     def update_peer(self, user_id: str, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.update_peer(self._peers_path(), user_id, **kwargs)
 
     def delete_peer(self, user_id: str, **kwargs) -> bool:
-        from services.cowork_agent.visualizer import peers_store
         return peers_store.delete_peer(self._peers_path(), user_id, **kwargs)
 
     # ── The GitHub mirror (runtime tier; read-only here) ──────────────
@@ -335,7 +319,6 @@ class VisualizerScope(_XoReader):
     # §5.4, rule R-TIER).
 
     def _claims_path(self, *, create: bool = False):
-        from services.cowork_agent.visualizer import workitem_claims
         root = self._runtime_root
         if root is None and create:
             # The runtime home is resolved once at construction and can
@@ -350,14 +333,12 @@ class VisualizerScope(_XoReader):
 
     def read_claims(self) -> dict:
         """Every claim on this project's workitems, or ``{}``."""
-        from services.cowork_agent.visualizer import workitem_claims
         path = self._claims_path()
         if path is None:
             return {}
         return workitem_claims.read_claims_quiet(path)
 
     def claim_workitem(self, workitem_id: str, **kwargs) -> dict:
-        from services.cowork_agent.visualizer import workitem_claims
         path = self._claims_path(create=True)
         if path is None:
             raise workitem_claims.WorkitemClaimsError(
@@ -368,7 +349,6 @@ class VisualizerScope(_XoReader):
         return workitem_claims.claim_workitem(path, workitem_id, **kwargs)
 
     def release_workitem(self, workitem_id: str) -> bool:
-        from services.cowork_agent.visualizer import workitem_claims
         path = self._claims_path()
         if path is None:
             return False
@@ -376,7 +356,6 @@ class VisualizerScope(_XoReader):
 
     def release_workitem_quiet(self, workitem_id: str) -> bool:
         """The implicit release — closing or deleting a workitem."""
-        from services.cowork_agent.visualizer import workitem_claims
         path = self._claims_path()
         if path is None:
             return False
@@ -384,7 +363,6 @@ class VisualizerScope(_XoReader):
 
     def in_progress_workitem_ids(self) -> frozenset[str]:
         """The workitems an agent is working **right now**, derived."""
-        from services.cowork_agent.visualizer import workitem_claims
         try:
             claims = self.read_claims()
             if not claims:

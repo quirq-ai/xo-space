@@ -446,8 +446,8 @@ _WORKITEM_CALLER_ERRORS: frozenset[str] = frozenset({
 })
 
 #: Store codes that mean *the document on disk cannot be acted on*, with the
-#: message served in their place.
-_WORKITEM_DOCUMENT_ERRORS: dict[str, str] = {
+#: message served in their place. Shared by every authored document.
+_DOCUMENT_ERRORS: dict[str, str] = {
     "corrupt_document": (
         "{document} is not a readable document of its kind. It is refused "
         "rather than read as empty or overwritten, so nothing it holds is "
@@ -461,33 +461,57 @@ _WORKITEM_DOCUMENT_ERRORS: dict[str, str] = {
 }
 
 
-def _workitem_error(
-    exc: Exception, *, failure: str, document: str = "workitems.json",
+def _store_error(
+    exc: Exception,
+    *,
+    failure: str,
+    document: str,
+    not_found: tuple[str, str],
+    caller_errors: frozenset[str],
+    conflicts: frozenset[str] = frozenset(),
 ) -> HTTPException:
-    """Map a ``WorkitemsStoreError`` onto its HTTP answer."""
+    """Map a store's ``(code, message)`` failure onto its HTTP answer."""
     code = getattr(exc, "code", None)
-    if code == "workitem_not_found":
+    if code == not_found[0]:
         return HTTPException(
-            status_code=404,
-            detail={"code": code, "message": "Workitem not found."},
+            status_code=404, detail={"code": code, "message": not_found[1]},
         )
-    if code in _WORKITEM_CALLER_ERRORS:
+    if code in caller_errors:
         return HTTPException(
             status_code=400, detail={"code": code, "message": str(exc)},
         )
-    if code in _WORKITEM_DOCUMENT_ERRORS:
+    if code in conflicts:
+        # The store's message names no path and says what to do instead, which
+        # a generic 409 could not, so it is served as written.
+        return HTTPException(
+            status_code=409, detail={"code": code, "message": str(exc)},
+        )
+    if code in _DOCUMENT_ERRORS:
         # The store's message names the path; log it, don't serve it.
         logger.error("%s refused (%s): %s", document, code, exc)
         return HTTPException(
             status_code=409,
             detail={
                 "code": code,
-                "message": _WORKITEM_DOCUMENT_ERRORS[code].format(document=document),
+                "message": _DOCUMENT_ERRORS[code].format(document=document),
             },
         )
     return HTTPException(
         status_code=500,
         detail={"code": "scope_unavailable", "message": failure},
+    )
+
+
+def _workitem_error(
+    exc: Exception, *, failure: str, document: str = "workitems.json",
+) -> HTTPException:
+    """Map a ``WorkitemsStoreError`` onto its HTTP answer."""
+    return _store_error(
+        exc,
+        failure=failure,
+        document=document,
+        not_found=("workitem_not_found", "Workitem not found."),
+        caller_errors=_WORKITEM_CALLER_ERRORS,
     )
 
 
@@ -1296,36 +1320,13 @@ _PEER_CALLER_ERRORS: frozenset[str] = frozenset({
 
 def _peer_error(exc: Exception, *, failure: str) -> HTTPException:
     """Map a ``PeersStoreError`` onto its HTTP answer."""
-    code = getattr(exc, "code", None)
-    if code == "peer_not_found":
-        return HTTPException(
-            status_code=404,
-            detail={"code": code, "message": "Peer not found."},
-        )
-    if code in _PEER_CALLER_ERRORS:
-        return HTTPException(
-            status_code=400, detail={"code": code, "message": str(exc)},
-        )
-    if code == "peer_exists":
-        # The store's message names no path, so it is served as written: it
-        # says what to do instead, which a generic 409 could not.
-        return HTTPException(
-            status_code=409, detail={"code": code, "message": str(exc)},
-        )
-    if code in _WORKITEM_DOCUMENT_ERRORS:
-        logger.error("peers.json refused (%s): %s", code, exc)
-        return HTTPException(
-            status_code=409,
-            detail={
-                "code": code,
-                "message": _WORKITEM_DOCUMENT_ERRORS[code].format(
-                    document="peers.json"
-                ),
-            },
-        )
-    return HTTPException(
-        status_code=500,
-        detail={"code": "scope_unavailable", "message": failure},
+    return _store_error(
+        exc,
+        failure=failure,
+        document="peers.json",
+        not_found=("peer_not_found", "Peer not found."),
+        caller_errors=_PEER_CALLER_ERRORS,
+        conflicts=frozenset({"peer_exists"}),
     )
 
 
