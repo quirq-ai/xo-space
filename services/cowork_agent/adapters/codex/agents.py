@@ -35,10 +35,8 @@ from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 
 _BACKEND = "codex"
 
-# Record schema for ``<project>/.xo/agent.json``
-# (docs/syncplan.md §5.4 · ``visualizer/schema/agent.schema.json``). Stamped on
-# records this adapter mints; never back-filled onto an older record, which the
-# schema accepts unversioned.
+# Record schema for ``<project>/.xo/agent.json`` (docs/syncplan.md §5.4 ·
+# ``visualizer/schema/agent.schema.json``).
 _SCHEMA_ID = "xo/agent.schema.json"
 _SCHEMA_VERSION = 1
 
@@ -58,19 +56,7 @@ def _load(agent_id: str) -> dict | None:
 
 
 def _load_owned(agent_id: str) -> dict | None:
-    """``_load`` restricted to records this backend owns.
-
-    Every project-tied adapter reads the SAME ``<project>/.xo/agent.json``, and
-    the ownership routes in ``routers/cowork_agent/agents.py`` take the first
-    non-None over ``list_adapters()`` (alphabetical) — so without this filter
-    whichever adapter sorts first answers for records another one created. A
-    record whose ``backend`` names another backend is not ours.
-
-    A missing or empty ``backend`` stays claimable, deliberately: records
-    written before the tag existed, and projects scaffolded outside the
-    agents contract, must still resolve — so first-adapter-wins is narrowed
-    here rather than eliminated for old data.
-    """
+    """``_load`` restricted to records this backend owns."""
     meta = _load(agent_id)
     if meta is None:
         return None
@@ -81,20 +67,7 @@ def _load_owned(agent_id: str) -> dict | None:
 
 
 def _write(agent_id: str, data: dict) -> None:
-    """Write the record to ``<project>/.xo/agent.json``, atomically.
-
-    ``write_json_atomic`` (sibling temp file + ``os.replace``) rather than a
-    bare ``write_text``: a concurrent reader — another adapter's
-    ``_load_owned``, or the sidebar's ``list_agents`` — must never see a
-    half-written record. A torn read here is not cosmetic, because ``_load``
-    swallows the parse error and returns ``None``, which every caller reads as
-    "no such agent".
-
-    A full-document write, not a key-scoped merge: both callers already hold
-    the whole record — ``create_agent`` mints it, and ``patch``
-    read-modify-writes exactly what ``_load_owned`` returned — so there is no
-    foreign key to carry forward.
-    """
+    """Write the record to ``<project>/.xo/agent.json``, atomically."""
     write_json_atomic(_meta_path(agent_id), data)
 
 

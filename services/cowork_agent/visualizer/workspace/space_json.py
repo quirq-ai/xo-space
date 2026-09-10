@@ -1,36 +1,4 @@
-"""``<XO root>/.xo/space.json`` — the Space record (syncplan §5.3).
-
-**This path used to hold the derived d3 graph.** The graph moved to
-``~/.quirq/workspace/graph.json`` (T14, see ``views.graph_path``) and
-``GET /xo/space.json`` still serves it, so nothing in the browser
-changed. What the move bought is this file: a durable, low-churn record
-of *what this Space is*, in a path with exactly one writer.
-
-The graph could never hold identity. It is rebuilt by two writers that
-share no lock — ``views.apply`` from the watcher tick and ``views.build``
-from a request thread — so any field written beside it is destroyed on
-the next rebuild.
-
-``space_id`` is **captured, never minted.** ``CODER_WORKSPACE_ID`` is
-externally assigned, stable across container rebuilds, and already read
-by ``services/usage_sync.py`` for every outbound usage record: the
-identity exists, so inventing a second one would only create a second
-thing to reconcile. Off Coder there is no such id and the field is
-``null`` — deliberately, per syncplan O1. **Never add a fallback that
-mints one**; a locally minted id would diverge the moment the same Space
-is opened on a machine that does have the environment.
-
-Ownership. This sink owns every key here except ``label``, which is
-seeded once from ``CODER_WORKSPACE_NAME`` and is then the user's — so
-the write goes through :func:`write_json_owned`, which carries ``label``
-(and anything a later writer adds) forward untouched.
-
-Cost. The record is near-static, so it is rebuilt at most every
-``XO_SPACE_REFRESH_S`` (default 60 s) and written only when it changes.
-``last_used_at`` would otherwise churn the file once a second; it is
-refreshed at most every ``XO_SPACE_AGENT_TOUCH_S`` (default 1 h), which
-is the resolution the field is actually read at.
-"""
+"""``<XO root>/.xo/space.json`` — the Space record (syncplan §5.3)."""
 
 from __future__ import annotations
 
@@ -59,9 +27,7 @@ logger = logging.getLogger(__name__)
 FILENAME = "space.json"
 SCHEMA = 2
 
-#: Every key this sink replaces on each write. ``label`` is deliberately
-#: absent: it is user-editable, so it is seeded once (below) and then
-#: carried forward by the merge like any other foreign key.
+#: Every key this sink replaces on each write.
 OWNS = frozenset(
     {
         "$schema",
@@ -115,15 +81,7 @@ def path() -> Path:
 
 
 def space_id() -> Optional[str]:
-    """The Space id — ``<owner>:<workspace>_<last6>``, ``None`` off Coder.
-
-    e.g. ``ankitdwivedi:collabse_07c611``. Minted from Coder's own
-    environment rather than captured verbatim (2026-09-08, reversing
-    syncplan O1); :func:`coder_identity.space_id` carries the reasoning and
-    the graded degradation. The raw ``CODER_WORKSPACE_ID`` is persisted
-    beside it as ``coder_workspace_id``, so nothing has to parse the
-    composite to recover the assigned id.
-    """
+    """The Space id — ``<owner>:<workspace>_<last6>``, ``None`` off Coder."""
     return coder_identity.space_id()
 
 
@@ -132,23 +90,12 @@ def _label() -> Optional[str]:
 
 
 def _resolve_user_id() -> str:
-    """Auth state, else the Coder workspace owner, else ``"local"``.
-
-    Was three duplicated copies (here, ``sinks/project_json``,
-    ``sinks/activity``) kept apart so a sink never imported another sink's
-    privates. :mod:`services.cowork_agent.coder_identity` is not a sink, so
-    it can hold the answer once and all three can agree on it.
-    """
+    """Auth state, else the Coder workspace owner, else ``"local"``."""
     return coder_identity.resolve_user_id()
 
 
 def _capabilities(agent: str) -> list[str]:
-    """Which capability modules ``adapters/<agent>/`` provides.
-
-    The same on-disk discovery ``adapters/loader.list_capability_providers``
-    does, read the other way round: one agent, every capability. Core code
-    still never names an agent — the names come off the filesystem.
-    """
+    """Which capability modules ``adapters/<agent>/`` provides."""
     try:
         folder = _ADAPTERS_DIR / agent
         if not folder.is_dir():
@@ -178,13 +125,7 @@ def _too_old(stamp: Any, *, now: datetime, max_age_s: float) -> bool:
 
 
 def _agents(current: dict, *, now: datetime) -> list[dict]:
-    """The attached-backend roster, carrying its own history forward.
-
-    ``first_seen_at`` is set once, when an agent first appears in the
-    record. ``last_used_at`` moves only for the active agent, and then
-    only when the stored stamp is older than the touch interval — a
-    per-tick stamp would rewrite this file every second forever.
-    """
+    """The attached-backend roster, carrying its own history forward."""
     previous = {
         row.get("name"): row
         for row in (current.get("agents") or [])
@@ -228,13 +169,7 @@ def _agents(current: dict, *, now: datetime) -> list[dict]:
 
 
 def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> dict:
-    """Assemble the record. ``current`` is the merge base.
-
-    ``label`` is emitted in its schema position but is only *written* on
-    the seeding pass; :func:`apply` drops it otherwise, so the key order
-    of a freshly created file matches syncplan §5.3 without the sink ever
-    claiming ownership of a field the user edits.
-    """
+    """Assemble the record. ``current`` is the merge base."""
     base = current if isinstance(current, dict) else {}
     moment = now or _now()
     stamp = _iso(moment)
@@ -247,12 +182,6 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
     # follows, and for the same reason: a Space changing hands is far rarer
     # than a momentarily unreadable auth state, and reassigning ownership by
     # accident is not recoverable from the record itself.
-    #
-    # This used to test ``owner == "local"``, which was sufficient only while
-    # "local" was the *only* fallback. Now that an unauthenticated Space
-    # resolves to its Coder owner instead, that test would let the Coder name
-    # overwrite a stored, authenticated id — so the condition is on what is
-    # *stored*, not on what was resolved.
     owner = _resolve_user_id()
     stored_owner = base.get("owner_user_id")
     if not coder_identity.is_placeholder_user_id(stored_owner):
@@ -262,10 +191,7 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
         "$schema": "xo/space.schema.json",
         "schema": SCHEMA,
         "space_id": space_id(),
-        # The id Coder actually assigned, verbatim. ``space_id`` is now a
-        # composite, and the whole point of O1's "captured, never minted"
-        # was that the assigned id must not be lost — so it is kept, not
-        # reconstructed by parsing the composite.
+        # The id Coder actually assigned, verbatim.
         "coder_workspace_id": coder_identity.workspace_id(),
         "label": _label(),
         "owner_user_id": owner,
@@ -280,11 +206,7 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
 
 
 def apply(*, force: bool = False) -> bool:
-    """Watcher entry point. Self-throttles; returns ``True`` when it wrote.
-
-    Never raises: the workspace tier runs the sinks in one ``try``, so an
-    exception here would cost every sink after it its tick.
-    """
+    """Watcher entry point. Self-throttles; returns ``True`` when it wrote."""
     global _last_build
     now = time.monotonic()
     if not force and (now - _last_build) < refresh_seconds():
@@ -295,9 +217,7 @@ def apply(*, force: bool = False) -> bool:
         return _apply_body()
     except CorruptDocumentError:
         # Only reachable if the file was replaced between the read below and
-        # the merge. Leave it alone rather than merging into nothing: a
-        # user-edited `label` (and anything a later writer owns) would be
-        # dropped silently, which is the bug the primitive refuses to commit.
+        # the merge.
         logger.warning(
             "space record became unreadable mid-write; leaving it for the "
             "next tick rather than merging into an unknown base"
@@ -317,10 +237,8 @@ def _apply_body() -> bool:
         current = None
 
     # What sits at this path on an existing install is the *old graph* — a
-    # derived document that now lives in ~/.quirq/workspace/graph.json — or
-    # a scaffold placeholder, or an unparseable file. None of those has a
-    # key worth preserving, so the record replaces them wholesale. Only a
-    # document that already is a schema-2 record gets merged into.
+    # derived document that now lives in ~/.quirq/workspace/graph.json — or a
+    # scaffold placeholder, or an unparseable file.
     legacy = not isinstance(current, dict) or current.get("schema") != SCHEMA
 
     values = build(None if legacy else current)

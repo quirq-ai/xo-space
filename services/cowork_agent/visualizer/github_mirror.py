@@ -1,61 +1,4 @@
-"""``~/.quirq/projects/<pid>/github/issues.json`` — the GitHub issue mirror.
-
-The runtime half of the workitems surface (``docs/workitems-plan.md`` §5.2).
-:mod:`services.cowork_agent.connectors.github_issues` fetches one page; the
-poller (:mod:`services.cowork_agent.github_poller`) decides *when* and *which
-repo*; this module owns the document on disk and the merge rule that decides
-what a page means. Nothing here makes a network call.
-
-Four things are load-bearing.
-
-**1. It is runtime tier, and the tier is enforced by construction.** Rule
-R-TIER: derived, high-churn, re-fetchable state lives in ``~/.quirq/``; only
-durable authored state lives in ``.xo/``. This document is re-fetched every
-60 seconds and rebuilt from scratch after ``rm -rf ~/.quirq``, so a copy in
-the synced tier would make ``.xo/`` churn at GitHub's rate — exactly what
-syncplan T19/T20 spent their effort removing — and would hand A10 a document
-that conflicts on every poll. So the path is resolved through
-:func:`~services.cowork_agent.project_layout.runtime_dir_for_project` and this
-module never names ``.xo`` at all. Note it deliberately does *not* use
-``runtime_read_path``: that helper falls back to the pre-T19 in-project copy
-for files that were *moved*, and this file never lived there — a read-through
-would quietly legitimise an ``.xo/github/issues.json`` that no writer creates.
-
-**2. The poller is the single writer, so the primitive is
-:func:`~...atomic_write.write_json_atomic_if_changed`.** Full ownership is
-what makes a corrupt file *repairable by overwriting* rather than something
-to refuse: unlike ``workitems.json`` (O-E, where the bytes on disk may be the
-only copy of authored state), losing this document costs exactly one poll.
-:func:`~...flock.locked` still guards the read-modify-write, because a second
-uvicorn worker is a second poller and two interleaved merges would drop a row
-until the next tick.
-
-**3. The merge rule is the fix for a real design bug** (§6.3, amendment 6).
-With a high-water mark in ``filterBy.since`` and ``states: [OPEN]``, an issue
-*closed* since the mark stops matching the query altogether — so an
-incremental merge leaves a stale ``open`` row in the mirror **forever**, and
-nothing ever corrects it. That is the "false statement about who owes what"
-§5.3 forbids. Two mechanisms fix it together, and both live here:
-
-* the steady-state poll asks for ``[OPEN, CLOSED]`` (the caller passes
-  ``include_closed=True`` whenever it passes ``since``), so a transition is
-  *observable*; and
-* a **complete seed** — a poll with no ``since`` that consumed every page —
-  **replaces** the issues map rather than merging into it, so any row that
-  was stranded before this code existed is dropped the first time the mirror
-  is reseeded.
-
-**4. The high-water mark only advances on a complete poll.** The query is
-``UPDATED_AT DESC``, so page 1 holds the newest rows. Advancing ``since`` to
-the newest row seen while pages remain unread would skip everything in
-between *permanently* — the same stranding class as the bug above, arrived at
-from the other direction. So ``since`` moves only when the caller reports
-``complete=True``, and it never moves backwards.
-
-**Not here, on purpose.** The read-time projection that joins this document
-with ``.xo/workitems.json`` is W7; adoption is W7; claims are W7b. This module
-answers "what did GitHub last say", and nothing else.
-"""
+"""``~/.quirq/projects/<pid>/github/issues.json`` — the GitHub issue mirror."""
 
 from __future__ import annotations
 
@@ -76,35 +19,19 @@ logger = logging.getLogger(__name__)
 #: On-disk revision of the mirror (plan §5.2).
 MIRROR_SCHEMA = 1
 
-#: Value stamped into ``$schema``. The schema's own ``$id``, not a filesystem
-#: path — the ``.xo/schema/`` pointer syncplan T16 removed was dangling on
-#: every document that carried it.
+#: Value stamped into ``$schema``.
 SCHEMA_REF = "xo/github-issues.schema.json"
 
-#: The mirror's location *below* a project's runtime directory. Exported as a
-#: constant so a reader joins the same relative path this writer does, and so
-#: the tier decision stays in :mod:`project_layout` (T18's chokepoint rule).
+#: The mirror's location *below* a project's runtime directory.
 MIRROR_SUBDIR = "github"
 MIRROR_FILENAME = "issues.json"
 MIRROR_RELATIVE = Path(MIRROR_SUBDIR) / MIRROR_FILENAME
 
 #: How many ``closed`` rows the mirror retains.
-#:
-#: Closed rows are *kept*, not dropped: §5.3's projection reads an adopted
-#: item's state from the mirror **always**, and "closed" is the true answer
-#: the incremental poll just observed — dropping it would put the item back to
-#: "unknown" one tick after we learned the truth. But an incremental merge
-#: only ever adds, so an old, busy repo would accumulate every closure it ever
-#: sees into a file rewritten once a minute. The cap bounds that, oldest
-#: ``updated_at`` first. Losing an old closed row degrades an adopted item to
-#: "stale, state unknown" — absent, which §5.3 says beats wrong — and never to
-#: a false ``open``.
 MAX_CLOSED_ROWS = 500
 
 #: The keys an issue row may carry, matching ``github-issues.schema.json``'s
-#: ``additionalProperties: false``. The client already emits exactly these,
-#: but this document is validated against that schema and this module is the
-#: one that writes it, so the guarantee is made here rather than borrowed.
+#: ``additionalProperties: false``.
 _ROW_KEYS = (
     "node_id", "number", "title", "state", "state_reason",
     "assignees", "labels", "url", "updated_at",
@@ -123,13 +50,7 @@ def _utc_now() -> str:
 
 
 def mirror_path(project: str, *, create: bool = False) -> Optional[Path]:
-    """The mirror's path for one project, or ``None`` to skip.
-
-    ``None`` means "there is nothing to resolve" — the project folder does not
-    exist, or its pid is unusable as a path segment — and every caller treats
-    that as an empty read or a skipped write, never as an error. ``create``
-    makes the parent directory; a reader must never conjure one.
-    """
+    """The mirror's path for one project, or ``None`` to skip."""
     root = project_layout.runtime_dir_for_project(project, create=create)
     if root is None:
         return None
@@ -144,16 +65,7 @@ def mirror_path(project: str, *, create: bool = False) -> Optional[Path]:
 
 
 def read_mirror(project: str) -> Optional[dict]:
-    """The mirror document, or ``None`` when it is absent or unusable.
-
-    Unusable covers unreadable bytes, an empty file (what a truncated
-    non-atomic write leaves behind), invalid JSON, a non-object, and a
-    ``schema`` this revision does not write. All of them read as ``None``
-    rather than raising, and the next successful poll overwrites the file —
-    the deliberate opposite of ``workitems_store``'s refusal, because that
-    document is authored state in the synced tier and this one is a cache
-    whose loss costs one poll.
-    """
+    """The mirror document, or ``None`` when it is absent or unusable."""
     path = mirror_path(project)
     if path is None:
         return None
@@ -192,13 +104,7 @@ def _read_document(path: Path) -> Optional[dict]:
 
 @dataclass(frozen=True)
 class MirrorState:
-    """Everything the poller reads off the mirror before deciding a query.
-
-    ``since`` is the whole point: ``None`` means "seed" — no ``since``
-    variable and ``states: [OPEN]`` — and a value means "steady state", which
-    the caller must pair with ``include_closed=True`` or it reintroduces the
-    stranding bug this module exists to prevent.
-    """
+    """Everything the poller reads off the mirror before deciding a query."""
 
     path: Optional[Path] = None
     exists: bool = False
@@ -215,14 +121,7 @@ class MirrorState:
 
 
 def load_state(project: str, *, repo: Optional[str] = None) -> MirrorState:
-    """Read the mirror's poll state for ``project``.
-
-    ``repo`` is the slug the caller is *about* to poll. When it disagrees with
-    the slug the document was written from — the project's remote changed —
-    the state comes back unseeded, so the next poll seeds from scratch rather
-    than merging one repository's issues into another's mirror. The schema
-    records ``repo`` for exactly this reason.
-    """
+    """Read the mirror's poll state for ``project``."""
     path = mirror_path(project)
     if path is None:
         return MirrorState()
@@ -234,9 +133,7 @@ def load_state(project: str, *, repo: Optional[str] = None) -> MirrorState:
     issues = doc.get("issues")
     count = len(issues) if isinstance(issues, dict) else 0
     if repo is not None and stored_repo is not None and stored_repo != repo:
-        # A different repository's document. Report what is there, but never
-        # hand back its high-water mark: it would filter the new repo's
-        # issues by a timestamp that means nothing in it.
+        # A different repository's document.
         return MirrorState(
             path=path, exists=True, repo=stored_repo, since=None,
             fetched_at=None, issue_count=count, error=_error_of(doc),
@@ -264,13 +161,7 @@ def _error_of(doc: dict) -> Optional[dict]:
 
 
 def _clean_row(row: Any) -> Optional[dict]:
-    """One row, reduced to the schema's declared keys, or ``None`` if unusable.
-
-    Applied to rows read back off disk as well as to fresh ones. A row the
-    mirror cannot vouch for is dropped rather than carried forward: the
-    document is validated against ``github-issues.schema.json``, and a single
-    poisoned row would make the whole file fail for every consumer.
-    """
+    """One row, reduced to the schema's declared keys, or ``None`` if unusable."""
     if not isinstance(row, dict):
         return None
     out: dict[str, Any] = {}
@@ -331,17 +222,17 @@ def _clean_rows(rows: Any) -> dict[str, dict]:
         if cleaned is None or not isinstance(key, str):
             continue
         if cleaned["node_id"] != key:
-            # The O-C lesson: never *derive* identity from a key. The row
-            # carries its own node_id; if the two disagree the pair is not
-            # trustworthy and neither half is preferred.
+            # The O-C lesson: never *derive* identity from a key.
             continue
         out[key] = cleaned
     return out
 
 
 def _prune_closed(issues: dict[str, dict], cap: int = MAX_CLOSED_ROWS) -> dict[str, dict]:
-    """Bound the closed rows, oldest ``updated_at`` first. Open rows are never
-    dropped — they are the answer to "who owes what"."""
+    """
+    Bound the closed rows, oldest ``updated_at`` first. Open rows are never
+    dropped — they are the answer to "who owes what".
+    """
     closed = [row for row in issues.values() if row.get("state") == "closed"]
     if len(closed) <= max(0, cap):
         return issues
@@ -359,15 +250,7 @@ def _high_water(rows: Iterable[dict]) -> Optional[str]:
 
 
 def _rate_document(pages: Sequence[IssuesResult]) -> Optional[dict]:
-    """``rate`` for the document: the newest reading, with this poll's total cost.
-
-    ``remaining``/``reset_at``/``limit`` come from the last page that reported
-    them — the most recent truth GitHub told us — while ``cost`` is summed
-    across the pages, because "the last poll" is the whole multi-page poll and
-    a per-page 1 would understate what a 250-issue repo actually spends.
-    ``None`` when nothing was observed: a fabricated budget is how a poller
-    talks itself past a limit it has really hit.
-    """
+    """``rate`` for the document: the newest reading, with this poll's total cost."""
     latest: Optional[RateLimit] = None
     total = 0
     seen_cost = False
@@ -398,13 +281,7 @@ def _document(
     issues: dict[str, dict],
     issues_enabled: Optional[bool] = None,
 ) -> dict:
-    """The §5.2 document, in the schema's key order.
-
-    ``etag`` is not written. It was a REST idea that does not survive D5 —
-    GraphQL has no conditional request, so there is no 304-style free poll on
-    this path (§13 amendment 3). The schema still declares it so the plan's
-    literal example validates.
-    """
+    """The §5.2 document, in the schema's key order."""
     return {
         "$schema": SCHEMA_REF,
         "schema": MIRROR_SCHEMA,
@@ -413,28 +290,15 @@ def _document(
         "since": since,
         "rate": rate,
         "error": error,
-        # Whether the repository has its issue tracker turned on
-        # (issuesplan I4). Written only when a poll established it; ``None``
-        # means unknown, which is what a failed poll and a pre-existing
-        # document both are. Without it a repository with issues *disabled*
-        # is byte-identical on the wire to a healthy one with no open
-        # issues — a successful poll, no error, an empty issue map — and
-        # the empty state has no way to say which.
+        # Whether the repository has its issue tracker turned on (issuesplan
+        # I4).
         "issues_enabled": issues_enabled,
         "issues": dict(sorted(issues.items())),
     }
 
 
 def _write(path: Path, payload: dict) -> bool:
-    """Persist, skipping a write that would only restamp a repeated failure.
-
-    ``error.at`` is the sole volatile path. A poll that succeeds always
-    changes ``fetched_at``, which is what the UI's staleness indicator reads,
-    so a success always writes — that is the point of the file. But a machine
-    with no GitHub auth fails identically every 60 seconds forever, and
-    without this mask each of those identical failures would rewrite the
-    document just to move a timestamp nobody is waiting on.
-    """
+    """Persist, skipping a write that would only restamp a repeated failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
     return write_json_atomic_if_changed(path, payload, ("error.at",))
 
@@ -446,25 +310,7 @@ def record_pages(
     pages: Sequence[IssuesResult],
     complete: bool,
 ) -> bool:
-    """Fold one poll's pages into the mirror. Returns ``True`` iff it wrote.
-
-    :param pages: the **successful** :class:`IssuesResult` pages of one poll,
-        in fetch order. An empty sequence is legitimate (a steady-state poll
-        of a quiet repo returns no rows) and still refreshes ``fetched_at``.
-    :param complete: whether the poll consumed every page GitHub offered.
-
-    The merge, in one paragraph. A poll with no stored ``since`` is a **seed**
-    and its result is the repository's whole open set; when it completed, the
-    issues map is **replaced**, which is what drops a row stranded by an
-    earlier ``[OPEN]``-only incremental poll and what makes ``rm -rf ~/.quirq``
-    a real repair. An incomplete seed **merges** instead — a partial snapshot
-    is not authoritative about what is missing, and replacing would make two
-    successive truncated seeds oscillate instead of accumulate. Every other
-    poll merges by ``node_id``, so a row that comes back ``closed`` overwrites
-    the stale ``open`` one rather than sitting beside it.
-
-    ``since`` advances only when ``complete``, and never backwards.
-    """
+    """Fold one poll's pages into the mirror. Returns ``True`` iff it wrote."""
     path = mirror_path(project, create=True)
     if path is None:
         return False
@@ -498,9 +344,9 @@ def record_pages(
             if mark and (since is None or mark > since):
                 since = mark
 
-        # From the newest page that answered — every page of one poll
-        # reports the same repository setting, and a poll that fetched no
-        # page at all leaves it unknown rather than guessing.
+        # From the newest page that answered — every page of one poll reports
+        # the same repository setting, and a poll that fetched no page at all
+        # leaves it unknown rather than guessing.
         enabled: Optional[bool] = None
         for page in pages:
             if page.issues_enabled is not None:
@@ -523,20 +369,7 @@ def record_pages(
 
 
 def record_failure(project: str, *, repo: Optional[str], result: IssuesResult) -> bool:
-    """Record a failed poll without losing the last good mirror.
-
-    ``fetched_at`` deliberately does **not** move: it means "when the poll
-    that produced these issues completed", and a failure produced none. The
-    failure carries its own ``error.at``, so the UI can say both "last
-    refreshed 09:00" and "tried 09:05, GitHub unreachable" — two different
-    facts that a single timestamp would collapse into a lie.
-
-    A failed poll is not evidence that the issues went away, so the rows are
-    carried through untouched. When there is no document yet the file is
-    created with an empty issue map and ``fetched_at: null``, which the schema
-    declares for exactly this state — a UI needs something to hang "connect
-    GitHub" off before the first successful poll.
-    """
+    """Record a failed poll without losing the last good mirror."""
     slug = repo or result.repo
     if not slug:
         return False
@@ -559,9 +392,7 @@ def record_failure(project: str, *, repo: Optional[str], result: IssuesResult) -
         rate = _rate_document([result])
         if rate is None and same_repo and isinstance(previous.get("rate"), dict):
             # A failure that never reached GitHub (no gh, no network) knows
-            # nothing about the budget. Keeping the last observed reading is
-            # honest; replacing it with null would read as "budget unknown"
-            # when in fact it is merely unchanged.
+            # nothing about the budget.
             rate = previous["rate"]
 
         payload = _document(
@@ -584,14 +415,7 @@ def record_failure(project: str, *, repo: Optional[str], result: IssuesResult) -
 
 
 def reset_mirror(project: str) -> bool:
-    """Delete the mirror. ``True`` iff a file was removed.
-
-    The escape hatch for the one state this module cannot merge its way out
-    of: a document whose rows are wrong in a way a merge cannot see. The next
-    poll seeds from scratch, which costs one point. Not called by the poller
-    — it is here because ``rm -rf ~/.quirq`` is a documented repair and a
-    single project deserves the same repair without the blast radius.
-    """
+    """Delete the mirror. ``True`` iff a file was removed."""
     path = mirror_path(project)
     if path is None:
         return False

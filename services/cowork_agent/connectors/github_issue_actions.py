@@ -1,52 +1,4 @@
-"""The GitHub reads a *person* triggers: fetch one issue, ask who we are.
-
-``docs/workitems-plan.md`` §7.2 (W7). :mod:`.github_issues` is the poll — one
-repo's page of issues, once a minute, on a budget. This module is its
-interactive sibling: one issue, on demand, because a human clicked something.
-They are separate for reasons that are not stylistic.
-
-* **Different cadence, different cost rules.** The poll is pinned to one
-  GraphQL point because it runs 60 times an hour per repo and the ceiling is
-  the binding constraint (§6.2). This call happens when someone adopts an
-  issue, which is rare, so it can afford the ``labels`` connection the poll
-  cannot: adoption's whole job is to take the one-time snapshot §5.3 asks
-  for, and *lazily at adoption* is exactly where the plan puts the label
-  fetch. Measured against ``cjpais/Handy`` on 2026-09-08:
-  :data:`ISSUE_QUERY` with ``labels(first:20)`` and ``assignees(first:5)``
-  costs **1 point**, the same as the poll — the label cost the plan warns
-  about is per *page of 100 issues*, not per issue.
-
-* **Everything here is a read.** There was a ``set_assignees`` beside these
-  two — a ``PATCH /repos/{owner}/{repo}/issues/{n}`` that wrote an
-  ``assignees`` array, because D1 put coordination in GitHub. **That decision
-  was reversed** (§13, amendment 33): assignment is now a local annotation in
-  ``.xo/workitems.json`` for every workitem, adopted or not, and *nothing in
-  this system writes to GitHub*. The function was deleted rather than left
-  unused, so there is no half-live write path for a future caller to rewire
-  by accident. GitHub remains the authority for an adopted issue's
-  ``status``/``state_reason``/``body``, which this module and the poller
-  read and never set.
-
-**It never raises**, exactly like :mod:`.github_issues`, and for the same
-reason: no ``gh``, no auth, no network, a deleted repo and a spent budget are
-five *states* a caller has to render, not five exceptions. ``error_kind`` is
-one of that module's :data:`~.github_issues.ERROR_KINDS`.
-
-**Why it imports five private helpers from that module.** ``_run_gh``,
-``_parse_rate``, ``_classify_graphql_errors``, ``_classify_rest_error`` and
-``_classify_stderr`` are the contract for *how this system talks to gh*: a
-process group that can be killed as a tree, a token injected into the child's
-environment and nowhere else, and one table mapping gh's output onto the
-closed error vocabulary the schema and the UI share. Re-implementing them
-here would produce a second table that could disagree with the first — the
-defect this codebase names outright when it refuses a second error mapping
-for the claim routes. Borrowing them keeps one.
-
-One thing that is *not* here: nothing in this module writes anything, to disk
-or to GitHub. Adoption records go through ``workitems_store``, and the mirror
-stays single-writer — the poller — which is why the label fetch happens here
-rather than being folded into the poll (§5.2, amendment 2).
-"""
+"""The GitHub reads a *person* triggers: fetch one issue, ask who we are."""
 
 from __future__ import annotations
 
@@ -70,19 +22,7 @@ from .github_issues import (
     gh_available,
 )
 
-#: The pinned single-issue query. Pinned for the same reason the poll's is:
-#: cost is a property of the query shape, and a shape that is assembled at
-#: the call site is not a shape anyone can measure.
-#:
-#: ``repository.issue(number:)`` resolves **issues only** — a pull request
-#: number comes back ``null`` with a ``NOT_FOUND`` error rather than as an
-#: issue. That is the same structural property §6.1 relies on, arriving from
-#: the other direction: there is nothing to filter, because a PR cannot be
-#: returned by an issue selector.
-#:
-#: ``labels(first: 20)`` is a literal, like the poll's ``assignees(first: 5)``
-#: and for the same reason — a pinned query assembled from a constant is not
-#: pinned. Twenty is well past what any issue carries in practice.
+#: The pinned single-issue query.
 ISSUE_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
   rateLimit { limit cost remaining resetAt }
@@ -125,13 +65,7 @@ def _failure_issue(repo: str | None, number: int | None, kind: str, message: str
 
 
 def _issue_row(node: Any, *, repo: str) -> dict[str, Any] | None:
-    """One GraphQL issue node → the shape adoption and the mirror both use.
-
-    Deliberately the mirror's row shape (§5.2) plus ``labels``: the caller
-    may fall back to a mirror row when this call fails, and two shapes for
-    one thing would make that fallback a translation step nobody remembers to
-    keep in sync.
-    """
+    """One GraphQL issue node → the shape adoption and the mirror both use."""
     if not isinstance(node, dict):
         return None
     node_id = node.get("id")
@@ -185,14 +119,7 @@ async def fetch_issue(
     timeout_s: float = GH_TIMEOUT_S,
     gh_bin: str = GH_BIN,
 ) -> IssueResult:
-    """One issue, with its labels. **Never raises.** One GraphQL point.
-
-    This is what "labels are fetched lazily at adoption" means (§5.3,
-    amendment 1). It also means adoption does not depend on the poller having
-    run: a project whose mirror is empty can still adopt an issue, which
-    matters because the mirror is exactly what a brand-new project does not
-    have yet.
-    """
+    """One issue, with its labels. **Never raises.** One GraphQL point."""
     ref = repo if isinstance(repo, RepoRef) else _coerce_ref(str(repo or ""))
     if ref is None:
         return _failure_issue(
@@ -290,21 +217,7 @@ class LoginResult:
 async def authenticated_login(
     *, timeout_s: float = GH_TIMEOUT_S, gh_bin: str = GH_BIN,
 ) -> LoginResult:
-    """This Space's own GitHub login, via ``gh api user``. **Never raises.**
-
-    §4 is the reason this is enough: *each Space only needs to know its own
-    GitHub login*. GitHub does the routing, so there is no workspace → login
-    mapping table anywhere in this design, and "assign to me" needs exactly
-    one fact that this call answers.
-
-    It goes through ``gh`` rather than only through the stored PAT because
-    the two auth paths are different populations: a user who pasted a token
-    has one in ``mcp-tokens.json``, while a user who ran the device-flow
-    login has a ``gh`` session and may have no stored token at all.
-    ``_subprocess_env`` injects the stored token when there is one, so this
-    single call covers both. It spends one **core** REST point, not a
-    GraphQL one — the poller's budget is untouched.
-    """
+    """This Space's own GitHub login, via ``gh api user``. **Never raises.**"""
     if not gh_available(gh_bin):
         return LoginResult(
             ok=False, error_kind="no_cli",

@@ -1,36 +1,4 @@
-"""Normalised event types — the API the sinks consume.
-
-Frozen, ``__slots__``-backed dataclasses. Sinks dispatch on
-``isinstance`` and never see raw jsonl shapes (P5-style boundary
-inside the watcher itself).
-
-Shared helpers (small enough to live alongside the types they
-operate on): :func:`compute_latency_ms` derives the user→assistant
-latency that :class:`UsageObserved` carries — used by every file-tail
-source.
-
-The shape is intentionally **sink-oriented**, not jsonl-oriented:
-
-* :class:`MessageObserved` collapses both user and assistant messages
-  to a single counter event.
-* :class:`UsageObserved` carries token counts; emitted alongside (not
-  inside) :class:`MessageObserved` because OpenClaw and Claude Code
-  attach usage to different surfaces.
-* :class:`ToolUseObserved` carries only the tool **name** — never
-  inputs (Bash commands, Edit diffs, etc.). The PII filter strips
-  inputs before construction.
-* :class:`TaskCreateObserved` and :class:`TaskUpdateObserved` are
-  pre-pairing observations. The source layer correlates a
-  ``TaskCreate`` tool_use with its ``Task #N created`` tool_result
-  to assign the user-visible task id; once paired, the source emits
-  :class:`TaskCreated`/:class:`TaskStatusChanged` to the sinks.
-* :class:`WorkitemEvent` is not *observed* at all. No runtime writes
-  workitems, so the stores that own the documents mint it directly —
-  the same "one source, every backend" shape T7 gave todos.
-
-Path fields (:class:`FileTouched`) are always **project-relative**.
-The PII filter drops events whose path resolves outside the project.
-"""
+"""Normalised event types — the API the sinks consume."""
 
 from __future__ import annotations
 
@@ -203,44 +171,19 @@ class TaskCreated(Event):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TaskStatusChanged(Event):
-    """A ``TaskUpdate`` tool_use.
-
-    ``status`` is the raw tool input, copied verbatim and NOT
-    validated here — a runtime may emit anything. Consumers filter
-    against
-    :data:`~services.cowork_agent.visualizer.todo_status.VALID_TODO_STATUSES`
-    (see ``sinks/sessions_augment.py``), which is the one definition
-    of the vocabulary.
-    """
+    """A ``TaskUpdate`` tool_use."""
 
     task_id: str
     status: str
 
 
 # ── Workitems (workitems-plan §8) ────────────────────────────────────────────
-#
-# Unlike everything above, no workitem event ever comes out of a
-# transcript: ``workitems.json`` and ``claims.json`` have no runtime that
-# writes them, so the stores are the only source and the API is the only
-# way in. That is deliberate — it is the T7 shape, one source for every
-# backend, applied to a second document — and it is why these events are
-# constructed by ``workitems_store`` / ``workitem_claims`` rather than by
-# the PII filter.
+# Unlike everything above, no workitem event ever comes out of a transcript:
+# ``workitems.json`` and ``claims.json`` have no runtime that writes them, so
+# the stores are the only source and the API is the only way in.
 
 
 #: The workitem lifecycle vocabulary (workitems-plan §8), declared **once**.
-#:
-#: ``sinks/timeline.py`` renders exactly ``workitem.<action>`` for the
-#: actions in this set and drops anything else, and
-#: ``timeline.schema.json`` declares exactly one ``oneOf`` branch per
-#: entry. Defect R3a was the emitter growing a type the schema's ``oneOf``
-#: then rejected; a single frozenset that both sides are tested against is
-#: what stops that recurring here — see
-#: ``tests/test_workitem_timeline.py::SchemaVocabularyTests``.
-#:
-#: ``claimed`` / ``released`` are why this list matters more than it
-#: looks: ``in_progress`` is derived and never stored (§5.4), so the
-#: timeline is the only place the *history* of in-progress exists.
 WORKITEM_ACTIONS: frozenset[str] = frozenset(
     {
         "created",
@@ -257,36 +200,11 @@ WORKITEM_ACTIONS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WorkitemEvent(Event):
-    """One workitem lifecycle transition, ``action`` ∈
-    :data:`WORKITEM_ACTIONS`.
+    """One workitem lifecycle transition, ``action`` ∈ :data:`WORKITEM_ACTIONS`."""
 
-    One class rather than eight, because the eight differ only in which
-    of the optional payload fields are meaningful — and because the
-    action then has to be a member of a declared vocabulary to render at
-    all, which is the property that keeps emitter and schema in step.
-
-    ``native_session_id`` and ``runtime`` are inherited but frequently
-    **unknown** here: a workitem is a project-level record and the CRUD
-    surface carries no session at all. Both default to ``""`` and the
-    sink omits an empty one from the rendered line rather than writing a
-    placeholder — ``session_id`` is declared absent on project-wide
-    events, and ``"_project"`` would be a session id no session has.
-
-    The payload fields are per-action and all optional:
-
-    * ``title`` / ``kind`` — ``created`` (``kind`` is ``local`` or
-      ``github``), and ``title`` again on ``adopted``.
-    * ``repo`` / ``number`` — the issue an ``adopted`` event points at,
-      rendered as a nested ``issue`` object.
-    * ``assignee`` — ``assigned``. ``None`` is meaningful and is
-      rendered as ``null``: it is how an item is un-assigned.
-    * ``state_reason`` — ``closed``. GitHub's own vocabulary
-      (``completed`` / ``not_planned``), never an invented one.
-    """
-
-    # Re-declared with defaults rather than forced on every call site:
-    # most workitem transitions genuinely have neither, and a required
-    # field whose honest value is ``""`` invites a placeholder.
+    # Re-declared with defaults rather than forced on every call site: most
+    # workitem transitions genuinely have neither, and a required field whose
+    # honest value is ``""`` invites a placeholder.
     native_session_id: str = ""
     runtime: str = ""
 

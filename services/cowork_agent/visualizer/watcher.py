@@ -87,23 +87,7 @@ POLL_INTERVAL_S = _poll_interval_seconds()
 
 
 def _sink_events(events: list) -> list:
-    """Drop the task family before the sinks see it.
-
-    Todos have exactly one source: the agent-facing HTTP API
-    (``visualizer/todos_store.py``), which writes ``todos.json`` and
-    emits the same ``TaskCreated`` / ``TaskStatusChanged`` events to the
-    timeline and counter sinks itself. Ingestion is not a second source
-    — the tool calls it used to parse appear in one runtime's transcript
-    out of five, so everything derived from them was silently
-    backend-dependent (syncplan §7, T7/T8).
-
-    Filtering here, once, is what keeps ``todos.json``, the timeline and
-    ``taskCount`` describing the same set of todos, and what stops a
-    deleted todo reappearing on an offset replay. A runtime's native
-    todo tool still fires; it just no longer writes state that nothing
-    else can see. The sinks themselves stay willing to render these
-    events — that is how the API path reuses them.
-    """
+    """Drop the task family before the sinks see it."""
     return [
         ev for ev in events
         if not isinstance(ev, (TaskCreated, TaskStatusChanged))
@@ -150,23 +134,16 @@ class Watcher:
             self.sources.append(source)
         self.model_by_session: dict[str, str] = {}
         # Monotonically increasing count of ticks executed since start;
-        # published in the heartbeat so a reader can tell a watcher that
-        # is ticking from one whose file merely happens to be recent.
+        # published in the heartbeat so a reader can tell a watcher that is
+        # ticking from one whose file merely happens to be recent.
         self.tick_count = 0
 
     # ── One tick ────────────────────────────────────────────────────────
 
     def tick(self) -> None:
-        """One pass: drain sources, fan to sinks, refresh the workspace
-        tier, beat.
-
-        The whole body runs inside ``project_index_scope()`` so the
-        project list is walked **once** per tick instead of the eight
-        times it used to be — six unconditional sinks plus up to two
-        from the active source (docs/syncplan.md §10, T23). The scope is
-        entered here, and only here, because it is the one place where
-        "one consistent snapshot for the duration" is obviously correct;
-        request threads never enter it and keep seeing live data.
+        """
+        One pass: drain sources, fan to sinks, refresh the workspace tier,
+        beat.
         """
         with project_index_scope():
             self._tick_body()
@@ -202,14 +179,7 @@ class Watcher:
             x = xo_dir(project_id)
             sink_events = _sink_events(project_events)
             try:
-                # Identity FIRST, then resolve the runtime home. The runtime
-                # key is ``project.json:pid``, which this call is what mints —
-                # resolving before it would key a brand-new project's runtime
-                # directory by folder name for exactly one tick and by pid
-                # forever after, splitting its state across two directories.
-                # ``fill_identity`` also refuses to mint for a project folder
-                # that does not exist, so ``rt`` can legitimately be None: that
-                # is a skip, not a directory to create.
+                # Identity FIRST, then resolve the runtime home.
                 project_json.fill_identity(x, project_id)
                 rt = runtime_dir_for_project(project_id, create=True)
                 if rt is None:
@@ -244,9 +214,9 @@ class Watcher:
             if isinstance(pid, str) and pid:
                 presence_by_project[pid].append(row)
 
-        # Resolved once, here, and threaded through the workspace tier
-        # below. Inside the scope this is the walk every other caller in
-        # this tick reuses.
+        # Resolved once, here, and threaded through the workspace tier below.
+        # Inside the scope this is the walk every other caller in this tick
+        # reuses.
         project_ids = list_project_ids()
 
         for pid in project_ids:
@@ -288,16 +258,7 @@ class Watcher:
         self._write_heartbeat(tick_started)
 
     def _write_heartbeat(self, tick_started: float) -> None:
-        """Persist the once-per-tick liveness beat. Never raises.
-
-        Written *unconditionally* — an unchanged heartbeat is exactly
-        what a write-on-change gate must not suppress, since a frozen
-        stamp is the signal that the loop stopped. One tiny file per
-        tick against the N+5 the tick already writes.
-
-        Any failure here is logged and swallowed: the heartbeat exists
-        to observe the tick, never to be able to break it.
-        """
+        """Persist the once-per-tick liveness beat. Never raises."""
         self.tick_count += 1
         try:
             write_json_atomic(

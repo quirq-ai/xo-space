@@ -1,43 +1,4 @@
-"""``sessions/sessions-augment.json`` sink — watcher-owned per-session
-counters.
-
-Tracks the fields the runtime adapters don't compute:
-
-* ``messageCount`` — total user + assistant messages observed
-* ``toolCallCount`` — total tool_use events (any tool)
-* ``taskCount`` — ``total`` plus one counter per status in
-  :data:`~services.cowork_agent.visualizer.todo_status.TODO_STATUSES`,
-  derived from ``TaskCreated`` / ``TaskStatusChanged``. Those events
-  now come from the todos HTTP API
-  (:mod:`~services.cowork_agent.visualizer.todos_store`), not from a
-  runtime transcript — one runtime out of five emitted them, so the
-  counters used to be backend-dependent (syncplan §7, T7). The watcher
-  drops task events before they reach any sink; see
-  ``watcher.py::_sink_events``.
-* ``firstActivity`` / ``lastActivity`` — epoch ms of the earliest /
-  latest event observed
-* ``ended_at`` — currently always null (filled once session-close
-  detection lands)
-* ``episode_refs`` — preserved verbatim; the
-  :mod:`memory_episodic` watcher writes to this field separately
-
-Keys match :mod:`sessionslist` — composite cowork-key when an
-adapter row exists, else native session id (the BFF merge naturally
-ignores unmatched augment rows).
-
-Read-modify-write per tick. The sink reads the prior augment file,
-applies the new events, writes back atomically — under
-:func:`flock.locked`, because this file now has two writers: the
-watcher tick and the todos API's counter updates, which arrive on a
-request thread. It is the only such file left (``todos.json`` became
-single-writer when the todo sink was removed).
-
-Since the tier move (syncplan T19) the caller supplies the project's
-RUNTIME root rather than its ``.xo/``: these counters are derived state,
-rebuildable from the events, so R-TIER keeps them out of the synced tree.
-``legacy_root`` is the pre-move ``.xo/``, read only until the first write
-lands in the runtime tier.
-"""
+"""``sessions/sessions-augment.json`` sink — watcher-owned per-session counters."""
 
 from __future__ import annotations
 
@@ -79,8 +40,8 @@ def _iso_to_ms(ts: str) -> Optional[int]:
 
 
 def _now_iso() -> str:
-    # Same string as before; ``utcnow()`` is deprecated and this sink is
-    # now called from a request thread too, where the warning is noise.
+    # Same string as before; ``utcnow()`` is deprecated and this sink is now
+    # called from a request thread too, where the warning is noise.
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -107,8 +68,8 @@ def _empty_row() -> dict:
         "messageCountByRole": {"user": 0, "assistant": 0,
                                "toolResults": 0, "errors": 0},
         "toolCallCount":  0,
-        # One counter per status, built from the shared vocabulary so a
-        # new status cannot arrive without a bucket to land in.
+        # One counter per status, built from the shared vocabulary so a new
+        # status cannot arrive without a bucket to land in.
         "taskCount":      {"total": 0, **{st: 0 for st in TODO_STATUSES}},
         "firstActivity":  None,
         "lastActivity":   None,
@@ -127,23 +88,16 @@ def _stamp_activity(row: dict, ts: str) -> None:
         row["lastActivity"] = ms
 
 
-# Status transitions we track. Anything else is ignored — the raw
-# ``TaskUpdate.status`` from a runtime transcript is unvalidated
-# (ingest/pii_filter.py:183), so this filter is what keeps a typo out
-# of ``taskCount``.
+# Status transitions we track.
 _VALID_STATUSES = VALID_TODO_STATUSES
 
 
 def apply(
     root: Path, events: Iterable[Event], *, legacy_root: Optional[Path] = None
 ) -> bool:
-    """Apply ``events`` to this project's augment file. Returns
-    ``True`` if the file changed (so the workspace tier knows to
-    re-aggregate).
-
-    The lock is taken here rather than inside the body so both writers
-    — the watcher tick and the todos API — go through the same gate
-    whichever entry point they use.
+    """
+    Apply ``events`` to this project's augment file. Returns ``True`` if the
+    file changed (so the workspace tier knows to re-aggregate).
     """
     events = list(events)
     if not events:
@@ -260,23 +214,7 @@ def forget_task(
     ts: Optional[str] = None,
     legacy_root: Optional[Path] = None,
 ) -> bool:
-    """Drop one task from the counters — its todo was deleted.
-
-    ``taskCount`` describes the todos that exist; a tombstoned todo does
-    not, so leaving it counted would re-open exactly the divergence
-    between ``todos.json`` and the counters that making the API the
-    event source closed (syncplan §7, T7/T9).
-
-    There is no ``TaskDeleted`` event: deletion is not something a
-    runtime transcript can observe, only something the API does, so this
-    is a direct call from
-    :mod:`~services.cowork_agent.visualizer.todos_store` rather than a
-    sixth event type. Returns ``True`` if a counter actually moved.
-
-    Only a task this sink has counted (i.e. present in
-    ``_task_states``) can be forgotten — that is what keeps the
-    decrement from underflowing on a replay or a double delete.
-    """
+    """Drop one task from the counters — its todo was deleted."""
     augment_path = root / _AUGMENT_FILE
     with locked(augment_path):
         current = read_json(augment_path)

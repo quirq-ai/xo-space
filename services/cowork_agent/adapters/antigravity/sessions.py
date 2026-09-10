@@ -1,17 +1,4 @@
-"""
-Antigravity (agy) sessions capability.
-
-agy tees its sessions into the per-project session index (runtime tier), tagged
-``backend:"antigravity"``, so the generic project-tied scan applies —
-``USES_PROJECT_SESSIONS = True``. The native message store is the per-conversation
-transcript ``brain/<nativeSessionId>/.system_generated/logs/transcript_full.jsonl``
-(keyed by conversation uuid, not by an encoded cwd path like claude_code).
-
-The listing hooks (``enrich_project_session`` / ``resolve_native_file`` /
-``list_native_sessions``) and read hooks (``owns_session`` / ``get_messages`` /
-``set_session_directory``) are what ``engine/sessions_io`` calls instead of
-branching on the backend name.
-"""
+"""Antigravity (agy) sessions capability."""
 from __future__ import annotations
 
 import json
@@ -26,9 +13,9 @@ from services.cowork_agent.helpers import strip_workspace_preamble
 
 USES_PROJECT_SESSIONS = True
 
-# The ``backend`` tag antigravity writes on every sessionslist row it publishes;
-# used to tell our rows apart from the other project-tied backends' in a shared
-# index.
+# The ``backend`` tag antigravity writes on every sessionslist row it
+# publishes; used to tell our rows apart from the other project-tied backends'
+# in a shared index.
 _BACKEND = "antigravity"
 
 
@@ -262,17 +249,14 @@ def _persist_session_directory(session_id: str, directory: str) -> bool:
         for key, meta in index.items():
             if meta.get("sessionId") != session_id:
                 continue
-            # Same-index rows from the other project-tied backends are not ours:
-            # the PATCH route loops adapters and takes the first non-None, so
-            # without this we would service (and rewrite) another backend's row.
-            # Untagged legacy rows stay claimable — a missing/empty ``backend``
-            # predates the tag, so first-adapter-wins still applies there.
+            # Same-index rows from the other project-tied backends are not
+            # ours: the PATCH route loops adapters and takes the first non-
+            # None, so without this we would service (and rewrite) another
+            # backend's row.
             backend = meta.get("backend")
             if isinstance(backend, str) and backend and backend != _BACKEND:
                 continue
-            # One row, one shard file, one atomic replace. The whole-document
-            # rewrite this used to do is what made two concurrent writers lose
-            # a row (syncplan T19, inherited from T4).
+            # One row, one shard file, one atomic replace.
             row = dict(meta)
             history = list(row.get("directoryHistory") or [])
             history.append({"directory": directory, "selectedAt": now_ms})

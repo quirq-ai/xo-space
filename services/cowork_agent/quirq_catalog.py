@@ -37,12 +37,7 @@ _MAX_FILES = 500
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _SENSITIVE_NAMES = frozenset({"secrets.env"})
 
-# ``tier`` says which root a per-project file hangs off. It is not decoration:
-# syncplan T19 moved four of the six out of ``<project>/.xo/`` and into
-# ``~/.quirq/projects/<key>/``, and a catalog that kept looking in the old
-# place would render "0 present" for each of them with no error at all — the
-# exact silent-empty failure the move is full of. The ``location`` field each
-# row publishes is built from the tier, so the UI shows where a file really is.
+# ``tier`` says which root a per-project file hangs off.
 _TIER_SYNCED = "synced"
 _TIER_RUNTIME = "runtime"
 
@@ -110,12 +105,7 @@ _PROJECT_OUTPUT_CONTRACT = (
         "used_by": "Projects",
     },
     # The workitems surface spans both tiers on purpose (workitems-plan §3).
-    # The authored half above is durable and travels; these two are not. The
-    # mirror is re-fetched every 60 s and the claims file is one machine's
-    # live process state, so either one written into ``.xo/`` would churn the
-    # synced tier at a poller's rate — the exact thing T19/T20 removed. They
-    # hang off the runtime root, and a row that said otherwise would render
-    # "0 present" while the files sat somewhere else entirely.
+    # The authored half above is durable and travels; these two are not.
     {
         "path": "github/issues.json",
         "tier": _TIER_RUNTIME,
@@ -138,11 +128,10 @@ _PROJECT_OUTPUT_CONTRACT = (
     },
 )
 
-# The workspace tier splits the same way the per-project one does, and for
-# the same reason (syncplan T20): the two records a clone would want stay in
-# ``<XO root>/.xo/``, every rollup the watcher recomputes from a walk of the
-# projects root moved to ``~/.quirq/workspace/``. Rows without the right tier
-# would report "0 present" against a directory nothing writes any more.
+# The workspace tier splits the same way the per-project one does, and for the
+# same reason (syncplan T20): the two records a clone would want stay in ``<XO
+# root>/.xo/``, every rollup the watcher recomputes from a walk of the projects
+# root moved to ``~/.quirq/workspace/``.
 _WORKSPACE_OUTPUT_CONTRACT = (
     {
         "path": "space.json",
@@ -238,9 +227,7 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Ephemeral activity snapshots"
         if relative_path == "watcher/activity/projects":
             return "Per-project live presence"
-        # The two runtime tiers (syncplan T19/T20). Naming them here is what
-        # keeps the tree from rendering the derived state as anonymous
-        # "Directory" rows once it stopped living in ``.xo/``.
+        # The two runtime tiers (syncplan T19/T20).
         if relative_path == "projects":
             return "Per-project runtime tier, keyed by project.json:pid"
         if relative_path == "workspace":
@@ -395,16 +382,7 @@ def _parse_iso(value: Any) -> datetime | None:
 
 
 def _stale_after_seconds(interval_seconds: Any) -> float:
-    """Age past which a heartbeat means "not ticking".
-
-    Derived from the configured tick interval rather than a magic
-    constant: the loop sleeps ``interval`` *between* ticks and the tick
-    itself takes non-zero time, so the observed period is always a
-    little longer than the interval. ``_MISSED_TICKS_BEFORE_DEAD``
-    missed beats is an unambiguous signal rather than a scheduling
-    hiccup, and the floor keeps a 0.25 s interval from flapping on one
-    slow tick.
-    """
+    """Age past which a heartbeat means "not ticking"."""
     try:
         interval = float(interval_seconds)
     except (TypeError, ValueError):
@@ -425,11 +403,8 @@ def _watcher(root: Path) -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
 
-    # Observed liveness. Everything above this line is *configuration* —
-    # it says what the watcher was asked to do, never whether the loop is
-    # running. The heartbeat is the only signal that distinguishes a
-    # ticking watcher from a crashed one, so a missing, unreadable or
-    # stale file all resolve to alive=False.
+    # Observed liveness. Everything above this line is *configuration* — it
+    # says what the watcher was asked to do, never whether the loop is running.
     heartbeat_path = root / "watcher" / "heartbeat.json"
     heartbeat = _read_json(heartbeat_path)
     if not isinstance(heartbeat, dict):
@@ -440,8 +415,8 @@ def _watcher(root: Path) -> dict[str, Any]:
     if last_tick is None:
         age: float | None = None
     else:
-        # Clamp: the stamp has second granularity, so a beat written in
-        # the same second reads as very slightly in the future.
+        # Clamp: the stamp has second granularity, so a beat written in the
+        # same second reads as very slightly in the future.
         age = round(
             max(0.0, (datetime.now(timezone.utc) - last_tick).total_seconds()), 3
         )
@@ -486,13 +461,7 @@ def _install_state(root: Path) -> dict[str, Any]:
 
 
 def _measure(path: Path) -> tuple[bool, int, float]:
-    """``(present, bytes, newest mtime)`` for a file **or** a directory.
-
-    The session index is a directory of shard files now, so "present" has to
-    mean "holds at least one file" for it and "is a file" for everything else.
-    Symlinks are never followed, at either level — the catalog reports what is
-    on this machine, it does not chase a link out of the tree.
-    """
+    """``(present, bytes, newest mtime)`` for a file **or** a directory."""
     try:
         if path.is_symlink():
             return False, 0, 0.0
@@ -522,13 +491,7 @@ def _contract_status(
     *,
     prefixes: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Roll one contract up across every project.
-
-    ``bases`` and ``prefixes`` are keyed by tier, because both contracts now
-    span two roots — the per-project one since T19, the workspace one since
-    T20. An entry with no ``tier`` reads as synced, which is the safe default:
-    a mis-tiered row reports "0 present" rather than erroring.
-    """
+    """Roll one contract up across every project."""
     rows: list[dict[str, Any]] = []
     for definition in contract:
         tier = definition.get("tier", _TIER_SYNCED)
@@ -575,10 +538,9 @@ def _project_outputs() -> dict[str, Any]:
             try:
                 xo_dir = candidate / ".xo"
                 if candidate.is_dir() and xo_dir.is_dir() and not xo_dir.is_symlink():
-                    # The runtime home is resolved through project_layout, which
-                    # keys it by ``project.json:pid`` and answers None for a
-                    # project that has none yet. None here means "runtime files
-                    # not present", never an error.
+                    # The runtime home is resolved through project_layout,
+                    # which keys it by ``project.json:pid`` and answers None
+                    # for a project that has none yet.
                     project_dirs.append(
                         (
                             candidate.name,

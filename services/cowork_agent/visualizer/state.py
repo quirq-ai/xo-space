@@ -30,14 +30,7 @@ def watcher_state_dir() -> Path:
 
 
 def watcher_heartbeat_path() -> Path:
-    """Return the watcher's once-per-tick liveness beat.
-
-    The watcher rewrites this file at the end of every tick; readers
-    (the Quirq catalog) use it to report *observed* liveness instead of
-    inferring it from configuration. Like :func:`watcher_state_dir` this
-    only computes the path — the directory is created by the watcher
-    when it writes, so a read-only inspection never mkdirs.
-    """
+    """Return the watcher's once-per-tick liveness beat."""
     return watcher_state_dir() / "heartbeat.json"
 
 

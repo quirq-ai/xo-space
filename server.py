@@ -606,17 +606,7 @@ _lifespan_logger = logging.getLogger("xo_space.lifespan")
 
 
 def _report_watcher_task_exit(task: "asyncio.Task") -> None:
-    """Surface a watcher task that died, instead of losing it to the GC.
-
-    ``asyncio.create_task`` holds a failure inside the task object: with
-    no done-callback a construction error (or anything that escapes the
-    run loop) only ever appears as a GC-time "Task exception was never
-    retrieved", long after the fact and with no context.
-
-    Cancellation is normal shutdown — ``Watcher.run`` re-raises it
-    deliberately — so it is not reported. This runs on the event loop
-    and must never raise, so every path is guarded.
-    """
+    """Surface a watcher task that died, instead of losing it to the GC."""
     try:
         if task.cancelled():
             return
@@ -755,10 +745,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
 
-    # One-time tier migration (docs/syncplan.md §9, T21). Runs HERE — before
-    # the watcher task exists and before the app yields, so no sink and no
-    # request handler can be writing the paths it moves. Idempotent and inert
-    # on an already-migrated machine; never fatal.
+    # One-time tier migration (docs/syncplan.md §9, T21).
     try:
         from services.cowork_agent.visualizer.migrate import migrate_runtime_layout
         _migrated = migrate_runtime_layout()
@@ -767,11 +754,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Tier migration skipped (non-fatal): {e}")
 
-    # GitHub issue poller — refreshes the runtime issue mirror for the
-    # projects that need it (docs/workitems-plan.md §6). Deliberately NOT a
-    # watcher sink: a watcher tick must never touch the network, so this is
-    # its own task with its own interval, exactly like the usage sync above.
-    # Off switch: XO_GITHUB_POLL_ENABLED=false (the task returns immediately).
+    # GitHub issue poller — refreshes the runtime issue mirror for the projects
+    # that need it (docs/workitems-plan.md §6).
     _github_poll_task = None
     try:
         from services.cowork_agent.github_poller import (

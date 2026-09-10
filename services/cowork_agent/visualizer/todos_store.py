@@ -1,38 +1,4 @@
-"""CRUD over ``<project>/.xo/todos.json`` — and the todo event source.
-
-Two things live here, and the second one is the point.
-
-**1. The only writer of ``todos.json``.** The watcher's todo sink is
-gone (syncplan §7, T8): it ingested task events that exactly one
-runtime emits, so todos worked on one backend out of five and the file
-had two writers with two incompatible id spaces. Every todo now enters
-through the agent-facing ``POST/PATCH/DELETE /todos`` endpoints, which
-means the document is byte-identical under every ``AGENT_NAME`` for the
-same sequence of calls. :func:`flock.locked` still guards the
-read-modify-write because concurrent *requests* (FastAPI's thread pool,
-or a second uvicorn worker) are still two writers.
-
-**2. The only producer of todo lifecycle events** (syncplan §7, T7).
-Three consumers used to be fed from one runtime's transcript: this
-file, the timeline sink and the per-session ``taskCount`` counters.
-Removing only the first would have left the other two emitting
-``todo.*`` lines and counting tasks that no longer exist anywhere on
-disk. So the write path emits the same
-:class:`~services.cowork_agent.visualizer.ingest.events.TaskCreated` /
-:class:`~...events.TaskStatusChanged` events the sinks already know how
-to render, and the watcher no longer feeds them from ingestion. One
-source, every backend, and ``todos.json``, ``timeline.jsonl`` and
-``sessions-augment.json`` cannot drift apart.
-
-**Soft delete** (syncplan §5.5, T9). ``status`` is lifecycle only —
-``cancelled`` is a real outcome and stays visible. Deletion is a
-separate ``deleted_at`` / ``deleted_by`` tombstone: the record is never
-removed, so "everything ever closed" stays answerable and a deleted
-todo cannot come back. Reads hide tombstones unless asked.
-
-The BFF route layer never imports this module directly — it goes
-through ``services.cowork_agent.scopes.VisualizerScope`` (P3).
-"""
+"""CRUD over ``<project>/.xo/todos.json`` — and the todo event source."""
 
 from __future__ import annotations
 
@@ -63,30 +29,19 @@ logger = logging.getLogger(__name__)
 
 PROJECT_SESSION = "_project"          # default session_id when caller doesn't provide one
 
-#: On-disk revision of ``todos.json`` (syncplan §5.5). Schema 2 declares
-#: the per-todo ``created_at`` / ``updated_at`` timestamps and the
-#: ``deleted_at`` / ``deleted_by`` tombstone.
+#: On-disk revision of ``todos.json`` (syncplan §5.5).
 TODOS_SCHEMA = 2
 
 #: Value written into the document's ``$schema`` key. It is the schema's own
-#: ``$id`` (visualizer/schema/todos.schema.json), NOT a filesystem path. The
-#: previous value was a project-relative path into a ``.xo/schema/``
-#: directory that nothing has ever created, so every todos.json on disk
-#: carried a dangling pointer (syncplan T16). ``xo/<name>.schema.json`` is
-#: the convention the other records already use — workspace/projects_json.py,
-#: workspace/space_json.py, adapters/*/agents.py.
+#: ``$id`` (visualizer/schema/todos.schema.json), NOT a filesystem path.
 _SCHEMA_REF = "xo/todos.schema.json"
 
-# The status vocabulary lives in one place — todo_status.py. Kept as a
-# module name here because :func:`_validate_status` below is the single
-# enforcement point in the whole system and reads better unqualified.
+# The status vocabulary lives in one place — todo_status.py.
 VALID_STATUSES = VALID_TODO_STATUSES
 
 _DEFAULT_STATUS = "pending"
 
-# Sanitisation regex for runtime / session_id. Permissive enough for
-# realistic adapter keys (composite ``<agent>:<project>:<surface>:<id>``
-# forms, dashes, dots, underscores) but rejects path traversal.
+# Sanitisation regex for runtime / session_id.
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_:\-\.]{1,200}$")
 
 
@@ -113,12 +68,7 @@ def _document(sessions: dict) -> dict:
 
 
 def is_deleted(todo: object) -> bool:
-    """Whether a todo record carries a tombstone.
-
-    One predicate so "deleted" means the same thing to the store, the
-    routes and the tests. Absent / ``null`` ``deleted_at`` is alive —
-    which is also what every pre-schema-2 record on disk says.
-    """
+    """Whether a todo record carries a tombstone."""
     return isinstance(todo, dict) and todo.get("deleted_at") is not None
 
 
@@ -156,44 +106,16 @@ def _validate_content_length(value: str, *, field: str, limit: int) -> None:
 
 
 # ── Lifecycle events ───────────────────────────────────────────────────────
-#
-# The API is the event source (syncplan T7). We hand the sinks the same
-# event objects the watcher used to hand them, so the rendering — the
-# timeline vocabulary, the per-status counters — lives in exactly one
-# place and every backend produces identical output.
+# The API is the event source (syncplan T7).
 
 
 def _derived_dir(todos_path: Path) -> Optional[Path]:
-    """Runtime directory holding the watcher's derived views for this project.
-
-    ``timeline.jsonl`` and ``sessions/sessions-augment.json`` used to sit
-    beside ``todos.json`` in ``.xo/``. T19 moved them to
-    ``~/.quirq/projects/<key>/`` while ``todos.json`` — part of the synced
-    contract — stayed put, so the two are no longer the same directory and
-    this function is what keeps the todos API writing to the tier the
-    watcher reads.
-
-    ``todos_path`` is ``<project>/.xo/todos.json``, so the project folder is
-    its grandparent. Returns ``None`` when that project has no runtime home
-    (it was deleted, or its identity was never minted) — the caller then
-    skips the derived write, exactly as the watcher does.
-    """
+    """Runtime directory holding the watcher's derived views for this project."""
     return project_layout.runtime_dir_for_project(todos_path.parent.parent.name)
 
 
 def _emit(todos_path: Path, events: Iterable[Event]) -> None:
-    """Fan todo lifecycle events to the sinks that render them.
-
-    Never raises: a todo that is safely on disk must not turn into a 500
-    because a derived view could not be updated. Both sinks are
-    self-healing (the timeline is append-only, the counters are rebuilt
-    from their own persisted state), so a logged failure costs one
-    timeline line, not correctness of ``todos.json``.
-
-    Called *after* the ``todos.json`` lock is released — the two sinks
-    take their own locks, and nesting them under this one would be the
-    only place in the system where two locks are held at once.
-    """
+    """Fan todo lifecycle events to the sinks that render them."""
     events = [ev for ev in events]
     if not events:
         return
@@ -211,20 +133,7 @@ def _emit(todos_path: Path, events: Iterable[Event]) -> None:
 
 
 def _read_sessions(todos_path: Path) -> tuple[Optional[dict], dict]:
-    """Return ``(document, deep-copied sessions map)``.
-
-    The copy matters: the document is passed back to
-    :func:`write_json_atomic_if_changed` as the comparison baseline, so
-    it must not alias the map we are about to mutate — an aliased
-    baseline compares equal to itself and would silently skip the write.
-
-    A file that is missing, unparseable, or not a JSON object comes back
-    as ``(None, {})``: the baseline says "there was nothing", so the next
-    write always happens and repairs the file. That is the declared
-    behaviour for a document with a single owner (syncplan §3) — there
-    is no foreign key to preserve, so refusing to write would only leave
-    the corruption in place.
-    """
+    """Return ``(document, deep-copied sessions map)``."""
     current = read_json(todos_path)
     if not isinstance(current, dict):
         return None, {}
@@ -234,12 +143,7 @@ def _read_sessions(todos_path: Path) -> tuple[Optional[dict], dict]:
 
 
 def _find(sessions: dict, todo_id: str) -> Optional[tuple[str, dict, dict]]:
-    """First ``(session_id, session_entry, todo)`` matching ``todo_id``.
-
-    Ids are server-minted and globally unique across sessions (they were
-    per-session decimals only while the removed sink co-wrote this file),
-    so "first match" is now "the match".
-    """
+    """First ``(session_id, session_entry, todo)`` matching ``todo_id``."""
     for sid, entry in sessions.items():
         if not isinstance(entry, dict):
             continue
@@ -262,16 +166,7 @@ def create_todo(
     session_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> dict:
-    """Append a new todo. Returns the created todo dict.
-
-    ``todo_id`` is server-generated (UUID v4 hex prefix, 8 chars) so
-    callers don't have to coordinate. Collisions are extremely
-    unlikely; on the off chance, we'd 500 (caller retries).
-
-    Emits ``TaskCreated`` (plus a ``TaskStatusChanged`` when the caller
-    asked for a non-default initial status), so the timeline and the
-    per-session counters see the todo whatever backend is active.
-    """
+    """Append a new todo. Returns the created todo dict."""
     _validate_safe_key(runtime, "runtime")
     sid = session_id or PROJECT_SESSION
     _validate_safe_key(sid, "session_id")
@@ -300,9 +195,9 @@ def create_todo(
             todos = []
             entry["todos"] = todos
 
-        # Ids are looked up across every session, so uniqueness has to
-        # hold across every session too — including against tombstones,
-        # which must never be shadowed by a live todo of the same id.
+        # Ids are looked up across every session, so uniqueness has to hold
+        # across every session too — including against tombstones, which must
+        # never be shadowed by a live todo of the same id.
         if _find(sessions, todo_id) is not None:
             raise TodosStoreError(
                 "scope_unavailable",
@@ -354,11 +249,7 @@ def create_todo(
 def get_todo(
     todos_path: Path, todo_id: str, *, include_deleted: bool = False,
 ) -> Optional[tuple[str, dict]]:
-    """Return ``(session_id, todo_dict)`` or ``None`` if no match.
-
-    A tombstoned todo is *not* a match unless ``include_deleted`` — the
-    caller asked for a todo, and a deleted one is history, not a todo.
-    """
+    """Return ``(session_id, todo_dict)`` or ``None`` if no match."""
     _current, sessions = _read_sessions(todos_path)
     found = _find(sessions, todo_id)
     if found is None:
@@ -378,16 +269,7 @@ def update_todo(
     description: Optional[str] = None,
     active_form: Optional[str] = None,
 ) -> dict:
-    """Update fields on an existing todo. Returns the updated dict.
-
-    Raises ``TodosStoreError("todo_not_found", ...)`` if the id isn't
-    present in any session, or if it names a tombstone — a deleted todo
-    is not editable, which is what stops it coming back to life.
-
-    A call that changes nothing writes nothing, stamps nothing and emits
-    nothing: re-sending the status a todo already has is a no-op, not a
-    fresh timeline line.
-    """
+    """Update fields on an existing todo. Returns the updated dict."""
     if status is not None:
         _validate_status(status)
     if content is not None:
@@ -443,23 +325,7 @@ def update_todo(
 def delete_todo(
     todos_path: Path, todo_id: str, *, deleted_by: Optional[str] = None,
 ) -> bool:
-    """Soft-delete a todo. Returns ``True`` if this call tombstoned it,
-    ``False`` if there was nothing to delete (idempotent — the route
-    reports ``deleted: false`` rather than 404, and a second DELETE of
-    the same id is a no-op, exactly as before).
-
-    The record itself is never removed (syncplan §5.5): ``deleted_at``
-    and ``deleted_by`` are set alongside the unchanged ``status``, so
-    "we decided not to do this" (``cancelled``) and "this should not
-    have existed" stay distinguishable forever.
-
-    ``deleted_by`` carries the calling **runtime**, the same vocabulary
-    ``create_todo`` already requires, and is validated against the same
-    charset: it is persisted into ``todos.json``, which is a synced
-    document, so it may not become a channel for arbitrary caller text.
-    ``None`` when the caller did not say — attribution is optional, and
-    an unattributed tombstone is still a tombstone.
-    """
+    """Soft-delete a todo."""
     if deleted_by is not None:
         _validate_safe_key(deleted_by, "runtime")
     with locked(todos_path):
@@ -477,9 +343,7 @@ def delete_todo(
             todos_path, _document(sessions), previous=current,
         )
 
-    # The counters describe todos that exist; a tombstone doesn't. The
-    # timeline is append-only history and keeps the lines it already
-    # wrote — the todo *was* added, and that stays true.
+    # The counters describe todos that exist; a tombstone doesn't.
     runtime_dir = _derived_dir(todos_path)
     try:
         if runtime_dir is not None:

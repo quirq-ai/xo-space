@@ -1,53 +1,6 @@
-"""Advisory file lock helper, used for files written by both the
-watcher and the BFF API endpoints.
-
-Five files need it today, for two distinct reasons — and the list is
-expected to grow, so **widen it rather than re-narrowing the claim.**
-
-*Genuinely two writers:*
-
-* ``sessions/sessions-augment.json`` — the watcher tick writes the
-  message / tool counters; the todos API writes the ``taskCount`` ones,
-  on a request thread, now that it is the source of todo lifecycle
-  events (syncplan §7, T7).
-
-*One writer, many callers* — the endpoints own the file outright, but two
-concurrent requests (the FastAPI thread pool, or a second uvicorn worker)
-are still two read-modify-writes racing for the same document:
-
-* ``.xo/todos.json`` — the watcher's todo sink is gone (T8).
-* ``.xo/workitems.json`` — the workitems CRUD surface (W2/W3).
-* ``.xo/peers.json`` — the peers CRUD surface. The template ships the
-  document; these routes are the first and only thing that writes it.
-* ``~/.quirq/projects/<pid>/workitems/claims.json`` — agent claims
-  (W7b). Note this one is **runtime tier**, not ``.xo/``: the lock is
-  about concurrent request threads, not about the synced/runtime split.
-
-The previous version of this docstring ended "every other ``.xo/`` file is
-single-writer", which was true when it was written and silently stopped
-being true twice. A sentence that has to be re-checked on every new writer
-is a sentence that will be wrong again; the list above is the contract.
-
-POSIX ``fcntl.flock`` with ``LOCK_EX``. Bounded wait so a wedged
-watcher can never block a user-facing API call indefinitely — the
-endpoint falls through after the deadline and accepts the small
-race (logged WARN).
-
-**Lock files live OUTSIDE ``.xo/``.** They are per-machine
-infrastructure (coordination state) — not project data — so they
-sit alongside ``offsets.json`` under
-``~/.quirq/watcher/locks/``. Keeping them out of ``.xo/`` means:
-
-* agents reading ``.xo/`` never trip over a 0-byte sentinel,
-* AGENTS.md's "everything in ``.xo/`` has a schema" contract stays
-  clean,
-* if ``.xo/`` is ever copied for sync the locks don't tag along.
-
-The lock filename is ``<basename>.<8-hex>.lock`` where the 8-hex
-suffix is a stable hash of the absolute data path — so multiple
-projects' ``todos.json`` files have distinct locks. The basename
-prefix keeps the file recognisable when grepping the locks dir
-during debugging.
+"""
+Advisory file lock helper, used for files written by both the watcher and the
+BFF API endpoints.
 """
 
 from __future__ import annotations
@@ -90,21 +43,10 @@ def _lock_path_for(data_path: Path) -> Path:
 
 @contextmanager
 def locked(path: Path) -> Iterator[None]:
-    """Acquire an exclusive advisory lock for the data file at
-    ``path``. The lock sentinel itself lives under
-    ``~/.quirq/watcher/locks/`` (see module docstring).
-
-    Bounded wait. If the lock can't be acquired in
-    :data:`_DEADLINE_S` seconds the context yields anyway (logged
-    WARN) — the watcher and the API are both designed for
-    non-destructive read-modify-write so the worst case is a single
-    lost update that the next tick / call recovers. (For the counters
-    that is literally true — the next event re-derives them; for
-    ``todos.json`` the loss would be one API call's edit, which is why
-    the deadline is generous relative to a write that takes microseconds.)
-
-    The lock is released by the kernel on fd close (i.e. on context
-    exit), so a crash mid-block can't wedge the file.
+    """
+    Acquire an exclusive advisory lock for the data file at ``path``. The lock
+    sentinel itself lives under ``~/.quirq/watcher/locks/`` (see module
+    docstring).
     """
     lock_path = _lock_path_for(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)

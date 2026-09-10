@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""Route-parity guard for the agent-modular broker.
-
-Checks the *invariant*, not a hardcoded count:
-
-    for every agent A:   paths(A) == CORE  ∪  own_routes(A)
-
-where CORE is the path set shared by every agent and ``own_routes(A)`` is what
-``services/cowork_agent/adapters/<A>/routes.py`` contributes. That means:
-
-  * the broker surface is identical under every agent (no agent silently adds
-    or loses a core route), and
-  * an agent-owned route never leaks into another agent's surface.
-
-Hardcoded totals (``expect 144/147/171``) rot on every route added — this does
-not. Run it after touching core or any adapter's ``routes.py``.
-
-    venv/bin/python scripts/check_route_parity.py          # check
-    venv/bin/python scripts/check_route_parity.py --list   # also print the sets
-
-Exits non-zero on any parity break. Kept out of the import path of the app;
-each agent is measured in its own subprocess because the agent registry caches
-the active manifest at import time.
-"""
+"""Route-parity guard for the agent-modular broker."""
 
 from __future__ import annotations
 
@@ -36,8 +14,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 # Emitted inside the subprocess: the app's OpenAPI paths plus whatever this
-# agent's own routes.py contributes, so the parent can check one against
-# the other without importing the app itself.
+# agent's own routes.py contributes, so the parent can check one against the
+# other without importing the app itself.
 _PROBE = """
 import contextlib, io, json, warnings
 warnings.simplefilter("ignore")
@@ -122,8 +100,8 @@ def main() -> int:
             )
         if extra:
             # A path outside core that this agent's routes.py does not declare:
-            # either a core route that is not universal, or a leaked
-            # agent-owned route.
+            # either a core route that is not universal, or a leaked agent-
+            # owned route.
             failures.append(
                 f"{a}: {len(extra)} path(s) present but not in core and not "
                 f"declared by adapters/{a}/routes.py:\n    "

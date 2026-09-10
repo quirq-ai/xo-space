@@ -155,11 +155,7 @@ def get_messages(session_id: str) -> list:
 
 
 def find_session_key(session_id: str) -> str | None:
-    """Look up the openclaw session key for a given session ID.
-
-    Checks the native store under ~/.openclaw/agents/<a>/sessions/ first, then
-    the per-project session index for tee'd openclaw sessions.
-    """
+    """Look up the openclaw session key for a given session ID."""
     # Native store
     if AGENTS_DIR.exists():
         for agent_dir in AGENTS_DIR.iterdir():

@@ -1,89 +1,4 @@
-"""CRUD over ``<project>/.xo/workitems.json`` — the durable work surface.
-
-A **workitem** is a coarse, durable unit of work with an owner and a
-lifecycle, possibly mirroring a GitHub issue. A **todo** is an agent's
-step list inside one session. They are distinct records, joined by
-``links.todo_ids`` (workitems-plan §9, D3), and this module is the
-sibling of :mod:`~services.cowork_agent.visualizer.todos_store`: same
-``runtime`` vocabulary, same tombstone semantics, same
-``StoreError(code, message)`` shape, so an agent that can drive todos
-can drive workitems without learning a second dialect.
-
-Three things are load-bearing here and none of them is obvious.
-
-**1. This file must stay quiet, because it syncs.** ``.xo/`` is the
-synced tier (rule R-TIER); a document that cached what GitHub owns
-would churn at GitHub's rate inside the tier that is snapshot-restored
-wholesale. So for an adopted item this store writes the *adoption
-record* and its local annotations, and nothing else: ``title`` and
-``labels`` are snapshotted once, at adoption, as the readable fallback
-when the mirror is gone (labels are fetched lazily then, because the
-poll deliberately does not carry them — §6.2), and ``status``,
-``state_reason`` and ``body`` are **omitted entirely** (plan §5.3). A
-stale title is a cosmetic inaccuracy; a stale ``closed`` is a false
-statement about whether the work is done. Absent beats wrong. Writing
-one of those three for an adopted item is refused
-(``github_authoritative``) rather than quietly accepted.
-
-``assignee`` **is not one of them, and used to be.** D1 put assignment
-in GitHub — ``PUT …/assignee`` on an adopted item issued a ``PATCH``
-against the issue and this store refused the field. That decision was
-reversed (§13, amendment 33): GitHub is now **read-only** to this
-system, and assignment is a *local annotation* carried here for every
-workitem, adopted or not. It stays quiet because it is written when a
-human assigns, never when GitHub changes. The cost of the reversal,
-stated where the field lives: ``.xo/`` does not continuously sync
-(restore is a wholesale force-replace), so an assignment is visible
-only inside the Space that made it.
-
-**2. There is no ``in_progress``.** ``status`` is ``open`` | ``closed``
-— GitHub's own two values, so the two can never disagree (§5.4, D7).
-"In progress" is derived at read time from a live agent claim and is
-never stored: a stored flag lies the moment the process holding it
-dies. "Cancelled" is not invented either — it is ``closed`` +
-``state_reason: not_planned``.
-
-**3. A corrupt document raises; it is never treated as empty.** This is
-the one hard requirement of the task (plan §10, W2) and it is a
-deliberate divergence from ``todos_store._read_sessions``, which maps an
-unparseable file to "no sessions" so the next create silently discards
-whatever the file held — catalogued as **O-E** in ``docs/OUTSTANDING.md``.
-"I own the whole document, so there is nothing in it worth preserving"
-is sound only when the document is re-derivable. This one is not: it is
-authored state in the synced tier, and the corrupt bytes may be the only
-copy. So every read classifies the file and refuses, and the write goes
-through :func:`~services.cowork_agent.visualizer.atomic_write.write_json_owned`
-— the merge primitive, which raises
-:class:`~...atomic_write.CorruptDocumentError` rather than repairing by
-overwriting — even though full ownership would have permitted the
-cheaper :func:`...write_json_atomic_if_changed`. Two independent
-refusals, one of them enforced by shared machinery.
-
-:func:`~services.cowork_agent.visualizer.flock.locked` guards the
-read-modify-write: one writer, but concurrent *requests* (FastAPI's
-thread pool, or a second uvicorn worker) are still two writers.
-
-**Adoption is here; the fetch that feeds it is not.**
-:func:`adopt_workitem` and :func:`unadopt_workitem` are state
-transitions rather than field edits — ``source.kind`` decides which
-fields the record may carry at all — so they live with the storage
-they have to keep valid. The issue reference and the label snapshot
-are the caller's to supply; this module makes no network call, and
-the GitHub mirror is a different document with a different writer.
-
-**This module is also the workitem event source** (plan §8, W10). Every
-write path that changes a record's lifecycle appends a ``workitem.*``
-line to the runtime ``timeline.jsonl``, for the reason T7 made the todos
-API the todo event source: the event is emitted where the *write*
-happens, so it cannot be missed by a caller that reached the store down
-a different route, and it exists exactly when the record does. Emission
-is best-effort by construction — see :func:`_emit`.
-
-**Not here, on purpose.** The mirror and the read-time projection are
-W4–W6 and ``visualizer/workitem_projection.py``; claims and derived
-``in_progress`` are W7b (``visualizer/workitem_claims.py``, which emits
-``workitem.claimed`` / ``.released`` the same way).
-"""
+"""CRUD over ``<project>/.xo/workitems.json`` — the durable work surface."""
 
 from __future__ import annotations
 
@@ -112,15 +27,10 @@ logger = logging.getLogger(__name__)
 #: On-disk revision of ``workitems.json`` (plan §5.1).
 WORKITEMS_SCHEMA = 1
 
-#: Value written into the document's ``$schema`` key. It is the schema's
-#: own ``$id`` (visualizer/schema/workitems.schema.json), NOT a filesystem
-#: path — the ``.xo/schema/`` pointer syncplan T16 removed was dangling on
-#: every document that carried it.
+#: Value written into the document's ``$schema`` key.
 _SCHEMA_REF = "xo/workitems.schema.json"
 
-#: The top-level keys this store owns. Declared for
-#: :func:`write_json_owned`, which is what makes an undeclared key a
-#: ``ValueError`` in tests rather than a silent widening of ownership.
+#: The top-level keys this store owns.
 _OWNS: frozenset[str] = frozenset({"$schema", "schema", "updated_at", "items"})
 
 #: ``open`` | ``closed`` and nothing else — GitHub's vocabulary (D7).
@@ -133,26 +43,20 @@ VALID_STATE_REASONS: frozenset[str] = frozenset(
 
 VALID_SOURCE_KINDS: frozenset[str] = frozenset({"local", "github"})
 
-#: The fields GitHub is authoritative for. Never stored for an adopted
-#: item (§5.3) — see the module docstring.
-#:
-#: ``assignee`` was the fourth entry and is deliberately **not** here any
-#: more (§13, amendment 33 — the reversal of D1). Nothing in this system
-#: writes to GitHub, so an assignee is ours to record; an adopted record
-#: may carry one exactly like a local one, and ``workitems.schema.json``
-#: permits it on both. The other three stay GitHub's.
+#: The fields GitHub is authoritative for. Never stored for an adopted item
+#: (§5.3) — see the module docstring.
 GITHUB_OWNED_FIELDS: tuple[str, ...] = ("status", "state_reason", "body")
 
 _DEFAULT_STATUS = "open"
 
-# Same charset as ``todos_store``: permissive enough for realistic
-# adapter keys and composite session ids, restrictive enough to reject
-# path traversal and anything that could turn a synced document into a
-# channel for arbitrary caller text.
+# Same charset as ``todos_store``: permissive enough for realistic adapter keys
+# and composite session ids, restrictive enough to reject path traversal and
+# anything that could turn a synced document into a channel for arbitrary
+# caller text.
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_:\-\.]{1,200}$")
 
-# A label is human text (GitHub allows spaces, colons, emoji), so only
-# control characters are excluded.
+# A label is human text (GitHub allows spaces, colons, emoji), so only control
+# characters are excluded.
 _LABEL_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,100}$")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,100}/[A-Za-z0-9_.\-]{1,100}$")
@@ -169,13 +73,7 @@ _MAX_LINKS = 500
 
 
 class _Unset:
-    """Sentinel: "the caller did not supply this field".
-
-    Needed because ``None`` is a *value* for ``body``, ``state_reason``
-    and ``assignee`` — clearing an assignee and not mentioning it are
-    different requests, and a PATCH that could not express the first
-    would leave no way to un-assign.
-    """
+    """Sentinel: "the caller did not supply this field"."""
 
     __slots__ = ()
 
@@ -187,8 +85,10 @@ UNSET = _Unset()
 
 
 class WorkitemsStoreError(Exception):
-    """Base for all store failures. ``code`` is the BFF error code the
-    route maps to ``detail.code`` — same shape as ``TodosStoreError``."""
+    """
+    Base for all store failures. ``code`` is the BFF error code the route maps
+    to ``detail.code`` — same shape as ``TodosStoreError``.
+    """
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -201,32 +101,11 @@ def _now_iso() -> str:
 
 
 # ── Lifecycle events (plan §8, W10) ────────────────────────────────────────
-#
-# The store is the event source, not the routes. Five entry points reach
-# these records — the five CRUD routes, adoption, un-adoption, the
-# assignee endpoint and the implicit release on close — and an emit
-# bolted onto each is an emit that one of them will eventually be added
-# without. Emitting from the write means a ``workitem.*`` line exists
-# exactly when the write that caused it committed.
-#
-# The events are rendered by ``sinks/timeline.py`` against the closed
-# vocabulary in ``ingest/events.WORKITEM_ACTIONS``; this module never
-# spells a ``type`` string, so it cannot invent one the schema has no
-# branch for.
+# The store is the event source, not the routes.
 
 
 def emit_workitem_events(project_id: str, events: Iterable[Event]) -> None:
-    """Append workitem lifecycle events to a project's timeline.
-
-    Public because one caller has no store write to hang an event on:
-    assigning an *adopted* workitem writes to GitHub and never touches
-    ``.xo/`` (§5.3), so the BFF route is the only place that knows it
-    happened. It is addressed by ``project_id`` rather than by path so
-    that caller does not have to resolve one — the tier decision stays
-    inside ``project_layout``, where the chokepoint guard wants it.
-
-    **Never raises**, and that is load-bearing: see :func:`_emit`.
-    """
+    """Append workitem lifecycle events to a project's timeline."""
     try:
         root = project_layout.runtime_dir_for_project(project_id)
     except Exception:  # noqa: BLE001 - a log must not fail the write it logs
@@ -240,29 +119,7 @@ def emit_workitem_events(project_id: str, events: Iterable[Event]) -> None:
 
 
 def _emit(workitems_path: Path, events: list[Event]) -> None:
-    """Fan lifecycle events to the timeline. **Never fails the write.**
-
-    Two independent reasons the log cannot be allowed to fail the
-    operation, and they compound:
-
-    1. The record is already on disk by the time this is called. Raising
-       here would turn a workitem that exists into a ``500``, and the
-       caller would then retry a create that already succeeded.
-    2. The timeline is derived, append-only history. Losing a line costs
-       one entry in a log; losing ``workitems.json`` costs authored state
-       in the synced tier.
-
-    So :func:`timeline.apply_quiet` swallows and logs every failure, and
-    the resolution of the runtime directory above it does too. Callers
-    invoke this *after* releasing the store's lock — the append ends in
-    an ``fsync``, and holding a document lock across one is how a slow
-    disk becomes a slow API.
-
-    ``workitems_path`` is ``<project>/.xo/workitems.json``, so the
-    project folder is its grandparent — the same derivation
-    ``todos_store`` uses, and the reason the timeline lands in the
-    *runtime* tier while the record it describes stays in the synced one.
-    """
+    """Fan lifecycle events to the timeline. **Never fails the write.**"""
     if not events:
         return
     emit_workitem_events(workitems_path.parent.parent.name, events)
@@ -284,20 +141,12 @@ def _issue_ref(source: object) -> tuple[Optional[str], Optional[int]]:
 
 
 def is_deleted(item: object) -> bool:
-    """Whether a workitem record carries a tombstone.
-
-    One predicate so "deleted" means the same thing to the store, the
-    routes and the tests. Absent / ``null`` ``deleted_at`` is alive.
-    """
+    """Whether a workitem record carries a tombstone."""
     return isinstance(item, dict) and item.get("deleted_at") is not None
 
 
 def is_adopted(item: object) -> bool:
-    """Whether the record mirrors a GitHub issue (``source.kind == "github"``).
-
-    The single predicate for the §5.3 asymmetry: everything that is
-    refused for an adopted item is refused through this.
-    """
+    """Whether the record mirrors a GitHub issue (``source.kind == "github"``)."""
     if not isinstance(item, dict):
         return False
     source = item.get("source")
@@ -325,9 +174,11 @@ def _validate_content_length(value: object, *, field: str, limit: int) -> None:
 
 
 def _validate_optional_text(value: object, *, field: str, limit: int) -> None:
-    """``None`` or a string within ``limit``. Unlike
-    :func:`_validate_content_length` an empty string is allowed — an
-    emptied body is a real edit, not a malformed one."""
+    """
+    ``None`` or a string within ``limit``. Unlike
+    :func:`_validate_content_length` an empty string is allowed — an emptied
+    body is a real edit, not a malformed one.
+    """
     if value is None:
         return
     if not isinstance(value, str):
@@ -382,12 +233,7 @@ def _validate_ids(value: object, *, kind: str) -> list[str]:
 
 
 def _validate_github_ref(value: object) -> dict:
-    """Validate and normalise ``source.github``.
-
-    ``node_id`` is required alongside ``number`` because it survives a
-    repo rename or transfer, which ``repo``/``number`` do not — it is the
-    match key against the mirror (§5.1).
-    """
+    """Validate and normalise ``source.github``."""
     if not isinstance(value, dict):
         raise WorkitemsStoreError(
             "invalid_source", "source.github must be an object."
@@ -427,11 +273,7 @@ def _validate_github_ref(value: object) -> dict:
 
 
 def _validate_source(value: object) -> dict:
-    """Validate and normalise the ``source`` block.
-
-    ``None`` means a plain local item — the common case, and the one the
-    CRUD routes (§7.1) always take.
-    """
+    """Validate and normalise the ``source`` block."""
     if value is None:
         return {"kind": "local"}
     if not isinstance(value, dict):
@@ -482,13 +324,7 @@ def _refuse_github_owned(supplied: dict[str, Any]) -> None:
 
 
 def _corrupt(path: Path, reason: str) -> WorkitemsStoreError:
-    """The O-E refusal, in one place.
-
-    Deliberately *not* ``(None, {})``. An unreadable ``workitems.json``
-    is authored state in the synced tier and the bytes on disk may be
-    the only copy; treating it as empty would make the next create
-    delete every workitem the file held. Refuse and say what to do.
-    """
+    """The O-E refusal, in one place."""
     return WorkitemsStoreError(
         "corrupt_document",
         f"{path} is not a readable workitems document ({reason}); refusing to "
@@ -498,37 +334,7 @@ def _corrupt(path: Path, reason: str) -> WorkitemsStoreError:
 
 
 def _read_document(path: Path) -> dict:
-    """Return the document's items map, deep-copied.
-
-    An **absent** file is ``{}`` — nothing has been written yet, which is
-    a legitimate state and the only one that reads as empty.
-
-    Everything else that is not a well-formed workitems document raises
-    :class:`WorkitemsStoreError` with code ``corrupt_document``:
-    unreadable bytes, an empty file (what a truncated non-atomic write
-    leaves behind), invalid JSON, a non-object at the top level, a
-    missing or non-object ``items`` map, a non-object record, a key that
-    is not a canonical UUID4, or a record whose ``id`` disagrees with the
-    key it is filed under.
-
-    That last check is the O-C lesson made executable: the key is only
-    trustworthy if it is unique by construction, so the store never
-    *derives* identity from the key — it verifies the two agree and
-    refuses if they do not, rather than silently preferring one.
-
-    A ``schema`` the store does not know is refused too (code
-    ``unsupported_schema``): a document written by a newer Space and
-    restored here carries keys this revision would drop on the next
-    write, and dropping them silently is the same defect wearing a
-    different hat.
-
-    Unlike ``todos_store._read_sessions`` this hands back no comparison
-    baseline, because :func:`_write` needs none: ``write_json_owned``
-    re-reads the file itself, and that read *is* the merge — a cached
-    baseline would resurrect keys another writer deleted. The map is
-    still deep-copied, so mutating it cannot alias the parsed document
-    the write primitive will compare against.
-    """
+    """Return the document's items map, deep-copied."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -575,19 +381,7 @@ def _read_document(path: Path) -> dict:
 
 
 def _write(path: Path, items: dict) -> None:
-    """Persist the items map, refusing a document that went unreadable.
-
-    ``write_json_owned`` rather than ``write_json_atomic_if_changed``.
-    The store does own the whole document, which would permit the
-    cheaper primitive — but that one *repairs* a corrupt file by
-    overwriting it, and this file is the durable, synced record of what
-    someone chose to work on. Paying one extra JSON parse per write buys
-    the shared machinery's refusal (:class:`CorruptDocumentError`) as a
-    second, independent guard behind :func:`_read_document`'s.
-
-    Top-level ``updated_at`` is volatile by default, so a call that
-    changes no workitem writes nothing at all.
-    """
+    """Persist the items map, refusing a document that went unreadable."""
     try:
         write_json_owned(
             path,
@@ -610,11 +404,7 @@ def _visible(item: dict, include_deleted: bool) -> bool:
 # ── The record shape ───────────────────────────────────────────────────────
 
 #: Canonical key order for a stored record, matching ``workitems.schema.json``
-#: and the plan's §5.1 example. It exists because :func:`adopt_workitem` and
-#: :func:`unadopt_workitem` *add and remove* keys on a record that is already
-#: on disk: without one place that says what the order is, a record that had
-#: been adopted and un-adopted would serialise differently from one created
-#: local, and every diff of the synced document would carry that noise.
+#: and the plan's §5.1 example.
 _KEY_ORDER: tuple[str, ...] = (
     "id", "title", "body", "labels", "status", "state_reason", "source",
     "assignee", "links", "created_at", "updated_at", "created_by",
@@ -623,13 +413,7 @@ _KEY_ORDER: tuple[str, ...] = (
 
 
 def _ordered(record: dict) -> dict:
-    """``record`` with its keys in :data:`_KEY_ORDER`, extras kept at the end.
-
-    Extras are *kept*, not dropped. This store refuses a document it cannot
-    fully represent (``unsupported_schema``) rather than silently rewriting
-    it, and quietly discarding an unknown key here would be that same defect
-    reached by a different road.
-    """
+    """``record`` with its keys in :data:`_KEY_ORDER`, extras kept at the end."""
     out = {key: record[key] for key in _KEY_ORDER if key in record}
     for key, value in record.items():
         if key not in out:
@@ -649,19 +433,7 @@ def _new_record(
     source: dict,
     links: dict,
 ) -> dict:
-    """One freshly-minted record, with a server-minted UUID4 ``id``.
-
-    The §5.3 asymmetry lives here and nowhere else: an adopted record simply
-    does not carry ``status``, ``state_reason`` or ``body``. They are absent
-    rather than ``null`` because the schema *forbids* them for
-    ``source.kind == "github"`` — "unknown, ask GitHub" and "known to be
-    empty" are different claims, and only absence can make the first one.
-
-    ``assignee`` is on the other side of that line, and the placement is the
-    point of amendment 33: it is written for **both** kinds, ``null`` when
-    nobody is assigned. Nothing writes it to GitHub any more, so there is no
-    upstream value it could go stale against — it is simply ours.
-    """
+    """One freshly-minted record, with a server-minted UUID4 ``id``."""
     adopted = source["kind"] == "github"
     stamp = _now_iso()
     record: dict[str, Any] = {"id": str(uuid.uuid4()), "title": title}
@@ -699,30 +471,7 @@ def create_workitem(
     todo_ids: Optional[list[str]] = None,
     session_ids: Optional[list[str]] = None,
 ) -> dict:
-    """Create a workitem. Returns the stored record.
-
-    ``id`` is a server-minted **UUID4**, not a short id: the workspace
-    rollup (§7.3) is a cross-project query, and O-C is exactly such a
-    query losing rows because a key was a constant rather than an
-    identifier. Unique by construction is the requirement; a UUID4 meets
-    it without depending on ``pid``, which does not exist during the
-    pre-mint window.
-
-    ``source=None`` (the default) creates a **local** item: it carries
-    ``status`` (``open`` unless told otherwise), ``state_reason``,
-    ``assignee`` and ``body``. Passing
-    ``source={"kind": "github", "github": {...}}`` records an
-    **adoption**: ``title`` is snapshotted once as the readable fallback
-    and the GitHub-owned fields are omitted from the record entirely —
-    supplying one raises ``github_authoritative`` rather than storing a
-    value that will be wrong within the hour (§5.3). ``assignee`` is
-    accepted for both kinds: it is a local annotation now, not GitHub's
-    (§13, amendment 33).
-
-    Raises :class:`WorkitemsStoreError` on any invalid input, and on a
-    ``workitems.json`` that exists but cannot be read — a corrupt
-    document is never treated as an empty one (O-E).
-    """
+    """Create a workitem. Returns the stored record."""
     _validate_safe_key(runtime, "runtime")
     _validate_content_length(title, field="title", limit=_TITLE_LIMIT)
     resolved_source = _validate_source(source)
@@ -747,8 +496,8 @@ def create_workitem(
         _validate_optional_text(body, field="body", limit=_BODY_LIMIT)
         _validate_state_reason(state_reason)
 
-    # ``is None`` rather than ``or``: an empty status is a malformed
-    # request, not an unstated one, and must not quietly become "open".
+    # ``is None`` rather than ``or``: an empty status is a malformed request,
+    # not an unstated one, and must not quietly become "open".
     initial_status = _DEFAULT_STATUS if status is None else status
     if not adopted:
         _validate_status(initial_status)
@@ -779,10 +528,10 @@ def create_workitem(
         items[workitem_id] = record
         _write(workitems_path, items)
 
-    # ``created`` and, for an item born adopted, ``adopted``: a record
-    # that starts life mirroring an issue did both in one call, and a
-    # reader of the log should not have to infer the second from a
-    # ``kind`` field on the first.
+    # ``created`` and, for an item born adopted, ``adopted``: a record that
+    # starts life mirroring an issue did both in one call, and a reader of the
+    # log should not have to infer the second from a ``kind`` field on the
+    # first.
     events: list[Event] = [
         WorkitemEvent(
             ts=record["created_at"],
@@ -814,11 +563,7 @@ def create_workitem(
 def get_workitem(
     workitems_path: Path, workitem_id: str, *, include_deleted: bool = False
 ) -> Optional[dict]:
-    """Return the record, or ``None`` if there is no such workitem.
-
-    A tombstoned item is *not* a match unless ``include_deleted`` — the
-    caller asked for a workitem, and a deleted one is history.
-    """
+    """Return the record, or ``None`` if there is no such workitem."""
     items = _read_document(workitems_path)
     record = items.get(workitem_id)
     if not isinstance(record, dict) or not _visible(record, include_deleted):
@@ -834,24 +579,7 @@ def list_workitems(
     assignee: Optional[str] = None,
     include_deleted: bool = False,
 ) -> list[dict]:
-    """Every workitem, in creation order, oldest first.
-
-    A **list**, never the raw map — §7.3's rollup unions these across
-    projects, and a list has no union key, so the O-C collision class
-    cannot occur there at all.
-
-    The ``status`` filter reads what is *stored*, so an adopted item
-    never matches it: it stores no status, by design. Filtering an
-    adopted item on state is the read-time projection's job (§5.3, W7),
-    which joins the mirror — this store deliberately cannot answer it,
-    rather than answering it wrong.
-
-    ``assignee`` is different since amendment 33: it *is* stored, for
-    both kinds, so this filter answers for an adopted item too. What it
-    still cannot see is GitHub's own assignees, which live in the mirror
-    and are information rather than assignment — the rollup (§7.3) is
-    where the two are considered together.
-    """
+    """Every workitem, in creation order, oldest first."""
     if status is not None:
         _validate_status(status)
     if kind is not None and kind not in VALID_SOURCE_KINDS:
@@ -891,28 +619,7 @@ def update_workitem(
     todo_ids: Optional[list[str]] = None,
     session_ids: Optional[list[str]] = None,
 ) -> dict:
-    """Update fields on an existing workitem. Returns the updated record.
-
-    ``title``, ``labels``, ``status``, ``todo_ids`` and ``session_ids``
-    take ``None`` to mean "not supplied" — they are not nullable, so the
-    two readings cannot collide. ``body``, ``state_reason`` and
-    ``assignee`` are nullable and therefore take :data:`UNSET`: passing
-    ``None`` **clears** them, which is how an item is un-assigned or
-    reopened.
-
-    For an adopted item the GitHub-owned fields raise
-    ``github_authoritative`` (§5.3): closing an adopted workitem means
-    closing the issue, not writing ``closed`` into a file GitHub does
-    not read. ``assignee`` is **not** among them since amendment 33 —
-    assigning an adopted workitem writes here, like everything else.
-
-    Raises ``workitem_not_found`` if the id is absent or names a
-    tombstone — a deleted workitem is not editable, which is what stops
-    it coming back to life.
-
-    A call that changes nothing writes nothing and stamps nothing: an
-    idempotent PATCH leaves the document byte-identical.
-    """
+    """Update fields on an existing workitem. Returns the updated record."""
     if title is not None:
         _validate_content_length(title, field="title", limit=_TITLE_LIMIT)
     if status is not None:
@@ -946,8 +653,8 @@ def update_workitem(
                 }
             )
 
-        # Captured before the mutation loop, because the loop writes
-        # into ``record`` in place: after it, "what it was" is gone.
+        # Captured before the mutation loop, because the loop writes into
+        # ``record`` in place: after it, "what it was" is gone.
         previous_status = record.get("status")
         previous_assignee = record.get("assignee")
 
@@ -983,25 +690,21 @@ def update_workitem(
                 changed = True
 
         if not changed:
-            # Nothing was written, so nothing is emitted either: an
-            # idempotent PATCH must not mint history it did not make.
+            # Nothing was written, so nothing is emitted either: an idempotent
+            # PATCH must not mint history it did not make.
             return copy.deepcopy(record)
 
         stamp = _now_iso()
         record["updated_at"] = stamp
-        # Re-ordered because a write can *introduce* a key: an adopted
-        # record stored before amendment 33 carries no ``assignee``, and
-        # assigning it would otherwise append the key after ``deleted_by``.
-        # ``_KEY_ORDER`` exists precisely so the synced document does not
-        # carry that kind of diff noise.
+        # Re-ordered because a write can *introduce* a key: an adopted record
+        # stored before amendment 33 carries no ``assignee``, and assigning it
+        # would otherwise append the key after ``deleted_by``.
         record = _ordered(record)
         items[workitem_id] = record
         _write(workitems_path, items)
         updated = copy.deepcopy(record)
 
-    # Outside the lock (:func:`_emit`). Only *transitions* are events:
-    # a title or a label edit has no type in §8 and inventing one would
-    # put a vocabulary in the log that nothing declares.
+    # Outside the lock (:func:`_emit`).
     events: list[Event] = []
     new_status = updated.get("status")
     if new_status != previous_status:
@@ -1037,20 +740,10 @@ def update_workitem(
 def delete_workitem(
     workitems_path: Path, workitem_id: str, *, deleted_by: Optional[str] = None
 ) -> bool:
-    """Soft-delete a workitem. ``True`` if this call tombstoned it,
-    ``False`` if there was nothing to delete — idempotent, so a second
-    DELETE of the same id is a no-op rather than a 404.
-
-    The record is never removed (plan §5.1, syncplan §5.5): ``deleted_at``
-    and ``deleted_by`` are set alongside the unchanged ``status``, so
-    "we decided not to do this" (``closed`` + ``not_planned``) and "this
-    should not have existed" stay distinguishable forever.
-
-    ``deleted_by`` carries the calling **runtime** — the same vocabulary
-    ``create_workitem`` requires, validated against the same charset,
-    because it is persisted into a synced document and may not become a
-    channel for arbitrary caller text. ``None`` when the caller did not
-    say; an unattributed tombstone is still a tombstone.
+    """
+    Soft-delete a workitem. ``True`` if this call tombstoned it, ``False`` if
+    there was nothing to delete — idempotent, so a second DELETE of the same id
+    is a no-op rather than a 404.
     """
     if deleted_by is not None:
         _validate_safe_key(deleted_by, "runtime")
@@ -1066,11 +759,8 @@ def delete_workitem(
         record["updated_at"] = stamp
         _write(workitems_path, items)
 
-    # The tombstone is the event; the ``created`` line stays true and is
-    # never retracted, because the workitem *was* created. ``runtime``
-    # carries ``deleted_by`` when the caller attributed the delete, and
-    # is simply absent when it did not — an unattributed tombstone is
-    # still a tombstone (and so is an unattributed line).
+    # The tombstone is the event; the ``created`` line stays true and is never
+    # retracted, because the workitem *was* created.
     _emit(workitems_path, [
         WorkitemEvent(
             ts=stamp,
@@ -1083,36 +773,12 @@ def delete_workitem(
 
 
 # ── Adoption ───────────────────────────────────────────────────────────────
-#
 # Adoption is a **state transition, not a field edit**, which is why it is not
-# ``update_workitem`` (§13, amendment 8). ``source.kind`` decides which fields
-# the record may even carry: ``workitems.schema.json`` forbids ``status``,
-# ``state_reason`` and ``body`` on an adopted item, and *requires* ``status``
-# on a local one. So flipping the kind has to drop three keys in one direction
-# and materialise them in the other, and a PATCH that set ``source`` alone
-# would leave the record invalid whichever way it went. ``assignee`` is the
-# one field that crosses unchanged in both directions (amendment 33): the
-# schema permits it on either kind, because it is ours and not GitHub's.
-#
-# What adoption writes is the §5.1 adoption record: the issue reference, plus
-# ``title`` and ``labels`` as a **one-time snapshot** that is never refreshed.
-# That pair is the fallback that makes a stale item readable — without it an
-# adopted item whose issue has left the mirror renders as ``repo#42``, which
-# is not a work item anyone can act on. It stays cheap because adoption is a
-# human act, so the synced tier still changes only when a human does
-# something; a GitHub rename does not touch this file.
-#
-# Neither function makes a network call. The issue reference and the label
-# snapshot are the caller's to supply — the route fetches them once, at
-# adoption, which is what keeps the mirror single-writer (§5.2, amendment 2).
+# ``update_workitem`` (§13, amendment 8).
 
 
 def _adopted_node_id(record: object) -> Optional[str]:
-    """The ``node_id`` a record is adopted to, or ``None`` if it is local.
-
-    Matching is on ``node_id`` and never on ``repo``/``number``: the node id
-    survives a repository rename or transfer, and those two do not (§5.1).
-    """
+    """The ``node_id`` a record is adopted to, or ``None`` if it is local."""
     if not is_adopted(record):
         return None
     ref = record.get("source", {}).get("github")  # type: ignore[union-attr]
@@ -1141,42 +807,7 @@ def adopt_workitem(
     todo_ids: Optional[list[str]] = None,
     session_ids: Optional[list[str]] = None,
 ) -> tuple[dict, bool]:
-    """Track a GitHub issue as a workitem. Returns ``(record, created)``.
-
-    Two entry points, one function, because the choice between them has to be
-    made **inside the lock**:
-
-    * ``workitem_id=None`` — the ordinary case. A new adopted record is minted
-      for the issue, *unless* a live record already tracks that ``node_id``,
-      in which case that record comes back with ``created=False``. Adoption is
-      a ``POST`` a UI can double-fire, and "look it up, then create it" from
-      the route would be a read-modify-write across two calls — the way one
-      issue ends up with two workitems and the surface starts lying about how
-      much work there is.
-    * ``workitem_id`` supplied — an existing **local** workitem starts
-      mirroring the issue, keeping its id, its ``links`` and its history. This
-      is not D8's promotion, which is the other direction and is what this
-      plan refuses: nothing is created on GitHub, and the issue being adopted
-      already exists and was already public.
-
-    The transition **drops** ``status``, ``state_reason`` and ``body``. That
-    is a deliberate loss of local edits, not an oversight: those three are
-    GitHub's for an adopted item, and keeping the old values would leave the
-    record asserting a state nothing maintains. The title and labels the
-    caller passes replace the local ones for the same reason — the record now
-    stands for the issue.
-
-    ``assignee`` **survives** the transition (amendment 33). It is a local
-    annotation and adoption does not change who this Space decided owes the
-    work; dropping it would silently un-assign somebody for adopting the
-    issue their work was already about.
-
-    Raises :class:`WorkitemsStoreError`: ``invalid_source`` for a malformed
-    reference, ``workitem_not_found`` for an absent or tombstoned id,
-    ``already_adopted`` when the target already tracks a *different* issue or
-    the issue is already tracked by a different workitem, and the usual
-    ``corrupt_document`` / ``unsupported_schema`` refusals.
-    """
+    """Track a GitHub issue as a workitem. Returns ``(record, created)``."""
     _validate_safe_key(runtime, "runtime")
     source = _validate_source({"kind": "github", "github": github})
     node_id = source["github"]["node_id"]
@@ -1197,10 +828,7 @@ def adopt_workitem(
 
         if workitem_id is None:
             if already is not None:
-                # Idempotent: the issue is already tracked. Returning the
-                # record rather than a second one is what makes a double-fired
-                # adopt harmless — and, since nothing was written, it emits
-                # nothing: a re-fired POST must not mint a second history.
+                # Idempotent: the issue is already tracked.
                 return copy.deepcopy(already), False
             if title is None:
                 raise WorkitemsStoreError(
@@ -1229,10 +857,7 @@ def adopt_workitem(
             repo, number = _issue_ref(source)
             stamp = record["created_at"]
             # Two lines, because two things happened: a record came into
-            # existence and it was pointed at an issue. A reader should
-            # not have to infer the second from a ``kind`` field on the
-            # first, and the ``adopted`` line is what makes "when did we
-            # start tracking this issue" a query rather than a guess.
+            # existence and it was pointed at an issue.
             events = [
                 WorkitemEvent(
                     ts=stamp, runtime=runtime, action="created",
@@ -1295,8 +920,8 @@ def adopt_workitem(
             _write(workitems_path, items)
             result, created = copy.deepcopy(items[workitem_id]), False
             repo, number = _issue_ref(source)
-            # No ``created`` line here: the record already existed, and
-            # this call is the moment it started standing for the issue.
+            # No ``created`` line here: the record already existed, and this
+            # call is the moment it started standing for the issue.
             events = [
                 WorkitemEvent(
                     ts=stamp, runtime=runtime, action="adopted",
@@ -1318,31 +943,7 @@ def unadopt_workitem(
     assignee: Any = UNSET,
     body: Optional[str] = None,
 ) -> dict:
-    """Stop mirroring a GitHub issue, keeping the workitem. Returns the record.
-
-    The mirror image of :func:`adopt_workitem`, and the reason neither is a
-    field edit: an adopted record carries **no** ``status``, and the schema
-    *requires* one on a local record. So un-adopting has to materialise the
-    GitHub-owned fields in the same write that drops ``source.github``, or it
-    leaves a document that no longer validates.
-
-    The caller supplies what to materialise, because the store reads no
-    runtime state: it cannot see the mirror, and inventing a value would be
-    the stale ``closed`` §5.3 forbids. The route passes the state the
-    projection was last serving, so the item looks the same to a reader across
-    the transition; ``status`` falls back to ``open`` — the least-committal
-    value, which keeps the row visible and actionable rather than reading as
-    work someone finished.
-
-    ``assignee`` is **kept** by default (:data:`UNSET`), which is the reversal
-    of D1 arriving here: it was never GitHub's to materialise, it is a local
-    annotation the record already carries, and un-adopting an issue is not a
-    statement about who owes the work. Passing ``None`` clears it explicitly;
-    passing a name replaces it.
-
-    Idempotent: un-adopting an already-local workitem returns it unchanged and
-    writes nothing. ``workitem_not_found`` for an absent or tombstoned id.
-    """
+    """Stop mirroring a GitHub issue, keeping the workitem. Returns the record."""
     resolved_status = _DEFAULT_STATUS if status is None else status
     _validate_status(resolved_status)
     _validate_state_reason(state_reason)

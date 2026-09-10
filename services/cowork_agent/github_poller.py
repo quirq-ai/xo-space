@@ -1,56 +1,4 @@
-"""The GitHub issue poller — a standalone loop, deliberately not a watcher sink.
-
-``docs/workitems-plan.md`` §6. Once a minute this refreshes the runtime mirror
-(:mod:`services.cowork_agent.visualizer.github_mirror`) for the projects that
-actually need it, using the pinned ``gh api graphql`` client in
-:mod:`services.cowork_agent.connectors.github_issues`.
-
-**It is not a watcher sink, and it must never become one.** §2's rule is
-absolute and ``visualizer/git_provenance.py`` states it in its own words:
-``git ls-remote`` would answer the default-branch question authoritatively
-"but it hits the network, which a watcher tick must never do". A tick that can
-block on DNS stops being a tick. So the precedent this file follows is
-:mod:`services.usage_sync` — its own ``asyncio`` task, its own interval, its
-own failure isolation, started from the FastAPI lifespan and cancelled with it.
-``tests/test_github_poller.py`` asserts the separation rather than trusting it.
-
-Four properties are load-bearing.
-
-**1. The budget is counted in points, not repos** (§6.2, amendment 7). The
-GraphQL budget is 5,000 points/hour and is *separate* from the REST 5,000/hour
-that ``git``, the sync module and MCP tooling share — measured, and the reason
-D5 chose ``gh``. One page of ≤100 issues costs one point, so the familiar
-"~83 repos at 60 s" figure is really "5,000 points/hour", and a 250-issue repo
-spends three of them per full poll. :class:`_Budget` therefore accounts in
-points, globally — one budget, not per-project timers — and the warning
-threshold is on projected point consumption as well as on the repo count §6.3
-names.
-
-**2. Polling is lazy** (D9). A repo nobody has open does not need 60-second
-freshness, and skipping it is what keeps the ceiling off the critical path.
-A project is polled only if its remote is a github.com repo *and* it holds
-adopted workitems, has a live agent session, or has been marked interesting
-through :func:`note_interest`. That last one is the hook for "being looked
-at": there is **no viewing signal in this system today** — nothing records
-which project a user has open — so the read routes (W7) are expected to call
-it, and until they do the first two conditions carry the feature.
-
-**3. Every failure is survivable and none of them stops the loop.** No ``gh``,
-no auth, no network, a deleted repo, a spent budget: each is a *state*, the
-client reports which one in ``error_kind``, and the mirror keeps its last good
-rows either way. The one thing the poller will not do is keep hammering — a
-rate limit pauses everything until GitHub's own ``resetAt``, a missing binary
-or a rejected credential pauses everything for a cool-down, and a repo that is
-gone or forbidden is not retried every minute.
-
-**4. Nothing it writes lands in ``.xo/``.** R-TIER. The only writer is
-:mod:`~services.cowork_agent.visualizer.github_mirror`, which resolves its path
-through ``project_layout``'s runtime helpers. This module reads
-``project.json`` and ``workitems.json`` out of the synced tier — reads are
-free, and the second is how "has adopted items" is answered — and writes
-neither. ``tests/test_github_poller.py`` snapshots ``XO_PROJECTS_ROOT`` across
-a full poll and asserts not one byte moved.
-"""
+"""The GitHub issue poller — a standalone loop, deliberately not a watcher sink."""
 
 from __future__ import annotations
 
@@ -83,10 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-#: The hard off switch. §11 lists it beside the rate budget and the backoff as
-#: an acceptance criterion rather than polish: this is the first thing in the
-#: system that makes outbound network calls on a timer, and an operator who
-#: wants it stopped must not have to uninstall anything.
+#: The hard off switch.
 ENV_ENABLED = "XO_GITHUB_POLL_ENABLED"
 ENV_INTERVAL = "XO_GITHUB_POLL_INTERVAL_S"
 ENV_MAX_PAGES = "XO_GITHUB_POLL_MAX_PAGES"
@@ -95,34 +40,24 @@ ENV_INTEREST_TTL = "XO_GITHUB_POLL_INTEREST_TTL_S"
 
 DEFAULT_INTERVAL_S = 60.0
 
-#: Pages per repo per poll. Ten pages is 1,000 issues; past that a *seed*
-#: cannot complete, the mirror stays unseeded and retries next tick, and the
-#: warning below names the repo. The cap exists so one enormous repository
-#: cannot spend the whole global budget in a single tick.
+#: Pages per repo per poll.
 DEFAULT_MAX_PAGES = 10
 
 #: §6.3: "W5 logs a warning when the polled-repo count crosses 80."
 DEFAULT_WARN_REPOS = 80
 
 #: GitHub's GraphQL budget, and the fraction of it we are willing to imply
-#: before saying so out loud. The ceiling is real and silent until it is not
-#: (§11), so the poller says it is approaching rather than waiting to fail.
+#: before saying so out loud.
 GRAPHQL_HOURLY_BUDGET = 5000
 WARN_BUDGET_FRACTION = 0.8
 
-#: Stop spending when GitHub says this little is left. The reserve is not for
-#: us — it leaves room for the interactive GraphQL calls adoption (W7) and
-#: assignment (W8) will make on the same budget, which a poll must never
-#: starve.
+#: Stop spending when GitHub says this little is left.
 BUDGET_RESERVE_POINTS = 250
 
 #: How long a project stays "being looked at" after :func:`note_interest`.
 DEFAULT_INTEREST_TTL_S = 300.0
 
 #: Per-repo cool-down after a failure that a retry in 60 s cannot fix.
-#: ``not_found`` (deleted, renamed, transferred), ``forbidden`` (this token
-#: cannot see it) and ``bad_remote`` are all stable states; ``network`` and
-#: ``timeout`` are not, and get no cool-down at all.
 _COOLDOWN_S: dict[str, float] = {
     "not_found": 900.0,
     "forbidden": 900.0,
@@ -131,10 +66,7 @@ _COOLDOWN_S: dict[str, float] = {
     "unknown": 300.0,
 }
 
-#: A failure that is true of the whole machine, not of one repo. Every
-#: candidate would fail identically, so the poller records it once for each of
-#: them (cheap — no network, and an unchanged error writes nothing) and then
-#: stops trying for a while.
+#: A failure that is true of the whole machine, not of one repo.
 _GLOBAL_KINDS = frozenset({"no_cli", "not_authenticated"})
 _GLOBAL_PAUSE_S = 600.0
 
@@ -142,8 +74,8 @@ _GLOBAL_PAUSE_S = 600.0
 #: cannot wedge the poller for a day.
 _MAX_PAUSE_S = 3600.0
 
-#: Warnings are throttled: a condition that holds every minute must not
-#: produce a log line every minute.
+#: Warnings are throttled: a condition that holds every minute must not produce
+#: a log line every minute.
 _WARN_INTERVAL_S = 900.0
 
 
@@ -186,43 +118,14 @@ def interest_ttl_seconds() -> float:
 
 
 # ── "Being looked at" ────────────────────────────────────────────────────────
-#
-# D9's other half. There is no viewing signal in this codebase — nothing
-# records which project a user has open — so this is the seam for one, and the
-# read routes (W7) call it when someone asks for a project's issues.
-#
-# **It used to be an in-process dict, and that was the I2 defect.** The
-# reasoning was that "what is on someone's screen right now" is transient, so
-# a restart may as well forget it. That holds for a *warm* Space and fails
-# completely for a fresh one, because of how the other two reasons behave:
-# ``.xo/workitems.json`` is synced, so a restored project brings its adopted
-# items and enrols itself on the first tick, while a fresh project has no
-# workitems file at all and a live session is transient by definition. So on a
-# fresh workspace the only durable enrolment signal was a mark that died with
-# the process — and the one screen that sets it is the screen that cannot show
-# anything until something has been polled.
-#
-# The mark now lives in the runtime tier beside the mirror
-# (``visualizer/github_interest.py``), which is still machine-local and still
-# disposable — it just outlives the process, which is the whole point.
+# D9's other half.
 
-#: Ceiling on how many projects one sweep will consider interesting. The
-#: durable marks are read per project rather than enumerated, so this is not
-#: about memory any more; it is the same protection the dict's cap gave —
-#: one machine cannot enrol an unbounded number of repositories into a
-#: points-limited budget.
+#: Ceiling on how many projects one sweep will consider interesting.
 _INTEREST_MAX = 512
 
 
 def note_interest(project_id: str) -> None:
-    """Mark a project as being looked at, for :func:`interest_ttl_seconds`.
-
-    The hook a read route calls when a user opens a project, so its issues
-    are fresh while they are looking and not otherwise. Safe to call from a
-    request thread: one small atomic write in the runtime tier, and it never
-    raises — a mark that cannot be written costs a background refresh and
-    nothing else.
-    """
+    """Mark a project as being looked at, for :func:`interest_ttl_seconds`."""
     name = (project_id or "").strip()
     if not name:
         return
@@ -232,25 +135,14 @@ def note_interest(project_id: str) -> None:
 
 
 def is_interested(project_id: str) -> bool:
-    """Whether ``project_id`` carries an unexpired interest mark.
-
-    Per project rather than "give me the set", because the durable marks are
-    one file each: asking about the project already in hand is one read,
-    while enumerating would mean reading every project's file to build a set
-    the caller then does a single lookup in.
-    """
+    """Whether ``project_id`` carries an unexpired interest mark."""
     return github_interest.is_interesting(
         project_id, ttl=interest_ttl_seconds()
     )
 
 
 def interested_projects() -> set[str]:
-    """Every project currently marked as being looked at.
-
-    Kept because it is the readable way to ask the question in a test and in
-    a diagnostic, but the poller itself uses :func:`is_interested` — see
-    there for why. Bounded by :data:`_INTEREST_MAX`.
-    """
+    """Every project currently marked as being looked at."""
     out: set[str] = set()
     for name in list_project_ids():
         if len(out) >= _INTEREST_MAX:
@@ -261,11 +153,7 @@ def interested_projects() -> set[str]:
 
 
 def clear_interest(project_id: Optional[str] = None) -> None:
-    """Forget interest marks. For tests and for a root switch.
-
-    With no argument, forgets every mark under the current root; with one,
-    just that project's.
-    """
+    """Forget interest marks. For tests and for a root switch."""
     if project_id is not None:
         github_interest.clear_interest(project_id)
         return
@@ -295,19 +183,7 @@ def _parse_reset(reset_at: Optional[str]) -> Optional[float]:
 
 @dataclass
 class _Budget:
-    """One global GraphQL budget, in points.
-
-    Two sources, and the order between them matters. GitHub's own
-    ``rateLimit.remaining`` — read from *inside* the query, because
-    ``gh api rate_limit`` was measured reporting a full budget regardless of
-    consumption — is authoritative whenever it is fresh. Local accounting over
-    a rolling hour is the fallback for everything before the first answer and
-    for the window after a failure that never reached GitHub.
-
-    Neither is trusted to invent a number: an unknown budget spends, because
-    refusing to poll on no evidence would disable the feature the first time a
-    response came back short.
-    """
+    """One global GraphQL budget, in points."""
 
     #: (monotonic stamp, points) for the last hour, for local accounting.
     _spend: deque = field(default_factory=deque)
@@ -364,8 +240,10 @@ class _Budget:
             )
 
     def pause_until_reset(self, rate: RateLimit, reason: str) -> None:
-        """Back off honouring GitHub's own ``resetAt`` — no extra call needed,
-        the poll's own response carried it."""
+        """
+        Back off honouring GitHub's own ``resetAt`` — no extra call needed, the
+        poll's own response carried it.
+        """
         seconds = _parse_reset(rate.reset_at or self.reset_at)
         self.pause(seconds if seconds is not None else 300.0, reason)
 
@@ -380,8 +258,8 @@ class _Budget:
         return True
 
 
-#: Module-level, because §6.3 requires **one** global budget rather than
-#: per-project timers — a per-project view cannot see the ceiling it is
+#: Module-level, because §6.3 requires **one** global budget rather than per-
+#: project timers — a per-project view cannot see the ceiling it is
 #: collectively approaching.
 _budget = _Budget()
 
@@ -405,9 +283,7 @@ def reset_state() -> None:
     _warned.clear()
     _inflight.clear()
     # Interest marks are durable now (I2), so they live on disk under the
-    # runtime root rather than in this module. A test that switches roots
-    # gets a fresh set for free; one that needs them gone calls
-    # ``clear_interest()``.
+    # runtime root rather than in this module.
 
 
 def budget_snapshot() -> dict:
@@ -448,19 +324,7 @@ class Candidate:
 
 
 def _remote_ref(project: str) -> Optional[RepoRef]:
-    """``project.json:git.remote_url`` → a github.com repo, or ``None``.
-
-    The durable copy in ``.xo/project.json``, written by the git refresher
-    (``sinks/project_json.refresh_git``) and newly trustworthy since O-K wired
-    it and O-B stopped SSH remotes being mangled. Read, never written — and
-    read from the file rather than by shelling out to ``git``, because this
-    runs once a minute across every project and ``git_provenance`` costs two
-    subprocesses per repository.
-
-    A non-github.com remote returns ``None`` **without spawning ``gh``**: the
-    budget is global, and a project whose origin is GitLab must not cost a
-    point every minute to rediscover that it is not a GitHub repo.
-    """
+    """``project.json:git.remote_url`` → a github.com repo, or ``None``."""
     meta = project_layout.load_project(project)
     if not isinstance(meta, dict):
         return None
@@ -474,14 +338,7 @@ def _remote_ref(project: str) -> Optional[RepoRef]:
 
 
 def _has_adopted_items(project: str) -> bool:
-    """Whether the project holds workitems adopted from GitHub (D2).
-
-    A read of the synced tier, which is allowed; the poller writes nothing
-    there. A corrupt or unreadable ``workitems.json`` is not this loop's
-    problem to solve — the store raises so the CRUD routes can refuse
-    (O-E) — so it is caught here and read as "no adopted items", which
-    costs the project its polling and nothing else.
-    """
+    """Whether the project holds workitems adopted from GitHub (D2)."""
     path = project_layout.xo_dir(project) / "workitems.json"
     try:
         return bool(list_workitems(path, kind="github"))
@@ -490,14 +347,7 @@ def _has_adopted_items(project: str) -> bool:
 
 
 def _has_live_session(project: str) -> bool:
-    """Whether an agent is currently working in the project.
-
-    ``open_sessions`` in the per-project ``activity.json`` is rebuilt each
-    watcher tick from the active source's ``poll_presence()``, so a session
-    that stops being present simply stops appearing — observed, not declared
-    (§5.4, and T22's heartbeat before it). It is the closest thing this system
-    has to "someone is here", and it costs one JSON read.
-    """
+    """Whether an agent is currently working in the project."""
     doc = read_json(watcher_state.project_activity_path(project))
     if not isinstance(doc, dict):
         return False
@@ -506,13 +356,7 @@ def _has_live_session(project: str) -> bool:
 
 
 def candidates() -> list[Candidate]:
-    """Every project worth polling this tick, and why (D9).
-
-    Order is stable — the project list is sorted — so a budget that runs out
-    mid-tick starves the same tail every time rather than a random one. That
-    is deliberate: a deterministic shortfall is diagnosable and the warning
-    below names it.
-    """
+    """Every project worth polling this tick, and why (D9)."""
     out: list[Candidate] = []
     for project in list_project_ids():
         ref = _remote_ref(project)
@@ -556,31 +400,11 @@ def _apply_cooldown(repo: str, kind: Optional[str]) -> None:
 async def poll_project(
     candidate: Candidate, *, max_pages_override: Optional[int] = None
 ) -> int:
-    """Refresh one project's mirror. Returns the points this poll spent.
-
-    The two-query rule of §6.3, applied here and nowhere else:
-
-    * **no stored high-water mark** — seed: no ``since``, ``states: [OPEN]``,
-      because seeding on ``[OPEN, CLOSED]`` would drag the repository's whole
-      closed history through the page budget;
-    * **a stored mark** — steady state: ``since`` set and
-      ``include_closed=True``, because an issue closed since the mark stops
-      matching ``[OPEN]`` and an incremental merge would then leave a stale
-      ``open`` row in the mirror forever.
-
-    Pagination stops at the page cap or when the budget says stop, and the
-    mirror is told whether the poll *completed*, because the high-water mark
-    may only advance when it did.
-
-    Never raises. Every failure the client can report is a state, and the
-    mirror keeps its last good rows through all of them.
-    """
-    # ``max_pages_override`` is how a request path asks for one page: a
-    # browse view shows the first page anyway, and a one-page result reports
+    """Refresh one project's mirror. Returns the points this poll spent."""
+    # ``max_pages_override`` is how a request path asks for one page: a browse
+    # view shows the first page anyway, and a one-page result reports
     # ``complete=False``, which ``record_pages`` already handles by merging
     # rather than replacing and by declining to advance the high-water mark.
-    # So a partial on-demand seed is finished by the background loop later,
-    # with no new merge rule and nothing stranded.
     cap = max_pages() if max_pages_override is None else max(1, int(max_pages_override))
     state = github_mirror.load_state(candidate.project, repo=candidate.repo)
     since = state.since
@@ -608,8 +432,8 @@ async def poll_project(
             after=after,
             include_closed=include_closed,
         )
-        # A failed poll still spent a point whenever GitHub answered at all,
-        # so the budget is charged from the response, not from success.
+        # A failed poll still spent a point whenever GitHub answered at all, so
+        # the budget is charged from the response, not from success.
         _budget.observe(result.rate)
         spent += result.rate.cost if result.rate.cost is not None else 1
         if not result.ok:
@@ -670,14 +494,7 @@ def _handle_failure(candidate: Candidate, result: IssuesResult) -> None:
 
 
 def _record_global_failure(rows: Sequence[Candidate], result: IssuesResult) -> None:
-    """Publish a machine-wide failure into every candidate's mirror.
-
-    ``not_authenticated`` is true of the machine, not of one repository, so
-    every project's UI needs the same "connect GitHub" affordance — and none
-    of them can learn it from a poll that never happens. No network is
-    involved, and an unchanged error writes nothing (``error.at`` is the
-    mirror's one volatile path), so the cost is one comparison per project.
-    """
+    """Publish a machine-wide failure into every candidate's mirror."""
     for candidate in rows:
         try:
             github_mirror.record_failure(
@@ -702,15 +519,14 @@ class PollOutcome:
     polled: bool
     #: Why it did not, when it did not: ``disabled``, ``no_remote``,
     #: ``paused``, ``no_cli``, ``cooldown``, ``in_flight``, ``timeout`` or
-    #: ``failed``. ``None`` when it polled.
+    #: ``failed``.
     reason: Optional[str] = None
     #: GraphQL points spent. Zero for every skip.
     points: int = 0
 
 
 #: One lock per project, so N concurrent cold requests cost one poll rather
-#: than N. Created lazily and never evicted: the key set is bounded by the
-#: number of projects on the machine, and a lock is a few dozen bytes.
+#: than N.
 _inflight: dict[str, asyncio.Lock] = {}
 
 
@@ -728,37 +544,7 @@ async def poll_project_now(
     max_pages_override: Optional[int] = None,
     timeout: Optional[float] = None,
 ) -> PollOutcome:
-    """Poll one project **now**, applying every guard the loop applies.
-
-    This exists because the guards used to live inside :func:`poll_once`'s
-    loop body, so they protected the tick and nothing else. Anything that
-    polled outside the loop — the adopt route, and now the browse route —
-    spent points without accounting and ignored the per-repo cool-down. That
-    was catalogued as **I5** and it is benign only while nothing on a request
-    path polls; the moment one does, a browse loop becomes a way to hammer a
-    dead repository once per request, past the 900 s back-off that exists to
-    stop exactly that.
-
-    So the guards live here, in the order the loop applied them — poller
-    disabled, budget paused, no ``gh``, repo cooling down, no github.com
-    remote — and :func:`poll_once` calls this too. One implementation, so the
-    tick and the request path cannot drift.
-
-    Two things it adds that the loop does not need:
-
-    * **Single flight.** Concurrent callers for one project queue on a lock,
-      and the ones that arrive while a poll is in flight return
-      ``in_flight`` immediately rather than waiting or duplicating it. A
-      browse view polling every 30 s must not stack up polls.
-    * **A timeout.** A request path cannot wait on ``gh`` indefinitely. On
-      expiry the answer is ``timeout`` and the caller serves whatever the
-      mirror already holds — degrading to the behaviour it had before this
-      function existed, never to an error.
-
-    Never raises, for the same reason ``poll_project`` does not: every
-    failure GitHub can produce is a state the mirror records, and a caller on
-    a read path must always be able to fall through to serving the file.
-    """
+    """Poll one project **now**, applying every guard the loop applies."""
     name = (project_id or "").strip()
     if not name:
         return PollOutcome(False, "no_remote")
@@ -777,9 +563,7 @@ async def poll_project_now(
 
     lock = _project_lock(name)
     if lock.locked():
-        # Someone is already polling this project. Returning immediately is
-        # the point: the caller serves the mirror as it stands, and the poll
-        # in flight will have updated it by their next request.
+        # Someone is already polling this project.
         return PollOutcome(False, "in_flight")
 
     async with lock:
@@ -820,11 +604,7 @@ async def poll_project_now(
 
 
 async def poll_once() -> dict:
-    """One tick: choose the repos, poll them, return a summary. Never raises.
-
-    The summary is what the loop logs and what the tests assert on:
-    ``{"candidates", "polled", "skipped", "points", "paused"}``.
-    """
+    """One tick: choose the repos, poll them, return a summary. Never raises."""
     summary = {"candidates": 0, "polled": 0, "skipped": 0, "points": 0, "paused": False}
 
     if _budget.paused:
@@ -842,10 +622,7 @@ async def poll_once() -> dict:
 
     if not gh_available():
         # §6.3's degradation, exactly as written: no gh → no poller, mirror
-        # absent, local workitems fully functional. Nothing is written,
-        # because writing a ``no_cli`` error into every project's runtime tree
-        # once a minute would be churn in service of a fact the UI can
-        # establish for itself in one ``which``.
+        # absent, local workitems fully functional.
         _warn_once(
             "no_cli",
             "github poller: `gh` is not installed; GitHub issue polling is "
@@ -900,13 +677,7 @@ async def poll_once() -> dict:
 
 
 def _warn_if_budget_is_close(points_this_tick: int) -> None:
-    """Say the ceiling is near *before* it is hit (§11).
-
-    Projection, not history: the hourly figure a tick implies is what tells
-    you the interval is wrong, and waiting for a real hour of data would mean
-    the first warning arrives an hour after the problem. Both numbers are
-    reported so the projection can be sanity-checked against the measurement.
-    """
+    """Say the ceiling is near *before* it is hit (§11)."""
     if points_this_tick <= 0:
         return
     interval = poll_interval_seconds()
@@ -925,24 +696,12 @@ def _warn_if_budget_is_close(points_this_tick: int) -> None:
 
 # ── The loop ─────────────────────────────────────────────────────────────────
 
-#: Boot delay. The first tick waits for the watcher to have written at least
-#: one ``activity.json`` and for ``fill_identity`` to have minted pids, so the
-#: first poll resolves runtime homes by pid rather than by folder name.
+#: Boot delay.
 _STARTUP_DELAY_S = 20.0
 
 
 async def start_github_poller() -> None:
-    """Entry point for the background task (mirrors ``usage_sync``).
-
-    Returns immediately when the poller is switched off, so a disabled poller
-    holds no task and costs nothing. Otherwise it loops forever: one tick,
-    then sleep the interval, with every failure caught — a poll that dies must
-    not take the server's event loop with it, and the next tick is always
-    another chance.
-
-    Cancellation is normal shutdown (the lifespan cancels this task), so
-    ``CancelledError`` propagates rather than being swallowed.
-    """
+    """Entry point for the background task (mirrors ``usage_sync``)."""
     if not poller_enabled():
         logger.info("github poller: disabled by %s", ENV_ENABLED)
         return

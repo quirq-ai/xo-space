@@ -60,21 +60,8 @@ from routers.cowork_agent.bff._visualizer_presenter import (
     tool_usage_from_stats as _tool_usage_from_stats,
     zero_filled_dates as _zero_filled_dates,
 )
-# The workspace rollup borrows five names from the project-tier router
-# rather than restating them (workitems-plan §7.3, W9). Each is one
-# definition that must not become two:
-#
-# * ``_make_workitem_model`` is the *total* record→wire builder — every
-#   field coerced or defaulted, because one malformed row must not 500 a
-#   list. A second copy here would be a second coercion table that could
-#   disagree with the first, which is the defect this codebase names
-#   outright when it refuses a second error mapping.
-# * ``_self_github_login`` / ``_self_identities`` / ``_SELF_ALIASES`` are
-#   what "me" means. ``PUT …/assignee`` already answers that question, and
-#   an agent that assigns work to ``me`` and then asks for ``?assignee=me``
-#   must get the same person back — two resolvers is how it stops.
-# * ``_WORKITEM_DOCUMENT_ERRORS`` is the path-free text served in place of
-#   a store message that names an absolute path.
+# The workspace rollup borrows five names from the project-tier router rather
+# than restating them (workitems-plan §7.3, W9).
 from routers.cowork_agent.bff.visualizer import (
     _SELF_ALIASES,
     _WORKITEM_DOCUMENT_ERRORS,
@@ -195,18 +182,7 @@ def _response_time_stats_from_by_day(by_day: dict[str, dict]) -> dict:
 def workspace_usage_dashboard(
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Workspace-aggregated ``UsageStats`` (UI-facing shape).
-
-    Aggregated across every project's runtime session index
-    (token totals, message counts, per-session view) plus
-    ``~/xo-projects/.xo/stats.json`` (per-model rolling window). Same
-    field names and nesting as the canonical ``/api/usage`` endpoint
-    so the FE's ``UsageStats`` TypeScript type is unchanged.
-
-    Honest zeros where the workspace tier does not have the data:
-    ``response_time`` (no per-message latency on disk),
-    cost (no pricing table), ``reasoning`` tokens (not tracked).
-    """
+    """Workspace-aggregated ``UsageStats`` (UI-facing shape)."""
     workspace = scopes.resolve_scope("xo-workspace-visualizer")
     stats = workspace.read_stats() or {}
     sessionslist = _union_sessionslist()
@@ -717,77 +693,31 @@ def workspace_timeline(
 
 
 # ── /api/workspace/workitems — the agent-pingable rollup ─────────────────────
-#
-# workitems-plan §7.3, task W9. The endpoint an agent polls to answer "what
-# is assigned to me", across every project on this machine, in one call.
-#
-# Three properties are structural rather than stylistic.
-#
-# **It is a flat list, not a map.** O-C was a real defect: a cross-project
-# union keyed by a constant (``"_project"``) silently kept one project's row
-# and lost the rest. A list has no union key, so that class of bug cannot
-# occur here at all (D4). Every row carries ``project_id`` *and* ``pid`` —
-# the directory name is what every path helper and every other route takes,
-# the pid is the identity that survives a rename, a clone and a restore, and
-# the distinction is load-bearing enough that serving one of them would make
-# a caller guess.
-#
-# **It filters the projection, not the file.** The per-project route's
-# ``?status=`` reads a stored field, so an adopted item never matches it —
-# it stores no status, because GitHub owns it (§5.3). This route joins the
-# mirror first and filters the result, which is the whole reason §7.3 exists
-# as a separate surface rather than a client-side loop over §7.1. The
-# assignee half filters on **both** the workitem's own ``assignee`` (a local
-# annotation since §13 amendment 33, stored for either kind) and the issue's
-# ``github_assignees``: assignment no longer travels through GitHub, but
-# GitHub's assignees are still the only way a peer's claim on an issue
-# reaches this machine.
-#
-# **It never goes to the network for workitem data.** The mirror is a local
-# file the poller owns; this route reads it and nothing else. The single
-# exception is resolving the literal ``me``, which is one ``GET /user``
-# against GitHub — see ``_resolve_assignee``.
+# workitems-plan §7.3, task W9. The endpoint an agent polls to answer "what is
+# assigned to me", across every project on this machine, in one call.
 
 
 class WorkspaceWorkitem(Workitem):
-    """One rollup row: a workitem plus where it lives.
+    """One rollup row: a workitem plus where it lives."""
 
-    A subclass rather than a parallel model, so the rollup and the
-    project-tier list cannot drift into two shapes of the same record. An
-    agent that reads ``GET /api/xo-projects/{id}/workitems`` reads these
-    with two extra keys and no relearning.
-    """
-
-    #: The project's **directory name** — the id every other route, and
-    #: every path helper, takes. This is what to put back into
-    #: ``/api/xo-projects/{project_id}/workitems/{id}`` to act on the row.
+    #: The project's **directory name** — the id every other route, and every
+    #: path helper, takes.
     project_id: str
-    #: The project's durable identity from ``project.json``. ``null`` for a
-    #: project whose pid has not been minted yet (a bare folder the watcher
-    #: has seen but not yet scaffolded) — which is a real state, not an
-    #: error, and is why this is not simply the key.
+    #: The project's durable identity from ``project.json``.
     pid: Optional[str] = None
 
 
 class SkippedProject(_ForbidExtra):
-    """A project the rollup could not read, and why.
-
-    Reported rather than raised: this endpoint is what an agent polls, so
-    one project with a corrupt ``workitems.json`` must not take down the
-    answer for the other nineteen. It is also not silently dropped — a
-    unit of work that vanishes with no signal is the failure mode the
-    whole tombstone design exists to avoid, and it would be worse here,
-    where the missing rows are somebody's assigned work.
-    """
+    """A project the rollup could not read, and why."""
 
     project_id: str
     pid: Optional[str] = None
-    #: The store's own code — ``corrupt_document``, ``unsupported_schema``,
-    #: or ``unavailable`` for anything else (a directory that went away
-    #: between the walk and the read, a permission change).
+    #: The store's own code — ``corrupt_document``, ``unsupported_schema``, or
+    #: ``unavailable`` for anything else (a directory that went away between
+    #: the walk and the read, a permission change).
     code: str
-    #: Path-free. The store's message names an absolute path, which is
-    #: logged for the operator instead of being served to the caller.
+    #: Path-free. The store's message names an absolute path, which is logged
+    #: for the operator instead of being served to the caller.
     message: str
 
 
@@ -797,42 +727,31 @@ class WorkspaceWorkitemsResponse(_ForbidExtra):
     workitems: list[WorkspaceWorkitem]
     #: Rows in ``workitems`` — after ``?limit=``.
     count: int
-    #: Rows that matched — before ``?limit=``. ``total > count`` is the
-    #: only way a caller can tell it is seeing part of the answer.
+    #: Rows that matched — before ``?limit=``. ``total > count`` is the only
+    #: way a caller can tell it is seeing part of the answer.
     total: int
     truncated: bool
-    #: The ``?assignee=`` value as it arrived, echoed verbatim so a caller
-    #: can see what was interpreted. ``null`` when none was given.
+    #: The ``?assignee=`` value as it arrived, echoed verbatim so a caller can
+    #: see what was interpreted. ``null`` when none was given.
     assignee: Optional[str] = None
-    #: What that value resolved to, and what rows were actually matched
-    #: against (case-insensitively). For ``me`` this is every name this
-    #: Space answers to: its GitHub login when there is one, plus its own
-    #: user id / Space id / Coder owner, which need no credential at all.
-    #: Empty when no filter was asked for.
+    #: What that value resolved to, and what rows were actually matched against
+    #: (case-insensitively).
     identities: list[str] = []
     #: Why ``me`` could not be resolved in full — currently only
     #: ``no_github_credential``. ``null`` when it resolved, and when no
     #: assignee filter was given.
-    #:
-    #: It is a *signal beside a filtered answer*, never a licence to widen
-    #: one: when it is set, the GitHub half of "me" is unknown, so adopted
-    #: items cannot match and the rows are whatever this Space's local
-    #: identity owns. Returning everything instead would be a lie, and
-    #: 4xx-ing would take away the local half that is perfectly knowable.
     assignee_unresolved: Optional[str] = None
     #: How many projects were walked (read *and* skipped).
     projects: int
     skipped: list[SkippedProject] = []
 
 
-#: What a caller may write for "me". Borrowed from the assignment route so
-#: the two cannot diverge: an agent that assigns to ``me`` and then filters
-#: on ``me`` must be talking about one person.
+#: What a caller may write for "me".
 _ME = _SELF_ALIASES
 
-#: The message served for a skipped project whose failure has no entry in
-#: the document-error table — a directory that disappeared between the walk
-#: and the read, a permission change, an unreadable pid.
+#: The message served for a skipped project whose failure has no entry in the
+#: document-error table — a directory that disappeared between the walk and the
+#: read, a permission change, an unreadable pid.
 _SKIPPED_FALLBACK = (
     "{document} could not be read for this project, so its workitems are "
     "missing from this answer. The rest of the workspace is unaffected."
@@ -842,39 +761,13 @@ _SKIPPED_FALLBACK = (
 async def _resolve_assignee(
     raw: Optional[str],
 ) -> tuple[Optional[list[str]], Optional[str]]:
-    """``?assignee=`` → (identities to match, unresolved reason).
-
-    ``None`` identities means *no filter*. A list means match these,
-    case-insensitively; an **empty** list is a filter nothing matches,
-    which is the honest answer when "me" is nobody.
-
-    **``me`` is a set, not a name**, and this is the one place the plan is
-    silent. §4 resolves ``me`` to this Space's GitHub login, which is what
-    matches an issue's own assignees. But ``PUT …/assignee`` writes
-    ``coder_identity.resolve_user_id()`` — for every workitem now, adopted
-    or not (§13, amendment 33) — so resolving ``me`` to the login alone
-    would hide from "what is assigned to me" exactly the items this Space
-    assigned to itself. So ``me`` is the union of both: the local half
-    matches what this Space wrote, and the GitHub half matches what a peer
-    put on the issue.
-
-    The GitHub half costs **one** ``GET /user`` — through the stored PAT
-    when there is one, through ``gh api user`` otherwise — for the whole
-    request, never once per project, and only when ``me`` was actually
-    asked for. It is on the REST core budget (5,000/hr), so it cannot
-    starve the poller. It is deliberately not cached: a cached login that
-    went stale after a re-auth would answer with another person's work,
-    which is the single failure this design exists to avoid.
-
-    Anything else is a literal login, with an optional leading ``@``
-    (``@octocat`` and ``octocat`` are one filter).
-    """
+    """``?assignee=`` → (identities to match, unresolved reason)."""
     value = (raw or "").strip()
     if not value:
         return None, None
     if value.casefold() in _ME:
-        # The local half first: it is captured from the environment, needs
-        # no network, and must keep working with GitHub switched off.
+        # The local half first: it is captured from the environment, needs no
+        # network, and must keep working with GitHub switched off.
         identities = list(_self_identities())
         login = await _self_login_or_none()
         if not login:
@@ -889,14 +782,7 @@ async def _resolve_assignee(
 
 
 async def _self_login_or_none() -> Optional[str]:
-    """``_self_github_login`` made total. Never raises, never 500s a poll.
-
-    It already catches its own failures, so this is the belt to that
-    braces — and it is not theoretical: this route is the one an agent
-    *polls*, so a resolver that started raising would turn a background
-    loop into a stream of 500s, for a filter that has a perfectly good
-    partial answer (the local half of "me") sitting right there.
-    """
+    """``_self_github_login`` made total. Never raises, never 500s a poll."""
     try:
         return await _self_github_login()
     except Exception:
@@ -908,22 +794,16 @@ async def _self_login_or_none() -> Optional[str]:
 
 
 def _row_sort_key(row: dict) -> tuple[str, str, str]:
-    """Newest first, deterministically.
-
-    ``updated_at`` is the record's own — not the issue's; the mirror's
-    timestamp is not projected onto the record, and pretending otherwise
-    would sort adopted rows by a field this response does not carry. The
-    project and id tie-break so that two rows stamped in the same second
-    do not swap places between polls, which would make ``?limit=`` return
-    a different subset each time.
-    """
+    """Newest first, deterministically."""
     stamp = row.get("updated_at") or row.get("created_at") or ""
     return (str(stamp), str(row.get("_project_id") or ""), str(row.get("id") or ""))
 
 
 def _skipped_model(entry: dict) -> SkippedProject:
-    """One skipped project, with the store's path-naming text logged, not
-    served — the same split ``_workitem_error`` makes for a 409."""
+    """
+    One skipped project, with the store's path-naming text logged, not served —
+    the same split ``_workitem_error`` makes for a 409.
+    """
     code = str(entry.get("code") or "unavailable")
     detail = entry.get("detail")
     project_id = str(entry.get("project_id") or "")
@@ -956,53 +836,7 @@ async def workspace_workitems(
     ),
     limit: int = Query(100, ge=1, le=500),
 ) -> WorkspaceWorkitemsResponse:
-    """Every workitem in the workspace, filtered on the **projected** view.
-
-    The agent loop §9 describes starts here: read ``?assignee=me&status=
-    open``, pick one, create todos under it, work, close.
-
-    **Why this is not the per-project list run in a loop.** There,
-    ``?status=`` and ``?assignee=`` filter what is *stored*, and an adopted
-    item stores neither — GitHub owns both (§5.3), so filtering on them
-    would silently drop every adopted item on a machine that has never
-    polled. Here each project's records are joined with that project's
-    GitHub mirror *first* and the join's result is filtered, so an adopted
-    item matches on the issue's real state and the issue's real assignees.
-
-    **Unknown is not open.** An adopted item the mirror cannot speak for —
-    never polled, no ``gh``, offline, the issue deleted — projects with
-    ``status`` ``null``, no ``github_assignees`` and ``stale: true``. It
-    matches no ``?status=``, so a filtered rollup omits it while an
-    unfiltered one still shows it, flagged. That is §5.3's "absent beats
-    wrong" applied to a predicate: guessing ``open`` would put someone
-    else's finished work on your list. Its ``assignee`` is unaffected — the
-    mirror never owned it — so a stale item this Space assigned to you
-    still answers ``?assignee=me``.
-
-    **Every row carries ``origin`` and ``assigned``**, exactly as the
-    per-project listing does — this model is a subclass of that one, so the
-    two surfaces cannot drift. ``origin`` is ``"github"`` for a workitem
-    that came from an issue and ``"space"`` for one that did not (the same
-    distinction the stored document spells ``source.kind: "local"``), and
-    ``assigned`` is the plain boolean form of ``assignee``.
-
-    **No network for the data.** Local files only — the stored document
-    and the mirror the poller writes. Nothing here fetches from GitHub and
-    nothing here writes. The single outbound call this route can make is
-    resolving the literal ``me`` (one ``GET /user``, once per request,
-    never per project); every other spelling of ``?assignee=`` and every
-    unfiltered call make none at all.
-
-    **One bad project does not take the answer down.** A project whose
-    ``workitems.json`` is corrupt or declares a future schema is listed in
-    ``skipped`` with its code, and the rest of the workspace answers
-    normally. ``projects`` counts what was walked, so
-    ``projects - len(skipped)`` is what was read.
-
-    Tombstoned workitems are never included: there is no
-    ``?include_deleted=`` here, because "what is assigned to me" is a
-    question about work that exists.
-    """
+    """Every workitem in the workspace, filtered on the **projected** view."""
     if status is not None and status not in _WORKITEM_STATUSES:
         raise _bad_query(f"status must be one of {sorted(_WORKITEM_STATUSES)}")
 
@@ -1011,8 +845,7 @@ async def workspace_workitems(
     workspace = scopes.resolve_scope("xo-workspace-visualizer")
     # Off the event loop: the fan-out is one walk plus a handful of small
     # blocking reads per project, and this route is ``async`` only because
-    # resolving ``me`` is. The same ``asyncio.to_thread`` the adoption and
-    # assignment routes use for their store writes.
+    # resolving ``me`` is.
     rollup = await asyncio.to_thread(
         workspace.rollup_workitems, assignees=identities, status=status,
     )

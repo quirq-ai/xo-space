@@ -25,9 +25,9 @@ from services.cowork_agent.engine import sessions_io as _session_index
 # index, so the generic project-tied scan applies to it.
 USES_PROJECT_SESSIONS = True
 
-# The ``backend`` tag claude_code writes on every sessionslist row it publishes;
-# used to tell our rows apart from the other project-tied backends' in a shared
-# index.
+# The ``backend`` tag claude_code writes on every sessionslist row it
+# publishes; used to tell our rows apart from the other project-tied backends'
+# in a shared index.
 _BACKEND = "claude_code"
 
 
@@ -91,24 +91,24 @@ def get_messages(session_id: str) -> list:
 
 
 def _persist_session_directory(session_id: str, directory: str) -> bool:
-    """Update the workspace directory for a claude_code session (project rows only)."""
+    """
+    Update the workspace directory for a claude_code session (project rows
+    only).
+    """
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     for project_id, _project_dir, index in _session_index.iter_project_session_indexes():
         for key, meta in index.items():
             if meta.get("sessionId") != session_id:
                 continue
-            # Same-index rows from the other project-tied backends are not ours:
-            # the PATCH route loops adapters and takes the first non-None, so
-            # without this we would service (and rewrite) another backend's row.
-            # Untagged legacy rows stay claimable — a missing/empty ``backend``
-            # predates the tag, so first-adapter-wins still applies there.
+            # Same-index rows from the other project-tied backends are not
+            # ours: the PATCH route loops adapters and takes the first non-
+            # None, so without this we would service (and rewrite) another
+            # backend's row.
             backend = meta.get("backend")
             if isinstance(backend, str) and backend and backend != _BACKEND:
                 continue
-            # One row, one shard file, one atomic replace. The whole-document
-            # rewrite this used to do is what made two concurrent writers lose
-            # a row (syncplan T19, inherited from T4).
+            # One row, one shard file, one atomic replace.
             row = dict(meta)
             history = list(row.get("directoryHistory") or [])
             history.append({"directory": directory, "selectedAt": now_ms})

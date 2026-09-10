@@ -305,26 +305,7 @@ def performance_for_dates(by_day: dict[str, dict], dates: list[str]) -> list[Per
 
 
 def _declared_timeline_types() -> frozenset[str]:
-    """Every event type ``timeline.schema.json`` declares a branch for.
-
-    Derived, not listed. This was a hardcoded set of twelve, and it had
-    already rotted twice by the time anyone noticed: ``todo.status_changed``
-    (widened by T7) and all eight ``workitem.*`` types were emitted, written
-    to the log, and served by an unfiltered ``GET /timeline`` — but naming one
-    in ``?types=`` returned ``400 unknown timeline type``. The same shape as
-    defect R3a, where an emitter was widened and the schema's ``oneOf``
-    lagged, and the same shape as the route-parity gate that now asserts an
-    invariant instead of pinning a count.
-
-    The schema is the declaration of record, so reading it is what keeps this
-    honest: a type cannot be filterable unless it is declared, and cannot be
-    declared without becoming filterable. Walk ``oneOf`` rather than
-    ``definitions`` — an unreferenced definition is not a reachable branch.
-
-    Falls back to the empty set if the schema cannot be read, which makes
-    ``?types=`` reject everything rather than silently accept anything; the
-    unfiltered route is unaffected either way.
-    """
+    """Every event type ``timeline.schema.json`` declares a branch for."""
     schema_path = (
         Path(__file__).resolve().parents[3]
         / "services" / "cowork_agent" / "visualizer" / "schema"

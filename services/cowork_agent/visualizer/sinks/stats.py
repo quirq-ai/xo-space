@@ -1,19 +1,4 @@
-"""``stats.json`` sink — rolling 7d/30d + by_runtime + by_session.
-
-Per the stats schema (``services/cowork_agent/visualizer/schema/
-stats.schema.json``):
-
-* ``rolling.7d`` / ``rolling.30d`` — totals over the trailing window
-  with ``{tokens, by_model, files_edited, sessions, active_minutes}``.
-* ``by_session`` — per native session id, ``{tokens, files,
-  duration_ms}``.
-* ``by_runtime`` — totals bucketed by runtime (claude_code / openclaw).
-
-The sink rebuilds from durable state stored INSIDE ``stats.json``
-itself: a private ``_session_totals`` dict that's filtered on read
-into the public ``by_session`` view. That way restart-after-crash
-recovers state from disk; we don't need a sidecar.
-"""
+"""``stats.json`` sink — rolling 7d/30d + by_runtime + by_session."""
 
 from __future__ import annotations
 
@@ -153,19 +138,9 @@ def _trim_oldest(buckets: dict, *, max_entries: int) -> dict:
 def apply(
     root: Path, events: Iterable[Event], *, legacy_root: Optional[Path] = None
 ) -> bool:
-    """Apply events to the project's stats file. Returns ``True`` if
-    the file changed.
-
-    ``root`` is the project's RUNTIME directory (``~/.quirq/projects/<key>/``)
-    since the tier move — ``stats.json`` is a machine-local accumulator, and
-    it shares a root with the offsets that protect it (syncplan §2, R-TIER).
-
-    ``legacy_root`` is the project's ``.xo/``, read **once**: if the runtime
-    file does not exist yet but the pre-move one does, the accumulator is
-    seeded from it and the very next write lands in the runtime tier. That is
-    the whole migration — read-through plus copy-on-first-write, the same
-    shape ``~/.xo-cowork`` → ``~/.quirq`` used, with no startup mover to race
-    the first tick.
+    """
+    Apply events to the project's stats file. Returns ``True`` if the file
+    changed.
     """
     events = list(events)
     if not events:

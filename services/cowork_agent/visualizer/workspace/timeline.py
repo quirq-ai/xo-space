@@ -1,25 +1,4 @@
-"""``~/.quirq/workspace/timeline.jsonl`` — multiplexed workspace
-timeline.
-
-Different from the other workspace sinks: timeline is **append-only**
-at both tiers, so we don't union the files on every tick (that
-would re-append duplicates). Instead the watcher's main loop emits
-workspace events alongside per-project events on a per-tick basis,
-appending the SAME events to the workspace file with an extra
-``project_id`` field.
-
-This module provides the append helper; the watcher loop calls it
-directly with the per-tick event list and a project_id tag.
-
-Runtime tier since T20. It is a multiplexed copy of per-project timelines
-that T19 had already made machine-local, so leaving it in ``<XO root>/.xo/``
-would have shipped this machine's telemetry to every clone and every restore.
-Nothing migrates: the same open decision O3 took for the per-project file
-applies here — append-only *with rotation* cannot be read through two roots
-without reconciling the ``timeline.<stamp>.jsonl`` glob across both, so the
-pre-move history is dropped rather than half-merged, and
-``views.sweep_abandoned`` removes it.
-"""
+"""``~/.quirq/workspace/timeline.jsonl`` — multiplexed workspace timeline."""
 
 from __future__ import annotations
 

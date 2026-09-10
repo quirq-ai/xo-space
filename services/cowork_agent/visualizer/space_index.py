@@ -371,21 +371,7 @@ def _build_ties(leaves: list[dict], commits_by_pid: dict[str, list[list[str]]]) 
 
 
 def _now_iso() -> str:
-    """The document's own freshness stamp, UTC, ISO-8601 with a ``Z``.
-
-    ``meta.mappedOn`` cannot serve this purpose: it is ``date.today()``
-    rendered for humans, so it is only accurate to the day and a reader
-    testing a 120-second staleness window learns nothing from it
-    (syncplan T25). The file's mtime cannot serve it either — that is a
-    fact about the file, not about the data, and it moves for reasons
-    that have nothing to do with a rebuild (a restore, a copy) and stays
-    put for reasons that have nothing to do with staleness (a write
-    skipped because the content did not change).
-
-    Same wire format as ``sessions.json``
-    (``visualizer/session_telemetry.py``), so one reader parses all three
-    views.
-    """
+    """The document's own freshness stamp, UTC, ISO-8601 with a ``Z``."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -469,12 +455,8 @@ def build_space_data() -> dict:
             "title": "Space",
             "tagline": "an xo-projects knowledge graph",
             "mappedOn": today.strftime("%d %B %Y"),
-            # Machine-readable freshness; ``mappedOn`` above is the human
-            # one and is only accurate to the day (syncplan T25). Spelled
-            # snake_case against the rest of this camelCase document on
-            # purpose: it is the same key ``sessions.json`` already uses,
-            # and syncplan T26 excludes exactly ``meta.generated_at`` from
-            # its write-on-change comparison.
+            # Machine-readable freshness; ``mappedOn`` above is the human one
+            # and is only accurate to the day (syncplan T25).
             "generated_at": _now_iso(),
             "workspace": str(root),
         },

@@ -289,12 +289,7 @@ def _project_id_from_category(category: str) -> str:
 
 
 def _now_iso() -> str:
-    """This projection's freshness stamp — UTC, ISO-8601 with a ``Z``.
-
-    Same wire format as ``space_index._now_iso`` and
-    ``session_telemetry``'s ``meta.generated_at``, so one reader parses
-    all three views (syncplan T25).
-    """
+    """This projection's freshness stamp — UTC, ISO-8601 with a ``Z``."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -431,9 +426,7 @@ def build_categorized_graph(source: dict | None = None) -> dict:
             "tagline": "projects gathered into purpose environments",
             "mappedOn": today.strftime("%d %B %Y"),
             # This projection's own stamp, not the source graph's: it is a
-            # separate file with a separate freshness (syncplan T25). Day
-            # granularity is why ``mappedOn`` cannot answer the routes'
-            # 120-second staleness test.
+            # separate file with a separate freshness (syncplan T25).
             "generated_at": _now_iso(),
             "workspace": (source.get("meta") or {}).get("workspace"),
             "noun": "projects",

@@ -33,14 +33,11 @@ from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.registry.settings import CLAUDE_COWORK_DIR
 
 # The ``backend`` tag this adapter writes on every record it creates, and the
-# tag ``_load_owned`` filters on. Mirrors the constant the sibling project-tied
-# adapters already carry.
+# tag ``_load_owned`` filters on.
 _BACKEND = "claude_code"
 
-# Record schema for ``<project>/.xo/agent.json``
-# (docs/syncplan.md §5.4 · ``visualizer/schema/agent.schema.json``). Stamped on
-# records this adapter mints; never back-filled onto an older record, which the
-# schema accepts unversioned.
+# Record schema for ``<project>/.xo/agent.json`` (docs/syncplan.md §5.4 ·
+# ``visualizer/schema/agent.schema.json``).
 _SCHEMA_ID = "xo/agent.schema.json"
 _SCHEMA_VERSION = 1
 
@@ -70,19 +67,7 @@ def _load(agent_id: str) -> dict | None:
 
 
 def _load_owned(agent_id: str) -> dict | None:
-    """``_load`` restricted to records this backend owns.
-
-    Every project-tied adapter reads the SAME ``<project>/.xo/agent.json``, and
-    the ownership routes in ``routers/cowork_agent/agents.py`` take the first
-    non-None over ``list_adapters()`` (alphabetical) — so without this filter
-    whichever adapter sorts first answers for records another one created. A
-    record whose ``backend`` names another backend is not ours.
-
-    A missing or empty ``backend`` stays claimable, deliberately: records
-    written before the tag existed — exactly the legacy
-    ``~/claude-cowork/<id>/.agent.json`` fallback — must still resolve, so
-    first-adapter-wins is narrowed here rather than eliminated for old data.
-    """
+    """``_load`` restricted to records this backend owns."""
     meta = _load(agent_id)
     if meta is None:
         return None
@@ -93,24 +78,7 @@ def _load_owned(agent_id: str) -> dict | None:
 
 
 def _write(agent_id: str, data: dict) -> None:
-    """Always writes to the canonical xo-projects location, atomically.
-
-    ``write_json_atomic`` (sibling temp file + ``os.replace``) rather than a
-    bare ``write_text``: a concurrent reader — another adapter's
-    ``_load_owned``, or the sidebar's ``list_agents`` — must never see a
-    half-written record. A torn read here is not cosmetic, because ``_load``
-    swallows the parse error and returns ``None``, which every caller reads as
-    "no such agent".
-
-    A full-document write, not a key-scoped merge: both callers already hold
-    the whole record — ``create_agent`` mints it, and ``patch``
-    read-modify-writes exactly what ``_load_owned`` returned — so there is no
-    foreign key to carry forward. ``write_json_owned`` would in fact be *wrong*
-    here: for the legacy fallback the document read and the document written
-    are different files, and merging the new record into an absent
-    ``<project>/.xo/agent.json`` would silently drop every key the legacy
-    ``~/claude-cowork/<id>/.agent.json`` record carries.
-    """
+    """Always writes to the canonical xo-projects location, atomically."""
     write_json_atomic(_meta_path(agent_id), data)
 
 

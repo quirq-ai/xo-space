@@ -1,34 +1,6 @@
-"""Publish one row into the per-project session index after each hermes
-streaming exchange.
-
-Mirrors what ``adapters/claude_code/adapter.py:write_preliminary_entry``
-and ``adapters/openclaw/transcript.py:tee_exchange`` do for their
-backends. Without this, hermes sessions are invisible to the
-per-project xo-coworker dashboard — the watcher never sees them
-because hermes writes its real session state to SQLite, not JSONL.
-
-Two things this module used to get wrong, both fixed by routing through
-``engine.sessions_io`` (syncplan T19):
-
-* it built ``xo_projects_root()/<agent_id>/.xo/sessions/`` by hand, bypassing
-  ``resolve_project_dirname`` — so a differently-cased id wrote into a folder
-  discovery never found, and ``mkdir(parents=True)`` conjured a ghost project
-  next to the real one;
-* it rewrote the WHOLE index document, so a concurrent write from another
-  stream in the same project lost a row. The index is partitioned now: this
-  writer replaces exactly its own row's shard.
-
-V1 limitation: ``usage`` is seeded as zeros on the first turn and
-carried forward untouched thereafter. Hermes records token
-counts in ``~/.hermes/state.db`` / ``~/.hermes/profiles/<name>/state.db``
-on a 3–10 s delay (see :func:`state_db.register_inflight_exchange`).
-A future enhancement can backfill the usage block from state.db once
-hermes commits; each subsequent turn merges a fresh ``updatedAt`` into
-the existing row (fields this writer does not own — including a usage
-block someone else backfilled — are preserved), so the totals will
-catch up naturally once a reader exists. The row's per-turn refresh is
-what matters for v1; the dashboard's "totalMessages" / "totalTokens"
-widgets degrade gracefully to zero until the backfill lands.
+"""
+Publish one row into the per-project session index after each hermes streaming
+exchange.
 """
 from __future__ import annotations
 
@@ -61,14 +33,7 @@ def write_session_row(
     our_session_id: Optional[str],
     native_session_id: Optional[str],
 ) -> None:
-    """Upsert one row in the project's session index.
-
-    No-op when ``agent_id`` is missing (agent-only chat with no
-    project selected) or ``native_session_id`` is missing (hermes
-    didn't surface one — usually means the request errored before any
-    session was created). All on-disk errors are swallowed with a
-    log: the dashboard write must never fail a chat.
-    """
+    """Upsert one row in the project's session index."""
     if not agent_id or not native_session_id:
         return
     try:
@@ -76,11 +41,6 @@ def write_session_row(
         existing = _session_index.read_session_index(agent_id).get(composite) or {}
 
         # Merge onto the row that is already there instead of rebuilding it.
-        # Unlike the other adapters' initial-row literals this runs on EVERY
-        # turn (adapter.py:50,115 — unguarded), so a fresh literal would drop
-        # every field this writer does not own — ``title``, ``directoryHistory``,
-        # a usage block backfilled from state.db, anything a later schema adds.
-        # Same ``dict(existing) + update`` shape as openclaw/transcript.py.
         entry = dict(existing)
         # ``usage`` is carried forward, not recomputed here (see the module
         # docstring); seed the zero block only when there is nothing to carry.

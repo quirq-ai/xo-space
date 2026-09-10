@@ -1,59 +1,4 @@
-"""One repo's open GitHub issues, read through ``gh api graphql``.
-
-The read side of the workitems mirror (``docs/workitems-plan.md`` §6). The
-poller loop (W5) and the mirror store (W6) are separate; this module is the
-client both of them call, and it does exactly one thing per call: one
-subprocess, one page, one point of GraphQL budget.
-
-**It never raises and never logs.** ``visualizer/git_provenance.py`` is the
-house reference for that shape and the reasoning carries over intact: every
-caller here needs a well-formed answer whether ``gh`` is missing, the user
-never connected GitHub, the repo was deleted, the network is down or the
-budget is spent. Those are five different *states*, not five exceptions, and
-:class:`IssuesResult` reports which one happened in ``error_kind`` so the UI
-can offer the right remedy. Nothing is logged because the token lives in the
-environment of the subprocess and gh's diagnostics are echoed into
-``error`` — a log line is one more place for that text to land.
-
-Four choices that are load-bearing, each measured on this machine against
-``cjpais/Handy`` (87 open issues) rather than reasoned about:
-
-* **``gh``, not raw REST via httpx** (D5). It brings the auth for free, and
-  the part that turned out to matter: the poll lands on the **GraphQL**
-  budget, 5,000 points/hr, which is *separate* from the core REST 5,000/hr.
-  A 60-second poll therefore competes with nothing — not ``git``, not the
-  sync module, not MCP GitHub tooling. Measured via ``x-ratelimit-used``: a
-  87-issue fetch costs **0 core**.
-
-* **``gh api graphql`` with a pinned query, not ``gh issue list --json``.**
-  Cost is the binding constraint (§6.2) and a porcelain command's internal
-  query shape is not a contract — it can change between ``gh`` releases and
-  take the ceiling with it. :data:`ISSUES_QUERY` is that contract, written
-  down here, and ``tests/test_github_issues.py`` fails if its shape drifts.
-
-* **``labels`` is deliberately not fetched.** Measured with ``rateLimit
-  { cost }`` inside the query: ``first:100`` with ``assignees(first:5)``
-  costs **1 point** — the same as with no nested connection at all — and
-  adding ``labels(first:10)`` costs **2**, which halves the ceiling from
-  ~83 polled repos at 60 s to ~41. ``assignees`` is non-negotiable because
-  assignment *is* a GitHub assignee (D1); labels are cosmetic and are
-  fetched lazily on adoption instead.
-
-* **The budget is read from inside the query.** ``rateLimit { limit cost
-  remaining resetAt }`` is requested inline, so a poll learns its own cost
-  and its reset time without a second call. This is not merely an
-  optimisation: ``gh api rate_limit`` was measured reporting a *full*
-  budget regardless of consumption on this token, so a monitor built on
-  that endpoint would report health forever.
-
-**There is no pull-request filter, and there must not be one.** In GraphQL,
-``repository.issues`` and ``repository.pullRequests`` are separate
-connections, so a PR cannot appear in the response — structural, not
-filtered (§6.1). The REST endpoint ``/repos/{o}/{r}/issues`` *does* return
-PRs carrying a ``pull_request`` key (verified: ``#2046`` on that repo, absent
-from the ``gh`` listing at the same moment). Adding a defensive filter here
-would tell the next reader that PRs can arrive, which is false.
-"""
+"""One repo's open GitHub issues, read through ``gh api graphql``."""
 
 from __future__ import annotations
 
@@ -81,29 +26,9 @@ MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 100
 
 #: The measured cost of one :data:`ISSUES_QUERY` poll, in GraphQL points.
-#: At 1 point and a 60-second interval the hourly budget of 5,000 supports
-#: ~83 continuously-polled repos (D6). This is a **cost contract**: anything
-#: that pushes a poll above it halves the ceiling, so
-#: ``tests/test_github_issues.py`` asserts both the query's shape and, when
-#: ``gh`` is authenticated, the live ``rateLimit.cost``.
 MAX_QUERY_COST = 1
 
-#: The pinned query. Every field below is a scalar except the two
-#: connections, and the two connections are the measured shape:
-#: ``issues(first:100)`` + ``assignees(first:5)`` = 1 point. Adding a third
-#: connection is the one edit that changes the cost, which is why the test
-#: enumerates them rather than diffing the whole string — reformatting the
-#: query is free, adding a connection is not.
-#:
-#: ``filterBy.since`` is the high-water mark of §6.3. It does **not** lower
-#: the cost (measured: still 1 with and without) — it lowers the payload, so
-#: a quiet repo settles into a small response rather than a cheap one.
-#:
-#: ``assignees(first: 5)`` is a literal rather than a constant, because a
-#: pinned query that is assembled from parts is not pinned. Five is a
-#: judgement: GitHub's own cap is ten, five covers every real assignment,
-#: and the measurement was identical either way — the nested connection is
-#: free at this size, and it is *labels* that crosses the threshold.
+#: The pinned query.
 ISSUES_QUERY = """
 query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
   rateLimit { limit cost remaining resetAt }
@@ -132,43 +57,17 @@ query($owner: String!, $name: String!, $first: Int!, $after: String, $since: Dat
 }
 """
 
-#: The steady-state twin of :data:`ISSUES_QUERY`, identical in every
-#: respect but one: ``states: [OPEN, CLOSED]``.
-#:
-#: **It exists because the high-water mark strands closed issues** (§6.3,
-#: amendment 6 — a real design bug, not a detail). With ``since`` set and
-#: ``states: [OPEN]``, an issue *closed* since the mark simply stops
-#: matching, so an incremental merge leaves a stale ``open`` row in the
-#: mirror forever and nothing ever corrects it — the exact "false statement
-#: about who owes what" §5.3 forbids. Asking for ``CLOSED`` as well is the
-#: only way a transition is ever observed.
-#:
-#: So the two are used in the two situations §6.3 tabulates, and nowhere
-#: else:
-#:
+#: The steady-state twin of :data:`ISSUES_QUERY`, identical in every respect
+#: but one: ``states: [OPEN, CLOSED]``.
 #: ==================================  =========  ======================
-#: poll                                ``since``  query
+#: poll ``since`` query
 #: ==================================  =========  ======================
-#: first, or after a mirror reset      absent     :data:`ISSUES_QUERY`
-#: steady state                        set        this one
+#: first, or after a mirror reset absent :data:`ISSUES_QUERY` steady state set
+#: this one
 #: ==================================  =========  ======================
-#:
 #: Seeding on ``[OPEN, CLOSED]`` would drag the repository's entire closed
-#: history through the page budget; ``since`` is what bounds the volume,
-#: and it does not exist on the first poll.
-#:
-#: **Measured on this machine, 2026-09-08**, against ``cjpais/Handy`` with
-#: ``rateLimit { cost }`` inside the query: ``first:100`` +
-#: ``assignees(first:5)`` + ``states:[OPEN, CLOSED]`` + ``filterBy.since``
-#: costs **1 point** — the same as :data:`ISSUES_QUERY`, and the response
-#: carried both open and closed rows. The ~83-repo ceiling is unchanged.
-#:
-#: **Written out in full rather than derived from the string above.** A
-#: pinned query assembled from parts is not pinned, and a ``.replace()``
-#: would degrade *silently* into the very bug this constant fixes the day
-#: someone reformats the other query's ``states`` clause. The duplication
-#: is held honest by ``tests/test_github_poller.py``, which asserts the two
-#: differ in exactly the states clause and in nothing else.
+#: history through the page budget; ``since`` is what bounds the volume, and it
+#: does not exist on the first poll.
 ISSUES_QUERY_WITH_CLOSED = """
 query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
   rateLimit { limit cost remaining resetAt }
@@ -197,9 +96,7 @@ query($owner: String!, $name: String!, $first: Int!, $after: String, $since: Dat
 }
 """
 
-#: The closed vocabulary of failure states. Mirrored by the ``error.kind``
-#: enum in ``visualizer/schema/github-issues.schema.json``; the test asserts
-#: the two agree, so a new kind cannot reach the UI undeclared.
+#: The closed vocabulary of failure states.
 ERROR_KINDS: tuple[str, ...] = (
     "no_cli",             # gh is not installed on this machine
     "not_authenticated",  # no gh session and no stored token, or it was revoked
@@ -215,11 +112,8 @@ ERROR_KINDS: tuple[str, ...] = (
 
 #: GraphQL enum → the lowercase vocabulary §5.4 pins to GitHub's own.
 _STATES = {"OPEN": "open", "CLOSED": "closed"}
-#: An unrecognised reason becomes ``None`` rather than being coerced into
-#: the nearest neighbour. GitHub has added reasons since §5.4 was written
-#: (``DUPLICATE``), and mapping one of those onto ``not_planned`` would put
-#: a claim in the mirror that GitHub never made. Absent beats wrong — the
-#: same rule §5.3 applies to a stale ``closed``.
+#: An unrecognised reason becomes ``None`` rather than being coerced into the
+#: nearest neighbour.
 _STATE_REASONS = {
     "COMPLETED": "completed",
     "NOT_PLANNED": "not_planned",
@@ -245,9 +139,7 @@ _RATE_MARKERS = ("rate limit", "secondary rate", "abuse detection")
 # ---------------------------------------------------------------------------
 
 #: Anything with a scheme: ``https://host/owner/repo.git``,
-#: ``ssh://git@host/owner/repo.git``, ``git://host/owner/repo.git``. The
-#: userinfo group exists to be discarded — it is either an already-stripped
-#: credential or the SSH username ``git``, and neither is part of the path.
+#: ``ssh://git@host/owner/repo.git``, ``git://host/owner/repo.git``.
 _URL_RE = re.compile(
     r"^(?:(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://)?"
     r"(?:(?P<userinfo>[^/@]+)@)?"
@@ -256,16 +148,10 @@ _URL_RE = re.compile(
 )
 
 #: ``git@host:owner/repo.git`` — the scp-short form, which has no ``//`` and
-#: therefore no authority to parse. It is the default for a repo cloned over
-#: SSH, and ``git_provenance.sanitize_remote_url`` returns it untouched, so
-#: it reaches this module exactly as git stored it.
+#: therefore no authority to parse.
 _SCP_RE = re.compile(r"^(?:(?P<userinfo>[^/@]+)@)?(?P<host>[^/:]+):(?P<path>.+)$")
 
-#: What GitHub accepts in an owner or repository name. Strict not for
-#: safety — owner and name travel as GraphQL *variables*, so there is no
-#: string to inject into — but for budget: a name outside this set is not a
-#: repo any poll could resolve, and rejecting it here costs nothing while
-#: asking GitHub costs a point.
+#: What GitHub accepts in an owner or repository name.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -283,14 +169,7 @@ class RepoRef:
 
     @property
     def is_github_com(self) -> bool:
-        """Whether this is github.com proper, as opposed to an Enterprise host.
-
-        The distinction matters to the caller, not to this module: a GHE
-        remote is polled through ``--hostname`` and works if ``gh`` holds a
-        session for that host, while the poller may reasonably choose to
-        skip non-github.com remotes rather than spend a point discovering it
-        has no session there.
-        """
+        """Whether this is github.com proper, as opposed to an Enterprise host."""
         host = self.host.lower()
         return host == "github.com" or host.endswith(".github.com")
 
@@ -299,39 +178,13 @@ class RepoRef:
 
 
 def parse_remote_url(url: str | None) -> RepoRef | None:
-    """``project.json:git.remote_url`` → :class:`RepoRef`, or ``None``.
-
-    All three shapes that reach this system parse, because all three occur
-    in the wild and ``git_provenance`` passes each through unchanged:
-
-    ``https://github.com/owner/repo.git``
-        The clone default over HTTPS. A ``user:token@`` userinfo has already
-        been stripped upstream, but this function tolerates one anyway
-        rather than depending on the order of two modules.
-
-    ``ssh://git@github.com/owner/repo.git``
-        The explicit SSH form. ``git@`` is the SSH *username*, which
-        ``sanitize_remote_url`` deliberately preserves, so it is present
-        here and must not be mistaken for a path segment.
-
-    ``git@github.com:owner/repo.git``
-        The scp-short form, and the one that has no ``//`` — a naive
-        ``urlsplit`` reads the whole thing as a bare path and yields
-        nothing. It is the default remote for an SSH clone, so getting it
-        wrong would silently disable polling for a large share of projects.
-
-    ``None`` for anything else: no remote, a local path, a URL with no
-    ``owner/repo`` pair, or names outside GitHub's character set. The caller
-    reports that as ``bad_remote`` and spends no budget on it.
-    """
+    """``project.json:git.remote_url`` → :class:`RepoRef`, or ``None``."""
     if not url or not isinstance(url, str):
         return None
     text = url.strip()
     if not text:
         return None
-    # A scheme decides which grammar applies. The scp-short form is tried
-    # only when there is no ``://`` at all, so ``https://host/o/r`` can never
-    # be read as a host named ``https``.
+    # A scheme decides which grammar applies.
     match = _URL_RE.match(text) if "://" in text else _SCP_RE.match(text)
     if match is None:
         return None
@@ -343,11 +196,7 @@ def parse_remote_url(url: str | None) -> RepoRef | None:
         path = path[: -len(".git")]
     parts = [p for p in path.split("/") if p]
     if len(parts) != 2:
-        # Exactly ``owner/repo`` and nothing else. Tolerating a longer path
-        # would turn a URL this module does not understand into a
-        # plausible-looking slug, and the caller would spend a point of the
-        # global budget discovering it is not a repo. ``bad_remote`` costs
-        # nothing.
+        # Exactly ``owner/repo`` and nothing else.
         return None
     owner, name = parts
     if not _NAME_RE.match(owner) or not _NAME_RE.match(name):
@@ -356,14 +205,7 @@ def parse_remote_url(url: str | None) -> RepoRef | None:
 
 
 def _coerce_ref(value: str) -> RepoRef | None:
-    """A :class:`RepoRef` from either a remote URL or a bare ``owner/name``.
-
-    Callers hold both spellings — the poller has ``project.json``'s remote
-    URL, while a route, a test or a fixture holds the slug it read back out
-    of the mirror. The slug branch is tried first and only for a string with
-    no scheme, no ``@`` and no ``:``, so ``git@host:o/r`` can never be
-    mistaken for a two-segment slug.
-    """
+    """A :class:`RepoRef` from either a remote URL or a bare ``owner/name``."""
     text = (value or "").strip()
     if not text:
         return None
@@ -375,8 +217,10 @@ def _coerce_ref(value: str) -> RepoRef | None:
 
 
 def parse_repo_slug(url: str | None) -> str | None:
-    """``owner/repo`` for a remote URL, or ``None``. Convenience over
-    :func:`parse_remote_url` for callers that only want the slug."""
+    """
+    ``owner/repo`` for a remote URL, or ``None``. Convenience over
+    :func:`parse_remote_url` for callers that only want the slug.
+    """
     ref = parse_remote_url(url)
     return ref.slug if ref else None
 
@@ -385,10 +229,8 @@ def parse_repo_slug(url: str | None) -> str | None:
 # The cost contract, made checkable
 # ---------------------------------------------------------------------------
 
-#: A field selection carrying a pagination argument — i.e. a *connection*,
-#: the only construct that adds to a query's point cost. ``$first`` in the
-#: operation's variable list is excluded by the lookbehind: ``$first: Int!``
-#: declares a variable, it does not open a connection.
+#: A field selection carrying a pagination argument — i.e. a *connection*, the
+#: only construct that adds to a query's point cost.
 _CONNECTION_RE = re.compile(
     r"\b(?P<field>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?P<args>[^()]*)\)", re.DOTALL
 )
@@ -396,19 +238,7 @@ _PAGE_ARG_RE = re.compile(r"(?<![$\w])(?:first|last)\s*:\s*(?P<value>\$?[A-Za-z0
 
 
 def query_connections(query: str = ISSUES_QUERY) -> tuple[tuple[str, str], ...]:
-    """Every paginated connection in ``query``, as ``(field, page size)``.
-
-    Exists so the cost contract can be checked **without a network call**.
-    GitHub's scoring is not a formula this module could reimplement — the
-    measurements show ``assignees(first:5)`` adding nothing while
-    ``labels(first:10)`` adds a point — so the test does not try to predict
-    a cost. It pins the *shape* that was measured at 1 point, and any new
-    connection changes this tuple and fails.
-
-    Whitespace, field order and reformatting are all invisible here. That is
-    the point: the query is allowed to be edited, it is not allowed to grow
-    a connection unnoticed.
-    """
+    """Every paginated connection in ``query``, as ``(field, page size)``."""
     out: list[tuple[str, str]] = []
     for match in _CONNECTION_RE.finditer(query):
         page = _PAGE_ARG_RE.search(match.group("args"))
@@ -427,12 +257,7 @@ def _utc_now() -> str:
 
 @dataclass(frozen=True)
 class RateLimit:
-    """The GraphQL budget as GitHub reported it *inside the response*.
-
-    Every field is optional because a failed call still has to return
-    something, and inventing a budget is how a poller talks itself past a
-    limit it has actually hit.
-    """
+    """The GraphQL budget as GitHub reported it *inside the response*."""
 
     limit: int | None = None
     cost: int | None = None
@@ -444,13 +269,7 @@ class RateLimit:
         return self.remaining is not None and self.reset_at is not None
 
     def as_document(self) -> dict[str, Any] | None:
-        """The ``rate`` value for the mirror, or ``None`` when unknown.
-
-        ``None`` rather than a half-filled object, because the schema
-        requires ``remaining`` and ``reset_at`` together: a budget is either
-        observed or it is not, and "remaining: null" reads as a number to
-        every consumer that does not check.
-        """
+        """The ``rate`` value for the mirror, or ``None`` when unknown."""
         if not self.known:
             return None
         doc: dict[str, Any] = {"remaining": self.remaining, "reset_at": self.reset_at}
@@ -463,14 +282,7 @@ class RateLimit:
 
 @dataclass(frozen=True)
 class IssuesResult:
-    """One poll's outcome — never an exception, always one of these.
-
-    ``ok`` is the only field a caller must branch on; ``error_kind`` says
-    *which* failure it was, and is one of :data:`ERROR_KINDS`. ``rate`` is
-    populated whenever GitHub answered at all, including on a NOT_FOUND,
-    because a failed poll still spent a point and the global budget has to
-    account for it.
-    """
+    """One poll's outcome — never an exception, always one of these."""
 
     ok: bool
     repo: str | None
@@ -481,27 +293,13 @@ class IssuesResult:
     error: str | None = None
     has_next_page: bool = False
     end_cursor: str | None = None
-    #: ``repository.hasIssuesEnabled`` — whether the issue tracker is turned
-    #: on for this repository at all. ``None`` when the poll failed, because
-    #: a failure establishes nothing about the repository's settings.
-    #:
-    #: It is on the query because a repository with issues disabled answers
-    #: a *successful* poll with an empty issue set, byte-identical to a
-    #: healthy repository that simply has no open issues (verified on
-    #: ``dwivedi-ai/xo-cowork-api``). Without this the two are
-    #: indistinguishable and the empty state has to guess. It is a scalar,
-    #: not a connection, so it is free: measured on ``cjpais/Handy``,
-    #: ``rateLimit.cost`` is 1 with and without it.
+    #: ``repository.hasIssuesEnabled`` — whether the issue tracker is turned on
+    #: for this repository at all.
     issues_enabled: bool | None = None
 
     @property
     def high_water_mark(self) -> str | None:
-        """The newest ``updated_at`` in this page, for the next ``since``.
-
-        Computed from the rows rather than taken from the first one: the
-        query is ``UPDATED_AT DESC`` so they coincide today, but a caller
-        that reorders would otherwise silently rewind the mark.
-        """
+        """The newest ``updated_at`` in this page, for the next ``since``."""
         stamps = [i["updated_at"] for i in self.issues if i.get("updated_at")]
         return max(stamps) if stamps else None
 
@@ -549,21 +347,7 @@ def gh_available(gh_bin: str = GH_BIN) -> bool:
 
 
 def _subprocess_env() -> dict[str, str]:
-    """The environment for ``gh``, with the stored token injected if needed.
-
-    ``gh`` authenticates from its own ``~/.config/gh/hosts.yml``, which the
-    device-flow login in ``github_cli_auth`` populates. But a user who
-    connected by pasting a PAT has a token in ``mcp-tokens.json`` and no gh
-    session at all, and the poller should work for them too — so the stored
-    token is exported as ``GH_TOKEN`` when the environment does not already
-    carry one. An explicit ``GH_TOKEN``/``GITHUB_TOKEN`` in the process
-    environment always wins; overriding an operator's choice would be the
-    surprising direction.
-
-    The token is placed in the child's environment and nowhere else: it is
-    never logged, never interpolated into an argument (where it would show
-    up in ``ps``), and never returned in an error message.
-    """
+    """The environment for ``gh``, with the stored token injected if needed."""
     env = os.environ.copy()
     if env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"):
         return env
@@ -577,15 +361,7 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _kill_tree(proc: "asyncio.subprocess.Process") -> None:
-    """SIGKILL the timed-out process **and its children**.
-
-    The group kill is the point. Killing only ``gh`` leaves any helper it
-    spawned holding the write end of our stdout pipe, so the read never sees
-    EOF and the cleanup below blocks for its full bound — once a minute,
-    forever. Falls back to killing the process alone if the group is already
-    gone, and swallows everything: this is the cleanup path of a function
-    whose contract is that it does not raise.
-    """
+    """SIGKILL the timed-out process **and its children**."""
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         return
@@ -598,13 +374,7 @@ def _kill_tree(proc: "asyncio.subprocess.Process") -> None:
 
 
 async def _run_gh(argv: list[str], timeout_s: float) -> tuple[int | None, str, str]:
-    """One ``gh`` invocation. Returns ``(returncode, stdout, stderr)``.
-
-    ``returncode`` is ``None`` for the two cases that have no exit status:
-    the binary could not be executed, or it had to be killed on timeout.
-    The caller tells them apart by the sentinel in stderr, which keeps this
-    helper free of classification.
-    """
+    """One ``gh`` invocation. Returns ``(returncode, stdout, stderr)``."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -613,10 +383,6 @@ async def _run_gh(argv: list[str], timeout_s: float) -> tuple[int | None, str, s
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # Its own process group, so a timeout can kill the whole tree.
-            # ``gh`` may spawn helpers (a credential helper, a proxy dialer),
-            # and SIGKILL to the parent alone leaves a child holding the read
-            # end of our pipe — which a poller running once a minute turns
-            # into an accumulating leak rather than a one-off.
             start_new_session=True,
         )
     except FileNotFoundError:
@@ -630,12 +396,7 @@ async def _run_gh(argv: list[str], timeout_s: float) -> tuple[int | None, str, s
         _kill_tree(proc)
         try:
             # ``communicate`` rather than ``wait``: it reaps the process AND
-            # closes the three pipes. ``wait`` alone leaves the transport for
-            # the garbage collector, which then tries to close it against an
-            # event loop that may already be gone — a "Event loop is closed"
-            # unraisable, which is exactly the noise this module promises not
-            # to make. Bounded, because a kill that did not take must not
-            # become a poller that never returns.
+            # closes the three pipes.
             await asyncio.wait_for(proc.communicate(), timeout=5)
         except Exception:
             pass
@@ -673,13 +434,7 @@ def _parse_rate(payload: Any) -> RateLimit:
 
 
 def _classify_graphql_errors(errors: list[Any]) -> tuple[str, str] | None:
-    """The first GraphQL error, as ``(kind, message)``.
-
-    GraphQL answers ``200 OK`` with an ``errors`` array, so a missing repo
-    and a spent budget both arrive as a *successful* HTTP response with a
-    partial body — which is also why ``data.rateLimit`` is still readable
-    on a NOT_FOUND and the poll's point is still accounted for.
-    """
+    """The first GraphQL error, as ``(kind, message)``."""
     for item in errors:
         if not isinstance(item, dict):
             continue
@@ -700,12 +455,7 @@ def _classify_graphql_errors(errors: list[Any]) -> tuple[str, str] | None:
 
 
 def _classify_rest_error(payload: dict[str, Any]) -> tuple[str, str] | None:
-    """A REST-shaped error body, which gh emits for transport-level failures.
-
-    An auth failure never reaches GraphQL: ``gh`` prints
-    ``{"message": "Bad credentials", "status": "401"}`` — the REST error
-    envelope — on stdout and exits 1. Measured, not assumed.
-    """
+    """A REST-shaped error body, which gh emits for transport-level failures."""
     message = payload.get("message")
     if not isinstance(message, str):
         return None
@@ -732,8 +482,8 @@ def _classify_stderr(stderr: str, returncode: int | None) -> tuple[str, str]:
     """Last resort: gh failed without a parseable body on stdout."""
     text = (stderr or "").strip()
     lowered = text.lower()
-    # gh documents exit status 4 as "authentication required"; it is the
-    # code for a machine with no gh session and no token in the environment.
+    # gh documents exit status 4 as "authentication required"; it is the code
+    # for a machine with no gh session and no token in the environment.
     if returncode == 4 or any(m in lowered for m in _AUTH_MARKERS):
         return "not_authenticated", text or "GitHub CLI is not authenticated."
     if any(m in lowered for m in _RATE_MARKERS):
@@ -744,13 +494,7 @@ def _classify_stderr(stderr: str, returncode: int | None) -> tuple[str, str]:
 
 
 def _issue_row(node: Any) -> dict[str, Any] | None:
-    """One GraphQL issue node → one mirror row, or ``None`` if unusable.
-
-    ``labels`` is absent by design: the poll does not fetch them (§6.2), and
-    an empty array here would be the claim "this issue has no labels", which
-    the poll never establishes. Absent beats wrong — the same rule §5.3
-    applies to a stale ``closed``.
-    """
+    """One GraphQL issue node → one mirror row, or ``None`` if unusable."""
     if not isinstance(node, dict):
         return None
     node_id = node.get("id")
@@ -801,32 +545,7 @@ async def fetch_open_issues(
     timeout_s: float = GH_TIMEOUT_S,
     gh_bin: str = GH_BIN,
 ) -> IssuesResult:
-    """One repo's issues, newest-updated first. **Never raises.**
-
-    :param repo: a :class:`RepoRef`, an ``owner/name`` slug, or a remote URL.
-    :param since: high-water mark — only issues updated at or after it
-        (§6.3). Lowers the payload, not the cost.
-    :param after: an ``end_cursor`` from a previous page. One call is one
-        page and one point; pagination is the caller's decision because the
-        budget is global (§6.3) and this module cannot see it.
-    :param first: page size, clamped to 1..100.
-    :param include_closed: which pinned query to send — ``False`` selects
-        :data:`ISSUES_QUERY` (``states: [OPEN]``), ``True`` selects
-        :data:`ISSUES_QUERY_WITH_CLOSED`. This is §6.3's parameterisation
-        of ``states``, and it is a boolean rather than a list because
-        there are exactly two legitimate settings and each has its own
-        pinned, separately measured query. **Pass ``True`` whenever
-        ``since`` is set**: an issue closed since the mark stops matching
-        ``[OPEN]`` entirely, so an incremental merge would leave a stale
-        ``open`` row in the mirror forever. Both cost 1 point (measured).
-        The function keeps its name for its default behaviour.
-
-    On success, ``issues`` holds mirror-shaped rows ready for §5.2 and
-    ``has_next_page``/``end_cursor`` say whether the repo has more. On
-    failure, ``issues`` is empty and ``error_kind`` is one of
-    :data:`ERROR_KINDS` — the mirror keeps whatever it had, because a failed
-    poll is not evidence that the issues went away.
-    """
+    """One repo's issues, newest-updated first. **Never raises.**"""
     ref = repo if isinstance(repo, RepoRef) else _coerce_ref(str(repo or ""))
     if ref is None:
         return _failure(
@@ -938,9 +657,9 @@ async def fetch_open_issues(
         rate=rate,
         has_next_page=bool(info.get("hasNextPage")),
         end_cursor=cursor if isinstance(cursor, str) else None,
-        # Absent (an older cached response, or a schema that stopped
-        # offering it) reads as ``None`` — "unknown" — never as ``False``,
-        # which would claim the tracker is off.
+        # Absent (an older cached response, or a schema that stopped offering
+        # it) reads as ``None`` — "unknown" — never as ``False``, which would
+        # claim the tracker is off.
         issues_enabled=(
             bool(repository.get("hasIssuesEnabled"))
             if isinstance(repository.get("hasIssuesEnabled"), bool) else None
@@ -951,22 +670,7 @@ async def fetch_open_issues(
 async def fetch_open_issues_for_remote(
     remote_url: str | None, **kwargs: Any
 ) -> IssuesResult:
-    """:func:`fetch_open_issues` straight from ``project.json:git.remote_url``.
-
-    A remote that is not on github.com returns ``bad_remote`` **without
-    spawning** ``gh``. That gate is here rather than left to the API to
-    reject, because the poller's budget is global and a project whose origin
-    is GitLab must not cost a point every minute to rediscover that it is
-    not a GitHub repo. It is also not a hypothetical: pointing this query at
-    ``gitlab.com`` returns ``DateTime isn't a defined input type`` — a
-    different GraphQL schema entirely, which no amount of retrying fixes.
-
-    A GitHub Enterprise host is reachable, but only deliberately: construct
-    the :class:`RepoRef` and call :func:`fetch_open_issues`, which routes it
-    with ``gh --hostname``. It is not done automatically because it needs a
-    ``gh`` session on that host, and silently spending budget to find out
-    there is none is the failure this gate exists to prevent.
-    """
+    """:func:`fetch_open_issues` straight from ``project.json:git.remote_url``."""
     ref = parse_remote_url(remote_url)
     if ref is None or not ref.is_github_com:
         return _failure(

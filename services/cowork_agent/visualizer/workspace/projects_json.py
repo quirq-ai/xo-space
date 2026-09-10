@@ -1,54 +1,4 @@
-"""``<XO root>/.xo/projects.json`` — the projects registry (syncplan §5.2).
-
-Replaces ``workspace.json``, whose payload was a bare array of directory
-names. This document is authoritative for *which projects exist*, and
-carries the two facts a peer needs about each one: the ``pid`` that
-survives a rename, and where the folder came from (``git``).
-
-**The map is keyed by directory name, not by pid.** That is the one
-decision in this file worth defending, and it rests on three findings:
-
-1. **A JSON object cannot have a null key, and every project is pid-less
-   at birth.** ``scaffold_project()`` leaves ``pid: null`` present in
-   ``project.json`` until the watcher's identity fill runs, and a bare
-   folder — which ``list_project_ids()`` reports like any other — may
-   never receive one at all.
-2. **Duplicate pids are real and silent.** ``cp -r`` of a project gives
-   both copies the identical UUID and ``fill_identity`` declines to
-   re-mint on either, because both are already non-template with a pid.
-   Restore is worse: ``xo_projects_sync/tarball.py`` excludes ``.git``
-   but not ``.xo/project.json``, so a snapshot carries the origin's pid
-   into the target folder. Keyed by pid, one of those two directories
-   silently disappears from the registry.
-3. **Every consumer key in the system is already the directory name** —
-   routes, graph hubs (``p_<dirname>``), activity and timeline
-   ``project_id``, the backup repository name. Nothing holds a pid. And
-   a pid that arrived over sync is *untrusted input*: as an object key
-   it would land in this file with no clamp at all.
-
-``by_pid`` is therefore a **derived reverse index in the same file**, so
-a pid lookup stays O(1) without a second source of truth. Its values are
-**always arrays**: one pid in two folders is a reachable state and losing
-a folder is not an option, so ``len(entry) > 1`` *is* the duplicate-pid
-alarm rather than a crash. A null pid, or one that fails the key charset
-clamp, is simply absent from the index.
-
-**Cost.** This file is rewritten on every watcher tick, so nothing here
-may shell out per tick. Two caches keep it honest:
-
-* ``git_provenance()`` costs two ``git`` spawns per repository, so it is
-  refreshed per project at most every ``XO_GIT_PROVENANCE_REFRESH_S``
-  (default 300 s) — a remote URL changes about once in a project's life.
-* ``pid``/``scaffolded`` come from ``<project>/.xo/project.json``, read
-  only when its ``stat`` signature changes. Minting a pid rewrites that
-  file, so the signature is exact, and the steady state is one ``stat``
-  per project per tick instead of a read plus a JSON parse.
-
-The write itself goes through :func:`write_json_atomic_if_changed`: this
-sink owns the whole document (nothing else writes it), so an in-memory
-baseline is sound and a corrupt file is repaired by overwriting rather
-than merged into.
-"""
+"""``<XO root>/.xo/projects.json`` — the projects registry (syncplan §5.2)."""
 
 from __future__ import annotations
 
@@ -70,8 +20,8 @@ from services.cowork_agent.visualizer.workspace_index import list_project_ids
 
 logger = logging.getLogger(__name__)
 
-#: The registry, and the file it replaces. Readers keep the fallback for
-#: one release (``scopes.WorkspaceVisualizerScope.read_projects``).
+#: The registry, and the file it replaces. Readers keep the fallback for one
+#: release (``scopes.WorkspaceVisualizerScope.read_projects``).
 FILENAME = "projects.json"
 LEGACY_FILENAME = "workspace.json"
 
@@ -79,26 +29,20 @@ LEGACY_FILENAME = "workspace.json"
 SCHEMA = 2
 
 #: A pid is only used as an object key in ``by_pid`` after passing this.
-#: It admits a UUID and every sane opaque id, and excludes the shapes
-#: that make a JSON key dangerous downstream — path separators, dots that
-#: read as a traversal, control characters, the empty string.
 _SAFE_PID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$")
 
 _GIT_REFRESH_DEFAULT_S = 300.0
 
-# Both caches are keyed on ``(resolved root, directory name)``, not on the
-# name alone: ``XO_PROJECTS_ROOT`` is re-read on every call, so a root
-# switch would otherwise serve one root's git block under another's
-# project of the same name.
-# key -> (monotonic stamp, git block)
+# Both caches are keyed on ``(resolved root, directory name)``, not on the name
+# alone: ``XO_PROJECTS_ROOT`` is re-read on every call, so a root switch would
+# otherwise serve one root's git block under another's project of the same
+# name.
 _git_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 # key -> (project.json stat signature, pid)
 _identity_cache: dict[tuple[str, str], tuple[tuple, Optional[str]]] = {}
 # The payload this process last wrote, per target path — the write-on-change
 # baseline (syncplan §3: held in memory rather than re-read, and sound because
-# this sink owns the whole document). Keyed like the two caches above, and for
-# the same reason: ``XO_PROJECTS_ROOT`` is re-read on every call, so a root
-# switch must not be answered from the previous root's registry.
+# this sink owns the whole document).
 _previous: dict[str, dict] = {}
 _PREVIOUS_MAX = 64
 
@@ -132,19 +76,13 @@ def reset_caches() -> None:
 
 
 def _identity(key: tuple[str, str], pdir: Path) -> tuple[Optional[str], bool]:
-    """``(pid, scaffolded)`` for one project, from its ``project.json``.
-
-    Cached on the metadata file's ``stat`` signature: the pid only ever
-    changes by rewriting that file, so a matching signature means a
-    matching pid, and the tick pays one ``stat`` instead of a read and a
-    parse per project.
-    """
+    """``(pid, scaffolded)`` for one project, from its ``project.json``."""
     meta = pdir / ".xo" / "project.json"
     try:
         st = meta.stat()
     except OSError:
-        # Not scaffolded, or unreadable — either way there is no identity
-        # to report and no cache entry worth keeping.
+        # Not scaffolded, or unreadable — either way there is no identity to
+        # report and no cache entry worth keeping.
         _identity_cache.pop(key, None)
         return None, False
 
@@ -164,20 +102,7 @@ def _identity(key: tuple[str, str], pdir: Path) -> tuple[Optional[str], bool]:
 
 
 def _git_block(key: tuple[str, str], pdir: Path) -> dict:
-    """The ``git`` block for one project, refreshed on an interval.
-
-    ``is_repo`` is answered from a single ``stat`` every time — it is what
-    flips when a user runs ``git init`` — while the two fields that cost a
-    subprocess are reused until the interval expires.
-
-    The refresh path is also where the **durable** copy is written, into
-    ``<project>/.xo/project.json`` (syncplan §5.1 assigns ``git`` there to
-    "the git refresher"; only the cache half was ever wired). Hanging it
-    off the cache miss is what keeps it free: no extra ``git`` spawn, and
-    at most one key-scoped merge per project per TTL rather than one per
-    tick. ``refresh_git`` declines to create the file, so an unscaffolded
-    folder stays unscaffolded.
-    """
+    """The ``git`` block for one project, refreshed on an interval."""
     repo = is_git_repo(pdir)
     now = time.monotonic()
     ttl = git_refresh_seconds()
@@ -202,9 +127,8 @@ def _git_block(key: tuple[str, str], pdir: Path) -> dict:
     try:
         refresh_git(pdir / ".xo", block["remote_url"], block["default_branch"])
     except Exception:  # pragma: no cover - the cache must not depend on it
-        # The registry is the caller's product; a failed durable write must
-        # not cost it its tick. ``refresh_git`` already swallows the corrupt
-        # case, so reaching here means something rarer (a read-only tree).
+        # The registry is the caller's product; a failed durable write must not
+        # cost it its tick.
         logger.warning("could not persist git provenance for %s", pdir, exc_info=True)
     return block
 
@@ -233,8 +157,8 @@ def build(project_ids: Sequence[str] | None = None) -> dict:
         if isinstance(pid, str) and _SAFE_PID_RE.match(pid):
             by_pid.setdefault(pid, []).append(name)
 
-    # Entries that vanished from the root — or belong to a root this
-    # process has stopped watching — must not pin memory forever.
+    # Entries that vanished from the root — or belong to a root this process
+    # has stopped watching — must not pin memory forever.
     live = {(str(root), name) for name in names}
     for cache in (_git_cache, _identity_cache):
         for stale in [key for key in cache if key not in live]:
@@ -251,12 +175,7 @@ def build(project_ids: Sequence[str] | None = None) -> dict:
 
 
 def apply(project_ids: Sequence[str] | None = None) -> bool:
-    """Refresh ``projects.json``. Returns ``True`` iff the file changed.
-
-    ``project_ids`` lets the watcher pass the list it already resolved
-    once for the whole tick (syncplan §10, T23); ``None`` keeps the
-    standalone behaviour of walking the root.
-    """
+    """Refresh ``projects.json``. Returns ``True`` iff the file changed."""
     payload = build(project_ids)
     target = path()
     key = str(target)
@@ -265,9 +184,7 @@ def apply(project_ids: Sequence[str] | None = None) -> bool:
         changed = write_json_atomic_if_changed(target, payload, previous=_previous[key])
     else:
         # First write of this process: the baseline has to come off disk,
-        # otherwise a restart rewrites an identical file. Same branch covers
-        # the file being deleted underneath us — a cached baseline alone
-        # would leave it missing until its content happened to change.
+        # otherwise a restart rewrites an identical file.
         changed = write_json_atomic_if_changed(target, payload)
     if key not in _previous and len(_previous) >= _PREVIOUS_MAX:
         _previous.clear()

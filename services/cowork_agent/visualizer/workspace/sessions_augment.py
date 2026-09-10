@@ -1,32 +1,6 @@
-"""``~/.quirq/workspace/sessions/sessions-augment.json`` — union of
-every project's per-project augment file.
-
-Same schema; same key shape (composite session id or native session
-id, depending on whether an adapter row exists at the project tier).
-
-Runtime tier since T20, via ``project_layout.workspace_sessions_dir()`` — the
-write below is unchanged because that chokepoint is what moved.
-
-**One key in that union is not a session id.** The union is flat — a later
-project's row simply overwrites an earlier one under the same key — which is
-sound for as long as every key is globally unique, and real keys are: a
-composite key carries its agent and a session-derived suffix, a native id is
-a UUID. Then T7 moved todo ingestion to the HTTP API and
-``todos_store.PROJECT_SESSION`` introduced ``"_project"`` as the pseudo-session
-for a todo created without one. That is a *constant*, not an identifier, so
-every project holding an API-created todo emitted a row under the identical
-key and the union kept whichever project sorted last — the rest lost their
-``taskCount`` from the aggregate.
-
-The pseudo-session is therefore namespaced by the project's **pid** here (see
-:func:`_union_key`), and only the pseudo-session is: real keys must survive
-verbatim, because ``reader.merge_sessionslist`` joins this file to the
-workspace ``sessionslist.json`` by key and drops any augment row it cannot
-match. Renaming them all would silently empty the merge.
-
-Re-keying needs no migration. This file is wholly derived and rebuilt from the
-per-project files every tick, so a pid minted after the fact just produces a
-different key on the next pass.
+"""
+``~/.quirq/workspace/sessions/sessions-augment.json`` — union of every
+project's per-project augment file.
 """
 
 from __future__ import annotations
@@ -51,8 +25,7 @@ _AUGMENT_RELATIVE = "sessions/sessions-augment.json"
 
 # The payload this process last wrote, per target path — the write-on-change
 # baseline (syncplan §3: held in memory rather than re-read, and sound because
-# this sink owns the whole document). Keyed by path because
-# ``QUIRQ_STATE_ROOT`` is re-read on every call.
+# this sink owns the whole document).
 _previous: dict[str, dict] = {}
 _PREVIOUS_MAX = 64
 
@@ -67,35 +40,17 @@ def _now_iso() -> str:
 
 
 def _union_key(key: str, name: str, pid: str | None) -> str:
-    """The key this row takes in the union.
-
-    Identity, not the folder name, is the qualifier: ``pid`` survives a
-    rename and the directory name does not, so a renamed project keeps its
-    aggregate row instead of appearing to be a new one. The folder name is
-    the fallback for the pre-mint window — a brand-new project whose
-    identity the watcher has not filled in yet. Either way the result is
-    *some* per-project qualifier, which is all the collision needs.
-
-    Only the pseudo-session is qualified. Real session keys are already
-    globally unique and are the join key for
-    ``reader.merge_sessionslist``; rewriting them would break that join.
-    """
+    """The key this row takes in the union."""
     if key != PROJECT_SESSION:
         return key
     return f"{pid or name}/{key}"
 
 
 def apply(project_ids: Sequence[str] | None = None) -> bool:
-    """Rebuild the union. Returns ``True`` iff the file changed (T26).
-
-    ``project_ids``: the tick-wide project list, resolved once by the
-    watcher (docs/syncplan.md §10, T23). ``None`` walks the root."""
+    """Rebuild the union. Returns ``True`` iff the file changed (T26)."""
     sessions: dict[str, dict] = {}
     # ``project_ids`` are directory NAMES — that is what every path helper
-    # takes, and what ``list_project_ids`` returns. ``pids`` is the separate
-    # identity projection (same walk, same parse: see
-    # ``workspace_index.list_project_pids``), used only to qualify the
-    # pseudo-session key.
+    # takes, and what ``list_project_ids`` returns.
     names = project_ids if project_ids is not None else list_project_ids()
     pids = list_project_pids()
     for name in names:
@@ -122,10 +77,10 @@ def apply(project_ids: Sequence[str] | None = None) -> bool:
             target, payload, ("updated_at",), previous=_previous[key]
         )
     else:
-        # No baseline yet (first tick of the process), or the file was
-        # removed underneath us — ``rm -rf ~/.quirq`` is a documented clean
-        # reset (syncplan §4) and must repopulate on the next tick, not on
-        # the next content change. The helper takes its baseline from disk.
+        # No baseline yet (first tick of the process), or the file was removed
+        # underneath us — ``rm -rf ~/.quirq`` is a documented clean reset
+        # (syncplan §4) and must repopulate on the next tick, not on the next
+        # content change.
         changed = write_json_atomic_if_changed(target, payload, ("updated_at",))
     if key not in _previous and len(_previous) >= _PREVIOUS_MAX:
         _previous.clear()

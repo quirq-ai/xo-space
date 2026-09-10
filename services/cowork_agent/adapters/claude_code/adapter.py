@@ -22,13 +22,8 @@ _native_map: dict[str, str] = {}
 
 
 # ── Session index I/O ─────────────────────────────────────────────────────────
-#
 # The index is machine-local and PARTITIONED: one shard file per row, under
-# ``~/.quirq/projects/<key>/sessions/sessionslist.d/`` (syncplan T19). This
-# module never builds that path and never rewrites the whole document — it asks
-# ``engine.sessions_io`` for the merged view and hands back one row at a time,
-# so a concurrent write from another stream (or another backend) in the same
-# project cannot lose this one's row.
+# ``~/.quirq/projects/<key>/sessions/sessionslist.d/`` (syncplan T19).
 
 
 def _load_agent_index(agent_id: str) -> dict:
