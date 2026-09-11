@@ -31,10 +31,9 @@ observable contract is preserved. Vercel codes always arrive with a PKCE
 ``state`` and can never be mistaken for MagicPath's.
 
 Session custody: ``~/.magicpath/session.json`` is written and deleted by the
-CLI only — this module never reads, stores, or logs tokens. Authorization codes
-are single-use secrets: they must never appear in log lines or response bodies,
-and login/logout runs must never pass ``log_path=`` (the command log renders
-the full argv).
+CLI only — this module never reads or stores tokens. Authorization codes are
+single-use secrets: they must never appear in response bodies, and command
+logging must keep redacting ``--code`` values from argv/output.
 """
 
 import asyncio

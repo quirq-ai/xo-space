@@ -958,7 +958,7 @@ function installationArticle(){
               <tr><td>./.xo</td><td>The Space tier, and only the durable half of it: space.json (the Space record), projects.json (the projects registry) and xo.json (the frontend manifest). Every derived rollup — the graph, dashboard and sessions payloads the UI reads over /xo/*.json, plus workspace stats, the sessions/ unions and the workspace timeline — is under ./.quirq/workspace/. Live presence is under ./.quirq/watcher/activity/</td></tr>
               <tr><td>./xo-space</td><td>The Quirq source checkout the installer owns and updates</td></tr>
               <tr><td>./xo-space/venv</td><td>The Python environment</td></tr>
-              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, watcher/ with its offsets, locks and live-presence snapshots, and the runtime tier — projects/&lt;pid&gt;/ per project and workspace/ for the cross-project rollups. All of it is re-derivable; none of it syncs</td></tr>
+              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, the command log commands.log, watcher/ with its offsets, locks and live-presence snapshots, and the runtime tier — projects/&lt;pid&gt;/ per project and workspace/ for the cross-project rollups. All of it is re-derivable; none of it syncs</td></tr>
             </tbody>
           </table>
         </div>
@@ -1479,6 +1479,7 @@ function quirqDataArticle(){
 ├── runtime.env                 # mode 0600; typed restart-time controls
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
+├── commands.log                # every external command Quirq runs, redacted and rotated locally
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
 ├── projects/
 │   └── &lt;pid&gt;/                # per-project runtime tier, keyed by project.json:pid
