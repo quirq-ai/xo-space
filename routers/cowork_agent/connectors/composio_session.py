@@ -56,8 +56,9 @@ async def xo_auth_session_self():
             status_code=401,
             detail={
                 "error": (
-                    f"Workspace identity unavailable ({exc}). {state.WORKSPACE_ENV} "
-                    "is injected by the Coder pod."
+                    f"Workspace identity unavailable ({exc}). Coder injects "
+                    f"{state.WORKSPACE_ENV}; a local install sets "
+                    f"{state.LOCAL_WORKSPACE_ENV} in .env."
                 )
             },
         )

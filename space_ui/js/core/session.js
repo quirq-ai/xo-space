@@ -19,7 +19,7 @@
    The id is minted once and shared: concurrent callers await the same promise. */
 /* Same stamp as the connectors view, so both share ONE api.js module instance
    (a differing URL would give each its own, splitting singleFlight's map). */
-import {apiFetch} from './api.js?v=20260904-tenancy1';
+import {apiFetch} from './api.js?v=20260911-detailerror1';
 
 let sessionId=null;
 let inflight=null;
