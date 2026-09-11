@@ -54,6 +54,10 @@ routers/                          broker routes only — NO agent branching
 
 services/
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
+  inbox/                          the Space Inbox (a property of the Space, not of any agent): store
+                                    (~/.quirq/inbox.json read/write, retention) feeders (timeline,
+                                    todos, sharing, issues, connections) service (the router-facing
+                                    surface); routes in routers/cowork_agent/bff/inbox.py
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
@@ -69,10 +73,6 @@ services/
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
-    inbox/                           the Inbox: store (inbox.json read/write, retention) feeders
-                                    (timeline, todos, sharing, issues, connections) service (the
-                                    router-facing surface); file at <XO root>/.xo/inbox.json,
-                                    routes in bff/inbox.py
     connections/                     connections polling for the Inbox (core, agent-free): store
                                     (~/.quirq/connections/<toolkit>/ config, state, events)
                                     collectors (the read-only catalog per toolkit) mcp_client

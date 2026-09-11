@@ -1,4 +1,10 @@
-"""The inbox file: ``<XO root>/.xo/inbox.json``.
+"""The inbox file: ``~/.quirq/inbox.json`` (under ``QUIRQ_STATE_ROOT``).
+
+Machine-local, next to the polled connections and the derived workspace
+views: what a person has seen or done here is this install's state, not
+something a project folder should carry into git or a sync. A file left at
+the pre-2026-09-11 location, ``<XO root>/.xo/inbox.json``, is moved here
+once on first use.
 
 Every write goes through :func:`modify` (``flock.locked`` around one
 read-modify-write, ``write_json_atomic`` for the swap), so the API and
@@ -16,11 +22,13 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.project_layout import workspace_xo_dir
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
@@ -230,13 +238,35 @@ def apply_retention(items: list[dict], now: Optional[datetime] = None) -> tuple[
 
 
 def inbox_path() -> Path:
+    return quirq_state_dir() / "inbox.json"
+
+
+def _legacy_path() -> Path:
     return workspace_xo_dir() / "inbox.json"
+
+
+def _adopt_legacy(path: Path) -> None:
+    """Move a file from the old ``.xo`` location once, only when nothing sits
+    at the new one. Best effort: a failure leaves both files alone."""
+    if path.exists():
+        return
+    legacy = _legacy_path()
+    try:
+        if not legacy.is_file():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(path))
+        logger.info("inbox: moved %s to %s", legacy, path)
+    except OSError as exc:
+        logger.warning("inbox: could not move the legacy inbox file: %s", exc)
 
 
 def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
     """``(document, ok)``. ``ok`` is False when the file exists with content
     that is not JSON; callers must not overwrite it in that case."""
-    path = path or inbox_path()
+    if path is None:
+        path = inbox_path()
+        _adopt_legacy(path)
     raw = read_json(path)
     ok = True
     if raw is None and path.is_file():

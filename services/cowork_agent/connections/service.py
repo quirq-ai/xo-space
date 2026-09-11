@@ -168,7 +168,7 @@ async def _refresh_inbox(toolkit: str) -> None:
     up). Imported lazily: the inbox package reads this package's store, so
     the dependency stays one-way at import time."""
     try:
-        from services.cowork_agent.inbox import service as inbox_service
+        from services.inbox import service as inbox_service
         await asyncio.to_thread(inbox_service.refresh, force=True)
     except asyncio.CancelledError:
         raise

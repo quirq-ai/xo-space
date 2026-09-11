@@ -379,7 +379,7 @@ const TAB_GUIDES={
     name:'Inbox',
     kicker:'Tab guide · Incoming information',
     title:'Inbox: what arrived, and whether it was handled',
-    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Five feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), sharing events from the in-memory commit relay, GitHub issues from the issue mirror of every project, and items collected from polled connections (Gmail, Google Calendar, Notion, Slack, Telegram) under ~/.quirq/connections/. Anything else is posted through the API. The whole tab is one hand-editable JSON file, &lt;XO root&gt;/.xo/inbox.json.',
+    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Five feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), sharing events from the in-memory commit relay, GitHub issues from the issue mirror of every project, and items collected from polled connections (Gmail, Google Calendar, Notion, Slack, Telegram) under ~/.quirq/connections/. Anything else is posted through the API. The whole tab is one hand-editable JSON file, ~/.quirq/inbox.json.',
     facts:['one JSON file','five feeders + API','new / seen / done','source filter','unread badge on the tab','hand-editable','500 items, done kept 30 days'],
     jobs:[
       ['See what is new','The tab badge counts new items and the header line reads the new, open, and done totals. Open lists new plus seen, Done lists what was handled, All lists everything the file holds.'],
@@ -392,7 +392,7 @@ const TAB_GUIDES={
     sources:[
       ['GET /api/inbox?status=open|done|all&limit=N','The list the tab renders: counts over the whole file, items newest first, truncated to limit (default 200, at most 500). Every read runs the feeders first, throttled to once per five seconds, and a feeder failure never fails the read.','Live view of the file'],
       ['POST /api/inbox · PATCH /api/inbox/{id} · DELETE /api/inbox/{id}','Create an item, change its status, remove it. Delete is idempotent; a malformed id is a 404.','Writes'],
-      ['<XO root>/.xo/inbox.json','Items, the per-feeder cursors, and the sources block that switches each feeder on or off. Written atomically under the same file lock the todo API uses, so a hand edit and an API write do not tear.','Workspace .xo file'],
+      ['~/.quirq/inbox.json','Items, the per-feeder cursors, and the sources block that switches each feeder on or off. Written atomically under the same file lock the todo API uses, so a hand edit and an API write do not tear.','Workspace .xo file'],
       ['~/.quirq/workspace/timeline.jsonl','The timeline feeder reads session.started and todo.added events (todo.completed, file.created, and file.edited only when enabled) and keeps the newest timestamp as its cursor. A fresh inbox takes only the last 24 hours.','Feeder input'],
       ['<project>/.xo/todos.json','The todos feeder raises one item per todo in a watched status (blocked by default) and marks it done by itself once the todo leaves that status or disappears.','Feeder input'],
       ['GET /api/project-sharing/status','The sharing feeder reads the recent list of the in-memory relay status: shared_with_you, fetched, error, revoked. That list restarts empty with the server, so a persisted cursor never re-ingests old events.','Feeder input'],
@@ -416,10 +416,10 @@ const TAB_GUIDES={
       ['Issue never closes','Auto-close needs every mirror readable in the same run. While one mirror file is corrupt the feeder keeps every issue item open on purpose; fix or delete that file and the next run closes what left the watched state.'],
       ['Item came back after delete','Feeder items are keyed. Deleting one removes it, but the feeder re-creates it while its source still reports it (a todo still blocked) or when its cursor is reset. Mark it done instead to keep it out of Open.'],
       ['Status reset on refresh','It should not: a feeder updates the title, body, and link of an existing key only. If it happens, a hand edit removed the key field and the item was re-created.'],
-      ['File missing','&lt;XO root&gt;/.xo/inbox.json appears on the first ingest that finds something or on the first POST; a read-only GET on an empty workspace creates nothing.'],
+      ['File missing','~/.quirq/inbox.json appears on the first ingest that finds something or on the first POST; a read-only GET on an empty workspace creates nothing.'],
       ['Items disappearing','Retention: done items older than 30 days are pruned, and the file is capped at 500 items (oldest done first, then the oldest of the rest).']
     ],
-    note:'Inbox owns one file, &lt;XO root&gt;/.xo/inbox.json, and nothing else. The feeders only read their sources; the API and the feeders are the only writers, and both tolerate a hand edit. It never writes project files, timeline.jsonl, todos.json, or .quirq. Connection polling writes its own folders under ~/.quirq/connections/, owned by the poller and the Connectors tab, never by Inbox.'
+    note:'Inbox owns one file, ~/.quirq/inbox.json (machine-local, next to the polled connections), and nothing else. The feeders only read their sources; the API and the feeders are the only writers, and both tolerate a hand edit. It never writes project files, timeline.jsonl, todos.json, or .quirq. Connection polling writes its own folders under ~/.quirq/connections/, owned by the poller and the Connectors tab, never by Inbox.'
   },
   wiki:{
     tab:'wiki',
@@ -1470,7 +1470,6 @@ function xoDataArticle(){
               <tr><td><code>stats.json</code></td><td><code>~/.quirq/workspace</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
               <tr><td><code>timeline.jsonl</code></td><td><code>~/.quirq/workspace</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
               <tr><td><code>xo.json</code></td><td>.xo</td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
-              <tr><td><code>inbox.json</code></td><td>.xo</td><td>What arrived in the workspace and its state: items with a <code>new</code>, <code>seen</code>, or <code>done</code> status, the per-feeder cursors, and the <code>sources</code> block that switches each feeder on or off. Hand-editable: unknown keys survive a rewrite.</td><td>the Inbox API on every write, plus its five feeders (timeline, todos, sharing, issues, connections) on each read, at most every 5s; capped at 500 items, done items kept 30 days</td></tr>
             </tbody>
           </table>
         </div>
@@ -1537,6 +1536,7 @@ function quirqDataArticle(){
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
+├── inbox.json                  # the Space Inbox: items, seen/done state, feeder cursors; hand-editable
 ├── connections/                # per-connection polling for Inbox, one folder per toolkit
 │   └── &lt;toolkit&gt;/            # gmail, googlecalendar, notion
 │       ├── config.json         # enabled, interval_s, collectors; hand-editable
@@ -1666,6 +1666,20 @@ function quirqDataArticle(){
             activity schema and adds <code>project_id</code> to each session
             row so workspace UIs can group live work.</p>
             <dl><div><dt>Read API</dt><dd>GET /api/xo-projects/activity</dd></div><div><dt>Project API</dt><dd>GET /api/xo-projects/{project_id}/activity</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>inbox.json</code><span>the Space Inbox</span></header>
+            <p>What arrived in the workspace and what a person did about it:
+            items with a <code>new</code>, <code>seen</code>, or
+            <code>done</code> status, the per-feeder cursors, and the
+            <code>sources</code> block that switches each feeder on or off.
+            Machine-local on purpose: seen and done are this install's state,
+            not something a project folder should carry into git or a sync.
+            Hand-editable; unknown keys survive a rewrite, and retention
+            (done items older than 30 days, then a 500 item cap) runs on every
+            write.</p>
+            <dl><div><dt>Writer</dt><dd>the Inbox API on every write, plus its five feeders (timeline, todos, sharing, issues, connections), under a file lock</dd></div><div><dt>Read API</dt><dd>GET /api/inbox</dd></div></dl>
           </article>
 
           <article class="wiki-file">

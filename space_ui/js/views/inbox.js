@@ -2,7 +2,7 @@
    with it. Sessions starting, todos going blocked, repos shared with this
    workspace, GitHub issues from the mirror, items collected from polled
    connections, and anything an agent POSTs land as rows here (data: GET
-   /api/inbox, a small service over <XO root>/.xo/inbox.json). Three
+   /api/inbox, a small service over ~/.quirq/inbox.json). Three
    statuses: new (unseen), seen (expanded once), done. Every field of a row
    is untrusted (agents write timeline content, anyone can POST), so every
    string is escaped before it reaches innerHTML. Independent of the other

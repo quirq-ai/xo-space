@@ -57,23 +57,25 @@ class InboxDocsTests(unittest.TestCase):
         self.assertIn("between Inbox and Setup", wiki)
         self.assertNotIn("between Sessions and Setup", wiki)
 
-    def test_wiki_xo_catalog_lists_inbox_json(self) -> None:
+    def test_wiki_catalogs_place_inbox_json_under_quirq_not_xo(self) -> None:
         wiki = read("space_ui/js/views/wiki.js")
         table = wiki[wiki.index("Workspace tier · <code>&lt;XO root&gt;/.xo/</code>"):]
         table = table[: table.index("</table>")]
-        self.assertIn("<code>inbox.json</code>", table)
-        self.assertIn("timeline, todos, sharing", table)
+        self.assertNotIn("<code>inbox.json</code>", table, "the inbox is machine-local, not a .xo file")
+        quirq = wiki[wiki.index("<pre class=\"wiki-tree\">~/.quirq/"):]
+        self.assertIn("inbox.json", quirq[: quirq.index("</pre>")])
+        self.assertIn("<header><code>inbox.json</code><span>the Space Inbox</span></header>", wiki)
+        self.assertIn("timeline, todos, sharing, issues, connections", wiki)
+        self.assertNotIn("&lt;XO root&gt;/.xo/inbox.json", wiki)
 
-    def test_quirq_catalog_contract_lists_inbox_json(self) -> None:
-        entries = [
-            d for d in quirq_catalog._WORKSPACE_OUTPUT_CONTRACT
-            if d["path"] == "inbox.json"
-        ]
-        self.assertEqual(len(entries), 1)
-        entry = entries[0]
-        self.assertEqual(entry["used_by"], "Inbox")
-        self.assertIn("feeders", entry["producer"])
-        self.assertIn("cursors", entry["purpose"])
+    def test_quirq_catalog_describes_inbox_json_as_machine_local(self) -> None:
+        self.assertEqual(
+            [d for d in quirq_catalog._WORKSPACE_OUTPUT_CONTRACT if d["path"] == "inbox.json"], [],
+            "no longer a workspace .xo file",
+        )
+        text = quirq_catalog._description("inbox.json", is_dir=False)
+        self.assertIn("Inbox", text)
+        self.assertIn("cursors", text)
 
     def test_readme_documents_the_inbox_tab(self) -> None:
         readme = read("space_ui/README.md")
@@ -90,7 +92,9 @@ class InboxDocsTests(unittest.TestCase):
             "DELETE /api/inbox/{id}",
         ):
             self.assertIn(route, readme)
-        self.assertIn("`<XO root>/.xo/inbox.json`", readme)
+        self.assertIn("`~/.quirq/inbox.json`", readme)
+        self.assertNotIn(".xo/inbox.json", readme)
+        self.assertIn("`services/inbox/store.py`", readme)
         for feeder in ("`timeline`", "`todos`", "`sharing`"):
             self.assertIn(feeder, readme)
         for constant in ("MAX_ITEMS = 500", "DONE_TTL_DAYS = 30"):
@@ -128,6 +132,11 @@ class InboxDocsTests(unittest.TestCase):
     def test_developing_guide_lists_the_inbox_package(self) -> None:
         dev = read("DEVELOPING.md")
         self.assertIn("inbox/", dev)
+        # the package sits beside swarm_api, not under cowork_agent
+        services_block = dev[dev.index("services/\n"):dev.index("  cowork_agent/\n")]
+        self.assertIn("  inbox/", services_block)
+        self.assertNotIn("cowork_agent/inbox", dev)
+        self.assertIn("~/.quirq/inbox.json", dev)
         self.assertIn("bff/inbox.py", dev)
 
 

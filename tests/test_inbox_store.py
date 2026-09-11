@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from services.cowork_agent import project_layout
 
-from services.cowork_agent.inbox import feeders, service, store
+from services.inbox import feeders, service, store
 from services.cowork_agent.project_sharing import status as sharing_status
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
@@ -50,7 +50,7 @@ class InboxStoreTests(unittest.TestCase):
 
     # helpers
     def path(self) -> Path:
-        return self.root / ".xo" / "inbox.json"
+        return self.root / ".quirq" / "inbox.json"
 
     def write(self, doc) -> None:
         self.path().parent.mkdir(parents=True, exist_ok=True)
@@ -434,3 +434,47 @@ class InboxStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InboxLocationTests(unittest.TestCase):
+    """The file is machine-local state under the Quirq root, and a file left
+    at the earlier ``<XO root>/.xo/inbox.json`` location is moved once."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self._env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.root),
+                                            "QUIRQ_STATE_ROOT": str(self.root / ".quirq")})
+        self._env.start()
+        service._reset_throttle()
+
+    def tearDown(self) -> None:
+        service._reset_throttle()
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def test_path_is_under_the_quirq_root_not_the_xo_root(self) -> None:
+        # the XO root is resolved (macOS keeps /var as a symlink to /private/var), the Quirq root is not
+        self.assertEqual(store.inbox_path(), self.root / ".quirq" / "inbox.json")
+        self.assertEqual(store._legacy_path().resolve(), (self.root / ".xo" / "inbox.json").resolve())
+
+    def test_a_legacy_file_is_moved_once_on_first_use(self) -> None:
+        legacy = self.root / ".xo" / "inbox.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema": 1, "items": [
+            {"id": "aaaaaaaa", "ts": "2026-09-10T00:00:00Z", "title": "carried over", "status": "seen"}]}))
+        doc, ok = store.load_document()
+        self.assertTrue(ok)
+        self.assertEqual([it["id"] for it in doc["items"]], ["aaaaaaaa"])
+        self.assertTrue(store.inbox_path().is_file(), "moved to the Quirq root")
+        self.assertFalse(legacy.exists(), "nothing is left behind in .xo")
+
+    def test_a_legacy_file_never_overwrites_a_newer_one(self) -> None:
+        new = store.inbox_path(); new.parent.mkdir(parents=True)
+        new.write_text(json.dumps({"schema": 1, "items": [
+            {"id": "bbbbbbbb", "ts": "2026-09-11T00:00:00Z", "title": "current", "status": "new"}]}))
+        legacy = self.root / ".xo" / "inbox.json"; legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema": 1, "items": []}))
+        doc, _ = store.load_document()
+        self.assertEqual([it["id"] for it in doc["items"]], ["bbbbbbbb"])
+        self.assertTrue(legacy.exists(), "left alone: the new file wins and the old one is not touched")

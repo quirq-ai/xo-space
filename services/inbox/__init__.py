@@ -1,4 +1,4 @@
-"""Space inbox: one human-readable ``<XO root>/.xo/inbox.json`` holding
+"""Space inbox: one human-readable ``~/.quirq/inbox.json`` holding
 information that arrived in the workspace, its seen/done state, and the
 feeder cursors.
 

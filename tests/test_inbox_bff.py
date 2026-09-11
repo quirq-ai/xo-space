@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routers.cowork_agent.bff import inbox as inbox_routes
-from services.cowork_agent.inbox import service
+from services.inbox import service
 
 ITEM = {"id": "deadbeef", "ts": "2026-09-10T12:00:00Z", "source": "api", "kind": "note", "title": "t",
         "body": "", "project_id": None, "link": None, "status": "new", "key": None}

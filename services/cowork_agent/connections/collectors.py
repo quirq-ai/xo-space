@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from services.cowork_agent.connectors.composio.service import TOOLKITS
-from services.cowork_agent.inbox.store import parse_ts
+from services.inbox.store import parse_ts
 
 TITLE_MAX, BODY_MAX = 300, 4000
 TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"

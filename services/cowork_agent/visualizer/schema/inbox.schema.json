@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/inbox.schema.json",
-  "title": "xo inbox (~/xo-projects/.xo/inbox.json)",
-  "description": "Information that arrived in the workspace, its seen/done state, and the feeder cursors. Written by the inbox service (services/cowork_agent/inbox/) and hand-editable: unknown keys at the top level and per item survive a rewrite, items without a valid id or title are dropped, an invalid status becomes new.",
+  "title": "xo inbox (~/.quirq/inbox.json)",
+  "description": "Information that arrived in the workspace, its seen/done state, and the feeder cursors. Written by the inbox service (services/inbox/) and hand-editable: unknown keys at the top level and per item survive a rewrite, items without a valid id or title are dropped, an invalid status becomes new.",
   "type": "object",
   "additionalProperties": true,
   "required": ["schema", "items"],

@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent.connections import store as connections_store
-from services.cowork_agent.inbox import feeders, service, store
+from services.inbox import feeders, service, store
 from services.cowork_agent.project_sharing import status as sharing_status
 from services.cowork_agent.visualizer import github_mirror
 
@@ -94,10 +94,10 @@ class _Base(unittest.TestCase):
                 "url": f"https://mail.google.com/mail/u/0/#all/{key}", "toolkit": toolkit, **extra}
 
     def inbox(self) -> dict:
-        return json.loads((self.projects / ".xo" / "inbox.json").read_text(encoding="utf-8"))
+        return json.loads((self.root / ".quirq" / "inbox.json").read_text(encoding="utf-8"))
 
     def write_inbox(self, doc: dict) -> None:
-        path = self.projects / ".xo" / "inbox.json"
+        path = self.root / ".quirq" / "inbox.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc), encoding="utf-8")
 
@@ -362,7 +362,7 @@ class InboxUrlFieldTests(_Base):
         self.assertEqual((url["type"], url["maxLength"], url["pattern"]), (["string", "null"], 2000, "^https?://"))
 
     def test_no_dashes_or_agent_names_or_router_imports_in_the_feeders(self) -> None:
-        for rel in ("services/cowork_agent/inbox/feeders.py", "services/cowork_agent/inbox/store.py",
+        for rel in ("services/inbox/feeders.py", "services/inbox/store.py",
                     "services/cowork_agent/visualizer/schema/inbox.schema.json"):
             with self.subTest(file=rel):
                 text = (ROOT / rel).read_text(encoding="utf-8")

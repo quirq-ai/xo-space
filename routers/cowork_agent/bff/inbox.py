@@ -5,7 +5,9 @@
   PATCH  /api/inbox/{item_id}                       body {status}
   DELETE /api/inbox/{item_id}                       {item_id, deleted} (idempotent)
 
-Declarative over services.cowork_agent.inbox.service (typed errors become
+Declarative over services.inbox.service (the Inbox is a property of the
+Space, so its package sits beside swarm_api rather than under
+cowork_agent; typed errors become
 HTTP here). Plain ``def`` handlers: the service does file I/O, so FastAPI
 runs them in its threadpool. No os/pathlib in this module (BFF rule P2).
 """
@@ -17,7 +19,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
-from services.cowork_agent.inbox import service
+from services.inbox import service
 
 router = APIRouter()
 
