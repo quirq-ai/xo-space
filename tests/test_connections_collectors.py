@@ -39,7 +39,8 @@ class CatalogTests(unittest.TestCase):
                 with self.subTest(toolkit=toolkit, collector=spec["id"]):
                     self.assertTrue(SPEC_KEYS <= set(spec), f"missing keys: {SPEC_KEYS - set(spec)}")
                     self.assertEqual(categories.classify(toolkit, spec["tool"]), "read")
-                    self.assertTrue(spec.get("url_keys") or spec.get("url_template"))
+                    # a url source is always declared, even when a toolkit has none to offer
+                    self.assertTrue("url_keys" in spec or "url_template" in spec)
                     self.assertIsInstance(spec["args"], dict)
 
     def test_catalog_contents(self) -> None:
@@ -57,6 +58,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(categories.classify("notion", "NOTION_SEARCH_NOTION_PAGE"), "read")
         self.assertEqual(notion["args"]["sort"], {"direction": "descending", "timestamp": "last_edited_time"})
         self.assertEqual(collectors.default_ids("notion"), ["recent_pages"])
+        slack = collectors.collector("slack", "recent")
+        self.assertEqual(slack["tool"], "SLACK_SEARCH_MESSAGES")
+        self.assertEqual(slack["args"]["query"], "after:{yesterday_date}")
+        self.assertEqual(collectors.default_ids("slack"), ["recent"])
+        telegram = collectors.collector("telegram", "updates")
+        self.assertEqual(telegram["tool"], "TELEGRAM_GET_UPDATES")
+        self.assertEqual(telegram["args"], {"limit": 50, "allowed_updates": ["message", "channel_post"]})
+        self.assertEqual(telegram["url_keys"], [])
+        self.assertEqual(collectors.default_ids("telegram"), ["updates"])
         for toolkit in ("googlesheets", "googledocs", "googleslides", "googlemeet", "figma"):
             self.assertEqual(collectors.catalog(toolkit), [])
             self.assertEqual(collectors.default_ids(toolkit), [])
@@ -294,3 +304,54 @@ class ExtractNotionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SlackAndTelegramTests(unittest.TestCase):
+    NOW = datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc)
+
+    def test_yesterday_placeholder_renders_a_date(self) -> None:
+        args = collectors.render_args(collectors.collector("slack", "recent"), self.NOW)
+        self.assertEqual(args, {"query": "after:2026-09-10", "sort": "timestamp", "sort_dir": "desc", "count": 20})
+
+    def test_slack_search_matches_map_to_events(self) -> None:
+        payload = {"successful": True, "data": {"messages": {"matches": [
+            {"iid": "a1", "ts": "1757584800.000100", "text": "deploy is green", "username": "ana",
+             "channel": {"id": "C1", "name": "eng"},
+             "permalink": "https://x.slack.com/archives/C1/p1757584800000100"},
+            {"ts": "1757584700.000200", "text": "no iid, ts is the id"},
+        ]}}}
+        items = collectors.extract_items(collectors.collector("slack", "recent"), payload,
+                                         toolkit="slack", now=self.NOW)
+        self.assertEqual([(i["key"], i["title"], i["body"], i["url"]) for i in items], [
+            ("a1", "deploy is green", "eng", "https://x.slack.com/archives/C1/p1757584800000100"),
+            ("1757584700.000200", "no iid, ts is the id", "", None),
+        ])
+        self.assertEqual(items[0]["ts"], "2025-09-11T10:00:00Z")   # the decimal epoch ts parses
+        self.assertEqual(items[0]["type"], "recent")
+
+    def test_telegram_updates_map_to_events_without_urls(self) -> None:
+        payload = {"successful": True, "data": {"result": [
+            {"update_id": 900, "message": {"message_id": 5, "date": 1757584800, "text": "hello bot",
+                                           "chat": {"id": 1, "title": "Ops room", "type": "group"},
+                                           "from": {"first_name": "Ana", "username": "ana"}}},
+            {"update_id": 901, "channel_post": {"message_id": 6, "date": 1757584860, "text": "release notes",
+                                                "chat": {"id": 2, "title": "Announcements", "type": "channel"}}},
+            {"update_id": 902, "message": {"message_id": 7, "date": 1757584900,
+                                           "chat": {"id": 1, "type": "private"}}},
+        ]}}
+        items = collectors.extract_items(collectors.collector("telegram", "updates"), payload,
+                                         toolkit="telegram", now=self.NOW)
+        self.assertEqual([(i["key"], i["title"], i["body"], i["url"]) for i in items], [
+            ("902", "New messages to the bot: 902", "", None),        # no text: the label fallback
+            ("901", "release notes", "Announcements", None),
+            ("900", "hello bot", "Ops room", None),
+        ])
+        self.assertEqual(items[2]["ts"], "2025-09-11T10:00:00Z")
+
+    def test_slack_and_telegram_are_classified_for_per_action_control(self) -> None:
+        self.assertEqual(categories.classify("slack", "SLACK_SEARCH_MESSAGES"), "read")
+        self.assertEqual(categories.classify("slack", "SLACK_SEND_MESSAGE"), "write")
+        self.assertEqual(categories.classify("telegram", "TELEGRAM_GET_UPDATES"), "read")
+        self.assertEqual(categories.classify("telegram", "TELEGRAM_SEND_MESSAGE"), "write")
+        self.assertEqual(TOOLKITS["slack"].schemes, ("OAUTH2",))
+        self.assertEqual(TOOLKITS["telegram"].schemes, ("API_KEY",))

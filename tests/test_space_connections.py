@@ -281,7 +281,8 @@ class CacheBusterTests(unittest.TestCase):
         self.assertIn(
             "import inboxView,{initInboxBadge} from './views/inbox.js?v=" + STAMP + "';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=" + STAMP + "';", app)
+        # connectors.js moved on again when Slack and Telegram landed (scheme-aware Connect)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260911-slacktg1" + "';", app)
         # the core/api.js import forms are a known quirk, left exactly as they were
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn(

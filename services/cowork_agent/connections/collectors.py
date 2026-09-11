@@ -9,9 +9,10 @@ A collector spec is data, not code::
 
 ``tool`` is always a read-only Composio slug (category ``read`` in
 ``connectors/composio/categories.py``; a test pins that). ``args`` may
-carry the string placeholders ``{now_iso}`` and ``{now_plus_7d_iso}``,
-substituted by :func:`render_args` on str leaves only (never
-``str.format``, so a literal brace in a query is safe).
+carry the string placeholders ``{now_iso}``, ``{now_plus_7d_iso}`` and
+``{yesterday_date}`` (``YYYY-MM-DD``, for search modifiers), substituted by
+:func:`render_args` on str leaves only (never ``str.format``, so a literal
+brace in a query is safe).
 
 Composio wraps a tool's payload as ``{"successful", "data", "error"}``
 inside the first text content item, so every ``list_keys`` list also
@@ -36,8 +37,10 @@ from services.cowork_agent.inbox.store import parse_ts
 TITLE_MAX, BODY_MAX = 300, 4000
 TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _PLACEHOLDER_NOW, _PLACEHOLDER_7D = "{now_iso}", "{now_plus_7d_iso}"
+_PLACEHOLDER_YESTERDAY = "{yesterday_date}"
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DIGITS_RE = re.compile(r"\d+")
+_DECIMAL_RE = re.compile(r"\d+\.\d+")       # Slack message ts: "1725000000.000100"
 _EPOCH_MS_THRESHOLD = 1e11        # anything larger is milliseconds, not seconds
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -77,6 +80,34 @@ _CATALOG.update({
          "title_keys": ["properties.title.title.0.plain_text", "properties.Name.title.0.plain_text",
                         "title", "name"],
          "body_keys": [], "ts_keys": ["last_edited_time", "created_time"], "url_keys": ["url"]},
+    ],
+    "slack": [
+        # search.messages answers {messages: {matches: [...]}}; a match carries the
+        # workspace-wide permalink, and its ts is the epoch-seconds message id.
+        {"id": "recent", "label": "Messages from the last day", "default": True,
+         "tool": "SLACK_SEARCH_MESSAGES",
+         "args": {"query": "after:" + _PLACEHOLDER_YESTERDAY, "sort": "timestamp", "sort_dir": "desc",
+                  "count": 20},
+         "list_keys": ["messages.matches", "data.messages.matches", "matches", "data.matches",
+                       "messages", "data.messages"],
+         "id_keys": ["iid", "ts"], "title_keys": ["text"],
+         "body_keys": ["channel.name", "username"], "ts_keys": ["ts"], "url_keys": ["permalink"]},
+    ],
+    "telegram": [
+        # Bot API getUpdates without an offset keeps answering the unconfirmed updates
+        # (Telegram holds them for a day), so the dedupe key is the update_id. A bot
+        # with a webhook set refuses getUpdates; that lands in last_error.
+        {"id": "updates", "label": "New messages to the bot", "default": True,
+         "tool": "TELEGRAM_GET_UPDATES",
+         "args": {"limit": 50, "allowed_updates": ["message", "channel_post"]},
+         "list_keys": ["result", "data.result", "updates", "data.updates"],
+         "id_keys": ["update_id"],
+         "title_keys": ["message.text", "channel_post.text", "message.caption", "channel_post.caption"],
+         "body_keys": ["message.chat.title", "message.from.username", "message.from.first_name",
+                       "channel_post.chat.title"],
+         "ts_keys": ["message.date", "channel_post.date"],
+         # private chats have no permalink; declared empty rather than omitted
+         "url_keys": []},
     ],
 })
 
@@ -133,6 +164,8 @@ def parse_any_ts(value) -> Optional[datetime]:
     text = value.strip()
     if _DIGITS_RE.fullmatch(text):
         return _from_epoch(int(text))
+    if _DECIMAL_RE.fullmatch(text):
+        return _from_epoch(float(text))
     if _DATE_ONLY_RE.fullmatch(text):
         try:
             return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -142,10 +175,11 @@ def parse_any_ts(value) -> Optional[datetime]:
 
 
 def render_args(spec: dict, now: datetime) -> dict:
-    """The spec's ``args`` with the two placeholders substituted on str
-    leaves anywhere in the tree. Non-string leaves pass through untouched."""
+    """The spec's ``args`` with the placeholders substituted on str leaves
+    anywhere in the tree. Non-string leaves pass through untouched."""
     now_utc = _aware(now)
-    values = {_PLACEHOLDER_NOW: iso(now_utc), _PLACEHOLDER_7D: iso(now_utc + timedelta(days=7))}
+    values = {_PLACEHOLDER_NOW: iso(now_utc), _PLACEHOLDER_7D: iso(now_utc + timedelta(days=7)),
+              _PLACEHOLDER_YESTERDAY: (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")}
 
     def walk(node):
         if isinstance(node, str):
