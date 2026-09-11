@@ -163,16 +163,22 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
 # *different* workspace is discarded rather than adopted along with that workspace's
 # connector scope. Never sent to Composio.
 WORKSPACE_ENV = "CODER_WORKSPACE_ID"
+# Off Coder there is no pod to inject it. A local install identifies itself with the id
+# the swarm already knows it by: XO_SPACE_ID, the same value project sharing sends as
+# ``workspace_id``. Read second, so a Coder pod that also carries XO_SPACE_ID keeps its
+# Coder identity. Still one id per install, so the stamp keeps its meaning.
+LOCAL_WORKSPACE_ENV = "XO_SPACE_ID"
 
 
 class WorkspaceIdentityUnavailable(RuntimeError):
-    """CODER_WORKSPACE_ID is unset or empty, so the store cannot be stamped."""
+    """Neither CODER_WORKSPACE_ID nor XO_SPACE_ID is set, so the store cannot be stamped."""
 
 
 def workspace_id() -> str:
-    """This pod's workspace id.
+    """This install's workspace id.
 
-    Read at call time, not import time, so an operator (or a verification run) can change
+    ``CODER_WORKSPACE_ID`` on a Coder pod, else ``XO_SPACE_ID`` on a local install. Read
+    at call time, not import time, so an operator (or a verification run) can change
     the environment without reimporting. Fails closed: there is no default and no
     ``"unknown"`` value, because a shared fallback would make every misconfigured pod
     claim ownership of every other's store.
@@ -181,10 +187,13 @@ def workspace_id() -> str:
         WorkspaceIdentityUnavailable: when the variable is unusable. Callers must surface
             this, never substitute a default.
     """
-    value = (os.getenv(WORKSPACE_ENV) or "").strip()
-    if value:
-        return value
-    raise WorkspaceIdentityUnavailable(f"{WORKSPACE_ENV} is not set")
+    for name in (WORKSPACE_ENV, LOCAL_WORKSPACE_ENV):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    raise WorkspaceIdentityUnavailable(
+        f"neither {WORKSPACE_ENV} nor {LOCAL_WORKSPACE_ENV} is set"
+    )
 
 
 def _workspace() -> str:

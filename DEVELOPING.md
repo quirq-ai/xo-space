@@ -432,7 +432,9 @@ receive *this* backend's principal, and its Composio connections with it. That i
 `POST /xo-auth/session` was removed rather than guarded. Serving several XO accounts from
 one backend needs credential forwarding — a design change, not a re-add.
 
-**`CODER_WORKSPACE_ID` is now a store stamp, not a tenant key.** It is never sent to
+**`CODER_WORKSPACE_ID` is now a store stamp, not a tenant key.** Off Coder, `XO_SPACE_ID`
+(the id the swarm already knows the install by, the one project sharing sends) plays the
+same role, so a local install can mint a session too. The stamp is never sent to
 Composio and is not a key in any store — a pod is one workspace, so the local stores are
 already isolated by the filesystem. Its one job is stamping `sessions.json` with the
 workspace that wrote it, so a store restored out of a backup or another workspace's home
@@ -610,7 +612,7 @@ Degradation is per-scope, and worth knowing when reading a bug report:
 | one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
 | xo-swarm-api unreachable | every Composio operation fails immediately — there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
 | xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
-| `CODER_WORKSPACE_ID` | every Composio route 401s |
+| `CODER_WORKSPACE_ID` (or `XO_SPACE_ID` off Coder) | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a workspace identity |
 | XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
 
 Every authoritative failure raised from `swarm_client.py` carries the literal string

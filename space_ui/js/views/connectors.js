@@ -26,7 +26,7 @@
    this view needs apiFetch's `headers` option, which was added at that stamp,
    and StaticFiles sends no Cache-Control — a browser holding the older bare
    URL would drop the session header and strand this tab on "sign in to XO". */
-import {apiFetch} from '../core/api.js?v=20260904-tenancy1';
+import {apiFetch} from '../core/api.js?v=20260911-detailerror1';
 import {toast} from '../core/ui.js';
 import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260903-connectors1';
 
@@ -113,7 +113,8 @@ function renderSignedOut(){
   setAlert('pending',
     'Sign in to XO to use connectors',
     (sessionError()||'')+' Connections belong to your XO account, so this page needs an '
-      +'identity. Set XO_API_KEY in .env, or sign in from the app, then refresh.');
+      +'identity. Set XO_API_KEY in .env (and, off Coder, XO_SPACE_ID), or sign in from '
+      +'the app, then refresh.');
   root.querySelector('#conn-grid').innerHTML=
     '<div class="conn-empty">No identity &mdash; nothing to show yet.</div>';
 }
