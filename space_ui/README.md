@@ -141,9 +141,12 @@ button carries an unread badge (`counts.new`, refreshed every 60 s).
   previewer; `{view}` switches to that tab; `{project}` alone switches to
   Files.
 
-### The file: `<XO root>/.xo/inbox.json`
+### The file: `~/.quirq/inbox.json`
 
-Written only by `services/cowork_agent/inbox/store.py` (atomic write under
+Machine-local, under the Quirq state root (`QUIRQ_STATE_ROOT`), next to the
+polled connections: what a person has seen or done is this install's state,
+not something a project folder should carry into git or a sync. Written only
+by `services/inbox/store.py` (atomic write under
 the visualizer's `flock.locked`, the same mechanism the todo API uses) and
 read with the visualizer's `reader.read_json`. It appears on the first
 ingest that finds something or on the first `POST`; a read-only `GET` on a
@@ -183,7 +186,7 @@ Items are kept newest-first. Retention runs on every write (constants in
 `MAX_ITEMS = 500` drops the oldest done items first, then the oldest of the
 rest.
 
-### Feeders (`services/cowork_agent/inbox/feeders.py`)
+### Feeders (`services/inbox/feeders.py`)
 
 Best-effort and idempotent. An item whose `key` already exists is updated in
 place (title, body, link, url; status is never reset) and never duplicated. A

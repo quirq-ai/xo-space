@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from services.cowork_agent.connectors.composio.service import TOOLKITS
-from services.cowork_agent.inbox.store import parse_ts
+from services.inbox.store import parse_ts
 from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.visualizer.atomic_write import append_jsonl, write_json_atomic
 from services.cowork_agent.visualizer.flock import locked

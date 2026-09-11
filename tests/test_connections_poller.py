@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 from services.cowork_agent.connections import collectors, mcp_client, poller, store
 from services.cowork_agent.connections import service as connections_service
 from services.cowork_agent.connections.mcp_client import McpError
-from services.cowork_agent.inbox import service as inbox_service
+from services.inbox import service as inbox_service
 
 ENTRY = {"type": "http", "url": "https://mcp.example.test/mcp", "headers": {"Authorization": "Bearer t"}}
 
@@ -432,7 +432,7 @@ class ServicePollNowTests(_Base):
         self.assertFalse(inbox_service.refresh(), "the throttle window is now armed")
         out = self.run_(connections_service.poll_now("gmail"))
         self.assertEqual((out["polled"], out["new_events"], out["error"]), (True, 1, None))
-        inbox_path = self.root / "projects" / ".xo" / "inbox.json"
+        inbox_path = self.root / ".quirq" / "inbox.json"
         self.assertTrue(inbox_path.is_file(), "the forced refresh wrote the inbox inside the throttle window")
         keys = {it["key"] for it in json.loads(inbox_path.read_text(encoding="utf-8"))["items"]}
         self.assertIn("connection:gmail:unread:m9", keys)

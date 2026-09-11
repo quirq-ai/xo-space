@@ -34,7 +34,7 @@ from typing import Optional
 
 from services.cowork_agent.connectors.composio import service as composio_service
 from services.cowork_agent.connectors.composio import state, workspace_scope
-from services.cowork_agent.inbox.store import parse_ts
+from services.inbox.store import parse_ts
 
 from . import collectors, mcp_client, store
 
