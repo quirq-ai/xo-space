@@ -379,7 +379,7 @@ const TAB_GUIDES={
     name:'Inbox',
     kicker:'Tab guide · Incoming information',
     title:'Inbox: what arrived, and whether it was handled',
-    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Five feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), sharing events from the in-memory commit relay, GitHub issues from the issue mirror of every project, and items collected from polled connections (Gmail, Google Calendar, Notion) under ~/.quirq/connections/. Anything else is posted through the API. The whole tab is one hand-editable JSON file, &lt;XO root&gt;/.xo/inbox.json.',
+    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Five feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), sharing events from the in-memory commit relay, GitHub issues from the issue mirror of every project, and items collected from polled connections (Gmail, Google Calendar, Notion, Slack, Telegram) under ~/.quirq/connections/. Anything else is posted through the API. The whole tab is one hand-editable JSON file, &lt;XO root&gt;/.xo/inbox.json.',
     facts:['one JSON file','five feeders + API','new / seen / done','source filter','unread badge on the tab','hand-editable','500 items, done kept 30 days'],
     jobs:[
       ['See what is new','The tab badge counts new items and the header line reads the new, open, and done totals. Open lists new plus seen, Done lists what was handled, All lists everything the file holds.'],
@@ -527,10 +527,10 @@ const TAB_GUIDES={
     name:'Connectors',
     kicker:'Tab guide · Composio toolkits',
     title:'Connectors: give the agent accounts to act in',
-    intro:'Connect Gmail, Google Workspace, Notion and Figma through Composio. A connection belongs to one XO account in one workspace, and its tools reach the active agent over a local MCP proxy that keeps the Composio API key on the server.',
-    facts:['OAuth2 only','per user, per workspace','per-action control','key never leaves the server'],
+    intro:'Connect Gmail, Google Workspace, Notion, Figma, Slack and Telegram through Composio. A connection belongs to one XO account in one workspace, and its tools reach the active agent over a local MCP proxy that keeps the Composio API key on the server.',
+    facts:['OAuth2, or a bot token for Telegram','per user, per workspace','per-action control','key never leaves the server'],
     jobs:[
-      ['Connect an app','Authorize a toolkit in a provider popup. The connection is recorded against your XO account, so every workspace can use it — but each workspace chooses which connectors it turns on.'],
+      ['Connect an app','Authorize a toolkit in a provider popup (Telegram asks for the bot token from BotFather instead of an OAuth sign-in). The connection is recorded against your XO account, so every workspace can use it: but each workspace chooses which connectors it turns on.'],
       ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
       ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
       ['Collect into Inbox','Polling, on a tile that is connected and turned on here, opens a drawer: tick Collect into Inbox, pick how often under Every (5 minutes to 24 hours), choose what to collect (unread mail, upcoming calendar events, recently edited Notion pages), then Save. The drawer opens by itself right after a connect, and nothing is stored until Save. Poll now runs the collectors at once and reports how many new events arrived; they show up in Inbox under the Connections filter.'],
@@ -538,7 +538,7 @@ const TAB_GUIDES={
     ],
     sources:[
       ['GET /api/connectors/composio/toolkits','The registered toolkits and your connection status for each.','Tile state'],
-      ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
+      ['POST /api/connectors/composio/{toolkit}/connect','Starts the toolkit\'s authorization (OAuth2, or API_KEY for Telegram) and returns the hosted URL plus a request id.','Connect flow'],
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
       ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in ~/.config/composio/action_prefs.json.','Action control'],
       ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity'],

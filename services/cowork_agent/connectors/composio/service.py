@@ -39,6 +39,10 @@ TOOLKITS: dict[str, ToolkitMeta] = {
     "googleslides":    ToolkitMeta("GOOGLESLIDES",    "Google Slides",    ("OAUTH2",)),
     "googlemeet":      ToolkitMeta("GOOGLEMEET",      "Google Meet",      ("OAUTH2",)),
     "figma":           ToolkitMeta("FIGMA",           "Figma",            ("OAUTH2",)),
+    "slack":           ToolkitMeta("SLACK",           "Slack",            ("OAUTH2",)),
+    # A bot token from BotFather, pasted on Composio's hosted page: the swarm mints
+    # the same kind of link it does for OAuth, so the UI flow is identical.
+    "telegram":        ToolkitMeta("TELEGRAM",        "Telegram",         ("API_KEY",)),
 }
 
 
@@ -188,8 +192,9 @@ def initiate_connection(
     alias: Optional[str] = None,
     allow_multiple: bool = False,
 ) -> dict[str, Any]:
-    # OAUTH2-only today: a new scheme needs a row here (`meta.schemes`) and a matching
-    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`.
+    # A new toolkit or scheme needs a row here (`meta.schemes`) and a matching
+    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`; the
+    # swarm's hosted link serves OAuth and key-based schemes alike.
     meta = toolkit_meta(toolkit_id)
     scheme = auth_scheme.upper()
     if scheme not in meta.schemes:
