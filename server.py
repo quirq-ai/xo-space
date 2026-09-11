@@ -857,6 +857,10 @@ from routers.cowork_agent import all_routers as cowork_agent_routers
 for _r in cowork_agent_routers:
     app.include_router(_r)
 
+# Local layer: the command scheduler's API (jobs run by the watcher tick).
+from routers.schedules import router as schedules_router
+app.include_router(schedules_router)
+
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space
 from routers.xo_data import router as xo_data_router

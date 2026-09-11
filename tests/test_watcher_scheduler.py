@@ -102,6 +102,10 @@ class WatcherSchedulerTests(unittest.TestCase):
 
     # ── use cases ──
 
+    def test_the_watcher_and_the_scheduler_share_one_tick_interval_reader(self) -> None:
+        # Not two readers kept in sync by a test: the same function object.
+        self.assertIs(watcher_mod._poll_interval_seconds, scheduler.tick_interval_seconds)
+
     def test_quiet_tick_before_the_slot_still_beats_and_reports(self) -> None:
         scheduler.create_job(_job("daily", 86400), now=T0)
         beat = self._tick(_at(1))

@@ -23,9 +23,9 @@ and never imports the visualizer package; it only takes a timestamp.
 
 This is the scheduling half of the command utility (the executor is the
 package ``__init__``). ``utils/`` sits below ``services/`` and must not import
-it, so the Quirq state root is resolved here from ``QUIRQ_STATE_ROOT`` the
-same way ``services.cowork_agent.local_state.quirq_state_dir`` does;
-``tests/test_scheduler.py`` pins that the two agree.
+it; the two environment facts it shares with the services layer — the Quirq
+state root and the watcher's tick interval — come from ``utils/runtime_env.py``,
+which is also what ``local_state`` and the watcher use. One definition each.
 """
 
 from __future__ import annotations
@@ -42,23 +42,18 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from utils.commands import CommandResult, CommandSpec, run_spec_sync
+from utils.runtime_env import (
+    ENV_WATCHER_INTERVAL,
+    quirq_state_dir,
+    watcher_tick_interval_seconds as tick_interval_seconds,
+)
 
 logger = logging.getLogger(__name__)
-
-ENV_STATE_ROOT = "QUIRQ_STATE_ROOT"
-
-
-def quirq_state_dir() -> Path:
-    """``~/.quirq/`` or ``$QUIRQ_STATE_ROOT`` — mirrors ``local_state`` (see
-    the module docstring for why it is not imported)."""
-    configured = (os.getenv(ENV_STATE_ROOT, "") or "").strip()
-    return Path(configured).expanduser() if configured else Path.home() / ".quirq"
 
 SCHEMA = 1
 ENV_ENABLED = "XO_SCHEDULER_ENABLED"
 ENV_MAX_CONCURRENT = "XO_SCHEDULER_MAX_CONCURRENT"
 DEFAULT_MAX_CONCURRENT = 4
-MIN_INTERVAL_SECONDS = 60
 OUTPUT_TAIL_CHARS = 2000
 
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
@@ -236,8 +231,17 @@ def validate_definition(payload: Any) -> dict:
     if spec.timeout is None:
         raise ValueError("command.timeout is required: a scheduled job without one could run forever")
     every = payload.get("every_seconds")
-    if isinstance(every, bool) or not isinstance(every, int) or every < MIN_INTERVAL_SECONDS:
-        raise ValueError(f"every_seconds must be an integer >= {MIN_INTERVAL_SECONDS}")
+    if isinstance(every, bool) or not isinstance(every, int) or every < 1:
+        raise ValueError("every_seconds must be a positive integer")
+    tick = tick_interval_seconds()
+    if every < tick:
+        # The scheduler looks once per tick; a shorter interval is polling,
+        # not scheduling, and could not be honoured.
+        raise ValueError(
+            f"every_seconds={every} is shorter than the watcher tick interval "
+            f"({tick:g}s): that is polling, not scheduling. Raise every_seconds or "
+            f"lower {ENV_WATCHER_INTERVAL}."
+        )
     project_id = payload.get("project_id")
     if project_id is not None and (not isinstance(project_id, str) or not project_id):
         raise ValueError("project_id must be a non-empty string when given")
@@ -563,6 +567,16 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
         report.errors.append(f"{job_id}: {exc}")
         return True
     report.started.append(job_id)
+    tick = tick_interval_seconds()
+    if every < tick:
+        # Registered under a faster tick, then the watcher was slowed down:
+        # the job still runs, once per tick, with its missed slots collapsed.
+        # Said once per launch (not per tick) so the heartbeat shows it
+        # without flooding the log.
+        report.errors.append(
+            f"{job_id}: every_seconds={every} is shorter than the watcher tick "
+            f"interval ({tick:g}s); running once per tick instead"
+        )
     return False
 
 

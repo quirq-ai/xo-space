@@ -67,6 +67,7 @@ from services.cowork_agent.visualizer.workspace_index import (
     project_index_scope,
 )
 from utils.commands import scheduler
+from utils.runtime_env import watcher_tick_interval_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _poll_interval_seconds() -> float:
-    raw = (os.getenv("QUIRQ_WATCHER_INTERVAL_SECONDS", "1") or "1").strip()
-    try:
-        interval = float(raw)
-    except ValueError:
-        interval = 1.0
-    return min(60.0, max(0.25, interval))
-
+# One definition, shared with the command scheduler (which treats the tick
+# period as the floor on a job's interval): utils/runtime_env.py.
+_poll_interval_seconds = watcher_tick_interval_seconds
 
 POLL_INTERVAL_S = _poll_interval_seconds()
 

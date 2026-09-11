@@ -1,10 +1,11 @@
-"""``/api/schedules*`` — fixed-interval command jobs (local Quirq).
+"""``/api/schedules*`` — fixed-interval command jobs (local layer).
 
 Thin handlers over ``utils/commands/scheduler.py`` (the scheduling half of
-the command utility): parse → call it → map its typed errors to HTTP. Same
-auth posture as the other local
-Quirq routes (``/api/runtime-config``, ``/api/quirq``): nothing beyond what
-the server applies globally.
+the command utility): parse → call it → map its typed errors to HTTP. Lives at
+the top of ``routers/`` beside ``space.py`` and ``xo_data.py`` because it is
+part of xo-space's local layer, not the broker's Plane B surface; ``server.py``
+mounts it directly. Same auth posture as the other local routes: nothing
+beyond what the server applies globally.
 
 The body of POST/PUT is passed to the service as a plain dict so that every
 validation failure — a wrong type included — is one ``400`` with the

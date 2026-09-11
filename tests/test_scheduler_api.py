@@ -1,9 +1,10 @@
-"""HTTP mapping for routers/cowork_agent/schedules.py.
+"""HTTP mapping for routers/schedules.py.
 
 Only the mapping is under test (status codes, error bodies); behaviour is
-covered by tests/test_scheduler.py. Importing the routers package pulls in
-the composio connector → visualizer/flock.py → fcntl, so this module skips
-itself where that import fails (Windows). Run it on Linux/WSL with
+covered by tests/test_scheduler.py. ``routers/schedules.py`` itself imports
+only the scheduler and FastAPI, but importing anything under ``routers``
+runs the package ``__init__`` chain, which on Windows can reach ``fcntl``; the
+module skips itself if that import fails. Run it on Linux/WSL with
 AGENT_NAME=claude_code.
 """
 
@@ -21,7 +22,7 @@ from fastapi.testclient import TestClient
 from utils.commands import scheduler
 
 try:
-    from routers.cowork_agent.schedules import router
+    from routers.schedules import router
 except ImportError as exc:  # pragma: no cover - platform gate
     raise unittest.SkipTest(f"routers package needs POSIX: {exc}") from exc
 
@@ -73,7 +74,7 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/schedules/{job['id']}").status_code, 404)
 
     def test_validation_errors_are_400_with_the_reason(self) -> None:
-        bad = self.client.post("/api/schedules", json={**_payload(), "every_seconds": 5})
+        bad = self.client.post("/api/schedules", json={**_payload(), "every_seconds": 0})
         self.assertEqual(bad.status_code, 400)
         self.assertIn("every_seconds", bad.json()["detail"])
         shell = self.client.post("/api/schedules", json={

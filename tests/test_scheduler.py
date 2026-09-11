@@ -80,12 +80,10 @@ class SchedulerTests(unittest.TestCase):
 
     # ── Task 1: validation and the store ──
 
-    def test_state_root_agrees_with_local_state(self) -> None:
-        # utils/ must not import services/, so the scheduler resolves the
-        # Quirq state root itself. This pins that it resolves it the same way.
+    def test_state_root_is_the_one_local_state_exposes(self) -> None:
+        # One definition (utils/runtime_env.py), re-exported by local_state.
+        self.assertIs(scheduler.quirq_state_dir, quirq_state_dir)
         self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
-        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": ""}):
-            self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
 
     def test_create_validates_writes_both_files_and_schedules_one_interval_out(self) -> None:
         job = scheduler.create_job(_job("Pull issues", 3600, project_id="blackhole"), now=T0)
@@ -111,7 +109,8 @@ class SchedulerTests(unittest.TestCase):
         bad = [
             ({**_job(), "name": ""}, "name"),
             ({**_job(), "name": "x" * 65}, "name"),
-            ({**_job(), "every_seconds": 59}, "every_seconds"),
+            ({**_job(), "every_seconds": 0}, "every_seconds"),
+            ({**_job(), "every_seconds": -5}, "every_seconds"),
             ({**_job(), "every_seconds": "60"}, "every_seconds"),
             ({**_job(), "every_seconds": True}, "every_seconds"),
             ({**_job(), "command": {"argv": [PY, "-c", "pass"]}}, "timeout"),
@@ -130,6 +129,38 @@ class SchedulerTests(unittest.TestCase):
                 self.assertIn(needle, str(ctx.exception).lower())
         self.assertFalse(scheduler.jobs_file().exists())
         self.assertFalse(scheduler.state_file().exists())
+
+    def test_intervals_shorter_than_the_watcher_tick_are_polling_not_scheduling(self) -> None:
+        # The only lower bound on every_seconds is the watcher's tick period:
+        # the scheduler looks once per tick, so anything shorter could not be
+        # honoured. There is no separate policy floor.
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "30"}):
+            self.assertEqual(scheduler.tick_interval_seconds(), 30.0)
+            with self.assertRaises(ValueError) as ctx:
+                scheduler.create_job(_job("fast", 10), now=T0)
+            self.assertIn("watcher tick", str(ctx.exception))
+            self.assertIn("polling", str(ctx.exception))
+            scheduler.create_job(_job("on-the-tick", 30), now=T0)   # equal is fine
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "0.25"}):
+            scheduler.create_job(_job("one-second", 1), now=T0)     # 1 s on a 0.25 s tick
+        # The one shared reader (utils/runtime_env.py) clamps and defaults.
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "junk"}):
+            self.assertEqual(scheduler.tick_interval_seconds(), 1.0)
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "999"}):
+            self.assertEqual(scheduler.tick_interval_seconds(), 60.0)
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "0.01"}):
+            self.assertEqual(scheduler.tick_interval_seconds(), 0.25)
+
+    def test_a_job_faster_than_a_slowed_watcher_runs_once_per_tick_and_says_so(self) -> None:
+        job = scheduler.create_job(_job("fast", 10), now=T0)   # registered on a 1 s tick
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_INTERVAL_SECONDS": "60"}):
+            report = scheduler.tick(now=_at(60))
+        self.assertEqual(report.started, [job["id"]])
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("once per tick", report.errors[0])
+        scheduler._running[job["id"]].thread.join(10)
+        # The six missed 10 s slots collapsed onto the next future one.
+        self.assertEqual(self._state(job["id"])["next_run"], "2026-09-11T10:01:10Z")
 
     def test_command_string_form_is_stored_as_argv(self) -> None:
         job = scheduler.create_job(
