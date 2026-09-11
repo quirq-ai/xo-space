@@ -89,3 +89,46 @@
     .inb-when{grid-area:when;justify-self:end}
     .inb-body{padding-left:16px}
   }
+
+  /* source pills: a second strip under the header, client-side only */
+  .inb-src{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 14px}
+  .inb-src button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:4px 10px;
+    background:var(--bg-2);transition:all .16s var(--ease)}
+  .inb-src button:hover{color:var(--ink);border-color:var(--line)}
+  .inb-src button.is-on{color:var(--accent);border-color:rgba(168,217,79,.4);background:var(--bg-3)}
+  .inb-src button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* an item's external link is a real anchor wearing the button style */
+  a.inb-btn{text-decoration:none;display:inline-flex;align-items:center}
+
+  /* connections: what the poller watches, between the header and the rows.
+     Collapsed to a one-line count unless an entry is in error. */
+  .inb-conns{margin-bottom:14px;border:1px solid var(--line-soft);border-radius:12px;
+    background:var(--bg-2)}
+  .inb-conns-head{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+    padding:9px 14px;border-radius:12px;font:600 10.5px/1 var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);transition:color .16s var(--ease)}
+  .inb-conns-head:hover{color:var(--ink)}
+  .inb-conns-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .inb-conns-head i{font-style:normal;width:10px;color:var(--ink-4)}
+  .inb-conns-head b{font-weight:600;letter-spacing:0;color:var(--ink-2);background:var(--bg-3);
+    border:1px solid var(--line);border-radius:999px;padding:2px 7px}
+  .inb-conns-head em{font-style:normal;letter-spacing:.06em;color:var(--err)}
+  .inb-conn-row{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) minmax(0,1fr) auto;
+    align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line-soft);
+    font-size:12.5px}
+  .inb-conn-row b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .inb-conn-meta{font:400 10.5px var(--mono);color:var(--ink-3);min-width:0;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .inb-conn-meta.is-error{color:#e1937d}
+  /* the section's one-line states: loading, failed, nothing polled yet */
+  .inb-conns>.inb-conn-meta{display:block;padding:9px 14px;white-space:normal;line-height:1.5}
+  .inb-conn-acts{display:flex;gap:6px;justify-content:flex-end}
+
+  @media (max-width:800px){
+    .inb-conn-row{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+    .inb-conn-row b{grid-column:1}
+    .inb-conn-acts{grid-column:2;grid-row:1}
+    .inb-conn-row .inb-conn-meta{grid-column:1 / -1}
+  }

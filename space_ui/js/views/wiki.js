@@ -379,13 +379,15 @@ const TAB_GUIDES={
     name:'Inbox',
     kicker:'Tab guide · Incoming information',
     title:'Inbox: what arrived, and whether it was handled',
-    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Three feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), and sharing events from the in-memory commit relay. Anything else is posted through the API. The whole tab is one hand-editable JSON file, &lt;XO root&gt;/.xo/inbox.json.',
-    facts:['one JSON file','three feeders + API','new / seen / done','unread badge on the tab','hand-editable','500 items, done kept 30 days'],
+    intro:'Inbox collects information that arrives in the workspace and tracks whether it has been seen and dealt with. Five feeders fill it: new sessions and todos from the workspace timeline, blocked todos from every project (both watcher output), sharing events from the in-memory commit relay, GitHub issues from the issue mirror of every project, and items collected from polled connections (Gmail, Google Calendar, Notion) under ~/.quirq/connections/. Anything else is posted through the API. The whole tab is one hand-editable JSON file, &lt;XO root&gt;/.xo/inbox.json.',
+    facts:['one JSON file','five feeders + API','new / seen / done','source filter','unread badge on the tab','hand-editable','500 items, done kept 30 days'],
     jobs:[
       ['See what is new','The tab badge counts new items and the header line reads the new, open, and done totals. Open lists new plus seen, Done lists what was handled, All lists everything the file holds.'],
-      ['Handle an item','Click a row to expand it; that marks a new item seen. The actions row offers Open (when the item links somewhere), Done or Reopen, and Delete. Mark all seen clears every new item on the page at once.'],
-      ['Follow the link','Open jumps to where the item came from: Sessions for a session start, Files for a todo or a share, and the file previewer when the item names a project file.'],
-      ['Post your own','Agents and scripts POST to /api/inbox with a title and an optional body, kind, project, and link. Those items carry no dedup key, so the feeders never touch them.']
+      ['Handle an item','Click a row to expand it; that marks a new item seen. The actions row offers Open (when the item links somewhere), Open link (when the item carries an http or https url, opened in a new tab), Done or Reopen, and Delete. Mark all seen clears every new item on the page at once.'],
+      ['Follow the link','Open jumps to where the item came from: Sessions for a session start, Files for a todo, a share, or an issue, Connectors for a polled connection, and the file previewer when the item names a project file. Open link leaves Space for the issue or the mail, event, or page itself.'],
+      ['Filter by source','The pills All, Issues, Connections, Workspace, Sharing, and Agents narrow the loaded page on the client and never fetch. Issues is the issues feeder, Connections the polled connections, Workspace the timeline and todos feeders, Sharing the relay, and Agents everything posted through the API.'],
+      ['Watch the connections','The Connections section above the rows lists every toolkit that is polled or connected here with its collectors, cadence, and last poll or error. Poll now runs its collectors at once and reloads the list; Configure jumps to the Connectors tab. It opens by itself when an entry carries an error and stays collapsed to a count otherwise.'],
+      ['Post your own','Agents and scripts POST to /api/inbox with a title and an optional body, kind, project, link, and url. Those items carry no dedup key, so the feeders never touch them.']
     ],
     sources:[
       ['GET /api/inbox?status=open|done|all&limit=N','The list the tab renders: counts over the whole file, items newest first, truncated to limit (default 200, at most 500). Every read runs the feeders first, throttled to once per five seconds, and a feeder failure never fails the read.','Live view of the file'],
@@ -393,25 +395,31 @@ const TAB_GUIDES={
       ['<XO root>/.xo/inbox.json','Items, the per-feeder cursors, and the sources block that switches each feeder on or off. Written atomically under the same file lock the todo API uses, so a hand edit and an API write do not tear.','Workspace .xo file'],
       ['~/.quirq/workspace/timeline.jsonl','The timeline feeder reads session.started and todo.added events (todo.completed, file.created, and file.edited only when enabled) and keeps the newest timestamp as its cursor. A fresh inbox takes only the last 24 hours.','Feeder input'],
       ['<project>/.xo/todos.json','The todos feeder raises one item per todo in a watched status (blocked by default) and marks it done by itself once the todo leaves that status or disappears.','Feeder input'],
-      ['GET /api/project-sharing/status','The sharing feeder reads the recent list of the in-memory relay status: shared_with_you, fetched, error, revoked. That list restarts empty with the server, so a persisted cursor never re-ingests old events.','Feeder input']
+      ['GET /api/project-sharing/status','The sharing feeder reads the recent list of the in-memory relay status: shared_with_you, fetched, error, revoked. That list restarts empty with the server, so a persisted cursor never re-ingests old events.','Feeder input'],
+      ['~/.quirq/projects/<pid>/github/issues.json','The issues feeder reads the GitHub issue mirror of every project and raises one item per issue in a watched state (open by default; sources.issues.states), keyed issue:&lt;project&gt;:&lt;number&gt; with kind issue.&lt;state&gt;, the labels and assignees as body, and the issue URL as Open link. A fresh inbox takes the last 7 days; the cursor is the newest updated_at seen. An issue that leaves the watched state is marked done by itself, but only on a run where every mirror was readable, so a transient read failure never closes real issues.','Feeder input'],
+      ['~/.quirq/connections/<toolkit>/events.jsonl','The connections feeder reads the newest 200 events of every polled connection and raises one item per event, keyed connection:&lt;toolkit&gt;:&lt;collector&gt;:&lt;id&gt; with kind &lt;toolkit&gt;.&lt;collector&gt;, the event url as Open link, linking to Connectors. One cursor covers every toolkit; with no cursor only the last 24 hours are taken, while events.jsonl keeps everything. Rotated files are history only and are never read.','Feeder input'],
+      ['GET /api/connections · POST /api/connections/{toolkit}/poll','The Connections section: one line per toolkit that is configured for polling or connected here, with collectors, cadence, and last poll or error. Loaded on every show with its own request, so a failed load shows one muted line and never blocks the rows.','Connections section']
     ],
     steps:[
       ['Open Inbox','It is the fifth top-level tab, between Sessions and Wiki, and deep-links at #/inbox.'],
       ['Read the counts','The summary line and the badge come from the whole file, not from the current filter.'],
-      ['Filter','Open is the default; switch to Done to review what was handled, or All to see everything.'],
+      ['Filter','Open is the default; switch to Done to review what was handled, or All to see everything. The source pills under them narrow the loaded page further without a fetch.'],
+      ['Check Connections','The Connections section reads No connections polled yet until a toolkit is connected on the Connectors tab and its Polling drawer is saved. Poll now runs the collectors at once; Configure opens that drawer.'],
       ['Expand a row','Read the body, then use Open, Done or Reopen, and Delete. A button stays disabled while its write is in flight.'],
       ['Refresh','The tab polls every 30 seconds while shown; Refresh asks at once.'],
       ['Tune the feeders','Edit the sources block in inbox.json to switch a feeder off, add timeline types, or watch more todo statuses. Delete a cursor to re-read that source.']
     ],
     checks:[
-      ['Nothing arrives','Every feeder reads a file the watcher writes or a list the relay keeps in memory. Check that the watcher runs (Setup), that ~/.quirq/workspace/timeline.jsonl grows, and that sources in inbox.json does not carry enabled: false for that feeder.'],
-      ['Old events missing','Intentional: with no timeline cursor the feeder bootstraps from the last 24 hours only, so a fresh inbox is not flooded with history.'],
+      ['Nothing arrives','Each feeder reads what another process writes: the timeline.jsonl and todos.json the watcher writes, the issue mirror the GitHub issue poller writes, the events.jsonl the connections poller writes, or the list the sharing relay keeps in memory. Check that the writer for that feeder runs (the watcher under Setup, the pollers unless their env flag turned them off), that its file grows, and that sources in inbox.json does not carry enabled: false for that feeder.'],
+      ['Old events missing','Intentional: with no cursor a feeder bootstraps from a short window only (24 hours for the timeline and connections feeders, 7 days for issues), so a fresh inbox is not flooded with history.'],
+      ['Connection events missing','The poller writes events.jsonl only while signed in to XO and only for toolkits turned on in this workspace; otherwise the Connections section shows its last_error. Polling can also be off for the whole server (XO_CONNECTIONS_POLL_ENABLED=false). The feeder drops events older than its 24 hour floor and reads only the live events.jsonl, so events_total in the section can exceed what Inbox shows.'],
+      ['Issue never closes','Auto-close needs every mirror readable in the same run. While one mirror file is corrupt the feeder keeps every issue item open on purpose; fix or delete that file and the next run closes what left the watched state.'],
       ['Item came back after delete','Feeder items are keyed. Deleting one removes it, but the feeder re-creates it while its source still reports it (a todo still blocked) or when its cursor is reset. Mark it done instead to keep it out of Open.'],
       ['Status reset on refresh','It should not: a feeder updates the title, body, and link of an existing key only. If it happens, a hand edit removed the key field and the item was re-created.'],
       ['File missing','&lt;XO root&gt;/.xo/inbox.json appears on the first ingest that finds something or on the first POST; a read-only GET on an empty workspace creates nothing.'],
       ['Items disappearing','Retention: done items older than 30 days are pruned, and the file is capped at 500 items (oldest done first, then the oldest of the rest).']
     ],
-    note:'Inbox owns one file, &lt;XO root&gt;/.xo/inbox.json, and nothing else. The feeders only read their sources; the API and the feeders are the only writers, and both tolerate a hand edit. It never writes project files, timeline.jsonl, todos.json, or .quirq.'
+    note:'Inbox owns one file, &lt;XO root&gt;/.xo/inbox.json, and nothing else. The feeders only read their sources; the API and the feeders are the only writers, and both tolerate a hand edit. It never writes project files, timeline.jsonl, todos.json, or .quirq. Connection polling writes its own folders under ~/.quirq/connections/, owned by the poller and the Connectors tab, never by Inbox.'
   },
   wiki:{
     tab:'wiki',
@@ -525,6 +533,7 @@ const TAB_GUIDES={
       ['Connect an app','Authorize a toolkit in a provider popup. The connection is recorded against your XO account, so every workspace can use it — but each workspace chooses which connectors it turns on.'],
       ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
       ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
+      ['Collect into Inbox','Polling, on a tile that is connected and turned on here, opens a drawer: tick Collect into Inbox, pick how often under Every (5 minutes to 24 hours), choose what to collect (unread mail, upcoming calendar events, recently edited Notion pages), then Save. The drawer opens by itself right after a connect, and nothing is stored until Save. Poll now runs the collectors at once and reports how many new events arrived; they show up in Inbox under the Connections filter.'],
       ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically — at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']
     ],
     sources:[
@@ -532,7 +541,8 @@ const TAB_GUIDES={
       ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
       ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in ~/.config/composio/action_prefs.json.','Action control'],
-      ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
+      ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity'],
+      ['GET/PUT/DELETE /api/connections/{toolkit} · POST /api/connections/{toolkit}/poll','The Polling drawer: read, save, or remove ~/.quirq/connections/&lt;toolkit&gt;/config.json, or poll at once. These calls carry no session header; the background poller signs in with the server credential.','Polling']
     ],
     steps:[
       ['Configure the server','Set COMPOSIO_API_KEY on the XO side (xo-swarm-api), plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. This workspace holds no Composio credentials — it fetches them with its XO credential. Both are created by hand in the Composio dashboard — nothing here creates them.'],
@@ -546,6 +556,7 @@ const TAB_GUIDES={
       ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id on the XO side. The others still work.'],
       ['“Sign in to XO”','The backend holds no XO credential, so there is no per-user identity to scope a connection to. Set XO_API_KEY or sign in from the app.'],
       ['Nothing happens after consent','The popup may have been blocked. The status poll still decides, so leave the tab open; if the window closed early, press Connect again.'],
+      ['Polling shows an error','The status line repeats the last_error the poller recorded: not signed in to XO, the toolkit not turned on in this workspace, or a collector the upstream rejected. Fix the cause and press Poll now. A toolkit without collectors says so and hides the form.'],
       ['Agent still has no tools','Restart the agent — MCP config is read at start. The gateway is written automatically at boot, re-checked every few minutes and whenever this tab loads. If the server log says “Composio MCP skipped”, fix the cause it names (no XO credential, no workspace id, XO unreachable, or the agent’s config file does not exist yet) and restart xo-space.']
     ],
     note:'Disconnect removes the connection from this workspace — it deletes the connected account at Composio, it does not revoke the grant in your Google, Notion or Figma account. Remove that in the provider’s own settings.'
@@ -1459,7 +1470,7 @@ function xoDataArticle(){
               <tr><td><code>stats.json</code></td><td><code>~/.quirq/workspace</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
               <tr><td><code>timeline.jsonl</code></td><td><code>~/.quirq/workspace</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
               <tr><td><code>xo.json</code></td><td>.xo</td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
-              <tr><td><code>inbox.json</code></td><td>.xo</td><td>What arrived in the workspace and its state: items with a <code>new</code>, <code>seen</code>, or <code>done</code> status, the per-feeder cursors, and the <code>sources</code> block that switches each feeder on or off. Hand-editable: unknown keys survive a rewrite.</td><td>the Inbox API on every write, plus its three feeders (timeline, todos, sharing) on each read, at most every 5s; capped at 500 items, done items kept 30 days</td></tr>
+              <tr><td><code>inbox.json</code></td><td>.xo</td><td>What arrived in the workspace and its state: items with a <code>new</code>, <code>seen</code>, or <code>done</code> status, the per-feeder cursors, and the <code>sources</code> block that switches each feeder on or off. Hand-editable: unknown keys survive a rewrite.</td><td>the Inbox API on every write, plus its five feeders (timeline, todos, sharing, issues, connections) on each read, at most every 5s; capped at 500 items, done items kept 30 days</td></tr>
             </tbody>
           </table>
         </div>
@@ -1526,6 +1537,11 @@ function quirqDataArticle(){
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
+├── connections/                # per-connection polling for Inbox, one folder per toolkit
+│   └── &lt;toolkit&gt;/            # gmail, googlecalendar, notion
+│       ├── config.json         # enabled, interval_s, collectors; hand-editable
+│       ├── state.json          # last poll, last error, seen keys per collector
+│       └── events.jsonl        # collected items, append-only; rotated: events.&lt;stamp&gt;.jsonl, three kept
 ├── projects/
 │   └── &lt;pid&gt;/                # per-project runtime tier, keyed by project.json:pid
 │       ├── stats.json
@@ -1650,6 +1666,25 @@ function quirqDataArticle(){
             activity schema and adds <code>project_id</code> to each session
             row so workspace UIs can group live work.</p>
             <dl><div><dt>Read API</dt><dd>GET /api/xo-projects/activity</dd></div><div><dt>Project API</dt><dd>GET /api/xo-projects/{project_id}/activity</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>connections/&lt;toolkit&gt;/</code><span>per-connection polling</span></header>
+            <p>One folder per polled Composio toolkit (<code>gmail</code>,
+            <code>googlecalendar</code>, <code>notion</code>), created when the
+            Polling drawer on the Connectors tab is first saved and never by
+            the poller itself. <code>config.json</code> says whether polling
+            is on, how often (<code>interval_s</code>, 60 to 86400 seconds),
+            and which collectors run; it is hand-editable and unknown keys
+            survive a rewrite. <code>state.json</code> keeps the last poll
+            time, the last error, and the newest 500 seen keys per collector,
+            which is the dedup memory. <code>events.jsonl</code> is the
+            append-only log of collected items (stable key, title, body, url),
+            rotated at 2 MB into <code>events.&lt;stamp&gt;.jsonl</code> with
+            three rotations kept. Rotated files are history only: the Inbox
+            feeder reads the live file and surfaces only events newer than
+            its 24 hour bootstrap floor.</p>
+            <dl><div><dt>Writer</dt><dd>the connections poller and PUT /api/connections/{toolkit}; every write under a file lock</dd></div><div><dt>Delete effect</dt><dd>DELETE /api/connections/{toolkit} removes the folder; Inbox items it produced stay until done</dd></div></dl>
           </article>
         </div>
       </section>

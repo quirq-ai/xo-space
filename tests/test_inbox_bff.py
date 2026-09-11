@@ -45,7 +45,12 @@ class InboxRoutesTests(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.json()["id"], "deadbeef")
         ci.assert_called_once_with(title="t", body="", kind="note", source="api", project_id=None,
-                                   link={"view": "projects"})
+                                   link={"view": "projects"}, url=None)
+        with patch.object(service, "create_item", return_value=ITEM) as ci:
+            r = client().post("/api/inbox", json={"title": "t", "url": "https://example.test/x"})
+        self.assertEqual(r.status_code, 201)
+        ci.assert_called_once_with(title="t", body="", kind="note", source="api", project_id=None,
+                                   link=None, url="https://example.test/x")
         for code in ("invalid_value", "invalid_project_id", "invalid_link"):
             with self.subTest(code=code):
                 with patch.object(service, "create_item", side_effect=service.InboxError(code, "bad")):

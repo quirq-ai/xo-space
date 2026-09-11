@@ -22,7 +22,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
     def test_view_is_imported_and_registered_with_a_cache_buster(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260910-inbox1';",
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260911-connections1';",
             app,
         )
         self.assertIn("registerView(inboxView);", app)
@@ -40,9 +40,9 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260910-inbox1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260911-connections1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
-        self.assertIn('src="js/app.js?v=20260911-inbox2"', html)
+        self.assertIn('src="js/app.js?v=20260911-connections1"', html)
         # the registry creates #view-inbox itself; no section markup needed
         self.assertNotIn('id="view-inbox"', html)
 

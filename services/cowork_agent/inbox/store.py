@@ -32,11 +32,13 @@ SCHEMA = 1
 MAX_ITEMS = 500          # after a write: drop oldest done first, then oldest of the rest
 DONE_TTL_DAYS = 30       # done items older than this are pruned on write
 STATUSES = ("new", "seen", "done")
-TITLE_MAX, BODY_MAX, PATH_MAX = 300, 4000, 500
+TITLE_MAX, BODY_MAX, PATH_MAX, URL_MAX = 300, 4000, 500, 2000
 DEFAULT_SOURCES: dict = {
     "timeline": {"enabled": True, "types": ["session.started", "todo.added"]},
     "todos": {"enabled": True, "statuses": ["blocked"]},
     "sharing": {"enabled": True},
+    "issues": {"enabled": True, "states": ["open"]},
+    "connections": {"enabled": True},
 }
 
 ID_RE = re.compile(r"[0-9a-f]{8}")
@@ -81,6 +83,13 @@ def is_project_id(value) -> bool:
     return isinstance(value, str) and PROJECT_ID_RE.fullmatch(value) is not None
 
 
+def is_url(value) -> bool:
+    """An absolute http(s) URL of at most ``URL_MAX`` chars: the only shape
+    the UI ever puts into an ``href``."""
+    return (isinstance(value, str) and 0 < len(value) <= URL_MAX
+            and (value.startswith("http://") or value.startswith("https://")))
+
+
 def is_link_path(value) -> bool:
     return (isinstance(value, str) and 0 < len(value) <= PATH_MAX and not value.startswith("/")
             and "\\" not in value and "\x00" not in value
@@ -111,7 +120,7 @@ def validate_link(link, *, strict: bool = False) -> Optional[dict]:
 
 
 def build_item(*, title, body="", kind="note", source="api", project_id=None, link=None,
-               ts=None, key=None) -> dict:
+               ts=None, key=None, url=None) -> dict:
     """Validate and shape an item (no id yet; :func:`upsert_many` and
     :func:`add_item` allocate ids inside the lock). Raises ``InboxError``."""
     if not isinstance(title, str) or not title.strip() or len(title.strip()) > TITLE_MAX:
@@ -124,9 +133,11 @@ def build_item(*, title, body="", kind="note", source="api", project_id=None, li
         raise InboxError("invalid_value", "source must match [a-z0-9_:-] (1 to 40 chars).")
     if project_id is not None and not is_project_id(project_id):
         raise InboxError("invalid_project_id", "project_id must be a project folder name.")
+    if url is not None and not is_url(url):
+        raise InboxError("invalid_value", f"url must start with http:// or https:// and be at most {URL_MAX} chars.")
     return {"ts": ts or now_iso(), "source": source, "kind": kind, "title": title.strip(),
             "body": body, "project_id": project_id, "link": validate_link(link, strict=True),
-            "status": "new", "key": key if isinstance(key, str) else None}
+            "url": url, "status": "new", "key": key if isinstance(key, str) else None}
 
 
 # ── Normalisation, ordering, retention ──────────────────────────────────────
@@ -156,6 +167,7 @@ def _normalize_item(raw, now_text: str) -> Optional[dict]:
         it["kind"] = "note"
     it["project_id"] = it.get("project_id") if is_project_id(it.get("project_id")) else None
     it["link"] = validate_link(it.get("link"))
+    it["url"] = it.get("url") if is_url(it.get("url")) else None   # lenient: a bad hand edit is dropped, never fatal
     it["key"] = it.get("key") if isinstance(it.get("key"), str) else None
     return it
 
@@ -277,7 +289,7 @@ def add_item(doc: dict, item: dict) -> dict:
 
 
 def upsert_many(doc: dict, items: list[dict]) -> bool:
-    """Keyed, status-preserving ingest: an existing key gets title/body/link
+    """Keyed, status-preserving ingest: an existing key gets title/body/link/url
     refreshed in place; a new key is appended with a fresh id. Items without
     a key are always appended. Returns whether the document changed."""
     ids = {it["id"] for it in doc["items"]}
@@ -293,7 +305,7 @@ def upsert_many(doc: dict, items: list[dict]) -> bool:
                 by_key[new["key"]] = new
             changed = True
             continue
-        for field in ("title", "body", "link"):
+        for field in ("title", "body", "link", "url"):
             if cur.get(field) != item.get(field):
                 cur[field] = item.get(field)
                 changed = True

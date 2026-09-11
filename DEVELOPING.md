@@ -49,7 +49,7 @@ routers/                          broker routes only — NO agent branching
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
     connectors/                   gdrive github manus onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
-                                    project_sharing, inbox.py)
+                                    project_sharing, inbox.py, connections.py)
     legacy/                       frozen URL aliases (openclaw_usage)
 
 services/
@@ -70,8 +70,15 @@ services/
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
     inbox/                           the Inbox: store (inbox.json read/write, retention) feeders
-                                    (timeline, todos, sharing) service (the router-facing surface);
-                                    file at <XO root>/.xo/inbox.json, routes in bff/inbox.py
+                                    (timeline, todos, sharing, issues, connections) service (the
+                                    router-facing surface); file at <XO root>/.xo/inbox.json,
+                                    routes in bff/inbox.py
+    connections/                     connections polling for the Inbox (core, agent-free): store
+                                    (~/.quirq/connections/<toolkit>/ config, state, events)
+                                    collectors (the read-only catalog per toolkit) mcp_client
+                                    (streamable-HTTP JSON-RPC over httpx) poller (the background
+                                    loop) service (the router-facing surface); routes in
+                                    bff/connections.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/
@@ -712,3 +719,62 @@ authenticates: `js/core/session.js` mints the session id and `apiFetch`'s
 `headers` option carries it. The OAuth popup's callback posts back to its opener
 with `"*"` as the target origin, so **the listener validates `event.origin`**; the
 `…/status?connection_request_id=` poll, not the message, is what decides success.
+
+### 10.8 Connections polling
+
+The Inbox's `connections` feeder is fed by a background poller in
+`services/cowork_agent/connections/` (routes in
+`routers/cowork_agent/bff/connections.py`, four paths under `/api/connections`).
+It is core code: no agent names, no adapter imports, and the router imports
+only `service.py`.
+
+How a collector reaches the provider: each poll lists the session's tools once. A plain MCP
+server exposes toolkit tools by slug and they are called directly; Composio's tool-router
+session exposes only its meta tools, so the poller runs the slug through
+`COMPOSIO_MULTI_EXECUTE_TOOL` and unwraps its per-tool result (`mcp_client.execute_tool`).
+When `initialize` answers HTTP 404 the tool-router session behind the cached MCP url is gone
+upstream (the swarm still updates its own record for that id, so nothing else notices): the
+poller invalidates the session, mints a fresh entry and retries once. A forced "poll now" waits
+up to `FORCE_WAIT_S` for the loop's own tick to release the toolkit lock before answering busy.
+
+**What it reads.** `~/.quirq/connections/<toolkit>/config.json`, written by
+`PUT /api/connections/{toolkit}` from the Polling drawer or by hand: `enabled`,
+`interval_s` (60 to 86400), `collectors` (ids from `collectors.py`, the read-only
+catalog: `gmail` `unread` and `inbox`, `googlecalendar` `upcoming`, `notion`
+`recent_pages`; every other toolkit has an empty list). The poller never creates
+a folder on its own and never polls a toolkit without a `config.json`. Each
+collector is one `tools/call` over the same Composio MCP upstream the agent
+proxy uses: the entry comes from `composio_service.build_mcp_server_entry(user_id)`
+and the call goes through the minimal streamable-HTTP client in `mcp_client.py`
+(initialize, `notifications/initialized`, `tools/call`, then a best-effort
+DELETE of the session).
+
+**Where it writes.** Only inside that toolkit's folder, every write under
+`flock.locked`: `state.json` (`last_poll_at`, `last_ok_at`, `last_error`, the
+newest 500 seen keys per collector, `events_total`) and `events.jsonl` (one line
+per new item: `ts`, `type`, `key`, `title`, `body`, `url`, `toolkit`; rotated at
+2 MB, three rotations kept). Dedup is by seen key only; there is no timestamp
+floor in the poller. The Inbox feeder applies its own 24 hour bootstrap floor
+and reads only the live file, so `events_total` can exceed what Inbox shows.
+
+**How it degrades.** Every failure is recorded, never raised. No XO credential
+(`state.account_id_if_known()` and `aaccount_id()` both fail) records
+`last_error` "not signed in to XO (no account id)" and stamps `last_poll_at`
+but not `last_ok_at`; a toolkit missing from `workspace_scope.enabled_toolkits()`
+records "<toolkit> is not turned on in this workspace"; a collector the upstream
+rejects records "<collector>: <message>" while the other collectors still run.
+Neither path writes `events.jsonl`. `last_error` is at most 300 chars and is
+built from status codes and body snippets only, never from headers. The loop
+itself is switched off with `XO_CONNECTIONS_POLL_ENABLED=false` (started in the
+lifespan block right after the GitHub poller in `server.py`; `Poll now` still
+works); `XO_CONNECTIONS_POLL_TICK_S` (default 30, minimum 5) is how often it
+looks for connections whose interval has elapsed. `POST
+/api/connections/{toolkit}/poll` runs the same `poll_connection(force=True)`
+under the same per-toolkit lock, so a tick and a manual poll never run one
+toolkit twice; the second caller reports `busy`.
+
+Tests: `tests/test_connections_{store,collectors,mcp_client,poller,bff}.py`,
+`tests/test_inbox_feeders_issues_connections.py`,
+`tests/test_space_connections.py`, `tests/test_connections_docs.py`. All
+hermetic: `QUIRQ_STATE_ROOT` patched to a temp dir, `httpx.MockTransport` for
+the MCP client, identity and scope patched on the poller module.

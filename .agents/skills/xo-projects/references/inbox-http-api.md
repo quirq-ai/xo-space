@@ -1,6 +1,6 @@
 # Inbox HTTP API
 
-The Space Inbox is where information arriving in the workspace is seen, tracked, and acted on. Sessions, blocked todos, and shares land there by themselves through feeders. This file is for the other case: an agent that has something a person should look at (a question, a finding, a request, a result) posts it here instead of burying it in a transcript.
+The Space Inbox is where information arriving in the workspace is seen, tracked, and acted on. Sessions, blocked todos, shares, GitHub issues, and polled connection events land there by themselves through feeders. This file is for the other case: an agent that has something a person should look at (a question, a finding, a request, a result) posts it here instead of burying it in a transcript.
 
 Use it sparingly: one item per thing a person should act on. Progress belongs in todos (SKILL.md Part 3), narrative in `PROGRESS.md`.
 
@@ -14,7 +14,6 @@ POST   /api/inbox
 PATCH  /api/inbox/{item_id}
 DELETE /api/inbox/{item_id}
 ```
-
 ## Create
 
 ```json
@@ -25,13 +24,14 @@ POST /api/inbox
   "kind": "question",                                  // optional, default "note"; [a-z0-9_.:-]{1,60}
   "source": "openclaw",                                // optional, default "api"; [a-z0-9_:-]{1,40}
   "project_id": "my-app",                              // optional; folder name under the projects root
-  "link": {"view": "projects", "project": "my-app", "path": "docs/auth.md"}   // optional
+  "link": {"view": "projects", "project": "my-app", "path": "docs/auth.md"},  // optional
+  "url": "https://github.com/org/my-app/issues/12"   // optional; http(s) only, up to 2000 chars
 }
-→ 201 { "id": "a1b2c3d4", "ts": "...Z", "status": "new", "title": "...", "body": "...", "kind": "question", "source": "openclaw", "project_id": "my-app", "link": {...} }
+→ 201 { "id": "a1b2c3d4", "ts": "...Z", "status": "new", "title": "...", "body": "...", "kind": "question", "source": "openclaw", "project_id": "my-app", "link": {...}, "url": "https://..." }
 → 400 invalid_value | invalid_project_id | invalid_link
 ```
 
-`kind` and `source` are labels the UI shows as chips: use your runtime name for `source` and a short stable word for `kind` (`question`, `finding`, `request`, `result`). `link` is what the Open button does: `view` names a Space tab (`projects`, `sessions`, `time`, `dashboard`; unknown views are ignored), and `project` plus `path` (project-relative, no leading slash, no `..`, at most 500 chars) opens that file in the previewer. Unknown link keys are dropped; an empty link is stored as `null`. Items created here carry no `key`, so the feeders never touch them.
+`kind` and `source` are labels the UI shows as chips: use your runtime name for `source` and a short stable word for `kind` (`question`, `finding`, `request`, `result`). `link` is what the Open button does: `view` names a Space tab (`projects`, `sessions`, `time`, `dashboard`; unknown views are ignored), and `project` plus `path` (project-relative, no leading slash, no `..`, at most 500 chars) opens that file in the previewer. Unknown link keys are dropped; an empty link is stored as `null`. `url` is what the Open link button does: an `http://` or `https://` address opened in a new tab; anything else is `invalid_value`. Items created here carry no `key`, so the feeders never touch them.
 
 ## Read
 
@@ -41,7 +41,7 @@ GET /api/inbox?status=open&limit=200
     "counts": { "new": 3, "seen": 2, "done": 12 },
     "items": [ { "id": "a1b2c3d4", "ts": "...", "source": "timeline", "kind": "session.started",
                  "title": "...", "body": "", "project_id": "...", "link": {"view": "sessions"},
-                 "status": "new", "key": "timeline:session.started:<session_id>" }, ... ] }
+                 "url": null, "status": "new", "key": "timeline:session.started:<session_id>" }, ... ] }
 → 400 invalid_status
 ```
 

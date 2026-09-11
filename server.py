@@ -727,6 +727,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
 
+    # Connections poller: runs each due connection's collectors over the
+    # Composio MCP upstream and appends to ~/.quirq/connections/<toolkit>/
+    # events.jsonl, which the Inbox's connections feeder reads.
+    _connections_poll_task = None
+    try:
+        from services.cowork_agent.connections.poller import (
+            poller_enabled as connections_poller_enabled,
+            start_connections_poller,
+            tick_seconds as connections_tick_seconds,
+        )
+        if connections_poller_enabled():
+            _connections_poll_task = asyncio.create_task(start_connections_poller())
+            print(f"   Connections poller: background task started ({connections_tick_seconds():.0f}s tick)")
+        else:
+            print("   Connections poller: disabled by XO_CONNECTIONS_POLL_ENABLED")
+    except Exception as e:
+        print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
+
     # Visualizer watcher — materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
@@ -811,6 +829,13 @@ async def lifespan(app: FastAPI):
         _github_poll_task.cancel()
         try:
             await _github_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _connections_poll_task:
+        _connections_poll_task.cancel()
+        try:
+            await _connections_poll_task
         except asyncio.CancelledError:
             pass
 

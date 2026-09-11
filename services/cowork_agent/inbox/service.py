@@ -106,11 +106,12 @@ def list_items(status: str = "open", limit: int = 200) -> dict:
             "items": items[:max(1, int(limit))]}
 
 
-def create_item(title, body="", kind="note", source="api", project_id=None, link=None) -> dict:
+def create_item(title, body="", kind="note", source="api", project_id=None, link=None, url=None) -> dict:
     """Validated (``invalid_value`` / ``invalid_project_id`` / ``invalid_link``,
-    all 400), status ``new``, ts now, server-generated id."""
+    all 400), status ``new``, ts now, server-generated id. ``url`` is optional
+    and must be an http(s) address when given (``invalid_value`` otherwise)."""
     item = store.build_item(title=title, body=body, kind=kind, source=source,
-                            project_id=project_id, link=link)
+                            project_id=project_id, link=link, url=url)
     created: dict = {}
 
     def apply(doc: dict) -> bool:

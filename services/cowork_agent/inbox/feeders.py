@@ -8,9 +8,14 @@ that raises is skipped for that run by the service; it never stops the
 others. Feeders are looked up by name from :data:`FEEDER_NAMES` so tests
 can patch one function on this module.
 
-Timestamps from the three producers differ (``Z``, ``+00:00``, naive), so
+Timestamps from the producers differ (``Z``, ``+00:00``, naive), so
 every comparison goes through :func:`store.parse_ts`; the cursor is kept
 as the producer's original string.
+
+Two feeders read what other pollers wrote to disk: ``issues`` reads each
+project's GitHub issue mirror, ``connections`` reads the per-toolkit
+``events.jsonl`` the connections poller appends to. Neither feeder talks
+to the network and neither imports a router.
 """
 
 from __future__ import annotations
@@ -20,9 +25,11 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple, Optional
 
+from services.cowork_agent.connections import store as connections_store
 from services.cowork_agent.project_layout import xo_dir
 from services.cowork_agent.project_sharing import status as sharing_status
 from services.cowork_agent.scopes import resolve_scope
+from services.cowork_agent.visualizer import github_mirror, workspace_index
 from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
 
@@ -30,10 +37,18 @@ from . import store
 
 logger = logging.getLogger(__name__)
 
-FEEDER_NAMES = ("timeline", "todos", "sharing")
+FEEDER_NAMES = ("timeline", "todos", "sharing", "issues", "connections")
 TIMELINE_FETCH_LIMIT = 500
 TODO_KEY_PREFIX = "todo."   # keys the todos feeder owns; only these are ever auto-closed
+ISSUE_KEY_PREFIX = "issue:"   # keys the issues feeder owns; only these are ever auto-closed
 BOOTSTRAP_WINDOW = timedelta(hours=24)   # no cursor: only the last day, never the whole history
+ISSUES_BOOTSTRAP_WINDOW = timedelta(days=7)   # issues move slower than the timeline; a week is the first read
+CONNECTIONS_FETCH_LIMIT = 200   # newest events read per toolkit per run
+_FUTURE_SLACK = timedelta(days=1)   # an issue updated_at further ahead than this never pins the cursor
+# Connection events are stamped with the producer's time and a calendar event
+# with its start, so only clock skew is tolerated here; anything further ahead
+# is emitted but never pins the cursor (see connections()).
+_CONNECTIONS_FUTURE_SLACK = timedelta(minutes=5)
 _SHARING_TITLES = {
     "shared_with_you": "Repo shared with this workspace: {repo}",
     "fetched": "New commits fetched: {repo}",
@@ -50,7 +65,7 @@ class Watched(NamedTuple):
 class FeedResult(NamedTuple):
     items: list[dict]                    # shaped by store.build_item, no id yet
     cursor: Optional[str]                # None: leave the stored cursor alone
-    watched: Optional[Watched]           # todos only: the keys still open under its prefix
+    watched: Optional[Watched]           # todos and issues: the keys still open under their prefix
 
 
 def _str_list(value) -> list[str]:
@@ -208,6 +223,162 @@ def sharing(doc: dict) -> FeedResult:
             project_id=project if store.is_project_id(project) else None, link={"view": "projects"},
             ts=e["at"], key=f"sharing:{kind}:{repo}:{e['at']}"))
     return FeedResult([it for it in items if it is not None], newest[1] if newest else None, None)
+
+
+# ── issues ───────────────────────────────────────────────────────────────────
+
+
+def _issue_item(pid: str, row: dict) -> Optional[dict]:
+    number, state = row["number"], row["state"]
+    lines = []
+    raw_labels = row.get("labels")
+    labels = [lb for lb in raw_labels if isinstance(lb, str) and lb] if isinstance(raw_labels, list) else []
+    if labels:
+        lines.append("labels: " + ", ".join(labels))
+    assignees = row.get("assignees") if isinstance(row.get("assignees"), list) else []
+    logins = [a["login"] for a in assignees if isinstance(a, dict) and isinstance(a.get("login"), str) and a["login"]]
+    if logins:
+        lines.append("assignees: " + ", ".join(logins))
+    url = row.get("url")
+    return _safe_item(
+        title=_one_line(f"Issue #{number} in {pid}: {_one_line(row['title'], 120)}", store.TITLE_MAX),
+        body="\n".join(lines)[:store.BODY_MAX], kind=f"issue.{state}", source="issues",
+        project_id=pid, link={"view": "projects", "project": pid}, ts=row["updated_at"],
+        url=url if store.is_url(url) else None, key=f"{ISSUE_KEY_PREFIX}{pid}:{number}")
+
+
+def _mirror_rows(pid: str) -> tuple[Optional[list[dict]], bool]:
+    """``(rows, unreadable)`` for one project's issue mirror. ``rows`` is
+    ``None`` when there is nothing to read; ``unreadable`` is True only
+    when a mirror file exists and could not be used."""
+    path = github_mirror.mirror_path(pid)
+    if path is None or not path.is_file():
+        return None, False          # absent by design: readable-empty
+    doc = github_mirror.read_mirror(pid)
+    if doc is None:
+        return None, True           # exists but unusable (bad JSON, wrong schema, unreadable)
+    issues = doc.get("issues")
+    rows = [r for r in (issues.values() if isinstance(issues, dict) else [])
+            if isinstance(r, dict) and isinstance(r.get("number"), int) and not isinstance(r.get("number"), bool)
+            and isinstance(r.get("title"), str)]
+    return rows, False
+
+
+def issues(doc: dict) -> FeedResult:
+    """GitHub issues in a watched state (``sources.issues.states``, default
+    ``open``) whose ``updated_at`` is newer than the cursor, or than the last
+    7 days when there is none, across every project's issue mirror.
+
+    The cursor advances to the newest ``updated_at`` seen across all readable
+    rows, kept or not, ignoring a value more than a day ahead of now so one
+    hand-edited mirror cannot starve every other project.
+
+    Auto-close: a transient read failure must not mark real issues done. The
+    watched set is returned only when every enumerated project's mirror was
+    readable or absent by design (no mirror file at all counts as
+    readable-empty); a mirror that exists but cannot be read makes the run
+    return ``watched=None`` so the close step is skipped this time."""
+    states = frozenset(_str_list(store.source_config(doc, "issues").get("states")))
+    cursor = store.parse_ts(doc["cursors"].get("issues"))
+    now = datetime.now(timezone.utc)
+    floor = cursor or (now - ISSUES_BOOTSTRAP_WINDOW)
+    horizon = now + _FUTURE_SLACK
+    newest: Optional[tuple[datetime, str]] = None
+    items: list[dict] = []
+    watched_keys: set[str] = set()
+    any_unreadable = False
+    # Enumerated through the module attribute, not the bare name the todos
+    # feeder binds: the two feeders are switched off independently and tests
+    # patch each enumeration on its own.
+    for pid in workspace_index.list_project_ids():
+        if not store.is_project_id(pid):
+            continue
+        rows, unreadable = _mirror_rows(pid)
+        if unreadable:
+            any_unreadable = True
+            logger.warning("inbox issues: the mirror for %s is unreadable this run; auto-close skipped", pid)
+        for row in rows or []:
+            # Watched membership depends on the state alone: a row whose
+            # updated_at does not parse is still open, and leaving it out
+            # would let close_missing mark its existing item done.
+            in_watched_state = row.get("state") in states
+            if in_watched_state:
+                watched_keys.add(f"{ISSUE_KEY_PREFIX}{pid}:{row['number']}")
+            dt = store.parse_ts(row.get("updated_at"))
+            if dt is None:
+                continue   # only the cursor and the emit need a parsable updated_at
+            if dt > horizon:
+                logger.debug("inbox issues: %s #%s has updated_at in the future; it never pins the cursor",
+                             pid, row["number"])
+            elif newest is None or dt > newest[0]:
+                newest = (dt, row["updated_at"])
+            if in_watched_state and dt > floor:
+                it = _issue_item(pid, row)
+                if it is not None:
+                    items.append(it)
+    watched = None if any_unreadable else Watched(ISSUE_KEY_PREFIX, frozenset(watched_keys))
+    return FeedResult(items, newest[1] if newest else None, watched)
+
+
+# ── connections ──────────────────────────────────────────────────────────────
+
+
+def _connection_item(toolkit: str, ev: dict) -> Optional[dict]:
+    kind, key = ev["type"], ev["key"]
+    title = _one_line(ev.get("title") if isinstance(ev.get("title"), str) else "", store.TITLE_MAX) \
+        or f"{toolkit} {kind}: {key}"
+    body = ev.get("body") if isinstance(ev.get("body"), str) else ""
+    url = ev.get("url")
+    return _safe_item(
+        title=title, body=body[:store.BODY_MAX],
+        kind=re.sub(r"[^a-z0-9_.:-]", "-", f"{toolkit}.{kind}".lower())[:60], source="connections",
+        link={"view": "connectors"}, ts=ev["ts"], url=url if store.is_url(url) else None,
+        key=f"connection:{toolkit}:{kind}:{key}")
+
+
+def connections(doc: dict) -> FeedResult:
+    """Collected items newer than the cursor (or the last 24 h when there
+    is none) from every configured connection's ``events.jsonl``. One cursor
+    covers every toolkit: it advances to the newest ``ts`` seen across all
+    of them, so a toolkit added later only surfaces what arrives after that
+    point (its older lines stay in its events file).
+
+    Collectors stamp an event with the producer's own time, and a calendar
+    collector stamps upcoming events with their start (up to a week ahead).
+    Such an event is still emitted, but a ``ts`` further ahead than
+    :data:`_CONNECTIONS_FUTURE_SLACK` never pins the cursor: otherwise one
+    calendar poll would put the floor days into the future and mail or
+    pages arriving now, from any toolkit, would never surface. Re-reading
+    the same future event on later runs is harmless (keyed upserts)."""
+    cursor = store.parse_ts(doc["cursors"].get("connections"))
+    now = datetime.now(timezone.utc)
+    floor = cursor or (now - BOOTSTRAP_WINDOW)
+    horizon = now + _CONNECTIONS_FUTURE_SLACK
+    newest: Optional[tuple[datetime, str]] = None
+    kept: list[tuple[datetime, str, dict]] = []
+    for toolkit in connections_store.list_configured():
+        try:
+            events = connections_store.read_events(toolkit, limit=CONNECTIONS_FETCH_LIMIT)
+        except Exception as exc:
+            logger.warning("inbox connections: could not read events for %s: %s", toolkit, exc)
+            continue
+        for ev in events:
+            if not isinstance(ev, dict) or not isinstance(ev.get("type"), str) or not ev["type"] \
+                    or not isinstance(ev.get("key"), str) or not ev["key"]:
+                continue
+            dt = store.parse_ts(ev.get("ts"))
+            if dt is None:
+                continue
+            if dt > horizon:
+                logger.debug("inbox connections: %s %s has a ts in the future; it never pins the cursor",
+                             toolkit, ev["key"])
+            elif newest is None or dt > newest[0]:
+                newest = (dt, ev["ts"])
+            if dt > floor:
+                kept.append((dt, toolkit, ev))
+    kept.sort(key=lambda entry: entry[0])   # read_events is newest-first; ingest chronologically
+    items = [it for it in (_connection_item(tk, ev) for _dt, tk, ev in kept) if it is not None]
+    return FeedResult(items, newest[1] if newest else None, None)
 
 
 def feeder(name: str) -> Callable[[dict], FeedResult]:
