@@ -12,7 +12,8 @@
        notImplemented — HTTP 501: the active agent lacks the capability. A
                         normal state for callers to render, not an error.
        error          — the API's own explanation when it sent one (a JSON
-                        body with detail.message / detail), else "http NNN".
+                        body with detail.message / detail.error / detail), else
+                        "http NNN".
    - Concurrent GETs for the same path share one in-flight request
      (single-flight); sequential calls always hit the network fresh. */
 import {singleFlight} from './store.js';
@@ -42,6 +43,7 @@ async function doFetch(path,method,body,headers){
       try{
         const j=await r.json();
         if(j.detail&&j.detail.message)message=j.detail.message;
+        else if(j.detail&&j.detail.error)message=j.detail.error; /* the auth and connector routes' shape */
         else if(typeof j.detail==='string')message=j.detail;
       }catch(e){}
       return{ok:false,status:r.status,data:null,offline:false,notImplemented:r.status===501,error:message};
