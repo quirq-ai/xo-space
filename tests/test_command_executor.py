@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -132,6 +133,116 @@ class RunSpecTests(unittest.TestCase):
         self.assertTrue(ok.ok)
         missing = spawn_detached(["definitely-not-a-binary-xyz"])
         self.assertTrue(missing.binary_missing)
+
+    def test_default_command_log_records_shape_and_caps_output(self) -> None:
+        from utils.commands import run_sync
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / ".quirq"
+            payload = "A" * 5000
+            with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(state_root)}, clear=False):
+                result = run_sync([sys.executable, "-c", f"print({payload!r})"], cwd=str(ROOT), timeout=30)
+            self.assertTrue(result.ok)
+            text = (state_root / "commands.log").read_text(encoding="utf-8")
+        self.assertIn("$", text)
+        self.assertIn(f"cwd: {ROOT}", text)
+        self.assertRegex(text, r"\[0; \d+\.\d{3}s\]")
+        self.assertIn("...[truncated ", text)
+        self.assertIn("A" * 100, text)
+
+    def test_default_command_log_redacts_known_secret_shapes(self) -> None:
+        result = CommandResult(
+            argv=["git"],
+            returncode=0,
+            output=(
+                "token ghp_secretvalue\n"
+                "sk-live-secret\n"
+                "AUTHORIZATION: basic abc123\n"
+                "Authorization: token github_pat_secretvalue\n"
+                "--token=gho_secretvalue"
+            ),
+            duration_seconds=0.1,
+        )
+        entry = commands._render_log_entry(
+            "2026-01-01T00:00:00+00:00",
+            "",
+            [
+                "git",
+                "-c",
+                "http.https://github.com/.extraheader=AUTHORIZATION: basic abc123",
+                "--token",
+                "ghp_secretvalue",
+                "--code=ak_secretvalue",
+            ],
+            result,
+            cwd="/tmp/work",
+        )
+        self.assertIn("http.https://github.com/.extraheader=AUTHORIZATION: basic [REDACTED]", entry)
+        self.assertIn("--token [REDACTED]", entry)
+        self.assertIn("--code=[REDACTED]", entry)
+        self.assertIn("Authorization: token [REDACTED]", entry)
+        for secret in (
+            "abc123",
+            "ghp_secretvalue",
+            "gho_secretvalue",
+            "github_pat_secretvalue",
+            "sk-live-secret",
+            "ak_secretvalue",
+        ):
+            self.assertNotIn(secret, entry)
+
+    def test_rotation_keeps_one_generation(self) -> None:
+        from utils.commands import run_sync
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / ".quirq"
+            with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(state_root)}, clear=False), \
+                 patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
+                first = run_sync([sys.executable, "-c", "print('first entry payload')"], timeout=30)
+                second = run_sync([sys.executable, "-c", "print('second entry payload')"], timeout=30)
+            self.assertTrue(first.ok)
+            self.assertTrue(second.ok)
+            current = (state_root / "commands.log").read_text(encoding="utf-8")
+            rotated = (state_root / "commands.log.1").read_text(encoding="utf-8")
+        self.assertIn("second entry payload", current)
+        self.assertNotIn("first entry payload", current)
+        self.assertIn("first entry payload", rotated)
+
+    def test_off_switch_disables_default_log_but_keeps_explicit_log_path(self) -> None:
+        from utils.commands import run_sync
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / ".quirq"
+            extra_log = Path(tmp) / "explicit.log"
+            env_override_log = Path(tmp) / "from-env.log"
+            with patch.dict(
+                os.environ,
+                {
+                    "QUIRQ_STATE_ROOT": str(state_root),
+                    "QUIRQ_COMMAND_LOG": "off",
+                    "QUIRQ_COMMAND_LOG_PATH": str(env_override_log),
+                },
+                clear=False,
+            ):
+                result = run_sync([sys.executable, "-c", "print('ok')"], log_path=extra_log, timeout=30)
+            self.assertTrue(result.ok)
+            self.assertFalse((state_root / "commands.log").exists())
+            self.assertFalse(env_override_log.exists())
+            self.assertIn("ok", extra_log.read_text(encoding="utf-8"))
+
+    def test_logging_failure_warns_once_and_does_not_change_result(self) -> None:
+        from utils.commands import run_sync
+
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": "/tmp/quirq-tests"}, clear=False), \
+             patch.object(commands, "_write_log", side_effect=OSError("disk full")), \
+             patch.object(commands.log, "warning") as warning, \
+             patch.object(commands, "_COMMAND_LOG_WARNING_EMITTED", False), \
+             patch.object(commands, "_FAILED_COMMAND_LOG_PATHS", set()):
+            first = run_sync([sys.executable, "-c", "print('one')"], timeout=30)
+            second = run_sync([sys.executable, "-c", "print('two')"], timeout=30)
+        self.assertTrue(first.ok)
+        self.assertTrue(second.ok)
+        self.assertEqual(warning.call_count, 1)
 
     @unittest.skipIf(os.name != "posix", "process groups are POSIX")
     def test_timeout_kills_the_whole_process_group(self) -> None:
