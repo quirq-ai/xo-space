@@ -9,7 +9,7 @@ tool-router session — see :mod:`.workspace_scope`. Never compose the account a
 into one key: an account connected under such a key is unreachable from an account-scoped
 session, because Composio requires a pinned account to belong to the session's ``user_id``.
 
-**The workspace half never leaves this pod.** It comes from ``CODER_WORKSPACE_ID``
+**The workspace half never leaves this install.** It comes from ``XO_SPACE_ID``
 (:func:`workspace_id`) and its only consumer is the ownership stamp on ``sessions.json``,
 which is what stops a store restored from another workspace being adopted.
 
@@ -158,42 +158,35 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         ) from exc
 
 
-# Injected by the Coder pod. Not a namespace key — the local stores are already isolated
-# by the filesystem. Its one job is stamping ``sessions.json``, so a store restored from a
-# *different* workspace is discarded rather than adopted along with that workspace's
-# connector scope. Never sent to Composio.
-WORKSPACE_ENV = "CODER_WORKSPACE_ID"
-# Off Coder there is no pod to inject it. A local install identifies itself with the id
-# the swarm already knows it by: XO_SPACE_ID, the same value project sharing sends as
-# ``workspace_id``. Read second, so a Coder pod that also carries XO_SPACE_ID keeps its
-# Coder identity. Still one id per install, so the stamp keeps its meaning.
-LOCAL_WORKSPACE_ENV = "XO_SPACE_ID"
+# The one workspace identity every install carries, on Coder and off: the id the swarm
+# knows this Space by, the same value project sharing and usage reporting send. Not a
+# namespace key (the local stores are already isolated by the filesystem); its one job
+# here is stamping ``sessions.json``, so a store restored from a *different* workspace is
+# discarded rather than adopted along with that workspace's connector scope. Never sent
+# to Composio.
+WORKSPACE_ENV = "XO_SPACE_ID"
 
 
 class WorkspaceIdentityUnavailable(RuntimeError):
-    """Neither CODER_WORKSPACE_ID nor XO_SPACE_ID is set, so the store cannot be stamped."""
+    """XO_SPACE_ID is unset or empty, so the store cannot be stamped."""
 
 
 def workspace_id() -> str:
-    """This install's workspace id.
+    """This install's workspace id, ``XO_SPACE_ID``.
 
-    ``CODER_WORKSPACE_ID`` on a Coder pod, else ``XO_SPACE_ID`` on a local install. Read
-    at call time, not import time, so an operator (or a verification run) can change
-    the environment without reimporting. Fails closed: there is no default and no
-    ``"unknown"`` value, because a shared fallback would make every misconfigured pod
-    claim ownership of every other's store.
+    Read at call time, not import time, so an operator (or a verification run) can
+    change the environment without reimporting. Fails closed: there is no default and
+    no ``"unknown"`` value, because a shared fallback would make every misconfigured
+    install claim ownership of every other's store.
 
     Raises:
         WorkspaceIdentityUnavailable: when the variable is unusable. Callers must surface
             this, never substitute a default.
     """
-    for name in (WORKSPACE_ENV, LOCAL_WORKSPACE_ENV):
-        value = (os.getenv(name) or "").strip()
-        if value:
-            return value
-    raise WorkspaceIdentityUnavailable(
-        f"neither {WORKSPACE_ENV} nor {LOCAL_WORKSPACE_ENV} is set"
-    )
+    value = (os.getenv(WORKSPACE_ENV) or "").strip()
+    if value:
+        return value
+    raise WorkspaceIdentityUnavailable(f"{WORKSPACE_ENV} is not set")
 
 
 def _workspace() -> str:

@@ -382,7 +382,7 @@ class NoToolkitsEnabled(RuntimeError):
 def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]]:
     """Read the store, returning ``(workspace, account, session_id, proxy_tokens)``.
 
-    ``workspace`` is the stamp: the ``CODER_WORKSPACE_ID`` of the pod that wrote the
+    ``workspace`` is the stamp: the ``XO_SPACE_ID`` of the install that wrote the
     document. It is what lets this pod tell its own store from one restored out of a
     backup or another workspace's home directory — with connections now account-wide,
     adopting a foreign store would mean inheriting that workspace's connector scope.
@@ -431,7 +431,7 @@ def _ensure_sessions_loaded() -> None:
     """Populate the in-memory mirrors from disk, if the store is this workspace's.
 
     Classifying the document needs no network: the stamp is compared against this pod's
-    own ``CODER_WORKSPACE_ID``. That matters because proxy-token resolution runs on every
+    own ``XO_SPACE_ID``. That matters because proxy-token resolution runs on every
     agent ``tools/call``.
 
     A store stamped for another workspace is left alone on disk and simply not adopted —
