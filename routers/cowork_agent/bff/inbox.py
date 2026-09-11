@@ -1,7 +1,7 @@
 """BFF routes for the Space inbox.
 
   GET    /api/inbox?status=open|done|all&limit=N   counts plus the newest-first slice
-  POST   /api/inbox                                 201, body {title, body?, kind?, source?, project_id?, link?}
+  POST   /api/inbox                                 201, body {title, body?, kind?, source?, project_id?, link?, url?}
   PATCH  /api/inbox/{item_id}                       body {status}
   DELETE /api/inbox/{item_id}                       {item_id, deleted} (idempotent)
 
@@ -36,6 +36,7 @@ class CreateItemBody(_ForbidExtra):
     source: str = "api"
     project_id: Optional[str] = None
     link: Optional[dict] = None
+    url: Optional[str] = None
 
 
 class UpdateItemBody(_ForbidExtra):
@@ -67,7 +68,7 @@ def list_inbox(status: str = Query("open"), limit: int = Query(200, ge=1, le=500
 def create_inbox_item(body: CreateItemBody) -> dict:
     try:
         return service.create_item(title=body.title, body=body.body, kind=body.kind, source=body.source,
-                                   project_id=body.project_id, link=body.link)
+                                   project_id=body.project_id, link=body.link, url=body.url)
     except service.InboxError as exc:
         raise _http(exc)
 
