@@ -376,7 +376,9 @@ one branch, serve both.
 ## 10. Connectors: Composio
 
 Composio gives the active agent tools in the user's own SaaS accounts (Gmail,
-Google Workspace, Notion, Figma) via [Composio](https://composio.dev). It is laid
+Google Workspace, Notion, Figma, Slack, Telegram) via [Composio](https://composio.dev).
+OAuth toolkits and key-based ones (Telegram takes a bot token) share one connect
+flow: the swarm mints a hosted link for either. It is laid
 out like every other connector — logic under `services/cowork_agent/connectors/`,
 HTTP surface under `routers/cowork_agent/connectors/`:
 

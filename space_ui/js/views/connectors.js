@@ -184,6 +184,13 @@ function renderListFailure(res){
 /* ---------- rendering ---------- */
 
 function isConnected(t){return String(t.status||'').toUpperCase()==='ACTIVE';}
+function schemeOf(toolkitId){
+  const t=toolkits.find(x=>x.id===toolkitId);
+  return (t&&Array.isArray(t.schemes)&&t.schemes[0])||'OAUTH2';
+}
+/* what a person is asked for when they press Connect */
+const SCHEME_LABEL={OAUTH2:'OAuth sign-in',API_KEY:'API key or bot token',BEARER_TOKEN:'access token',BASIC:'username and password'};
+const schemeLabel=s=>SCHEME_LABEL[String(s||'').toUpperCase()]||String(s||'');
 function isEnabledHere(t){return !!t.workspace_enabled;}
 
 /* Connections are account-wide; reach is not. A toolkit connected on the account but
@@ -220,13 +227,17 @@ function renderCard(t){
     +'</div>'
     +'<div class="conn-card-body">'
       +'<div class="conn-facts">'
-        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).join(', '))+'</span>'
+        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
       +'</div>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
           +'workspace&rsquo;s agent use it.</p>'
+        :'')
+      +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
+        ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))
+          +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'.</p>'
         :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
@@ -446,8 +457,10 @@ async function connect(toolkitId,button){
      is blocked by default in most browsers. */
   const popup=window.open('','composio-auth','width=560,height=760');
   try{
+    /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
+       the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:'OAUTH2'},headers:sessionHeaders(),
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},headers:sessionHeaders(),
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();

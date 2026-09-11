@@ -16,7 +16,7 @@ import sharingView from './views/sharing.js?v=20260911-sharingfix1';
 import wikiView from './views/wiki.js?v=20260911-connections1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
-import connectorsView from './views/connectors.js?v=20260911-connections1';
+import connectorsView from './views/connectors.js?v=20260911-slacktg1';
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
 addEventListener('error',e=>console.error('Space shell error:',e.error||e.message));

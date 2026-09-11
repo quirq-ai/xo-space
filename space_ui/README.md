@@ -207,7 +207,7 @@ than the cursor surfaces nothing until it collects something newer (delete
 ### Connections polling
 
 The `connections` feeder reads what a background poller collected from the
-Composio connections (Gmail, Google Calendar, Notion) over the same MCP
+Composio connections (Gmail, Google Calendar, Notion, Slack, Telegram) over the same MCP
 upstream the agent proxy uses. Everything lives in
 `services/cowork_agent/connections/` (store, collectors, mcp_client, poller,
 service) and in one folder per toolkit, hand-maintainable in the same spirit
@@ -240,8 +240,10 @@ a fresh one. "Poll now" waits briefly for a running tick instead of reporting bu
 
 Collectors are read-only tools from the catalog in `collectors.py`: `gmail`
 `unread` (default) and `inbox`, `googlecalendar` `upcoming` (default),
-`notion` `recent_pages` (default); every other toolkit has none yet and the
-drawer says so. The poller only ever polls a toolkit that has a
+`notion` `recent_pages` (default), `slack` `recent` (messages from the last
+day, default), `telegram` `updates` (new messages to the bot, default; no
+links, since private chats have no permalink); every other toolkit has none
+yet and the drawer says so. The poller only ever polls a toolkit that has a
 `config.json`, dedups by the seen keys in `state.json` (the newest 500 per
 collector), and records failures in `last_error` instead of raising: not
 signed in to XO, the toolkit not turned on in this workspace, or one
