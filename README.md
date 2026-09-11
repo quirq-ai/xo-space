@@ -79,7 +79,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Then open **http://localhost:5002/space/**.
 
-What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `quirq.log` for server output and `commands.log` for every external command Quirq runs — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
+What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `quirq.log` for server output and `commands.log` for every external command Quirq runs in that state root — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
 
 **Requirements:** `git`. Everything else is optional and only disables its own feature — `node`/`npm` for installing an agent CLI, `gh` for project backup, `rclone` for Drive/OneDrive. Windows runs under WSL ([details](INSTALLATION.md#windows)).
 
@@ -196,7 +196,7 @@ Nothing, by default. A self-hosted install binds to loopback, needs no account, 
 
 If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. It never includes prompts, responses, file contents or paths. Leave the key unset to stay signed out.
 
-To see what your install decided: the status is the first thing on the Setup tab's **Agent and watcher** card (`/space/#/secrets`), the server's own decisions are in `~/.quirq/quirq.log` (`grep usage_sync ~/.quirq/quirq.log`), and every external command Quirq runs is recorded beside it in `~/.quirq/commands.log`. The installer prints the log pointers on every run.
+To see what your install decided: the status is the first thing on the Setup tab's **Agent and watcher** card (`/space/#/secrets`), the server's own decisions are in `<state root>/quirq.log` (`grep usage_sync ~/.quirq/quirq.log` on the default install), and every external command Quirq runs is recorded beside it in `<state root>/commands.log`. The installer prints the log pointers on every run.
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
