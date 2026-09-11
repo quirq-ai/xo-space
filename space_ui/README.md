@@ -1,9 +1,9 @@
 # Space — the workspace knowledge graph UI
 
-An explorable map of `~/xo-projects`. Six top-level tabs — **Dashboard**,
+An explorable map of `~/xo-projects`. Eight top-level tabs: **Dashboard**,
 **Files** (List | Graph | Tree lenses under one tab), **Timeline**,
-**Sessions**, **Wiki**, and **Setup** — plus the **Quirq** state view, which
-has no tab of its own and opens from Setup's header.
+**Sessions**, **Inbox**, **Wiki**, **Setup**, and **Connectors**, plus the
+**Quirq** state view, which has no tab of its own and opens from Setup's header.
 
 This folder is a bundled snapshot of the xo-atlas UI (originally a standalone
 folder with no remote), trimmed to the single endpoint-driven page and served
@@ -28,6 +28,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Dashboard + Graph + Timeline — three lenses over one dataset, one shared closure, three exported views. |
 | `js/views/sessions.js` | The Sessions view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. |
+| `js/views/inbox.js` | The Inbox view: what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the tab button (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/projects.js` | The Files List lens: project list with per-project drawers (folder browser via `/tree`, todos, open sessions, recent events, and the project's GitHub issues via `/github/issues`). Todos are read *and written* through `/api/xo-projects/{id}/todos` — the only write path for any runtime. Owns the `Files` tab; Graph and Tree are sibling lenses (`nav:false`, `parent:'projects'`). |
 | `js/views/tree.js` | The Files Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph — folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered — no tab. |
@@ -73,8 +74,8 @@ spring stiffness makes the original explicit-Euler sim diverge (positions hit
 
 ## Sessions tab
 
-The fourth topbar tab (`Dashboard | Files | Timeline | Sessions | Wiki |
-Setup`) is a session-telemetry dashboard: per-session stats rendered as cards,
+The fourth topbar tab (`Dashboard | Files | Timeline | Sessions | Inbox |
+Wiki | Setup`) is a session-telemetry dashboard: per-session stats rendered as cards,
 tables, and hand-drawn canvas charts (no dependencies), re-skinned to the
 Space theme. The payload is assembled from every backend that implements the
 `session_telemetry` capability, so a runtime that reports nothing shows as
@@ -93,6 +94,106 @@ switchable regardless.
   payload.
 - No alerts and no prompts by design — those tables are never read, so raw
   prompt text never enters the payload.
+
+## Inbox tab
+
+The fifth topbar tab is where information arriving in the workspace is seen,
+tracked, and acted on. One human-readable JSON file is the source of truth, a
+small service feeds and edits it, four HTTP routes serve it, and one view
+module (`js/views/inbox.js`, styled by `css/inbox.css`) renders it. The tab
+button carries an unread badge (`counts.new`, refreshed every 60 s).
+
+- Data: `GET /api/inbox?status=open|done|all&limit=N` (defaults `open`, 200;
+  `limit` 1 to 500). The reply is `{schema, updated_at, counts: {new, seen,
+  done}, items: [...]}`: counts always cover the whole file, items are newest
+  first. Every read runs the feeders first (throttled to once per 5 s per
+  process) and a feeder failure never fails the read. The view polls every
+  30 s while shown and re-fetches after every write.
+- Writes: `POST /api/inbox` `{title, body?, kind?, source?, project_id?,
+  link?}` answers 201 with the item; `PATCH /api/inbox/{id}` `{status}`
+  answers the item; `DELETE /api/inbox/{id}` answers `{item_id, deleted}` and
+  is idempotent. Ids are 8 lowercase hex; a malformed id is a 404
+  `item_not_found`. Validation failures are 400 with `{code, message}`:
+  `invalid_value` (title, body, kind, source), `invalid_project_id`,
+  `invalid_link`, `invalid_status`.
+- Rows: status dot (accent while new), kind chip, title, project chip,
+  relative time. Clicking a row expands the body and marks a new item seen.
+  Actions: Open (only when the item carries a link), Done or Reopen, Delete.
+  Filter pills Open (new plus seen) | Done | All; "Mark all seen" shows only
+  while there are new items; Refresh re-fetches.
+- Open follows `link`: `{project, path}` switches to Files and opens the file
+  previewer; `{view}` switches to that tab; `{project}` alone switches to
+  Files.
+
+### The file: `<XO root>/.xo/inbox.json`
+
+Written only by `services/cowork_agent/inbox/store.py` (atomic write under
+the visualizer's `flock.locked`, the same mechanism the todo API uses) and
+read with the visualizer's `reader.read_json`. It appears on the first
+ingest that finds something or on the first `POST`; a read-only `GET` on a
+fresh workspace creates nothing.
+
+```jsonc
+{
+  "schema": 1,
+  "updated_at": "2026-09-10T12:00:00Z",
+  "sources": {                                   // optional; absent = these defaults
+    "timeline": {"enabled": true, "types": ["session.started", "todo.added"]},
+    "todos":    {"enabled": true, "statuses": ["blocked"]},
+    "sharing":  {"enabled": true}
+  },
+  "cursors": {"timeline": "<ts>", "sharing": "<ts>"},   // optional; absent = no cursor
+  "items": [
+    { "id": "a1b2c3d4",                          // 8 lowercase hex, unique in the file
+      "ts": "2026-09-10T11:59:30Z",              // when it arrived (ISO-8601 UTC)
+      "source": "timeline",                      // [a-z0-9_:-]{1,40}
+      "kind": "session.started",                 // [a-z0-9_.:-]{1,60}
+      "title": "Session started in xo-space (claude_code)",   // 1 to 300 chars
+      "body": "",                                // up to 4000 chars
+      "project_id": "xo-space",                  // optional project folder name
+      "link": {"view": "sessions"},              // optional: view, project, path
+      "status": "new",                           // new | seen | done
+      "key": "timeline:session.started:<session_id>" }   // dedup identity; API items carry none
+  ]
+}
+```
+
+Items are kept newest-first. Retention runs on every write (constants in
+`store.py`): `DONE_TTL_DAYS = 30` prunes done items older than that, then
+`MAX_ITEMS = 500` drops the oldest done items first, then the oldest of the
+rest.
+
+### Feeders (`services/cowork_agent/inbox/feeders.py`)
+
+Best-effort and idempotent. An item whose `key` already exists is updated in
+place (title, body, link; status is never reset) and never duplicated. A
+feeder that throws is logged and skipped for that run while the others still
+run. A source with `enabled: false` is never read.
+
+| Feeder | Reads | Default | Cursor | Produces |
+|---|---|---|---|---|
+| `timeline` | `~/.quirq/workspace/timeline.jsonl` (the runtime-tier workspace timeline), the newest 500 events of the enabled types | `types: ["session.started", "todo.added"]`; `todo.completed`, `file.created`, `file.edited` can be added | `cursors.timeline`, the newest event timestamp seen; with no cursor only the last 24 hours are taken | `Session started in <project> (<runtime>)` linking to Sessions; `Todo added in <project>: <content>` linking to Files |
+| `todos` | every `<project>/.xo/todos.json` | `statuses: ["blocked"]` | none | `Todo blocked in <project>: <content>` (kind `todo.blocked`, linking to Files); the item is set to done by itself once the todo leaves the watched status or disappears |
+| `sharing` | the in-memory relay status (the `recent` list of `GET /api/project-sharing/status`) | on | `cursors.sharing` | `Repo shared with this workspace: <repo>`, `New commits fetched: <repo>`, `Sharing error: <repo>`, `Sharing access revoked: <repo>`, with the relay detail as body, linking to Files |
+
+The relay list restarts empty with the server, so a persisted sharing cursor
+never re-ingests old events.
+
+### Hand-editing
+
+The store tolerates edits: missing keys get defaults, unknown top-level and
+per-item keys survive a rewrite, items without a title or a valid id are
+dropped with a warning, an invalid status becomes `new`.
+
+- Disable a source: set `sources.<name>.enabled` to `false`.
+- Re-read a source: delete `cursors.<name>`. The timeline feeder then takes
+  the last 24 hours again; sharing re-reads whatever the relay still holds,
+  deduped by key.
+- Watch more: add types to `sources.timeline.types` or statuses to
+  `sources.todos.statuses`.
+- Remove items: delete them from `items`, or mark them `done` and let
+  retention prune them. A feeder item you delete comes back while its source
+  still reports it.
 
 ## Data format (`/xo/space.json`)
 

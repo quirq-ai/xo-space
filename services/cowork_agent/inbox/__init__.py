@@ -1,0 +1,16 @@
+"""Space inbox: one human-readable ``<XO root>/.xo/inbox.json`` holding
+information that arrived in the workspace, its seen/done state, and the
+feeder cursors.
+
+Three modules, one router-facing surface:
+
+* :mod:`store`    the file (normalisation, validation, retention, locked
+                  read-modify-write, keyed upserts).
+* :mod:`feeders`  best-effort readers that turn the workspace timeline,
+                  per-project todos and the sharing relay into items.
+* :mod:`service`  what ``routers/cowork_agent/bff/inbox.py`` imports:
+                  ``refresh``, ``list_items``, ``create_item``,
+                  ``update_item``, ``delete_item`` and ``InboxError``.
+
+Core code: names no agent and imports nothing from the adapters tree.
+"""

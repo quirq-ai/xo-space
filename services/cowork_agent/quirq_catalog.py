@@ -203,6 +203,13 @@ _WORKSPACE_OUTPUT_CONTRACT = (
         "purpose": "Multiplexed project timelines tagged with project id",
         "used_by": "Workspace timeline APIs",
     },
+    {
+        "path": "inbox.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Inbox API + feeders (timeline, todos, sharing)",
+        "purpose": "Incoming information, its seen/done state, and feeder cursors",
+        "used_by": "Inbox",
+    },
 )
 
 
