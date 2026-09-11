@@ -7,12 +7,12 @@ import {initLensSwitch} from './core/lens-switch.js?v=20260910-sharinglens1';
 import {initPreview} from './core/preview.js?v=20260827-htmlfix1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-review1';
 import sessionsView from './views/sessions.js?v=20260825-rename1';
-import projectsView from './views/projects.js?v=20260911-issues1';
+import projectsView from './views/projects.js?v=20260911-capfloor3';
 import treeView from './views/tree.js?v=20260825-rename1';
 import sharingView from './views/sharing.js?v=20260911-sharingfix1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260911-issues1';
+import wikiView from './views/wiki.js?v=20260911-capfloor3';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
 import connectorsView from './views/connectors.js?v=20260904-autoinstall1';
