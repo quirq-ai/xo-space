@@ -7,6 +7,7 @@ import {initLensSwitch} from './core/lens-switch.js?v=20260910-sharinglens1';
 import {initPreview} from './core/preview.js?v=20260827-htmlfix1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-review1';
 import sessionsView from './views/sessions.js?v=20260825-rename1';
+import inboxView,{initInboxBadge} from './views/inbox.js?v=20260910-inbox1';
 import projectsView from './views/projects.js?v=20260911-issues1';
 import treeView from './views/tree.js?v=20260825-rename1';
 import sharingView from './views/sharing.js?v=20260911-sharingfix1';
@@ -30,6 +31,7 @@ try{
   registerView(graphView);
   registerView(timeView);
   registerView(sessionsView);
+  registerView(inboxView);
   registerView(projectsView);
   registerView(treeView);
   registerView(sharingView);
@@ -41,4 +43,5 @@ try{
 }catch(err){console.error('Space registry failed to start:',err);}
 
 try{initServerWidget();}catch(err){console.error('Server widget failed to start:',err);}
+try{initInboxBadge();}catch(err){console.error('Inbox badge failed to start:',err);}
 try{initPreview();}catch(err){console.error('Previewer failed to start:',err);}
