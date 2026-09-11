@@ -154,7 +154,13 @@ class RunSpecTests(unittest.TestCase):
         result = CommandResult(
             argv=["git"],
             returncode=0,
-            output="token ghp_secretvalue\nsk-live-secret\nAUTHORIZATION: basic abc123\n--token=gho_secretvalue",
+            output=(
+                "token ghp_secretvalue\n"
+                "sk-live-secret\n"
+                "AUTHORIZATION: basic abc123\n"
+                "Authorization: token github_pat_secretvalue\n"
+                "--token=gho_secretvalue"
+            ),
             duration_seconds=0.1,
         )
         entry = commands._render_log_entry(
@@ -174,7 +180,15 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn("http.https://github.com/.extraheader=AUTHORIZATION: basic [REDACTED]", entry)
         self.assertIn("--token [REDACTED]", entry)
         self.assertIn("--code=[REDACTED]", entry)
-        for secret in ("abc123", "ghp_secretvalue", "gho_secretvalue", "sk-live-secret", "ak_secretvalue"):
+        self.assertIn("Authorization: token [REDACTED]", entry)
+        for secret in (
+            "abc123",
+            "ghp_secretvalue",
+            "gho_secretvalue",
+            "github_pat_secretvalue",
+            "sk-live-secret",
+            "ak_secretvalue",
+        ):
             self.assertNotIn(secret, entry)
 
     def test_rotation_keeps_one_generation(self) -> None:
@@ -200,14 +214,20 @@ class RunSpecTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / ".quirq"
             extra_log = Path(tmp) / "explicit.log"
+            env_override_log = Path(tmp) / "from-env.log"
             with patch.dict(
                 os.environ,
-                {"QUIRQ_STATE_ROOT": str(state_root), "QUIRQ_COMMAND_LOG": "off"},
+                {
+                    "QUIRQ_STATE_ROOT": str(state_root),
+                    "QUIRQ_COMMAND_LOG": "off",
+                    "QUIRQ_COMMAND_LOG_PATH": str(env_override_log),
+                },
                 clear=False,
             ):
                 result = run_sync([sys.executable, "-c", "print('ok')"], log_path=extra_log, timeout=30)
             self.assertTrue(result.ok)
             self.assertFalse((state_root / "commands.log").exists())
+            self.assertFalse(env_override_log.exists())
             self.assertIn("ok", extra_log.read_text(encoding="utf-8"))
 
     def test_logging_failure_warns_once_and_does_not_change_result(self) -> None:

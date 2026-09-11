@@ -74,11 +74,13 @@ _SENSITIVE_FLAGS = frozenset({
     "--secret",
     "--token",
 })
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization:\s*(?:basic|bearer)\s+)(\S+)")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization:\s*(?:basic|bearer|token)\s+)(\S+)")
 _INLINE_SECRET_RE = re.compile(
     r"(?i)(--(?:access-token|api-key|auth-token|code|password|secret|token)\b\s*[=:]\s*)(\S+)"
 )
-_TOKEN_PREFIX_RE = re.compile(r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b")
+_TOKEN_PREFIX_RE = re.compile(
+    r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b"
+)
 _COMMAND_LOG_WARNING_EMITTED = False
 _FAILED_COMMAND_LOG_PATHS: set[str] = set()
 
@@ -173,8 +175,12 @@ def _command_log_status(result: CommandResult) -> str:
     )
 
 
+def _default_command_logging_enabled() -> bool:
+    return ((os.getenv("QUIRQ_COMMAND_LOG", "") or "").strip().lower() != "off")
+
+
 def _default_command_log_path() -> Path | None:
-    if ((os.getenv("QUIRQ_COMMAND_LOG", "") or "").strip().lower() == "off"):
+    if not _default_command_logging_enabled():
         return None
     override = (os.getenv("QUIRQ_COMMAND_LOG_PATH", "") or "").strip()
     return Path(override).expanduser() if override else quirq_state_dir() / "commands.log"
@@ -183,7 +189,9 @@ def _default_command_log_path() -> Path | None:
 def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
     seen: set[str] = set()
     paths: list[Path] = []
-    for candidate in (_default_command_log_path(), Path(log_path).expanduser() if log_path is not None else None):
+    default_path = _default_command_log_path()
+    explicit_path = Path(log_path).expanduser() if log_path is not None else None
+    for candidate in (default_path, explicit_path):
         if candidate is None:
             continue
         key = os.path.abspath(str(candidate))
