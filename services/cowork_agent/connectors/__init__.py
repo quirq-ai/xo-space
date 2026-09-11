@@ -10,7 +10,6 @@ its ``__init__``, so callers import the connector, not its internals::
     onedrive/  OneDrive              (provider.py — rclone-backed)
     github/    GitHub                (common.py + pat.py + cli_auth.py)
     vercel/    Vercel                (oauth.py + api.py + connector.py)
-    manus/     Manus                 (connector.py — API key)
 
 Two shared pieces sit alongside them, deliberately not connectors:
 

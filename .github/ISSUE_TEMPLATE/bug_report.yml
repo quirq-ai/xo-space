@@ -24,7 +24,7 @@ body:
         - Chat (a specific runtime)
         - Sessions / usage / cost telemetry
         - Installer / update / restart
-        - Connector (gdrive / onedrive / github / vercel / manus)
+        - Connector (gdrive / onedrive / github / vercel)
         - xo-projects sync / backup
         - Docs / Wiki
     validations:

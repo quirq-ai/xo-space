@@ -21,7 +21,6 @@ from .connectors.gdrive import router as gdrive_router
 from .connectors.github_cli import router as github_cli_router
 from .connectors.github_pat import router as github_pat_router
 from .connectors.magicpath import router as magicpath_router
-from .connectors.manus import router as manus_router
 from .misc import router as misc_router
 from .onboarding import router as onboarding_router
 from .quirq_state import router as quirq_state_router
@@ -75,7 +74,6 @@ all_routers: list[APIRouter] = [
     # it delegates vercel-shaped requests to vercel_oauth_callback unchanged.
     magicpath_router,
     vercel_router,
-    manus_router,
     *bff_routers,
     xo_projects_sync_router,
 ]
