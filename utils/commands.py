@@ -53,6 +53,7 @@ import re
 import shlex
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,7 @@ _TOKEN_PREFIX_RE = re.compile(
 )
 _COMMAND_LOG_WARNING_EMITTED = False
 _FAILED_COMMAND_LOG_PATHS: set[str] = set()
+_COMMAND_LOG_STATE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -191,11 +193,13 @@ def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
     paths: list[Path] = []
     default_path = _default_command_log_path()
     explicit_path = Path(log_path).expanduser() if log_path is not None else None
+    with _COMMAND_LOG_STATE_LOCK:
+        failed_paths = set(_FAILED_COMMAND_LOG_PATHS)
     for candidate in (default_path, explicit_path):
         if candidate is None:
             continue
         key = os.path.abspath(str(candidate))
-        if key in seen or key in _FAILED_COMMAND_LOG_PATHS:
+        if key in seen or key in failed_paths:
             continue
         seen.add(key)
         paths.append(candidate)
@@ -204,10 +208,13 @@ def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
 
 def _warn_logging_failed(path: Path, exc: Exception) -> None:
     global _COMMAND_LOG_WARNING_EMITTED
-    _FAILED_COMMAND_LOG_PATHS.add(os.path.abspath(str(path)))
-    if _COMMAND_LOG_WARNING_EMITTED:
+    with _COMMAND_LOG_STATE_LOCK:
+        _FAILED_COMMAND_LOG_PATHS.add(os.path.abspath(str(path)))
+        should_warn = not _COMMAND_LOG_WARNING_EMITTED
+        if should_warn:
+            _COMMAND_LOG_WARNING_EMITTED = True
+    if not should_warn:
         return
-    _COMMAND_LOG_WARNING_EMITTED = True
     log.warning("command logging disabled after failure writing %s: %s", path, exc)
 
 
