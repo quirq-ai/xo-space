@@ -403,7 +403,7 @@ Clerk credentials, runs the browser OAuth handshake, and mints the session ids t
 carries. What lives here is one credential and one pass-through route.
 
 **Composio is addressed by the bare Clerk account id.** It was once addressed by a
-composed `<account_id>__ws__<CODER_WORKSPACE_ID>` key. That gave hard workspace
+composed `<account_id>__ws__<workspace id>` key. That gave hard workspace
 isolation at a price nobody wanted: a connected account belonged to one workspace only,
 so you re-ran the OAuth dance per workspace, per toolkit, forever. Connections are
 **account-wide**, and workspaces are separated inside the Composio tool-router session
@@ -439,9 +439,10 @@ receive *this* backend's principal, and its Composio connections with it. That i
 `POST /xo-auth/session` was removed rather than guarded. Serving several XO accounts from
 one backend needs credential forwarding — a design change, not a re-add.
 
-**`CODER_WORKSPACE_ID` is now a store stamp, not a tenant key.** Off Coder, `XO_SPACE_ID`
-(the id the swarm already knows the install by, the one project sharing sends) plays the
-same role, so a local install can mint a session too. The stamp is never sent to
+**`XO_SPACE_ID` is the workspace identity, and it is a store stamp, not a tenant key.**
+One flow on Coder and off: the id the swarm knows this Space by (the same value project
+sharing and usage reporting send) is what the session mint supplies and what the store is
+stamped with; Coder's own workspace id is no longer read anywhere. The stamp is never sent to
 Composio and is not a key in any store — a pod is one workspace, so the local stores are
 already isolated by the filesystem. Its one job is stamping `sessions.json` with the
 workspace that wrote it, so a store restored out of a backup or another workspace's home
@@ -523,7 +524,7 @@ declares an enabled `mcp` block — and nothing else does: there is no manual en
 and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
 boot, retries with backoff (5 s → 300 s) while xo-swarm-api cannot provide the
 principal, stops after one console line for a gate that cannot open without a restart
-(no XO credential, no `CODER_WORKSPACE_ID`, credential rejected), and then sweeps
+(no XO credential, no `XO_SPACE_ID`, credential rejected), and then sweeps
 every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
 `GET /api/connectors/composio/toolkits` also kicks a rate-limited background sweep, so
 opening the Connectors tab is what pressing "Reinstall MCP gateway" used to be.
@@ -619,7 +620,7 @@ Degradation is per-scope, and worth knowing when reading a bug report:
 | one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
 | xo-swarm-api unreachable | every Composio operation fails immediately — there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
 | xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
-| `CODER_WORKSPACE_ID` (or `XO_SPACE_ID` off Coder) | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a workspace identity |
+| `XO_SPACE_ID` | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a workspace identity |
 | XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
 
 Every authoritative failure raised from `swarm_client.py` carries the literal string
@@ -646,7 +647,7 @@ old `data/composio_*.json` location is moved into place on first access.
 | `workspace_scope.json` | which toolkits this workspace has turned on, and which connected accounts back them |
 
 All three are flat: a pod is one workspace, so there is no user or workspace level to key
-on. `sessions.json` carries the `CODER_WORKSPACE_ID` stamp that proves it, and comparing
+on. `sessions.json` carries the `XO_SPACE_ID` stamp that proves it, and comparing
 it needs no network — which is what keeps `account_for_proxy_token` a set lookup on the
 MCP hot path (`initialize`, `tools/list` and *every* `tools/call`). A token this pod
 cannot place is simply unknown.

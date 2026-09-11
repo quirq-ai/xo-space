@@ -91,13 +91,15 @@ class MintTests(_Base):
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer tok"})
         self.assertEqual(kwargs["json"], {"workspace_id": WORKSPACE})
 
-    async def test_a_local_install_supplies_xo_space_id_as_the_workspace(self) -> None:
-        # Off Coder there is no CODER_WORKSPACE_ID; the install's id at the swarm is
-        # XO_SPACE_ID, the same value project sharing already sends as workspace_id.
+    async def test_xo_space_id_is_the_only_workspace_identity(self) -> None:
+        # One flow on Coder and off: the id the swarm knows this Space by, the same
+        # value project sharing and usage reporting send. Coder's own workspace id
+        # is never consulted, even when the pod still injects it.
+        self.assertEqual(state.WORKSPACE_ENV, "XO_SPACE_ID")
         swarm, post = self._swarm(
             _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
         )
-        env = {state.WORKSPACE_ENV: "", state.LOCAL_WORKSPACE_ENV: "space-local"}
+        env = {"XO_SPACE_ID": "space-local", "CODER_WORKSPACE_ID": "coder-uuid"}
         with swarm, patch.dict("os.environ", env), \
                 patch.object(composio_session, "get_auth_token", return_value="tok"):
             result = await composio_session.xo_auth_session_self()
@@ -105,18 +107,6 @@ class MintTests(_Base):
         self.assertEqual(result["session_id"], MINTED)
         _, kwargs = post.call_args
         self.assertEqual(kwargs["json"], {"workspace_id": "space-local"})
-
-    async def test_a_coder_pod_keeps_its_coder_identity_over_xo_space_id(self) -> None:
-        swarm, post = self._swarm(
-            _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
-        )
-        env = {state.WORKSPACE_ENV: WORKSPACE, state.LOCAL_WORKSPACE_ENV: "space-local"}
-        with swarm, patch.dict("os.environ", env), \
-                patch.object(composio_session, "get_auth_token", return_value="tok"):
-            await composio_session.xo_auth_session_self()
-
-        _, kwargs = post.call_args
-        self.assertEqual(kwargs["json"], {"workspace_id": WORKSPACE})
 
     async def test_the_tenant_key_never_reaches_the_browser(self) -> None:
         swarm, _ = self._swarm(
@@ -159,10 +149,10 @@ class RefusalTests(_Base):
         self.assertIn("XO_API_KEY", exc.detail["error"])
 
     async def test_no_workspace_is_a_401_and_never_an_account_wide_bucket(self) -> None:
-        with patch.dict("os.environ", {state.WORKSPACE_ENV: "", state.LOCAL_WORKSPACE_ENV: ""}):
+        # A Coder id alone no longer counts: without XO_SPACE_ID the mint refuses.
+        with patch.dict("os.environ", {state.WORKSPACE_ENV: "", "CODER_WORKSPACE_ID": "coder-uuid"}):
             exc = await self._fails_with(401)
         self.assertIn(state.WORKSPACE_ENV, exc.detail["error"])
-        self.assertIn(state.LOCAL_WORKSPACE_ENV, exc.detail["error"])
 
     async def test_a_rejected_credential_is_a_401_not_a_503(self) -> None:
         # Authoritative: XO said no. Sending the user to sign in is the right advice.

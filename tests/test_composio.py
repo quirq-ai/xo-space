@@ -281,7 +281,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_an_unstamped_store_is_never_written(self) -> None:
         # Without a workspace id the document could not be told apart from one restored
         # out of another workspace, so it must not be written at all.
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: "", state.LOCAL_WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
             service.proxy_token()
         self.assertFalse(self.sessions_path.exists())
 
@@ -1201,7 +1201,7 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # the session store — but that is the store's problem to report.
         sid = session_identity.remember(secrets.token_urlsafe(32))
         request = _make_request({"x-xo-session": sid})
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: "", state.LOCAL_WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
             self.assertEqual(
                 await identity_mod.get_composio_user(request), ACCOUNT
             )
@@ -1650,7 +1650,7 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertFalse(sweep.retryable)
 
     async def test_missing_workspace_installs_nothing_and_is_final(self) -> None:
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: "", state.LOCAL_WORKSPACE_ENV: ""}), \
+        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}), \
                 patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("routers.auth.auth.get_auth_token", return_value="tok"):
             sweep = await service.install_gateways()
