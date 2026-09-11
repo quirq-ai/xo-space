@@ -1,25 +1,4 @@
-"""``timeline.jsonl`` sink — append-only event log with rotation.
-
-Translates the watcher's internal event taxonomy into the timeline
-schema's vocabulary (docs/watcher-design.md §3.8):
-
-* :class:`SessionFirstSeen`  → ``session.started``
-* :class:`TaskCreated`       → ``todo.added``
-* :class:`TaskStatusChanged` (``completed``) → ``todo.completed``
-* :class:`FileTouched` (created) → ``file.created``
-* :class:`FileTouched` (not created) → ``file.edited``
-
-Other internal events (``MessageObserved``, ``UsageObserved``,
-``ToolUseObserved``, non-``completed`` task status changes) don't
-map to any timeline type and are silently dropped here. Those
-events live on as counters in :mod:`sessions_augment` and aggregates
-in :mod:`stats`.
-
-Rotation: when ``timeline.jsonl`` exceeds 8 MB the sink renames it
-to ``timeline.<UTC-iso>.jsonl`` and starts fresh. Older rotations
-beyond 5 are deleted. The atomic rename means BFF readers either
-see the old or the new file; never both half-written.
-"""
+"""``timeline.jsonl`` sink — append-only event log with rotation."""
 
 from __future__ import annotations
 
@@ -29,11 +8,13 @@ from typing import Iterable, Optional
 
 from services.cowork_agent.visualizer.atomic_write import append_jsonl
 from services.cowork_agent.visualizer.ingest.events import (
+    WORKITEM_ACTIONS,
     Event,
     FileTouched,
     SessionFirstSeen,
     TaskCreated,
     TaskStatusChanged,
+    WorkitemEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,20 +49,66 @@ def _emit_event(ev: Event) -> Optional[dict]:
             },
         }
     if isinstance(ev, TaskStatusChanged):
+        # ``todo.completed`` is kept as its own type rather than folded into
+        # the generic one: it is the type readers, docs and the ``?types=``
+        # filter already know, and completion is the transition worth naming.
         if ev.status == "completed":
             return {**base, "type": "todo.completed", "todo_id": ev.task_id}
-        return None  # only completion is in the schema
+        return {
+            **base,
+            "type": "todo.status_changed",
+            "todo_id": ev.task_id,
+            "status": ev.status,
+        }
     if isinstance(ev, FileTouched):
         return {
             **base,
             "type": "file.created" if ev.created else "file.edited",
             "path": ev.relative_path,
         }
+    if isinstance(ev, WorkitemEvent):
+        return _emit_workitem(ev)
     return None
 
 
-def _rotate_if_needed(xo_dir: Path) -> None:
-    path = xo_dir / _TIMELINE_FILE
+def _emit_workitem(ev: WorkitemEvent) -> Optional[dict]:
+    """Render one ``workitem.*`` line, or ``None`` if it must not exist."""
+    if ev.action not in WORKITEM_ACTIONS or not ev.workitem_id:
+        logger.warning(
+            "dropping an unrenderable workitem event (action=%r id=%r): the "
+            "timeline schema declares no branch for it",
+            ev.action, ev.workitem_id,
+        )
+        return None
+
+    line: dict = {"ts": ev.ts, "type": f"workitem.{ev.action}"}
+    if ev.native_session_id:
+        line["session_id"] = ev.native_session_id
+    if ev.runtime:
+        line["runtime"] = ev.runtime
+    line["workitem_id"] = ev.workitem_id
+
+    if ev.title is not None:
+        line["title"] = ev.title
+    if ev.kind is not None:
+        line["kind"] = ev.kind
+    if ev.repo and isinstance(ev.number, int):
+        # Nested, because the pair only means anything together: a repo with no
+        # number names no issue, and a number with no repo names somebody
+        # else's.
+        line["issue"] = {"repo": ev.repo, "number": ev.number}
+    if ev.action == "assigned":
+        # Always present, ``null`` included: clearing an assignee is half of
+        # what this event exists to record, and an absent key would be
+        # indistinguishable from an event that forgot to say.
+        line["assignee"] = ev.assignee
+    if ev.action == "closed" and ev.state_reason is not None:
+        line["state_reason"] = ev.state_reason
+    return line
+
+
+def _rotate_if_needed(root: Path) -> None:
+    path = root / _TIMELINE_FILE
     if not path.is_file():
         return
     try:
@@ -110,19 +137,9 @@ def _rotate_if_needed(xo_dir: Path) -> None:
             logger.warning("timeline rotation prune failed for %s: %s", old, exc)
 
 
-def apply(xo_dir: Path, events: Iterable[Event]) -> list[dict]:
-    """Append timeline events for this project's events.
-
-    Returns the list of rendered lines actually appended (empty when
-    no event mapped to a schema-vocab type, or when called with an
-    empty input). The watcher main loop passes the returned list to
-    the workspace timeline sink so the workspace ``timeline.jsonl``
-    stays a multiplexed view without re-rendering.
-
-    Rotation is checked **before** the write so a tick that pushes us
-    over 8 MB starts the next tick on a fresh file.
-    """
-    _rotate_if_needed(xo_dir)
+def apply(root: Path, events: Iterable[Event]) -> list[dict]:
+    """Append timeline events for this project's events."""
+    _rotate_if_needed(root)
 
     lines: list[dict] = []
     for ev in events:
@@ -133,5 +150,16 @@ def apply(xo_dir: Path, events: Iterable[Event]) -> list[dict]:
     if not lines:
         return []
 
-    append_jsonl(xo_dir / _TIMELINE_FILE, lines)
+    append_jsonl(root / _TIMELINE_FILE, lines)
     return lines
+
+
+def apply_quiet(root: Optional[Path], events: Iterable[Event]) -> list[dict]:
+    """:func:`apply`, for a caller whose write has already succeeded."""
+    if root is None:
+        return []
+    try:
+        return apply(root, events)
+    except Exception:  # noqa: BLE001 - see the docstring; never fail the write
+        logger.warning("timeline append failed for %s", root, exc_info=True)
+        return []

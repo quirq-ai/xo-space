@@ -8,6 +8,8 @@ fallback when a workspace-tier file isn't present yet.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -34,6 +36,8 @@ from routers.cowork_agent.bff._visualizer_models import (
     ToolUsageEntry,
     UsageAnalyticsResponse,
     UsageSummaryCardResponse,
+    Workitem,
+    _ForbidExtra,
 )
 from routers.cowork_agent.bff._visualizer_presenter import (
     TIMELINE_TYPES as _TIMELINE_TYPES,
@@ -56,8 +60,22 @@ from routers.cowork_agent.bff._visualizer_presenter import (
     tool_usage_from_stats as _tool_usage_from_stats,
     zero_filled_dates as _zero_filled_dates,
 )
+# The workspace rollup borrows five names from the project-tier router rather
+# than restating them (workitems-plan §7.3, W9).
+from routers.cowork_agent.bff.visualizer import (
+    _SELF_ALIASES,
+    _DOCUMENT_ERRORS,
+    _make_workitem_model,
+    _self_github_login,
+    _self_identities,
+)
 from services.cowork_agent import scopes
+from services.cowork_agent.visualizer.workitems_store import (
+    VALID_STATUSES as _WORKITEM_STATUSES,
+)
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -164,18 +182,7 @@ def _response_time_stats_from_by_day(by_day: dict[str, dict]) -> dict:
 def workspace_usage_dashboard(
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Workspace-aggregated ``UsageStats`` (UI-facing shape).
-
-    Aggregated across every project's ``.xo/sessions/sessionslist.json``
-    (token totals, message counts, per-session view) plus
-    ``~/xo-projects/.xo/stats.json`` (per-model rolling window). Same
-    field names and nesting as the canonical ``/api/usage`` endpoint
-    so the FE's ``UsageStats`` TypeScript type is unchanged.
-
-    Honest zeros where the workspace tier does not have the data:
-    ``response_time`` (no per-message latency on disk),
-    cost (no pricing table), ``reasoning`` tokens (not tracked).
-    """
+    """Workspace-aggregated ``UsageStats`` (UI-facing shape)."""
     workspace = scopes.resolve_scope("xo-workspace-visualizer")
     stats = workspace.read_stats() or {}
     sessionslist = _union_sessionslist()
@@ -653,6 +660,7 @@ def workspace_activity() -> ActivityResponse:
 @router.get(
     "/api/xo-projects/timeline",
     response_model=TimelineResponse,
+    response_model_exclude_unset=True,
 )
 def workspace_timeline(
     limit: int = Query(100, ge=1, le=500),
@@ -661,8 +669,8 @@ def workspace_timeline(
 ) -> TimelineResponse:
     """Multiplexed workspace timeline. Each event tagged with ``project_id``.
 
-    Reads from ``~/xo-projects/.xo/timeline.jsonl``. Empty if the
-    workspace tier hasn't materialised it yet.
+    Reads ``~/.quirq/workspace/timeline.jsonl`` — the runtime tier, since
+    T20. Empty if the watcher has not materialised it yet.
     """
     if before is not None:
         try:
@@ -679,7 +687,191 @@ def workspace_timeline(
         try:
             out.append(TimelineEvent(**ev))
         except Exception:
+            logger.warning("timeline: dropping an event that failed validation")
             continue
 
     next_cursor = out[-1].ts if len(out) == limit else None
     return TimelineResponse(project_id=None, events=out, next_cursor=next_cursor)
+
+
+# ── /api/workspace/workitems — the agent-pingable rollup ─────────────────────
+# workitems-plan §7.3, task W9. The endpoint an agent polls to answer "what is
+# assigned to me", across every project on this machine, in one call.
+
+
+class WorkspaceWorkitem(Workitem):
+    """One rollup row: a workitem plus where it lives."""
+
+    #: The project's **directory name** — the id every other route, and every
+    #: path helper, takes.
+    project_id: str
+    #: The project's durable identity from ``project.json``.
+    pid: Optional[str] = None
+
+
+class SkippedProject(_ForbidExtra):
+    """A project the rollup could not read, and why."""
+
+    project_id: str
+    pid: Optional[str] = None
+    #: The store's own code — ``corrupt_document``, ``unsupported_schema``, or
+    #: ``unavailable`` for anything else (a directory that went away between
+    #: the walk and the read, a permission change).
+    code: str
+    #: Path-free. The store's message names an absolute path, which is logged
+    #: for the operator instead of being served to the caller.
+    message: str
+
+
+class WorkspaceWorkitemsResponse(_ForbidExtra):
+    """``GET /api/workspace/workitems`` — the cross-project answer."""
+
+    workitems: list[WorkspaceWorkitem]
+    #: Rows in ``workitems`` — after ``?limit=``.
+    count: int
+    #: Rows that matched — before ``?limit=``. ``total > count`` is the only
+    #: way a caller can tell it is seeing part of the answer.
+    total: int
+    truncated: bool
+    #: The ``?assignee=`` value as it arrived, echoed verbatim so a caller can
+    #: see what was interpreted. ``null`` when none was given.
+    assignee: Optional[str] = None
+    #: What that value resolved to, and what rows were actually matched against
+    #: (case-insensitively).
+    identities: list[str] = []
+    #: Why ``me`` could not be resolved in full — currently only
+    #: ``no_github_credential``. ``null`` when it resolved, and when no
+    #: assignee filter was given.
+    assignee_unresolved: Optional[str] = None
+    #: How many projects were walked (read *and* skipped).
+    projects: int
+    skipped: list[SkippedProject] = []
+
+
+#: What a caller may write for "me".
+_ME = _SELF_ALIASES
+
+#: The message served for a skipped project whose failure has no entry in the
+#: document-error table — a directory that disappeared between the walk and the
+#: read, a permission change, an unreadable pid.
+_SKIPPED_FALLBACK = (
+    "{document} could not be read for this project, so its workitems are "
+    "missing from this answer. The rest of the workspace is unaffected."
+)
+
+
+async def _resolve_assignee(
+    raw: Optional[str],
+) -> tuple[Optional[list[str]], Optional[str]]:
+    """``?assignee=`` → (identities to match, unresolved reason)."""
+    value = (raw or "").strip()
+    if not value:
+        return None, None
+    if value.casefold() in _ME:
+        # The local half first: it is captured from the environment, needs no
+        # network, and must keep working with GitHub switched off.
+        identities = list(_self_identities())
+        login = await _self_login_or_none()
+        if not login:
+            return identities, "no_github_credential"
+        if login not in identities:
+            identities.append(login)
+        return identities, None
+    login = value[1:].strip() if value.startswith("@") else value
+    if not login:
+        raise _bad_query("assignee must be `me`, `@login`, or a login")
+    return [login], None
+
+
+async def _self_login_or_none() -> Optional[str]:
+    """``_self_github_login`` made total. Never raises, never 500s a poll."""
+    try:
+        return await _self_github_login()
+    except Exception:
+        logger.warning(
+            "could not resolve this Space's GitHub login; `me` will match "
+            "local identities only", exc_info=True,
+        )
+        return None
+
+
+def _row_sort_key(row: dict) -> tuple[str, str, str]:
+    """Newest first, deterministically."""
+    stamp = row.get("updated_at") or row.get("created_at") or ""
+    return (str(stamp), str(row.get("_project_id") or ""), str(row.get("id") or ""))
+
+
+def _skipped_model(entry: dict) -> SkippedProject:
+    """
+    One skipped project, with the store's path-naming text logged, not served —
+    the same split ``_workitem_error`` makes for a 409.
+    """
+    code = str(entry.get("code") or "unavailable")
+    detail = entry.get("detail")
+    project_id = str(entry.get("project_id") or "")
+    if detail:
+        logger.error(
+            "workspace rollup skipped project %s (%s): %s",
+            project_id, code, detail,
+        )
+    template = _DOCUMENT_ERRORS.get(code, _SKIPPED_FALLBACK)
+    pid = entry.get("pid")
+    return SkippedProject(
+        project_id=project_id,
+        pid=pid if isinstance(pid, str) and pid else None,
+        code=code,
+        message=template.format(document="workitems.json"),
+    )
+
+
+@router.get(
+    "/api/workspace/workitems",
+    response_model=WorkspaceWorkitemsResponse,
+)
+async def workspace_workitems(
+    assignee: Optional[str] = Query(
+        default=None,
+        description="`me`, `@login`, or a login. Matched case-insensitively.",
+    ),
+    status: Optional[str] = Query(
+        default=None, description="Filter to `open` or `closed`.",
+    ),
+    limit: int = Query(100, ge=1, le=500),
+) -> WorkspaceWorkitemsResponse:
+    """Every workitem in the workspace, filtered on the **projected** view."""
+    if status is not None and status not in _WORKITEM_STATUSES:
+        raise _bad_query(f"status must be one of {sorted(_WORKITEM_STATUSES)}")
+
+    identities, unresolved = await _resolve_assignee(assignee)
+
+    workspace = scopes.resolve_scope("xo-workspace-visualizer")
+    # Off the event loop: the fan-out is one walk plus a handful of small
+    # blocking reads per project, and this route is ``async`` only because
+    # resolving ``me`` is.
+    rollup = await asyncio.to_thread(
+        workspace.rollup_workitems, assignees=identities, status=status,
+    )
+
+    rows = sorted(rollup.rows, key=_row_sort_key, reverse=True)
+    total = len(rows)
+    shown = rows[:limit]
+    return WorkspaceWorkitemsResponse(
+        workitems=[
+            WorkspaceWorkitem(
+                **_make_workitem_model(
+                    row, in_progress=bool(row.get("_in_progress")),
+                ).model_dump(),
+                project_id=str(row.get("_project_id") or ""),
+                pid=row.get("_pid") if isinstance(row.get("_pid"), str) else None,
+            )
+            for row in shown
+        ],
+        count=len(shown),
+        total=total,
+        truncated=total > len(shown),
+        assignee=assignee,
+        identities=list(identities or []),
+        assignee_unresolved=unresolved,
+        projects=rollup.projects,
+        skipped=[_skipped_model(entry) for entry in rollup.skipped],
+    )

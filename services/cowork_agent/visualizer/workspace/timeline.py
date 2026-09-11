@@ -1,22 +1,10 @@
-"""``~/xo-projects/.xo/timeline.jsonl`` — multiplexed workspace
-timeline.
-
-Different from the other workspace sinks: timeline is **append-only**
-at both tiers, so we don't union the files on every tick (that
-would re-append duplicates). Instead the watcher's main loop emits
-workspace events alongside per-project events on a per-tick basis,
-appending the SAME events to the workspace file with an extra
-``project_id`` field.
-
-This module provides the append helper; the watcher loop calls it
-directly with the per-tick event list and a project_id tag.
-"""
+"""``~/.quirq/workspace/timeline.jsonl`` — multiplexed workspace timeline."""
 
 from __future__ import annotations
 
 from typing import Iterable
 
-from services.cowork_agent.project_layout import workspace_xo_dir
+from services.cowork_agent.project_layout import workspace_runtime_dir
 from services.cowork_agent.visualizer.atomic_write import append_jsonl
 
 
@@ -44,5 +32,5 @@ def apply(events: Iterable[dict], *, project_id: str) -> bool:
             lines.append(tagged)
     if not lines:
         return False
-    append_jsonl(workspace_xo_dir() / _WORKSPACE_TIMELINE, lines)
+    append_jsonl(workspace_runtime_dir() / _WORKSPACE_TIMELINE, lines)
     return True

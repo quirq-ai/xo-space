@@ -69,6 +69,7 @@
 .quirq-panel h2{font:500 20px var(--serif)}
 .quirq-panel>header>b{font:600 8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
 .quirq-panel>header>b.is-live{color:var(--accent)}
+.quirq-panel>header>b.is-stalled{color:var(--err)}
 .quirq-stat-row{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line-soft)}
 .quirq-stat-row>div{padding:14px 16px}
 .quirq-stat-row>div+div{border-left:1px solid var(--line-soft)}

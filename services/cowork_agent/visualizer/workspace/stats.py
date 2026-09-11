@@ -1,16 +1,15 @@
-"""``~/xo-projects/.xo/stats.json`` — workspace stats = sum of every
-project's ``stats.json``.
-
-Same schema as per-project ``stats.json``. Recomputed from per-
-project files each tick (no incremental state of its own).
+"""
+``~/.quirq/workspace/stats.json`` — workspace stats = sum of every project's
+runtime ``stats.json``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
-from services.cowork_agent.project_layout import workspace_xo_dir, xo_dir
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+from services.cowork_agent.project_layout import runtime_read_path, workspace_runtime_dir
+from services.cowork_agent.visualizer.atomic_write import ChangeGate
 from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
 
@@ -24,6 +23,14 @@ _BY_DAY_MAX_ENTRIES = 35
 # unbiased enough for a workspace-tier estimate and avoids the
 # complexity of weighted reservoir merging.
 _LATENCY_RESERVOIR_CAP = 100
+
+
+_gate = ChangeGate()
+
+
+def reset_caches() -> None:
+    """Drop the write-on-change baseline. For tests, and for a root switch."""
+    _gate.reset()
 
 
 def _now_iso() -> str:
@@ -126,15 +133,19 @@ def _trim_oldest(buckets: dict, *, max_entries: int) -> dict:
     return {k: buckets[k] for k in keep}
 
 
-def apply() -> bool:
-    """Recompute and write workspace ``stats.json``. Returns ``True``."""
+def apply(project_ids: Sequence[str] | None = None) -> bool:
+    """Recompute workspace ``stats.json``. Returns ``True`` iff it changed."""
     rolling = {"7d": _empty_window(), "30d": _empty_window()}
     by_session: dict[str, dict] = {}
     by_runtime: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
 
-    for pid in list_project_ids():
-        st = read_json(xo_dir(pid) / "stats.json")
+    for pid in (project_ids if project_ids is not None else list_project_ids()):
+        # Runtime tier since T19, with a read-through to the pre-move copy so a
+        # project that has not produced an event since the move still
+        # contributes its totals.
+        path = runtime_read_path(pid, "stats.json")
+        st = read_json(path) if path is not None else None
         if not isinstance(st, dict):
             continue
         r = st.get("rolling") or {}
@@ -174,5 +185,6 @@ def apply() -> bool:
         "by_runtime": by_runtime,
         "by_day": by_day,
     }
-    write_json_atomic(workspace_xo_dir() / "stats.json", payload)
-    return True
+    target = workspace_runtime_dir() / "stats.json"
+    return _gate.publish(target, payload)
+

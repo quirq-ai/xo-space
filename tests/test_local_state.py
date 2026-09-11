@@ -76,12 +76,23 @@ class LocalStateTests(unittest.TestCase):
                 "inode": 7,
             })
 
-    def test_todo_locks_live_under_quirq(self) -> None:
+    def test_shared_file_locks_live_under_quirq(self) -> None:
+        """Lock sentinels never land in ``.xo/``.
+
+        Both locked files are checked: ``sessions-augment.json``, which
+        the watcher tick and the todos API both write, and
+        ``todos.json``, which the API owns but several concurrent
+        requests can reach at once.
+        """
         watcher_root = Path("/machine/.quirq/watcher")
-        with patch.object(flock, "watcher_state_dir", return_value=watcher_root):
-            lock_path = flock._lock_path_for(Path("/projects/demo/.xo/todos.json"))
-        self.assertEqual(lock_path.parent, watcher_root / "locks")
-        self.assertTrue(lock_path.name.startswith("todos.json."))
+        for data_path in (
+            Path("/projects/demo/.xo/sessions/sessions-augment.json"),
+            Path("/projects/demo/.xo/todos.json"),
+        ):
+            with patch.object(flock, "watcher_state_dir", return_value=watcher_root):
+                lock_path = flock._lock_path_for(data_path)
+            self.assertEqual(lock_path.parent, watcher_root / "locks")
+            self.assertTrue(lock_path.name.startswith(data_path.name + "."))
 
 
 if __name__ == "__main__":

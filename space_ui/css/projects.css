@@ -247,6 +247,9 @@
   .fx-size,.fx-when{font:400 11px var(--mono);color:var(--ink-3);white-space:nowrap}
   .fx-when{min-width:70px;text-align:right}
 
+  /* One chip class per todo status; the set is owned by
+     services/cowork_agent/visualizer/todo_status.py and
+     tests/test_todo_status.py fails if these stop matching it. */
   .tchip{font:500 10px/1 var(--mono);color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:3px 6px;flex:none;white-space:nowrap}
   .tchip.st-in_progress{color:var(--accent);border-color:var(--accent)}
   .tchip.st-pending{color:var(--ink-2)}
@@ -254,3 +257,44 @@
   .tchip.st-completed,.tchip.st-cancelled{color:var(--ink-3)}
   .truntime{font:500 10.5px/1 var(--mono);color:var(--ink-3);flex:none}
   .tmuted{color:var(--ink-3);font-size:11.5px;margin-left:auto;flex:none}
+
+  /* ---- GitHub issues (drawer panel) ----
+     The mirror as a list: one row per issue, the state dot carrying open vs
+     closed and the accent reserved (as everywhere) for what is happening now
+     — an issue an agent is working right this second. Rows are links out to
+     GitHub, so they get the underline-on-hover of a link, not the fill of a
+     button. */
+  .iss-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .iss-meta{display:flex;align-items:baseline;gap:9px;min-width:0;flex-wrap:wrap;
+    font:400 11px var(--mono);color:var(--ink-3)}
+  .iss-meta b{font-weight:500;color:var(--ink-2)}
+  .iss-head .iss-q{width:170px}
+  .iss-list{display:flex;flex-direction:column}
+  .iss-row{display:grid;grid-template-columns:8px 46px minmax(0,1fr) auto auto;
+    gap:10px;align-items:baseline;padding:6px 7px;border-radius:7px;
+    color:var(--ink-2);text-decoration:none;
+    transition:background .16s var(--ease)}
+  .iss-row+.iss-row{box-shadow:inset 0 1px 0 var(--line-soft)}
+  a.iss-row:hover{background:var(--bg-3);color:var(--ink)}
+  a.iss-row:hover .iss-title{text-decoration:underline;text-underline-offset:2px}
+  a.iss-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  /* open is a ring, closed is filled and quiet — the same shape vocabulary
+     the graph uses for code vs document */
+  .iss-dot{width:8px;height:8px;border-radius:50%;align-self:center;
+    border:1.5px solid var(--accent);opacity:.75}
+  .iss-row.is-closed .iss-dot{background:var(--ink-4);border-color:var(--ink-4);opacity:.5}
+  .iss-num{font:400 11px var(--mono);color:var(--ink-4);text-align:right}
+  .iss-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  .iss-row.is-closed .iss-title{color:var(--ink-3)}
+  .iss-chips{display:flex;align-items:baseline;gap:6px;flex:none}
+  .iss-label{font:500 9.5px var(--mono);letter-spacing:.06em;color:var(--ink-3);
+    background:var(--bg-2);border:1px solid var(--line-soft);border-radius:999px;
+    padding:2px 7px;white-space:nowrap}
+  .iss-when{font:400 10.5px var(--mono);color:var(--ink-3);white-space:nowrap;
+    min-width:64px;text-align:right}
+  @media (max-width:900px){
+    /* the chips are the first thing to go: a title you cannot read is worse
+       than a label you cannot see */
+    .iss-row{grid-template-columns:8px 40px minmax(0,1fr) auto}
+    .iss-chips{display:none}
+  }

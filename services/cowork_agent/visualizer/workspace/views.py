@@ -1,47 +1,49 @@
-"""``~/xo-projects/.xo/{space,dashboard,sessions}.json`` — the Space data files.
-
-These three used to exist only as route responses, rebuilt per request behind a
-30s in-process cache. Now they are real files in the workspace ``.xo``
-directory, next to the rest of the workspace's state: one location that holds
-everything, materialised by the watcher and read by the routes.
-
-Each file keeps its own name and its own schema — a reader that wants the
-session telemetry does not parse the 168 KB graph to get it.
-
-Cadence: the views walk every mapped file in every project, so they are rebuilt
-at most every ``XO_VIEWS_REFRESH_S`` (default 30s — the freshness the routes
-already served). The watcher tick runs inside ``asyncio.to_thread``
-(watcher.run), so that walk never blocks the event loop.
-
-Each view is built under its own guard: a failing session-telemetry provider
-must not cost the graph its refresh, and a failed rebuild leaves the previous
-file in place rather than truncating it. Stale beats absent — a route can say
-how old a file is, it cannot invent one.
-
-The two projections come from ONE scan. ``build_categorized_graph`` used to
-call ``build_space_data`` itself, so a client that opened Dashboard and Graph
-paid for two full workspace walks.
-"""
+"""The Space data files — the three payloads ``/xo/*.json`` serves."""
 
 from __future__ import annotations
 
 import logging
 import os
+import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from services.cowork_agent.project_layout import workspace_xo_dir
+from services.cowork_agent.project_layout import (
+    workspace_runtime_dir,
+    workspace_xo_dir,
+)
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.reader import read_json
 
 logger = logging.getLogger(__name__)
 
-# filename -> the builder that fills it
+# view name -> the builder that fills it. The name is the route's, and since
+# T14 it is not necessarily the file's; see :func:`view_path`.
 VIEWS = ("space", "dashboard", "sessions")
 
+# The one view whose file is not named after it.
+_VIEW_FILENAMES = {"space": "graph.json"}
+
 _last_build = 0.0  # monotonic; a clock jump must not pin the views stale
+
+# ── Single-flight ─────────────────────────────────────────────────────────────
+# A rebuild is a full workspace walk plus a ``git log`` per project plus an
+# Argus SQLite scan.
+_flight_lock = threading.Lock()
+_in_flight: dict[str, "_Flight"] = {}
+
+
+class _Flight:
+    """One in-progress build other callers can wait on."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: dict = {}
 
 
 def refresh_seconds() -> float:
@@ -52,19 +54,127 @@ def refresh_seconds() -> float:
 
 
 def view_path(name: str) -> Path:
+    """The file one view is written to, under ``~/.quirq/workspace/``."""
     if name not in VIEWS:
         raise ValueError(f"unknown view {name!r}")
-    return workspace_xo_dir() / f"{name}.json"
+    return workspace_runtime_dir() / _VIEW_FILENAMES.get(name, f"{name}.json")
+
+
+def graph_path() -> Path:
+    """``~/.quirq/workspace/graph.json`` — the derived d3 graph."""
+    return view_path("space")
+
+
+# ── The T20 sweep of the abandoned workspace views ────────────────────────────
+# Snapshots are deleted, history is moved. Everything below is derived state
+# the next tick rebuilds in the runtime tier — except the timeline, which is
+# append-only and is fed only by the live tick, so deleting it would drop every
+# event recorded before the upgrade with nothing able to put them back. It is
+# relocated instead, on the same "destination wins" rule the project-tier
+# migration uses (T21).
+
+_ABANDONED_FILES = (
+    "dashboard.json",
+    "sessions.json",
+    "stats.json",
+    "activity.json",
+)
+
+#: Append-only history: moved into the runtime tier, never unlinked. The live
+#: file and the segments ``sinks/timeline.py`` rotated to
+#: ``timeline.<stamp>.jsonl``.
+_RELOCATED_GLOBS = ("timeline.jsonl", "timeline.*.jsonl")
+
+# Wholly derived, and now written under ``workspace_sessions_dir()``.
+_ABANDONED_DIRS = ("sessions",)
+
+# Roots already swept by this process.
+_SWEPT: set[str] = set()
+_SWEPT_MAX = 64
+
+
+def _relocate_history(src: Path) -> Optional[str]:
+    """
+    Move one pre-T20 timeline file into the runtime tier. The destination
+    wins — a runtime file of the same name is the newer log, so the stale
+    source is dropped rather than merged. Returns what to report, or ``None``.
+    """
+    try:
+        if not src.is_file():
+            return None
+        dst = workspace_runtime_dir() / src.name
+        if dst.exists():
+            src.unlink()
+            return f"{src.name} (superseded)"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+        return f"{src.name} -> runtime tier"
+    except OSError:
+        logger.warning("workspace views: could not relocate %s", src)
+        return None
+
+
+def sweep_abandoned(*, force: bool = False) -> list[str]:
+    """Delete the workspace views T20 moved out of ``<XO root>/.xo/``."""
+    root = workspace_xo_dir()
+    marker = str(root)
+    if marker in _SWEPT and not force:
+        return []
+    removed: list[str] = []
+    try:
+        if not root.is_dir():
+            # Nothing to sweep, and deliberately not remembered: the synced
+            # workspace directory does not exist until something writes a
+            # record into it, and a restore can put a pre-T20 tree there later
+            # in the life of this process.
+            return removed
+        for pattern in _RELOCATED_GLOBS:
+            for path in sorted(root.glob(pattern)):
+                moved = _relocate_history(path)
+                if moved:
+                    removed.append(moved)
+        candidates = [root / name for name in _ABANDONED_FILES]
+        for path in candidates:
+            try:
+                if path.is_file():
+                    path.unlink()
+                    removed.append(path.name)
+            except OSError:
+                logger.warning("workspace views: could not remove %s", path)
+        for name in _ABANDONED_DIRS:
+            target = root / name
+            try:
+                if target.is_dir() and not target.is_symlink():
+                    shutil.rmtree(target)
+                    removed.append(name + "/")
+            except OSError:
+                logger.warning("workspace views: could not remove %s", target)
+    except OSError:
+        logger.warning("workspace views: could not sweep %s", root)
+        return removed
+    if len(_SWEPT) >= _SWEPT_MAX:
+        _SWEPT.clear()
+    _SWEPT.add(marker)
+    if removed:
+        logger.info(
+            "workspace views: removed pre-T20 derived state from %s: %s",
+            root,
+            ", ".join(removed),
+        )
+    return removed
 
 
 def scaffold() -> None:
-    """Create the three files if they are missing, so the ``.xo`` directory
-    always has the shape the UI expects — even before the first build."""
-    wxo = workspace_xo_dir()
-    wxo.mkdir(parents=True, exist_ok=True)
+    """
+    Create the three files if they are missing, so the directories always have
+    the shape the UI expects — even before the first build.
+    """
+    workspace_runtime_dir().mkdir(parents=True, exist_ok=True)
     for name in VIEWS:
-        path = wxo / f"{name}.json"
+        path = view_path(name)
         if not path.exists():
+            # write_json_atomic creates the parent, which is
+            # ~/.quirq/workspace/ on a machine that has never built one.
             write_json_atomic(path, {"schema": 1, "generated_at": None, name: None})
 
 
@@ -78,6 +188,34 @@ def build(name: str) -> Optional[dict]:
 
 
 def _build_all(only: Optional[str] = None) -> dict:
+    """Build the requested views, collapsing concurrent callers into one build."""
+    key = only or "*"
+    with _flight_lock:
+        flight = _in_flight.get(key)
+        if flight is not None:
+            leader = False
+        else:
+            flight = _Flight()
+            _in_flight[key] = flight
+            leader = True
+
+    if not leader:
+        flight.done.wait()
+        return flight.result
+
+    try:
+        flight.result = _build_all_locked(only)
+        return flight.result
+    finally:
+        with _flight_lock:
+            _in_flight.pop(key, None)
+        # Set last: a follower must not wake to a half-populated result.
+        flight.done.set()
+
+
+def _build_all_locked(only: Optional[str] = None) -> dict:
+    global _last_build
+
     from services.cowork_agent.visualizer.categorized_graph import (
         build_categorized_graph,
     )
@@ -86,6 +224,8 @@ def _build_all(only: Optional[str] = None) -> dict:
     )
     from services.cowork_agent.visualizer.space_index import build_space_data
 
+    # ``_last_build`` is stamped AFTER the work, at the bottom, and only when
+    # something actually built.
     out: dict = {}
     space = None
     # space is built whenever the dashboard is wanted: the projection is
@@ -116,6 +256,10 @@ def _build_all(only: Optional[str] = None) -> dict:
         except Exception:
             logger.exception("workspace views: sessions build failed")
 
+    # Partial progress counts.
+    if out:
+        _last_build = time.monotonic()
+
     return out
 
 
@@ -123,6 +267,7 @@ def apply(*, force: bool = False) -> bool:
     """Watcher entry point. Self-throttles; returns True when it rebuilt."""
     global _last_build
     scaffold()
+    sweep_abandoned()
     now = time.monotonic()
     if not force and (now - _last_build) < refresh_seconds():
         return False
@@ -131,21 +276,67 @@ def apply(*, force: bool = False) -> bool:
     return True
 
 
-def read(name: str, *, max_age_s: Optional[float] = None):
-    """Return ``(payload, age_seconds)`` from the file, or ``(None, age)``.
+# ── Freshness (syncplan T25) ──────────────────────────────────────────────────
+# A view's age comes from the document's own ``generated_at``, never from the
+# file's mtime.
 
-    A file older than ``max_age_s``, or a scaffold placeholder that has never
-    been built, reads as missing so the caller rebuilds it.
-    """
+
+def _generated_at(payload: dict) -> Any:
+    meta = payload.get("meta")
+    if isinstance(meta, dict) and meta.get("generated_at") is not None:
+        return meta.get("generated_at")
+    return payload.get("generated_at")
+
+
+def _parse_stamp(stamp: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 ``generated_at``; ``None`` when it is unusable."""
+    if not isinstance(stamp, str) or not stamp.strip():
+        return None
+    text = stamp.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def age_seconds(payload: dict) -> Optional[float]:
+    """Seconds since the document says it was generated, or ``None``."""
+    parsed = _parse_stamp(_generated_at(payload))
+    if parsed is None:
+        return None
+    return (datetime.now(timezone.utc) - parsed).total_seconds()
+
+
+def is_stale(age: Optional[float], max_age_s: Optional[float]) -> bool:
+    """Fail **closed**: an unknown age is stale."""
+    if max_age_s is None:
+        return False
+    return age is None or age > max_age_s
+
+
+def read(
+    name: str,
+    *,
+    max_age_s: Optional[float] = None,
+    stale_ok: bool = False,
+):
+    """Return ``(payload, age_seconds)`` from the file, or ``(None, age)``."""
     path = view_path(name)
-    payload = read_json(path)
+    try:
+        payload = read_json(path)
+    except OSError:
+        # Fail closed. ``read_json`` swallows this itself today, but the guard
+        # is the point: an unreadable view must read as missing, not as fresh.
+        logger.warning("workspace views: could not read %s", path)
+        return None, None
     if not payload or payload.get(name, "__") is None:
         return None, None
-    age = None
-    try:
-        age = time.time() - path.stat().st_mtime
-    except OSError:
-        age = None
-    if max_age_s is not None and age is not None and age > max_age_s:
+    age = age_seconds(payload)
+    if is_stale(age, max_age_s) and not stale_ok:
         return None, age
     return payload, age

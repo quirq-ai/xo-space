@@ -1,30 +1,6 @@
-"""Advisory file lock helper, used for files written by both the
-watcher and the BFF API endpoints.
-
-Today only ``.xo/todos.json`` has two writers (the todos sink AND
-the agent-facing todos POST/PATCH/DELETE endpoints). Every other
-``.xo/`` file is single-writer.
-
-POSIX ``fcntl.flock`` with ``LOCK_EX``. Bounded wait so a wedged
-watcher can never block a user-facing API call indefinitely — the
-endpoint falls through after the deadline and accepts the small
-race (logged WARN).
-
-**Lock files live OUTSIDE ``.xo/``.** They are per-machine
-infrastructure (coordination state) — not project data — so they
-sit alongside ``offsets.json`` under
-``~/.quirq/watcher/locks/``. Keeping them out of ``.xo/`` means:
-
-* agents reading ``.xo/`` never trip over a 0-byte sentinel,
-* AGENTS.md's "everything in ``.xo/`` has a schema" contract stays
-  clean,
-* if ``.xo/`` is ever copied for sync the locks don't tag along.
-
-The lock filename is ``<basename>.<8-hex>.lock`` where the 8-hex
-suffix is a stable hash of the absolute data path — so multiple
-projects' ``todos.json`` files have distinct locks. The basename
-prefix keeps the file recognisable when grepping the locks dir
-during debugging.
+"""
+Advisory file lock helper, used for files written by both the watcher and the
+BFF API endpoints.
 """
 
 from __future__ import annotations
@@ -67,18 +43,10 @@ def _lock_path_for(data_path: Path) -> Path:
 
 @contextmanager
 def locked(path: Path) -> Iterator[None]:
-    """Acquire an exclusive advisory lock for the data file at
-    ``path``. The lock sentinel itself lives under
-    ``~/.quirq/watcher/locks/`` (see module docstring).
-
-    Bounded wait. If the lock can't be acquired in
-    :data:`_DEADLINE_S` seconds the context yields anyway (logged
-    WARN) — the watcher and the API are both designed for
-    non-destructive read-modify-write so the worst case is a single
-    lost update that the next tick / call recovers.
-
-    The lock is released by the kernel on fd close (i.e. on context
-    exit), so a crash mid-block can't wedge the file.
+    """
+    Acquire an exclusive advisory lock for the data file at ``path``. The lock
+    sentinel itself lives under ``~/.quirq/watcher/locks/`` (see module
+    docstring).
     """
     lock_path = _lock_path_for(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
