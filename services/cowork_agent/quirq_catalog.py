@@ -203,13 +203,6 @@ _WORKSPACE_OUTPUT_CONTRACT = (
         "purpose": "Multiplexed project timelines tagged with project id",
         "used_by": "Workspace timeline APIs",
     },
-    {
-        "path": "inbox.json",
-        "tier": _TIER_SYNCED,
-        "producer": "Inbox API + feeders (timeline, todos, sharing)",
-        "purpose": "Incoming information, its seen/done state, and feeder cursors",
-        "used_by": "Inbox",
-    },
 )
 
 
@@ -262,6 +255,8 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Polled connection: what to collect, how often, and what arrived"
         return "Directory"
     name = Path(relative_path).name
+    if relative_path == "inbox.json":
+        return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
     # Files under connections/ come first: the generic state.json rule below
     # would otherwise claim a connection's state.json, and the events rule is
     # scoped here so an unrelated events* file elsewhere keeps its own label.

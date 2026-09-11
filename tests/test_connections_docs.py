@@ -112,11 +112,12 @@ class ConnectionsDocsTests(unittest.TestCase):
         for line in lines_with(page, "connections/"):
             self.assertIsNone(DASHES.search(line), line)
 
-    def test_wiki_xo_catalog_row_counts_five_feeders(self) -> None:
+    def test_wiki_quirq_catalog_row_counts_five_feeders(self) -> None:
+        # inbox.json is machine-local now: its catalog entry lives on the .quirq page
         wiki = read("space_ui/js/views/wiki.js")
-        table = wiki[wiki.index("Workspace tier · <code>&lt;XO root&gt;/.xo/</code>"):]
-        table = table[: table.index("</table>")]
-        self.assertIn("five feeders (timeline, todos, sharing, issues, connections)", table)
+        article = wiki[wiki.index("<header><code>inbox.json</code><span>the Space Inbox</span></header>"):]
+        article = article[: article.index("</article>")]
+        self.assertIn("five feeders (timeline, todos, sharing, issues, connections)", article)
 
     # ------------------------------------------------------------- quirq catalog
     def test_quirq_catalog_describes_the_connections_tree(self) -> None:
@@ -223,7 +224,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
         self.assertIn("project_sharing, inbox.py, connections.py)", layout)
-        self.assertIn("(timeline, todos, sharing, issues, connections) service", layout)
+        self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
         self.assertIn("    connections/", layout)
         for module in ("store", "collectors", "mcp_client", "poller", "service"):
             self.assertIn(module, layout)

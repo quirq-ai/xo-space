@@ -6,7 +6,7 @@ Use it sparingly: one item per thing a person should act on. Progress belongs in
 
 ## Endpoints
 
-Same base URL as the rest of cowork-api (`http://${HOST:-localhost}:${PORT:-5002}`). The file behind these routes is `<XO root>/.xo/inbox.json`, written under a flock, so concurrent posts don't tear.
+Same base URL as the rest of cowork-api (`http://${HOST:-localhost}:${PORT:-5002}`). The file behind these routes is `~/.quirq/inbox.json` (machine-local), written under a flock, so concurrent posts don't tear.
 
 ```
 GET    /api/inbox?status=open|done|all&limit=N
