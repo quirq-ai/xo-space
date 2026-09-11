@@ -1,0 +1,231 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/github-issues.schema.json",
+  "title": "xo github issues \u2014 the runtime mirror of one repo's issues",
+  "description": "The GitHub issue mirror for one project, at ~/.quirq/projects/<pid>/github/issues.json (workitems-plan.md \u00a75.2). RUNTIME TIER, never .xo/: it is re-fetched every 60 s and rebuilt from scratch after `rm -rf ~/.quirq`, so R-TIER puts it outside the synced tree and A10 cannot be violated by it. Wholly owned by the poller, which is the single writer \u2014 hence write_json_atomic_if_changed rather than a key-scoped merge, and hence a corrupt file is repaired by overwriting rather than merged into. Keyed by `node_id` because a union key must be unique BY CONSTRUCTION (\u00a72, the O-C lesson): `number` is per-repo and would collide across repos, and a repo rename changes the URL but never the node id. The document is a cache and states so: everything in it is authoritative on GitHub, nothing in it is authored, and losing it costs one poll.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repo",
+    "fetched_at",
+    "issues"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+      "description": "`owner/name`, parsed from project.json:git.remote_url by connectors/github_issues.parse_remote_url(). Recorded so a mirror can never be read as belonging to a repo it did not come from \u2014 the remote can change under a project."
+    },
+    "fetched_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When the poll that produced this document completed, UTC. Null only on a document written before any poll has succeeded. The UI's staleness indicator reads this, not `since`."
+    },
+    "since": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "High-water mark (\u00a76.3): the `updatedAt` of the most recently updated issue this document has seen, fed back as filterBy.since so a quiet repo settles into a small response. It does NOT reduce the query's point cost (measured: still 1) \u2014 it reduces payload, not budget."
+    },
+    "rate": {
+      "description": "GraphQL rate-limit state as of the last poll, read from the `rateLimit` field inside the query itself. That source is deliberate: `gh api rate_limit` was measured returning a full budget regardless of consumption on a real token, and the inline field costs no extra call. Null when unknown \u2014 after an auth failure there is no budget to report, and a fabricated one is worse than none.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "remaining",
+            "reset_at"
+          ],
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Points per hour on the GraphQL budget: 5000. Separate from the REST 5000/hr, which this poll does not touch at all (\u00a76.2)."
+            },
+            "cost": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Points the last poll spent. 1 for the pinned query; 2 would mean a nested connection was added and the ~83-repo ceiling has halved."
+            },
+            "remaining": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reset_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When the budget refills. The backoff honours this instead of guessing."
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "description": "The last poll failure, or null after a poll that succeeded. Structured rather than a bare string because the UI has to tell apart states with different remedies: `not_authenticated` asks the user to connect GitHub, `not_found` says the repo is gone, `network` says wait. `kind` is the closed vocabulary in connectors/github_issues.ERROR_KINDS, so an unrecognised state fails here instead of reaching the UI as an unhandled string.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "message"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "no_cli",
+                "not_authenticated",
+                "forbidden",
+                "not_found",
+                "rate_limited",
+                "network",
+                "timeout",
+                "bad_remote",
+                "bad_response",
+                "unknown"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable, and safe to display: it is composed from gh's own text, which never contains the token."
+            },
+            "at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            }
+          }
+        }
+      ]
+    },
+    "issues_enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether the repository has its issue tracker enabled (`repository.hasIssuesEnabled`). `null` means no poll has established it: never polled, or every poll so far failed. It is carried here because a repository with issues DISABLED answers a successful poll with an empty issue map and no error \u2014 indistinguishable from a healthy repository that simply has no open issues, which left the empty state guessing. Free to collect: it is a scalar, not a connection, so `rateLimit.cost` is unchanged at 1 (measured). Not required, so a document written before this field existed stays valid and reads as unknown."
+    },
+    "issues": {
+      "type": "object",
+      "description": "Map of node_id \u2192 issue snapshot. Pull requests are structurally impossible here: `gh` reads GraphQL, where repository.issues and repository.pullRequests are separate connections (\u00a76.1). The REST /issues endpoint does return PRs, which is one of the reasons D5 chose gh.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_=-]{1,255}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/issue"
+      }
+    }
+  },
+  "definitions": {
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "number",
+        "title",
+        "state",
+        "url",
+        "updated_at"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GitHub's global node id, and the map key. Survives a repo rename or transfer, which `number` does too but the URL does not; adopted workitems match on this (\u00a75.1)."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The human handle. Unique within a repo only \u2014 never used as a map key."
+        },
+        "title": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ],
+          "description": "Lowercased from GraphQL's OPEN/CLOSED. Exactly GitHub's two values and no others (\u00a75.4, D7): a vocabulary we do not own cannot drift from GitHub's, and `in_progress` is derived from a live claim rather than stored anywhere."
+        },
+        "state_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "completed",
+            "not_planned",
+            "reopened",
+            null
+          ],
+          "description": "Lowercased from GraphQL's stateReason. `closed` + `not_planned` is what 'cancelled' means here \u2014 mirrored from GitHub, not invented."
+        },
+        "assignees": {
+          "type": "array",
+          "description": "Who GitHub has on the issue. This was THE coordination substrate under D1 \u2014 assignment WAS a GitHub assignee \u2014 and that decision was reversed (workitems-plan \u00a713, amendment 33): nothing in this system writes an assignee any more, so this array is information about the issue rather than an assignment made here. It is still fetched, and still matters: it is the only way a peer's claim on an issue reaches this machine, so the projection serves it as `github_assignees` beside the workitem's own `assignee` and the rollup matches both. Costs nothing extra \u2014 assignees(first:5) measured at 1 point, the same as omitting it. An empty array means nobody is on it upstream; the field's absence means the row was written by something that is not the poller.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "login"
+            ],
+            "properties": {
+              "login": {
+                "type": "string",
+                "minLength": 1
+              },
+              "avatar_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OPTIONAL, and absent on every row the poller writes. labels(first:10) was measured to double the query cost from 1 to 2, halving the ceiling from ~83 polled repos to ~41 (\u00a76.2), so labels are fetched lazily on adoption instead. Absent means 'not fetched'; an empty array would be the claim 'this issue has no labels', which the poll never establishes."
+        },
+        "url": {
+          "type": "string",
+          "description": "Always .../issues/<number> \u2014 GraphQL's Issue.url. A /pull/ URL here would mean the query stopped being an issues query."
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "GitHub's updatedAt, verbatim. Drives the high-water mark and the sort."
+        }
+      }
+    }
+  }
+}

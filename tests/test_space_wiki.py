@@ -70,6 +70,50 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("scrollIntoView", registry)
 
+    def test_connectors_view_is_registered_and_identity_aware(self) -> None:
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
+        view = (
+            ROOT / "space_ui" / "js" / "views" / "connectors.js"
+        ).read_text(encoding="utf-8")
+        session = (
+            ROOT / "space_ui" / "js" / "core" / "session.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("import connectorsView from './views/connectors.js?v=", app)
+        self.assertIn("registerView(connectorsView);", app)
+        self.assertIn('href="css/connectors.css?v=', index)
+        self.assertIn("id:'connectors',label:'Connectors'", view)
+
+        # The Composio routes 401 without an identity, so every call must carry
+        # the session header. A view that quietly stopped sending it would show
+        # "sign in" forever.
+        self.assertIn("sessionHeaders()", view)
+        self.assertIn("X-XO-Session", session)
+        # The opaque id is per-tab: persisting it would outlive the server-side
+        # session table, which is in-memory and dies with the process.
+        self.assertNotIn("localStorage", session)
+
+        # The callback page posts to "*", so the origin check is what stops any
+        # other page forging a completion message.
+        self.assertIn("event.origin!==location.origin", view)
+        self.assertIn("connector-auth-complete", view)
+        # postMessage only accelerates; the status poll decides.
+        self.assertIn("connection_request_id=", view)
+
+        # The MCP gateway is installed by the server's reconcile sweep, so the view
+        # has neither a repair button nor a reason to know which agent is active —
+        # and naming one here would put an agent literal in a core (non-adapter) file.
+        self.assertNotIn("refresh-gateway", view)
+        self.assertNotIn("conn-gateway", view)
+        self.assertNotIn("/api/runtime-config", view)
+        for agent in ("claude_code", "openclaw", "hermes", "antigravity"):
+            self.assertNotIn(agent, view)
+        wiki = (
+            ROOT / "space_ui" / "js" / "views" / "wiki.js"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("refresh-gateway", wiki)
+
     def test_quirq_view_registered_and_six_degrees_removed(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
@@ -243,6 +287,7 @@ class SpaceWikiTests(unittest.TestCase):
             "tab-wiki",
             "tab-quirq",
             "tab-setup",
+            "tab-connectors",
         ):
             self.assertIn(f"id:'{page_id}'", wiki)
             self.assertIn(f"'{page_id}':", wiki)
@@ -317,7 +362,7 @@ class SpaceWikiTests(unittest.TestCase):
         # One renderer, one position. Three copies in three containers is
         # what made the control jump when you used it, so the views must not
         # render it at all.
-        for lens in ("projects", "graph", "tree"):
+        for lens in ("projects", "graph", "tree", "sharing"):
             self.assertIn(f'data-files-lens="{lens}"', index)
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
@@ -354,14 +399,72 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("is-growing", tree)
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
-        # Wiki Files guide must stay aligned with the three-lens UI (drift here
-        # is how "two lenses" docs survive after Tree ships).
-        self.assertIn("three lenses", wiki)
-        self.assertIn("List | Graph | Tree", wiki)
+        # Wiki Files guide must stay aligned with the four-lens UI (drift here
+        # is how "two lenses" docs survive after Tree ships, or "three" after
+        # Sharing).
+        self.assertIn("four lenses", wiki)
+        self.assertIn("List | Graph | Tree | Sharing", wiki)
         self.assertIn("#/tree", wiki)
         self.assertIn("/api/xo-projects/{id}/tree", wiki)
         self.assertNotIn("one home, two lenses", wiki)
+        self.assertNotIn("one home, three lenses", wiki)
         self.assertNotIn("'List | Graph lens switch'", wiki)
+        self.assertNotIn("'List | Graph | Tree lens switch'", wiki)
+
+    def test_sharing_lens_is_the_fourth_files_lens(self) -> None:
+        """Sharing is a lens of the Files tab (issue #83) and the whole of
+        project sharing in the UI: rail (inbox + shared projects) and detail
+        (commits + Apply, members + share/revoke). The List lens carries no
+        sharing surface; tests/test_space_project_sharing.py pins the pane's
+        own seams."""
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
+        switcher = (
+            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+        ).read_text(encoding="utf-8")
+        sharing = (
+            ROOT / "space_ui" / "js" / "views" / "sharing.js"
+        ).read_text(encoding="utf-8")
+        data = (
+            ROOT / "space_ui" / "js" / "views" / "sharing_data.js"
+        ).read_text(encoding="utf-8")
+        projects = (
+            ROOT / "space_ui" / "js" / "views" / "projects.js"
+        ).read_text(encoding="utf-8")
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
+            encoding="utf-8"
+        )
+
+        # registered as a nav-less child of Files, like Tree
+        self.assertIn("import sharingView from './views/sharing.js?v=", app)
+        self.assertIn("registerView(sharingView);", app)
+        contract = view_contract("sharing")
+        self.assertIn("id:'sharing',label:'Sharing'", contract)
+        self.assertIn("nav:false", contract)
+        self.assertIn("parent:'projects'", contract)
+        # the pill is shell chrome: index.html + lens-switch.js know the lens,
+        # the view itself never renders a switch
+        self.assertIn('data-files-lens="sharing"', index)
+        self.assertIn("'sharing'", switcher)
+        self.assertNotIn('data-files-lens="', sharing)
+        # one source of truth: the status snapshot, read by the data module
+        self.assertIn("from './sharing_data.js?v=", sharing)
+        self.assertNotIn("apiFetch(", sharing)
+        self.assertIn("apiFetch(API_BASE+'/api/project-sharing/status'", data)
+        # "Open in List" opens that project's drawer (views never import each
+        # other: switchTo + an event the List listens for)
+        self.assertIn("space:open-project", sharing)
+        self.assertIn("space:open-project", projects)
+        # the List lens carries no sharing surface any more
+        self.assertNotIn("sharing_data.js", projects)
+        self.assertNotIn("sharingPanel", projects)
+        # the wiki keeps the lens facts true
+        self.assertIn("#/sharing", wiki)
+        self.assertIn("/api/project-sharing/status", wiki)
+        self.assertIn("Apply", wiki)
+        self.assertIn("Check now", wiki)
+        self.assertIn("copy invite", wiki)
+        self.assertNotIn("Sharing panel", wiki.split("files:{")[1].split("timeline:{")[0])
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
         """The Files drawer browses a project folder by folder, and the wire
@@ -601,6 +704,30 @@ class SpaceWikiTests(unittest.TestCase):
         # The cross-link buttons need a rule, or they render as stock buttons.
         css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(encoding="utf-8")
         self.assertIn(".wiki-link{", css)
+
+    def test_wiki_steps_keep_extra_children_out_of_the_counter_column(self) -> None:
+        """Install-page steps put a <code> between the title and the body.
+
+        The wide layout is a 3-track grid (counter | title | body). Grid
+        auto-placement then drops the paragraph into the 38px counter
+        column, which on a QHD viewport reads as a single vertical strip
+        of letters. Pin the explicit columns so a command or a second
+        paragraph stays in the body track on every width.
+        """
+        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grid-template-columns:38px 205px minmax(0,1fr)",
+            css,
+        )
+        self.assertIn(".wiki-steps li>:not(b){grid-column:3}", css)
+        # The 900px stack must move title AND body into column 2. Pinning
+        # only p leaves a sibling <code> in the counter track.
+        self.assertIn(
+            ".wiki-steps b,.wiki-steps li>:not(b){grid-column:2;grid-row:auto}",
+            css,
+        )
 
     def test_contributing_guide_matches_how_the_repo_actually_works(self) -> None:
         """CONTRIBUTING.md is the front door for outside contributors. The

@@ -9,11 +9,13 @@
 <link rel="stylesheet" href="css/sessions.css?v=20260725-sessions2">
 <link rel="stylesheet" href="css/timeline.css?v=20260825-timeline1">
 <link rel="stylesheet" href="css/chrome.css?v=20260813-timeline2">
-<link rel="stylesheet" href="css/projects.css?v=20260824-treecam1">
-<link rel="stylesheet" href="css/wiki.css?v=20260827-firstrun1">
+<link rel="stylesheet" href="css/projects.css?v=20260911-issues1">
+<link rel="stylesheet" href="css/sharing.css?v=20260910-sharingpane1">
+<link rel="stylesheet" href="css/wiki.css?v=20260906-steps1">
 <link rel="stylesheet" href="css/quirq.css?v=20260816-navswap1">
 <link rel="stylesheet" href="css/secrets.css?v=20260825-installlink1">
 <link rel="stylesheet" href="css/preview.css?v=20260827-htmlfix1">
+<link rel="stylesheet" href="css/connectors.css?v=20260903-connectors1">
 
 <div class="topbar">
   <div class="brand">
@@ -47,7 +49,7 @@
 </div>
 
 <main id="stage">
-  <!-- Files lens switch: one element for all three lenses, owned by
+  <!-- Files lens switch: one element for all four lenses, owned by
        core/lens-switch.js. It sits in the stage rather than inside a view so
        that switching lens cannot move it. -->
   <div id="fileslens" hidden>
@@ -56,6 +58,7 @@
         <button type="button" data-files-lens="projects">List</button>
         <button type="button" data-files-lens="graph">Graph</button>
         <button type="button" data-files-lens="tree">Tree</button>
+        <button type="button" data-files-lens="sharing">Sharing</button>
       </div>
     </div>
   </div>
@@ -152,6 +155,6 @@
   <div class="meta" id="fmeta"></div>
 </footer>
 
-<script type="module" src="js/app.js?v=20260831-merged1"></script>
+<script type="module" src="js/app.js?v=20260911-issues1"></script>
 
 </body></html>

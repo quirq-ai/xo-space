@@ -17,12 +17,13 @@ that is the ``auth_method`` field carried alongside it for display purposes.
 Token file: ~/.config/token.json  (see connectors/token_store.py)
 """
 
-import asyncio
 import logging
 import shutil
 from typing import Any, Literal
 
 import httpx
+
+from utils.commands import run
 
 from ..token_store import TOKEN_FILE, delete_entry, get_entry, set_entry
 
@@ -59,6 +60,10 @@ def save_github_token(token: str, *, auth_method: str = "pat") -> None:
     """Save a GitHub access token to token.json.
 
     auth_method is "pat" (user-pasted PAT) or "cli" (from `gh auth login`).
+
+    Both acquisition flows converge here, so this is also where the issue
+    poller learns its backoff is stale: a poller resting ten minutes on
+    ``not_authenticated`` must not outlive the sign-in that fixed it.
     """
     set_entry("github", {
         "access_token": token,
@@ -69,6 +74,21 @@ def save_github_token(token: str, *, auth_method: str = "pat") -> None:
         "auth_method": auth_method,
     })
     log.info("GitHub token saved to %s (method=%s)", TOKEN_FILE, auth_method)
+    _notify_issue_poller()
+
+
+def _notify_issue_poller() -> None:
+    """Tell the GitHub issue poller a new credential is in play. Never raises."""
+    try:
+        # Imported here rather than at module scope: the poller imports this
+        # package, so a top-level import would close the cycle.
+        from services.cowork_agent import github_poller
+
+        github_poller.note_auth_change()
+    except Exception:
+        # Storing the token is the caller's actual business; a poller that
+        # misses the hint still recovers on its own next tick.
+        log.debug("could not notify the GitHub issue poller", exc_info=True)
 
 
 def delete_github_token() -> None:
@@ -190,20 +210,11 @@ _SUBPROCESS_TIMEOUT_SECONDS = 10
 
 async def _run(*args: str) -> tuple[int, str]:
     """Run a command; return (returncode, merged output). Never raises."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_SUBPROCESS_TIMEOUT_SECONDS
-        )
-    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
-        log.warning("Command %s failed: %s", args[0], exc)
+    res = await run(list(args), timeout=_SUBPROCESS_TIMEOUT_SECONDS)
+    if res.timed_out or res.binary_missing or res.exception is not None:
+        log.warning("Command %s failed: %s", args[0], res.output.strip())
         return 1, ""
-    return proc.returncode or 0, stdout.decode("utf-8", "replace").strip()
+    return res.returncode or 0, res.output.strip()
 
 
 def commit_email(validation: dict[str, Any]) -> str:

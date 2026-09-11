@@ -11,8 +11,8 @@
 A working folder shared between a human and any number of AI agents. It contains the actual project work, plus two persistence layers:
 
 - **`memory/`** — shared cognition. Committed to git. Distilled facts, past episodes, reusable procedures. Visible to every teammate and every agent.
-- **`.xo/`** — portable project metadata. Gitignored. Identity, sessions, sync, peers, stats, todos, timeline.
-- **`~/.quirq/`** — machine-local service state. Live presence and watcher cursors never travel with the project.
+- **`.xo/`** — portable project metadata: identity, todos, and the sharing roster. Small, durable, and the half of the state a copy of this folder would want.
+- **`~/.quirq/`** — machine-local service state: session indexes, statistics, the event timeline, sync progress, live presence and watcher cursors. All of it is re-derivable from this machine's runtime logs, so none of it travels with the project.
 
 ### Who writes what
 
@@ -20,8 +20,9 @@ A working folder shared between a human and any number of AI agents. It contains
 |----------------------------------------------------------|:-:|---|
 | `PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md` | yes | Co-edited with the human. |
 | `memory/{semantic,episodic,procedural,working}/`        | yes | The agent's externalized cognition. |
-| `.xo/**` — **everything** under `.xo/`                  | **no** | Quirq services own this directory. Runtime adapters write session and optional agent indexes; the watcher writes identity, augmentation, timeline, todos, and stats; collaboration/sync flows own peers and sync state. Agents only **read** `.xo/`. Never write — your edits will be overwritten and may corrupt coordinated state. |
-| `~/.quirq/watcher/**`                                  | **no** | Machine-local watcher infrastructure and live-presence snapshots. Read presence through the cowork API; never edit these files directly. |
+| `.xo/**` — **everything** under `.xo/`                  | **no** | Quirq services own this directory. The watcher fills identity; the todo API owns `todos.json`; collaboration flows own the peer roster. Agents only **read** `.xo/`. Never write — your edits will be overwritten and may corrupt coordinated state. |
+| `.xo/todos.json`                                        | **no**, but you **drive** it | You never edit the file, and you never rely on a native todo tool to reach it. Record every todo through `POST/PATCH/DELETE /api/xo-projects/<project-id>/todos` (§5). The API is the file's only writer, for every runtime. |
+| `~/.quirq/**`                                          | **no** | Machine-local service state: this project's session index, stats, timeline and sync progress, plus watcher cursors and live-presence snapshots. Read it through the cowork API; never edit these files directly. |
 
 If the agent needs something not listed as agent-writable, it almost certainly needs a different tool (a tool call that mutates state) — not a direct edit.
 
@@ -49,21 +50,42 @@ Every agent that works here is expected to leave the folder in a **better state 
 ├── .xo/                     ← portable project metadata. Gitignored.
 │   ├── project.json         identity: pid, name, owner_user_id, created_at
 │   ├── agent.json           optional backend-specific agent attachment
-│   ├── todos.json           aggregated todos across active sessions
-│   ├── stats.json           rolling 7d/30d: tokens, models, files, sessions, time
-│   ├── timeline.jsonl       append-only event log (sessions, todos, edits, syncs)
-│   ├── peers.json           who this folder is shared with
-│   ├── sync.json            last-sync state per peer
-│   └── sessions/
-│       ├── sessionslist.json       adapter-owned session index
-│       └── sessions-augment.json   watcher counters and timing joined at read time
+│   ├── todos.json           work items, written only by the todo API (§5)
+│   └── peers.json           who this folder is shared with
 │
 └── ... (the actual project work files)
 ```
 
-Live presence is stored outside the project at
-`~/.quirq/watcher/activity/projects/<project-id>.json` and exposed through
-`GET /api/xo-projects/<project-id>/activity`.
+**Everything else the services keep about this project lives outside the
+folder**, under the machine-local state root, keyed by the `pid` in
+`.xo/project.json`:
+
+```
+~/.quirq/projects/<pid>/
+├── stats.json               rolling 7d/30d: tokens, models, files, sessions, time
+├── timeline.jsonl           append-only event log (sessions, todos, edits)
+├── sync.json                last-sync state per peer
+└── sessions/
+    ├── sessionslist.d/      the session index, one shard file per session
+    └── sessions-augment.json   watcher counters and timing joined at read time
+
+~/.quirq/watcher/activity/projects/<pid>.json   live "who is here now"
+```
+
+**Do not go looking for those paths.** They are machine-local, they are keyed
+by an id you would have to resolve yourself, and the session index is sharded.
+Read them through the cowork API instead — it does the resolution and the
+merge for you:
+
+| You want | Ask |
+|---|---|
+| open todos | `GET /api/xo-projects/<project-id>/todos` |
+| recent sessions | `GET /api/xo-projects/<project-id>/usage/sessions` |
+| the event log | `GET /api/xo-projects/<project-id>/timeline?limit=100` |
+| who is working here now | `GET /api/xo-projects/<project-id>/activity` |
+
+`<project-id>` is this folder's name. The base URL is
+`http://${HOST:-localhost}:${PORT:-5002}`.
 
 ---
 
@@ -87,16 +109,18 @@ Read these in order, **before answering**:
 4. `PLAN.md` — current plan
 5. `memory/semantic/*.md` — distilled facts (3 short files)
 6. `PROGRESS.md` — **last ~30 lines only**
-7. `.xo/todos.json` — open todos across active sessions
-8. `.xo/sessions/sessionslist.json` — **last 3 entries only**, to know what was worked on most recently
+7. `GET /api/xo-projects/<project-id>/todos` — open todos across active sessions. This is the API, not the file: `.xo/todos.json` is readable, but the endpoint is what hides deleted rows and is the same surface you write through.
+8. `GET /api/xo-projects/<project-id>/usage/sessions` — **the 3 most recent only**, to know what was worked on last. The session index itself is machine-local and sharded now (§2); this endpoint merges it for you.
 9. `GET /api/xo-projects/<project-id>/activity` — is anyone else working here right now?
 
-You don't need to "announce yourself." The runtime adapter creates the
-`sessionslist.json` row, while the watcher observes supported native events and
-writes the corresponding `session.started` timeline event, session
-augmentation, and machine-local activity heartbeat.
+You don't need to "announce yourself." The runtime adapter registers the
+session, while the watcher observes supported native events and writes the
+corresponding `session.started` timeline event, session augmentation, and
+machine-local activity heartbeat.
 
-**Do not read** `memory/episodic/`, `memory/procedural/`, the full `.xo/sessions/sessionslist.json`, or the full `.xo/timeline.jsonl` from the main thread. They grow without bound. To inspect past session history, follow the rule in §10.
+**Do not read** `memory/episodic/`, `memory/procedural/`, the full session
+list, or the full timeline from the main thread. They grow without bound. To
+inspect past session history, follow the rule in §10.
 
 ---
 
@@ -109,7 +133,29 @@ Keep these living:
 
 **Do not** edit `PROGRESS.md` mid-work — it is written once at session close.
 
-Use your runtime's **native** todo tool (e.g. Claude Code's TaskCreate/TaskUpdate) for in-session todos — the watcher mirrors those into `.xo/todos.json` automatically. There is no project-level `TASKS.json`; project todos and session todos are the same list, surfaced through the watcher. If you need to see all in-flight todos across sessions, read `.xo/todos.json`.
+**Record todos through the HTTP API — every runtime, no exceptions:**
+
+```
+GET    /api/xo-projects/<project-id>/todos                # list (add ?include_deleted=true for history)
+POST   /api/xo-projects/<project-id>/todos                # {"runtime": "...", "content": "..."}
+PATCH  /api/xo-projects/<project-id>/todos/<todo-id>      # {"status": "in_progress"}
+DELETE /api/xo-projects/<project-id>/todos/<todo-id>      # tombstone; prefer status "cancelled"
+```
+
+Statuses: `pending | in_progress | completed | cancelled | blocked`. One
+`in_progress` per agent at a time. There is no project-level `TASKS.json`;
+project todos and session todos are the same list, and this API is its only
+writer.
+
+**If your runtime has a native todo tool, it is not enough.** There used to be
+a watcher sink that tailed one runtime's session log and mirrored its native
+todos into `.xo/todos.json`. It is gone — it only ever worked for that one
+backend. Removing it did **not** stop a native `TaskCreate` from firing; your
+runtime's own list still works. What it stopped is anyone **seeing** the
+result. A todo that exists only in a native tool is invisible to the human's
+UI, to the timeline, to the task counters and to the next agent, and nothing
+errors to warn you. Use the native tool to think with if you like; a step is
+not recorded until the API call returns.
 
 ---
 
@@ -126,12 +172,13 @@ When the human says "done", "wrap up", "good for today", or you detect a natural
 
 Do all six. Skipping for "the session was short" is how folders rot.
 
-Everything in `.xo/` is service-owned: adapters maintain session/agent
-indexes, the watcher derives timeline/todo/stat/augmentation data from
-supported runtime events, and collaboration/sync flows maintain peer state.
+Everything in `.xo/` is service-owned: the watcher fills identity, the todo
+API owns `todos.json`, and collaboration flows maintain peer state.
 **Do not write to those files** — your edits will conflict with coordinated
-writers and may be overwritten. Live presence is watcher-owned under
-`~/.quirq/watcher/activity/`; access it through the cowork API.
+writers and may be overwritten. Close your todos through the API (§5), not
+by editing the file. Session indexes, statistics, the timeline and live
+presence are machine-local under `~/.quirq/`; reach all of them through the
+cowork API.
 
 ---
 
@@ -140,8 +187,8 @@ writers and may be overwritten. Live presence is watcher-owned under
 | Log                              | Format                          | Purpose                                            | Read by                              |
 |----------------------------------|---------------------------------|----------------------------------------------------|--------------------------------------|
 | `PROGRESS.md`                    | append-only paragraphs          | human-readable progress, scrolled by humans        | every agent at boot (last ~30 lines) |
-| `.xo/sessions/sessionslist.json` | upserted JSON object/map         | one keyed row per session — the **index** of history | every agent at boot (3 newest rows) |
-| `.xo/timeline.jsonl`             | one JSON event per line         | machine-readable firehose (audit, sync, dashboards)| watcher writes; agents read only via §10        |
+| `GET …/usage/sessions`           | merged JSON rows                | one row per session — the **index** of history      | every agent at boot (3 newest rows) |
+| `GET …/timeline`                 | one JSON event per record       | machine-readable firehose (audit, sync, dashboards)| services write; agents read only via §10 |
 | `memory/episodic/*.md`           | one file per noteworthy episode | distilled context for future recall                | memory subagent (never main thread)  |
 
 **`PROGRESS.md` paragraph format:**
@@ -153,13 +200,16 @@ agent: <model id>
 ```
 `[outcome]` ∈ `shipped | progress | blocked | pivoted | cleanup | research`.
 
-**`.xo/timeline.jsonl` event shape:**
+**Timeline event shape** (one record per line in the machine-local
+`timeline.jsonl`; read it with `GET /api/xo-projects/<project-id>/timeline`):
 ```json
-{"ts":"2026-05-09T14:33:00Z","type":"session.started","session_id":"ses_abc123","runtime":"claude_code"}
+{"ts":"2026-05-09T14:33:00Z","type":"session.started","session_id":"ses_abc123","runtime":"<runtime>"}
 ```
-Current watcher types: `session.started`, `todo.added`, `todo.completed`,
-`file.created`, and `file.edited`. The schema also reserves project and peer
-sync event families for their owning services.
+Current types: `session.started`, `todo.added`, `todo.completed`,
+`file.created`, and `file.edited`. The `todo.*` lines come from the todo API
+(§5), so they appear for every runtime — which is exactly why a native-only
+todo leaves no trace here. The schema also reserves project and peer sync
+event families for their owning services.
 
 ---
 
@@ -213,11 +263,12 @@ Procedural memory is the highest-leverage kind — it converts experience into r
 
 ## 9. Hard rules
 
-- **Never write to `.xo/`.** No exceptions — not even `.xo/project.json` on first boot. The watcher service owns the entire directory; your edits will conflict with it, be overwritten, or corrupt sync state.
+- **Never write to `.xo/`.** No exceptions — not even `.xo/project.json` on first boot, and not `todos.json` (drive it through the API in §5). The services own the entire directory; your edits will conflict with them, be overwritten, or corrupt sync state.
+- **Never treat a native todo tool as the record.** It is invisible to everyone but you. The API call in §5 is what makes a todo real.
 - **Never delete** anything in `memory/` outside the rules in §8 (and even then, only `working/` gets wiped). Memory loss is irreversible.
 - **Never edit** an episodic memory file after it is written. Append-only.
 - **Never** write narrative text to `memory/semantic/*`. That folder is for distilled claims only.
-- **Never** dump tool output, full file contents, or raw logs into any memory file. Memory is *distilled*; raw logs live in `.xo/timeline.jsonl`.
+- **Never** dump tool output, full file contents, or raw logs into any memory file. Memory is *distilled*; raw logs live in the machine-local timeline (§7).
 - **Never claim work as done** without verifying it (run the test, open the page, read the diff).
 - **Never put secrets** in `memory/` (it is committed) or `.xo/` (it may be synced to peers).
 - **Never invent** peer/sync state. If `.xo/peers.json` is empty, you are working solo.
@@ -227,18 +278,20 @@ Procedural memory is the highest-leverage kind — it converts experience into r
 
 ## 10. Looking up past sessions (read-only)
 
-`.xo/sessions/sessionslist.json` and `.xo/timeline.jsonl` are **read-only for agents** — the watcher service maintains them. You consult them; you never edit them.
+The session index and the timeline are **read-only for agents** — the services
+maintain them, and they live outside this folder under `~/.quirq/` (§2). You
+consult them through the API; you never edit them.
 
 When the user references prior work ("continue the auth thing", "the bug from yesterday", "what we discussed"), or whenever you need history older than the last 3 sessions:
 
-1. **Start at the index, not the log.** Open `.xo/sessions/sessionslist.json` and find the relevant `id` by `started_at`, `summary`, or `outcome`. This is a small file — scanning it is cheap.
-2. **Pull only that session's events.** Filter `.xo/timeline.jsonl` by `session_id` (e.g. `grep '"session_id":"ses_abc123"' .xo/timeline.jsonl`). Don't read the full log.
-3. **For narrative detail**, look at the `episode_refs` on that session's entry — those point into `memory/episodic/`. Have a subagent read them; never main-thread.
-4. **For raw artefact recovery**, the entry's `source_file` points at the runtime's native session log (e.g. `~/.claude/projects/.../ses_abc123.jsonl`).
+1. **Start at the index, not the log.** `GET /api/xo-projects/<project-id>/usage/sessions` and find the relevant session by its last activity. This is a small merged list — scanning it is cheap.
+2. **Pull only that session's events.** `GET /api/xo-projects/<project-id>/timeline?limit=100` returns newest-first and accepts a `types=` filter; page with `before=<ts>`. Don't try to read the raw log — it is machine-local, rotated, and keyed by an id you would have to resolve yourself.
+3. **For narrative detail**, go to `memory/episodic/` — the episode files are named `YYYY-MM-DD-{slug}.md`, so the session's date is the index. Have a subagent read them; never main-thread.
+4. **For raw artefact recovery**, the session row's `sessionFile` names the runtime's native log. The API returns the file name only, never its absolute path — the transcript is machine-local and the service will not hand out a path into it.
 
-If the question is open-ended ("what have we been working on lately?"), read the last 5–10 entries of `sessionslist.json` and summarise — do not load the whole timeline.
+If the question is open-ended ("what have we been working on lately?"), read the last 5–10 rows of the session list and summarise — do not load the whole timeline.
 
-> **Why two files?** `sessionslist.json` is the human/agent-readable index; `timeline.jsonl` is the firehose. They are joined on `session_id`. Most lookups need only the index.
+> **Why two surfaces?** The session list is the human/agent-readable index; the timeline is the firehose. They are joined on `session_id`. Most lookups need only the index.
 
 ---
 
@@ -251,6 +304,6 @@ Run §3 (if there are `[TEMPLATE]` markers anywhere) or §4 (otherwise). By the 
 - The current plan (`PLAN.md`)
 - What has already been done (`PROGRESS.md` last 30 lines)
 - What facts are settled (`memory/semantic/`)
-- What's in flight (`.xo/todos.json`)
+- What's in flight (`GET /api/xo-projects/<project-id>/todos`)
 
 That is enough to be useful. Ask the human if anything contradicts.

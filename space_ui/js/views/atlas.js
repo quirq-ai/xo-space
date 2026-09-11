@@ -172,7 +172,15 @@ const hexA=(h,a)=>`rgba(${parseInt(h.slice(1,3),16)},${parseInt(h.slice(3,5),16)
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* expansion + filter state */
-const expanded=new Map(GROUPS.map(g=>[g.id,true]));
+/* Groups start collapsed once the workspace is large enough that simulating
+   every leaf would cost more than it shows. isShown() already excludes a
+   collapsed group's leaves from BOTH shownNodes() and shownEdges(), so the
+   simulated set drops to root+hubs+groups (hundreds, not thousands) with no
+   other change. Collapsed groups already render as a dashed ring with a "+N"
+   count and open on double-click, so nothing is hidden — only deferred. */
+const COLLAPSE_LEAVES_ABOVE=600;
+const START_COLLAPSED=LEAVES.length>COLLAPSE_LEAVES_ABOVE;
+const expanded=new Map(GROUPS.map(g=>[g.id,!START_COLLAPSED]));
 let deptFilter=null;
 const belongsToCategory=(n,cat)=>n.cat===cat||(n.clusters||[]).includes(cat);
 const isShown=n=>{
@@ -184,8 +192,34 @@ const isShown=n=>{
   return true;
 };
 const dimByFilter=n=>deptFilter&&n.cat&&!belongsToCategory(n,deptFilter);
-const shownNodes=()=>NODES.filter(isShown);
-const shownEdges=()=>EDGES.filter(e=>isShown(byId.get(e.s))&&isShown(byId.get(e.t)));
+/* isShown() depends only on `expanded` and `deptFilter`, so the filtered
+   arrays only need rebuilding when one of those changes — not the 4x per frame
+   the old always-filter cost (measured ~19% of simTick at the 1500-leaf cap,
+   plus four throwaway arrays per frame of GC pressure).
+   setExp() bumps _expVersion; deptFilter is folded into the key so a future
+   direct write to it can never leave a stale cache behind.
+   Callers must treat the returned arrays as read-only. */
+let _expVersion=0,_shownKey=null,_shownNodes=[],_shownEdges=[];
+function _refreshShown(){
+  const key=_expVersion+'|'+deptFilter;
+  if(key===_shownKey)return;
+  _shownKey=key;
+  _shownNodes=NODES.filter(isShown);
+  _shownEdges=EDGES.filter(e=>isShown(byId.get(e.s))&&isShown(byId.get(e.t)));
+}
+const shownNodes=()=>{_refreshShown();return _shownNodes;};
+const shownEdges=()=>{_refreshShown();return _shownEdges;};
+
+/* Leaf counts for the hub / collapsed-group labels. Precomputed because the
+   draw loop needs them every frame: the old inline LEAVES.filter(...) was an
+   O(LEAVES) scan per labelled node per frame. */
+const leafCountByGroup=new Map(GROUPS.map(g=>[g.id,0]));
+const leafCountByCat=new Map();
+for(const l of LEAVES){
+  leafCountByGroup.set(l.group,(leafCountByGroup.get(l.group)||0)+1);
+  for(const c of new Set([l.cat,...(l.clusters||[])]))
+    leafCountByCat.set(c,(leafCountByCat.get(c)||0)+1);
+}
 
 /* layout seed */
 const HUB_ANGLE=DATA.hubAngles;
@@ -527,7 +561,7 @@ function drawGraph(now){
       gc.font='500 17px '+SERIF;
       halo(n.label,sx,sy-n.r*k-12,`rgba(233,228,217,${.94*a})`);
       gc.font='400 8.5px '+MONO;
-      const hubCount=LEAVES.filter(l=>belongsToCategory(l,n.cat)).length;
+      const hubCount=leafCountByCat.get(n.cat)||0;
       const hubNoun=hubCount===1?noun.replace(/s$/,''):noun;
       halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(125,120,109,${a})`,.14);
     }else if(n.type==='group'){
@@ -535,7 +569,7 @@ function drawGraph(now){
       if(!(on||k>.8))continue;
       const closed=!expanded.get(n.id);
       gc.font='400 9px '+MONO;
-      const t=n.label.toUpperCase()+(closed?` +${LEAVES.filter(l=>belongsToCategory(l,n.cat)).length}`:'');
+      const t=n.label.toUpperCase()+(closed?` +${leafCountByGroup.get(n.id)||0}`:'');
       halo(t,sx,sy-n.r*k-7,`rgba(179,173,160,${.72*a})`,.1);
     }else if(n.type==='leaf'){
       const on=n.id===hoverId||n.id===selId||n.id===rootId||(focusSet&&focusSet.has(n.id))||(pathIds&&pathIds.includes(n.id));
@@ -688,6 +722,7 @@ function clearPath(){pathIds=null;pathEdges=null;}
 function setExp(g,v){
   if(expanded.get(g.id)===v)return;
   expanded.set(g.id,v);
+  _expVersion++;   /* invalidates the shownNodes/shownEdges cache */
   if(v){
     const kids=LEAVES.filter(l=>l.group===g.id);
     kids.forEach((l,i)=>{
@@ -935,8 +970,10 @@ const SAT_DOTS=28;    /* dots drawn — beyond this the orbit reads as noise */
 const SAT_ROWS=40;    /* rows listed in the panel */
 const SAT_TTL=20000;  /* ms a fetched list stays fresh (re-click is instant) */
 const SAT_MIN_K=.55;  /* below this zoom, dots would collide with sibling nodes */
-/* Same order the Files tab lists todos in (projects.js:28). Duplicated rather
-   than imported: views never import each other (see the registry contract). */
+/* Same order the Files tab lists todos in (projects.js). Duplicated rather
+   than imported: views never import each other (see the registry contract).
+   The status set is owned by services/cowork_agent/visualizer/todo_status.py;
+   tests/test_todo_status.py fails if these three stop matching it. */
 const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
 const ST_DONE=new Set(['completed','cancelled']);
 const ST_COLOR={in_progress:ACCENT,blocked:'#e0b04c',pending:'#b3ada0',
@@ -1907,19 +1944,52 @@ function resize(){
 }
 addEventListener('resize',resize);
 resize();
-for(let i=0;i<260;i++)simTick();
-simAlpha=.35;
-/* initial camera: fit everything, centered */
-{
+/* Layout warm-up.
+
+   This was `for(let i=0;i<260;i++)simTick();` — a synchronous burst of 260
+   O(N^2) ticks that blocked the first paint. Measured: ~2.0s at the 1500-leaf
+   cap, ~7.8s at 3000 leaves, ~33s at 6000. That freeze is the reason the caps
+   in space_index.py have to sit as low as they do.
+
+   The same 260 ticks are budgeted now: a short synchronous burst so the first
+   painted frame is already a readable layout, and the remainder spread across
+   following frames. Worst case is one long frame, not a multi-second hang,
+   whatever the workspace size. */
+const WARM_TICKS=260;
+let warmLeft=WARM_TICKS,warmDone=false;
+function warmStep(budgetMs){
+  const t0=performance.now();
+  while(warmLeft>0&&performance.now()-t0<budgetMs){simTick();warmLeft--;}
+  if(warmLeft===0&&!warmDone){warmDone=true;simAlpha=.35;}
+  return warmDone;
+}
+function fitAll(){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   shownNodes().forEach(n=>{x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x);y1=Math.max(y1,n.y);});
-  const k=Math.max(.3,Math.min(1.6,.94*Math.min(GW/(x1-x0+140),GH/(y1-y0+140))));
-  cam.k=k;
+  if(x1<x0)return;   /* nothing shown yet — leave the camera alone */
+  cam.k=Math.max(.3,Math.min(1.6,.94*Math.min(GW/(x1-x0+140),GH/(y1-y0+140))));
   cam.x=(x0+x1)/2;
   cam.y=(y0+y1)/2;
 }
+warmStep(24);
+fitAll();
+/* Say so, once. A large workspace opens with its groups closed (dashed rings
+   with a +N count); without a word the graph just looks empty of files. */
+if(START_COLLAPSED)setTimeout(()=>toast(
+  `${LEAVES.length} files across ${GROUPS.length} folders — double-click a folder or project to open it`),600);
 function frame(now){
-  if(view==='graph'){simTick();drawGraph(now);}
+  if(view==='graph'){
+    if(!warmDone){
+      warmStep(8);              /* ~half a frame; finishes over a few frames */
+      if(!camAnim)fitAll();     /* track the expanding layout unless flying */
+    }else if(simAlpha>0){
+      /* Gated. simAlpha decays to 0 once the layout settles; the old
+         unconditional simTick() kept doing ~N^2/2 distance computations
+         every frame forever and multiplying the result by zero. */
+      simTick();
+    }
+    drawGraph(now);
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -251,12 +251,34 @@ function metric(label,value,note){
   return '<div><span>'+esc(label)+'</span><b>'+esc(value)+'</b><p>'+esc(note)+'</p></div>';
 }
 
+// Three states, not two. `enabled` is configuration — it says what the
+// watcher was asked to do, never whether the loop is running — so a
+// crashed watcher used to keep showing "Live". `alive` is the observed
+// heartbeat: enabled but not beating is the failure worth shouting about.
+function watcherBadge(watcher){
+  if(!watcher.enabled)return{text:'Paused',cls:'is-muted',title:'Watcher disabled by runtime configuration'};
+  if(watcher.alive)return{
+    text:'Live',
+    cls:'is-live',
+    title:'Last tick '+(watcher.last_tick_at||'unknown')+' · '+(watcher.tick_count??'?')+' ticks'
+  };
+  return{
+    text:'Stalled',
+    cls:'is-stalled',
+    title:watcher.last_tick_at
+      ?'Watcher is enabled but has not ticked since '+watcher.last_tick_at
+      :'Watcher is enabled but has never written a heartbeat'
+  };
+}
+
 function renderActivity(activity,watcher){
   const projects=activity.projects||[];
   const active=projects.filter(project=>project.open_sessions>0).length;
   const badge=root.querySelector('#quirq-activity-badge');
-  badge.textContent=watcher.enabled?'Live':'Paused';
-  badge.className=watcher.enabled?'is-live':'is-muted';
+  const state=watcherBadge(watcher);
+  badge.textContent=state.text;
+  badge.className=state.cls;
+  badge.title=state.title;
   const target=root.querySelector('#quirq-activity');
   const summary=
     '<div class="quirq-stat-row">'

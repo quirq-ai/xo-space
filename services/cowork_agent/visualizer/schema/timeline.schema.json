@@ -5,6 +5,7 @@
   "description": "Append-only event log. The file is JSONL — one JSON object per line, newline-terminated. This schema describes a single event. Validators should run line-by-line.",
   "type": "object",
   "required": ["ts", "type"],
+  "propertyNames": { "enum": ["agent", "assignee", "files", "issue", "kind", "outcome", "path", "peer_user_id", "peers", "project_id", "runtime", "session_id", "state_reason", "status", "title", "todo", "todo_id", "ts", "type", "user_id", "workitem_id"] },
   "properties": {
     "ts":           { "type": "string", "format": "date-time", "description": "ISO 8601 UTC." },
     "type":         { "type": "string", "description": "Dotted event name, e.g. `session.started`, `file.edited`." },
@@ -19,13 +20,22 @@
     { "$ref": "#/definitions/session_closed" },
     { "$ref": "#/definitions/todo_added" },
     { "$ref": "#/definitions/todo_completed" },
+    { "$ref": "#/definitions/todo_status_changed" },
     { "$ref": "#/definitions/file_edited" },
     { "$ref": "#/definitions/file_created" },
     { "$ref": "#/definitions/plan_written" },
     { "$ref": "#/definitions/episode_written" },
     { "$ref": "#/definitions/peer_sync_started" },
     { "$ref": "#/definitions/peer_sync_applied" },
-    { "$ref": "#/definitions/peer_sync_conflict" }
+    { "$ref": "#/definitions/peer_sync_conflict" },
+    { "$ref": "#/definitions/workitem_created" },
+    { "$ref": "#/definitions/workitem_adopted" },
+    { "$ref": "#/definitions/workitem_assigned" },
+    { "$ref": "#/definitions/workitem_claimed" },
+    { "$ref": "#/definitions/workitem_released" },
+    { "$ref": "#/definitions/workitem_closed" },
+    { "$ref": "#/definitions/workitem_reopened" },
+    { "$ref": "#/definitions/workitem_deleted" }
   ],
   "definitions": {
     "project_created":    { "properties": { "type": { "const": "project.created" } } },
@@ -33,12 +43,22 @@
     "session_closed":     { "properties": { "type": { "const": "session.closed" }, "session_id": { "type": "string" }, "outcome": { "type": "string" } }, "required": ["session_id"] },
     "todo_added":         { "properties": { "type": { "const": "todo.added" }, "session_id": { "type": "string" }, "todo": { "type": "object" } } },
     "todo_completed":     { "properties": { "type": { "const": "todo.completed" }, "session_id": { "type": "string" }, "todo_id": { "type": "string" } } },
+    "todo_status_changed": { "description": "T7 made the HTTP API the todo event source and widened the timeline to carry EVERY status transition; sinks/timeline.py previously dropped all of them but completed. todo.completed keeps its own branch because it is the type readers, docs and the ?types= filter already know.", "properties": { "type": { "const": "todo.status_changed" }, "session_id": { "type": "string" }, "todo_id": { "type": "string" }, "status": { "type": "string" } }, "required": ["todo_id", "status"] },
     "file_edited":        { "properties": { "type": { "const": "file.edited" }, "path": { "type": "string" } }, "required": ["path"] },
     "file_created":       { "properties": { "type": { "const": "file.created" }, "path": { "type": "string" } }, "required": ["path"] },
     "plan_written":       { "properties": { "type": { "const": "plan.written" }, "path": { "type": "string" } } },
     "episode_written":    { "properties": { "type": { "const": "episode.written" }, "path": { "type": "string" } } },
     "peer_sync_started":  { "properties": { "type": { "const": "peer.sync.started" }, "peer_user_id": { "type": "string" } } },
     "peer_sync_applied":  { "properties": { "type": { "const": "peer.sync.applied" }, "peer_user_id": { "type": "string" }, "files": { "type": "array", "items": { "type": "string" } } } },
-    "peer_sync_conflict": { "properties": { "type": { "const": "peer.sync.conflict" }, "path": { "type": "string" }, "peers": { "type": "array", "items": { "type": "string" } } } }
+    "peer_sync_conflict": { "properties": { "type": { "const": "peer.sync.conflict" }, "path": { "type": "string" }, "peers": { "type": "array", "items": { "type": "string" } } } },
+
+    "workitem_created":  { "description": "workitems-plan §8. Emitted by visualizer/workitems_store.py the moment a record exists in <project>/.xo/workitems.json — every workitem.* branch below is written by a store, never by a route, so the line exists exactly when the write it describes succeeded. `session_id` and `runtime` are absent when unknown: the workitem CRUD surface carries no session, and a placeholder id would name a session that never ran.", "properties": { "type": { "const": "workitem.created" }, "workitem_id": { "type": "string" }, "title": { "type": "string" }, "kind": { "enum": ["local", "github"] } }, "required": ["workitem_id"] },
+    "workitem_adopted":  { "description": "A workitem now mirrors a GitHub issue — either minted for it or an existing local record transitioned onto it. `issue` is nested because repo and number only mean anything together: a number without a repo names someone else's issue. Absent when the reference was unusable.", "properties": { "type": { "const": "workitem.adopted" }, "workitem_id": { "type": "string" }, "title": { "type": "string" }, "issue": { "type": "object", "properties": { "repo": { "type": "string" }, "number": { "type": "integer" } }, "required": ["repo", "number"] } }, "required": ["workitem_id"] },
+    "workitem_assigned": { "description": "Who owes this workitem changed. `assignee` is REQUIRED and nullable: null is the un-assignment, and an absent key could not be told apart from an emitter that forgot. For an adopted item the write went to GitHub rather than to .xo/ (§5.3), so this line is the only local record of it.", "properties": { "type": { "const": "workitem.assigned" }, "workitem_id": { "type": "string" }, "assignee": { "type": ["string", "null"] } }, "required": ["workitem_id", "assignee"] },
+    "workitem_claimed":  { "description": "An agent session started working this workitem. `in_progress` is DERIVED from a live claim and never stored (§5.4), so this line and its release are the only history the state ever had — which is what makes 'what did this agent work on last Tuesday' answerable without a stored flag that could have been wrong. `session_id` is required here precisely because a claim without one claims nothing.", "properties": { "type": { "const": "workitem.claimed" }, "workitem_id": { "type": "string" }, "session_id": { "type": "string" } }, "required": ["workitem_id", "session_id"] },
+    "workitem_released": { "description": "A claim was dropped — explicitly, or implicitly by closing or tombstoning the workitem. NOT emitted when a claim simply lapses: a session going away is an absence of observation, not an event, and nothing writes at that moment (§5.4).", "properties": { "type": { "const": "workitem.released" }, "workitem_id": { "type": "string" }, "session_id": { "type": "string" } }, "required": ["workitem_id"] },
+    "workitem_closed":   { "description": "A LOCAL workitem moved open -> closed. `state_reason` is GitHub's own vocabulary (completed / not_planned), never an invented one, and is omitted when unset. An adopted item is closed on GitHub, which this Space learns from the next poll and cannot emit here.", "properties": { "type": { "const": "workitem.closed" }, "workitem_id": { "type": "string" }, "state_reason": { "type": ["string", "null"] } }, "required": ["workitem_id"] },
+    "workitem_reopened": { "description": "A local workitem moved closed -> open.", "properties": { "type": { "const": "workitem.reopened" }, "workitem_id": { "type": "string" } }, "required": ["workitem_id"] },
+    "workitem_deleted":  { "description": "The workitem was tombstoned. The record itself is never removed (§5.1), so this marks the tombstone, not an erasure; `runtime` carries deleted_by when the caller attributed it.", "properties": { "type": { "const": "workitem.deleted" }, "workitem_id": { "type": "string" } }, "required": ["workitem_id"] }
   }
 }

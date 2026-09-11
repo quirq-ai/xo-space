@@ -45,8 +45,10 @@
 - The project venv is `venv/bin/python` (system `python3` lacks fastapi).
 - After touching core, uphold the modularity invariant (no agent name in core
   code; see DEVELOPING.md §6). A local AST guard can check it if present.
-- Import gate + route parity (expect 144 / 147 / 171 openapi paths for
-  claude_code / openclaw / hermes): `AGENT_NAME=<a> venv/bin/python -c "import server"`.
+- Import gate + route parity: `venv/bin/python scripts/check_route_parity.py`
+  (must pass). It asserts the invariant — every agent's surface is the shared
+  core plus exactly its own `adapters/<name>/routes.py` — instead of a
+  hardcoded total, which rots on every route added.
 - Validate behavior after edits (lint, compile/tests where feasible).
 - Keep changes minimal and targeted; behavior-preserving (no path/request/
   response changes unless explicitly asked).

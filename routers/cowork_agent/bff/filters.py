@@ -94,3 +94,14 @@ def is_root_only_hidden(name: str) -> bool:
     """True iff the entry is hidden only when listed at the project root
     (e.g. canonical agent files). Returns False everywhere else."""
     return name in PROJECT_ROOT_AGENT_FILES
+
+
+# ── Commit relay ──────────────────────────────────────────────────────────────
+
+_WORKSPACE_ID_RE = re.compile(r"^\S{1,100}$")
+
+
+def is_valid_workspace_id(value: str) -> bool:
+    """A recipient workspace id: non-blank after strip, no whitespace, ≤100 chars
+    (the swarm column width). The relay never interprets it further."""
+    return isinstance(value, str) and bool(_WORKSPACE_ID_RE.match(value.strip()))
