@@ -37,16 +37,35 @@
           "properties": {
             "enabled": { "type": "boolean", "default": true }
           }
+        },
+        "issues": {
+          "type": "object",
+          "description": "GitHub issues from every project's issue mirror (~/.quirq/projects/<pid>/github/issues.json). Only rows in a watched state are surfaced; an issue that leaves every watched state is marked done.",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "states":  { "type": "array", "items": { "type": "string", "enum": ["open", "closed"] }, "default": ["open"] }
+          }
+        },
+        "connections": {
+          "type": "object",
+          "description": "Items collected by the connections poller (~/.quirq/connections/<toolkit>/events.jsonl). One cursor for every toolkit; without one only the last 24 hours are read.",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
         }
       }
     },
     "cursors": {
       "type": "object",
-      "description": "Newest producer timestamp each feeder has seen, stored as the producer wrote it. Delete a key to re-read that source (bounded: the timeline feeder then keeps only the last 24 hours).",
+      "description": "Newest producer timestamp each feeder has seen, stored as the producer wrote it. Delete a key to re-read that source (bounded: the timeline and connections feeders then keep only the last 24 hours, the issues feeder the last 7 days).",
       "additionalProperties": { "type": "string" },
       "properties": {
-        "timeline": { "type": "string" },
-        "sharing":  { "type": "string" }
+        "timeline":    { "type": "string" },
+        "sharing":     { "type": "string" },
+        "issues":      { "type": "string" },
+        "connections": { "type": "string" }
       }
     },
     "items": {
@@ -63,8 +82,8 @@
       "properties": {
         "id":         { "type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Server-generated, unique within the file." },
         "ts":         { "type": "string", "format": "date-time", "description": "When the information arrived (ISO 8601 UTC)." },
-        "source":     { "type": "string", "pattern": "^[a-z0-9_:-]{1,40}$", "description": "timeline | todos | sharing | api | anything an agent posts." },
-        "kind":       { "type": "string", "pattern": "^[a-z0-9_.:-]{1,60}$", "description": "session.started, todo.blocked, sharing.fetched, note, ..." },
+        "source":     { "type": "string", "pattern": "^[a-z0-9_:-]{1,40}$", "description": "timeline | todos | sharing | issues | connections | api | anything an agent posts." },
+        "kind":       { "type": "string", "pattern": "^[a-z0-9_.:-]{1,60}$", "description": "session.started, todo.blocked, sharing.fetched, issue.open, gmail.unread, note, ..." },
         "title":      { "type": "string", "minLength": 1, "maxLength": 300 },
         "body":       { "type": "string", "maxLength": 4000, "default": "" },
         "project_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_:\\-\\.]{1,200}$" },
@@ -77,6 +96,12 @@
             "project": { "type": "string", "pattern": "^[A-Za-z0-9_:\\-\\.]{1,200}$" },
             "path":    { "type": "string", "maxLength": 500, "description": "Project-relative, no leading slash, no .. segment." }
           }
+        },
+        "url": {
+          "type": ["string", "null"],
+          "maxLength": 2000,
+          "pattern": "^https?://",
+          "description": "Where the Open link action goes (the issue page, the mail, the calendar event). An invalid value is dropped on read."
         },
         "status":     { "type": "string", "enum": ["new", "seen", "done"] },
         "key":        { "type": ["string", "null"], "description": "Stable dedup identity for ingested items; API-created items carry none." }
