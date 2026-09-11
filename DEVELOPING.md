@@ -48,7 +48,8 @@ routers/                          broker routes only — NO agent branching
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
     connectors/                   gdrive github manus onedrive vercel composio composio_mcp_proxy route modules
-    bff/                          backend-for-frontend (visualizer, secrets, xo_projects)
+    bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
+                                    project_sharing, inbox.py)
     legacy/                       frozen URL aliases (openclaw_usage)
 
 services/
@@ -68,6 +69,9 @@ services/
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
+    inbox/                           the Inbox: store (inbox.json read/write, retention) feeders
+                                    (timeline, todos, sharing) service (the router-facing surface);
+                                    file at <XO root>/.xo/inbox.json, routes in bff/inbox.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/

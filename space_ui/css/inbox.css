@@ -1,0 +1,91 @@
+  /* ---------------- inbox tab ----------------
+     The same centred column and header strip as the Files list, with its
+     own .inb-* vocabulary so the two surfaces can move independently. */
+  #view-inbox{overflow-y:auto}
+  .inb{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
+
+  /* header strip: eyebrow · summary · filter · mark all seen · refresh */
+  .inb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .inb-eyebrow{font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--ink-3);
+    text-transform:uppercase}
+  .inb-sum{font-size:12.5px;color:var(--ink-2)}
+  .inb-spacer{flex:1}
+  .inb-filter{display:flex;gap:2px;background:var(--bg-2);border:1px solid var(--line-soft);
+    border-radius:999px;padding:2px}
+  .inb-filter button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);border-radius:999px;padding:5px 10px;transition:all .16s var(--ease)}
+  .inb-filter button:hover{color:var(--ink)}
+  .inb-filter button.is-on{color:var(--bg);background:var(--accent)}
+  .inb-filter button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .inb-btn{font-size:12.5px;color:var(--ink-2);border:1px solid var(--line);border-radius:9px;
+    padding:5px 11px;transition:all .16s var(--ease)}
+  .inb-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent)}
+  .inb-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .inb-btn:disabled{opacity:.45;cursor:default}
+  .inb-btn.is-danger:hover:not(:disabled){color:#e07a5f;border-color:#e07a5f}
+
+  /* tab badge: the unseen count, painted onto the Inbox tab button by
+     inbox.js; inverts when the tab itself is lit */
+  .inb-badge{display:inline-block;margin-left:7px;min-width:16px;padding:1px 5px;
+    border-radius:999px;font:600 9px/1.4 var(--mono);letter-spacing:0;text-align:center;
+    color:#14100a;background:var(--accent-deep)}
+  .tabs button.is-on .inb-badge{color:var(--accent);background:#14100a}
+
+  /* rows: dot · kind · title · project · when */
+  .inb-rows{display:flex;flex-direction:column;gap:8px}
+  .inb-row{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;
+    transition:border-color .16s var(--ease),background .16s var(--ease)}
+  .inb-row:hover{border-color:var(--line)}
+  .inb-row.is-open{border-color:#2c3240;background:var(--bg-3)}
+  .inb-row-head{display:grid;grid-template-columns:10px auto minmax(0,1fr) auto 84px;
+    align-items:center;gap:12px;width:100%;text-align:left;padding:11px 16px;
+    border-radius:12px;color:var(--ink)}
+  .inb-row-head:hover .inb-title{color:var(--accent)}
+  .inb-row-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  /* the dot is the only saturated thing in a row, and only while it is new */
+  .inb-dot{width:8px;height:8px;border-radius:50%;background:var(--ink-4);opacity:.55}
+  .inb-row.is-new .inb-dot{background:var(--accent);opacity:1;
+    box-shadow:0 0 0 3px rgba(168,217,79,.14)}
+  .inb-kind{font:500 10px/1 var(--mono);color:var(--ink-2);background:var(--bg-3);
+    border:1px solid var(--line);border-radius:5px;padding:3px 6px;white-space:nowrap}
+  .inb-row.is-new .inb-kind{color:var(--accent);border-color:rgba(168,217,79,.4)}
+  .inb-title{min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;transition:color .16s var(--ease)}
+  .inb-row.is-new .inb-title{font-weight:500}
+  .inb-row.is-done .inb-title{color:var(--ink-3)}
+  /* pinned columns, so a row without a project chip keeps its time flush right */
+  .inb-proj{grid-column:4;font:400 10.5px var(--mono);color:var(--ink-3);white-space:nowrap;
+    max-width:200px;overflow:hidden;text-overflow:ellipsis}
+  .inb-when{grid-column:5;font:400 10.5px var(--mono);letter-spacing:.04em;color:var(--ink-3);
+    white-space:nowrap;text-align:right}
+
+  /* expanded body: the text as written, then the actions */
+  .inb-body{padding:0 16px 14px 38px;border-top:1px solid var(--line-soft)}
+  .inb-text{margin:12px 0 0;font:400 12.5px/1.55 var(--sans);color:var(--ink-2);
+    white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
+  .inb-note{margin-top:12px;color:var(--ink-3);font-size:12px}
+  .inb-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+
+  /* loading, empty, failed */
+  .inb-skel{height:44px;border-radius:12px;background:linear-gradient(90deg,
+    var(--bg-2) 0%,var(--bg-3) 40%,var(--bg-2) 80%);background-size:280% 100%;
+    animation:inbshimmer 1.5s var(--ease) infinite}
+  @keyframes inbshimmer{from{background-position:120% 0}to{background-position:-60% 0}}
+  @media (prefers-reduced-motion:reduce){.inb-skel{animation:none}}
+  .inb-empty{padding:46px 22px;text-align:center;border:1px dashed var(--line);
+    border-radius:12px;background:var(--bg-2)}
+  .inb-empty b{display:block;font:500 15px var(--serif);color:var(--ink);margin-bottom:7px}
+  .inb-empty p{font-size:12.5px;color:var(--ink-3);max-width:52ch;margin:0 auto;line-height:1.6}
+  .inb-fail{margin-bottom:10px;padding:12px 16px;border-left:3px solid var(--err);
+    border-radius:0 10px 10px 0;background:var(--bg-2);color:var(--ink-2);font-size:12.5px}
+
+  @media (max-width:800px){
+    .inb-row-head{grid-template-columns:10px auto minmax(0,1fr);
+      grid-template-areas:'dot kind title' '. proj when';row-gap:6px}
+    .inb-dot{grid-area:dot}
+    .inb-kind{grid-area:kind}
+    .inb-title{grid-area:title}
+    .inb-proj{grid-area:proj}
+    .inb-when{grid-area:when;justify-self:end}
+    .inb-body{padding-left:16px}
+  }
