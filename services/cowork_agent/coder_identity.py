@@ -1,4 +1,5 @@
-"""Who and where we are, as Coder reports it."""
+"""Who and where we are: the Space id (``XO_SPACE_ID``, on Coder and off) and the
+workspace name and owner Coder reports when it runs the pod."""
 
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ def _env(name: str) -> Optional[str]:
 
 
 def workspace_id() -> Optional[str]:
-    """``CODER_WORKSPACE_ID`` — the id Coder assigned. ``None`` off Coder."""
-    return _env("CODER_WORKSPACE_ID")
+    """``XO_SPACE_ID``: the id the swarm knows this Space by. ``None`` when unset."""
+    return _env("XO_SPACE_ID")
 
 
 def workspace_name() -> Optional[str]:
@@ -29,7 +30,8 @@ def owner_name() -> Optional[str]:
 
 
 def space_id() -> Optional[str]:
-    """``<owner>:<workspace>_<last 6 of workspace id>``, or ``None`` off Coder."""
+    """``<owner>:<workspace>_<last 6 of XO_SPACE_ID>`` when Coder supplies the owner
+    and workspace name, the bare ``XO_SPACE_ID`` otherwise, ``None`` when unset."""
     wid = workspace_id()
     if not wid:
         return None

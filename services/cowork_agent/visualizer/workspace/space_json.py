@@ -33,6 +33,8 @@ OWNS = frozenset(
         "$schema",
         "schema",
         "space_id",
+        "xo_space_id",
+        # the pre-2026-09-11 name of the same field; owned so the stale key is dropped
         "coder_workspace_id",
         "owner_user_id",
         "created_at",
@@ -81,7 +83,7 @@ def path() -> Path:
 
 
 def space_id() -> Optional[str]:
-    """The Space id — ``<owner>:<workspace>_<last6>``, ``None`` off Coder."""
+    """The Space id: ``<owner>:<workspace>_<last6>`` on Coder, ``XO_SPACE_ID`` otherwise."""
     return coder_identity.space_id()
 
 
@@ -191,8 +193,8 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
         "$schema": "xo/space.schema.json",
         "schema": SCHEMA,
         "space_id": space_id(),
-        # The id Coder actually assigned, verbatim.
-        "coder_workspace_id": coder_identity.workspace_id(),
+        # XO_SPACE_ID verbatim: the id the swarm knows this Space by.
+        "xo_space_id": coder_identity.workspace_id(),
         "label": _label(),
         "owner_user_id": owner,
         "created_at": created_at,

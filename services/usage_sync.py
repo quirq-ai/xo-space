@@ -240,7 +240,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
     nothing, posts a zero-valued placeholder whose ``note`` column explains
     why so the analytics surface still shows the sync ran.
     """
-    workspace_id = os.getenv("CODER_WORKSPACE_ID") or "unknown"
+    workspace_id = os.getenv("XO_SPACE_ID") or "unknown"
     workspace_name = os.getenv("CODER_WORKSPACE_NAME") or None
     project_id = os.getenv("XO_SPACE_ID") or None
 
