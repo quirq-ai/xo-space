@@ -24,7 +24,6 @@ Three things live here so the per-agent adapters can stay tiny:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
@@ -33,6 +32,7 @@ from typing import Any, Callable
 
 from services.cowork_agent.project_layout import xo_projects_root
 from services.xo_manifest import build_static_manifest
+from utils.commands import run
 
 CLAUDE_BIN_ENV = "CLAUDE_CLI_PATH"
 DEFAULT_CLAUDE_BIN = "claude"
@@ -131,28 +131,11 @@ async def claude_auth_status(
         or DEFAULT_CLAUDE_BIN
     if os.path.isabs(binary) and not os.path.isfile(binary):
         return {}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            binary, "auth", "status", "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-    except (FileNotFoundError, PermissionError):
+    res = await run([binary, "auth", "status", "--json"], env=env, timeout=timeout, separate_stderr=True)
+    if not res.ok:
         return {}
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-            await proc.communicate()
-        except Exception:
-            pass
-        return {}
-    if proc.returncode != 0:
-        return {}
-    try:
-        payload = json.loads((stdout or b"").decode("utf-8", errors="replace") or "{}")
+        payload = json.loads(res.output or "{}")
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}

@@ -69,7 +69,7 @@ const PAGES=[
     id:'tab-files',
     section:'Tab guides',
     title:'Files tab',
-    summary:'One home for the workspace: List for ops and browsing, Graph for relationships, Tree for hierarchy — three lenses, one tab.'
+    summary:'One home for the workspace: List for ops and browsing, Graph for relationships, Tree for hierarchy, Sharing for what is synced with other workspaces — four lenses, one tab.'
   },
   {
     id:'tab-timeline',
@@ -100,6 +100,12 @@ const PAGES=[
     section:'Tab guides',
     title:'Setup tab',
     summary:'Configure roots, agent runtime, watcher coverage, credentials, and managed restarts.'
+  },
+  {
+    id:'tab-connectors',
+    section:'Tab guides',
+    title:'Connectors tab',
+    summary:'Connect Composio toolkits per user and per workspace, and choose which actions the agent may call.'
   }
 ];
 
@@ -119,7 +125,8 @@ const ARTICLES={
   'tab-sessions':()=>tabGuideArticle('sessions'),
   'tab-wiki':()=>tabGuideArticle('wiki'),
   'tab-quirq':()=>tabGuideArticle('quirq'),
-  'tab-setup':()=>tabGuideArticle('setup')
+  'tab-setup':()=>tabGuideArticle('setup'),
+  'tab-connectors':()=>tabGuideArticle('connectors')
 };
 const wikiEsc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -238,16 +245,18 @@ const TAB_GUIDES={
     tab:'projects',
     name:'Files',
     kicker:'Tab guide · Workspace map and project state',
-    title:'Files: one home, three lenses',
-    intro:'Files is one top-level tab with three lenses behind a List | Graph | Tree pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, and recent events. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy — folders as columns, files stacked beside their parent. All three lenses are read-only.',
-    facts:['lands on List','List | Graph | Tree lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','portable .xo history','live .quirq presence','read-only'],
+    title:'Files: one home, four lenses',
+    intro:'Files is one top-level tab with four lenses behind a List | Graph | Tree | Sharing pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, recent events, and the project’s GitHub issues. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy — folders as columns, files stacked beside their parent. Sharing is the whole of project sharing: a rail with the “shared with you” inbox and every project shared from this machine, and a detail panel with the commits waiting on origin, an Apply button, the members, and the share form. List, Graph and Tree are read-only; Sharing is where a project is shared, a member revoked, and new commits applied.',
+    facts:['lands on List','List | Graph | Tree | Sharing lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','GitHub issues in the drawer','Sharing: rail + detail, Apply, Check now, copy invite','portable .xo history','live .quirq presence','read-only except Sharing'],
     jobs:[
+      ['Share and sync a project','Open the Sharing lens. “+ Share a project” swaps a composer into the panel: pick a project with a git origin, paste the recipient’s workspace id, Share. The rail lists every project shared from here, work waiting first, each with one sync state (N new · not applied / in sync / fetch failed); the “Shared with you” inbox above it shows incoming repos and their auto-clone state with the one thing to click when only you can move it on (Connect GitHub, clone by hand). Select a row for its commits, members and share form; Apply fast-forwards to origin in one click; “Check now” asks the relay to check instead of waiting out the minute; “copy invite” puts your workspace id and what to click on the clipboard as one line.'],
       ['Find an artifact','In Graph, search by title, tag, project, or cluster and fly to the matching node. In Tree, expand folders and filter by name; click a file to open it in the previewer, then use the previewer’s Graph button if you want that leaf focused on the map.'],
       ['Understand relationships','Select a Graph node to inspect its neighborhood and follow parent, cluster, and cross-project ties.'],
       ['Read the hierarchy','Use Tree when the question is “what is in there”: workspace root on the left, one column per depth, files stacked beside their folder (not one column per file). The pane is a canvas, not a scroller: drag to pan, wheel to zoom around the cursor, Reset view to return.'],
       ['Change perspective','Use Graph root to temporarily reorganize the layout around any node without changing the XO filesystem.'],
       ['Browse project files','In List, open a project drawer: the Files panel lists one folder at a time via GET /api/xo-projects/{id}/tree, with breadcrumbs and separate folder/file panes.'],
       ['Review active work','In the same drawer, inspect todos, current sessions, and the latest normalized timeline events.'],
+      ['Read a project’s GitHub issues','Open a project drawer: the Issues panel lists the project’s open issues — number, title, labels, assignee and when GitHub last saw a change — newest first, and a row opens that issue on GitHub in a new tab. It reads the poller’s mirror rather than GitHub, so the header says when the last poll was and Refresh asks the server to poll now; Open | Closed | All and the filter box narrow the rows already fetched, without spending GitHub budget. A row an agent is working right now is marked “in progress”, and one already adopted as a workitem is marked “tracked”.'],
       ['Jump between lenses','Use a List row’s Map action to focus that project on Graph; use “Show on timeline” from Graph to carry a run into Timeline.'],
       ['Read a file','Three surfaces open the same floating window: a file row in Tree, a file row in the List drawer’s Files panel, and “Preview file” in Graph’s detail panel. Markdown renders, HTML renders inside a sandboxed iframe cut off from the app, everything else shows as escaped source; a Source toggle shows the raw text, a version dropdown shows the file as any commit left it, and Escape closes it.']
     ],
@@ -257,20 +266,30 @@ const TAB_GUIDES={
       ['GET /api/xo-projects','Names, descriptions, and created dates for every direct child of the XO root. The List pairs it with GET /api/xo-projects/activity and GET /api/xo-projects/timeline?limit=200 for the live and last-active columns: four workspace-wide requests in total, whatever the project count.','List lens catalog'],
       ['GET /api/xo-projects/{id}/tree?relative_path=…','Bounded, path-safe folder listing for the List drawer’s Files panel: one folder at a time, each row carrying is_dir, size_bytes, modified_at, and — for a folder — how many entries it holds.','List drawer explorer'],
       ['GET /api/xo-projects/{id}/todos|activity|timeline','Portable todos, machine-local live presence, and recent normalized events. Each drawer panel fetches independently.','List drawer panels'],
-      ['GET /api/xo-projects/{id}/file?relative_path=…','One text file for the previewer drawer: 256 KB cap, suffix allowlist, and a kind of markdown, html, or text. An unsupported suffix returns 415 and the drawer says so.','File previewer']
+      ['GET /api/xo-projects/{id}/github/issues','The GitHub issue mirror the poller writes to ~/.quirq/projects/&lt;id&gt;/github/issues.json, plus which rows are already adopted as workitems. The answer names which empty it is — no_remote, never_polled, issues_disabled, empty, error or ok — so the panel can say why it is showing nothing. refresh=1 (the Refresh button) polls GitHub before answering; the first open of a never-polled project does that on its own.','Drawer issues panel'],
+      ['GET /api/xo-projects/{id}/file?relative_path=…','One text file for the previewer drawer: 256 KB cap, suffix allowlist, and a kind of markdown, html, or text. An unsupported suffix returns 415 and the drawer says so.','File previewer'],
+      ['GET /api/project-sharing/status · POST …/check','The relay’s in-memory snapshot: parked or running and why, this workspace id, the watched branch, and one entry per repo it knows — cloned here or shared with you, member count, last fetch, clone state. One poll a minute feeds the strip and the rail; it restarts empty, so a missing entry means “unknown”, never “not shared”. POST …/check nudges the relay to run its next tick now (the Check now button).','Sharing lens'],
+      ['GET /api/xo-projects/{id}/commits · /members · POST …/share · …/revoke · …/apply','Per project: recent commits on origin/&lt;branch&gt; with the behind count (the rail asks limit=5 per project), the member list from the swarm, the two swarm writes, and apply — git merge --ff-only origin/&lt;branch&gt;, the one write the relay ever makes to a working tree. A diverged branch or local changes make git refuse, and the pane shows git’s reason; the by-hand command stays beside the button.','Sharing detail panel']
     ],
     steps:[
-      ['Pick a lens','Files opens in List; switch with the List | Graph | Tree pill. #/projects, #/graph, and #/tree deep-link each lens.'],
+      ['Pick a lens','Files opens in List; switch with the List | Graph | Tree | Sharing pill. #/projects, #/graph, #/tree, and #/sharing deep-link each lens.'],
       ['Search','Press / for the top-bar search (it is global, on every tab). List has its own “Filter projects…” box and sorts by Activity, Name, Files or Created; Tree has a name filter in its header.'],
       ['Focus','Click a Graph node; double-click clusters to expand or collapse. In Tree, click folders to expand columns; click a file to preview it — the tree keeps its camera and its expansion state, and the previewer’s Graph button is the explicit way to move.'],
       ['Expand one row','In List each drawer panel loads independently, so one failed data source does not hide the others.'],
       ['Browse files','In the Files panel, use breadcrumbs and folder rows to change cwd; browsing state is remembered per project for the session.'],
-      ['Follow time','Choose “Show on timeline” to carry the selected run into Timeline.']
+      ['Follow time','Choose “Show on timeline” to carry the selected run into Timeline.'],
+      ['Share a project','In Sharing, press “+ Share a project”, pick the project, paste the recipient’s workspace id (they copy theirs from the strip at the top of their own Sharing pane, or send you an invite), press Share. Or select an already-shared project and use the share form under its members. Members list owner first, each with a short id, the full id on hover, and a copy button; you are marked “you”. Revoke asks for confirmation in the row before anything is sent.'],
+      ['Apply new commits','A rail row with “N new · not applied” has an Apply button, and so does the detail panel. Apply is git merge --ff-only origin/&lt;branch&gt;: it cannot create a merge commit or touch a diverged branch, and if git refuses (local changes, diverged history) the toast carries git’s reason and the by-hand command is still there to copy.']
     ],
     checks:[
+      ['Sharing lens shows two cards and no rail','Nothing is shared yet: “Share one of your projects” opens the composer; “Receive a project” copies your invite. With “sharing parked” in the strip, the reason is named there (no XO_SPACE_ID, not signed in, or switched off) and both buttons are disabled until it is fixed.'],
+      ['Row says “fetch failed”','The relay could not fetch that repo on its last check; hover for the git error. It retries every minute on its own, or press Check now.'],
+      ['Apply failed','git refused the fast-forward: local changes in the way, or the branch has diverged from origin. Resolve it in the project (stash or commit, then merge or rebase by hand) — XO Space never merges for you.'],
       ['Empty graph or tree','Confirm the XO root in Setup and verify GET /xo/space.json — the file lives at &lt;XO root&gt;/.xo/space.json.'],
       ['Project missing from the List','Verify the XO root and ensure the folder is a direct child of it.'],
       ['Unscaffolded badge','The folder exists but lacks canonical project metadata.'],
+      ['Issues panel says no github.com remote','The project’s origin is not a GitHub repository, so there is no mirror to read. Only projects with a github.com remote are polled.'],
+      ['Closed shows nothing','The poller asks GitHub for OPEN issues only. An issue is kept once Space watches it close, so issues closed before it started watching stay on GitHub.'],
       ['No open sessions','This is a valid live-presence zero, not proof that no historical work exists.'],
       ['Unexpected root label','Graph root is an in-view lens, not the host XO directory configured in Setup.'],
       ['Stale result','Nothing is generated per request. &lt;XO root&gt;/.xo/space.json is rebuilt by the watcher at most every 30 seconds (XO_VIEWS_REFRESH_S) and by a request only once the file is older than 120 seconds (XO_VIEW_MAX_AGE_S), so a reader can be up to two minutes behind. List Refresh re-fetches the project catalog and any open drawer.'],
@@ -447,9 +466,45 @@ const TAB_GUIDES={
       ['CLI unavailable','A manifest may support bootstrap, but required credentials must be present first. When a runtime or its CLI is missing, the card links to that runtime’s own install docs.'],
       ['Sessions missing','Confirm the native runtime directory is mounted and watcher coverage includes it.'],
       ['Secret value hidden','That is intentional; replace the value or remove the variable.'],
-      ['Usage reporting: blocked','xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
+      ['Usage reporting: blocked','The status strip at the top of Agent and watcher shows xo-swarm-api rejected XO_API_KEY (HTTP 401/403), so nothing is sent. Fix the key in credentials (or remove it) and the next sync re-probes; details in the README section “What leaves your machine”.']
     ],
     note:'XO root changes select a project collection and never move project files. An empty new .quirq root receives a safe state copy; a non-empty root is never merged.'
+  },
+  connectors:{
+    tab:'connectors',
+    name:'Connectors',
+    kicker:'Tab guide · Composio toolkits',
+    title:'Connectors: give the agent accounts to act in',
+    intro:'Connect Gmail, Google Workspace, Notion and Figma through Composio. A connection belongs to one XO account in one workspace, and its tools reach the active agent over a local MCP proxy that keeps the Composio API key on the server.',
+    facts:['OAuth2 only','per user, per workspace','per-action control','key never leaves the server'],
+    jobs:[
+      ['Connect an app','Authorize a toolkit in a provider popup. The connection is recorded against your XO account, so every workspace can use it — but each workspace chooses which connectors it turns on.'],
+      ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically — another user of the same server sees their own state, not yours.'],
+      ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
+      ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically — at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']
+    ],
+    sources:[
+      ['GET /api/connectors/composio/toolkits','The registered toolkits and your connection status for each.','Tile state'],
+      ['POST /api/connectors/composio/{toolkit}/connect','Starts an OAuth2 authorization and returns the provider URL plus a request id.','Connect flow'],
+      ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
+      ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in ~/.config/composio/action_prefs.json.','Action control'],
+      ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity']
+    ],
+    steps:[
+      ['Configure the server','Set COMPOSIO_API_KEY on the XO side (xo-swarm-api), plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. This workspace holds no Composio credentials — it fetches them with its XO credential. Both are created by hand in the Composio dashboard — nothing here creates them.'],
+      ['Sign in','The tab needs an XO identity. With XO_API_KEY set, the session mints itself when the tab opens.'],
+      ['Connect','Press Connect and complete consent in the popup. The tile flips to Connected when the poll sees an ACTIVE account.'],
+      ['Trim the toolset','Open Actions on a connected tile and switch off anything the agent should not call.'],
+      ['Restart the agent','MCP configuration is read at agent start, so a newly connected toolkit reaches an already-running agent only after it restarts.']
+    ],
+    checks:[
+      ['“Composio is not configured”','COMPOSIO_API_KEY could not be resolved — either XO has none set, or this server could not reach XO to fetch it. The rest of the server is unaffected. A brief XO outage is covered by the cache; a cold start during one is not.'],
+      ['One toolkit cannot connect (422)','That toolkit has no COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id on the XO side. The others still work.'],
+      ['“Sign in to XO”','The backend holds no XO credential, so there is no per-user identity to scope a connection to. Set XO_API_KEY or sign in from the app.'],
+      ['Nothing happens after consent','The popup may have been blocked. The status poll still decides, so leave the tab open; if the window closed early, press Connect again.'],
+      ['Agent still has no tools','Restart the agent — MCP config is read at start. The gateway is written automatically at boot, re-checked every few minutes and whenever this tab loads. If the server log says “Composio MCP skipped”, fix the cause it names (no XO credential, no workspace id, XO unreachable, or the agent’s config file does not exist yet) and restart xo-space.']
+    ],
+    note:'Disconnect removes the connection from this workspace — it deletes the connected account at Composio, it does not revoke the grant in your Google, Notion or Figma account. Remove that in the provider’s own settings.'
   }
 };
 
@@ -901,10 +956,10 @@ function installationArticle(){
             <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
             <tbody>
               <tr><td>.</td><td>Your projects root; each project is a subdirectory with its own portable .xo metadata</td></tr>
-              <tr><td>./.xo</td><td>The workspace tier the watcher materialises: space.json, dashboard.json and sessions.json — the three payloads the UI reads over /xo/*.json — plus workspace.json, stats, the sessions/ unions and the workspace timeline. Live presence is not here: it lives under ./.quirq/watcher/activity/</td></tr>
+              <tr><td>./.xo</td><td>The Space tier, and only the durable half of it: space.json (the Space record), projects.json (the projects registry) and xo.json (the frontend manifest). Every derived rollup — the graph, dashboard and sessions payloads the UI reads over /xo/*.json, plus workspace stats, the sessions/ unions and the workspace timeline — is under ./.quirq/workspace/. Live presence is under ./.quirq/watcher/activity/</td></tr>
               <tr><td>./xo-space</td><td>The Quirq source checkout the installer owns and updates</td></tr>
               <tr><td>./xo-space/venv</td><td>The Python environment</td></tr>
-              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, and watcher/ with its offsets, locks and live-presence snapshots</td></tr>
+              <tr><td>./.quirq</td><td>Machine-local state: runtime.env and secrets.env from the Setup tab, roots.env, the server log quirq.log, watcher/ with its offsets, locks and live-presence snapshots, and the runtime tier — projects/&lt;pid&gt;/ per project and workspace/ for the cross-project rollups. All of it is re-derivable; none of it syncs</td></tr>
             </tbody>
           </table>
         </div>
@@ -1089,11 +1144,11 @@ function watcherArticle(){
           <table class="wiki-table">
             <thead><tr><th>Observation</th><th>Retained data</th><th>Destinations</th></tr></thead>
             <tbody>
-              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project, the runtime-reported working directory</td><td>session augment, todos session bucket, stats timing, timeline</td></tr>
+              <tr><td>SessionFirstSeen</td><td>time, runtime, native session id, project, the runtime-reported working directory</td><td>session augment, stats timing, timeline</td></tr>
               <tr><td>MessageObserved</td><td>role, time and (for assistant turns) the model; no message text</td><td>message counters, daily message buckets, per-role session counters</td></tr>
               <tr><td>UsageObserved</td><td>input/output/cache tokens, model, optional response latency</td><td>stats, per-model rollups, in-memory presence model cache</td></tr>
               <tr><td>ToolUseObserved</td><td>tool name only; no arguments</td><td>tool call counters and per-tool analytics</td></tr>
-              <tr><td>TaskCreated / changed</td><td>id, content, description, active form, status</td><td>todos, task counters, added/completed timeline events</td></tr>
+              <tr><td>TaskCreated / changed</td><td>id, content, description, active form, status</td><td>task counters and todo timeline events. <b>Emitted by the todo API, not by ingestion</b> — every runtime produces them</td></tr>
               <tr><td>FileTouched</td><td>project-relative path and created/edited flag</td><td>unique-file stats and file timeline events</td></tr>
             </tbody>
           </table>
@@ -1106,8 +1161,8 @@ function watcherArticle(){
           <table class="wiki-table wiki-matrix">
             <thead><tr><th>Runtime</th><th>Messages</th><th>Tokens</th><th>Tools</th><th>Files</th><th>Tasks</th><th>Presence</th></tr></thead>
             <tbody>
-              <tr><td>Claude Code</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>native task pairing</td><td>PID session files</td></tr>
-              <tr><td>Codex</td><td>yes</td><td>yes</td><td>name only</td><td>applied patches</td><td>not yet</td><td>not yet</td></tr>
+              <tr><td>Claude Code</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>todo API</td><td>PID session files</td></tr>
+              <tr><td>Codex</td><td>yes</td><td>yes</td><td>name only</td><td>applied patches</td><td>todo API</td><td>not yet</td></tr>
               <tr><td>OpenClaw</td><td>yes</td><td>yes</td><td>yes</td><td>not yet</td><td>todo API</td><td>not yet</td></tr>
               <tr><td>Hermes</td><td>yes</td><td>not exposed</td><td>yes</td><td>not yet</td><td>todo API</td><td>not available</td></tr>
               <tr><td>Antigravity</td><td>yes</td><td>separate usage capability</td><td>yes</td><td>supported write tools</td><td>todo API</td><td>short-lived process</td></tr>
@@ -1116,19 +1171,30 @@ function watcherArticle(){
         </div>
         <p class="wiki-note">An empty value is preferable to invented telemetry.
         Pages and flows should display “not available” separately from a real
-        numeric zero.</p>
+        numeric zero. <b>Tasks are the one column that is identical for every
+        runtime</b>, and deliberately so: they come from the todo API rather
+        than from a transcript. The sink that used to mirror one runtime's
+        native task tool is gone — it made todos work on one backend out of
+        five and gave the file a second, colliding id space. An agent whose
+        runtime has a native todo tool must still call the API; nothing else
+        reaches <code>todos.json</code>.</p>
       </section>
 
       <section class="wiki-section wiki-grid">
         <div>
           <h2>Atomicity and coordination</h2>
           <p>JSON snapshots are written to a temporary sibling, flushed, and
-          replaced. Timelines append complete JSON lines. Because both the
-          watcher and todo API can update <code>todos.json</code>, they share
-          advisory locks under <code>&lt;state root&gt;/watcher/locks/</code> —
-          <code>~/.quirq/watcher/locks/</code> unless
+          replaced. Timelines append complete JSON lines. Two documents take
+          an advisory lock under <code>&lt;state root&gt;/watcher/locks/</code>
+          — <code>~/.quirq/watcher/locks/</code> unless
           <code>QUIRQ_STATE_ROOT</code> moves it, which the native installer
-          does.</p>
+          does. <code>sessions-augment.json</code> genuinely has two writers,
+          the watcher tick and the todo API's counter update.
+          <code>todos.json</code> has one writer and many callers: the API
+          owns the file outright, but two concurrent requests are still two
+          read-modify-writes. Everything else is single-writer, and the
+          session index avoids the question entirely by giving each session
+          its own shard file.</p>
         </div>
         <div>
           <h2>Turning it off</h2>
@@ -1153,8 +1219,11 @@ function watcherArticle(){
 
       <aside class="wiki-callout">
         <b>Ownership rule</b>
-        <p>Agents do not edit watcher files. Use native task tools or the todo
-        API for mutations, and use the visualizer APIs for reads.</p>
+        <p>Agents do not edit service files. The todo API is the only write
+        path for todos — for every runtime, native task tool or not — and the
+        visualizer APIs are the only read path. A todo recorded solely in a
+        runtime's own task tool reaches nothing here: no file, no timeline
+        line, no counter, and no error to say so.</p>
       </aside>
     </article>`;
 }
@@ -1165,13 +1234,21 @@ function xoDataArticle(){
       <header class="wiki-hero">
         <div class="wiki-kicker">Data catalog · Portable metadata</div>
         <h1>Everything in <code>.xo</code></h1>
-        <p>There are two tiers: one <code>.xo</code> inside each project and
-        one at the projects root. The project tier describes one body of work;
-        the workspace tier is a materialized cross-project view.</p>
+        <p>There are two <code>.xo</code> tiers — one inside each project, one
+        at the projects root — and both are now deliberately small. The rule
+        that decides what stays is a single question: <b>would a copy of this
+        folder on another machine want the file?</b> Identity, todos and the
+        peer roster would. Statistics, the session index, the event timeline
+        and sync progress would not — they are re-derivable from this
+        machine's runtime logs, so they moved out of the project tree entirely
+        and live under <code>~/.quirq/</code>. That is a filesystem
+        invariant rather than a <code>.gitignore</code> policy: derived state
+        cannot be committed, tarred or leaked, because it is not in the tree.</p>
         <div class="wiki-facts">
           <span>service-owned</span>
           <span>project tier</span>
           <span>workspace tier</span>
+          <span>durable, not derived</span>
           <span>not a transcript store</span>
         </div>
       </header>
@@ -1201,49 +1278,17 @@ function xoDataArticle(){
           </article>
 
           <article class="wiki-file">
-            <header><code>sessions/sessionslist.json</code><span>adapter-owned</span></header>
-            <p>A flat map keyed by a composite cowork session key. Each row
-            carries <code>sessionId</code>, <code>nativeSessionId</code>,
-            absolute <code>directory</code>, <code>backend</code>,
-            <code>updatedAt</code>, and optional cumulative token/cost usage.</p>
-            <dl><div><dt>Used for</dt><dd>session discovery, resume lookup, usage summaries, mapping runtime logs to projects</dd></div><div><dt>API safety</dt><dd>the absolute directory is not exposed by visualizer presenters</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>sessions/sessions-augment.json</code><span>watcher-owned</span></header>
-            <p>Fields the adapter index does not own: message totals and
-            role split, tool calls, task counts by status, first/last
-            activity, <code>ended_at</code>, and episodic memory references.
-            A private <code>_task_states</code> map preserves correct task
-            transitions across restarts.</p>
-            <dl><div><dt>Join key</dt><dd>the same composite key as sessionslist whenever available</dd></div><div><dt>Read behavior</dt><dd>BFF merges base and augment rows; unmatched augment rows are dropped</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>todos.json</code><span>watcher + todo API</span></header>
+            <header><code>todos.json</code><span>todo API · sole writer</span></header>
             <p>Session buckets containing runtime, optional native source
             path, session start time, and todos. Todo fields include id,
-            content, status, optional description, and optional active form.</p>
-            <dl><div><dt>Status values</dt><dd>pending, in_progress, completed, cancelled, blocked</dd></div><div><dt>API safety</dt><dd>source_file is always returned as null</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>stats.json</code><span>watcher-owned</span></header>
-            <p>Rolling 7-day and 30-day totals plus
-            <code>by_session</code>, <code>by_runtime</code>, and up to about
-            35 UTC days in <code>by_day</code>. Tracks tokens, models, tool
-            counts, files, durations, messages, cache tokens, and bounded
-            response-latency samples when the runtime provides them.</p>
-            <dl><div><dt>Private fields</dt><dd>_session_totals and _by_day_totals make incremental updates restart-safe</dd></div><div><dt>API safety</dt><dd>presenters project only named public fields</dd></div></dl>
-          </article>
-
-          <article class="wiki-file">
-            <header><code>timeline.jsonl</code><span>watcher-owned</span></header>
-            <p>Append-only, one JSON object per line. Current watcher events
-            include session started, todo added/completed, and file
-            created/edited. Each record has time, type, session id, runtime,
-            and event-specific safe fields.</p>
-            <dl><div><dt>Retention</dt><dd>rotates at 8 MB; keeps five timestamped project rotations</dd></div><div><dt>Read pattern</dt><dd>newest-first API pagination with optional type filters</dd></div></dl>
+            content, status, optional description, optional active form,
+            created/updated timestamps, and a <code>deleted_at</code>
+            tombstone. <b>Every runtime writes here through
+            <code>POST/PATCH/DELETE /api/xo-projects/{id}/todos</code></b>,
+            including runtimes with a native task tool of their own: the sink
+            that used to mirror one runtime's tasks is gone, so a todo that
+            never reaches this API is invisible everywhere.</p>
+            <dl><div><dt>Status values</dt><dd>pending, in_progress, completed, cancelled, blocked</dd></div><div><dt>Deletion</dt><dd>a tombstone, never a removal — <code>?include_deleted=true</code> to see them; <code>cancelled</code> is a lifecycle outcome, not a delete</dd></div><div><dt>API safety</dt><dd>source_file is always returned as null</dd></div></dl>
           </article>
 
           <article class="wiki-file">
@@ -1254,28 +1299,100 @@ function xoDataArticle(){
             <dl><div><dt>Not derived from</dt><dd>runtime logs</dd></div><div><dt>Do not</dt><dd>invent peers from open sessions</dd></div></dl>
           </article>
 
+        </div>
+        <p class="wiki-note">Four documents used to sit in this list and no
+        longer do — the session index, the session augment file,
+        <code>stats.json</code> and <code>timeline.jsonl</code>. They are
+        derived, so they moved to the runtime tier below. A fifth,
+        <code>sync.json</code>, went with them: “what have I pushed to peer X”
+        is a fact about this machine, not about the project.</p>
+      </section>
+
+      <section class="wiki-section">
+        <h2>Project runtime tier · <code>~/.quirq/projects/&lt;pid&gt;/</code></h2>
+        <p>Keyed by the <code>pid</code> in the project's
+        <code>project.json</code>, not by folder name — so renaming a folder
+        keeps its history, and two folders can never collide. Nothing here is
+        authored: every file is recomputed from this machine's runtime logs,
+        which is exactly why it never syncs and why one
+        <code>rm -rf ~/.quirq</code> is a clean reset rather than data loss.
+        Read these through the APIs; the paths are machine-local and the
+        session index is sharded.</p>
+        <div class="wiki-file-list">
+          <article class="wiki-file">
+            <header><code>sessions/sessionslist.d/</code><span>adapter-owned</span></header>
+            <p>The session index, partitioned: <b>one shard file per
+            session</b>, named by a digest of the composite session key and
+            published with an atomic rename. Each row carries
+            <code>sessionId</code>, <code>nativeSessionId</code>, absolute
+            <code>directory</code>, <code>backend</code>,
+            <code>updatedAt</code>, and optional cumulative token/cost usage.
+            It is one file per session because it had fifteen writers and no
+            lock: partitioning removes the lost update a lock could only
+            bound.</p>
+            <dl><div><dt>Used for</dt><dd>session discovery, resume lookup, usage summaries, mapping runtime logs to projects</dd></div><div><dt>Read behavior</dt><dd>readers merge every shard in name order; a malformed shard is skipped, not fatal</dd></div><div><dt>API safety</dt><dd>the absolute directory is not exposed by visualizer presenters</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>sessions/sessions-augment.json</code><span>watcher-owned</span></header>
+            <p>Fields the adapter index does not own: message totals and
+            role split, tool calls, task counts by status, first/last
+            activity, <code>ended_at</code>, and episodic memory references.
+            A private <code>_task_states</code> map preserves correct task
+            transitions across restarts.</p>
+            <dl><div><dt>Join key</dt><dd>the same composite key as the shards whenever available</dd></div><div><dt>Read behavior</dt><dd>BFF merges base and augment rows; unmatched augment rows are dropped</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>stats.json</code><span>watcher-owned</span></header>
+            <p>Rolling 7-day and 30-day totals plus
+            <code>by_session</code>, <code>by_runtime</code>, and up to about
+            35 UTC days in <code>by_day</code>. Tracks tokens, models, tool
+            counts, files, durations, messages, cache tokens, and bounded
+            response-latency samples when the runtime provides them.</p>
+            <dl><div><dt>Private fields</dt><dd>_session_totals and _by_day_totals make incremental updates restart-safe</dd></div><div><dt>Why runtime</dt><dd>it accumulates against a replay cursor, and an accumulator that outlives its cursor double-counts — so both share one root</dd></div></dl>
+          </article>
+
+          <article class="wiki-file">
+            <header><code>timeline.jsonl</code><span>watcher-owned</span></header>
+            <p>Append-only, one JSON object per line. Current events are
+            session started, todo added/completed, and file created/edited.
+            Each record has time, type, session id, runtime, and
+            event-specific safe fields. The <code>todo.*</code> lines come
+            from the todo API, so they appear for every backend.</p>
+            <dl><div><dt>Retention</dt><dd>rotates at 8 MB; keeps five timestamped project rotations</dd></div><div><dt>Read pattern</dt><dd>newest-first API pagination with optional type filters</dd></div></dl>
+          </article>
+
           <article class="wiki-file">
             <header><code>sync.json</code><span>schema-defined · reserved</span></header>
             <p>Per-peer synchronization state: vector clock, manifest hash,
             last pull/push timestamps, pending outbox count, and overall last
-            sync time. Both peers.json and sync.json are scaffolded empty from
-            the project template today; their shapes are fixed by the bundled
-            schemas, and no service in this build writes them yet.</p>
+            sync time. Its shape is fixed by a bundled schema, and no service
+            in this build writes it yet — the project's
+            <code>peers.json</code> is the scaffolded half of the same pair.</p>
             <dl><div><dt>Used for</dt><dd>conflict-aware project synchronization</dd></div><div><dt>Not activity</dt><dd>it describes replication progress, not current presence</dd></div></dl>
           </article>
         </div>
       </section>
 
       <section class="wiki-section">
-        <h2>Workspace tier · <code>&lt;XO root&gt;/.xo/</code></h2>
+        <h2>Workspace tier · <code>&lt;XO root&gt;/.xo/</code> and
+        <code>~/.quirq/workspace/</code></h2>
         <p>Space reads its data from here, not from the application folder.
-        <code>space.json</code>, <code>dashboard.json</code> and
-        <code>sessions.json</code> are served one for one at
-        <code>GET /xo/space.json</code>, <code>/xo/dashboard.json</code> and
-        <code>/xo/sessions.json</code> — an explicit allowlist rather than a
-        static mount, because this directory also holds the capability
-        manifest, the session index and the workspace timeline. The older
-        <code>/space/data/</code> routes for these three are gone.</p>
+        The same durable/derived split as the project tier applies: three
+        <b>records</b> stay in <code>&lt;XO root&gt;/.xo/</code>, and every
+        <b>rollup</b> the watcher recomputes from a walk of the projects root
+        moved to <code>~/.quirq/workspace/</code>. That move is also what
+        makes the rollups' two unlocked writers — the watcher tick and a
+        request thread rebuilding a stale view — harmless: the worst a lost
+        update can cost is one rebuild.</p>
+        <p><code>GET /xo/space.json</code>, <code>/xo/dashboard.json</code>
+        and <code>/xo/sessions.json</code> are an explicit allowlist rather
+        than a static mount, and all three now read from the runtime half —
+        <code>/xo/space.json</code> serves
+        <code>~/.quirq/workspace/graph.json</code>, so the URL is a name, not
+        a path. The older <code>/space/data/</code> routes for these three are
+        gone.</p>
         <p class="wiki-note">Two numbers govern freshness. The watcher rebuilds
         the three files at most every <code>XO_VIEWS_REFRESH_S</code>
         (default 30s), because the build walks every mapped file in the
@@ -1286,17 +1403,18 @@ function xoDataArticle(){
         them.</p>
         <div class="wiki-table-wrap">
           <table class="wiki-table">
-            <thead><tr><th>File</th><th>What it contains</th><th>How it is produced</th></tr></thead>
+            <thead><tr><th>File</th><th>Where</th><th>What it contains</th><th>How it is produced</th></tr></thead>
             <tbody>
-              <tr><td><code>space.json</code></td><td>The workspace graph the Graph, Tree and Files List read: projects, folders, files, derived ties, git history.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on-demand when a request finds it stale</td></tr>
-              <tr><td><code>dashboard.json</code></td><td>The same scan collapsed into five purpose environments.</td><td>same tick as space.json — one scan feeds both</td></tr>
-              <tr><td><code>sessions.json</code></td><td>Session telemetry merged across every runtime that reports it.</td><td>same tick</td></tr>
-              <tr><td><code>workspace.json</code></td><td>Workspace identity only: schema, update time, the projects root, and the discovered project ids. The derived views sit beside it in their own files — <code>space.json</code>, <code>dashboard.json</code>, <code>sessions.json</code> — so a reader that wants session telemetry does not parse the graph to get it.</td><td>rewritten by the watcher on every tick; cheap (small JSON, one iterdir of the workspace root)</td></tr>
-              <tr><td><code>sessions/sessionslist.json</code></td><td>union of every project’s adapter session rows</td><td>rebuilt every tick</td></tr>
-              <tr><td><code>sessions/sessions-augment.json</code></td><td>union of watcher session enrichments</td><td>rebuilt every tick</td></tr>
-              <tr><td><code>stats.json</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
-              <tr><td><code>timeline.jsonl</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
-              <tr><td><code>xo.json</code></td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
+              <tr><td><code>space.json</code></td><td>.xo</td><td>The Space record: the captured Space id, its label, the two roots, and the agent backends attached to it. Not the graph — the graph it used to hold is derived state and moved to <code>~/.quirq/workspace/graph.json</code>, where <code>GET /xo/space.json</code> still reads it.</td><td>one writer, at most every XO_SPACE_REFRESH_S (60s) and only when something changes</td></tr>
+              <tr><td><code>graph.json</code></td><td><code>~/.quirq/workspace</code></td><td>The workspace graph the Graph, Tree and Files List read: projects, folders, files, derived ties, git history. Served at <code>GET /xo/space.json</code>.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on demand when a request finds it stale</td></tr>
+              <tr><td><code>dashboard.json</code></td><td><code>~/.quirq/workspace</code></td><td>The same scan as the graph, collapsed into five purpose environments.</td><td>same tick as the graph — one scan feeds both</td></tr>
+              <tr><td><code>sessions.json</code></td><td><code>~/.quirq/workspace</code></td><td>Session telemetry merged across every runtime that reports it.</td><td>same tick</td></tr>
+              <tr><td><code>projects.json</code></td><td>.xo</td><td>The projects registry: every project directory the watcher discovered, keyed by directory name, each with its <code>pid</code>, whether it is scaffolded, and its git origin. <code>by_pid</code> is a derived reverse index in the same file; its values are always arrays, so a pid that appears in two folders raises an alarm instead of losing one of them.</td><td>rebuilt every tick and written only when it changes; git origins refresh at most every XO_GIT_PROVENANCE_REFRESH_S (300s)</td></tr>
+              <tr><td><code>sessions/sessionslist.json</code></td><td><code>~/.quirq/workspace</code></td><td>union of every project’s adapter session rows</td><td>rebuilt every tick</td></tr>
+              <tr><td><code>sessions/sessions-augment.json</code></td><td><code>~/.quirq/workspace</code></td><td>union of watcher session enrichments</td><td>rebuilt every tick</td></tr>
+              <tr><td><code>stats.json</code></td><td><code>~/.quirq/workspace</code></td><td>summed project windows, runtimes, sessions, days, models, tools, and latency</td><td>recomputed from project stats</td></tr>
+              <tr><td><code>timeline.jsonl</code></td><td><code>~/.quirq/workspace</code></td><td>project events plus <code>project_id</code></td><td>appended during each project sink batch; no workspace rotation yet</td></tr>
+              <tr><td><code>xo.json</code></td><td>.xo</td><td>active agent capability flags and supported live model/channel status</td><td>written at server startup and patched by status probes</td></tr>
             </tbody>
           </table>
         </div>
@@ -1305,10 +1423,10 @@ function xoDataArticle(){
       <section class="wiki-section wiki-grid">
         <div>
           <h2>Legacy compatibility</h2>
-          <p>Some session readers accept the former
-          <code>sessions/sessions.json</code> index when
-          <code>sessionslist.json</code> is absent. New writes target
-          <code>sessionslist.json</code>. Project and workspace
+          <p>Pre-move projects keep working: readers fall back to the old
+          <code>&lt;project&gt;/.xo/</code> location for the files that left it,
+          and to the former <code>sessions/sessions.json</code> index, but
+          every <b>write</b> goes to the new one. Project and workspace
           <code>.xo/activity.json</code> files are no longer scaffolded or
           written; live presence lives under
           <code>~/.quirq/watcher/activity/</code>. A leftover copy is detected,
@@ -1341,7 +1459,12 @@ function quirqDataArticle(){
         <h1>Everything in <code>~/.quirq</code></h1>
         <p>This directory helps one Quirq installation operate safely and
         resume efficiently. It is not project memory and is never a source for
-        backup, collaboration, or cross-machine history.</p>
+        backup, collaboration, or cross-machine history. It also holds the
+        <b>runtime tier</b>: every statistic, session index and event log the
+        services derive from this machine's runtime logs. Those are here and
+        not in <code>.xo/</code> because an accumulator and the replay cursor
+        that protects it must share a root — split them and a restore replays
+        history the totals already counted.</p>
         <div class="wiki-facts">
           <span>local only</span>
           <span>contains secrets</span>
@@ -1358,8 +1481,21 @@ function quirqDataArticle(){
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
+├── projects/
+│   └── &lt;pid&gt;/                # per-project runtime tier, keyed by project.json:pid
+│       ├── stats.json
+│       ├── timeline.jsonl      # rotated: timeline.&lt;stamp&gt;.jsonl, five kept
+│       ├── sync.json           # reserved; no writer yet
+│       └── sessions/
+│           ├── sessionslist.d/ # one shard file per session
+│           └── sessions-augment.json
+├── workspace/                  # the derived cross-project rollups
+│   ├── graph.json              # served at GET /xo/space.json
+│   ├── dashboard.json  sessions.json  stats.json  timeline.jsonl
+│   └── sessions/{sessionslist,sessions-augment}.json
 └── watcher/
     ├── offsets.json
+    ├── heartbeat.json            # liveness beat, rewritten every tick
     ├── hermes-offsets.json       # only when the Hermes source is watched
     ├── locks/
     │   └── todos.json.&lt;hash&gt;.lock
@@ -1367,6 +1503,11 @@ function quirqDataArticle(){
         ├── projects/
         │   └── &lt;project-id&gt;.json
         └── workspace.json</pre>
+        <p class="wiki-note">One <code>rm -rf ~/.quirq</code> is a clean total
+        reset: everything under it is re-derivable, and nothing under it is
+        the only copy of anything. That property is the whole point of the
+        split, and it is why the replay cursors live in the same root as the
+        totals they protect.</p>
       </section>
 
       <section class="wiki-section">
@@ -1440,10 +1581,13 @@ function quirqDataArticle(){
 
           <article class="wiki-file">
             <header><code>watcher/locks/*.lock</code><span>coordination sentinels</span></header>
-            <p>Empty advisory lock files for data with multiple writers,
-            currently project <code>todos.json</code>. The filename combines
-            the guarded basename with an eight-character hash of its absolute
-            path, keeping different projects separate.</p>
+            <p>Empty advisory lock files. Two documents take one: the session
+            augment file, which the watcher tick and the todo API's counter
+            update both write, and <code>todos.json</code>, which has a single
+            writer but many callers — two concurrent API requests are still
+            two read-modify-writes. The filename combines the guarded basename
+            with an eight-character hash of its absolute path, keeping
+            different projects separate.</p>
             <dl><div><dt>Lifetime</dt><dd>files may remain; the kernel releases the actual lock when the descriptor closes</dd></div><div><dt>Timeout</dt><dd>bounded wait prevents a stalled writer from wedging an API call</dd></div></dl>
           </article>
 
@@ -2091,7 +2235,7 @@ function flowsArticle(){
         <div class="wiki-recipe">
           <div class="wiki-recipe-step"><small>1</small><b>Read project todos</b><code>GET /api/xo-projects/{id}/todos</code><p>Group todo lists by session and runtime.</p></div>
           <i>→</i>
-          <div class="wiki-recipe-step"><small>2</small><b>Mutate through one lane</b><p>Claude Code uses native task tools; other runtimes use POST/PATCH/DELETE todo endpoints.</p></div>
+          <div class="wiki-recipe-step"><small>2</small><b>Mutate through one lane</b><code>POST/PATCH/DELETE /api/xo-projects/{id}/todos</code><p>Every runtime, including ones with a native task tool. Nothing else writes the file.</p></div>
           <i>→</i>
           <div class="wiki-recipe-step"><small>3</small><b>Reflect lifecycle</b><p>Make pending, in-progress, completed, blocked, and cancelled visually distinct.</p></div>
         </div>

@@ -33,12 +33,23 @@ def parse_stream_line(raw: bytes) -> dict | None:
             return {"type": "session_id", "session_id": sid}
         return None
 
+    if etype == "stream_event":
+        # `--include-partial-messages`: API streaming events wrapped in a
+        # stream_event line. Only text deltas become tokens; thinking and
+        # tool-input deltas have other delta types and are dropped here.
+        inner = event.get("event") or {}
+        if inner.get("type") == "content_block_delta":
+            delta = inner.get("delta") or {}
+            if delta.get("type") == "text_delta" and delta.get("text"):
+                return {"type": "token", "token": delta["text"], "partial": True}
+        return None
+
     if etype == "content_block_delta":
         delta = event.get("delta", {})
         if delta.get("type") == "text_delta":
             text = delta.get("text", "")
             if text:
-                return {"type": "token", "token": text}
+                return {"type": "token", "token": text, "partial": True}
         return None
 
     if etype == "assistant":

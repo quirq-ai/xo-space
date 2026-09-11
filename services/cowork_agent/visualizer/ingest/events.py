@@ -1,33 +1,4 @@
-"""Normalised event types — the API the sinks consume.
-
-Frozen, ``__slots__``-backed dataclasses. Sinks dispatch on
-``isinstance`` and never see raw jsonl shapes (P5-style boundary
-inside the watcher itself).
-
-Shared helpers (small enough to live alongside the types they
-operate on): :func:`compute_latency_ms` derives the user→assistant
-latency that :class:`UsageObserved` carries — used by every file-tail
-source.
-
-The shape is intentionally **sink-oriented**, not jsonl-oriented:
-
-* :class:`MessageObserved` collapses both user and assistant messages
-  to a single counter event.
-* :class:`UsageObserved` carries token counts; emitted alongside (not
-  inside) :class:`MessageObserved` because OpenClaw and Claude Code
-  attach usage to different surfaces.
-* :class:`ToolUseObserved` carries only the tool **name** — never
-  inputs (Bash commands, Edit diffs, etc.). The PII filter strips
-  inputs before construction.
-* :class:`TaskCreateObserved` and :class:`TaskUpdateObserved` are
-  pre-pairing observations. The source layer correlates a
-  ``TaskCreate`` tool_use with its ``Task #N created`` tool_result
-  to assign the user-visible task id; once paired, the source emits
-  :class:`TaskCreated`/:class:`TaskStatusChanged` to the sinks.
-
-Path fields (:class:`FileTouched`) are always **project-relative**.
-The PII filter drops events whose path resolves outside the project.
-"""
+"""Normalised event types — the API the sinks consume."""
 
 from __future__ import annotations
 
@@ -200,12 +171,51 @@ class TaskCreated(Event):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TaskStatusChanged(Event):
-    """A ``TaskUpdate`` tool_use. ``status`` ∈ {``pending``,
-    ``in_progress``, ``completed``, ``cancelled``, ``blocked``}.
-    """
+    """A ``TaskUpdate`` tool_use."""
 
     task_id: str
     status: str
+
+
+# ── Workitems (workitems-plan §8) ────────────────────────────────────────────
+# Unlike everything above, no workitem event ever comes out of a transcript:
+# ``workitems.json`` and ``claims.json`` have no runtime that writes them, so
+# the stores are the only source and the API is the only way in.
+
+
+#: The workitem lifecycle vocabulary (workitems-plan §8), declared **once**.
+WORKITEM_ACTIONS: frozenset[str] = frozenset(
+    {
+        "created",
+        "adopted",
+        "assigned",
+        "claimed",
+        "released",
+        "closed",
+        "reopened",
+        "deleted",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WorkitemEvent(Event):
+    """One workitem lifecycle transition, ``action`` ∈ :data:`WORKITEM_ACTIONS`."""
+
+    # Re-declared with defaults rather than forced on every call site: most
+    # workitem transitions genuinely have neither, and a required field whose
+    # honest value is ``""`` invites a placeholder.
+    native_session_id: str = ""
+    runtime: str = ""
+
+    action: str
+    workitem_id: str
+    title: Optional[str] = None
+    kind: Optional[str] = None
+    repo: Optional[str] = None
+    number: Optional[int] = None
+    assignee: Optional[str] = None
+    state_reason: Optional[str] = None
 
 
 # ── Source-emitted helper, not from the jsonl ────────────────────────────────

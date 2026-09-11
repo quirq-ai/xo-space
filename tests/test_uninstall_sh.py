@@ -28,12 +28,26 @@ BASH = shutil.which("bash") if os.name == "posix" else None
 class UninstallShTests(unittest.TestCase):
     @unittest.skipUnless(BASH and shutil.which("git"), "needs bash and git on a POSIX host")
     def test_harness_passes(self) -> None:
+        # Run the harness with the installation roots scrubbed from the
+        # environment. ``services/cowork_agent/registry/settings.py`` calls
+        # ``load_dotenv()`` at import time, so merely importing any module
+        # that reaches it pushes this developer's ``.env`` — including
+        # ``XO_PROJECTS_ROOT`` and ``QUIRQ_STATE_ROOT`` — into ``os.environ``
+        # for the whole process. The harness fabricates its own install and
+        # asserts what ``uninstall.sh`` removes from it; an inherited root
+        # silently redirects ``resolve_roots`` at the real machine, so the
+        # fabricated ``.quirq`` survives and the full-run case fails. That
+        # made the suite's result depend on a gitignored file: green on a
+        # checkout with no ``.env``, red on a configured one.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT")}
         result = subprocess.run(
             [BASH, str(HARNESS)],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
             timeout=120,
+            env=env,
         )
         self.assertEqual(
             result.returncode, 0,

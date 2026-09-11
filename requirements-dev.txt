@@ -1,0 +1,26 @@
+# XO Space API — development / test dependencies
+#
+# Runtime deps live in requirements.txt. Nothing here is imported by the
+# server: these are the tools the test suite needs.
+#
+#   venv/bin/python -m pip install -r requirements-dev.txt
+#   (this repo's venv is uv-managed and has no bundled pip — use
+#    `uv pip install --python venv/bin/python -r requirements-dev.txt`)
+#
+# Both gates must stay green with these installed:
+#   venv/bin/python -m unittest discover -s tests
+#   venv/bin/python -m pytest -q
+
+# JSON Schema validation. tests/test_schemas.py is the only consumer: it
+# validates every project template file and every live writer's output
+# against services/cowork_agent/visualizer/schema/*.schema.json, which is
+# what stops the schemas drifting back into decoration (syncplan T16).
+# Draft-07 support is all we use; the floor is just "has Draft7Validator
+# and the modern `referencing` resolver".
+jsonschema>=4.21
+
+# Test runner. The suite is written as plain unittest.TestCase so
+# `unittest discover` — the gate every contributor runs — keeps working
+# without pytest installed at all; pytest is the richer local runner
+# (-k, -x, --lf) and the one syncplan §14 names.
+pytest>=8.4,<9
