@@ -216,7 +216,8 @@ class RunSpecTests(unittest.TestCase):
         with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": "/tmp/quirq-tests"}, clear=False), \
              patch.object(commands, "_write_log", side_effect=OSError("disk full")), \
              patch.object(commands.log, "warning") as warning, \
-             patch.object(commands, "_COMMAND_LOG_WARNING_EMITTED", False):
+             patch.object(commands, "_COMMAND_LOG_WARNING_EMITTED", False), \
+             patch.object(commands, "_FAILED_COMMAND_LOG_PATHS", set()):
             first = run_sync([sys.executable, "-c", "print('one')"], timeout=30)
             second = run_sync([sys.executable, "-c", "print('two')"], timeout=30)
         self.assertTrue(first.ok)

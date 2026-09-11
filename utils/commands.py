@@ -80,6 +80,7 @@ _INLINE_SECRET_RE = re.compile(
 )
 _TOKEN_PREFIX_RE = re.compile(r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b")
 _COMMAND_LOG_WARNING_EMITTED = False
+_FAILED_COMMAND_LOG_PATHS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -186,7 +187,7 @@ def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
         if candidate is None:
             continue
         key = os.path.abspath(str(candidate))
-        if key in seen:
+        if key in seen or key in _FAILED_COMMAND_LOG_PATHS:
             continue
         seen.add(key)
         paths.append(candidate)
@@ -195,6 +196,7 @@ def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
 
 def _warn_logging_failed(path: Path, exc: Exception) -> None:
     global _COMMAND_LOG_WARNING_EMITTED
+    _FAILED_COMMAND_LOG_PATHS.add(os.path.abspath(str(path)))
     if _COMMAND_LOG_WARNING_EMITTED:
         return
     _COMMAND_LOG_WARNING_EMITTED = True
