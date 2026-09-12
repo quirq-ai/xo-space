@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/inbox.schema.json",
+  "title": "xo inbox (~/.quirq/inbox.json)",
+  "description": "Information that arrived in the workspace, its seen/done state, and the feeder cursors. Written by the inbox service (services/inbox/) and hand-editable: unknown keys at the top level and per item survive a rewrite, items without a valid id or title are dropped, an invalid status becomes new.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "items"],
+  "properties": {
+    "$schema":    { "type": "string" },
+    "schema":     { "type": "integer", "const": 1 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "sources": {
+      "type": "object",
+      "description": "Per-feeder configuration. Absent means the defaults; a source with enabled=false is never read.",
+      "additionalProperties": true,
+      "properties": {
+        "timeline": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "types":   { "type": "array", "items": { "type": "string" }, "default": ["session.started", "todo.added"] }
+          }
+        },
+        "todos": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled":  { "type": "boolean", "default": true },
+            "statuses": { "type": "array", "items": { "type": "string" }, "default": ["blocked"] }
+          }
+        },
+        "sharing": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        },
+        "issues": {
+          "type": "object",
+          "description": "GitHub issues from every project's issue mirror (~/.quirq/projects/<pid>/github/issues.json). Only rows in a watched state are surfaced; an issue that leaves every watched state is marked done.",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "states":  { "type": "array", "items": { "type": "string", "enum": ["open", "closed"] }, "default": ["open"] }
+          }
+        },
+        "connections": {
+          "type": "object",
+          "description": "Items collected by the connections poller (~/.quirq/connections/<toolkit>/events.jsonl). One cursor for every toolkit; without one only the last 24 hours are read.",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
+        }
+      }
+    },
+    "cursors": {
+      "type": "object",
+      "description": "Newest producer timestamp each feeder has seen, stored as the producer wrote it. Delete a key to re-read that source (bounded: the timeline and connections feeders then keep only the last 24 hours, the issues feeder the last 7 days).",
+      "additionalProperties": { "type": "string" },
+      "properties": {
+        "timeline":    { "type": "string" },
+        "sharing":     { "type": "string" },
+        "issues":      { "type": "string" },
+        "connections": { "type": "string" }
+      }
+    },
+    "items": {
+      "type": "array",
+      "description": "Newest first by ts. At most 500 after a write (oldest done items go first); done items older than 30 days are pruned.",
+      "items": { "$ref": "#/definitions/item" }
+    }
+  },
+  "definitions": {
+    "item": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "ts", "source", "kind", "title", "status"],
+      "properties": {
+        "id":         { "type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Server-generated, unique within the file." },
+        "ts":         { "type": "string", "format": "date-time", "description": "When the information arrived (ISO 8601 UTC)." },
+        "source":     { "type": "string", "pattern": "^[a-z0-9_:-]{1,40}$", "description": "timeline | todos | sharing | issues | connections | api | anything an agent posts." },
+        "kind":       { "type": "string", "pattern": "^[a-z0-9_.:-]{1,60}$", "description": "session.started, todo.blocked, sharing.fetched, issue.open, gmail.unread, note, ..." },
+        "title":      { "type": "string", "minLength": 1, "maxLength": 300 },
+        "body":       { "type": "string", "maxLength": 4000, "default": "" },
+        "project_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_:\\-\\.]{1,200}$" },
+        "link": {
+          "type": ["object", "null"],
+          "description": "Where the Open action goes. Unknown keys are dropped; an empty object becomes null.",
+          "additionalProperties": false,
+          "properties": {
+            "view":    { "type": "string", "pattern": "^[a-z0-9_-]{1,40}$", "description": "A Space UI view id (projects, sessions, ...)." },
+            "project": { "type": "string", "pattern": "^[A-Za-z0-9_:\\-\\.]{1,200}$" },
+            "path":    { "type": "string", "maxLength": 500, "description": "Project-relative, no leading slash, no .. segment." }
+          }
+        },
+        "url": {
+          "type": ["string", "null"],
+          "maxLength": 2000,
+          "pattern": "^https?://",
+          "description": "Where the Open link action goes (the issue page, the mail, the calendar event). An invalid value is dropped on read."
+        },
+        "status":     { "type": "string", "enum": ["new", "seen", "done"] },
+        "key":        { "type": ["string", "null"], "description": "Stable dedup identity for ingested items; API-created items carry none." }
+      }
+    }
+  }
+}

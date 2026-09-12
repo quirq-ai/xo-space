@@ -48,11 +48,16 @@ routers/                          broker routes only — NO agent branching
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
     connectors/                   gdrive github manus onedrive vercel composio composio_mcp_proxy route modules
-    bff/                          backend-for-frontend (visualizer, secrets, xo_projects)
+    bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
+                                    project_sharing, inbox.py, connections.py)
     legacy/                       frozen URL aliases (openclaw_usage)
 
 services/
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
+  inbox/                          the Space Inbox (a property of the Space, not of any agent): store
+                                    (~/.quirq/inbox.json read/write, retention) feeders (timeline,
+                                    todos, sharing, issues, connections) service (the router-facing
+                                    surface); routes in routers/cowork_agent/bff/inbox.py
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
@@ -68,6 +73,12 @@ services/
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
+    connections/                     connections polling for the Inbox (core, agent-free): store
+                                    (~/.quirq/connections/<toolkit>/ config, state, events)
+                                    collectors (the read-only catalog per toolkit) mcp_client
+                                    (streamable-HTTP JSON-RPC over httpx) poller (the background
+                                    loop) service (the router-facing surface); routes in
+                                    bff/connections.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/
@@ -367,7 +378,9 @@ one branch, serve both.
 ## 10. Connectors: Composio
 
 Composio gives the active agent tools in the user's own SaaS accounts (Gmail,
-Google Workspace, Notion, Figma) via [Composio](https://composio.dev). It is laid
+Google Workspace, Notion, Figma, Slack, Telegram) via [Composio](https://composio.dev).
+OAuth toolkits and key-based ones (Telegram takes a bot token) share one connect
+flow: the swarm mints a hosted link for either. It is laid
 out like every other connector — logic under `services/cowork_agent/connectors/`,
 HTTP surface under `routers/cowork_agent/connectors/`:
 
@@ -394,7 +407,7 @@ Clerk credentials, runs the browser OAuth handshake, and mints the session ids t
 carries. What lives here is one credential and one pass-through route.
 
 **Composio is addressed by the bare Clerk account id.** It was once addressed by a
-composed `<account_id>__ws__<CODER_WORKSPACE_ID>` key. That gave hard workspace
+composed `<account_id>__ws__<workspace id>` key. That gave hard workspace
 isolation at a price nobody wanted: a connected account belonged to one workspace only,
 so you re-ran the OAuth dance per workspace, per toolkit, forever. Connections are
 **account-wide**, and workspaces are separated inside the Composio tool-router session
@@ -430,7 +443,10 @@ receive *this* backend's principal, and its Composio connections with it. That i
 `POST /xo-auth/session` was removed rather than guarded. Serving several XO accounts from
 one backend needs credential forwarding — a design change, not a re-add.
 
-**`CODER_WORKSPACE_ID` is now a store stamp, not a tenant key.** It is never sent to
+**`XO_SPACE_ID` is the workspace identity, and it is a store stamp, not a tenant key.**
+One flow on Coder and off: the id the swarm knows this Space by (the same value project
+sharing and usage reporting send) is what the session mint supplies and what the store is
+stamped with; Coder's own workspace id is no longer read anywhere. The stamp is never sent to
 Composio and is not a key in any store — a pod is one workspace, so the local stores are
 already isolated by the filesystem. Its one job is stamping `sessions.json` with the
 workspace that wrote it, so a store restored out of a backup or another workspace's home
@@ -512,7 +528,7 @@ declares an enabled `mcp` block — and nothing else does: there is no manual en
 and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
 boot, retries with backoff (5 s → 300 s) while xo-swarm-api cannot provide the
 principal, stops after one console line for a gate that cannot open without a restart
-(no XO credential, no `CODER_WORKSPACE_ID`, credential rejected), and then sweeps
+(no XO credential, no `XO_SPACE_ID`, credential rejected), and then sweeps
 every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
 `GET /api/connectors/composio/toolkits` also kicks a rate-limited background sweep, so
 opening the Connectors tab is what pressing "Reinstall MCP gateway" used to be.
@@ -608,7 +624,7 @@ Degradation is per-scope, and worth knowing when reading a bug report:
 | one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
 | xo-swarm-api unreachable | every Composio operation fails immediately — there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
 | xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
-| `CODER_WORKSPACE_ID` | every Composio route 401s |
+| `XO_SPACE_ID` | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a workspace identity |
 | XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
 
 Every authoritative failure raised from `swarm_client.py` carries the literal string
@@ -635,7 +651,7 @@ old `data/composio_*.json` location is moved into place on first access.
 | `workspace_scope.json` | which toolkits this workspace has turned on, and which connected accounts back them |
 
 All three are flat: a pod is one workspace, so there is no user or workspace level to key
-on. `sessions.json` carries the `CODER_WORKSPACE_ID` stamp that proves it, and comparing
+on. `sessions.json` carries the `XO_SPACE_ID` stamp that proves it, and comparing
 it needs no network — which is what keeps `account_for_proxy_token` a set lookup on the
 MCP hot path (`initialize`, `tools/list` and *every* `tools/call`). A token this pod
 cannot place is simply unknown.
@@ -708,3 +724,62 @@ authenticates: `js/core/session.js` mints the session id and `apiFetch`'s
 `headers` option carries it. The OAuth popup's callback posts back to its opener
 with `"*"` as the target origin, so **the listener validates `event.origin`**; the
 `…/status?connection_request_id=` poll, not the message, is what decides success.
+
+### 10.8 Connections polling
+
+The Inbox's `connections` feeder is fed by a background poller in
+`services/cowork_agent/connections/` (routes in
+`routers/cowork_agent/bff/connections.py`, four paths under `/api/connections`).
+It is core code: no agent names, no adapter imports, and the router imports
+only `service.py`.
+
+How a collector reaches the provider: each poll lists the session's tools once. A plain MCP
+server exposes toolkit tools by slug and they are called directly; Composio's tool-router
+session exposes only its meta tools, so the poller runs the slug through
+`COMPOSIO_MULTI_EXECUTE_TOOL` and unwraps its per-tool result (`mcp_client.execute_tool`).
+When `initialize` answers HTTP 404 the tool-router session behind the cached MCP url is gone
+upstream (the swarm still updates its own record for that id, so nothing else notices): the
+poller invalidates the session, mints a fresh entry and retries once. A forced "poll now" waits
+up to `FORCE_WAIT_S` for the loop's own tick to release the toolkit lock before answering busy.
+
+**What it reads.** `~/.quirq/connections/<toolkit>/config.json`, written by
+`PUT /api/connections/{toolkit}` from the Polling drawer or by hand: `enabled`,
+`interval_s` (60 to 86400), `collectors` (ids from `collectors.py`, the read-only
+catalog: `gmail` `unread` and `inbox`, `googlecalendar` `upcoming`, `notion`
+`recent_pages`; every other toolkit has an empty list). The poller never creates
+a folder on its own and never polls a toolkit without a `config.json`. Each
+collector is one `tools/call` over the same Composio MCP upstream the agent
+proxy uses: the entry comes from `composio_service.build_mcp_server_entry(user_id)`
+and the call goes through the minimal streamable-HTTP client in `mcp_client.py`
+(initialize, `notifications/initialized`, `tools/call`, then a best-effort
+DELETE of the session).
+
+**Where it writes.** Only inside that toolkit's folder, every write under
+`flock.locked`: `state.json` (`last_poll_at`, `last_ok_at`, `last_error`, the
+newest 500 seen keys per collector, `events_total`) and `events.jsonl` (one line
+per new item: `ts`, `type`, `key`, `title`, `body`, `url`, `toolkit`; rotated at
+2 MB, three rotations kept). Dedup is by seen key only; there is no timestamp
+floor in the poller. The Inbox feeder applies its own 24 hour bootstrap floor
+and reads only the live file, so `events_total` can exceed what Inbox shows.
+
+**How it degrades.** Every failure is recorded, never raised. No XO credential
+(`state.account_id_if_known()` and `aaccount_id()` both fail) records
+`last_error` "not signed in to XO (no account id)" and stamps `last_poll_at`
+but not `last_ok_at`; a toolkit missing from `workspace_scope.enabled_toolkits()`
+records "<toolkit> is not turned on in this workspace"; a collector the upstream
+rejects records "<collector>: <message>" while the other collectors still run.
+Neither path writes `events.jsonl`. `last_error` is at most 300 chars and is
+built from status codes and body snippets only, never from headers. The loop
+itself is switched off with `XO_CONNECTIONS_POLL_ENABLED=false` (started in the
+lifespan block right after the GitHub poller in `server.py`; `Poll now` still
+works); `XO_CONNECTIONS_POLL_TICK_S` (default 30, minimum 5) is how often it
+looks for connections whose interval has elapsed. `POST
+/api/connections/{toolkit}/poll` runs the same `poll_connection(force=True)`
+under the same per-toolkit lock, so a tick and a manual poll never run one
+toolkit twice; the second caller reports `busy`.
+
+Tests: `tests/test_connections_{store,collectors,mcp_client,poller,bff}.py`,
+`tests/test_inbox_feeders_issues_connections.py`,
+`tests/test_space_connections.py`, `tests/test_connections_docs.py`. All
+hermetic: `QUIRQ_STATE_ROOT` patched to a temp dir, `httpx.MockTransport` for
+the MCP client, identity and scope patched on the poller module.

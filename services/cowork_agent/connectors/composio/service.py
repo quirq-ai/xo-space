@@ -39,6 +39,10 @@ TOOLKITS: dict[str, ToolkitMeta] = {
     "googleslides":    ToolkitMeta("GOOGLESLIDES",    "Google Slides",    ("OAUTH2",)),
     "googlemeet":      ToolkitMeta("GOOGLEMEET",      "Google Meet",      ("OAUTH2",)),
     "figma":           ToolkitMeta("FIGMA",           "Figma",            ("OAUTH2",)),
+    "slack":           ToolkitMeta("SLACK",           "Slack",            ("OAUTH2",)),
+    # A bot token from BotFather, pasted on Composio's hosted page: the swarm mints
+    # the same kind of link it does for OAuth, so the UI flow is identical.
+    "telegram":        ToolkitMeta("TELEGRAM",        "Telegram",         ("API_KEY",)),
 }
 
 
@@ -188,8 +192,9 @@ def initiate_connection(
     alias: Optional[str] = None,
     allow_multiple: bool = False,
 ) -> dict[str, Any]:
-    # OAUTH2-only today: a new scheme needs a row here (`meta.schemes`) and a matching
-    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`.
+    # A new toolkit or scheme needs a row here (`meta.schemes`) and a matching
+    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`; the
+    # swarm's hosted link serves OAuth and key-based schemes alike.
     meta = toolkit_meta(toolkit_id)
     scheme = auth_scheme.upper()
     if scheme not in meta.schemes:
@@ -382,7 +387,7 @@ class NoToolkitsEnabled(RuntimeError):
 def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]]:
     """Read the store, returning ``(workspace, account, session_id, proxy_tokens)``.
 
-    ``workspace`` is the stamp: the ``CODER_WORKSPACE_ID`` of the pod that wrote the
+    ``workspace`` is the stamp: the ``XO_SPACE_ID`` of the install that wrote the
     document. It is what lets this pod tell its own store from one restored out of a
     backup or another workspace's home directory — with connections now account-wide,
     adopting a foreign store would mean inheriting that workspace's connector scope.
@@ -431,7 +436,7 @@ def _ensure_sessions_loaded() -> None:
     """Populate the in-memory mirrors from disk, if the store is this workspace's.
 
     Classifying the document needs no network: the stamp is compared against this pod's
-    own ``CODER_WORKSPACE_ID``. That matters because proxy-token resolution runs on every
+    own ``XO_SPACE_ID``. That matters because proxy-token resolution runs on every
     agent ``tools/call``.
 
     A store stamped for another workspace is left alone on disk and simply not adopted —

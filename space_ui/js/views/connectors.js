@@ -26,7 +26,7 @@
    this view needs apiFetch's `headers` option, which was added at that stamp,
    and StaticFiles sends no Cache-Control — a browser holding the older bare
    URL would drop the session header and strand this tab on "sign in to XO". */
-import {apiFetch} from '../core/api.js?v=20260904-tenancy1';
+import {apiFetch} from '../core/api.js?v=20260911-detailerror1';
 import {toast} from '../core/ui.js';
 import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260903-connectors1';
 
@@ -43,6 +43,24 @@ let openToolkit=null;      /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
+
+/* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
+   one open id, one cache. The connections routes are workspace-local files under
+   .quirq, not Composio, so these calls carry no session header. */
+let openPolling=null;      /* id of the expanded Polling drawer, if any */
+let pollCache={};          /* toolkit id -> GET /api/connections/<id> payload; null on failure */
+let pollNotes={};          /* toolkit id -> one-line result of the last "Poll now" */
+const INTERVALS=[[300,'5 min'],[900,'15 min'],[1800,'30 min'],[3600,'1 hour'],
+  [21600,'6 hours'],[86400,'24 hours']];
+function rel(iso){
+  if(!iso)return'';
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(!isFinite(s))return'';
+  if(s<60)return'just now';
+  if(s<3600)return Math.floor(s/60)+'m ago';
+  if(s<86400)return Math.floor(s/3600)+'h ago';
+  return Math.floor(s/86400)+'d ago';
+}
 
 export default {
   id:'connectors',label:'Connectors',order:10,
@@ -113,7 +131,8 @@ function renderSignedOut(){
   setAlert('pending',
     'Sign in to XO to use connectors',
     (sessionError()||'')+' Connections belong to your XO account, so this page needs an '
-      +'identity. Set XO_API_KEY in .env, or sign in from the app, then refresh.');
+      +'identity. Set XO_API_KEY and XO_SPACE_ID in .env, or sign in from the app, '
+      +'then refresh.');
   root.querySelector('#conn-grid').innerHTML=
     '<div class="conn-empty">No identity &mdash; nothing to show yet.</div>';
 }
@@ -165,6 +184,13 @@ function renderListFailure(res){
 /* ---------- rendering ---------- */
 
 function isConnected(t){return String(t.status||'').toUpperCase()==='ACTIVE';}
+function schemeOf(toolkitId){
+  const t=toolkits.find(x=>x.id===toolkitId);
+  return (t&&Array.isArray(t.schemes)&&t.schemes[0])||'OAUTH2';
+}
+/* what a person is asked for when they press Connect */
+const SCHEME_LABEL={OAUTH2:'OAuth sign-in',API_KEY:'API key or bot token',BEARER_TOKEN:'access token',BASIC:'username and password'};
+const schemeLabel=s=>SCHEME_LABEL[String(s||'').toUpperCase()]||String(s||'');
 function isEnabledHere(t){return !!t.workspace_enabled;}
 
 /* Connections are account-wide; reach is not. A toolkit connected on the account but
@@ -190,6 +216,7 @@ function renderCard(t){
   const enabled=isEnabledHere(t);
   const status=statusOf(t);
   const open=openToolkit===t.id;
+  const polling=openPolling===t.id;
   return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
@@ -200,13 +227,17 @@ function renderCard(t){
     +'</div>'
     +'<div class="conn-card-body">'
       +'<div class="conn-facts">'
-        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).join(', '))+'</span>'
+        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
       +'</div>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
           +'workspace&rsquo;s agent use it.</p>'
+        :'')
+      +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
+        ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))
+          +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'.</p>'
         :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
@@ -226,9 +257,132 @@ function renderCard(t){
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
         :'')
+      /* Polling: connected and on here, or already open (the auto-opened drawer
+         after a connect needs a way to close before the toolkit is on here). */
+      +(connected&&(enabled||polling)
+        ?'<button class="conn-secondary" data-action="polling">'
+          +(polling?'Hide polling':'Polling')+'</button>'
+        :'')
     +'</div>'
     +(open?renderActions(t.id):'')
+    /* The drawer needs a connection, not "enabled here": a fresh connect opens
+       it before the workspace has turned the toolkit on, and it says so. */
+    +(polling&&connected?renderPolling(t,enabled):'')
     +'</article>';
+}
+
+/* ---------- polling ---------- */
+
+function renderPolling(t,enabled){
+  const c=pollCache[t.id];
+  const wrap=inner=>'<div class="conn-poll" id="poll-'+esc(t.id)+'">'+inner+'</div>';
+  if(c===undefined)return wrap('<div class="conn-empty">Loading polling settings&hellip;</div>');
+  if(c===null)return wrap('<div class="conn-empty is-error">Could not load polling settings.</div>');
+  const available=(Array.isArray(c.available_collectors)?c.available_collectors:[])
+    .filter(a=>a&&typeof a==='object'&&typeof a.id==='string');
+  if(!available.length)return wrap('<div class="conn-empty">No collectors available for this toolkit yet.</div>');
+  /* an unconfigured connection starts from the catalog defaults; a configured
+     one shows exactly what config.json says */
+  const chosen=new Set(c.configured
+    ?(Array.isArray(c.collectors)?c.collectors:[])
+    :available.filter(a=>a.default).map(a=>a.id));
+  const interval=Number(c.interval_s)||900;
+  const options=INTERVALS.map(([s,label])=>
+      '<option value="'+s+'"'+(s===interval?' selected':'')+'>'+label+'</option>').join('')
+    /* a hand-edited interval outside the menu is kept, not silently rounded */
+    +(INTERVALS.some(([s])=>s===interval)?''
+      :'<option value="'+interval+'" selected>'+interval+' s (from config.json)</option>');
+  return wrap(
+    (enabled?'':'<p class="conn-poll-note">Turn it on here first: polling reads through this '
+      +'workspace&rsquo;s connection.</p>')
+    +'<p class="conn-poll-note">What the poller collects into the Inbox, and how often. '
+      +'Nothing is saved until you press Save.</p>'
+    +'<label class="conn-poll-row"><input type="checkbox" data-poll="enabled"'
+      +(c.enabled?' checked':'')+'> Collect into Inbox</label>'
+    +'<label class="conn-poll-row">Every <select data-poll="interval">'+options+'</select></label>'
+    +available.map(a=>
+      '<label class="conn-poll-row"><input type="checkbox" data-poll="collector" value="'+esc(a.id)+'"'
+        +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
+    +pollStatus(t.id,c)
+    +'<div class="conn-poll-acts">'
+      +'<button class="conn-primary" data-action="poll-save">Save</button>'
+      +'<button class="conn-secondary" data-action="poll-now"'
+        +(c.configured?'':' disabled title="Save first"')+'>Poll now</button>'
+    +'</div>');
+}
+
+/* one line: the last "Poll now" result (if any), then the last error in the
+   error style, else the last poll time, else "never polled" */
+function pollStatus(toolkitId,c){
+  const note=pollNotes[toolkitId]?esc(pollNotes[toolkitId])+' &middot; ':'';
+  if(c.last_error)return'<div class="conn-poll-status is-error">'+note+esc(c.last_error)+'</div>';
+  const total=Number(c.events_total)||0;
+  const when=c.last_poll_at
+    ?'Last poll '+esc(rel(c.last_poll_at))+(total?' &middot; '+total+' collected so far':'')
+    :'Never polled';
+  return'<div class="conn-poll-status">'+note+when+'</div>';
+}
+
+async function togglePolling(toolkitId){
+  if(openPolling===toolkitId){openPolling=null;renderGrid();return;}
+  openPolling=toolkitId;
+  renderGrid();
+  if(pollCache[toolkitId]===undefined)await loadPolling(toolkitId);
+  if(openPolling===toolkitId)renderGrid();
+}
+
+async function loadPolling(toolkitId){
+  const res=await apiFetch('/api/connections/'+encodeURIComponent(toolkitId));
+  pollCache[toolkitId]=res.ok&&res.data?res.data:null;
+  return res;
+}
+
+function readPollForm(toolkitId){
+  const drawer=root.querySelector('#poll-'+CSS.escape(toolkitId));
+  if(!drawer)return null;
+  const enabled=drawer.querySelector('input[data-poll="enabled"]');
+  const interval=drawer.querySelector('select[data-poll="interval"]');
+  if(!enabled||!interval)return null;
+  return{
+    enabled:enabled.checked,
+    interval_s:Number(interval.value),
+    collectors:[...drawer.querySelectorAll('input[data-poll="collector"]:checked')].map(i=>i.value),
+  };
+}
+
+async function savePolling(toolkitId,button){
+  const body=readPollForm(toolkitId);
+  if(!body)return;
+  cardError(toolkitId,'');
+  setBusy(button,true);
+  try{
+    const res=await apiFetch('/api/connections/'+encodeURIComponent(toolkitId),{method:'PUT',body});
+    if(!res.ok||!res.data){cardError(toolkitId,res.error||'Could not save polling settings.');return;}
+    pollCache[toolkitId]=res.data;
+    delete pollNotes[toolkitId];
+    toast(labelFor(toolkitId)+' polling saved');
+    if(openPolling===toolkitId)renderGrid();
+  }finally{
+    setBusy(button,false);
+  }
+}
+
+async function pollNow(toolkitId,button){
+  cardError(toolkitId,'');
+  setBusy(button,true);
+  try{
+    const res=await apiFetch('/api/connections/'+encodeURIComponent(toolkitId)+'/poll',{method:'POST'});
+    if(!res.ok||!res.data){cardError(toolkitId,res.error||'Poll failed.');return;}
+    const r=res.data;
+    pollNotes[toolkitId]=r.skipped?'Poll skipped ('+String(r.skipped)+')'
+      :r.error?'Poll failed'
+      :'Polled just now: '+(Number(r.new_events)||0)+' new';
+    /* the server is the truth for last_poll_at and last_error: re-read, repaint */
+    await loadPolling(toolkitId);
+    if(openPolling===toolkitId)renderGrid();
+  }finally{
+    setBusy(button,false);
+  }
 }
 
 function renderActions(toolkitId){
@@ -291,6 +445,9 @@ function handleGridAction(event){
   else if(button.dataset.action==='unlink')setScope(id,false,button);
   else if(button.dataset.action==='disconnect')disconnect(id,button);
   else if(button.dataset.action==='actions')toggleDrawer(id);
+  else if(button.dataset.action==='polling')togglePolling(id);
+  else if(button.dataset.action==='poll-save')savePolling(id,button);
+  else if(button.dataset.action==='poll-now')pollNow(id,button);
 }
 
 async function connect(toolkitId,button){
@@ -300,8 +457,10 @@ async function connect(toolkitId,button){
      is blocked by default in most browsers. */
   const popup=window.open('','composio-auth','width=560,height=760');
   try{
+    /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
+       the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:'OAUTH2'},headers:sessionHeaders(),
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},headers:sessionHeaders(),
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();
@@ -351,7 +510,15 @@ async function pollUntilConnected(toolkitId,requestId,popup){
     if(status==='ACTIVE'){
       if(popup&&!popup.closed)popup.close();
       toast(labelFor(toolkitId)+' connected');
+      /* Open the Polling drawer for the toolkit that just connected, so the
+         interval and the data to collect get picked right away. Set BEFORE
+         loadAll(): it re-renders the grid, and a drawer flagged afterwards
+         would be lost. Nothing is persisted until Save. */
+      openPolling=toolkitId;
+      delete pollCache[toolkitId];
       await loadAll();
+      await loadPolling(toolkitId);
+      if(openPolling===toolkitId&&root.querySelector('.conn-card[data-toolkit]'))renderGrid();
       return;
     }
     if(status==='FAILED'){
@@ -384,6 +551,7 @@ async function setScope(toolkitId,enabled,button){
     if(!res.ok){cardError(toolkitId,res.error||'Could not save that change.');return;}
     toast(labelFor(toolkitId)+(enabled?' on in this workspace':' off in this workspace'));
     if(!enabled&&openToolkit===toolkitId)openToolkit=null;
+    if(!enabled&&openPolling===toolkitId)openPolling=null;
     await loadAll();
   }finally{
     setBusy(button,false);
@@ -412,7 +580,10 @@ async function disconnect(toolkitId,button){
     if(!res.ok){cardError(toolkitId,res.error||'Delete failed.');return;}
     toast(labelFor(toolkitId)+' connection deleted');
     if(openToolkit===toolkitId)openToolkit=null;
+    if(openPolling===toolkitId)openPolling=null;
     delete toolsCache[toolkitId];
+    delete pollCache[toolkitId];
+    delete pollNotes[toolkitId];
     await loadAll();
   }finally{
     setBusy(button,false);
