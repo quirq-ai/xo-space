@@ -377,7 +377,7 @@ class NoToolkitsEnabled(RuntimeError):
     """This workspace has not enabled any toolkit, so it has no session.
 
     Not an error condition so much as a state: connections are account-wide and every
-    workspace opts in to the ones it wants (see :mod:`.workspace_scope`). Carried as an
+    workspace opts in to the ones it wants (see :mod:`.space_scope`). Carried as an
     exception because the MCP proxy has to answer *something*, and "no connectors are
     enabled in this workspace" is a far better answer than an empty tool list that looks
     like a broken integration.
@@ -701,7 +701,7 @@ def prune_scope_to_live_accounts(user_id: str) -> bool:
     just its toolkit. A connection deleted from another workspace cannot reach into this
     pod's store, so this is what makes that deletion self-heal here.
     """
-    from services.cowork_agent.connectors.composio import workspace_scope
+    from services.cowork_agent.connectors.composio import space_scope
 
     try:
         rows = list_connections(user_id, statuses=["ACTIVE"])
@@ -716,15 +716,15 @@ def prune_scope_to_live_accounts(user_id: str) -> bool:
         for row in rows
         if row.get("connected_account_id") and not row.get("is_disabled")
     }
-    return workspace_scope.prune_to(live)
+    return space_scope.prune_to(live)
 
 
 def _session_config(user_id: str) -> dict[str, Any]:
     """The toolkits/tools/connected_accounts this workspace's session is built from."""
-    from services.cowork_agent.connectors.composio import workspace_scope
+    from services.cowork_agent.connectors.composio import space_scope
 
     prune_scope_to_live_accounts(user_id)
-    enabled = workspace_scope.enabled_toolkits()
+    enabled = space_scope.enabled_toolkits()
     if not enabled:
         raise NoToolkitsEnabled(
             "No connectors are enabled in this workspace. Connections are shared across "
@@ -736,7 +736,7 @@ def _session_config(user_id: str) -> dict[str, Any]:
         "toolkits": {"enable": enabled},
         "tools": _disabled_tools_config(),
     }
-    pinned = workspace_scope.pins()
+    pinned = space_scope.pins()
     if pinned:
         # An exact override with no fallback: without it Composio resolves the most
         # recently connected account at execution time, so a connection made in another

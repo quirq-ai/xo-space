@@ -10,7 +10,7 @@ This is a **gate**, not a resolver:
 2. hand back the pod's account id, fetched from xo-swarm-api and cached in :mod:`.state`.
 
 Which connections a *particular* workspace may use is a property of the Composio session,
-decided in :mod:`.workspace_scope`, not here. A missing ``XO_SPACE_ID`` is not checked
+decided in :mod:`.space_scope`, not here. A missing ``XO_SPACE_ID`` is not checked
 here either.
 """
 

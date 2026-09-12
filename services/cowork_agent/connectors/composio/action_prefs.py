@@ -8,7 +8,7 @@ later default to on.
 
 Feeds the ``tools`` key of the Composio session (``{toolkit: {"disable": [...]}}``).
 Toolkit-level on/off and connected-account pinning are a different question, answered by
-:mod:`.workspace_scope`.
+:mod:`.space_scope`.
 """
 from __future__ import annotations
 

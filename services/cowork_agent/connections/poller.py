@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import state, workspace_scope
+from services.cowork_agent.connectors.composio import state, space_scope
 from services.inbox.store import parse_ts
 
 from . import collectors, mcp_client, store
@@ -272,7 +272,7 @@ async def _poll_locked(toolkit: str, user_id) -> dict:
     if not user_id:
         return _fail(toolkit, NOT_SIGNED_IN, now_text)
     try:
-        enabled_here = toolkit in workspace_scope.enabled_toolkits()
+        enabled_here = toolkit in space_scope.enabled_toolkits()
     except Exception:
         logger.warning("connections poller: workspace scope unreadable", exc_info=True)
         enabled_here = False
