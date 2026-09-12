@@ -19,7 +19,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from services.cowork_agent.connectors.composio import workspace_scope
+from services.cowork_agent.connectors.composio import space_scope
 from services.cowork_agent.connectors.composio.service import TOOLKITS
 
 from . import collectors, poller, store
@@ -49,7 +49,7 @@ def _check_known(toolkit) -> str:
 
 def _connected_here(toolkit: str) -> bool:
     try:
-        return bool(workspace_scope.is_enabled(toolkit))
+        return bool(space_scope.is_enabled(toolkit))
     except Exception:
         logger.warning("connections: workspace scope unreadable for %s", toolkit, exc_info=True)
         return False
