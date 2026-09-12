@@ -244,7 +244,9 @@ exceptions:
 
 ### One executor for external commands
 
-Every subprocess xo-space starts goes through `utils/commands.py`:
+Every subprocess xo-space starts goes through the `utils/commands/` package
+(`__init__.py` is the executor; `scheduler.py`, beside it, runs registered
+commands on a fixed interval — see `docs/command-scheduler.md`):
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
 argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
 described as data (the skill catalog, manifests, future automation). The
