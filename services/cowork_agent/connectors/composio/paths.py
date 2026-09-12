@@ -1,4 +1,5 @@
-"""Where Composio's local stores live: ``sessions.json`` and ``action_prefs.json``.
+"""Where Composio's local stores live: ``sessions.json``, ``action_prefs.json`` and
+``space_scope.json``.
 
 Overridable with ``COMPOSIO_STORE_DIR``. The default is ``~/.config/composio/``, not
 ``~/.composio/``, which the Composio SDK owns as scratch space.

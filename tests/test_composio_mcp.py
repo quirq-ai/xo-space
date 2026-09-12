@@ -605,11 +605,11 @@ class GatewayWiringTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
 
-        # The session store is stamped with this pod's workspace, so writing one
-        # requires CODER_WORKSPACE_ID to be set.
+        # The session store is stamped with this install's space, so writing one
+        # requires XO_SPACE_ID to be set.
         env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
-            composio_state.WORKSPACE_ENV: "ws-test",
+            composio_state.SPACE_ENV: "ws-test",
         })
         env.start()
         self.addCleanup(env.stop)

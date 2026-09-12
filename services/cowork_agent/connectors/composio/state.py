@@ -1,17 +1,18 @@
-"""This workspace's Composio identity, resolved from xo-swarm-api.
+"""This space's Composio identity, resolved from xo-swarm-api.
 
 Composio is addressed by the **bare Clerk account id**. This module is the client for
 ``GET /auth/workspace-principal``, a pure identity lookup that reads no database on either
-side; it answers ``{account_id, workspace_id}``.
+side; it answers ``{account_id, space_id}``.
 
-**Connections are account-wide**, and workspaces are separated inside the Composio
-tool-router session — see :mod:`.workspace_scope`. Never compose the account and workspace
+**Connections are account-wide**, and spaces are separated inside the Composio
+tool-router session — see :mod:`.space_scope`. Never compose the account and space
 into one key: an account connected under such a key is unreachable from an account-scoped
 session, because Composio requires a pinned account to belong to the session's ``user_id``.
 
-**The workspace half never leaves this pod.** It comes from ``CODER_WORKSPACE_ID``
-(:func:`workspace_id`) and its only consumer is the ownership stamp on ``sessions.json``,
-which is what stops a store restored from another workspace being adopted.
+``XO_SPACE_ID`` (:func:`space_id`) is how this install names itself. It is sent to the
+swarm as the ``space_id`` parameter here and in the session mint, and it stamps
+``sessions.json`` — the ownership check that stops a store restored from another space
+being adopted. It is never sent to Composio, and it is not a key in any store.
 
 The account id is cached for the life of the pod. A swarm that cannot be reached falls
 back to the cached value, then to the account recorded in this pod's own store
@@ -35,7 +36,7 @@ log = logging.getLogger(__name__)
 
 
 # Do not rename: a 404 here reads as "this swarm predates the route", so a rename would
-# look like an outage on every workspace that has not been redeployed yet.
+# look like an outage on every space that has not been redeployed yet.
 IDENTITY_PATH = os.getenv("XO_PRINCIPAL_PATH", "/auth/workspace-principal")
 
 _TTL = float(os.getenv("COMPOSIO_STATE_TTL", "900"))
@@ -107,7 +108,7 @@ def _endpoint() -> tuple[str, dict[str, str]]:
     token = get_auth_token()
     if not token:
         raise StateUnavailable(
-            "This workspace's Composio account id comes from xo-swarm-api and this "
+            "This space's Composio account id comes from xo-swarm-api and this "
             "backend holds no XO credential. Set XO_API_KEY, or sign in to XO.",
             authoritative=True,
         )
@@ -123,7 +124,7 @@ def _request(*, params: Optional[dict] = None) -> Any:
             resp = client.get(url, headers=headers, params=params)
     except Exception as exc:
         raise StateUnavailable(
-            f"xo-swarm-api could not be reached for this workspace's identity at "
+            f"xo-swarm-api could not be reached for this space's identity at "
             f"{url}: {exc}"
         ) from exc
     return _interpret(resp, url)
@@ -135,7 +136,7 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
     if resp.status_code in (401, 403):
         raise StateUnavailable(
             f"xo-swarm-api rejected this backend's XO credential (HTTP "
-            f"{resp.status_code}) for this workspace's identity.",
+            f"{resp.status_code}) for this space's identity.",
             authoritative=True,
         )
     if resp.status_code == 422:
@@ -146,7 +147,7 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         )
     if resp.status_code >= 400:
         raise StateUnavailable(
-            f"xo-swarm-api returned HTTP {resp.status_code} for this workspace's "
+            f"xo-swarm-api returned HTTP {resp.status_code} for this space's "
             f"identity at {url}."
         )
     try:
@@ -158,37 +159,69 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         ) from exc
 
 
-# Injected by the Coder pod. Not a namespace key — the local stores are already isolated
-# by the filesystem. Its one job is stamping ``sessions.json``, so a store restored from a
-# *different* workspace is discarded rather than adopted along with that workspace's
-# connector scope. Never sent to Composio.
-WORKSPACE_ENV = "CODER_WORKSPACE_ID"
+# The id the swarm knows this Space by — the same value project sharing and usage
+# reporting send — so one install has exactly one identity, on Coder and off. It names
+# this install to xo-swarm-api and stamps ``sessions.json``, so a store restored from a
+# *different* space is discarded rather than adopted along with that space's connector
+# scope. ``space_scope.json`` carries the same stamp informationally (:func:`space_stamp`).
+# Not a namespace key (the local stores are already isolated by the filesystem), and
+# never sent to Composio.
+SPACE_ENV = "XO_SPACE_ID"
 
 
-class WorkspaceIdentityUnavailable(RuntimeError):
-    """CODER_WORKSPACE_ID is unset or empty, so the store cannot be stamped."""
+class SpaceIdentityUnavailable(StateUnavailable):
+    """XO_SPACE_ID is not set, so this install cannot name itself to xo-swarm-api.
+
+    A :class:`StateUnavailable` subclass, and authoritative: the space id is read *inside*
+    the identity fetch, so a plain ``RuntimeError`` here would escape the soft paths
+    (chat, ``/api/tools``) that only guard against ``StateUnavailable`` and surface as a
+    500. As an authoritative refusal it degrades the way a rejected credential does —
+    no stale cache, no store fallback — which is right: an install that cannot name
+    itself has no business being served another space's cached answer.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, authoritative=True)
 
 
-def workspace_id() -> str:
-    """This pod's workspace id.
+def space_id() -> str:
+    """This install's id at the swarm, from ``XO_SPACE_ID``.
 
     Read at call time, not import time, so an operator (or a verification run) can change
     the environment without reimporting. Fails closed: there is no default and no
-    ``"unknown"`` value, because a shared fallback would make every misconfigured pod
-    claim ownership of every other's store.
+    ``"unknown"`` value, because a shared fallback would have every misconfigured install
+    claiming to be the same one.
+
+    ``XO_SPACE_ID`` is the only identity read, on Coder and off: it names this install *at
+    the swarm*, which is the identity every other XO-facing feature already uses.
 
     Raises:
-        WorkspaceIdentityUnavailable: when the variable is unusable. Callers must surface
+        SpaceIdentityUnavailable: when the variable is unusable. Callers must surface
             this, never substitute a default.
     """
-    value = (os.getenv(WORKSPACE_ENV) or "").strip()
+    value = (os.getenv(SPACE_ENV) or "").strip()
     if value:
         return value
-    raise WorkspaceIdentityUnavailable(f"{WORKSPACE_ENV} is not set")
+    raise SpaceIdentityUnavailable(f"{SPACE_ENV} is not set")
 
 
-def _workspace() -> str:
-    return workspace_id()
+def space_stamp(existing: object = None) -> Optional[str]:
+    """The ``space_id`` ``space_scope.json`` should record. Never raises.
+
+    ``XO_SPACE_ID`` when set; otherwise whatever ``existing`` (the document already on
+    disk) carries, so a write from an incomplete environment does not erase what a
+    complete one recorded; otherwise None.
+
+    Informational, and for ``space_scope.json`` only: that store writes without it and
+    nothing compares it on read. ``sessions.json`` is different — its stamp is an
+    ownership check, taken from :func:`space_id`, which fails closed.
+    """
+    value = (os.getenv(SPACE_ENV) or "").strip()
+    if value:
+        return value
+    if isinstance(existing, dict):
+        return str(existing.get("space_id") or "").strip() or None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +254,11 @@ def account_id_if_known() -> Optional[str]:
 
 
 def identity_payload() -> dict:
-    """This pod's identity from xo-swarm-api: account and workspace.
+    """This pod's identity from xo-swarm-api: account and space.
 
     The account id is a constant for the life of the pod, so the answer is cached. The
-    workspace id is echoed back for symmetry only — this pod already knows its own, and
-    :func:`workspace_id` is the authority.
+    space id is echoed back for symmetry only — this install already knows its own, and
+    :func:`space_id` is the authority.
 
     Raises :class:`StateUnavailable`. Callers that must not fail closed (the boot
     installer, the soft chat/tools paths) catch it.
@@ -239,14 +272,14 @@ def identity_payload() -> dict:
             return dict(cached[3])
 
     try:
-        payload = _request(params={"workspace_id": _workspace()})
+        payload = _request(params={"space_id": space_id()})
     except StateUnavailable as exc:
         # A deploy gap must not take Composio down when the store already names its owner.
         deploy_gap = exc.not_found
         if deploy_gap:
             log.error(
                 "composio_state: xo-swarm-api has no %s. Deploy the swarm before this "
-                "workspace.", IDENTITY_PATH,
+                "space.", IDENTITY_PATH,
             )
         with _LOCK:
             stale = _IDENTITY
@@ -264,7 +297,7 @@ def identity_payload() -> dict:
                 "composio_state: identity unavailable (%s); using the account recorded "
                 "in this pod's own store.", exc,
             )
-            return {"account_id": _ACCOUNT_FROM_STORE, "workspace_id": None}
+            return {"account_id": _ACCOUNT_FROM_STORE, "space_id": None}
         raise
 
     # Verbatim — no strip, no normalisation. Composio stores this string against every

@@ -47,7 +47,7 @@ from services.cowork_agent.connectors.composio import action_prefs, categories
 from services.cowork_agent.connectors.composio import identity as identity_mod
 from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.connectors.composio import service, session_identity, state
-from services.cowork_agent.connectors.composio import workspace_scope
+from services.cowork_agent.connectors.composio import space_scope
 from services.swarm_api import composio as swarm_client
 
 WORKSPACE = "ws-test"
@@ -64,7 +64,7 @@ def _enable(toolkit: str = "gmail", *accounts: str) -> None:
     Connections are account-wide but reach is not: a workspace opts in. Most tests below
     care about something else and just need a session to be mintable.
     """
-    workspace_scope.set_toolkit(
+    space_scope.set_toolkit(
         toolkit, enabled=True, connected_account_ids=list(accounts) or None,
         max_accounts=max(len(accounts), 1),
     )
@@ -101,12 +101,12 @@ class _ComposioBase(unittest.TestCase):
         tmp = Path(self._tmp.name)
         self.sessions_path = tmp / "data" / "composio_sessions.json"
         self.prefs_path = tmp / "data" / "composio_action_prefs.json"
-        self.scope_path = tmp / "data" / "composio_workspace_scope.json"
+        self.scope_path = tmp / "data" / "composio_space_scope.json"
 
         env = patch.dict(
             os.environ,
             {
-                state.WORKSPACE_ENV: WORKSPACE,
+                state.SPACE_ENV: WORKSPACE,
                 "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
                 # Required with no default since the loopback fallback was
                 # dropped, and patch.dict does not clear the ambient env — pinned
@@ -122,12 +122,14 @@ class _ComposioBase(unittest.TestCase):
         for patcher in (
             patch.object(service, "_SESSIONS_PATH", self.sessions_path),
             patch.object(action_prefs, "_store_path", return_value=self.prefs_path),
-            patch.object(workspace_scope, "_store_path", return_value=self.scope_path),
-            # Without these two, migration would move the developer's REAL
-            # data/composio_*.json into this temp dir and delete it on cleanup —
-            # see the third trap in the module docstring.
+            patch.object(space_scope, "_store_path", return_value=self.scope_path),
+            # Without these three, migration would move the developer's REAL
+            # data/composio_*.json (or ~/.config/composio/workspace_scope.json) into
+            # this temp dir and delete it on cleanup — see the third trap in the
+            # module docstring.
             patch.object(service, "_LEGACY_SESSIONS_PATHS", ()),
             patch.object(action_prefs, "_LEGACY_PREFS_PATHS", ()),
+            patch.object(space_scope, "_LEGACY_SCOPE_PATHS", ()),
             # The developer's real XO_API_KEY is in this shell, and the tenant-state
             # client and the account-mismatch guard both reach for it. Without this the
             # suite would make live calls to xo-swarm-api. Tests that exercise those
@@ -147,7 +149,7 @@ class _ComposioBase(unittest.TestCase):
             ACCOUNT, _now + 3600, _now,
             {
                 "account_id": ACCOUNT,
-                "workspace_id": WORKSPACE,
+                "space_id": WORKSPACE,
             },
         )
         state.adopt_account_id(ACCOUNT)
@@ -279,11 +281,37 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
 class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_an_unstamped_store_is_never_written(self) -> None:
-        # Without a workspace id the document could not be told apart from one restored
-        # out of another workspace, so it must not be written at all.
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
+        # Without a space id the document could not be told apart from one restored
+        # out of another space, so it must not be written at all.
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
             service.proxy_token()
         self.assertFalse(self.sessions_path.exists())
+
+    def test_an_unset_space_id_leaves_the_store_on_disk_untouched(self) -> None:
+        # The write is refused, not downgraded to an unstamped document.
+        token = service.proxy_token()
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
+            service._persist_session_id("trs_new")
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["space_id"], WORKSPACE)
+        self.assertIsNone(data["session"])
+        self.assertEqual(data["proxy_tokens"], [token])
+
+    def test_a_foreign_store_is_replaced_not_merged_on_write(self) -> None:
+        # Another space's document: its rows never carry over.
+        self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sessions_path.write_text(json.dumps({
+            "version": 4,
+            "space_id": "space-somewhere-else",
+            "account_id": ACCOUNT,
+            "session": "trs_theirs",
+            "proxy_tokens": ["tok-theirs"],
+        }), encoding="utf-8")
+        service._persist_session_id("trs_new")
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["space_id"], WORKSPACE)
+        self.assertEqual(data["session"], "trs_new")
+        self.assertEqual(data["proxy_tokens"], [])
 
     def test_token_is_stable_across_calls(self) -> None:
         first = service.proxy_token()
@@ -335,13 +363,13 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # re-block every boot.
         self.assertEqual(service.drain_orphaned_sessions(), 0)
 
-    async def test_another_workspace_s_store_is_not_adopted(self) -> None:
+    async def test_another_space_s_store_is_not_adopted(self) -> None:
         # A correctly formed, current-version document — refused purely because it was
-        # stamped by a sibling workspace. This is what a restored backup looks like, and
-        # adopting it would mean inheriting that workspace's connector scope.
+        # stamped by a different space. This is what a restored backup looks like, and
+        # adopting it would mean inheriting that space's connector scope.
         self._write_store({
             "version": 4,
-            "workspace_id": "ws-somewhere-else",
+            "space_id": "space-somewhere-else",
             "account_id": ACCOUNT,
             "session": "trs_theirs",
             "proxy_tokens": ["theirs"],
@@ -352,15 +380,25 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertTrue(self.sessions_path.exists())
         self.assertIn("trs_theirs", service._ORPHANED_SESSION_IDS)
 
-    async def test_this_workspace_s_own_store_is_adopted(self) -> None:
+    async def test_this_space_s_own_store_is_adopted(self) -> None:
         self._write_store({
             "version": 4,
-            "workspace_id": WORKSPACE,
+            "space_id": WORKSPACE,
             "account_id": ACCOUNT,
             "session": "trs_ours",
             "proxy_tokens": ["ours"],
         })
         self.assertEqual(service.account_for_proxy_token_local("ours"), ACCOUNT)
+
+    async def test_an_unstamped_store_is_adopted(self) -> None:
+        # Only a space_id stamp is compared; a document without one is this install's.
+        self._write_store({
+            "version": 4,
+            "account_id": ACCOUNT,
+            "session": "trs_unstamped",
+            "proxy_tokens": ["unstamped"],
+        })
+        self.assertEqual(service.account_for_proxy_token_local("unstamped"), ACCOUNT)
 
     async def test_empty_token_resolves_to_nobody(self) -> None:
         self.assertIsNone(await service.account_for_proxy_token(""))
@@ -405,7 +443,7 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(data["version"], 4)
         # The stamp is what lets the pod tell its own store from a restored one, with
         # no network — and the account is what keeps token resolution offline.
-        self.assertEqual(data["workspace_id"], WORKSPACE)
+        self.assertEqual(data["space_id"], WORKSPACE)
         self.assertEqual(data["account_id"], ACCOUNT)
         self.assertEqual(data["proxy_tokens"], [token])
 
@@ -441,7 +479,7 @@ class MigrationTests(_ComposioBase):
     def _write_legacy_store(self) -> dict:
         doc = {
             "version": 4,
-            "workspace_id": WORKSPACE,
+            "space_id": WORKSPACE,
             "account_id": ACCOUNT,
             "session": "trs_legacy",
             "proxy_tokens": ["tok-from-the-checkout"],
@@ -453,9 +491,8 @@ class MigrationTests(_ComposioBase):
         self._write_legacy_store()
         self._arm()
 
-        workspace, account, session_id, tokens = service._load_store()
+        account, session_id, tokens = service._load_store()
 
-        self.assertEqual(workspace, WORKSPACE)
         self.assertEqual(account, ACCOUNT)
         self.assertEqual(session_id, "trs_legacy")
         self.assertEqual(tokens, {"tok-from-the-checkout"})
@@ -472,7 +509,7 @@ class MigrationTests(_ComposioBase):
         self.sessions_path.write_text(
             json.dumps({
                 "version": 4,
-                "workspace_id": WORKSPACE,
+                "space_id": WORKSPACE,
                 "account_id": ACCOUNT,
                 "session": "trs_current",
                 "proxy_tokens": [],
@@ -481,7 +518,7 @@ class MigrationTests(_ComposioBase):
         )
         self._arm()
 
-        _ws, _account, session_id, _tokens = service._load_store()
+        _account, session_id, _tokens = service._load_store()
 
         self.assertEqual(session_id, "trs_current")
         # The legacy file is left alone rather than deleted: nothing read it, so
@@ -493,11 +530,11 @@ class MigrationTests(_ComposioBase):
         self._arm()
 
         with patch.object(paths.shutil, "move", side_effect=OSError("read-only")):
-            workspace, account, session_id, tokens = service._load_store()
+            account, session_id, tokens = service._load_store()
 
         # The same degradation as a store that was never written — not a crash on the
         # MCP hot path, which runs this on every tools/call.
-        self.assertEqual((workspace, account, session_id, tokens), (None, None, None, set()))
+        self.assertEqual((account, session_id, tokens), (None, None, set()))
         self.assertFalse(self.sessions_path.exists())
 
     def test_prefs_migrate_through_the_patched_store_path(self) -> None:
@@ -857,26 +894,26 @@ class MultiAccountTests(_ComposioBase):
     # Pins are now the workspace's explicit choice, not a heuristic. The old behaviour —
     # "pin whatever is newest and active" — is precisely what this replaces: with
     # account-wide connections it would let a connect performed in a sibling workspace
-    # silently repoint this one. workspace_scope.pins()/enabled_toolkits() are purely
+    # silently repoint this one. space_scope.pins()/enabled_toolkits() are purely
     # local, so most of these need no swarm_client patch at all.
 
     def test_a_pin_is_the_workspace_s_choice_not_the_newest_account(self) -> None:
         _enable("gmail", "ca_old")
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_old"]})
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_old"]})
 
     def test_an_unenabled_toolkit_is_never_pinned_even_when_connected(self) -> None:
         # The account holds a Gmail connection; this workspace has not opted in.
-        self.assertEqual(workspace_scope.pins(), {})
-        self.assertEqual(workspace_scope.enabled_toolkits(), [])
+        self.assertEqual(space_scope.pins(), {})
+        self.assertEqual(space_scope.enabled_toolkits(), [])
 
     def test_pinning_never_exceeds_the_configured_maximum(self) -> None:
         # Composio rejects a session pinning more than the cap, and that failure would
         # take every other toolkit down with it — so the excess is dropped here.
-        workspace_scope.set_toolkit(
+        space_scope.set_toolkit(
             "gmail", enabled=True,
             connected_account_ids=["ca_1", "ca_2", "ca_3"], max_accounts=2,
         )
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
 
     def test_a_non_multi_account_session_pins_exactly_one(self) -> None:
         self.assertEqual(service.max_accounts_per_toolkit(), 1)
@@ -889,10 +926,10 @@ class MultiAccountTests(_ComposioBase):
         _enable("gmail", "ca_gone")
         with patch.object(swarm_client, "list_connections", return_value=[_row("ca_live")]):
             self.assertTrue(service.prune_scope_to_live_accounts(ACCOUNT))
-        self.assertEqual(workspace_scope.pins(), {})
+        self.assertEqual(space_scope.pins(), {})
         # And with nothing left pinned the toolkit goes off, rather than falling back
         # to Composio's most-recently-connected default.
-        self.assertEqual(workspace_scope.enabled_toolkits(), [])
+        self.assertEqual(space_scope.enabled_toolkits(), [])
 
     def test_a_disabled_account_counts_as_gone_for_pruning(self) -> None:
         _enable("gmail", "ca_off")
@@ -900,13 +937,13 @@ class MultiAccountTests(_ComposioBase):
             _row("ca_off", is_disabled=True), _row("ca_on"),
         ]):
             service.prune_scope_to_live_accounts(ACCOUNT)
-        self.assertEqual(workspace_scope.pins(), {})
+        self.assertEqual(space_scope.pins(), {})
 
     def test_pruning_leaves_a_healthy_scope_untouched(self) -> None:
         _enable("gmail", "ca_1")
         with patch.object(swarm_client, "list_connections", return_value=[_row("ca_1")]):
             self.assertFalse(service.prune_scope_to_live_accounts(ACCOUNT))
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_1"]})
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_1"]})
 
     # ---- the session ----
 
@@ -1012,7 +1049,7 @@ class MultiAccountTests(_ComposioBase):
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
-        workspace_scope.set_toolkit("gmail", enabled=False)
+        space_scope.set_toolkit("gmail", enabled=False)
         with patch.object(swarm_client, "delete_session"):
             service.sync_session(ACCOUNT)
         self.assertIsNone(service._SESSION_ID)
@@ -1197,11 +1234,12 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     async def test_a_missing_workspace_no_longer_refuses_the_request(self) -> None:
         # This gate used to 401 to avoid "falling back to an account-wide Composio
         # bucket". That bucket is now the intended design, so the check had inverted
-        # from a protection into an outage. The workspace id still matters — it stamps
-        # the session store — but that is the store's problem to report.
+        # from a protection into an outage. The space id still matters — the swarm
+        # needs it to answer "who am I?" — but that is the identity fetch's problem to
+        # report, and here the account is already cached.
         sid = session_identity.remember(secrets.token_urlsafe(32))
         request = _make_request({"x-xo-session": sid})
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
             self.assertEqual(
                 await identity_mod.get_composio_user(request), ACCOUNT
             )
@@ -1649,13 +1687,13 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(sweep.skipped, "account_unavailable")
         self.assertFalse(sweep.retryable)
 
-    async def test_missing_workspace_installs_nothing_and_is_final(self) -> None:
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}), \
+    async def test_missing_space_id_installs_nothing_and_is_final(self) -> None:
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}), \
                 patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("routers.auth.auth.get_auth_token", return_value="tok"):
             sweep = await service.install_gateways()
         self.assertEqual(sweep.results, {})
-        self.assertEqual(sweep.skipped, "no_workspace")
+        self.assertEqual(sweep.skipped, "no_space")
         self.assertFalse(sweep.retryable)
 
     async def test_a_failing_agent_does_not_stop_the_others(self) -> None:
@@ -1888,7 +1926,7 @@ class GatewayKickWithoutLoopTests(_ComposioBase):
         sweep.assert_not_called()
 
 
-class WorkspaceScopeTests(_ComposioBase):
+class SpaceScopeTests(_ComposioBase):
     """The per-workspace half of connector isolation.
 
     Connections are account-wide; this store is what keeps a workspace from reaching
@@ -1896,79 +1934,105 @@ class WorkspaceScopeTests(_ComposioBase):
     """
 
     def test_a_toolkit_with_no_entry_is_off(self) -> None:
-        self.assertFalse(workspace_scope.is_enabled("gmail"))
-        self.assertEqual(workspace_scope.enabled_toolkits(), [])
-        self.assertEqual(workspace_scope.pins(), {})
+        self.assertFalse(space_scope.is_enabled("gmail"))
+        self.assertEqual(space_scope.enabled_toolkits(), [])
+        self.assertEqual(space_scope.pins(), {})
 
     def test_enabling_is_partial_and_leaves_other_fields_alone(self) -> None:
-        workspace_scope.set_toolkit("gmail", enabled=True,
+        space_scope.set_toolkit("gmail", enabled=True,
                                     connected_account_ids=["ca_1"])
-        workspace_scope.set_toolkit("gmail", enabled=False)
-        entry = workspace_scope.load()["gmail"]
+        space_scope.set_toolkit("gmail", enabled=False)
+        entry = space_scope.load()["gmail"]
         self.assertFalse(entry["enabled"])
         self.assertEqual(entry["connected_account_ids"], ["ca_1"])
 
     def test_an_enabled_toolkit_with_no_pin_is_omitted_from_the_pin_map(self) -> None:
         # Composio reads an empty pin list as "no account is permitted", which would
         # surface as a confusing execution-time failure rather than a default.
-        workspace_scope.set_toolkit("gmail", enabled=True)
-        self.assertEqual(workspace_scope.enabled_toolkits(), ["gmail"])
-        self.assertEqual(workspace_scope.pins(), {})
+        space_scope.set_toolkit("gmail", enabled=True)
+        self.assertEqual(space_scope.enabled_toolkits(), ["gmail"])
+        self.assertEqual(space_scope.pins(), {})
 
     def test_duplicate_pins_are_collapsed(self) -> None:
-        workspace_scope.set_toolkit(
+        space_scope.set_toolkit(
             "gmail", enabled=True,
             connected_account_ids=["ca_1", "ca_1", "ca_2"], max_accounts=5,
         )
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
 
     def test_unlinking_the_last_account_switches_the_toolkit_off(self) -> None:
         _enable("gmail", "ca_1")
-        workspace_scope.unlink_account("gmail", "ca_1")
-        self.assertFalse(workspace_scope.is_enabled("gmail"))
-        self.assertEqual(workspace_scope.pins(), {})
+        space_scope.unlink_account("gmail", "ca_1")
+        self.assertFalse(space_scope.is_enabled("gmail"))
+        self.assertEqual(space_scope.pins(), {})
 
     def test_unlinking_one_of_several_leaves_the_toolkit_on(self) -> None:
-        workspace_scope.set_toolkit(
+        space_scope.set_toolkit(
             "gmail", enabled=True,
             connected_account_ids=["ca_1", "ca_2"], max_accounts=5,
         )
-        workspace_scope.unlink_account("gmail", "ca_1")
-        self.assertTrue(workspace_scope.is_enabled("gmail"))
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_2"]})
+        space_scope.unlink_account("gmail", "ca_1")
+        self.assertTrue(space_scope.is_enabled("gmail"))
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_2"]})
 
     def test_a_connect_here_enables_it_here(self) -> None:
-        workspace_scope.adopt_connection("gmail", "ca_new")
-        self.assertTrue(workspace_scope.is_enabled("gmail"))
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_new"]})
+        space_scope.adopt_connection("gmail", "ca_new")
+        self.assertTrue(space_scope.is_enabled("gmail"))
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_new"]})
 
     def test_adopting_replaces_the_pin_when_only_one_is_allowed(self) -> None:
         _enable("gmail", "ca_old")
-        workspace_scope.adopt_connection("gmail", "ca_new", max_accounts=1)
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_new"]})
+        space_scope.adopt_connection("gmail", "ca_new", max_accounts=1)
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_new"]})
 
     def test_adopting_twice_does_not_duplicate(self) -> None:
-        workspace_scope.adopt_connection("gmail", "ca_1", max_accounts=5)
-        workspace_scope.adopt_connection("gmail", "ca_1", max_accounts=5)
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_1"]})
+        space_scope.adopt_connection("gmail", "ca_1", max_accounts=5)
+        space_scope.adopt_connection("gmail", "ca_1", max_accounts=5)
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_1"]})
 
     def test_the_store_survives_a_process_restart(self) -> None:
         _enable("notion", "ca_n")
-        self.assertEqual(workspace_scope.pins(), {"notion": ["ca_n"]})
+        self.assertEqual(space_scope.pins(), {"notion": ["ca_n"]})
         stored = json.loads(self.scope_path.read_text(encoding="utf-8"))
         self.assertEqual(stored["version"], 1)
         # Flat: a pod is one workspace, so there is no workspace level to key on.
         self.assertNotIn("workspaces", stored)
+        self.assertEqual(stored["space_id"], WORKSPACE)
+
+    def test_the_scope_keeps_its_stamp_when_the_space_id_is_unset(self) -> None:
+        _enable("gmail", "ca_1")
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
+            space_scope.set_toolkit("gmail", enabled=False)
+        stored = json.loads(self.scope_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored["space_id"], WORKSPACE)
+        self.assertFalse(stored["toolkits"]["gmail"]["enabled"])
 
     def test_an_unreadable_document_reads_as_nothing_enabled(self) -> None:
         # Fail closed. A corrupt store must not be read as "everything on".
         self.scope_path.parent.mkdir(parents=True, exist_ok=True)
         self.scope_path.write_text("{not json", encoding="utf-8")
-        self.assertEqual(workspace_scope.load(), {})
-        self.assertEqual(workspace_scope.enabled_toolkits(), [])
+        self.assertEqual(space_scope.load(), {})
+        self.assertEqual(space_scope.enabled_toolkits(), [])
+
+    def test_a_workspace_scope_json_left_by_an_older_build_is_moved_once(self) -> None:
+        # The store was renamed from workspace_scope.json. Without the move, every
+        # toolkit a user had enabled would silently read as off.
+        legacy = self.scope_path.parent / "workspace_scope.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text(json.dumps({
+            "version": 1,
+            "toolkits": {"gmail": {"enabled": True, "connected_account_ids": ["ca_1"]}},
+        }), encoding="utf-8")
+        with patch.object(space_scope, "_LEGACY_SCOPE_PATHS", (legacy,)):
+            self.assertEqual(space_scope.pins(), {"gmail": ["ca_1"]})
+            self.assertTrue(self.scope_path.exists())
+            self.assertFalse(legacy.exists())
+            # Once moved, a stray legacy file never clobbers the live store.
+            legacy.write_text(json.dumps({"version": 1, "toolkits": {}}), encoding="utf-8")
+            self.assertEqual(space_scope.pins(), {"gmail": ["ca_1"]})
 
 
-class WorkspaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
+class SpaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     async def test_scope_route_reports_this_workspace_s_choice(self) -> None:
         _enable("gmail", "ca_1")
         response = await router_mod.get_toolkit_scope("gmail", user_id=ACCOUNT)
@@ -2026,7 +2090,7 @@ class WorkspaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
                 patch.object(service, "sync_session"):
             await router_mod.disconnect("gmail", body, user_id=ACCOUNT)
         deleted.assert_called_once_with("ca_1")
-        self.assertEqual(workspace_scope.pins(), {})
+        self.assertEqual(space_scope.pins(), {})
 
     async def test_a_completed_connect_enables_the_toolkit_in_this_workspace(self) -> None:
         # The OAuth callback carries no account id; the status poll is what learns it.
@@ -2036,8 +2100,8 @@ class WorkspaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             await router_mod.connect_status(
                 "gmail", connection_request_id="cr_1", user_id=ACCOUNT,
             )
-        self.assertTrue(workspace_scope.is_enabled("gmail"))
-        self.assertEqual(workspace_scope.pins(), {"gmail": ["ca_fresh"]})
+        self.assertTrue(space_scope.is_enabled("gmail"))
+        self.assertEqual(space_scope.pins(), {"gmail": ["ca_fresh"]})
 
     async def test_toolkits_route_separates_connected_from_enabled_here(self) -> None:
         # The distinction the whole change rests on: a sibling workspace's connection
@@ -2079,7 +2143,7 @@ class WorkspaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
         with patch.object(service, "list_connections", side_effect=_list):
             service.prune_scope_to_live_accounts(ACCOUNT)
-        self.assertNotIn("ca_legacy", str(workspace_scope.pins()))
+        self.assertNotIn("ca_legacy", str(space_scope.pins()))
 
 
 if __name__ == "__main__":

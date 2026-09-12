@@ -2,7 +2,7 @@
 
 Minting moved to the swarm (``POST /auth/session/self``). This route no longer generates
 an id; it presents this backend's XO credential, supplies the one thing the swarm cannot
-know — this pod's workspace id — and records what comes back so the next request can be
+know — this install's space id — and records what comes back so the next request can be
 checked locally.
 
 Hermetic: httpx is never allowed to leave the process, and the credential is patched, so
@@ -38,7 +38,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         session_identity._SESSIONS.clear()
         self.addCleanup(session_identity._SESSIONS.clear)
 
-        env = patch.dict("os.environ", {state.WORKSPACE_ENV: WORKSPACE})
+        env = patch.dict("os.environ", {state.SPACE_ENV: WORKSPACE})
         env.start()
         self.addCleanup(env.stop)
 
@@ -47,7 +47,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         warm = patch(
             "services.cowork_agent.connectors.composio.state.aidentity_payload",
             new=AsyncMock(return_value={"account_id": ACCOUNT,
-                                        "workspace_id": WORKSPACE}),
+                                        "space_id": WORKSPACE}),
         )
         warm.start()
         self.addCleanup(warm.stop)
@@ -70,7 +70,7 @@ class MintTests(_Base):
     async def test_the_swarm_s_id_is_returned_and_recorded_locally(self) -> None:
         swarm, post = self._swarm(
             _response(200, {"session_id": MINTED, "account_id": ACCOUNT,
-                            "workspace_id": WORKSPACE, "expires_in": 3600})
+                            "space_id": WORKSPACE, "expires_in": 3600})
         )
         with swarm, patch.object(composio_session, "get_auth_token", return_value="tok"):
             result = await composio_session.xo_auth_session_self()
@@ -89,7 +89,23 @@ class MintTests(_Base):
 
         _, kwargs = post.call_args
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer tok"})
-        self.assertEqual(kwargs["json"], {"workspace_id": WORKSPACE})
+        self.assertEqual(kwargs["json"], {"space_id": WORKSPACE})
+
+    async def test_xo_space_id_is_the_only_space_identity(self) -> None:
+        # One flow on Coder and off: the id the swarm knows this Space by, the same
+        # value project sharing and usage reporting send.
+        self.assertEqual(state.SPACE_ENV, "XO_SPACE_ID")
+        swarm, post = self._swarm(
+            _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
+        )
+        env = {"XO_SPACE_ID": "space-local"}
+        with swarm, patch.dict("os.environ", env), \
+                patch.object(composio_session, "get_auth_token", return_value="tok"):
+            result = await composio_session.xo_auth_session_self()
+
+        self.assertEqual(result["session_id"], MINTED)
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs["json"], {"space_id": "space-local"})
 
     async def test_the_tenant_key_never_reaches_the_browser(self) -> None:
         swarm, _ = self._swarm(
@@ -131,10 +147,11 @@ class RefusalTests(_Base):
         exc = await self._fails_with(401, token=None)
         self.assertIn("XO_API_KEY", exc.detail["error"])
 
-    async def test_no_workspace_is_a_401_and_never_an_account_wide_bucket(self) -> None:
-        with patch.dict("os.environ", {state.WORKSPACE_ENV: ""}):
+    async def test_no_space_id_is_a_401_and_never_an_account_wide_bucket(self) -> None:
+        # Without XO_SPACE_ID the mint refuses.
+        with patch.dict("os.environ", {state.SPACE_ENV: ""}):
             exc = await self._fails_with(401)
-        self.assertIn(state.WORKSPACE_ENV, exc.detail["error"])
+        self.assertIn(state.SPACE_ENV, exc.detail["error"])
 
     async def test_a_rejected_credential_is_a_401_not_a_503(self) -> None:
         # Authoritative: XO said no. Sending the user to sign in is the right advice.
