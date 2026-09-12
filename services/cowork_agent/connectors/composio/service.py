@@ -385,15 +385,13 @@ class NoToolkitsEnabled(RuntimeError):
 
 
 def _stamp_of(data: object) -> Optional[str]:
-    """The space a store document was written for, or None when it is unstamped.
+    """The space a store document was written for (its ``space_id``), or None when unstamped.
 
-    ``space_id`` is the stamp. A ``workspace_id`` an older build wrote is read as the same
-    stamp, so a store written under the same ``XO_SPACE_ID`` before the rename is still
-    this install's; one holding Coder's pod id simply does not match.
+    ``XO_SPACE_ID`` is the only identity: no other key is read as a stamp.
     """
     if not isinstance(data, dict):
         return None
-    return str(data.get("space_id") or data.get("workspace_id") or "").strip() or None
+    return str(data.get("space_id") or "").strip() or None
 
 
 def _read_stamp() -> Optional[str]:

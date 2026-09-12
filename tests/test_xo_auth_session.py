@@ -93,13 +93,12 @@ class MintTests(_Base):
 
     async def test_xo_space_id_is_the_only_space_identity(self) -> None:
         # One flow on Coder and off: the id the swarm knows this Space by, the same
-        # value project sharing and usage reporting send. Coder's own workspace id
-        # names a *pod* and is never consulted, even when the pod still injects it.
+        # value project sharing and usage reporting send.
         self.assertEqual(state.SPACE_ENV, "XO_SPACE_ID")
         swarm, post = self._swarm(
             _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
         )
-        env = {"XO_SPACE_ID": "space-local", "CODER_WORKSPACE_ID": "coder-uuid"}
+        env = {"XO_SPACE_ID": "space-local"}
         with swarm, patch.dict("os.environ", env), \
                 patch.object(composio_session, "get_auth_token", return_value="tok"):
             result = await composio_session.xo_auth_session_self()
@@ -149,8 +148,8 @@ class RefusalTests(_Base):
         self.assertIn("XO_API_KEY", exc.detail["error"])
 
     async def test_no_space_id_is_a_401_and_never_an_account_wide_bucket(self) -> None:
-        # A Coder id alone never counts: without XO_SPACE_ID the mint refuses.
-        with patch.dict("os.environ", {state.SPACE_ENV: "", "CODER_WORKSPACE_ID": "coder-uuid"}):
+        # Without XO_SPACE_ID the mint refuses.
+        with patch.dict("os.environ", {state.SPACE_ENV: ""}):
             exc = await self._fails_with(401)
         self.assertIn(state.SPACE_ENV, exc.detail["error"])
 

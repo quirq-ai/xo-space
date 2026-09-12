@@ -297,37 +297,18 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertIsNone(data["session"])
         self.assertEqual(data["proxy_tokens"], [token])
 
-    def test_a_legacy_workspace_id_stamp_is_rewritten_as_space_id(self) -> None:
-        # Written before the rename under the same XO_SPACE_ID: still this space's
-        # store, so its tokens survive and the old key does not.
-        self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
-        self.sessions_path.write_text(json.dumps({
-            "version": 4,
-            "workspace_id": WORKSPACE,
-            "account_id": ACCOUNT,
-            "session": None,
-            "proxy_tokens": ["tok-old"],
-        }), encoding="utf-8")
-        service._persist_session_id("trs_new")
-        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
-        self.assertNotIn("workspace_id", data)
-        self.assertEqual(data["space_id"], WORKSPACE)
-        self.assertEqual(data["session"], "trs_new")
-        self.assertEqual(data["proxy_tokens"], ["tok-old"])
-
     def test_a_foreign_store_is_replaced_not_merged_on_write(self) -> None:
-        # A Coder pod id (or any other space) is not ours: its rows never carry over.
+        # Another space's document: its rows never carry over.
         self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
         self.sessions_path.write_text(json.dumps({
             "version": 4,
-            "workspace_id": "85572265-4598-4e96-a30b-503704b7aa28",
+            "space_id": "space-somewhere-else",
             "account_id": ACCOUNT,
             "session": "trs_theirs",
             "proxy_tokens": ["tok-theirs"],
         }), encoding="utf-8")
         service._persist_session_id("trs_new")
         data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
-        self.assertNotIn("workspace_id", data)
         self.assertEqual(data["space_id"], WORKSPACE)
         self.assertEqual(data["session"], "trs_new")
         self.assertEqual(data["proxy_tokens"], [])
@@ -409,27 +390,15 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         })
         self.assertEqual(service.account_for_proxy_token_local("ours"), ACCOUNT)
 
-    async def test_a_legacy_workspace_id_stamp_with_this_space_s_id_is_adopted(self) -> None:
-        # Written before the rename: the same XO_SPACE_ID under the old key is still ours.
+    async def test_an_unstamped_store_is_adopted(self) -> None:
+        # Only a space_id stamp is compared; a document without one is this install's.
         self._write_store({
             "version": 4,
-            "workspace_id": WORKSPACE,
             "account_id": ACCOUNT,
-            "session": "trs_legacy",
-            "proxy_tokens": ["legacy"],
+            "session": "trs_unstamped",
+            "proxy_tokens": ["unstamped"],
         })
-        self.assertEqual(service.account_for_proxy_token_local("legacy"), ACCOUNT)
-
-    async def test_a_legacy_coder_pod_id_stamp_is_not_adopted(self) -> None:
-        # Older builds stamped CODER_WORKSPACE_ID. A pod id is not this space's id.
-        self._write_store({
-            "version": 4,
-            "workspace_id": "85572265-4598-4e96-a30b-503704b7aa28",
-            "account_id": ACCOUNT,
-            "session": "trs_pod",
-            "proxy_tokens": ["pod"],
-        })
-        self.assertIsNone(service.account_for_proxy_token_local("pod"))
+        self.assertEqual(service.account_for_proxy_token_local("unstamped"), ACCOUNT)
 
     async def test_empty_token_resolves_to_nobody(self) -> None:
         self.assertIsNone(await service.account_for_proxy_token(""))
@@ -475,7 +444,6 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # The stamp is what lets the pod tell its own store from a restored one, with
         # no network — and the account is what keeps token resolution offline.
         self.assertEqual(data["space_id"], WORKSPACE)
-        self.assertNotIn("workspace_id", data)
         self.assertEqual(data["account_id"], ACCOUNT)
         self.assertEqual(data["proxy_tokens"], [token])
 
@@ -511,7 +479,7 @@ class MigrationTests(_ComposioBase):
     def _write_legacy_store(self) -> dict:
         doc = {
             "version": 4,
-            "workspace_id": WORKSPACE,
+            "space_id": WORKSPACE,
             "account_id": ACCOUNT,
             "session": "trs_legacy",
             "proxy_tokens": ["tok-from-the-checkout"],
@@ -541,7 +509,7 @@ class MigrationTests(_ComposioBase):
         self.sessions_path.write_text(
             json.dumps({
                 "version": 4,
-                "workspace_id": WORKSPACE,
+                "space_id": WORKSPACE,
                 "account_id": ACCOUNT,
                 "session": "trs_current",
                 "proxy_tokens": [],
@@ -2030,7 +1998,6 @@ class SpaceScopeTests(_ComposioBase):
         # Flat: a pod is one workspace, so there is no workspace level to key on.
         self.assertNotIn("workspaces", stored)
         self.assertEqual(stored["space_id"], WORKSPACE)
-        self.assertNotIn("workspace_id", stored)
 
     def test_the_scope_keeps_its_stamp_when_the_space_id_is_unset(self) -> None:
         _enable("gmail", "ca_1")

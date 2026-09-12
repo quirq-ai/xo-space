@@ -443,10 +443,8 @@ one backend needs credential forwarding — a design change, not a re-add.
 
 **`XO_SPACE_ID` is the space identity, and it is a store stamp, not a tenant key.**
 One flow on Coder and off: the id the swarm knows this Space by (the same value project
-sharing and usage reporting send). `CODER_WORKSPACE_ID` is **not** consulted, and not as a
-fallback either: it names a *pod*, and honouring both let a Coder pod report one id to
-xo-swarm-api while recording another locally. A pod that carried only the Coder id must now
-set `XO_SPACE_ID` explicitly.
+sharing and usage reporting send) is the only identity the connector reads, so every
+install sets `XO_SPACE_ID` explicitly.
 
 On the wire it is sent as `space_id`: `GET /auth/workspace-principal?space_id=` and the
 `space_id` body field of `POST /auth/session/self`. It is never sent to Composio and is not
@@ -454,8 +452,8 @@ a key in any store — a pod is one space, so the local stores are already isola
 filesystem. Locally its job is stamping `sessions.json` with the space that wrote it, so
 a store restored out of a backup or another space's home directory is discarded rather than
 adopted along with that space's connector scope. Without `XO_SPACE_ID` the store is never
-written, and a stamp an older build wrote as `workspace_id` with the same value is still
-recognised. Comparing the stamp needs no network, which is what keeps the MCP hot path
+written; only a `space_id` stamp is compared, so an unstamped document is adopted and
+stamped on its next write. Comparing the stamp needs no network, which is what keeps the MCP hot path
 offline. `space_scope.json` (formerly `workspace_scope.json`) carries the same `space_id`
 stamp, but there it is informational: nothing compares it, and a write without
 `XO_SPACE_ID` keeps the stamp already on disk.
