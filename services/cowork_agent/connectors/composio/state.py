@@ -5,7 +5,7 @@ Composio is addressed by the **bare Clerk account id**. This module is the clien
 side; it answers ``{account_id, space_id}``.
 
 **Connections are account-wide**, and spaces are separated inside the Composio
-tool-router session — see :mod:`.workspace_scope`. Never compose the account and space
+tool-router session — see :mod:`.space_scope`. Never compose the account and space
 into one key: an account connected under such a key is unreachable from an account-scoped
 session, because Composio requires a pinned account to belong to the session's ``user_id``.
 
@@ -163,8 +163,9 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
 # reporting send — so one install has exactly one identity, on Coder and off. It names
 # this install to xo-swarm-api and stamps ``sessions.json``, so a store restored from a
 # *different* space is discarded rather than adopted along with that space's connector
-# scope. Not a namespace key (the local stores are already isolated by the filesystem),
-# and never sent to Composio.
+# scope. ``space_scope.json`` carries the same stamp informationally (:func:`space_stamp`).
+# Not a namespace key (the local stores are already isolated by the filesystem), and
+# never sent to Composio.
 SPACE_ENV = "XO_SPACE_ID"
 
 
@@ -203,6 +204,26 @@ def space_id() -> str:
     if value:
         return value
     raise SpaceIdentityUnavailable(f"{SPACE_ENV} is not set")
+
+
+def space_stamp(existing: object = None) -> Optional[str]:
+    """The ``space_id`` ``space_scope.json`` should record. Never raises.
+
+    ``XO_SPACE_ID`` when set; otherwise whatever ``existing`` (the document already on
+    disk) carries, so a write from an incomplete environment does not erase what a
+    complete one recorded; otherwise None. A legacy ``workspace_id`` — Coder's pod id — is
+    never adopted.
+
+    Informational, and for ``space_scope.json`` only: that store writes without it and
+    nothing compares it on read. ``sessions.json`` is different — its stamp is an
+    ownership check, taken from :func:`space_id`, which fails closed.
+    """
+    value = (os.getenv(SPACE_ENV) or "").strip()
+    if value:
+        return value
+    if isinstance(existing, dict):
+        return str(existing.get("space_id") or "").strip() or None
+    return None
 
 
 # ---------------------------------------------------------------------------

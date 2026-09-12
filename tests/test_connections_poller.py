@@ -51,7 +51,7 @@ class _Base(unittest.TestCase):
         self.loop = asyncio.new_event_loop()
         self.known = patch.object(poller.state, "account_id_if_known", return_value="user_x")
         self.aaccount = patch.object(poller.state, "aaccount_id", new=AsyncMock(return_value="user_x"))
-        self.scope = patch.object(poller.workspace_scope, "enabled_toolkits",
+        self.scope = patch.object(poller.space_scope, "enabled_toolkits",
                                   return_value=["gmail", "googlecalendar", "notion"])
         self.entry = patch.object(poller.composio_service, "build_mcp_server_entry", return_value=ENTRY)
         self.call = patch.object(poller.mcp_client, "call_tool",

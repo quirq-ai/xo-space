@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import workspace_scope
+from services.cowork_agent.connectors.composio import space_scope
 from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ async def list_toolkits(
     classified = composio_categories.classified_toolkits()
 
     multi = composio_service.multi_account_config()
-    scope = workspace_scope.load()
+    scope = space_scope.load()
 
     toolkits: list[dict[str, Any]] = []
     for toolkit_id, meta in composio_service.TOOLKITS.items():
@@ -155,7 +155,7 @@ async def connect_status(
         connected_account_id = result.get("connected_account_id")
         if connected_account_id:
             try:
-                workspace_scope.adopt_connection(
+                space_scope.adopt_connection(
                     toolkit,
                     connected_account_id,
                     max_accounts=composio_service.max_accounts_per_toolkit(),
@@ -194,7 +194,7 @@ async def disconnect(
         raise HTTPException(status_code=404, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=502, detail="Composio disconnect failed.")
-    workspace_scope.unlink_account(toolkit, body.connected_account_id)
+    space_scope.unlink_account(toolkit, body.connected_account_id)
     rows = composio_service.list_connections(user_id)
     still_connected = any(
         r.get("connected_account_id") == body.connected_account_id and r.get("status") == "ACTIVE"
@@ -227,7 +227,7 @@ async def unlink_account(
             status_code=404,
             detail="No such connected account for this user and toolkit.",
         )
-    entry = workspace_scope.unlink_account(toolkit, connected_account_id)
+    entry = space_scope.unlink_account(toolkit, connected_account_id)
     composio_service.sync_session(user_id)
     return JSONResponse({
         "toolkit": toolkit,
@@ -248,7 +248,7 @@ async def get_toolkit_scope(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    entry = workspace_scope.load().get(toolkit) or {}
+    entry = space_scope.load().get(toolkit) or {}
     return JSONResponse({
         "toolkit": toolkit,
         "workspace_enabled": bool(entry.get("enabled")),
@@ -287,7 +287,7 @@ async def put_toolkit_scope(
                 ),
             )
 
-    entry = workspace_scope.set_toolkit(
+    entry = space_scope.set_toolkit(
         toolkit,
         enabled=body.enabled,
         connected_account_ids=body.connected_account_ids,
@@ -321,7 +321,7 @@ async def list_toolkit_accounts(
         raise HTTPException(status_code=404, detail=str(exc))
 
     slug = composio_service.toolkit_meta(toolkit).slug
-    scope_entry = workspace_scope.load().get(toolkit) or {}
+    scope_entry = space_scope.load().get(toolkit) or {}
     pinned = set(scope_entry.get("connected_account_ids") or [])
     default_seen = False
     for row in accounts:

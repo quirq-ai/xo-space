@@ -451,12 +451,14 @@ set `XO_SPACE_ID` explicitly.
 On the wire it is sent as `space_id`: `GET /auth/workspace-principal?space_id=` and the
 `space_id` body field of `POST /auth/session/self`. It is never sent to Composio and is not
 a key in any store — a pod is one space, so the local stores are already isolated by the
-filesystem. Locally its one job is stamping `sessions.json` with the space that wrote it, so
+filesystem. Locally its job is stamping `sessions.json` with the space that wrote it, so
 a store restored out of a backup or another space's home directory is discarded rather than
 adopted along with that space's connector scope. Without `XO_SPACE_ID` the store is never
 written, and a stamp an older build wrote as `workspace_id` with the same value is still
 recognised. Comparing the stamp needs no network, which is what keeps the MCP hot path
-offline.
+offline. `space_scope.json` (formerly `workspace_scope.json`) carries the same `space_id`
+stamp, but there it is informational: nothing compares it, and a write without
+`XO_SPACE_ID` keeps the stamp already on disk.
 
 The route gate that used to 401 on a missing workspace id is **gone**: it existed to
 prevent "falling back to an account-wide bucket", and that bucket is now the intended
@@ -481,7 +483,7 @@ anything that needs one.
 
 Connections are account-wide. What keeps one workspace out of another's connectors is
 the **Composio tool-router session**, built per workspace in `service._session_config`
-from `connectors/composio/workspace_scope.py`:
+from `connectors/composio/space_scope.py`:
 
 ```
 composio.create(
@@ -505,7 +507,7 @@ Three properties of Composio's API make this a real boundary rather than a conve
 *most recently connected* active account at execution time, so a connect performed in a
 sibling workspace would silently repoint this one. The single concession to ergonomics is
 that the workspace which ran the OAuth flow enables and pins the result immediately
-(`workspace_scope.adopt_connection`, called from the status poll — the callback itself
+(`space_scope.adopt_connection`, called from the status poll — the callback itself
 carries no account id). Every other workspace starts empty and opts in.
 
 A workspace with nothing enabled gets **no session at all** (`NoToolkitsEnabled` → 409).
@@ -653,7 +655,7 @@ old `data/composio_*.json` location is moved into place on first access.
 |---|---|
 | `sessions.json` (0600) | the `space_id` stamp, the account id, this install's Composio session id, and the **plaintext** MCP proxy tokens. A store stamped for another space is not adopted — see §10.1 |
 | `action_prefs.json` | disabled actions — only *disabled* slugs, so an action added to a toolkit later defaults to enabled |
-| `workspace_scope.json` | which toolkits this workspace has turned on, and which connected accounts back them |
+| `space_scope.json` | the `space_id` stamp, which toolkits this workspace has turned on, and which connected accounts back them. Formerly `workspace_scope.json`, which is moved here on first access |
 
 All three are flat: a pod is one space, so there is no user or space level to key on.
 `sessions.json` carries the `space_id` stamp that proves it, and comparing it needs no
@@ -770,7 +772,7 @@ and reads only the live file, so `events_total` can exceed what Inbox shows.
 **How it degrades.** Every failure is recorded, never raised. No XO credential
 (`state.account_id_if_known()` and `aaccount_id()` both fail) records
 `last_error` "not signed in to XO (no account id)" and stamps `last_poll_at`
-but not `last_ok_at`; a toolkit missing from `workspace_scope.enabled_toolkits()`
+but not `last_ok_at`; a toolkit missing from `space_scope.enabled_toolkits()`
 records "<toolkit> is not turned on in this workspace"; a collector the upstream
 rejects records "<collector>: <message>" while the other collectors still run.
 Neither path writes `events.jsonl`. `last_error` is at most 300 chars and is
