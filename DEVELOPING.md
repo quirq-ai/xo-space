@@ -47,7 +47,7 @@ routers/                          broker routes only — NO agent branching
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
-    connectors/                   gdrive github manus onedrive vercel composio composio_mcp_proxy route modules
+    connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects)
     legacy/                       frozen URL aliases (openclaw_usage)
 
@@ -64,7 +64,7 @@ services/
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
-                                    vercel/ manus/ composio/ + shared rclone/ engine and token_store.py
+                                    vercel/ composio/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
