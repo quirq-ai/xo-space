@@ -384,16 +384,36 @@ class NoToolkitsEnabled(RuntimeError):
     """
 
 
-def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]]:
-    """Read the store, returning ``(workspace, account, session_id, proxy_tokens)``.
+def _stamp_of(data: object) -> Optional[str]:
+    """The space a store document was written for, or None when it is unstamped.
 
-    ``workspace`` is the stamp: the ``XO_SPACE_ID`` of the install that wrote the
-    document. It is what lets this pod tell its own store from one restored out of a
-    backup or another workspace's home directory — with connections now account-wide,
-    adopting a foreign store would mean inheriting that workspace's connector scope.
+    ``space_id`` is the stamp. A ``workspace_id`` an older build wrote is read as the same
+    stamp, so a store written under the same ``XO_SPACE_ID`` before the rename is still
+    this install's; one holding Coder's pod id simply does not match.
+    """
+    if not isinstance(data, dict):
+        return None
+    return str(data.get("space_id") or data.get("workspace_id") or "").strip() or None
+
+
+def _read_stamp() -> Optional[str]:
+    from services.cowork_agent.visualizer.reader import read_json
+
+    return _stamp_of(read_json(_SESSIONS_PATH))
+
+
+def _load_store() -> tuple[Optional[str], Optional[str], set[str]]:
+    """Read the store, returning ``(account, session_id, proxy_tokens)``.
+
+    The document is stamped with ``space_id``: the ``XO_SPACE_ID`` of the install that
+    wrote it (:func:`_stamp_of`). It is what lets this pod tell its own store from one
+    restored out of a backup or another space's home directory — with connections now
+    account-wide, adopting a foreign store would mean inheriting that space's connector
+    scope. The store also names its ``account_id``, which is what lets a pod that has
+    booted once ride out a swarm outage (:func:`state.adopt_account_id`).
 
     Anything below v4 is discarded rather than upgraded. Those rows are keyed by the
-    retired ``<account>__ws__<workspace>`` tenant key and their sessions were minted
+    retired ``<account>__ws__<space>`` tenant key and their sessions were minted
     against it, so every one of them addresses a Composio user that is no longer ours.
     Their session ids are parked in ``_ORPHANED_SESSION_IDS`` for the boot sweep to
     delete.
@@ -403,7 +423,7 @@ def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]
     paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
     data = read_json(_SESSIONS_PATH)
     if not isinstance(data, dict):
-        return None, None, None, set()
+        return None, None, set()
     try:
         version = int(data.get("version") or 0)
     except (TypeError, ValueError):
@@ -417,53 +437,54 @@ def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]
                     _ORPHANED_SESSION_IDS.append(sid)
         log.info(
             "composio: discarding a v%d session store. Its sessions were minted against "
-            "the retired workspace-scoped user id; a fresh one is minted on demand.",
+            "the retired space-scoped user id; a fresh one is minted on demand.",
             version,
         )
-        return None, None, None, set()
+        return None, None, set()
 
-    workspace = str(data.get("workspace_id") or "").strip() or None
     account = str(data.get("account_id") or "").strip() or None
     session_id = str(data.get("session") or "").strip() or None
     raw_tokens = data.get("proxy_tokens")
     tokens = {
         str(t) for t in raw_tokens if isinstance(t, str) and t
     } if isinstance(raw_tokens, list) else set()
-    return workspace, account, session_id, tokens
+    return account, session_id, tokens
 
 
 def _ensure_sessions_loaded() -> None:
-    """Populate the in-memory mirrors from disk, if the store is this workspace's.
+    """Populate the in-memory mirrors from disk, if the store is this space's.
 
     Classifying the document needs no network: the stamp is compared against this pod's
     own ``XO_SPACE_ID``. That matters because proxy-token resolution runs on every
     agent ``tools/call``.
 
-    A store stamped for another workspace is left alone on disk and simply not adopted —
-    it is somebody's restored backup, and destroying it here would be an odd thing for a
-    read to do. The next write replaces it.
+    A store stamped for another space is left alone on disk and simply not adopted — it
+    is somebody's restored backup, and destroying it here would be an odd thing for a
+    read to do. Its session id is parked for the boot sweep, and the next write replaces
+    the document. An unstamped store is adopted.
     """
     global _SESSIONS_LOADED, _SESSION_ID, _STORE_ACCOUNT
     if _SESSIONS_LOADED:
         return
     try:
-        workspace, account, session_id, tokens = _load_store()
+        account, session_id, tokens = _load_store()
+        stamp = _read_stamp()
     except Exception as exc:
         log.warning("composio: could not read session store: %s", exc)
         _SESSIONS_LOADED = True
         return
 
     try:
-        mine = state.workspace_id()
-    except state.WorkspaceIdentityUnavailable:
+        mine = state.space_id()
+    except state.SpaceIdentityUnavailable:
         # No stamp to compare against. Leave _SESSIONS_LOADED False so a later call
         # retries once the pod's environment is complete.
         return
 
-    if workspace and workspace != mine:
+    if stamp and stamp != mine:
         log.warning(
-            "composio: ignoring a session store stamped for a different workspace. "
-            "It was most likely restored from a backup; this workspace mints its own.",
+            "composio: ignoring a session store stamped for a different space. "
+            "It was most likely restored from a backup; this space mints its own.",
         )
         if session_id and session_id not in _ORPHANED_SESSION_IDS:
             _ORPHANED_SESSION_IDS.append(session_id)
@@ -479,18 +500,23 @@ def _ensure_sessions_loaded() -> None:
 
 
 def _write_store(mutate) -> None:
-    """Lock, re-read, mutate, atomically replace — stamped with this workspace.
+    """Lock, re-read, mutate, atomically replace.
 
     ``mutate(session_id, tokens) -> (session_id, tokens)`` sees what is on disk, not the
     in-memory mirror, so two processes sharing a store converge instead of clobbering.
+
+    The document is stamped with this install's ``space_id``, so it is never written
+    without one: an unstamped store could not be told apart from one restored out of
+    another space. A document already on disk that is stamped for a different space is
+    replaced, never merged into.
     """
     global _STORE_ACCOUNT
     from services.cowork_agent.visualizer.atomic_write import write_json_atomic
     from services.cowork_agent.visualizer.flock import locked
 
     try:
-        workspace = state.workspace_id()
-    except state.WorkspaceIdentityUnavailable as exc:
+        space = state.space_id()
+    except state.SpaceIdentityUnavailable as exc:
         log.warning("composio: refusing to write an unstamped session store: %s", exc)
         return
 
@@ -499,9 +525,10 @@ def _write_store(mutate) -> None:
         # Before the lock: the sentinel is keyed on the store's absolute path.
         paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
         with locked(_SESSIONS_PATH):
-            existing_ws, existing_account, session_id, tokens = _load_store()
-            if existing_ws and existing_ws != workspace:
-                # Another workspace's document. Do not merge its rows into ours.
+            existing_account, session_id, tokens = _load_store()
+            existing_space = _read_stamp()
+            if existing_space and existing_space != space:
+                # Another space's document. Do not merge its rows into ours.
                 session_id, tokens = None, set()
             elif existing_account:
                 account = account or existing_account
@@ -510,7 +537,7 @@ def _write_store(mutate) -> None:
                 _SESSIONS_PATH,
                 {
                     "version": STORE_VERSION,
-                    "workspace_id": workspace,
+                    "space_id": space,
                     "account_id": account,
                     "session": session_id,
                     "proxy_tokens": sorted(tokens),
@@ -574,17 +601,18 @@ def account_for_proxy_token_local(token: str) -> Optional[str]:
         return None
     _ensure_sessions_loaded()
     if token not in _PROXY_TOKENS:
-        # A row written by another process since this one last read. _load_store has
-        # already refused anything stamped for a different workspace.
+        # A row written by another process since this one last read. The stamp is checked
+        # again: a document replaced by another space's store must not leak its tokens.
         try:
-            workspace, account, _session, tokens = _load_store()
+            account, _session, tokens = _load_store()
+            stamp = _read_stamp()
         except Exception:
             return None
         try:
-            mine = state.workspace_id()
-        except state.WorkspaceIdentityUnavailable:
+            mine = state.space_id()
+        except state.SpaceIdentityUnavailable:
             return None
-        if workspace and workspace != mine:
+        if stamp and stamp != mine:
             return None
         _PROXY_TOKENS.update(tokens)
         if account:
@@ -904,7 +932,7 @@ class GatewaySweep:
 
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
     # None when the sweep ran; otherwise which gate stopped it: "no_agents",
-    # "no_credential", "no_workspace" or "account_unavailable".
+    # "no_credential", "no_space" or "account_unavailable".
     skipped: Optional[str] = None
     # Whether waiting can help. Only an unreachable swarm changes on its own: the XO
     # credential is fixed at boot and the workspace id is injected by the pod.
@@ -1014,7 +1042,7 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
     xo-swarm-api directly — the same fetch every later request reads from cache, so
     this also warms it.
 
-    Fail closed and quietly: no credential, no workspace identity, or an unreachable
+    Fail closed and quietly: no credential, no space identity, or an unreachable
     swarm means nothing is installed and the agents keep whatever config they already
     have. The returned :class:`GatewaySweep` says which gate closed and whether a
     later sweep can pass it. Never raises; nothing here is fatal to boot.
@@ -1049,14 +1077,14 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                 return GatewaySweep(skipped="no_credential", detail=detail)
 
             try:
-                state.workspace_id()
-            except state.WorkspaceIdentityUnavailable as exc:
-                detail = f"{exc} — {state.WORKSPACE_ENV} is injected by the Coder pod"
+                state.space_id()
+            except state.SpaceIdentityUnavailable as exc:
+                detail = f"{exc} — set {state.SPACE_ENV} to this install's id at XO"
                 log.warning(
-                    "composio: %s; the session store cannot be stamped, so it could not "
-                    "be told apart from one restored out of another workspace.", detail,
+                    "composio: %s; the identity lookup names this install to "
+                    "xo-swarm-api, so it cannot run.", detail,
                 )
-                return GatewaySweep(skipped="no_workspace", detail=detail)
+                return GatewaySweep(skipped="no_space", detail=detail)
 
             # A store that already names its account lets the identity fetch fall
             # back to it during a swarm outage (state.identity_payload), so read first.

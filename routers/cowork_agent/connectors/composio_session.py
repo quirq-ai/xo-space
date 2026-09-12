@@ -50,15 +50,15 @@ async def xo_auth_session_self():
         )
 
     try:
-        workspace_id = state.workspace_id()
-    except state.WorkspaceIdentityUnavailable as exc:
+        space_id = state.space_id()
+    except state.SpaceIdentityUnavailable as exc:
         raise HTTPException(
             status_code=401,
             detail={
                 "error": (
-                    f"Workspace identity unavailable ({exc}). Set "
-                    f"{state.WORKSPACE_ENV} in .env (the id the swarm knows this "
-                    "Space by)."
+                    f"Space identity unavailable ({exc}). Set {state.SPACE_ENV} in "
+                    f".env to this install's id at XO — the same value project "
+                    f"sharing uses."
                 )
             },
         )
@@ -69,7 +69,7 @@ async def xo_auth_session_self():
             response = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {token}"},
-                json={"workspace_id": workspace_id},
+                json={"space_id": space_id},
             )
     except Exception as exc:
         # 503, not 401: unreachable is not a sign-in problem, and "sign in" would send

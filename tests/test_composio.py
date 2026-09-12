@@ -106,7 +106,7 @@ class _ComposioBase(unittest.TestCase):
         env = patch.dict(
             os.environ,
             {
-                state.WORKSPACE_ENV: WORKSPACE,
+                state.SPACE_ENV: WORKSPACE,
                 "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
                 # Required with no default since the loopback fallback was
                 # dropped, and patch.dict does not clear the ambient env — pinned
@@ -147,7 +147,7 @@ class _ComposioBase(unittest.TestCase):
             ACCOUNT, _now + 3600, _now,
             {
                 "account_id": ACCOUNT,
-                "workspace_id": WORKSPACE,
+                "space_id": WORKSPACE,
             },
         )
         state.adopt_account_id(ACCOUNT)
@@ -279,9 +279,9 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
 
 class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     def test_an_unstamped_store_is_never_written(self) -> None:
-        # Without a workspace id the document could not be told apart from one restored
-        # out of another workspace, so it must not be written at all.
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
+        # Without a space id the document could not be told apart from one restored
+        # out of another space, so it must not be written at all.
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
             service.proxy_token()
         self.assertFalse(self.sessions_path.exists())
 
@@ -335,13 +335,13 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         # re-block every boot.
         self.assertEqual(service.drain_orphaned_sessions(), 0)
 
-    async def test_another_workspace_s_store_is_not_adopted(self) -> None:
+    async def test_another_space_s_store_is_not_adopted(self) -> None:
         # A correctly formed, current-version document — refused purely because it was
-        # stamped by a sibling workspace. This is what a restored backup looks like, and
-        # adopting it would mean inheriting that workspace's connector scope.
+        # stamped by a different space. This is what a restored backup looks like, and
+        # adopting it would mean inheriting that space's connector scope.
         self._write_store({
             "version": 4,
-            "workspace_id": "ws-somewhere-else",
+            "space_id": "space-somewhere-else",
             "account_id": ACCOUNT,
             "session": "trs_theirs",
             "proxy_tokens": ["theirs"],
@@ -352,15 +352,37 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertTrue(self.sessions_path.exists())
         self.assertIn("trs_theirs", service._ORPHANED_SESSION_IDS)
 
-    async def test_this_workspace_s_own_store_is_adopted(self) -> None:
+    async def test_this_space_s_own_store_is_adopted(self) -> None:
         self._write_store({
             "version": 4,
-            "workspace_id": WORKSPACE,
+            "space_id": WORKSPACE,
             "account_id": ACCOUNT,
             "session": "trs_ours",
             "proxy_tokens": ["ours"],
         })
         self.assertEqual(service.account_for_proxy_token_local("ours"), ACCOUNT)
+
+    async def test_a_legacy_workspace_id_stamp_with_this_space_s_id_is_adopted(self) -> None:
+        # Written before the rename: the same XO_SPACE_ID under the old key is still ours.
+        self._write_store({
+            "version": 4,
+            "workspace_id": WORKSPACE,
+            "account_id": ACCOUNT,
+            "session": "trs_legacy",
+            "proxy_tokens": ["legacy"],
+        })
+        self.assertEqual(service.account_for_proxy_token_local("legacy"), ACCOUNT)
+
+    async def test_a_legacy_coder_pod_id_stamp_is_not_adopted(self) -> None:
+        # Older builds stamped CODER_WORKSPACE_ID. A pod id is not this space's id.
+        self._write_store({
+            "version": 4,
+            "workspace_id": "85572265-4598-4e96-a30b-503704b7aa28",
+            "account_id": ACCOUNT,
+            "session": "trs_pod",
+            "proxy_tokens": ["pod"],
+        })
+        self.assertIsNone(service.account_for_proxy_token_local("pod"))
 
     async def test_empty_token_resolves_to_nobody(self) -> None:
         self.assertIsNone(await service.account_for_proxy_token(""))
@@ -405,7 +427,8 @@ class ProxyTokenTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(data["version"], 4)
         # The stamp is what lets the pod tell its own store from a restored one, with
         # no network — and the account is what keeps token resolution offline.
-        self.assertEqual(data["workspace_id"], WORKSPACE)
+        self.assertEqual(data["space_id"], WORKSPACE)
+        self.assertNotIn("workspace_id", data)
         self.assertEqual(data["account_id"], ACCOUNT)
         self.assertEqual(data["proxy_tokens"], [token])
 
@@ -453,9 +476,8 @@ class MigrationTests(_ComposioBase):
         self._write_legacy_store()
         self._arm()
 
-        workspace, account, session_id, tokens = service._load_store()
+        account, session_id, tokens = service._load_store()
 
-        self.assertEqual(workspace, WORKSPACE)
         self.assertEqual(account, ACCOUNT)
         self.assertEqual(session_id, "trs_legacy")
         self.assertEqual(tokens, {"tok-from-the-checkout"})
@@ -481,7 +503,7 @@ class MigrationTests(_ComposioBase):
         )
         self._arm()
 
-        _ws, _account, session_id, _tokens = service._load_store()
+        _account, session_id, _tokens = service._load_store()
 
         self.assertEqual(session_id, "trs_current")
         # The legacy file is left alone rather than deleted: nothing read it, so
@@ -493,11 +515,11 @@ class MigrationTests(_ComposioBase):
         self._arm()
 
         with patch.object(paths.shutil, "move", side_effect=OSError("read-only")):
-            workspace, account, session_id, tokens = service._load_store()
+            account, session_id, tokens = service._load_store()
 
         # The same degradation as a store that was never written — not a crash on the
         # MCP hot path, which runs this on every tools/call.
-        self.assertEqual((workspace, account, session_id, tokens), (None, None, None, set()))
+        self.assertEqual((account, session_id, tokens), (None, None, set()))
         self.assertFalse(self.sessions_path.exists())
 
     def test_prefs_migrate_through_the_patched_store_path(self) -> None:
@@ -1197,11 +1219,12 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
     async def test_a_missing_workspace_no_longer_refuses_the_request(self) -> None:
         # This gate used to 401 to avoid "falling back to an account-wide Composio
         # bucket". That bucket is now the intended design, so the check had inverted
-        # from a protection into an outage. The workspace id still matters — it stamps
-        # the session store — but that is the store's problem to report.
+        # from a protection into an outage. The space id still matters — the swarm
+        # needs it to answer "who am I?" — but that is the identity fetch's problem to
+        # report, and here the account is already cached.
         sid = session_identity.remember(secrets.token_urlsafe(32))
         request = _make_request({"x-xo-session": sid})
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}):
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}):
             self.assertEqual(
                 await identity_mod.get_composio_user(request), ACCOUNT
             )
@@ -1649,13 +1672,13 @@ class GatewaySweepTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(sweep.skipped, "account_unavailable")
         self.assertFalse(sweep.retryable)
 
-    async def test_missing_workspace_installs_nothing_and_is_final(self) -> None:
-        with patch.dict(os.environ, {state.WORKSPACE_ENV: ""}), \
+    async def test_missing_space_id_installs_nothing_and_is_final(self) -> None:
+        with patch.dict(os.environ, {state.SPACE_ENV: ""}), \
                 patch.object(service, "gateway_install_agents", return_value=["claude_code"]), \
                 patch("routers.auth.auth.get_auth_token", return_value="tok"):
             sweep = await service.install_gateways()
         self.assertEqual(sweep.results, {})
-        self.assertEqual(sweep.skipped, "no_workspace")
+        self.assertEqual(sweep.skipped, "no_space")
         self.assertFalse(sweep.retryable)
 
     async def test_a_failing_agent_does_not_stop_the_others(self) -> None:

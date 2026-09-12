@@ -361,7 +361,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
-| `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py` |
+| `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it and every Composio route 401s | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/state.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
 | `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
@@ -441,15 +441,22 @@ receive *this* backend's principal, and its Composio connections with it. That i
 `POST /xo-auth/session` was removed rather than guarded. Serving several XO accounts from
 one backend needs credential forwarding — a design change, not a re-add.
 
-**`XO_SPACE_ID` is the workspace identity, and it is a store stamp, not a tenant key.**
+**`XO_SPACE_ID` is the space identity, and it is a store stamp, not a tenant key.**
 One flow on Coder and off: the id the swarm knows this Space by (the same value project
-sharing and usage reporting send) is what the session mint supplies and what the store is
-stamped with; Coder's own workspace id is no longer read anywhere. The stamp is never sent to
-Composio and is not a key in any store — a pod is one workspace, so the local stores are
-already isolated by the filesystem. Its one job is stamping `sessions.json` with the
-workspace that wrote it, so a store restored out of a backup or another workspace's home
-directory is discarded rather than adopted along with that workspace's connector scope.
-Comparing the stamp needs no network, which is what keeps the MCP hot path offline.
+sharing and usage reporting send). `CODER_WORKSPACE_ID` is **not** consulted, and not as a
+fallback either: it names a *pod*, and honouring both let a Coder pod report one id to
+xo-swarm-api while recording another locally. A pod that carried only the Coder id must now
+set `XO_SPACE_ID` explicitly.
+
+On the wire it is sent as `space_id`: `GET /auth/workspace-principal?space_id=` and the
+`space_id` body field of `POST /auth/session/self`. It is never sent to Composio and is not
+a key in any store — a pod is one space, so the local stores are already isolated by the
+filesystem. Locally its one job is stamping `sessions.json` with the space that wrote it, so
+a store restored out of a backup or another space's home directory is discarded rather than
+adopted along with that space's connector scope. Without `XO_SPACE_ID` the store is never
+written, and a stamp an older build wrote as `workspace_id` with the same value is still
+recognised. Comparing the stamp needs no network, which is what keeps the MCP hot path
+offline.
 
 The route gate that used to 401 on a missing workspace id is **gone**: it existed to
 prevent "falling back to an account-wide bucket", and that bucket is now the intended
@@ -622,7 +629,7 @@ Degradation is per-scope, and worth knowing when reading a bug report:
 | one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
 | xo-swarm-api unreachable | every Composio operation fails immediately — there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
 | xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
-| `XO_SPACE_ID` | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a workspace identity |
+| `XO_SPACE_ID` | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a space identity, and the identity lookup cannot name this install to the swarm. `sessions.json` is not written until it is set |
 | XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
 
 Every authoritative failure raised from `swarm_client.py` carries the literal string
@@ -644,22 +651,22 @@ old `data/composio_*.json` location is moved into place on first access.
 
 | file | holds |
 |---|---|
-| `sessions.json` (0600) | the workspace stamp, the account id, this workspace's Composio session id, and the **plaintext** MCP proxy tokens |
+| `sessions.json` (0600) | the `space_id` stamp, the account id, this install's Composio session id, and the **plaintext** MCP proxy tokens. A store stamped for another space is not adopted — see §10.1 |
 | `action_prefs.json` | disabled actions — only *disabled* slugs, so an action added to a toolkit later defaults to enabled |
 | `workspace_scope.json` | which toolkits this workspace has turned on, and which connected accounts back them |
 
-All three are flat: a pod is one workspace, so there is no user or workspace level to key
-on. `sessions.json` carries the `XO_SPACE_ID` stamp that proves it, and comparing
-it needs no network — which is what keeps `account_for_proxy_token` a set lookup on the
-MCP hot path (`initialize`, `tools/list` and *every* `tools/call`). A token this pod
-cannot place is simply unknown.
+All three are flat: a pod is one space, so there is no user or space level to key on.
+`sessions.json` carries the `space_id` stamp that proves it, and comparing it needs no
+network — which is what keeps `account_for_proxy_token` a set lookup on the MCP hot path
+(`initialize`, `tools/list` and *every* `tools/call`). A token this pod cannot place is
+simply unknown.
 
 A store below v4 is **discarded, not upgraded**: its rows are keyed by the retired tenant
 key and its session was minted against it, so it addresses a Composio user that is no
 longer ours. The abandoned session id is queued and deleted by the next boot sweep
 (`drain_orphaned_sessions`) — Composio sessions never expire, so nothing else would clean
-it up. The same applies to a store stamped for another workspace, except that document is
-left on disk rather than rewritten: it is somebody's restored backup.
+it up. A v4 store is never refused on ownership grounds: the stamp that used to decide
+that is gone.
 
 **The store does not survive a pod recreation.** The published container mounts no volume,
 so losing it loses every agent's proxy token: the next reconcile sweep mints a fresh one
@@ -675,7 +682,7 @@ workspace silently regaining reach it was never granted — but making it durabl
 table in xo-swarm-api, and that is a deliberate follow-up rather than an oversight.
 
 The one thing xo-swarm-api still answers is this pod's **identity**:
-`GET /auth/workspace-principal` returns `{account_id, workspace_id}`
+`GET /auth/workspace-principal?space_id=` returns `{account_id, space_id}`
 (§10.1). That is a pure identity lookup — it reads no database — and
 `connectors/composio/state.py` is its client. It caches the answer for the life of the
 pod, serves a stale one during a transient outage, and falls back to the account recorded
