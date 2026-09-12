@@ -192,9 +192,8 @@ def space_id() -> str:
     ``"unknown"`` value, because a shared fallback would have every misconfigured install
     claiming to be the same one.
 
-    ``CODER_WORKSPACE_ID`` is deliberately **not** consulted, on Coder or anywhere else.
-    Coder's id names a *pod*; ``XO_SPACE_ID`` names this install *at the swarm*, which is
-    the identity every other XO-facing feature already uses.
+    ``XO_SPACE_ID`` is the only identity read, on Coder and off: it names this install *at
+    the swarm*, which is the identity every other XO-facing feature already uses.
 
     Raises:
         SpaceIdentityUnavailable: when the variable is unusable. Callers must surface
@@ -211,8 +210,7 @@ def space_stamp(existing: object = None) -> Optional[str]:
 
     ``XO_SPACE_ID`` when set; otherwise whatever ``existing`` (the document already on
     disk) carries, so a write from an incomplete environment does not erase what a
-    complete one recorded; otherwise None. A legacy ``workspace_id`` — Coder's pod id — is
-    never adopted.
+    complete one recorded; otherwise None.
 
     Informational, and for ``space_scope.json`` only: that store writes without it and
     nothing compares it on read. ``sessions.json`` is different — its stamp is an
