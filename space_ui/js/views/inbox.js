@@ -100,6 +100,7 @@ const SOURCES=[
 ];
 const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);
 let srcFilter='all';
+let query='';
 function sourceOf(it){
   const s=typeof it.source==='string'?it.source:'';
   const row=SOURCES.find(r=>r.sources.includes(s));
@@ -120,6 +121,15 @@ const connBusy=new Set();   /* toolkits with a Poll now in flight */
 
 export default {
   id:'inbox',label:'Inbox',order:5,
+  toolbar:{search:{
+    placeholder:'Search loaded inbox items…',
+    getValue:()=>query,
+    setValue(value){
+      value=String(value??'');
+      if(value===query)return;
+      query=value;render();
+    }
+  }},
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
@@ -172,7 +182,7 @@ async function load(){
    30 s tick; anything else repaints with focus put back on the control
    that had it. */
 let painted='';
-const paintKey=()=>JSON.stringify([data,filter,srcFilter,failed&&failText(failed),loadingRows,marking,
+const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(failed),loadingRows,marking,
   [...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
 /* the focused control as a selector over the data-* it carries, so the same
    one can be found again once the rows are rebuilt */
@@ -204,13 +214,16 @@ function summary(c){
 }
 function head(){
   const c=counts();
+  const narrowed=query.trim()||srcFilter!=='all';
   return'<div class="inb-head">'
     +'<span class="inb-eyebrow">Inbox</span>'
     +'<span class="inb-sum">'+(data?esc(summary(c)):'loading…')+'</span>'
     +'<span class="inb-spacer"></span>'
     +pills(FILTERS,filter,'filter','Filter inbox','inb-filter')
     +(c.new>0?'<button class="inb-btn" type="button" data-act="mark-all"'
-      +(marking?' disabled':'')+' title="Mark every new item on this page as seen">Mark all seen</button>':'')
+      +(marking?' disabled':'')+' title="'+(narrowed
+        ?'Mark every new item in the loaded status page as seen, including items hidden by search or source filters'
+        :'Mark every new item on this page as seen')+'">'+(narrowed?'Mark all loaded seen':'Mark all seen')+'</button>':'')
     +'<button class="inb-btn" type="button" data-act="refresh" title="Re-read the inbox">'
       +'&#8635; Refresh</button>'
   +'</div>';
@@ -226,13 +239,26 @@ function body(){
      another filter, so it must not be shown under this pill */
   if(failed&&dataFilter!==filter)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
   const all=data.items||[];
-  const items=all.filter(matchesSource);
+  const sourceItems=all.filter(matchesSource);
+  const terms=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const items=terms.length?sourceItems.filter(it=>{
+    const sourceLabel=SOURCES.find(source=>source.id===sourceOf(it))?.label;
+    const text=[it.title,it.body,it.kind,it.source,sourceLabel,it.project_id]
+      .map(value=>String(value??'')).join(' ').toLowerCase();
+    return terms.every(term=>text.includes(term));
+  }):sourceItems;
   const stale=failed?'<div class="inb-fail">'+esc(failText(failed))+' · showing the last good read</div>':'';
-  if(!all.length)return stale+'<div class="inb-empty"><b>Nothing in the inbox.</b>'
+  const scope=terms.length||srcFilter!=='all'?'<p class="inb-note" role="status">'
+    +items.length+' matching of '+all.length+' loaded items in this status page.'
+    +(srcFilter!=='all'?' '+sourceItems.length+' in the selected source.':'')
+    +(counts().new>0?' Mark all loaded seen includes items hidden by search or source filters.':'')+'</p>':'';
+  if(!all.length)return stale+scope+'<div class="inb-empty"><b>Nothing in the inbox.</b>'
     +'<p>Sessions, todos and shares arriving in the workspace land here.</p></div>';
-  if(!items.length)return stale+'<div class="inb-empty"><b>Nothing from this source on this page.</b>'
+  if(!sourceItems.length)return stale+scope+'<div class="inb-empty"><b>Nothing from this source on this page.</b>'
     +'<p>The source pills filter the loaded page only. Pick All to see every row.</p></div>';
-  return stale+'<div class="inb-rows">'+items.map(rowHTML).join('')+'</div>';
+  if(!items.length)return stale+scope+'<div class="inb-empty"><b>No loaded inbox items match this search.</b>'
+    +'<p>Try another term or clear the search. Status and source filters still apply.</p></div>';
+  return stale+scope+'<div class="inb-rows">'+items.map(rowHTML).join('')+'</div>';
 }
 const hasLink=it=>!!it.link&&typeof it.link==='object'&&!!(it.link.view||it.link.project);
 function rowHTML(it){

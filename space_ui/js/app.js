@@ -1,22 +1,23 @@
 /* Entry point. Adding a view = create js/views/<name>.js exporting the view
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
-import {registerView,startRegistry} from './core/registry.js?v=20260914-projectslens1';
+import {registerView,startRegistry} from './core/registry.js?v=20260914-context1';
 import {initServerWidget} from './core/server-widget.js?v=20260825-rename1';
+import {initToolbar} from './core/toolbar.js?v=20260914-context1';
 import {initLensSwitch} from './core/lens-switch.js?v=20260914-projectslens1';
 import {initPreview} from './core/preview.js?v=20260914-wikihub1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-projectslens1';
-import sessionsView from './views/sessions.js?v=20260825-rename1';
-import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-accounts1';
-import projectsView from './views/projects.js?v=20260914-projectslens1';
-import treeView from './views/tree.js?v=20260825-rename1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-context1';
+import sessionsView from './views/sessions.js?v=20260914-context1';
+import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-context1';
+import projectsView from './views/projects.js?v=20260914-context1';
+import treeView from './views/tree.js?v=20260914-context1';
 import sharingView from './views/sharing.js?v=20260914-accounts1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260914-wikilink1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
-import connectorsView from './views/connectors.js?v=20260914-accounts1';
+import connectorsView from './views/connectors.js?v=20260914-context1';
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
 addEventListener('error',e=>console.error('Space shell error:',e.error||e.message));
@@ -48,6 +49,7 @@ addEventListener('space:view',event=>{
   if(event.detail?.id==='wiki')link.setAttribute('aria-current','page');
   else link.removeAttribute('aria-current');
 });
+try{initToolbar();}catch(err){console.error('Toolbar failed to start:',err);}
 try{initLensSwitch();}catch(err){console.error('Lens switch failed to start:',err);}
 
 try{

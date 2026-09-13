@@ -54,6 +54,8 @@
     .tabs button{flex:0 0 auto}
     .tright{grid-column:2;grid-row:1}
     .resource-links{grid-column:3;grid-row:1}
+    .topbar[data-toolbar="none"]{grid-template-columns:minmax(0,1fr) auto}
+    .topbar[data-toolbar="none"] .resource-links{grid-column:2}
     .rootdd{left:0;right:auto;width:min(280px,calc(100vw - 28px))}
     body{grid-template-rows:auto 1fr var(--footer-h)}
   }
@@ -69,6 +71,8 @@
     .resource-links{grid-column:2;grid-row:1;justify-self:end}
     .tright{grid-column:1/-1;grid-row:2;max-width:none}
     .tabs{grid-row:3}
+    .topbar[data-toolbar="none"]{grid-template-rows:auto auto}
+    .topbar[data-toolbar="none"] .tabs{grid-row:2}
   }
   /* Keep the root picker and search inside the viewport alongside the brand
      when all five Projects lenses are available on a phone. */

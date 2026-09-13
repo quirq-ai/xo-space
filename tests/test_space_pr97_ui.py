@@ -269,6 +269,7 @@ const conn=id=>({toolkit:id,configured:true,enabled:true,interval_s:900,collecto
 let putReply=null;
 let putFails=false;        /* the PUT throws: apiFetch answers ok:false */
 let pollGate=null;         /* a promise POST /poll awaits before answering */
+let prefsGate=null,connectGate=null;
 globalThis.fetch=async(url,opts={})=>{
   const method=opts.method||'GET';
   const path=url.replace(/\?.*$/,'');
@@ -278,6 +279,12 @@ globalThis.fetch=async(url,opts={})=>{
   if(path==='/xo-auth/session/self')return json({session_id:'s1'});
   if(path==='/api/connectors/composio/toolkits')return json({toolkits:TOOLKITS});
   if(/^\/api\/connectors\/composio\/[^/]+\/tools$/.test(path))return json({tools:[{slug:'send',name:'Send',enabled:true}]});
+  if(/^\/api\/connectors\/composio\/[^/]+\/prefs$/.test(path)){
+    if(prefsGate)await prefsGate;return json({});
+  }
+  if(/^\/api\/connectors\/composio\/[^/]+\/connect$/.test(path)){
+    if(connectGate)await connectGate;return json({});
+  }
   if(path==='/api/connections'&&method==='GET')
     return json({signed_in:true,poller_enabled:true,connections:TOOLKITS.map(t=>conn(t.id))});
   const a=path.match(/^\/api\/connections\/([^/]+)\/account$/);
@@ -325,6 +332,7 @@ const paints=[];
 /* a paint recreates every card: the error boxes come back hidden and the
    buttons a click handed out are detached, as in a browser */
 let errs={};
+let cardNodes=new Map();
 const buttons=[];
 const grid={
   listeners:[],drawers:{},_html:'',
@@ -332,6 +340,7 @@ const grid={
   set innerHTML(html){
     this._html=html;this.drawers=parseDrawers(html);paints.push(html);
     errs={};buttons.forEach(b=>{b.detached=true;});
+    cardNodes=new Map();
   },
   addEventListener(type,fn){this.listeners.push(fn);},
 };
@@ -339,6 +348,7 @@ const grid={
    chip, the open drawer's interval row takes the note after it */
 const inserts=[];
 function cardEl(toolkit){
+  if(cardNodes.has(toolkit))return cardNodes.get(toolkit);
   const start=()=>grid._html.indexOf('data-toolkit="'+toolkit+'"');
   if(start()<0)return null;
   const inner=()=>grid._html.slice(start(),grid._html.indexOf('</article>',start()));
@@ -365,15 +375,18 @@ function cardEl(toolkit){
       throw new Error('unstubbed drawer selector '+sel);
     },
   };
-  return{
+  const card={dataset:{toolkit},hidden:false,
     querySelector(sel){
       if(sel==='.conn-facts')return facts;
       if(sel==='.conn-poll')return inner().includes('<div class="conn-poll" id="poll-'+toolkit+'"')?drawer:null;
       throw new Error('unstubbed card selector '+sel);
     },
   };
+  cardNodes.set(toolkit,card);
+  return card;
 }
 const alertEl={hidden:true,innerHTML:'',className:''};
+const noMatch={hidden:true,textContent:''};
 const refreshBtn={listeners:[],addEventListener(type,fn){this.listeners.push(fn);}};
 const refresh=()=>refreshBtn.listeners.forEach(fn=>fn());
 const root={
@@ -382,12 +395,18 @@ const root={
     if(sel==='#conn-grid')return grid;
     if(sel==='#conn-refresh')return refreshBtn;
     if(sel==='#conn-alert')return alertEl;
+    if(sel==='#conn-no-match')return noMatch;
     if(sel.startsWith('#err-')){const id=sel.slice(5);return errs[id]||(errs[id]={hidden:true,textContent:''});}
     if(sel.startsWith('#poll-')){const m=grid.drawers[sel.slice(6)];return m?drawerEl(m):null;}
     if(sel==='.conn-card[data-toolkit]')return grid._html.includes('conn-card')?{}:null;
     const card=sel.match(/^\.conn-card\[data-toolkit="([^"]+)"\]$/);
     if(card)return cardEl(card[1]);
     throw new Error('unstubbed selector '+sel);
+  },
+  querySelectorAll(sel){
+    if(sel==='.conn-card[data-toolkit]')
+      return [...grid._html.matchAll(/<article[^>]*data-toolkit="([^"]+)"/g)].map(m=>cardEl(m[1]));
+    throw new Error('unstubbed all selector '+sel);
   },
 };
 function click(toolkit,action){
@@ -611,7 +630,8 @@ class ConnectorsViewTests(unittest.TestCase):
         self.assertIn(
             "function paintGrid(build,{snapshot=true}={}){\n"
             "  if(snapshot)snapshotPollDraft();\n"
-            "  root.querySelector('#conn-grid').innerHTML=build();\n}",
+            "  root.querySelector('#conn-grid').innerHTML=build();\n"
+            "  applyFilter();\n}",
             self.view,
         )
         self.assertIn("paintGrid(()=>toolkits.map(renderCard).join(''),opts);", self.view)
@@ -859,14 +879,15 @@ class ShellTests(unittest.TestCase):
 
     def test_stamps_moved_together(self) -> None:
         app = read("js/app.js")
-        # Assets unchanged by the Projects navigation change keep their URLs.
-        for view in ("inbox", "connectors", "sharing"):
-            self.assertIn("./views/" + view + ".js?v=" + STAMP + "'", app)
-        projects_stamp = "20260914-projectslens1"
-        for view in ("atlas", "projects"):
-            self.assertIn("./views/" + view + ".js?v=" + projects_stamp + "'", app)
-        for core in ("registry", "lens-switch"):
-            self.assertIn("./core/" + core + ".js?v=" + projects_stamp + "'", app)
+        # Contextual controls refresh the shell and each participating view.
+        # Unchanged resources keep their existing URLs.
+        self.assertIn("./views/sharing.js?v=" + STAMP + "'", app)
+        context_stamp = "20260914-context1"
+        for view in ("atlas", "projects", "tree", "sessions", "inbox", "connectors"):
+            self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
+        for core in ("registry", "toolbar"):
+            self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
+        self.assertIn("./core/lens-switch.js?v=20260914-projectslens1'", app)
         self.assertRegex(app, r"\./core/preview\.js\?v=\d{8}-[a-z0-9]+'")
         html = read("index.html")
         # Later view changes legitimately advance the shell and Wiki stamps;

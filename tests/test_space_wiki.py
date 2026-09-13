@@ -491,7 +491,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("/api/xo-projects/timeline?limit=", projects)
         self.assertNotIn("/todos'", projects.split("const PANELS")[0])
         # operable: filter, sort, and a refresh that keeps the open drawer
-        self.assertIn('id="prj-filter"', projects)
+        self.assertIn("placeholder:'Filter projects…'", projects)
         self.assertIn("data-sort=", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # accessible: a real button that reports its state, with Map outside

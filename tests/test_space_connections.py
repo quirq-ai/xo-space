@@ -72,7 +72,7 @@ class InboxSourceFilterTests(unittest.TestCase):
         self.assertNotIn("load(", body)
         self.assertNotIn("apiFetch(", body)
         # the rows are filtered from the loaded page, not re-requested
-        self.assertIn("const items=all.filter(matchesSource);", self.src)
+        self.assertIn("const sourceItems=all.filter(matchesSource);", self.src)
         self.assertIn("Nothing from this source on this page.", self.src)
         # the unfiltered empty state is unchanged
         self.assertIn("Nothing in the inbox.", self.src)
@@ -345,9 +345,9 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=" + STAMP + "';", app
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-context1';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=" + STAMP + "';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-context1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))

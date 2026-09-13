@@ -23,8 +23,9 @@ function openPending(){
   pendingOpen=null;
   if(!items.some(p=>p.id===id))return;
   /* a filter that hides the row would make the jump land on nothing */
-  if(filter&&!visible().some(p=>p.id===id))filter='';
-  if(expanded!==id){expanded=id;render();}
+  const clearFilter=filter&&!visible().some(p=>p.id===id);
+  if(clearFilter){filter='';clearTimeout(fdeb);refreshToolbar();}
+  if(expanded!==id||clearFilter){expanded=id;render();}
   const row=document.getElementById('prj-row-'+id);
   if(row){
     row.scrollIntoView({block:'start',behavior:'smooth'});
@@ -340,6 +341,7 @@ const PANELS=[
 
 let root=null,items=null,expanded=null;
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount */
+let refreshToolbar=()=>{};
 /* Workspace-wide rollups: four requests total, whatever the project count.
    Each degrades on its own — a dead timeline costs the "last active" column,
    not the list. */
@@ -354,9 +356,19 @@ export default {
   /* The Projects tab opens List. Its four other lenses report the same
      parent:'projects', keeping this tab lit across all five views. */
   id:'projects',label:'Projects',order:1,
+  toolbar:{search:{
+    placeholder:'Filter projects…',
+    getValue:()=>filter,
+    setValue(value){
+      filter=String(value??'');
+      clearTimeout(fdeb);
+      fdeb=setTimeout(renderRows,140);
+    },
+  }},
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
+    refreshToolbar=ctx.refreshToolbar||(()=>{});
     el.innerHTML='<div class="prj">'+skeleton()+'</div>';
     await loadList();
   },
@@ -440,9 +452,6 @@ function head(n){
   return'<div class="prj-head">'
     +'<span class="prj-eyebrow" id="prj-count">'+esc(summary(n))+'</span>'
     +'<span class="prj-spacer"></span>'
-    +'<input class="tv-filter" id="prj-filter" placeholder="Filter projects…" '
-      +'autocomplete="off" spellcheck="false" aria-label="Filter projects" '
-      +'value="'+esc(filter)+'">'
     +'<div class="prj-sort" role="group" aria-label="Sort projects">'
       +SORTS.map(([k,label])=>'<button type="button" data-sort="'+k+'"'
         +(sortK===k?' class="is-on" aria-pressed="true"':' aria-pressed="false"')
@@ -462,13 +471,13 @@ function render(){
   bindRows();
   if(expanded)fillDrawer(expanded);
 }
-/* Repaint the rows only. Rebuilding the head would destroy the filter input
-   mid-keystroke and throw the caret to the end — which is what the old
-   focus/setSelectionRange hack was papering over. */
+/* The shared search stays outside this view; repaint only its result rows
+   and count, keeping the sort and Refresh controls in place. */
 function renderRows(){
+  if(!root||!items)return;
   const rows=visible();
   const box=root.querySelector('.prj-body');
-  if(!box){render();return;}
+  if(!box)return; /* keep loading and request-failure states intact */
   box.innerHTML=rowsHTML(rows);
   bindRows();
   const count=root.querySelector('#prj-count');
@@ -525,12 +534,6 @@ function bindHead(){
   if(r)r.addEventListener('click',loadList);
   root.querySelectorAll('[data-sort]').forEach(b=>
     b.addEventListener('click',()=>{sortK=b.dataset.sort;syncSortUI();renderRows();}));
-  const f=root.querySelector('#prj-filter');
-  if(f)f.addEventListener('input',e=>{
-    filter=e.target.value;
-    clearTimeout(fdeb);
-    fdeb=setTimeout(renderRows,140);
-  });
 }
 
 function liveCell(p){

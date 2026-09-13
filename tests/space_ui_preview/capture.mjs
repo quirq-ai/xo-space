@@ -150,13 +150,17 @@ try {
       await page.goto(origin + '/space/#/projects', {waitUntil: 'networkidle'});
       await page.locator('.prj-row').first().waitFor();
       const initialBounds = await page.locator('#fileslens').boundingBox();
+      const initialStage = await page.locator('#stage').boundingBox();
       for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing']) {
         const button = page.locator(`[data-files-lens="${id}"]`);
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);
         await lens(id);
         const bounds = await page.locator('#fileslens').boundingBox();
-        for(const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(bounds[key] - initialBounds[key]) < 1, `${id} lens ${key} stays fixed at ${width}px`);
+        for(const key of ['x', 'width', 'height']) assert.ok(Math.abs(bounds[key] - initialBounds[key]) < 1, `${id} lens ${key} stays fixed at ${width}px`);
+        const stageBounds = await page.locator('#stage').boundingBox();
+        assert.ok(Math.abs((bounds.y - stageBounds.y) - (initialBounds.y - initialStage.y)) < 1,
+          `${id} lens stays anchored to the content at ${width}px as the contextual header changes height`);
         const size = await page.evaluate(() => ({width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth}));
         assert.ok(size.scroll <= size.width, `${id} at ${width}px has no document overflow (${size.scroll})`);
       }
@@ -172,7 +176,7 @@ try {
       await screenshot(`projects-mobile-${width}.png`);
       report.screenshots.push(`projects-mobile-${width}.png`);
     }
-    report.checks.push('320px and 375px: stable lens bounds, no page overflow, readable project counts/activity and footer');
+    report.checks.push('320px and 375px: lenses anchored below the contextual header, no page overflow, readable project counts/activity and footer');
   }
   assert.deepEqual(errors, [], 'No console errors, uncaught exceptions or HTTP failures');
   report.checks.push('No browser console, page or HTTP errors');

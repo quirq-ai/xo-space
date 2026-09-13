@@ -33,9 +33,25 @@ The full check verifies the six-tab order, Dashboard default, all five
 lenses and existing hash routes, stationary lens controls, retention of an
 open historical file in source mode across lens switches (including real
 Dashboard/Graph dataset reloads), closing the preview when leaving Projects,
-the local Wiki resource and its deep link, number keys 1–6, and fixed lens-switch
-bounds at 320px and 375px. It fails
+the local Wiki resource and its deep link, number keys 1–6, and lens-switch
+position relative to the content at 320px and 375px (the contextual toolbar
+can change the mobile header height). It fails
 on console errors, uncaught page errors and unsuccessful HTTP responses.
+
+For contextual toolbar coverage, use the same server and Playwright settings:
+
+```sh
+node tests/space_ui_preview/contextual-toolbar.mjs /tmp/space-contextual-toolbar
+node tests/space_ui_preview/search-sessions-inbox.mjs
+```
+
+These checks cover page-specific controls, query restoration, clear and keyboard
+behavior, responsive headers, and filtering without graph navigation. The toolbar
+check supplies synthetic Connector/account and Quirq responses and blocks external
+requests and service writes. The Sessions/Inbox check supplies synthetic telemetry
+and Inbox responses, including
+an in-memory bulk action, to verify source filters, pagination, loaded counts,
+and hiding search on session charts/detail. No real Inbox data is modified.
 
 This is a browser regression check of the frontend and its API contracts.
 The fixture server is deliberately not a substitute for backend tests.

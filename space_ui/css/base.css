@@ -28,6 +28,9 @@
     padding:0 18px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,#0d0f13,#0b0c0f);position:relative;z-index:60;
   }
+  .topbar[data-toolbar="none"]{grid-template-columns:auto minmax(0,1fr) auto}
+  .topbar[data-toolbar="none"] .tabs{justify-self:start}
+  .topbar[data-toolbar="none"] .resource-links{justify-self:end}
   .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
   .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
   .brand b{font:600 19px var(--serif);letter-spacing:.06em;color:var(--ink)}
@@ -96,6 +99,11 @@
     padding:1px 5px;transition:opacity .16s var(--ease);
   }
   .searchwrap input:focus~kbd{opacity:0}
+  #view-search::-webkit-search-cancel-button{display:none}
+  #view-search-clear{position:absolute;right:7px;top:50%;translate:0 -50%;
+    width:26px;height:26px;padding:0;border-radius:50%;font-size:18px;color:var(--ink-2)}
+  #view-search-clear:hover{background:var(--bg-3);color:var(--ink)}
+  #view-search-clear:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .ac{
     position:absolute;top:calc(100% + 7px);left:0;right:0;z-index:60;
     background:rgba(16,19,24,.97);backdrop-filter:blur(14px);border:1px solid var(--line);

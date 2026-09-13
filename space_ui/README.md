@@ -18,6 +18,28 @@ shortcut. Its three-step quickstart and topic cards link to the
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
+The toolbar adapts to the active page. Dashboard and Graph keep the root
+picker and map autocomplete. List, Tree, Timeline, Connectors, Inbox, and
+the Sessions list have their own search; typing there keeps you on that page.
+Setup, Wiki, Sharing, Quirq, and the Sessions charts/detail have no search
+toolbar. On phones these pages also give back the empty toolbar row.
+
+| Page | Search scope |
+|------|--------------|
+| Projects List | Project names in the loaded catalog. |
+| Tree | Folder and file names, keeping the ancestors of matches visible. |
+| Timeline | Project names; the selected timeline mode and date range still apply. |
+| Connectors | Toolkit name, identifier, description, and resolved connected account label. Filtering preserves open controls and unsaved polling edits. |
+| Inbox | Title, body, kind, source, and project in the loaded status page, intersected with the source filter. The matching count shows this scope. |
+| Sessions list | Project, path, source, model, and session ID in the loaded sessions, intersected with the selected sources. Matching counts distinguish loaded rows from the total. |
+
+Each page remembers its query while you navigate within the app; a full
+reload resets it. Press `/` outside an editable control to focus the visible
+search. In a page search, `Escape` clears the query; pressing it again removes
+focus. The clear button does the same reset. When Inbox is narrowed, **Mark all
+loaded seen** explicitly includes loaded new items hidden by search or source
+filters.
+
 This folder is a bundled snapshot of the xo-atlas UI (originally a standalone
 folder with no remote), trimmed to the single endpoint-driven page and served
 by this API, so every workspace that runs xo-space gets the graph with
@@ -34,6 +56,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). |
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
 | `js/core/registry.js` | View registry: tab nav, `1..n` hotkeys (ignored while an input, textarea or select has focus), `#/<id>` hash routing, lazy mount, per-view failure isolation. |
+| `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
@@ -52,9 +75,17 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. The only view that authenticates (`js/core/session.js`). |
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
-The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`, mount/show/hide)
+The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`/`toolbar`, mount/show/hide)
 is documented in the header comment of `js/core/registry.js`; repo-wide working
 rules are in the root `AGENTS.md`.
+
+`toolbar` is an object or function returning `{graph: true}` for the map
+controls, `{search: {placeholder, getValue, setValue}}` for page search, or
+`null` for no controls. A descriptor can set `disabled` while loading; a search
+can supply an accessible `label`. Views own query state and filtering, and
+call `ctx.refreshToolbar()` when a subview or load changes the available
+controls. The registry ignores refreshes from inactive views and waits for
+mount to finish before showing the latest requested view.
 
 ## How it's served
 

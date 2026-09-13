@@ -9,17 +9,29 @@
 import {API_BASE,apiFetch} from '../core/api.js';
 
 let _open=null;
+let _toolbar=()=>null;
 
 export default {
   id:'sessions',label:'Sessions',order:4,
-  async mount(){
+  toolbar(){return _toolbar();},
+  async mount(el,ctx){
 const wrap=document.getElementById('sesswrap');
 const WINS=[['today','Today'],['7d','7 days'],['30d','30 days'],['all','All']];
 const WDAYS={today:1,'7d':7,'30d':30,all:null};
 const SUBS=[['overview','Overview'],['sessions','Sessions'],['tools','Tools'],['models','Models'],['trends','Trends']];
-let SD=null,loading=false,failed=null,win='7d',sub='overview',sel=null,sortK='started_at',sortD=-1,enabledAgents=null,page=0;
+let SD=null,loading=false,failed=null,win='7d',sub='overview',sel=null,sortK='started_at',sortD=-1,enabledAgents=null,page=0,query='';
 const PAGE_SIZE=10;              /* sessions list page length */
 const promptsCache=new Map();    /* session key -> session_prompts payload */
+/* Search belongs to the loaded table, not the charts or a selected transcript. */
+_toolbar=()=>sub==='sessions'&&!sel&&SD&&!loading&&!failed?{search:{
+  placeholder:'Search loaded sessions…',
+  getValue:()=>query,
+  setValue(value){
+    value=String(value??'');
+    if(value===query)return;
+    query=value;page=0;render();
+  }
+}}:null;
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const tok=n=>n>=1e9?(n/1e9).toFixed(1)+'B':n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':String(Math.round(n));
@@ -156,6 +168,7 @@ function drawBars(host,items){
 
 /* ---- render dispatcher ---- */
 function render(){
+  ctx.refreshToolbar();
   if(loading){wrap.innerHTML='<div class="sess-note">loading .xo/sessions.json…</div>';return;}
   if(failed){
     const off=failed==='\x00offline';
@@ -185,6 +198,7 @@ function render(){
   wrap.querySelectorAll('[data-agent]').forEach(input=>input.addEventListener('change',()=>{
     const changedAgent=input.dataset.agent;
     if(input.checked)enabledAgents.add(input.dataset.agent);else enabledAgents.delete(input.dataset.agent);
+    page=0;
     const selected=SD.sessions.find(row=>sessionKey(row)===sel);
     if(selected&&!agentOn(selected))sel=null;
     render();
@@ -263,7 +277,13 @@ function topTable(rows){
 /* ---- Sessions list + detail ---- */
 const COLS=[['started_at','Started'],['project','Project'],['agent','Source'],['model','Model'],['tokens','Tokens'],['cost','Cost'],['turns','Turns'],['duration_sec','Duration']];
 function rList(el){
-  const rows=SD.sessions.filter(agentOn);
+  const loaded=SD.sessions.filter(agentOn);
+  const terms=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const rows=terms.length?loaded.filter(s=>{
+    const text=[s.project,s.project_path,agentOf(s),agentLabel(agentOf(s)),s.model,s.id,sessionKey(s)]
+      .map(value=>String(value??'')).join(' ').toLowerCase();
+    return terms.every(term=>text.includes(term));
+  }):loaded;
   const kf=s=>sortK==='tokens'?stok(s):sortK==='project'?s.project:sortK==='agent'?agentLabel(agentOf(s)):(s[sortK]??0);
   rows.sort((a,b)=>{const x=kf(a),y=kf(b);return(x<y?-1:x>y?1:0)*sortD;});
   const byAgent=SD.totals.sessions_by_agent;
@@ -277,9 +297,11 @@ function rList(el){
   page=Math.max(0,Math.min(page,pages-1));
   const start=page*PAGE_SIZE;
   const pageRows=rows.slice(start,start+PAGE_SIZE);
-  const cap=(selectedTotal>rows.length?'newest '+rows.length+' loaded of '+selectedTotal+' selected sessions':rows.length+' sessions (all time)')
+  const loadedCap=selectedTotal>loaded.length?'newest '+loaded.length+' loaded of '+selectedTotal+' selected sessions':loaded.length+' sessions (all time)';
+  const cap=(terms.length?rows.length+' matching of '+loaded.length+' loaded sessions'
+      +(selectedTotal>loaded.length?' · '+loadedCap:' (all time)'):loadedCap)
     +(rows.length>PAGE_SIZE?' · showing '+(start+1)+'–'+(start+pageRows.length):'');
-  el.innerHTML='<div class="scard"><div class="eyebrow2">'+cap+'</div>'
+  el.innerHTML='<div class="scard"><div class="eyebrow2" role="status">'+cap+'</div>'
     +'<table class="stbl"><tr>'+COLS.map(([k,l])=>'<th data-k="'+k+'">'+l+(k===sortK?(sortD<0?' ↓':' ↑'):'')+'</th>').join('')+'<th class="num">Sub-agents</th></tr>'
     +pageRows.map(s=>'<tr class="rowlink" data-sid="'+esc(sessionKey(s))+'">'
       +'<td style="white-space:nowrap">'+dtfmt(s.started_at)+'</td><td><b>'+esc(s.project)+'</b></td>'
@@ -288,6 +310,7 @@ function rList(el){
       +'<td class="num acc">'+tok(stok(s))+'</td><td class="num">'+costfmt(s.cost,s.cost_known)+'</td>'
       +'<td class="num">'+s.turns+'</td><td class="num">'+dur(s.duration_sec)+'</td>'
       +'<td class="num">'+(s.subagents.length||'')+'</td></tr>').join('')+'</table>'
+    +(terms.length&&!rows.length?'<div class="sess-note">No loaded sessions match this search for the selected sources.</div>':'')
     +(pages>1?'<div class="sess-pager">'
       +'<button id="sess-prev"'+(page?'':' disabled')+'>&larr; Prev</button>'
       +'<span>Page '+(page+1)+' of '+pages+'</span>'
@@ -302,7 +325,7 @@ function rList(el){
 const kv=(k,v)=>'<div class="kvrow"><dt>'+k+'</dt><dd>'+esc(v??'—')+'</dd></div>';
 function rDetail(el){
   const s=SD.sessions.find(x=>sessionKey(x)===sel&&agentOn(x));
-  if(!s){sel=null;rList(el);return;}
+  if(!s){sel=null;ctx.refreshToolbar();rList(el);return;}
   const t=stok(s);
   const explicitOwn=Number(s.own_tokens);
   const childTokens=s.subagents.reduce((sum,row)=>sum+num(row.total_tokens??row.tokens),0);

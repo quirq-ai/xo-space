@@ -22,9 +22,9 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_view_is_imported_and_registered_with_a_cache_buster(self) -> None:
         app = read("js/app.js")
-        self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-accounts1';",
+        self.assertRegex(
             app,
+            r"import inboxView,\{initInboxBadge\} from './views/inbox\.js\?v=\d{8}-[a-z0-9]+';",
         )
         self.assertIn("registerView(inboxView);", app)
         # Inbox sits between Sessions and Setup in the primary nav.

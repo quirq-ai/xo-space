@@ -51,6 +51,7 @@ let openToolkit=null;      /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
+let filter='';
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -80,6 +81,11 @@ const accountInFlight=new Set(); /* ids with a POST in flight, kept across loads
 
 export default {
   id:'connectors',label:'Connectors',order:10,
+  toolbar:{search:{
+    placeholder:'Filter connectors…',
+    getValue:()=>filter,
+    setValue(value){filter=String(value??'');applyFilter();},
+  }},
   async mount(el){
     root=el;
     renderShell();
@@ -108,6 +114,7 @@ function renderShell(){
       +'<section class="conn-grid" id="conn-grid" aria-label="Composio toolkits">'
         +'<div class="conn-empty">Loading connectors&hellip;</div>'
       +'</section>'
+      +'<div class="conn-empty" id="conn-no-match" role="status" hidden></div>'
     +'</div>';
 }
 
@@ -234,6 +241,7 @@ function statusOf(t){
 function paintGrid(build,{snapshot=true}={}){
   if(snapshot)snapshotPollDraft();
   root.querySelector('#conn-grid').innerHTML=build();
+  applyFilter();
 }
 function renderGrid(opts){
   if(!toolkits.length){
@@ -241,6 +249,25 @@ function renderGrid(opts){
     return;
   }
   paintGrid(()=>toolkits.map(renderCard).join(''),opts);
+}
+
+/* Filter in place: replacing cards while someone authorizes, saves a poll
+   draft or toggles an action would detach its controls and lose live state. */
+function applyFilter(){
+  if(!root)return;
+  const q=filter.trim().toLowerCase();
+  const cards=root.querySelectorAll('.conn-card[data-toolkit]');
+  let shown=0;
+  for(const card of cards){
+    const t=toolkits.find(t=>t.id===card.dataset.toolkit);
+    const fields=t?[t.id,t.slug,t.display_name,t.description,
+      isConnected(t)?accountLabel(accountCache[t.id]):'']:[];
+    card.hidden=!!q&&!fields.some(value=>String(value??'').toLowerCase().includes(q));
+    if(!card.hidden)shown++;
+  }
+  const note=root.querySelector('#conn-no-match');
+  note.hidden=!cards.length||shown>0;
+  note.textContent=note.hidden?'':'No connectors match “'+filter.trim()+'”. Clear the search to show all connectors.';
 }
 
 function renderCard(t){
@@ -498,6 +525,7 @@ async function resolveAccount(toolkitId){
     if(!label)return;
     accountCache[toolkitId]={account_label:label,account_checked_at:res.data.account_checked_at||null};
     paintAccount(toolkitId,label);
+    applyFilter();
   }finally{
     accountInFlight.delete(toolkitId);
   }

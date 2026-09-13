@@ -40,7 +40,7 @@ class SpaceSessionsUiTests(unittest.TestCase):
         self.assertIn(".sess-pager", css)
         self.assertIn(".sess-prompt", css)
         self.assertIn("sessions.js?v=", app)
-        self.assertIn("sessions.css?v=20260725-sessions2", index)
+        self.assertRegex(index, r"sessions\.css\?v=\d{8}-[a-z0-9]+")
 
     def test_telemetry_only_providers_are_discovered(self) -> None:
         providers = list_capability_providers("session_telemetry")
