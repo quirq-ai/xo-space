@@ -249,6 +249,9 @@ async def _run_collector(toolkit: str, spec: dict, session: mcp_client.McpSessio
                                   stage="execute")
     items = collectors.extract_items(spec, payload, toolkit=toolkit, now=now)
     warnings = collectors.extract_warnings(spec, payload)
+    if isinstance(payload, dict) and payload.get("truncated"):
+        warnings.append("Composio returned only a preview of a large answer; the newest items were read, "
+                        "the rest were not")
     seen = set(state_doc["cursors"].get(spec["id"], {}).get("seen", []))
     fresh: list[dict] = []
     for item in items:

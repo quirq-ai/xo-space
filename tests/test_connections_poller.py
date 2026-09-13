@@ -241,7 +241,7 @@ class SuccessfulPollTests(_Base):
         self.assertEqual(self.mocks["call"].await_count, 2)
         self.assertEqual(self.mocks["call"].await_args_list[0].args, ("GMAIL_GET_PROFILE", {"user_id": "me"}))
         tool, args = self.mocks["call"].await_args.args
-        self.assertEqual((tool, args), ("GMAIL_FETCH_EMAILS", {"query": "is:unread", "max_results": 20}))
+        self.assertEqual((tool, args), ("GMAIL_FETCH_EMAILS", {"query": "is:unread", "max_results": 20, "verbose": False, "include_payload": False}))
         self.assertEqual(self.mocks["call"].await_args.kwargs, {"raise_on_tool_error": True})
         self.assertEqual(self.accounts()["gmail"]["label"], EMAIL)
         self.mocks["entry"].assert_called_once_with("user_x")
@@ -380,6 +380,14 @@ class CollectorFailureTests(_Base):
         self.assertEqual((state_doc["events_total"], state_doc["last_ok_at"]), (1, None))
         lines = (store.connection_dir("googlecalendar") / "events.jsonl").read_text().splitlines()
         self.assertEqual([json.loads(line)["title"] for line in lines], ["Standup"])
+
+    def test_a_truncated_answer_is_read_and_reported(self) -> None:
+        store.write_config("gmail")
+        payload = {"successful": True, "data": {"messages": [message(1)]}, "error": None, "truncated": True}
+        self.mocks["call"].return_value = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(out["new_events"], 1)
+        self.assertIn("only a preview", out["error"])
 
     def test_mapping_exception_is_isolated_and_truncated(self) -> None:
         store.write_config("gmail")

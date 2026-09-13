@@ -399,6 +399,23 @@ class ExecuteToolTests(_Base):
             run(mcp_client.execute_tool(ENTRY, "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", {}, tool_names=[self.EXECUTOR]))
         self.assertEqual(str(raised.exception), "Quota exceeded for quota metric 'Queries'")
 
+    def test_executor_preview_is_used_and_flagged_when_data_is_absent(self) -> None:
+        """A large answer comes back as ``data_preview`` with the full payload
+        parked remotely: the preview is the data, and the envelope says so."""
+        answer = router_call([{"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
+                               "response": {"successful": True, "data_preview": {"messages": [{"messageId": "m1"}]}}}])
+        self.use(RouterUpstream(tools=[self.EXECUTOR], call=answer))
+        result = run(mcp_client.execute_tool(ENTRY, "GMAIL_FETCH_EMAILS", {}, tool_names=[self.EXECUTOR]))
+        payload = mcp_client.tool_result_json(result)
+        self.assertEqual(payload["data"], {"messages": [{"messageId": "m1"}]})
+        self.assertIs(payload["truncated"], True)
+        plain = router_call([{"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
+                              "response": {"successful": True, "data": {"messages": []}}}])
+        with patch.object(mcp_client, "_TRANSPORT",
+                          httpx.MockTransport(RouterUpstream(tools=[self.EXECUTOR], call=plain).handler)):
+            result = run(mcp_client.execute_tool(ENTRY, "GMAIL_FETCH_EMAILS", {}, tool_names=[self.EXECUTOR]))
+        self.assertNotIn("truncated", mcp_client.tool_result_json(result))
+
     def test_executor_without_a_result_or_with_a_failed_response(self) -> None:
         empty = router_call([])
         self.use(RouterUpstream(tools=[self.EXECUTOR], call=empty))

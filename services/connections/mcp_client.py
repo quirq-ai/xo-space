@@ -271,9 +271,19 @@ def _unwrap_executor(payload: Any, slug: str) -> dict:
     if first.get("error"):
         raise McpError(error_text(first["error"])[:_TOOL_ERROR_MAX], stage="execute")
     response = first.get("response")
-    if isinstance(response, dict) and ("successful" in response or "data" in response):
-        return {"successful": response.get("successful", True), "data": response.get("data", {}),
-                "error": response.get("error")}
+    if isinstance(response, dict) and ("successful" in response or "data" in response or "data_preview" in response):
+        data = response.get("data")
+        truncated = False
+        if not data and isinstance(response.get("data_preview"), dict):
+            # A large answer: the executor keeps only a preview inline and parks
+            # the full payload in a remote file the poller cannot read. The
+            # preview is real data (the first items), so it is used and flagged.
+            data, truncated = response["data_preview"], True
+        out = {"successful": response.get("successful", True), "data": data if data is not None else {},
+               "error": response.get("error")}
+        if truncated:
+            out["truncated"] = True
+        return out
     return {"successful": True, "data": response if response is not None else {}, "error": None}
 
 

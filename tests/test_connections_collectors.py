@@ -54,8 +54,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in collectors.catalog("gmail")], ["unread", "inbox"])
         self.assertEqual(collectors.default_ids("gmail"), ["unread"])
         self.assertEqual(gmail_spec("unread")["tool"], "GMAIL_FETCH_EMAILS")
-        self.assertEqual(gmail_spec("unread")["args"], {"query": "is:unread", "max_results": 20})
-        self.assertEqual(gmail_spec("inbox")["args"], {"query": "in:inbox newer_than:1d", "max_results": 20})
+        self.assertEqual(gmail_spec("unread")["args"], {"query": "is:unread", "max_results": 20, "verbose": False, "include_payload": False})
+        self.assertEqual(gmail_spec("inbox")["args"], {"query": "in:inbox newer_than:1d", "max_results": 20, "verbose": False, "include_payload": False})
         self.assertEqual(gmail_spec("inbox")["label"], "New mail in Inbox (last day)")
         self.assertEqual([s["id"] for s in collectors.catalog("googlecalendar")], ["upcoming"])
         self.assertEqual(collectors.collector("googlecalendar", "upcoming")["tool"], "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS")
@@ -144,6 +144,14 @@ class IdentityTests(unittest.TestCase):
         long = collectors.extract_identity(spec, {"emailAddress": "x" * 500})
         self.assertEqual(len(long), collectors.IDENTITY_LABEL_MAX)
         self.assertEqual(collectors.IDENTITY_LABEL_MAX, 200)
+
+
+class GmailArgsTests(unittest.TestCase):
+    def test_gmail_asks_for_metadata_only(self) -> None:
+        for cid in ("unread", "inbox"):
+            args = collectors.collector("gmail", cid)["args"]
+            self.assertIs(args["verbose"], False, cid)
+            self.assertIs(args["include_payload"], False, cid)
 
 
 class RenderArgsTests(unittest.TestCase):

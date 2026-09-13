@@ -60,6 +60,8 @@ _DIGITS_RE = re.compile(r"\d+")
 _DECIMAL_RE = re.compile(r"\d+\.\d+")       # Slack message ts: "1725000000.000100"
 _EPOCH_MS_THRESHOLD = 1e11        # anything larger is milliseconds, not seconds
 
+# Metadata only (verbose and include_payload false): a full-body answer is large
+# enough for Composio's executor to replace it with a three-item preview.
 _GMAIL_MAP = {
     "list_keys": ["messages", "data.messages", "items"],
     "id_keys": ["messageId", "id", "threadId"],
@@ -73,9 +75,10 @@ _CATALOG: dict[str, list[dict]] = {toolkit: [] for toolkit in TOOLKITS}
 _CATALOG.update({
     "gmail": [
         {"id": "unread", "label": "Unread mail", "default": True, "tool": "GMAIL_FETCH_EMAILS",
-         "args": {"query": "is:unread", "max_results": 20}, **_GMAIL_MAP},
+         "args": {"query": "is:unread", "max_results": 20, "verbose": False, "include_payload": False}, **_GMAIL_MAP},
         {"id": "inbox", "label": "New mail in Inbox (last day)", "tool": "GMAIL_FETCH_EMAILS",
-         "args": {"query": "in:inbox newer_than:1d", "max_results": 20}, **_GMAIL_MAP},
+         "args": {"query": "in:inbox newer_than:1d", "max_results": 20, "verbose": False, "include_payload": False},
+         **_GMAIL_MAP},
     ],
     "googlecalendar": [
         # One call across every calendar in the account's list: a "primary"-only
