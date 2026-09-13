@@ -56,13 +56,15 @@ class PathsAndValidationTests(_Base):
         self.assertEqual(store.connections_dir(), self.conns())
         self.assertEqual(store.connection_dir("gmail"), self.conns() / "gmail")
         self.assertEqual(store.connection_dir("some_other_id"), self.conns() / "some_other_id")
+        self.assertEqual(store.accounts_path(), self.conns() / "accounts.json")
 
     def test_bad_ids_are_404_before_any_filesystem_touch(self) -> None:
         for bad in BAD_IDS:
             for fn in (store.connection_dir, store.read_config, store.read_state, store.read_events,
                        store.remove, lambda t: store.write_config(t, enabled=True),
                        lambda t: store.update_state(t, last_error="x"),
-                       lambda t: store.append_events(t, [ev(1, "2026-09-11T10:00:00Z")])):
+                       lambda t: store.append_events(t, [ev(1, "2026-09-11T10:00:00Z")]),
+                       lambda t: store.remember_account(t, "a@b.c", None), store.forget_account):
                 with self.subTest(toolkit=bad):
                     with self.assertRaises(ConnectionsError) as ctx:
                         fn(bad)
@@ -75,6 +77,9 @@ class PathsAndValidationTests(_Base):
         self.assertEqual((ctx.exception.code, ctx.exception.status), ("unknown_toolkit", 404))
         with self.assertRaises(ConnectionsError):
             store.append_events("zzz_unknown", [ev(1, "2026-09-11T10:00:00Z")])
+        with self.assertRaises(ConnectionsError):
+            store.remember_account("zzz_unknown", "a@b.c", None)
+        self.assertFalse(store.forget_account("zzz_unknown"))
         self.assertIsNone(store.read_config("zzz_unknown"))
         self.assertEqual(store.read_state("zzz_unknown")["events_total"], 0)
         self.assertEqual(store.read_events("zzz_unknown"), [])
@@ -209,6 +214,7 @@ class ConfigTests(_Base):
         (self.conns() / "stray.txt").write_text("x", encoding="utf-8")          # a file
         self.write_file("Bad-Name", "config.json", "{}")                        # outside the regex
         (self.conns() / "googlecalendar").symlink_to(self.conns() / "gmail")   # a symlink
+        store.remember_account("slack", "ana@example.com", "ca_1")             # accounts.json, a file
         self.assertEqual(store.list_configured(), ["gmail", "notion"])
 
 
@@ -329,6 +335,119 @@ class EventsTests(_Base):
                    and p.name.startswith("events.") and "2020" not in p.name and p.name != "events.jsonl"]
         self.assertEqual(len(rotated), 1)
         self.assertIn('"k1"', rotated[0].read_text(encoding="utf-8"))
+
+
+class AccountsTests(_Base):
+    """``accounts.json`` beside the folders: the account each toolkit's
+    session is bound to, separate from the polling state."""
+
+    def accounts_file(self) -> dict:
+        return json.loads(store.accounts_path().read_text(encoding="utf-8"))
+
+    def test_round_trip_creates_the_file_and_no_toolkit_folder(self) -> None:
+        self.assertEqual(store.read_accounts(), {})
+        self.assertFalse(self.conns().exists())
+        entry = store.remember_account("gmail", "  ana@example.com ", "ca_1")
+        self.assertEqual((entry["label"], entry["connected_account_id"]), ("ana@example.com", "ca_1"))
+        self.assertRegex(entry["checked_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(store.read_accounts(), {"gmail": entry})
+        self.assertEqual(self.accounts_file(), {"schema": 1, "accounts": {"gmail": entry}})
+        self.assertFalse((self.conns() / "gmail").exists(), "a label never creates a toolkit folder")
+        self.assertEqual(store.list_configured(), [])
+        self.assertTrue((self.root / ".quirq" / "watcher" / "locks").is_dir(), "flock sentinel stayed in the temp root")
+        # an explicit checked_at, and an unpinned account
+        from datetime import datetime, timezone
+        entry = store.remember_account("googlecalendar", "cal@example.com", None,
+                                       now=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc))
+        self.assertEqual(entry, {"label": "cal@example.com", "connected_account_id": None,
+                                 "checked_at": "2026-09-11T12:00:00Z"})
+        self.assertEqual(len(store.remember_account("slack", "x" * 500, "")["label"]), 200)
+        self.assertIsNone(store.read_accounts()["slack"]["connected_account_id"], "an empty pin reads as none")
+
+    def test_merge_keeps_other_toolkits_and_unknown_keys(self) -> None:
+        self.conns().mkdir(parents=True)
+        store.accounts_path().write_text(json.dumps({
+            "schema": 1, "note": "keep me",
+            "accounts": {"gmail": {"label": "old@example.com", "connected_account_id": "ca_0",
+                                   "checked_at": "2026-09-10T00:00:00Z", "alias": "work"},
+                         "notion": {"label": "Ana's workspace", "checked_at": "2026-09-10T00:00:00Z"}}}),
+            encoding="utf-8")
+        store.remember_account("gmail", "new@example.com", "ca_1")
+        on_disk = self.accounts_file()
+        self.assertEqual(on_disk["note"], "keep me")
+        self.assertEqual(on_disk["schema"], 1)
+        self.assertEqual(on_disk["accounts"]["gmail"]["alias"], "work", "unknown keys inside the entry survive")
+        self.assertEqual((on_disk["accounts"]["gmail"]["label"], on_disk["accounts"]["gmail"]["connected_account_id"]),
+                         ("new@example.com", "ca_1"))
+        self.assertNotEqual(on_disk["accounts"]["gmail"]["checked_at"], "2026-09-10T00:00:00Z")
+        self.assertEqual(on_disk["accounts"]["notion"]["label"], "Ana's workspace")
+        read = store.read_accounts()
+        self.assertEqual(sorted(read), ["gmail", "notion"])
+        self.assertIsNone(read["notion"]["connected_account_id"], "a missing pin reads as none")
+        self.assertEqual(read["gmail"]["alias"], "work")
+
+    def test_lenient_read_drops_entries_without_a_label(self) -> None:
+        self.conns().mkdir(parents=True)
+        store.accounts_path().write_text(json.dumps({"accounts": {
+            "gmail": {"label": "a@b.c", "connected_account_id": 7, "checked_at": None},
+            "notion": {"label": ""}, "slack": {"label": 5}, "telegram": "junk", "figma": {},
+            "googlecalendar": {"label": "  padded@x.y  ", "connected_account_id": "ca_2", "checked_at": "junk"},
+        }}), encoding="utf-8")
+        read = store.read_accounts()
+        self.assertEqual(sorted(read), ["gmail", "googlecalendar"])
+        self.assertEqual(read["gmail"], {"label": "a@b.c", "connected_account_id": None, "checked_at": None})
+        self.assertEqual(read["googlecalendar"]["label"], "padded@x.y")
+        self.assertEqual(read["googlecalendar"]["checked_at"], "junk", "the reader coerces types, not values")
+        store.accounts_path().write_text(json.dumps({"accounts": [1, 2]}), encoding="utf-8")
+        self.assertEqual(store.read_accounts(), {})
+        with self.assertLogs("services.connections.store", level="WARNING"):
+            store.accounts_path().write_text("[1, 2]", encoding="utf-8")
+            self.assertEqual(store.read_accounts(), {})
+
+    def test_forget(self) -> None:
+        self.assertFalse(store.forget_account("gmail"), "no file, nothing to forget")
+        self.assertFalse(self.conns().exists())
+        store.remember_account("gmail", "a@b.c", "ca_1")
+        store.remember_account("notion", "Ana", None)
+        self.assertTrue(store.forget_account("gmail"))
+        self.assertEqual(sorted(store.read_accounts()), ["notion"])
+        self.assertEqual(sorted(self.accounts_file()["accounts"]), ["notion"])
+        self.assertFalse(store.forget_account("gmail"))
+        self.assertFalse(store.forget_account("figma"))
+        self.assertTrue(store.forget_account("notion"))
+        self.assertEqual(self.accounts_file(), {"schema": 1, "accounts": {}})
+
+    def test_a_file_that_is_not_json_is_refused_and_reads_as_empty(self) -> None:
+        self.conns().mkdir(parents=True)
+        store.accounts_path().write_text("not json", encoding="utf-8")
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(store.read_accounts(), {})
+        with self.assertRaises(ConnectionsError) as ctx:
+            store.remember_account("gmail", "a@b.c", "ca_1")
+        self.assertEqual((ctx.exception.code, ctx.exception.status), ("accounts_unreadable", 500))
+        self.assertFalse(store.forget_account("gmail"))
+        self.assertEqual(store.accounts_path().read_text(encoding="utf-8"), "not json", "never overwritten")
+
+    def test_validation(self) -> None:
+        for label in ("", "   ", None, 7, ["a@b.c"]):
+            with self.subTest(label=label):
+                with self.assertRaises(ConnectionsError) as ctx:
+                    store.remember_account("gmail", label, "ca_1")
+                self.assertEqual((ctx.exception.code, ctx.exception.status), ("invalid_value", 400))
+        with self.assertRaises(ConnectionsError) as ctx:
+            store.remember_account("gmail", "a@b.c", 7)
+        self.assertEqual(ctx.exception.code, "invalid_value")
+        self.assertFalse(store.accounts_path().exists(), "a rejected write creates nothing")
+
+    def test_remove_forgets_the_account_too(self) -> None:
+        store.write_config("gmail")
+        store.remember_account("gmail", "a@b.c", "ca_1")
+        store.remember_account("notion", "Ana", None)
+        self.assertTrue(store.remove("gmail"))
+        self.assertEqual(sorted(store.read_accounts()), ["notion"])
+        # an unconfigured toolkit's label goes on DELETE as well; the answer stays about the folder
+        self.assertFalse(store.remove("notion"))
+        self.assertEqual(store.read_accounts(), {})
 
 
 class RemoveTests(_Base):

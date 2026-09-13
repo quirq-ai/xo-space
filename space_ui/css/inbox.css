@@ -119,6 +119,10 @@
     align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line-soft);
     font-size:12.5px}
   .inb-conn-row b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* the account the toolkit polls as, muted beside the name; capped so a
+     long email cannot starve the meta columns */
+  .inb-conn-acct{display:inline-block;margin-left:8px;max-width:200px;vertical-align:bottom;
+    font:400 10.5px var(--mono);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
   .inb-conn-meta{font:400 10.5px var(--mono);color:var(--ink-3);min-width:0;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .inb-conn-meta.is-error{color:#e1937d}

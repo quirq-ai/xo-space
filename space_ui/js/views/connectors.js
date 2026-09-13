@@ -12,6 +12,10 @@
    A card can be connected and off, which is the normal state for a workspace that
    did not run the OAuth flow itself. Hence two controls: "Turn off here" edits
    only this workspace, "Delete connection" removes it account-wide.
+   A third, read-only fact per connected card is WHICH account the session is
+   bound to (an email for Gmail and Google Calendar): read with the grid from
+   GET /api/connections, resolved live through POST /api/connections/<id>/account
+   when the read had none, and shown as a chip. Never a control, never blocking.
 
    Three failure modes are first-class states, not errors to hide:
      - no XO session      -> the backend holds no credential to identify you
@@ -31,7 +35,8 @@
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
-import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260913-inboxfix1';
+import {accountLabel,accountLine} from '../core/connections.js';
+import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260914-accounts1';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
@@ -63,6 +68,15 @@ let pollNotes={};          /* toolkit id -> one-line result of the last "Poll no
 let pollDraft={};          /* toolkit id -> {enabled, interval_s, collectors} not yet saved */
 const INTERVALS=[[300,'5 min'],[900,'15 min'],[1800,'30 min'],[3600,'1 hour'],
   [21600,'6 hours'],[86400,'24 hours']];
+
+/* Account labels (spec: connected account name). Filled once per grid load
+   from GET /api/connections, never per card; a connected toolkit turned on
+   here that the read left unlabelled is asked once per load through
+   POST /api/connections/<id>/account, and a label that arrives is written
+   into its card in place. Both calls are workspace-local: no session header. */
+let accountCache={};       /* toolkit id -> {account_label, account_checked_at} */
+let accountAsked=new Set(); /* ids POSTed this load; reset by every load (Refresh included) */
+const accountInFlight=new Set(); /* ids with a POST in flight, kept across loads: one request per toolkit */
 
 export default {
   id:'connectors',label:'Connectors',order:10,
@@ -116,6 +130,11 @@ async function loadAll(){
     const session=await ensureSession();
     if(!session){renderSignedOut();return;}
 
+    /* the account labels ride alongside the listing; awaited before the
+       paint so the cards come up labelled, never awaited past a failure */
+    accountAsked=new Set();
+    const accounts=loadAccounts();
+
     /* Listing also starts the server's MCP-gateway sweep in the background, so
        opening this tab (or pressing Refresh) does what the old "Reinstall MCP
        gateway" button did: the agent's wiring is never installed by hand. */
@@ -123,7 +142,9 @@ async function loadAll(){
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
+    await accounts;
     renderGrid();
+    askAccounts();
   }finally{
     loading=false;
   }
@@ -228,6 +249,7 @@ function renderCard(t){
   const status=statusOf(t);
   const open=openToolkit===t.id;
   const polling=openPolling===t.id;
+  const acct=accountLabel(accountCache[t.id]);
   return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
@@ -241,6 +263,10 @@ function renderCard(t){
         +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
+        /* which account the session is bound to; only a connection has one */
+        +(connected&&acct
+          ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
+          :'')
       +'</div>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
@@ -302,6 +328,9 @@ function renderPolling(t,enabled){
       :available.filter(a=>a.default).map(a=>a.id));
   const interval=draft?draft.interval_s:(Number(c.interval_s)||900);
   const collect=draft?draft.enabled:!!c.enabled;
+  /* the drawer's own read carries the label; the card's cache covers a
+     lookup that landed after the drawer loaded */
+  const acct=accountLine(c)||accountLine(accountCache[t.id]);
   const options=INTERVALS.map(([s,label])=>
       '<option value="'+s+'"'+(s===interval?' selected':'')+'>'+label+'</option>').join('')
     /* a hand-edited interval outside the menu is kept, not silently rounded */
@@ -315,6 +344,7 @@ function renderPolling(t,enabled){
     +'<label class="conn-poll-row"><input type="checkbox" data-poll="enabled"'
       +(collect?' checked':'')+'> Collect into Inbox</label>'
     +'<label class="conn-poll-row">Every <select data-poll="interval">'+options+'</select></label>'
+    +(acct?'<p class="conn-poll-note conn-poll-account">Polling '+esc(acct)+'</p>':'')
     +available.map(a=>
       '<label class="conn-poll-row"><input type="checkbox" data-poll="collector" value="'+esc(a.id)+'"'
         +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
@@ -424,6 +454,79 @@ async function pollNow(toolkitId,button){
   }finally{
     setBusy(button,false);
   }
+}
+
+/* ---------- accounts ---------- */
+
+/* One read per grid load, never per card: the list route carries every
+   toolkit's account_label, so the cards paint with whatever the server
+   already knows. A failed read keeps the labels of the previous load. */
+async function loadAccounts(){
+  const path=API_BASE+'/api/connections';
+  const res=await apiFetch(path);
+  const rows=res.ok&&res.data&&Array.isArray(res.data.connections)?res.data.connections:null;
+  if(!rows)return;
+  const next={};
+  for(const c of rows){
+    if(!c||typeof c!=='object'||typeof c.toolkit!=='string')continue;
+    next[c.toolkit]={account_label:accountLabel(c)||null,account_checked_at:c.account_checked_at||null};
+  }
+  accountCache=next;
+}
+
+/* A connected toolkit turned on here that the read left unlabelled gets one
+   live lookup per load; the server answers from its cache for a minute, so
+   a Refresh right after costs no provider call. Not awaited by loadAll: a
+   slow provider must not hold the Refresh button. */
+function askAccounts(){
+  for(const t of toolkits){
+    if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;
+    if(accountAsked.has(t.id)||accountInFlight.has(t.id))continue;
+    accountAsked.add(t.id);
+    resolveAccount(t.id);
+  }
+}
+
+async function resolveAccount(toolkitId){
+  accountInFlight.add(toolkitId);
+  try{
+    const path=API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/account';
+    const res=await apiFetch(path,{method:'POST'});
+    /* no retry: an error with no label (a provider fault, a toolkit with no
+       lookup yet) leaves the card exactly as it is */
+    const label=res.ok&&res.data?accountLabel(res.data):'';
+    if(!label)return;
+    accountCache[toolkitId]={account_label:label,account_checked_at:res.data.account_checked_at||null};
+    paintAccount(toolkitId,label);
+  }finally{
+    accountInFlight.delete(toolkitId);
+  }
+}
+
+/* The label lands in place, never through a grid repaint: a lookup answers
+   at any moment after the load, and rebuilding the grid then would hide a
+   card error a failed Save, Poll now or scope change just showed, and
+   re-enable the button of a connect or delete still in flight (its later
+   setBusy would reach a detached node). The next full paint reads
+   accountCache and draws the same chip and note. Nothing to do when the
+   card is gone or its toolkit is no longer connected (deleted meanwhile). */
+function paintAccount(toolkitId,label){
+  const toolkit=toolkits.find(t=>t.id===toolkitId);
+  if(!toolkit||!isConnected(toolkit))return;
+  const card=root.querySelector('.conn-card[data-toolkit="'+CSS.escape(toolkitId)+'"]');
+  if(!card)return;
+  const facts=card.querySelector('.conn-facts');
+  if(facts&&!facts.querySelector('.conn-account'))
+    facts.insertAdjacentHTML('beforeend',
+      '<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(label)+'</span>');
+  /* an open drawer gets its "Polling as" note under the interval row, the
+     spot renderPolling gives it */
+  const drawer=card.querySelector('.conn-poll');
+  if(!drawer||drawer.querySelector('.conn-poll-account'))return;
+  const interval=drawer.querySelector('select[data-poll="interval"]');
+  const row=interval&&interval.closest('label');
+  if(row)row.insertAdjacentHTML('afterend',
+    '<p class="conn-poll-note conn-poll-account">Polling '+esc(accountLine(accountCache[toolkitId]))+'</p>');
 }
 
 function renderActions(toolkitId){

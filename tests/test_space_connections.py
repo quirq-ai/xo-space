@@ -7,9 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
 # the JS stamp (app.js and every view import it carries); the two stylesheets
-# this feature added kept their own stamps when the JS moved on
-STAMP = "20260913-inboxfix1"
-INBOX_CSS_STAMP = "20260911-connections1"
+# this feature added moved with it when the account chip touched them
+STAMP = "20260914-accounts1"
+INBOX_CSS_STAMP = STAMP
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -298,6 +298,44 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
             self.assertIn(cls, css)
 
 
+class ConnectedAccountTests(unittest.TestCase):
+    """The two fields every entry of GET /api/connections gained
+    (account_label, account_checked_at) and POST
+    /api/connections/{toolkit}/account: read through core/connections.js,
+    painted in the Inbox row and on the Connectors card, requested without
+    a session header. The behaviour pins live in
+    test_space_pr97_ui.AccountLabelTests; these hold the contract."""
+
+    def test_core_reads_account_label_and_both_views_paint_it(self) -> None:
+        core = read("js/core/connections.js")
+        self.assertIn("export function accountLabel(c){", core)
+        self.assertIn("c.account_label", core)
+        inbox = read("js/views/inbox.js")
+        self.assertIn("import {accountLabel} from '../core/connections.js';", inbox)
+        self.assertIn("'<span class=\"inb-conn-acct\">'+esc(acct)+'</span>'", inbox)
+        view = read("js/views/connectors.js")
+        self.assertIn("import {accountLabel,accountLine} from '../core/connections.js';", view)
+        self.assertIn(
+            "'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(acct)+'</span>'",
+            view,
+        )
+        self.assertIn("account_checked_at:c.account_checked_at||null", view)
+
+    def test_account_route_is_posted_without_a_session_header(self) -> None:
+        view = read("js/views/connectors.js")
+        accounts = slice_between(view, "/* ---------- accounts ---------- */", "function renderActions(")
+        self.assertIn("const path=API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/account';", accounts)
+        self.assertIn("apiFetch(path,{method:'POST'})", accounts)
+        self.assertIn("const path=API_BASE+'/api/connections';", accounts)
+        self.assertNotIn("sessionHeaders", accounts)
+        self.assertNotIn("headers", accounts)
+        # the route answers 200 with error set on a provider failure: no label, no change to the card
+        self.assertIn("if(!label)return;", accounts)
+        for agent in AGENTS:
+            self.assertNotIn(agent, accounts)
+        self.assertNotRegex(accounts, DASHES)
+
+
 class CacheBusterTests(unittest.TestCase):
     """The JS stamps move together; index.html's app.js stamp is what makes
     a browser re-import the per-view URLs at all. The core modules every
@@ -320,8 +358,8 @@ class CacheBusterTests(unittest.TestCase):
     def test_index_html_links(self) -> None:
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + INBOX_CSS_STAMP + '">', html)
-        # connectors.css moved on again after the action row learned to wrap (4 buttons)
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260911-connections2">', html)
+        # connectors.css carries the account chip's rule, so it moved with the JS
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=' + STAMP + '">', html)
         self.assertIn('src="js/app.js?v=' + STAMP + '"', html)
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

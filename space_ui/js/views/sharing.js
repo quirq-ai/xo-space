@@ -23,7 +23,7 @@ import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
   cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260913-inboxfix1';
+  checkNow,failText} from './sharing_data.js?v=20260914-accounts1';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 

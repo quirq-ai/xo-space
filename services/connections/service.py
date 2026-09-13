@@ -7,6 +7,10 @@ One entry per toolkit the Composio catalog knows, configured or not: an
 unconfigured toolkit reports the defaults (``configured`` false, null poll
 fields) so the Connectors tab's Polling drawer can render a form before a
 ``config.json`` exists. Nothing is written until :func:`configure` runs.
+Every entry also carries ``account_label`` and ``account_checked_at``, the
+account the toolkit's session is bound to as cached in ``accounts.json``
+(separate from the polling state, so an unconfigured toolkit can carry
+one); :func:`refresh_account` resolves it live through the poller.
 
 Core code: names no agent and imports nothing from the adapters tree.
 ``signed_in`` looks at the auth router lazily (inside the function) so
@@ -31,7 +35,7 @@ from .store import ConnectionsError  # re-exported: the router catches service.C
 
 __all__ = [
     "ConnectionsError", "UNSET", "list_connections", "get_connection", "configure",
-    "events", "remove", "poll_now", "signed_in", "poller_enabled",
+    "events", "remove", "poll_now", "refresh_account", "signed_in", "poller_enabled",
     "register_new_events_listener",
 ]
 
@@ -67,12 +71,14 @@ def _available(toolkit: str) -> list[dict]:
 _NULL_STATE = {"last_poll_at": None, "last_ok_at": None, "last_error": None, "events_total": 0}
 
 
-def _entry(toolkit: str, config: Optional[dict]) -> dict:
+def _entry(toolkit: str, config: Optional[dict], accounts: dict) -> dict:
     """The connection dict for one toolkit; ``config`` is the normalised
     ``config.json`` or ``None`` when the folder holds none (then the poll
-    fields are null: a stray ``state.json`` without a config is not shown)."""
+    fields are null: a stray ``state.json`` without a config is not shown);
+    ``accounts`` is ``store.read_accounts()``, read once per listing."""
     configured = config is not None
     state_doc = store.read_state(toolkit) if configured else dict(_NULL_STATE)
+    account = accounts.get(toolkit) or {}
     return {
         "toolkit": toolkit,
         "display_name": TOOLKITS[toolkit].display_name,
@@ -86,6 +92,8 @@ def _entry(toolkit: str, config: Optional[dict]) -> dict:
         "last_ok_at": state_doc["last_ok_at"],
         "last_error": state_doc["last_error"],
         "events_total": state_doc["events_total"],
+        "account_label": account.get("label"),
+        "account_checked_at": account.get("checked_at"),
     }
 
 
@@ -104,12 +112,13 @@ def _read_config_or_none(toolkit: str) -> Optional[dict]:
 
 def list_connections() -> list[dict]:
     """One entry per toolkit id in the Composio catalog, sorted by id."""
-    return [_entry(toolkit, _read_config_or_none(toolkit)) for toolkit in sorted(TOOLKITS)]
+    accounts = store.read_accounts()
+    return [_entry(toolkit, _read_config_or_none(toolkit), accounts) for toolkit in sorted(TOOLKITS)]
 
 
 def get_connection(toolkit: str) -> dict:
     _check_known(toolkit)
-    return _entry(toolkit, _read_config_or_none(toolkit))
+    return _entry(toolkit, _read_config_or_none(toolkit), store.read_accounts())
 
 
 def events(toolkit: str, limit: int = EVENTS_LIMIT_DEFAULT) -> list[dict]:
@@ -166,6 +175,16 @@ async def poll_now(toolkit: str) -> dict:
     if outcome.get("new_events"):
         await _notify_new_events(toolkit)
     return outcome
+
+
+async def refresh_account(toolkit: str) -> dict:
+    """Resolve the account the toolkit's session is bound to, live, and
+    cache it: ``{"toolkit", "account_label", "account_checked_at", "error",
+    "cached"}`` (see :func:`poller.refresh_account`). A provider or session
+    failure is an ``error`` in that dict, never a raise; only an unknown
+    toolkit raises (404)."""
+    _check_known(toolkit)
+    return await poller.refresh_account(toolkit)
 
 
 # ── New-events listeners ─────────────────────────────────────────────────────

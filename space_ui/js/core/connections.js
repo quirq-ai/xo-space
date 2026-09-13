@@ -1,10 +1,25 @@
 /* Pure formatters over one entry of GET /api/connections (a polled
-   toolkit): its cadence, its collector labels, and its last-poll-or-error
-   line. Shared by the Inbox connections section and the Connectors polling
-   drawer so the same payload never reads two ways. No DOM, no fetch, no
-   escaping: every string returned here still goes through esc() in the
-   view that paints it. */
+   toolkit): its cadence, its collector labels, its last-poll-or-error
+   line, and the account its session is bound to (account_label, an email
+   once known, null until then). Shared by the Inbox connections section
+   and the Connectors polling drawer so the same payload never reads two
+   ways. No DOM, no fetch, no escaping: every string returned here still
+   goes through esc() in the view that paints it. */
 import {rel} from './ui.js';
+
+/* The entry's account_label as a string: '' when null, missing, or the
+   entry itself is absent (a card whose list read failed passes undefined). */
+export function accountLabel(c){
+  const v=c&&typeof c==='object'?c.account_label:null;
+  return typeof v==='string'?v:'';
+}
+
+/* 'as dev@example.com', or '' with no label; the view supplies the verb
+   ('Polling as ...') and the escape. */
+export function accountLine(c){
+  const label=accountLabel(c);
+  return label?'as '+label:'';
+}
 
 /* 'every 15 min', or 'every 2 h' on a whole number of hours; a missing or
    sub-minute interval reads as one minute rather than zero */

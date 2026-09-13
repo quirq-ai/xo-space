@@ -28,6 +28,16 @@ The dedupe key of an event is the element id only (``id_keys``): a
 calendar event that is rescheduled keeps its id and is not surfaced
 again; a recurring instance carries its own id and is. That is by design
 (a stable key, no flood on every reschedule), and a test pins it.
+
+Beside the collectors sits the identity catalog: one read-only tool per
+toolkit that names the account the session is bound to (the swarm's
+account rows carry no email, so the provider is asked). An identity spec
+is ``{"tool", "args", "keys"}``; :func:`identity_spec` hands out a copy
+(``None`` for a toolkit without one) and :func:`extract_identity` reads
+the label out of the answer: the first ``keys`` path holding a non-blank
+string, stripped and capped at :data:`IDENTITY_LABEL_MAX`. Gmail answers
+``{"data": {"emailAddress": ...}}`` and the calendar's ``primary``
+calendar carries the account's email as ``calendar_data.id``.
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ from services.cowork_agent.connectors.composio.service import TOOLKITS
 from services.timestamps import EPOCH as _EPOCH, TS_FORMAT, aware as _aware, iso, parse_ts  # noqa: F401
 
 TITLE_MAX, BODY_MAX = 300, 4000
+IDENTITY_LABEL_MAX = 200
 _PLACEHOLDER_NOW, _PLACEHOLDER_7D = "{now_iso}", "{now_plus_7d_iso}"
 _PLACEHOLDER_YESTERDAY = "{yesterday_date}"
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -128,6 +139,17 @@ _CATALOG.update({
     ],
 })
 
+# The identity catalog: which read-only tool names the connected account.
+# Gmail: {emailAddress, historyId, messagesTotal, threadsTotal}. Calendar: the
+# "primary" calendar's id is the account's email; its summary is the fallback.
+_IDENTITY: dict[str, dict] = {
+    "gmail": {"tool": "GMAIL_GET_PROFILE", "args": {"user_id": "me"},
+              "keys": ["emailAddress", "data.emailAddress"]},
+    "googlecalendar": {"tool": "GOOGLECALENDAR_GET_CALENDAR", "args": {"calendar_id": "primary"},
+                       "keys": ["calendar_data.id", "data.calendar_data.id",
+                                "calendar_data.summary", "data.calendar_data.summary"]},
+}
+
 
 # ── Catalog access ───────────────────────────────────────────────────────────
 
@@ -144,6 +166,26 @@ def collector(toolkit: str, collector_id: str) -> Optional[dict]:
 
 def default_ids(toolkit: str) -> list[str]:
     return [spec["id"] for spec in _CATALOG.get(toolkit, []) if spec.get("default")]
+
+
+def identity_spec(toolkit: str) -> Optional[dict]:
+    """A copy of the identity spec for ``toolkit`` (``{"tool", "args",
+    "keys"}``), or ``None`` for a toolkit without an account lookup."""
+    spec = _IDENTITY.get(toolkit)
+    return copy.deepcopy(spec) if spec is not None else None
+
+
+def extract_identity(spec: dict, payload) -> Optional[str]:
+    """The account label in an identity tool's answer: the first ``keys``
+    path whose value is a non-blank string, stripped and capped at
+    :data:`IDENTITY_LABEL_MAX`; ``None`` when no path holds one."""
+    if not isinstance(spec, dict):
+        return None
+    for key in spec.get("keys") or []:
+        value = lookup(payload, key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:IDENTITY_LABEL_MAX]
+    return None
 
 
 # ── Time ─────────────────────────────────────────────────────────────────────

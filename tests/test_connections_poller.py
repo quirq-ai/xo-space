@@ -3,12 +3,21 @@ isolation, the identity and scope failure paths, and the tick summary.
 
 Hermetic: QUIRQ_STATE_ROOT points into a temp dir, every collaborator with
 a network or cache behind it is patched by attribute on the poller module
-(identity, workspace scope, the MCP entry builder, and the MCP session
-class, replaced by :class:`FakeSession`; :class:`RealSessionTests` keeps
-the real one over an ``httpx.MockTransport``), one event loop per test,
-and the lock dict is reset in setUp. A guard asserts
-``store.connections_dir()`` resolves under the temp root once the env is
-patched, so nothing here can reach the real ``~/.quirq``."""
+(identity, workspace scope and its pins, the MCP entry builder, and the
+MCP session class, replaced by :class:`FakeSession`;
+:class:`RealSessionTests` keeps the real one over an
+``httpx.MockTransport``), one event loop per test, and the lock dict is
+reset in setUp. A guard asserts ``store.connections_dir()`` resolves under
+the temp root once the env is patched, so nothing here can reach the real
+``~/.quirq``.
+
+A poll resolves the connected account before its collectors when the
+cache is cold, so the default session lists the two identity tools beside
+the collector slugs and the default answer carries ``emailAddress`` (one
+blob serves the identity call and the collectors): the first poll of a
+gmail or calendar connection makes one ``tools/call`` more than its
+collectors, and a scripted ``side_effect`` list starts with the identity
+answer (:func:`profile`)."""
 
 from __future__ import annotations
 
@@ -29,10 +38,35 @@ from services.connections.mcp_client import McpError
 from services.inbox import service as inbox_service
 
 ENTRY = {"type": "http", "url": "https://mcp.example.test/mcp", "headers": {"Authorization": "Bearer t"}}
+EMAIL = "ana@example.com"
+#: What the default FakeSession lists: the collector slugs and the two identity tools.
+DEFAULT_TOOLS = ["GMAIL_FETCH_EMAILS", "GMAIL_GET_PROFILE", "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS",
+                 "GOOGLECALENDAR_GET_CALENDAR", "NOTION_SEARCH_NOTION_PAGE"]
 
 
-def envelope(messages: list[dict], *, successful: bool = True, error=None) -> dict:
-    payload = {"successful": successful, "data": {"messages": messages}, "error": error}
+def envelope(messages: list[dict], *, successful: bool = True, error=None, email: str | None = None) -> dict:
+    """A Gmail fetch answer; with ``email`` the data also carries the profile's
+    ``emailAddress``, so one answer serves the identity call too."""
+    data = {"messages": messages}
+    if email:
+        data["emailAddress"] = email
+    payload = {"successful": successful, "data": data, "error": error}
+    return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
+def profile(email: str = EMAIL) -> dict:
+    """What GMAIL_GET_PROFILE answers (the live shape)."""
+    payload = {"successful": True, "error": None,
+               "data": {"emailAddress": email, "historyId": "12345", "messagesTotal": 10, "threadsTotal": 8,
+                        "display_url": "https://mail.google.com/"}}
+    return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
+def calendar_profile(email: str = EMAIL) -> dict:
+    """What GOOGLECALENDAR_GET_CALENDAR answers for ``primary`` (the live shape)."""
+    payload = {"successful": True, "error": None,
+               "data": {"calendar_data": {"id": email, "summary": email, "timeZone": "Europe/Lisbon"},
+                        "display_url": "https://calendar.google.com/"}}
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
 
 
@@ -102,14 +136,18 @@ class _Base(unittest.TestCase):
         self.aaccount = patch.object(poller.state, "aaccount_id", new=AsyncMock(return_value="user_x"))
         self.scope = patch.object(poller.space_scope, "enabled_toolkits",
                                   return_value=["gmail", "googlecalendar", "notion"])
+        # the pins: space_scope.load() reads a path fixed at import time, so it is
+        # replaced here (nothing pinned by default; a test sets connected_account_ids)
+        self.pins = patch.object(poller.space_scope, "load", return_value={})
         self.entry = patch.object(poller.composio_service, "build_mcp_server_entry", return_value=ENTRY)
-        # The session lists the collector slugs directly, so the default path is a
-        # plain tools/call; the routing tests swap this for the executor-only list.
-        FakeSession.reset(["GMAIL_FETCH_EMAILS", "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", "NOTION_SEARCH_NOTION_PAGE"],
-                          envelope([message(1), message(2)]))
+        # The session lists the collector and identity slugs directly, so the
+        # default path is a plain tools/call; the routing tests swap this for the
+        # executor-only list. The one default answer carries emailAddress, so the
+        # identity call a cold cache adds to the first poll succeeds on it too.
+        FakeSession.reset(list(DEFAULT_TOOLS), envelope([message(1), message(2)], email=EMAIL))
         self.mocks = {"open": FakeSession.open_mock, "names": FakeSession.list_mock, "call": FakeSession.call_mock}
         for name, p in (("known", self.known), ("aaccount", self.aaccount), ("scope", self.scope),
-                        ("entry", self.entry)):
+                        ("pins", self.pins), ("entry", self.entry)):
             self.mocks[name] = p.start()
             self.addCleanup(p.stop)
         if not self.REAL_SESSION:
@@ -132,6 +170,13 @@ class _Base(unittest.TestCase):
 
     def events(self, toolkit: str = "gmail") -> list[dict]:
         return store.read_events(toolkit, limit=100)
+
+    def accounts(self) -> dict:
+        path = self.root / ".quirq" / "connections" / "accounts.json"
+        return json.loads(path.read_text(encoding="utf-8"))["accounts"] if path.is_file() else {}
+
+    def called_tools(self) -> list[str]:
+        return [c.args[0] for c in self.mocks["call"].await_args_list]
 
 
 class SkipPathsTests(_Base):
@@ -192,10 +237,13 @@ class SuccessfulPollTests(_Base):
         store.write_config("gmail")
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual(out, {"toolkit": "gmail", "polled": True, "new_events": 2, "error": None, "skipped": None})
-        self.mocks["call"].assert_awaited_once()
+        # the cold account cache adds the identity call, ahead of the collector
+        self.assertEqual(self.mocks["call"].await_count, 2)
+        self.assertEqual(self.mocks["call"].await_args_list[0].args, ("GMAIL_GET_PROFILE", {"user_id": "me"}))
         tool, args = self.mocks["call"].await_args.args
         self.assertEqual((tool, args), ("GMAIL_FETCH_EMAILS", {"query": "is:unread", "max_results": 20}))
         self.assertEqual(self.mocks["call"].await_args.kwargs, {"raise_on_tool_error": True})
+        self.assertEqual(self.accounts()["gmail"]["label"], EMAIL)
         self.mocks["entry"].assert_called_once_with("user_x")
         self.assertEqual([s.url for s in FakeSession.opened], [ENTRY["url"]], "one session, on the minted entry")
         self.assertEqual(FakeSession.opened[0].timeout_s, poller.CALL_TIMEOUT_S)
@@ -230,9 +278,10 @@ class SuccessfulPollTests(_Base):
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual(out["new_events"], 4)
         self.assertEqual(sorted(e["type"] for e in self.events()), ["inbox", "inbox", "unread", "unread"])
-        self.assertEqual(self.mocks["call"].await_count, 2)
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS", "GMAIL_FETCH_EMAILS"],
+                         "the identity call, then both collectors")
         self.assertEqual((len(FakeSession.opened), self.mocks["names"].await_count, FakeSession.closed), (1, 1, 1),
-                         "both collectors ran through one session and one listing")
+                         "the identity call and both collectors ran through one session and one listing")
 
     def test_cached_identity_wins_and_a_fetch_is_the_fallback(self) -> None:
         store.write_config("gmail")
@@ -247,7 +296,7 @@ class SuccessfulPollTests(_Base):
 class CollectorFailureTests(_Base):
     def test_one_failing_collector_does_not_stop_the_others(self) -> None:
         store.write_config("gmail", collectors=["unread", "inbox"])
-        self.mocks["call"].side_effect = [McpError("HTTP 500 boom"), envelope([message(7)])]
+        self.mocks["call"].side_effect = [profile(), McpError("HTTP 500 boom"), envelope([message(7)])]
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual((out["polled"], out["new_events"], out["error"]), (True, 1, "unread: HTTP 500 boom"))
         self.assertEqual([e["key"] for e in self.events()], ["m7"])
@@ -322,9 +371,10 @@ class CollectorFailureTests(_Base):
                         "source_calendar_id": "team@group.calendar.google.com", "source_calendar_summary": "Team"}],
             "summary_view": [], "calendars_queried": [{"id": "primary"}, {"id": "team@group.calendar.google.com"}],
             "errors_by_calendar": {"primary": "403 Quota exceeded for quota metric 'Queries'"}}}
-        self.mocks["call"].return_value = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        self.mocks["call"].side_effect = [calendar_profile(), {"content": [{"type": "text", "text": json.dumps(payload)}]}]
         out = self.run_(poller.poll_connection("googlecalendar"))
         self.assertEqual((out["polled"], out["new_events"]), (True, 1))
+        self.assertEqual(self.accounts()["googlecalendar"]["label"], EMAIL, "the primary calendar's id")
         self.assertTrue(out["error"].startswith("upcoming: 1 calendar(s) failed: primary: 403 Quota exceeded"), out["error"])
         state_doc = store.read_state("googlecalendar")
         self.assertEqual((state_doc["events_total"], state_doc["last_ok_at"]), (1, None))
@@ -354,7 +404,7 @@ class CollectorFailureTests(_Base):
 
     def test_errors_are_joined_and_a_later_success_clears_them(self) -> None:
         store.write_config("gmail", collectors=["unread", "inbox"])
-        self.mocks["call"].side_effect = [McpError("a"), McpError("b")]
+        self.mocks["call"].side_effect = [profile(), McpError("a"), McpError("b")]
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual(out["error"], "unread: a; inbox: b")
         self.mocks["call"].side_effect = None
@@ -413,13 +463,258 @@ class IdentityAndScopeTests(_Base):
         self.assertEqual(self.run_(poller.poll_connection("gmail"))["skipped"], "not_due")
 
 
+class AccountLookupTests(_Base):
+    """A poll resolves the connected account on its own session before the
+    collectors whenever the cache is cold, stale, or bound to another pinned
+    id; the lookup is best-effort and never touches the poll's outcome."""
+
+    def pin(self, toolkit: str, *ids: str) -> None:
+        self.mocks["pins"].return_value = {toolkit: {"enabled": True, "connected_account_ids": list(ids)}}
+
+    def test_cold_cache_looks_the_account_up_once_and_writes_accounts_json(self) -> None:
+        store.write_config("gmail")
+        self.pin("gmail", "ca_1", "ca_2")
+        self.mocks["call"].side_effect = [profile(), envelope([message(1)])]
+        out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual((out["polled"], out["new_events"], out["error"]), (True, 1, None))
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS"], "identity first")
+        self.assertEqual(self.mocks["call"].await_args_list[0].args[1], {"user_id": "me"})
+        entry = self.accounts()["gmail"]
+        self.assertEqual((entry["label"], entry["connected_account_id"]), (EMAIL, "ca_1"), "the first pinned id")
+        self.assertEqual(entry["checked_at"], store.read_state("gmail")["last_poll_at"], "stamped with the poll's now")
+        self.assertFalse((self.root / ".quirq" / "connections" / "gmail" / "accounts.json").exists(),
+                         "one file beside the folders, not inside one")
+
+    def test_a_second_poll_within_the_ttl_makes_no_identity_call(self) -> None:
+        store.write_config("gmail")
+        self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS"])
+        self.run_(poller.poll_connection("gmail", force=True))
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS", "GMAIL_FETCH_EMAILS"])
+        self.assertTrue(poller.account_is_fresh("gmail", datetime.now(timezone.utc)))
+
+    def test_a_changed_pinned_id_or_an_expired_check_triggers_one_lookup(self) -> None:
+        store.write_config("gmail")
+        self.pin("gmail", "ca_1")
+        self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(self.accounts()["gmail"]["connected_account_id"], "ca_1")
+        self.pin("gmail", "ca_2")                                   # another account pinned here
+        self.mocks["call"].side_effect = [profile("other@example.com"), envelope([])]
+        self.run_(poller.poll_connection("gmail", force=True))
+        self.assertEqual(self.called_tools()[-2:], ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS"])
+        entry = self.accounts()["gmail"]
+        self.assertEqual((entry["label"], entry["connected_account_id"]), ("other@example.com", "ca_2"))
+        self.mocks["call"].side_effect = None
+        self.run_(poller.poll_connection("gmail", force=True))
+        self.assertEqual(self.called_tools()[-1], "GMAIL_FETCH_EMAILS", "the new pin is cached now")
+        # older than the TTL: looked up again, same pin
+        stale = datetime.now(timezone.utc) - timedelta(seconds=poller.ACCOUNT_TTL_S + 1)
+        store.remember_account("gmail", "other@example.com", "ca_2", now=stale)
+        self.run_(poller.poll_connection("gmail", force=True))
+        self.assertEqual(self.called_tools()[-2:], ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS"])
+        self.assertNotEqual(self.accounts()["gmail"]["checked_at"], collectors.iso(stale))
+        # unpinned then and now is the same account
+        self.mocks["pins"].return_value = {}
+        store.remember_account("gmail", EMAIL, None)
+        self.mocks["call"].reset_mock()
+        self.run_(poller.poll_connection("gmail", force=True))
+        self.assertEqual(self.called_tools(), ["GMAIL_FETCH_EMAILS"])
+
+    def test_an_identity_failure_never_reaches_the_poll_outcome(self) -> None:
+        store.write_config("gmail")
+        self.mocks["call"].side_effect = [McpError("HTTP 500 profile down"), envelope([message(1), message(2)])]
+        with self.assertLogs(poller.logger, level="WARNING") as logs:
+            out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(out, {"toolkit": "gmail", "polled": True, "new_events": 2, "error": None, "skipped": None})
+        state_doc = store.read_state("gmail")
+        self.assertIsNone(state_doc["last_error"])
+        self.assertEqual(state_doc["last_ok_at"], state_doc["last_poll_at"])
+        self.assertEqual([e["key"] for e in self.events()], ["m2", "m1"])
+        self.assertEqual(self.accounts(), {}, "nothing remembered")
+        self.assertTrue(any("gmail: account lookup failed: HTTP 500 profile down" in line for line in logs.output),
+                        logs.output)
+        # an answer without a label, a successful:false envelope and a timeout are failures of the same kind
+        for answer in (envelope([message(1)]), envelope([], successful=False, error="scope missing")):
+            with self.subTest(answer=answer):
+                self.mocks["call"].side_effect = [answer, envelope([message(1)])]
+                with self.assertLogs(poller.logger, level="WARNING"):
+                    out = self.run_(poller.poll_connection("gmail", force=True))
+                self.assertIsNone(out["error"])
+                self.assertEqual(self.accounts(), {})
+
+    def test_a_toolkit_without_an_identity_spec_makes_no_identity_call(self) -> None:
+        store.write_config("notion")
+        self.mocks["call"].return_value = {"content": [{"type": "text", "text": json.dumps(
+            {"successful": True, "data": {"results": []}, "error": None})}]}
+        out = self.run_(poller.poll_connection("notion"))
+        self.assertEqual((out["polled"], out["error"]), (True, None))
+        self.assertEqual(self.called_tools(), ["NOTION_SEARCH_NOTION_PAGE"])
+        self.assertEqual(self.accounts(), {})
+        self.assertIsNone(self.run_(poller.resolve_account("notion", FakeSession(ENTRY), DEFAULT_TOOLS,
+                                                           datetime.now(timezone.utc))))
+
+    def test_a_session_that_lists_neither_the_tool_nor_the_executor_is_refused_before_any_call(self) -> None:
+        store.write_config("gmail")
+        self.mocks["names"].return_value = ["GMAIL_FETCH_EMAILS"]
+        with self.assertLogs(poller.logger, level="WARNING") as logs:
+            out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual((out["new_events"], out["error"]), (2, None))
+        self.assertEqual(self.called_tools(), ["GMAIL_FETCH_EMAILS"])
+        self.assertTrue(any("GMAIL_GET_PROFILE is not exposed" in line for line in logs.output), logs.output)
+
+    def test_freshness_and_the_pinned_id(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.assertFalse(poller.account_is_fresh("gmail", now), "nothing cached")
+        store.remember_account("gmail", EMAIL, None, now=now - timedelta(hours=1))
+        self.assertTrue(poller.account_is_fresh("gmail", now))
+        self.assertTrue(poller.account_is_fresh("gmail", now.replace(tzinfo=None)), "a naive now is UTC")
+        self.assertFalse(poller.account_is_fresh("gmail", now + timedelta(seconds=poller.ACCOUNT_TTL_S)))
+        self.assertFalse(poller.account_is_fresh("gmail", now - timedelta(hours=2)), "checked in the future: stale")
+        self.pin("gmail", "ca_1")
+        self.assertFalse(poller.account_is_fresh("gmail", now), "cached unpinned, pinned now")
+        store.remember_account("gmail", EMAIL, "ca_1", now=now)
+        self.assertTrue(poller.account_is_fresh("gmail", now))
+        self.assertEqual(poller.pinned_account_id("gmail"), "ca_1")
+        self.assertIsNone(poller.pinned_account_id("notion"))
+        self.mocks["pins"].return_value = {"gmail": {"enabled": True, "connected_account_ids": []}}
+        self.assertIsNone(poller.pinned_account_id("gmail"))
+        self.mocks["pins"].side_effect = OSError("unreadable")
+        self.assertIsNone(poller.pinned_account_id("gmail"), "an unreadable scope reads as nothing pinned")
+        self.assertEqual((poller.ACCOUNT_TTL_S, poller.ACCOUNT_MIN_REFRESH_S), (86400, 60))
+
+
+class RefreshAccountTests(_Base):
+    """``poller.refresh_account``: the route's "resolve it now" on a session
+    of its own, answered in the route's shape, never raising for a provider
+    or session failure."""
+
+    def refresh(self, toolkit: str = "gmail", **kwargs) -> dict:
+        return self.run_(poller.refresh_account(toolkit, **kwargs))
+
+    def test_gmail_resolves_on_its_own_session_and_caches(self) -> None:
+        self.mocks["pins"].return_value = {"gmail": {"enabled": True, "connected_account_ids": ["ca_1"]}}
+        self.mocks["call"].return_value = profile()
+        out = self.refresh()
+        self.assertEqual({k: v for k, v in out.items() if k != "account_checked_at"},
+                         {"toolkit": "gmail", "account_label": EMAIL, "error": None, "cached": False})
+        self.assertRegex(out["account_checked_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE"])
+        self.assertEqual((len(FakeSession.opened), FakeSession.closed, self.mocks["names"].await_count), (1, 1, 1))
+        self.assertEqual(FakeSession.opened[0].timeout_s, poller.CALL_TIMEOUT_S)
+        entry = self.accounts()["gmail"]
+        self.assertEqual((entry["label"], entry["connected_account_id"], entry["checked_at"]),
+                         (EMAIL, "ca_1", out["account_checked_at"]))
+        self.assertFalse((self.folder() / "config.json").exists(), "no polling config is created")
+        self.assertFalse((self.folder()).exists())
+
+    def test_a_toolkit_without_a_lookup_answers_without_a_session(self) -> None:
+        self.assertEqual(self.refresh("notion"), {"toolkit": "notion", "account_label": None, "account_checked_at": None,
+                                                  "error": "no account lookup for notion yet", "cached": False})
+        self.assertEqual(self.refresh("figma")["error"], "no account lookup for figma yet")
+        self.assertEqual(FakeSession.opened, [])
+        self.mocks["call"].assert_not_awaited()
+        self.mocks["known"].assert_not_called()
+
+    def test_twice_within_a_minute_answers_from_the_cache(self) -> None:
+        self.mocks["call"].return_value = profile()
+        first = self.refresh()
+        second = self.refresh()
+        self.assertEqual(second, {**first, "cached": True})
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE"], "one provider call")
+        self.assertEqual(len(FakeSession.opened), 1)
+        self.assertEqual(self.refresh(force=True)["cached"], False)
+        self.assertEqual(len(self.called_tools()), 2, "force asks the provider again")
+        # a check older than the minute is not answered from the cache
+        store.remember_account("gmail", EMAIL, None,
+                               now=datetime.now(timezone.utc) - timedelta(seconds=poller.ACCOUNT_MIN_REFRESH_S + 1))
+        self.assertEqual(self.refresh()["cached"], False)
+        self.assertEqual(len(self.called_tools()), 3)
+
+    def test_a_provider_failure_keeps_the_cached_label_and_rewords_the_error(self) -> None:
+        old = datetime.now(timezone.utc) - timedelta(minutes=2)
+        store.remember_account("gmail", EMAIL, None, now=old)
+        self.mocks["call"].side_effect = McpError(
+            "No active connection found for toolkit(s) 'gmail' in this session. To fix this, call "
+            "COMPOSIO_MANAGE_CONNECTIONS with toolkits=['gmail'] to establish a connection, then retry this tool call.",
+            stage="execute")
+        with self.assertLogs(poller.logger, level="WARNING"):
+            out = self.refresh()
+        self.assertEqual(out, {"toolkit": "gmail", "account_label": EMAIL, "account_checked_at": collectors.iso(old),
+                               "error": "gmail is no longer connected on Composio (the sign-in expired or was revoked): "
+                                        "reconnect it from the Connectors tab", "cached": False})
+        self.assertEqual(FakeSession.closed, 1, "the session is closed after the failed call")
+        self.assertEqual(self.accounts()["gmail"]["checked_at"], collectors.iso(old), "the cache is untouched")
+        # without a cache the label is null
+        store.forget_account("gmail")
+        self.mocks["call"].side_effect = McpError("[Session Restriction] Toolkit 'gmail' is not allowed", stage="execute")
+        with self.assertLogs(poller.logger, level="WARNING"):
+            out = self.refresh()
+        self.assertEqual((out["account_label"], out["account_checked_at"], out["cached"]), (None, None, False))
+        self.assertEqual(out["error"], "gmail is turned off for this workspace's Composio session: "
+                                       "turn it on from the Connectors tab")
+        for answer in (envelope([message(1)]), envelope([], successful=False, error={"message": "boom"})):
+            with self.subTest(answer=answer):
+                self.mocks["call"].side_effect = None
+                self.mocks["call"].return_value = answer
+                with self.assertLogs(poller.logger, level="WARNING"):
+                    out = self.refresh()
+                self.assertIsNotNone(out["error"])
+                self.assertIsNone(out["account_label"])
+
+    def test_session_failures_answer_in_the_same_shape(self) -> None:
+        store.remember_account("gmail", EMAIL, None,
+                               now=datetime.now(timezone.utc) - timedelta(minutes=2))
+        self.mocks["known"].return_value = None
+        self.mocks["aaccount"].side_effect = RuntimeError("no token")
+        out = self.refresh()
+        self.assertEqual((out["error"], out["account_label"], out["cached"]), (poller.NOT_SIGNED_IN, EMAIL, False))
+        self.mocks["entry"].assert_not_called()
+        self.mocks["known"].return_value = "user_x"
+        self.mocks["scope"].return_value = ["notion"]
+        self.assertEqual(self.refresh()["error"], "gmail is not turned on in this workspace")
+        self.mocks["scope"].return_value = ["gmail"]
+        self.mocks["entry"].side_effect = poller.composio_service.NoToolkitsEnabled("none")
+        self.assertEqual(self.refresh()["error"], poller.NO_TOOLKITS)
+        self.mocks["entry"].side_effect = None
+        self.mocks["names"].side_effect = McpError("tools/list failed: HTTP 500 upstream")
+        out = self.refresh()
+        self.assertTrue(out["error"].startswith("tools/list failed"), out["error"])
+        self.assertEqual(FakeSession.closed, 1, "a session whose listing failed is closed")
+        self.mocks["call"].assert_not_awaited()
+        self.assertEqual(self.accounts()["gmail"]["label"], EMAIL, "the cache is untouched by any of it")
+
+    def test_a_dead_session_is_replaced_once_like_a_poll(self) -> None:
+        fresh = dict(ENTRY, url="https://mcp.example.test/mcp-fresh")
+        self.mocks["entry"].side_effect = [ENTRY, fresh]
+        self.mocks["open"].side_effect = [dead_session(), None]
+        self.mocks["call"].return_value = profile()
+        with patch.object(poller.composio_service, "invalidate_session") as invalidate:
+            out = self.refresh()
+        invalidate.assert_called_once()
+        self.assertEqual((out["account_label"], out["error"]), (EMAIL, None))
+        self.assertEqual([s.url for s in FakeSession.opened], [fresh["url"]])
+        self.assertEqual(FakeSession.closed, 2)
+
+    def test_the_service_checks_the_catalog_then_delegates(self) -> None:
+        for bad in ("nope_toolkit", "Gmail", "a/b", "", None):
+            with self.subTest(toolkit=bad):
+                with self.assertRaises(connections_service.ConnectionsError) as ctx:
+                    self.run_(connections_service.refresh_account(bad))
+                self.assertEqual((ctx.exception.code, ctx.exception.status), ("unknown_toolkit", 404))
+        answer = {"toolkit": "gmail", "account_label": EMAIL, "account_checked_at": "2026-09-11T10:00:00Z",
+                  "error": None, "cached": True}
+        with patch.object(poller, "refresh_account", new=AsyncMock(return_value=answer)) as ra:
+            self.assertEqual(self.run_(connections_service.refresh_account("gmail")), answer)
+        ra.assert_awaited_once_with("gmail")
+
+
 class TickTests(_Base):
     def test_poll_once_summary_and_single_identity_resolution(self) -> None:
         store.write_config("gmail")
         store.write_config("notion", enabled=False)
         store.write_config("googlecalendar")
         (self.root / ".quirq" / "connections" / "figma").mkdir()          # no config.json: never polled
-        self.mocks["call"].return_value = envelope([message(1)])
+        self.mocks["call"].return_value = envelope([message(1)], email=EMAIL)
         summary = self.run_(poller.poll_once())
         self.assertEqual(summary, {"configured": 3, "polled": 2, "skipped": 1, "errors": 0})
         self.assertEqual(self.mocks["known"].call_count, 1, "identity resolved once per tick")
@@ -583,13 +878,20 @@ class SessionRoutingTests(_Base):
     def test_slug_not_listed_runs_through_the_executor(self) -> None:
         store.write_config("gmail")
         self.mocks["names"].return_value = [mcp_client.EXECUTOR_TOOL, "COMPOSIO_SEARCH_TOOLS"]
-        self.mocks["call"].return_value = router_result(results=[
-            {"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
-             "response": {"successful": True, "data": {"messages": [message(1)]}}}])
+        # the identity call (first, cold cache) and the collector both route through the executor
+        self.mocks["call"].side_effect = [
+            router_result(results=[{"tool_slug": "GMAIL_GET_PROFILE", "index": 0,
+                                    "response": {"successful": True, "data": {"emailAddress": EMAIL}}}]),
+            router_result(results=[{"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
+                                    "response": {"successful": True, "data": {"messages": [message(1)]}}}]),
+        ]
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual((out["polled"], out["new_events"], out["error"]), (True, 1, None))
         self.assertEqual([e["key"] for e in self.events()], ["m1"])
-        called = self.mocks["call"].call_args
+        self.assertEqual(self.accounts()["gmail"]["label"], EMAIL)
+        first, called = self.mocks["call"].call_args_list
+        self.assertEqual(first.args[0], mcp_client.EXECUTOR_TOOL)
+        self.assertEqual(first.args[1]["tools"], [{"tool_slug": "GMAIL_GET_PROFILE", "arguments": {"user_id": "me"}}])
         self.assertEqual(called.args[0], mcp_client.EXECUTOR_TOOL)
         self.assertEqual(called.args[1]["tools"][0]["tool_slug"], "GMAIL_FETCH_EMAILS")
         self.assertEqual(called.args[1]["tools"][0]["arguments"]["query"], "is:unread")
@@ -600,6 +902,8 @@ class SessionRoutingTests(_Base):
         store.write_config("gmail", collectors=["unread", "inbox"])
         self.mocks["names"].return_value = [mcp_client.EXECUTOR_TOOL]
         self.mocks["call"].side_effect = [
+            router_result(results=[{"tool_slug": "GMAIL_GET_PROFILE", "index": 0,
+                                    "response": {"successful": True, "data": {"emailAddress": EMAIL}}}]),
             router_result(results=[{"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
                                     "error": "[Session Restriction] Toolkit 'gmail' is not allowed"}], is_error=True),
             router_result(results=[{"tool_slug": "GMAIL_FETCH_EMAILS", "index": 0,
@@ -693,11 +997,12 @@ class SessionRoutingTests(_Base):
         store.write_config("gmail", collectors=["unread", "inbox"])
         lost = McpError("tools/call GMAIL_FETCH_EMAILS failed: HTTP 404 session not found",
                         stage="tools/call", status=404)
-        self.mocks["call"].side_effect = [lost, envelope([message(3)])]
+        self.mocks["call"].side_effect = [profile(), lost, envelope([message(3)])]
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual((out["polled"], out["new_events"]), (True, 0))
         self.assertEqual(out["error"], f"unread: {lost}; inbox: {poller.SESSION_LOST}")
-        self.assertEqual(self.mocks["call"].await_count, 1, "the second collector never ran on the dead session")
+        self.assertEqual(self.called_tools(), ["GMAIL_GET_PROFILE", "GMAIL_FETCH_EMAILS"],
+                         "the second collector never ran on the dead session")
         self.assertEqual(FakeSession.closed, 1)
         self.assertFalse((self.folder() / "events.jsonl").exists())
         state_doc = store.read_state("gmail")
@@ -705,13 +1010,15 @@ class SessionRoutingTests(_Base):
         self.assertIsNone(state_doc["last_ok_at"])
         self.mocks["call"].side_effect = None
         out = self.run_(poller.poll_connection("gmail", force=True))
-        self.assertEqual((out["new_events"], out["error"], self.mocks["call"].await_count), (4, None, 3))
+        # the account is cached now, so the second poll is its two collectors only
+        self.assertEqual((out["new_events"], out["error"], self.mocks["call"].await_count), (4, None, 4))
         self.assertEqual(FakeSession.closed, 2)
 
     def test_other_collector_failures_do_not_end_the_loop(self) -> None:
         """Only ``tools/call`` + 404 stops the loop: another status, another
         stage, or a 404 in the text alone leaves the other collectors running."""
         store.write_config("gmail", collectors=["unread", "inbox"])
+        store.remember_account("gmail", EMAIL, None)     # cached: every poll below is its two collectors only
         for exc in (McpError("HTTP 500", stage="tools/call", status=500),
                     McpError("restricted", stage="execute"),
                     McpError("gone", stage="initialize", status=404),

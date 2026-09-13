@@ -6,6 +6,9 @@ the Connectors tab's Polling drawer).
   PUT    /api/connections/{toolkit}             body {enabled?, interval_s?, collectors?}; creates the config on first call
   DELETE /api/connections/{toolkit}             {toolkit, removed}
   POST   /api/connections/{toolkit}/poll        poll now, ignoring enabled and interval; the poll summary
+  POST   /api/connections/{toolkit}/account     resolve the connected account's label now and cache it:
+                                                {toolkit, account_label, account_checked_at, error, cached};
+                                                a provider or session failure is 200 with error set
   GET    /api/connections/{toolkit}/events      {toolkit, events: [...]} newest-first, limit 1..500
 
 Thin over services.connections.service (typed errors become
@@ -82,6 +85,14 @@ def remove_connection(toolkit: str) -> dict:
 async def poll_connection_now(toolkit: str) -> dict:
     try:
         return await service.poll_now(_toolkit_or_404(toolkit))
+    except service.ConnectionsError as exc:
+        raise http_error(exc)
+
+
+@router.post("/api/connections/{toolkit}/account")
+async def refresh_connection_account(toolkit: str) -> dict:
+    try:
+        return await service.refresh_account(_toolkit_or_404(toolkit))
     except service.ConnectionsError as exc:
         raise http_error(exc)
 

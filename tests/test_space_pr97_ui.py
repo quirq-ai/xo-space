@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("XO_SPACE_ROOT") or Path(__file__).resolve().parents[1])
 UI = ROOT / "space_ui"
-STAMP = "20260913-inboxfix1"
+STAMP = "20260914-accounts1"
 DASHES = re.compile("[\\u2013\\u2014]")
 
 
@@ -243,8 +243,9 @@ class InboxViewTests(unittest.TestCase):
 # a DOM stub just big enough for the Polling drawer: the grid keeps the
 # painted html and a model of every drawer's form parsed out of it, the
 # probe edits that model the way a person edits the form. A text pin cannot
-# see evaluation order; this can. Output: one JSON line.
-DRAWER_PROBE = r"""
+# see evaluation order; this can. The prelude (server, DOM stub, helpers)
+# is shared by the two scenarios below; each prints one JSON line.
+PROBE_PRELUDE = r"""
 const UI=process.argv[process.argv.length-1];
 globalThis.location={pathname:'/space/',search:'',origin:'http://space.test'};
 globalThis.CSS={escape:s=>s};
@@ -255,22 +256,37 @@ globalThis.document={getElementById:()=>({textContent:'',classList:{add(){},remo
 const calls=[];
 const TOOLKITS=['gmail','slack'].map((id,i)=>({id,slug:id,display_name:id,status:'ACTIVE',
   workspace_enabled:true,supports_action_prefs:true,schemes:['OAUTH2'],connected_account_id:'ca'+i}));
+/* account labels: what the list and the per-toolkit read report, and how
+   the account route answers (default: no lookup, no label) */
+let accounts={};
+let accountReply=id=>({toolkit:id,account_label:null,account_checked_at:null,
+  error:'no account lookup for '+id+' yet',cached:false});
+let accountGate=null;      /* a promise the account route awaits before answering */
 const conn=id=>({toolkit:id,configured:true,enabled:true,interval_s:900,collectors:['mail'],
   available_collectors:[{id:'mail',label:'Mail',default:true},{id:'cal',label:'Calendar'}],
-  events_total:0,last_poll_at:null,last_error:null});
+  events_total:0,last_poll_at:null,last_error:null,
+  account_label:accounts[id]||null,account_checked_at:null});
 let putReply=null;
+let putFails=false;        /* the PUT throws: apiFetch answers ok:false */
+let pollGate=null;         /* a promise POST /poll awaits before answering */
 globalThis.fetch=async(url,opts={})=>{
   const method=opts.method||'GET';
   const path=url.replace(/\?.*$/,'');
   const body=opts.body?JSON.parse(opts.body):undefined;
-  calls.push({method,path,body});
+  calls.push({method,path,body,headers:opts.headers});
   const json=data=>({ok:true,status:200,json:async()=>data});
   if(path==='/xo-auth/session/self')return json({session_id:'s1'});
   if(path==='/api/connectors/composio/toolkits')return json({toolkits:TOOLKITS});
   if(/^\/api\/connectors\/composio\/[^/]+\/tools$/.test(path))return json({tools:[{slug:'send',name:'Send',enabled:true}]});
+  if(path==='/api/connections'&&method==='GET')
+    return json({signed_in:true,poller_enabled:true,connections:TOOLKITS.map(t=>conn(t.id))});
+  const a=path.match(/^\/api\/connections\/([^/]+)\/account$/);
+  if(a&&method==='POST'){if(accountGate)await accountGate;return json(accountReply(a[1]));}
   const m=path.match(/^\/api\/connections\/([^/]+)$/);
   if(m&&method==='GET')return json(conn(m[1]));
-  if(m&&method==='PUT')return json(putReply||{...conn(m[1]),...body});
+  if(m&&method==='PUT'){if(putFails)throw new Error('boom');return json(putReply||{...conn(m[1]),...body});}
+  const poll=path.match(/^\/api\/connections\/([^/]+)\/poll$/);
+  if(poll&&method==='POST'){if(pollGate)await pollGate;return json({new_events:0,error:null,skipped:null});}
   throw new Error('unexpected '+method+' '+path);
 };
 
@@ -306,29 +322,80 @@ const drawerEl=model=>({
   },
 });
 const paints=[];
+/* a paint recreates every card: the error boxes come back hidden and the
+   buttons a click handed out are detached, as in a browser */
+let errs={};
+const buttons=[];
 const grid={
   listeners:[],drawers:{},_html:'',
   get innerHTML(){return this._html;},
-  set innerHTML(html){this._html=html;this.drawers=parseDrawers(html);paints.push(html);},
+  set innerHTML(html){
+    this._html=html;this.drawers=parseDrawers(html);paints.push(html);
+    errs={};buttons.forEach(b=>{b.detached=true;});
+  },
   addEventListener(type,fn){this.listeners.push(fn);},
 };
+/* one card of the painted html, edited in place: the facts row takes a
+   chip, the open drawer's interval row takes the note after it */
+const inserts=[];
+function cardEl(toolkit){
+  const start=()=>grid._html.indexOf('data-toolkit="'+toolkit+'"');
+  if(start()<0)return null;
+  const inner=()=>grid._html.slice(start(),grid._html.indexOf('</article>',start()));
+  const splice=(at,html)=>{grid._html=grid._html.slice(0,at)+html+grid._html.slice(at);inserts.push(html);};
+  const facts={
+    querySelector:sel=>sel==='.conn-account'&&/conn-account"/.test(inner())?{}:null,
+    insertAdjacentHTML(where,html){
+      if(where!=='beforeend')throw new Error('unstubbed insert '+where);
+      const i=grid._html.indexOf('<div class="conn-facts">',start());
+      splice(grid._html.indexOf('</div>',i),html);
+    },
+  };
+  const row={
+    insertAdjacentHTML(where,html){
+      if(where!=='afterend')throw new Error('unstubbed insert '+where);
+      const i=grid._html.indexOf('<select data-poll="interval">',start());
+      splice(grid._html.indexOf('</label>',i)+'</label>'.length,html);
+    },
+  };
+  const drawer={
+    querySelector(sel){
+      if(sel==='.conn-poll-account')return /conn-poll-account"/.test(inner())?{}:null;
+      if(sel==='select[data-poll="interval"]')return inner().includes('<select data-poll="interval">')?{closest:()=>row}:null;
+      throw new Error('unstubbed drawer selector '+sel);
+    },
+  };
+  return{
+    querySelector(sel){
+      if(sel==='.conn-facts')return facts;
+      if(sel==='.conn-poll')return inner().includes('<div class="conn-poll" id="poll-'+toolkit+'"')?drawer:null;
+      throw new Error('unstubbed card selector '+sel);
+    },
+  };
+}
 const alertEl={hidden:true,innerHTML:'',className:''};
+const refreshBtn={listeners:[],addEventListener(type,fn){this.listeners.push(fn);}};
+const refresh=()=>refreshBtn.listeners.forEach(fn=>fn());
 const root={
   innerHTML:'',
   querySelector(sel){
     if(sel==='#conn-grid')return grid;
-    if(sel==='#conn-refresh')return{addEventListener(){}};
+    if(sel==='#conn-refresh')return refreshBtn;
     if(sel==='#conn-alert')return alertEl;
-    if(sel.startsWith('#err-'))return{hidden:true,textContent:''};
+    if(sel.startsWith('#err-')){const id=sel.slice(5);return errs[id]||(errs[id]={hidden:true,textContent:''});}
     if(sel.startsWith('#poll-')){const m=grid.drawers[sel.slice(6)];return m?drawerEl(m):null;}
     if(sel==='.conn-card[data-toolkit]')return grid._html.includes('conn-card')?{}:null;
+    const card=sel.match(/^\.conn-card\[data-toolkit="([^"]+)"\]$/);
+    if(card)return cardEl(card[1]);
     throw new Error('unstubbed selector '+sel);
   },
 };
 function click(toolkit,action){
   const card={dataset:{toolkit}};
-  const button={dataset:{action},disabled:false,classList:{toggle(){}},closest:()=>card};
+  const button={dataset:{action},disabled:false,detached:false,classList:{toggle(){}},closest:()=>card};
+  buttons.push(button);
   grid.listeners.forEach(fn=>fn({target:{closest:sel=>sel.startsWith('input')?null:button}}));
+  return button;
 }
 const settle=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setTimeout(r,0));};
 const gmail=()=>grid.drawers.gmail;
@@ -336,6 +403,9 @@ const snap=d=>d?{enabled:d.enabled,interval:d.interval,cal:!!d.collectors.cal,ma
 const out={};
 
 const view=(await import(UI+'/js/views/connectors.js')).default;
+"""
+
+DRAWER_PROBE = PROBE_PRELUDE + r"""
 await view.mount(root);
 await settle();
 out.cards=(grid._html.match(/<article class="conn-card/g)||[]).length;
@@ -385,6 +455,128 @@ click('gmail','polling');await settle();
 out.hidden=!gmail();
 click('gmail','polling');await settle();
 out.reopenedAfterHide=snap(gmail());
+
+console.log(JSON.stringify(out));
+process.exit(0);
+"""
+
+# The account label on the Connectors card: one list read per load, one
+# account lookup per load for a connected toolkit turned on here that the
+# read left unlabelled, a repaint (through the draft-keeping paint) when a
+# label arrives, nothing at all when the lookup answers without one.
+ACCOUNT_PROBE = PROBE_PRELUDE + r"""
+const listReads=()=>calls.filter(c=>c.method==='GET'&&c.path==='/api/connections').length;
+const asks=()=>calls.filter(c=>c.method==='POST'&&/\/account$/.test(c.path)).map(c=>c.path);
+const chip=label=>new RegExp('conn-fact conn-account" title="the account this workspace uses">'+label+'<').test(grid._html);
+const chips=()=>(grid._html.match(/conn-account"/g)||[]).length;
+
+/* mount: the list labels gmail only; slack (connected, on here) is asked
+   once and the answer carries a label, so the grid repaints with it */
+accounts={gmail:'dev@example.com'};
+accountReply=id=>({toolkit:id,account_label:id==='slack'?'ops@example.com':null,
+  account_checked_at:'2026-09-14T00:00:00Z',error:null,cached:false});
+await view.mount(root);
+await settle();
+out.listReadsAfterMount=listReads();
+out.asksAfterMount=asks();
+out.gmailChip=chip('dev@example.com');
+out.slackChip=chip('ops@example.com');
+out.headersOnAccountCalls=calls.some(c=>/\/api\/connections/.test(c.path)&&c.headers!==undefined);
+
+/* Refresh with the list now labelling both: one more read, nobody asked */
+accounts={gmail:'dev@example.com',slack:'ops@example.com'};
+refresh();await settle();
+out.listReadsAfterRefresh=listReads();
+out.asksAfterRefresh=asks().length;
+out.chipsAfterRefresh=chips();
+
+/* the list forgets slack and the lookup answers with an error and no
+   label: asked once more, and the card is left as it is (no chip, and
+   no paint beyond the load's own) */
+accounts={gmail:'dev@example.com'};
+accountReply=id=>({toolkit:id,account_label:null,account_checked_at:null,
+  error:'no account lookup for '+id+' yet',cached:true});
+const before=paints.length;
+refresh();await settle();
+out.asksAfterFailure=asks().length;
+out.paintsOnFailure=paints.length-before;
+out.slackChipAfterFailure=chip('ops@example.com');
+out.gmailChipAfterFailure=chip('dev@example.com');
+
+/* an unsaved edit in gmail's drawer survives the repaint a label causes,
+   and the drawer names the account it polls as */
+click('gmail','polling');await settle();
+out.drawerNote=/<p class="conn-poll-note conn-poll-account">Polling as dev@example.com<\/p>/.test(grid._html);
+gmail().collectors.cal=true;gmail().interval='1800';
+accountReply=id=>({toolkit:id,account_label:'ops@example.com',account_checked_at:'2026-09-14T00:00:00Z',error:null,cached:false});
+refresh();await settle();
+out.slackChipAfterLabel=chip('ops@example.com');
+out.editKept=snap(gmail());
+
+/* one request in flight per toolkit: two loads while the lookup hangs ask
+   once; the chip lands when it answers */
+accounts={gmail:'dev@example.com'};
+let release;accountGate=new Promise(r=>{release=r;});
+const asked=asks().length;
+refresh();await settle();
+refresh();await settle();
+out.asksWhileHanging=asks().length-asked;
+out.slackChipWhileHanging=chip('ops@example.com');
+release();accountGate=null;await settle();
+out.slackChipAfterRelease=chip('ops@example.com');
+
+/* a label that lands while the page is mid-action: gmail's Save just
+   failed (its card error is showing) and slack's Poll now is still in
+   flight (its button is busy). The chip and, for slack's open drawer, the
+   note land in place: no paint, the error stays, the button stays busy
+   and attached for the setBusy(false) that follows. */
+accountGate=new Promise(r=>{release=r;});
+refresh();await settle();
+click('slack','polling');await settle();           /* gmail's drawer closes, slack's opens */
+click('gmail','polling');await settle();           /* and back: gmail's open for the Save */
+click('slack','polling');await settle();
+out.bothDrawers=!!gmail()&&!!grid.drawers.slack;   /* one at a time: false */
+click('gmail','polling');await settle();
+putFails=true;
+click('gmail','poll-save');await settle();
+putFails=false;
+out.errorShown=!errs.gmail.hidden&&errs.gmail.textContent==='boom';
+pollGate=new Promise(r=>{out.releasePoll=r;});
+const pollBtn=click('slack','poll-now');await settle();
+out.pollBusy=pollBtn.disabled;
+const paintsBefore=paints.length;
+release();accountGate=null;await settle();
+out.paintsOnLabel=paints.length-paintsBefore;
+out.chipLandedInPlace=chip('ops@example.com');
+out.errorKept=!!errs.gmail&&!errs.gmail.hidden&&errs.gmail.textContent==='boom';
+out.pollStillBusyAndAttached=pollBtn.disabled&&!pollBtn.detached;
+out.inserts=inserts.length;
+const releasePoll=out.releasePoll;delete out.releasePoll;
+releasePoll();pollGate=null;await settle();
+out.pollReleased=!pollBtn.disabled;
+/* the same lookup, landing while that toolkit's own drawer is open, adds
+   the note in place too; a second label for a card that has one adds nothing */
+accountGate=new Promise(r=>{release=r;});
+refresh();await settle();
+click('slack','polling');await settle();
+out.noteBeforeLabel=/conn-poll-account/.test(grid._html);
+const paintsBeforeNote=paints.length;
+release();accountGate=null;await settle();
+out.paintsOnNote=paints.length-paintsBeforeNote;
+out.noteLandedInPlace=/<\/label><p class="conn-poll-note conn-poll-account">Polling as ops@example.com<\/p>/.test(grid._html);
+out.chipsAfterNote=chips();
+click('slack','polling');await settle();           /* closed again for the scenario below */
+
+/* a hostile label is escaped on the way into the chip (from the list and
+   from the lookup) and into the drawer note (slack's own read has none,
+   so the note falls back to the looked-up label) */
+accounts={gmail:'<b>x</b>&y'};
+accountReply=id=>({toolkit:id,account_label:'<i>z</i>',account_checked_at:null,error:null,cached:false});
+refresh();await settle();
+out.escapedChips=grid._html.includes('>&lt;b&gt;x&lt;/b&gt;&amp;y<')&&grid._html.includes('>&lt;i&gt;z&lt;/i&gt;<')
+  &&!grid._html.includes('<b>x</b>')&&!grid._html.includes('<i>z</i>');
+click('slack','polling');await settle();
+out.escapedNote=/Polling as &lt;i&gt;z&lt;\/i&gt;<\/p>/.test(grid._html);
 
 console.log(JSON.stringify(out));
 process.exit(0);
@@ -488,6 +680,178 @@ class ConnectorsViewTests(unittest.TestCase):
         self.assertNotIn("'Never polled'", status)
 
 
+class AccountLabelTests(unittest.TestCase):
+    """The connected account name (spec: account_label on every entry of
+    GET /api/connections, POST /api/connections/{toolkit}/account to resolve
+    it): two pure helpers in core, a span in the Inbox row, a chip on the
+    Connectors card, a note in the Polling drawer, and the wiki lines."""
+
+    def setUp(self) -> None:
+        self.core = read("js/core/connections.js")
+        self.inbox = read("js/views/inbox.js")
+        self.view = read("js/views/connectors.js")
+        self.wiki = read("js/views/wiki.js")
+
+    def test_core_exports_the_two_pure_helpers(self) -> None:
+        self.assertIn("export function accountLabel(c){", self.core)
+        self.assertIn("export function accountLine(c){", self.core)
+        self.assertIn("account_label", self.core[: self.core.index("import ")])  # documented in the header
+        self.assertNotIn("&lt;", self.core)  # no escaping here: the views escape
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_helpers_behave_under_node(self) -> None:
+        script = """
+          globalThis.location={pathname:'/space/',search:''};
+          const conn=await import(process.argv[1]+'/js/core/connections.js');
+          console.log(JSON.stringify({
+            label:conn.accountLabel({account_label:'dev@example.com'}),
+            labelNull:conn.accountLabel({account_label:null}),
+            labelMissing:conn.accountLabel({}),
+            labelNoEntry:conn.accountLabel(undefined),
+            labelNumber:conn.accountLabel({account_label:7}),
+            line:conn.accountLine({account_label:'dev@example.com'}),
+            lineNull:conn.accountLine({account_label:null}),
+            lineNoEntry:conn.accountLine(null),
+          }));
+        """
+        out = run_node(script)
+        self.assertEqual(out["label"], "dev@example.com")
+        for key in ("labelNull", "labelMissing", "labelNoEntry", "labelNumber", "lineNull", "lineNoEntry"):
+            self.assertEqual(out[key], "", key)
+        self.assertEqual(out["line"], "as dev@example.com")
+
+    def test_inbox_row_names_the_account_beside_the_toolkit(self) -> None:
+        self.assertIn("import {accountLabel} from '../core/connections.js';", self.inbox)
+        row = slice_between(self.inbox, "function connRowHTML(c){", "/* one delegated listener")
+        self.assertIn("const acct=accountLabel(c);", row)
+        self.assertIn("'<b>'+esc(c.display_name||c.toolkit)\n      +(acct?'<span class=\"inb-conn-acct\">'+esc(acct)+'</span>':'')+'</b>'", row)
+        css = read("css/inbox.css")
+        self.assertIn(".inb-conn-acct{", css)
+        rule = css[css.index(".inb-conn-acct{"):]
+        rule = rule[: rule.index("}")]
+        for prop in ("color:var(--ink-3)", "text-overflow:ellipsis", "max-width:"):
+            self.assertIn(prop, rule)
+
+    def test_card_chip_and_drawer_note(self) -> None:
+        self.assertIn("import {accountLabel,accountLine} from '../core/connections.js';", self.view)
+        self.assertIn("let accountCache={};", self.view)
+        card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
+        self.assertIn("const acct=accountLabel(accountCache[t.id]);", card)
+        self.assertIn(
+            "+(connected&&acct\n"
+            "          ?'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(acct)+'</span>'\n"
+            "          :'')",
+            card,
+        )
+        # the "N accounts" chip stays
+        self.assertIn("+(t.account_count>1?'<span class=\"conn-fact\">'+t.account_count+' accounts</span>':'')", card)
+        drawer = slice_between(self.view, "function renderPolling(t,enabled){", "function pollStatus(")
+        self.assertIn("const acct=accountLine(c)||accountLine(accountCache[t.id]);", drawer)
+        self.assertIn("+(acct?'<p class=\"conn-poll-note conn-poll-account\">Polling '+esc(acct)+'</p>':'')", drawer)
+        # above the collectors
+        self.assertLess(drawer.index("conn-poll-account"), drawer.index("+available.map(a=>"))
+        css = read("css/connectors.css")
+        self.assertIn(".conn-account{text-transform:none;", css)
+        self.assertIn(".conn-poll-account{", css)
+
+    def test_one_list_read_per_load_and_one_lookup_per_toolkit(self) -> None:
+        load = slice_between(self.view, "async function loadAll(){", "function renderSignedOut(){")
+        self.assertIn("accountAsked=new Set();\n    const accounts=loadAccounts();", load)
+        self.assertIn("await accounts;\n    renderGrid();\n    askAccounts();", load)
+        self.assertLess(load.index("const accounts=loadAccounts();"), load.index("apiFetch(BASE+'/toolkits'"))
+        self.assertIn("const accountInFlight=new Set();", self.view)
+        accounts = slice_between(self.view, "/* ---------- accounts ---------- */", "function renderActions(")
+        self.assertIn("const path=API_BASE+'/api/connections';\n  const res=await apiFetch(path);", accounts)
+        self.assertIn(
+            "const path=API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/account';\n"
+            "    const res=await apiFetch(path,{method:'POST'});",
+            accounts,
+        )
+        self.assertNotIn("headers", accounts)  # workspace-local routes: no session header
+        self.assertNotIn("renderCard", accounts)  # never a request per card
+        ask = slice_between(accounts, "function askAccounts(){", "async function resolveAccount(")
+        self.assertIn("if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;", ask)
+        self.assertIn("if(accountAsked.has(t.id)||accountInFlight.has(t.id))continue;", ask)
+        resolve = accounts[accounts.index("async function resolveAccount("):]
+        self.assertIn("if(!label)return;", resolve)  # an error with no label leaves the card as is
+        self.assertNotIn("resolveAccount(", resolve[resolve.index("{"):])  # no retry
+        # the label lands in place: a grid repaint at an unscheduled moment
+        # would hide a card error just shown and re-enable a busy button
+        self.assertIn("paintAccount(toolkitId,label);", resolve)
+        self.assertNotIn("renderGrid(", resolve)
+        self.assertNotIn("paintGrid(", resolve)
+        self.assertIn("accountInFlight.delete(toolkitId);", resolve)
+        paint = resolve[resolve.index("function paintAccount(toolkitId,label){"):]
+        self.assertIn("if(!toolkit||!isConnected(toolkit))return;", paint)
+        self.assertIn("root.querySelector('.conn-card[data-toolkit=\"'+CSS.escape(toolkitId)+'\"]')", paint)
+        self.assertIn("if(facts&&!facts.querySelector('.conn-account'))", paint)
+        self.assertIn("'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(label)+'</span>'", paint)
+        self.assertIn("if(!drawer||drawer.querySelector('.conn-poll-account'))return;", paint)
+        self.assertIn("'<p class=\"conn-poll-note conn-poll-account\">Polling '+esc(accountLine(accountCache[toolkitId]))+'</p>'", paint)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_account_behaviour_under_node(self) -> None:
+        out = run_node(ACCOUNT_PROBE)
+        self.assertEqual(out["listReadsAfterMount"], 1)
+        self.assertEqual(out["asksAfterMount"], ["/api/connections/slack/account"])
+        self.assertTrue(out["gmailChip"])
+        self.assertTrue(out["slackChip"])
+        self.assertFalse(out["headersOnAccountCalls"])
+        self.assertEqual(out["listReadsAfterRefresh"], 2)
+        self.assertEqual(out["asksAfterRefresh"], 1)
+        self.assertEqual(out["chipsAfterRefresh"], 2)
+        self.assertEqual(out["asksAfterFailure"], 2)
+        self.assertEqual(out["paintsOnFailure"], 1)
+        self.assertFalse(out["slackChipAfterFailure"])
+        self.assertTrue(out["gmailChipAfterFailure"])
+        self.assertTrue(out["drawerNote"])
+        self.assertTrue(out["slackChipAfterLabel"])
+        self.assertEqual(out["editKept"], {"enabled": True, "interval": "1800", "cal": True, "mail": True})
+        self.assertEqual(out["asksWhileHanging"], 1)
+        self.assertFalse(out["slackChipWhileHanging"])
+        self.assertTrue(out["slackChipAfterRelease"])
+        # a label landing mid-action paints nothing: the card error a failed
+        # Save just showed stays, the in-flight Poll now button stays busy
+        # and attached, the chip and the drawer note land in place
+        self.assertFalse(out["bothDrawers"])
+        self.assertTrue(out["errorShown"])
+        self.assertTrue(out["pollBusy"])
+        self.assertEqual(out["paintsOnLabel"], 0)
+        self.assertTrue(out["chipLandedInPlace"])
+        self.assertTrue(out["errorKept"])
+        self.assertTrue(out["pollStillBusyAndAttached"])
+        self.assertTrue(out["pollReleased"])
+        self.assertFalse(out["noteBeforeLabel"])
+        self.assertEqual(out["paintsOnNote"], 0)
+        self.assertTrue(out["noteLandedInPlace"])
+        self.assertEqual(out["chipsAfterNote"], 2)
+        self.assertTrue(out["escapedChips"])
+        self.assertTrue(out["escapedNote"])
+
+    def test_wiki_names_the_account_file_and_the_account_name(self) -> None:
+        tree = self.wiki[self.wiki.index('<pre class="wiki-tree">~/.quirq/'):]
+        lines = tree[: tree.index("</pre>")].splitlines()
+        i = next(n for n, line in enumerate(lines) if line.startswith("├── connections/"))
+        self.assertEqual(
+            lines[i + 1],
+            "│   ├── accounts.json           # which account each toolkit's session is bound to (email), "
+            "refreshed daily or when the pin changes",
+        )
+        self.assertTrue(lines[i + 2].startswith("│   └── &lt;toolkit&gt;/"))
+        for needle in ("['Watch the connections'", "['Collect into Inbox'", "'GET /api/connections · POST /api/connections/{toolkit}/account'"):
+            row = self.wiki[self.wiki.index(needle):]
+            row = row[: row.index("],")]
+            self.assertIn("account", row, needle)
+            self.assertIsNone(DASHES.search(row), needle)
+        self.assertIn("the account name it polls as", self.wiki)
+        self.assertIn("The drawer names the account it polls as (Polling as", self.wiki)
+        self.assertIn("~/.quirq/connections/accounts.json", self.wiki)
+
+    def test_touched_stylesheets_carry_no_dashes(self) -> None:
+        for rel in ("css/inbox.css", "css/connectors.css"):
+            self.assertIsNone(DASHES.search(read(rel)), rel)
+
+
 class SessionModuleTests(unittest.TestCase):
     def test_imports_api_bare_and_mints_through_api_base(self) -> None:
         session = read("js/core/session.js")
@@ -518,7 +882,12 @@ class ShellTests(unittest.TestCase):
         for view in ("inbox", "wiki", "connectors", "sharing"):
             self.assertIn("./views/" + view + ".js?v=" + STAMP + "'", app)
         self.assertIn("./core/registry.js?v=" + STAMP + "'", app)  # registry.js changed too
-        self.assertIn('src="js/app.js?v=' + STAMP + '"', read("index.html"))
+        html = read("index.html")
+        self.assertIn('src="js/app.js?v=' + STAMP + '"', html)
+        # the account chip and span are styled by these two; a stale sheet
+        # next to a fresh module leaves the chip uppercased
+        for sheet in ("inbox", "connectors"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + STAMP + '">', html)
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:
         """core/api.js and core/ui.js gained exports and are imported bare

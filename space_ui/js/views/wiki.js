@@ -386,7 +386,7 @@ const TAB_GUIDES={
       ['Handle an item','Click a row to expand it; that marks a new item seen. The actions row offers Open (when the item links somewhere), Open link (when the item carries an http or https url, opened in a new tab), Done or Reopen, and Delete. Mark all seen clears every new item on the page at once.'],
       ['Follow the link','Open jumps to where the item came from: Sessions for a session start, Files for a todo, a share, or an issue, Connectors for a polled connection, and the file previewer when the item names a project file. Open link leaves Space for the issue or the mail, event, or page itself.'],
       ['Filter by source','The pills All, Issues, Connections, Workspace, Sharing, and Agents narrow the loaded page on the client and never fetch. Issues is the issues feeder, Connections the polled connections, Workspace the timeline and todos feeders, Sharing the relay, and Agents everything posted through the API.'],
-      ['Watch the connections','The Connections section above the rows lists every toolkit that is polled or connected here with its collectors, cadence, and last poll or error. Poll now runs its collectors at once and reloads the list; Configure jumps to the Connectors tab. It opens by itself when an entry carries an error and stays collapsed to a count otherwise.'],
+      ['Watch the connections','The Connections section above the rows lists every toolkit that is polled or connected here with the account name it polls as (the email, once the server has resolved it), its collectors, cadence, and last poll or error. Poll now runs its collectors at once and reloads the list; Configure jumps to the Connectors tab. It opens by itself when an entry carries an error and stays collapsed to a count otherwise.'],
       ['Post your own','Agents and scripts POST to /api/inbox with a title and an optional body, kind, project, link, and url. Those items carry no dedup key, so the feeders never touch them.']
     ],
     sources:[
@@ -533,7 +533,7 @@ const TAB_GUIDES={
       ['Connect an app','Authorize a toolkit in a provider popup (Telegram asks for the bot token from BotFather instead of an OAuth sign-in). The connection is recorded against your XO account, so every workspace can use it: but each workspace chooses which connectors it turns on.'],
       ['See what is connected','Each tile reports ACTIVE or NEEDS_AUTH for you specifically: another user of the same server sees their own state, not yours.'],
       ['Narrow what the agent may do','Turn individual actions off. Only disabled actions are stored, so a toolkit that gains new actions later has them enabled by default.'],
-      ['Collect into Inbox','Polling, on a tile that is connected and turned on here, opens a drawer: tick Collect into Inbox, pick how often under Every (5 minutes to 24 hours), choose what to collect (unread mail, upcoming calendar events, recently edited Notion pages), then Save. The drawer opens by itself right after a connect, and nothing is stored until Save. Poll now runs the collectors at once and reports how many new events arrived; they show up in Inbox under the Connections filter.'],
+      ['Collect into Inbox','Polling, on a tile that is connected and turned on here, opens a drawer: tick Collect into Inbox, pick how often under Every (5 minutes to 24 hours), choose what to collect (unread mail, upcoming calendar events, recently edited Notion pages), then Save. The drawer names the account it polls as (Polling as, the email the connection is bound to) once the server has resolved it; the same email is a chip on the tile. The drawer opens by itself right after a connect, and nothing is stored until Save. Poll now runs the collectors at once and reports how many new events arrived; they show up in Inbox under the Connections filter.'],
       ['Keep the agent wired','The MCP gateway is installed into every capable agent automatically: at boot, on a periodic check, and whenever this tab loads. There is nothing to press; restart the agent after a change so it re-reads its config.']
     ],
     sources:[
@@ -542,7 +542,8 @@ const TAB_GUIDES={
       ['GET /api/connectors/composio/{toolkit}/status','Polled until the connection reports ACTIVE; the popup callback only accelerates it.','Connect flow'],
       ['GET/PUT /api/connectors/composio/{toolkit}/prefs','Reads and writes your per-action allow list in ~/.config/composio/action_prefs.json.','Action control'],
       ['GET /xo-auth/session/self','Asks XO for the opaque session id this tab sends as X-XO-Session; the raw XO token stays on the server.','Identity'],
-      ['GET/PUT/DELETE /api/connections/{toolkit} · POST /api/connections/{toolkit}/poll','The Polling drawer: read, save, or remove ~/.quirq/connections/&lt;toolkit&gt;/config.json, or poll at once. These calls carry no session header; the background poller signs in with the server credential.','Polling']
+      ['GET/PUT/DELETE /api/connections/{toolkit} · POST /api/connections/{toolkit}/poll','The Polling drawer: read, save, or remove ~/.quirq/connections/&lt;toolkit&gt;/config.json, or poll at once. These calls carry no session header; the background poller signs in with the server credential.','Polling'],
+      ['GET /api/connections · POST /api/connections/{toolkit}/account','The account each connection is bound to: every entry of the list carries account_label (an email for Gmail and Google Calendar, null until known), and the tab asks the account route once per load for a connected toolkit turned on here that has none. The answer is cached in ~/.quirq/connections/accounts.json and repeated for a minute; a lookup failure keeps the tile as it was.','Account name']
     ],
     steps:[
       ['Configure the server','Set COMPOSIO_API_KEY on the XO side (xo-swarm-api), plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app. This workspace holds no Composio credentials: it fetches them with its XO credential. Both are created by hand in the Composio dashboard: nothing here creates them.'],
@@ -1539,6 +1540,7 @@ function quirqDataArticle(){
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here, the installer does)
 ├── inbox.json                  # the Space Inbox: items, seen/done state, feeder cursors; hand-editable
 ├── connections/                # per-connection polling for Inbox, one folder per toolkit
+│   ├── accounts.json           # which account each toolkit's session is bound to (email), refreshed daily or when the pin changes
 │   └── &lt;toolkit&gt;/            # gmail, googlecalendar, notion, slack, telegram
 │       ├── config.json         # enabled, interval_s, collectors; hand-editable
 │       ├── state.json          # last poll, last error, seen keys per collector

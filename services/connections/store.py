@@ -28,6 +28,16 @@ writes additionally require a toolkit the Composio catalog knows.
 A folder is only ever created by :func:`write_config`. ``update_state``
 and ``append_events`` refuse to write once ``config.json`` is gone, so a
 DELETE racing a poll cannot resurrect the folder.
+
+Beside the folders sits one ``accounts.json``: which account each toolkit's
+session is bound to (``{"schema": 1, "accounts": {<toolkit>: {"label",
+"connected_account_id", "checked_at"}}}``), separate from the polling
+state so an unconfigured toolkit can still carry a label. Read leniently
+(entries without a str label are dropped, unknown keys kept), written
+through the same locked read-merge-write (:func:`remember_account`,
+:func:`forget_account`); a file that is not JSON reads as empty and is
+never overwritten. :func:`list_configured` never looks at it, and
+:func:`remove` forgets the toolkit's account along with its folder.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ from services.storage.atomic_write import append_jsonl, write_json_atomic
 from services.storage.flock import locked
 from services.storage.paths import quirq_state_dir
 from services.storage.reader import read_json, read_jsonl_tail_reverse
-from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts
+from services.timestamps import EPOCH as _EPOCH, iso, now_iso, parse_ts
 
 from . import collectors
 
@@ -58,6 +68,7 @@ SEEN_CAP = 500
 ERROR_MAX = 300
 CONFIG_FIELDS = ("enabled", "interval_s", "collectors")
 STATE_FIELDS = ("last_poll_at", "last_ok_at", "last_error", "cursors", "events_total")
+ACCOUNT_FIELDS = ("label", "connected_account_id", "checked_at")
 _ROTATE_BYTES = 2 * 1024 * 1024      # tests patch this; never write 2 MB to exercise it
 _MAX_ROTATIONS_KEEP = 3
 _ROTATION_RE = re.compile(r"events\.\d{8}T\d{6}Z\.jsonl")
@@ -380,16 +391,126 @@ def read_events(toolkit: str, limit: int = 50, types=None) -> list[dict]:
     return sorted(rows, key=_ts_key, reverse=True)
 
 
+# ── accounts.json ───────────────────────────────────────────────────────────
+
+
+def accounts_path() -> Path:
+    return connections_dir() / "accounts.json"
+
+
+def _normalize_accounts(raw) -> dict:
+    """``{toolkit: entry}`` for every entry holding a non-blank str label;
+    the other two fields coerced to str or ``None``, unknown keys kept."""
+    accounts = raw.get("accounts") if isinstance(raw, dict) else None
+    out: dict = {}
+    if not isinstance(accounts, dict):
+        return out
+    for toolkit, entry in accounts.items():
+        if not isinstance(toolkit, str) or not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        doc = dict(entry)
+        doc["label"] = label.strip()[:collectors.IDENTITY_LABEL_MAX]
+        for name in ("connected_account_id", "checked_at"):
+            value = entry.get(name)
+            doc[name] = value if isinstance(value, str) and value else None
+        out[toolkit] = doc
+    return out
+
+
+def read_accounts() -> dict:
+    """The cached account per toolkit (see :func:`_normalize_accounts`);
+    empty when the file is missing or not JSON (``read_json`` warned)."""
+    raw = read_json(accounts_path())
+    if raw is not None and not isinstance(raw, dict):
+        logger.warning("connections: accounts.json is not a JSON object; reading it as empty")
+    return _normalize_accounts(raw)
+
+
+def _read_accounts_for_write(path: Path) -> dict:
+    """The raw document under the lock; a file that is not JSON is refused,
+    never overwritten."""
+    raw = read_json(path)
+    if raw is None and path.is_file() and path.read_text(encoding="utf-8").strip():
+        raise ConnectionsError("accounts_unreadable",
+                               "connections/accounts.json is not valid JSON; fix or remove it.", 500)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_accounts(path: Path, raw: dict, accounts: dict) -> None:
+    """``{"schema", "accounts", <unknown keys of the old document>}``."""
+    merged: dict = {"schema": SCHEMA, "accounts": accounts}
+    for name, value in raw.items():
+        merged.setdefault(name, value)
+    write_json_atomic(path, merged)
+
+
+def remember_account(toolkit: str, label: str, connected_account_id: Optional[str], *,
+                     now: Optional[datetime] = None) -> dict:
+    """Locked read-merge-write of one toolkit's entry: ``label`` (stripped,
+    at most :data:`collectors.IDENTITY_LABEL_MAX` chars), the pinned
+    ``connected_account_id`` the label was resolved under (``None`` when
+    nothing is pinned) and ``checked_at`` (``now``, default the clock).
+    Other toolkits and unknown keys survive. Creates the connections
+    folder when it is missing, never a toolkit folder. Returns the entry."""
+    _check_known(toolkit)
+    if not isinstance(label, str) or not label.strip():
+        raise ConnectionsError("invalid_value", f"account label must be a non-blank string (got {label!r}).")
+    if connected_account_id is not None and not isinstance(connected_account_id, str):
+        raise ConnectionsError("invalid_value",
+                               f"connected_account_id must be a string or null (got {connected_account_id!r}).")
+    fields = {"label": label.strip()[:collectors.IDENTITY_LABEL_MAX],
+              "connected_account_id": connected_account_id or None,
+              "checked_at": iso(now) if now is not None else now_iso()}
+    path = accounts_path()
+    with locked(path):
+        raw = _read_accounts_for_write(path)
+        accounts = dict(raw["accounts"]) if isinstance(raw.get("accounts"), dict) else {}
+        current = accounts.get(toolkit)
+        entry = dict(current) if isinstance(current, dict) else {}
+        entry.update(fields)
+        accounts[toolkit] = entry
+        _write_accounts(path, raw, accounts)
+    return dict(entry)
+
+
+def forget_account(toolkit: str) -> bool:
+    """Drop one toolkit's entry. ``False`` when there was none, and when the
+    file is not JSON (``read_json`` warned; it is never overwritten)."""
+    _check_toolkit(toolkit)
+    path = accounts_path()
+    if not path.is_file():
+        return False
+    with locked(path):
+        raw = read_json(path)
+        accounts = raw.get("accounts") if isinstance(raw, dict) else None
+        if not isinstance(accounts, dict) or toolkit not in accounts:
+            return False
+        _write_accounts(path, raw, {name: entry for name, entry in accounts.items() if name != toolkit})
+    return True
+
+
 # ── Removal ─────────────────────────────────────────────────────────────────
 
 
 def remove(toolkit: str) -> bool:
+    """Delete that toolkit's folder (:func:`_remove_folder`) and forget its
+    account label. The answer is about the folder: ``False`` when there was
+    none to remove, whether or not a label was forgotten."""
+    _check_toolkit(toolkit)
+    removed = _remove_folder(toolkit)
+    forget_account(toolkit)
+    return removed
+
+
+def _remove_folder(toolkit: str) -> bool:
     """``shutil.rmtree`` of that one folder, only when it is a real directory
     sitting directly under :func:`connections_dir` (no symlink, no escape).
     ``False`` when there is nothing to remove, or when either escape check
     refuses (both are real checks, never ``assert``: that safety net would
     vanish under ``python -O``)."""
-    _check_toolkit(toolkit)
     root = connections_dir()
     target = root / toolkit
     if target.is_symlink() or not target.is_dir():

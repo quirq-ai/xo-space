@@ -42,6 +42,13 @@ class CatalogTests(unittest.TestCase):
                     # a url source is always declared, even when a toolkit has none to offer
                     self.assertTrue("url_keys" in spec or "url_template" in spec)
                     self.assertIsInstance(spec["args"], dict)
+            identity = collectors.identity_spec(toolkit)
+            if identity is not None:
+                with self.subTest(toolkit=toolkit, identity=identity["tool"]):
+                    self.assertEqual(set(identity), {"tool", "args", "keys"})
+                    self.assertEqual(categories.classify(toolkit, identity["tool"]), "read")
+                    self.assertIsInstance(identity["args"], dict)
+                    self.assertTrue(identity["keys"])
 
     def test_catalog_contents(self) -> None:
         self.assertEqual([s["id"] for s in collectors.catalog("gmail")], ["unread", "inbox"])
@@ -80,6 +87,63 @@ class CatalogTests(unittest.TestCase):
         spec["id_keys"].append("x")
         self.assertEqual(gmail_spec()["args"]["query"], "is:unread")
         self.assertNotIn("x", gmail_spec()["id_keys"])
+
+
+class IdentityTests(unittest.TestCase):
+    """The identity catalog and the label read out of each tool's answer,
+    in the shapes the live Composio session answers with."""
+
+    GMAIL = {"successful": True, "error": None,
+             "data": {"emailAddress": "ana@example.com", "historyId": "12345", "messagesTotal": 10,
+                      "threadsTotal": 8, "display_url": "https://mail.google.com/"}}
+    CALENDAR = {"successful": True, "error": None,
+                "data": {"calendar_data": {"id": "ana@example.com", "summary": "ana@example.com",
+                                           "timeZone": "Europe/Lisbon"},
+                         "display_url": "https://calendar.google.com/"}}
+
+    def test_spec_lookups(self) -> None:
+        gmail = collectors.identity_spec("gmail")
+        self.assertEqual(gmail, {"tool": "GMAIL_GET_PROFILE", "args": {"user_id": "me"},
+                                 "keys": ["emailAddress", "data.emailAddress"]})
+        calendar = collectors.identity_spec("googlecalendar")
+        self.assertEqual((calendar["tool"], calendar["args"]), ("GOOGLECALENDAR_GET_CALENDAR", {"calendar_id": "primary"}))
+        self.assertEqual(calendar["keys"][:2], ["calendar_data.id", "data.calendar_data.id"])
+        for toolkit in ("notion", "slack", "telegram", "figma", "googledocs", "not_a_toolkit"):
+            self.assertIsNone(collectors.identity_spec(toolkit), toolkit)
+        gmail["args"]["user_id"] = "changed"
+        gmail["keys"].append("x")
+        self.assertEqual(collectors.identity_spec("gmail")["args"], {"user_id": "me"}, "a copy every time")
+        self.assertNotIn("x", collectors.identity_spec("gmail")["keys"])
+
+    def test_extracts_the_email_from_both_real_shapes(self) -> None:
+        self.assertEqual(collectors.extract_identity(collectors.identity_spec("gmail"), self.GMAIL), "ana@example.com")
+        self.assertEqual(collectors.extract_identity(collectors.identity_spec("googlecalendar"), self.CALENDAR),
+                         "ana@example.com")
+        # the unwrapped payloads (a plain MCP server answering without the envelope)
+        self.assertEqual(collectors.extract_identity(collectors.identity_spec("gmail"), self.GMAIL["data"]),
+                         "ana@example.com")
+        self.assertEqual(collectors.extract_identity(collectors.identity_spec("googlecalendar"), self.CALENDAR["data"]),
+                         "ana@example.com")
+        # a calendar whose id is not an address falls through to its summary
+        payload = {"data": {"calendar_data": {"id": "", "summary": "  Ana Lima  "}}}
+        self.assertEqual(collectors.extract_identity(collectors.identity_spec("googlecalendar"), payload), "Ana Lima")
+
+    def test_missing_blank_or_non_string_values_read_as_none(self) -> None:
+        spec = collectors.identity_spec("gmail")
+        for payload in ({"data": {"emailAddress": ""}}, {"data": {"emailAddress": "   "}},
+                        {"data": {"emailAddress": 7}}, {"data": {"emailAddress": ["a@b"]}},
+                        {"data": {}}, {"successful": False, "data": None, "error": "nope"}, {}, None, "junk", []):
+            with self.subTest(payload=payload):
+                self.assertIsNone(collectors.extract_identity(spec, payload))
+        self.assertIsNone(collectors.extract_identity(None, self.GMAIL), "no spec, no label")
+        self.assertIsNone(collectors.extract_identity({"keys": []}, self.GMAIL))
+
+    def test_label_is_stripped_and_capped(self) -> None:
+        spec = collectors.identity_spec("gmail")
+        self.assertEqual(collectors.extract_identity(spec, {"emailAddress": "  a@b.c \n"}), "a@b.c")
+        long = collectors.extract_identity(spec, {"emailAddress": "x" * 500})
+        self.assertEqual(len(long), collectors.IDENTITY_LABEL_MAX)
+        self.assertEqual(collectors.IDENTITY_LABEL_MAX, 200)
 
 
 class RenderArgsTests(unittest.TestCase):

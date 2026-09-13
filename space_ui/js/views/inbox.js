@@ -14,6 +14,7 @@ import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
+import {accountLabel} from '../core/connections.js';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -295,8 +296,13 @@ function connRowHTML(c){
   const when=line.error
     ?'<span class="inb-conn-meta is-error" title="'+esc(line.error)+'">'+esc(line.error)+'</span>'
     :'<span class="inb-conn-meta">'+esc(line.text)+'</span>';
+  /* the account the session is bound to (an email, once the server has
+     resolved it) sits inside the name cell so the row's grid keeps its
+     four columns */
+  const acct=accountLabel(c);
   return'<div class="inb-conn-row" data-toolkit="'+tk+'">'
-    +'<b>'+esc(c.display_name||c.toolkit)+'</b>'
+    +'<b>'+esc(c.display_name||c.toolkit)
+      +(acct?'<span class="inb-conn-acct">'+esc(acct)+'</span>':'')+'</b>'
     +'<span class="inb-conn-meta">'+esc(collectorLabels(c))+' · '+esc(every(c.interval_s))
       +(c.enabled?'':' · polling off')+'</span>'
     +when
