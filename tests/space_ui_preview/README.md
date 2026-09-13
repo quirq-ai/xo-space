@@ -29,11 +29,12 @@ expanded project screenshots, 320px and 375px screenshots, and `report.json`.
 the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
-The full check verifies the seven-tab order, Dashboard default, all five
+The full check verifies the six-tab order, Dashboard default, all five
 lenses and existing hash routes, stationary lens controls, retention of an
 open historical file in source mode across lens switches (including real
 Dashboard/Graph dataset reloads), closing the preview when leaving Projects,
-number keys 1–7, and fixed lens-switch bounds at 320px and 375px. It fails
+the local Wiki resource and its deep link, number keys 1–6, and fixed lens-switch
+bounds at 320px and 375px. It fails
 on console errors, uncaught page errors and unsuccessful HTTP responses.
 
 This is a browser regression check of the frontend and its API contracts.

@@ -331,7 +331,7 @@ hides CRs, so don't trust it for that check.
 
 - **Issues** — bugs, features, questions:
   <https://github.com/quirq-ai/xo-space/issues>.
-- **The in-app Wiki** — `http://localhost:5002/space/` → Wiki. A compact
+- **The in-app Wiki** — `http://localhost:5002/space/` → Wiki at the top right. A compact
   overview bundled with the running build and available offline, with links
   to the detailed online guides in a new tab.
 - **Full Space guides** — <https://docs.quirq.ai/docs/space>.

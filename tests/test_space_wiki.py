@@ -114,11 +114,11 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("registerView(wikiView);", app)
         self.assertIn('href="css/wiki.css?v=', index)
         self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
-        # The wiki stays between Inbox (order 5) and Setup (order 9).
-        # Hidden child lenses consume no hotkeys, so Wiki is top-level key 5.
+        # Wiki remains a local route, reached through the header resource
+        # link without consuming a primary tab or numbered shortcut.
         contract = view_contract("wiki")
         self.assertIn("id:'wiki',label:'Wiki',order:7,", contract)
-        self.assertNotIn("nav:false", contract)
+        self.assertIn("nav:false", contract)
         self.assertNotIn("parent:", contract)
         # The intro overlays are gone from Graph and Dashboard.
         self.assertNotIn('id="intro"', index)

@@ -13,7 +13,7 @@ import treeView from './views/tree.js?v=20260825-rename1';
 import sharingView from './views/sharing.js?v=20260914-accounts1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-wikihub1';
+import wikiView from './views/wiki.js?v=20260914-wikilink1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
 import connectorsView from './views/connectors.js?v=20260914-accounts1';
@@ -42,6 +42,12 @@ try{initTopbarInset();}catch(err){console.error('Topbar measurement failed:',err
 
 /* Before startRegistry: its first switchTo announces the active view, and a
    listener registered afterwards would miss it on a deep link. */
+addEventListener('space:view',event=>{
+  const link=document.getElementById('wiki-link');
+  if(!link)return;
+  if(event.detail?.id==='wiki')link.setAttribute('aria-current','page');
+  else link.removeAttribute('aria-current');
+});
 try{initLensSwitch();}catch(err){console.error('Lens switch failed to start:',err);}
 
 try{

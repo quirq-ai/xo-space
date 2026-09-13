@@ -43,7 +43,7 @@
   .nodata button{font:600 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
     color:#14100a;background:var(--accent);border-radius:999px;padding:9px 18px}
   @media (max-width:1640px){ .brand>span:not(.mark){display:none} }
-  /* Reflow the seven tabs below the brand, graph controls and resource links. */
+  /* Reflow the primary tabs below the brand, graph controls and resource links. */
   @media (max-width:1400px){
     .topbar{grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
     .tabs{

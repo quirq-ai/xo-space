@@ -71,13 +71,13 @@ for(const [,name] of app.matchAll(/registerView\((\w+)\);/g)){
   registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
 }
 registry.startRegistry({defaultView:'dashboard'});
-const expectedTabs=['projects','time','sessions','inbox','wiki','secrets','connectors'];
+const expectedTabs=['projects','time','sessions','inbox','secrets','connectors'];
 assert.deepEqual(tabs.children.map(tab=>tab.id),expectedTabs.map(id=>'tab-'+id));
 assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing']);
 assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing']);
 assert.equal(tabs.children[0].innerHTML,'Projects');
 const initial=process.argv[1].replace(/^#\//,'');
-const initialId=['dashboard','projects','graph','tree','sharing'].includes(initial)?initial:'dashboard';
+const initialId=['dashboard','projects','graph','tree','sharing','wiki'].includes(initial)?initial:'dashboard';
 function assertLens(id){
   assert.equal(location.hash,'#/'+id);
   assert.equal(pill.hidden,false);
@@ -85,7 +85,13 @@ function assertLens(id){
   assert.deepEqual(buttons.filter(b=>b.attributes['aria-current']==='true').map(b=>b.dataset.filesLens),[id]);
   assert.ok(elements.get('view-'+(['dashboard','graph'].includes(id)?'graph':id)).classList.contains('is-active'));
 }
-assertLens(initialId);
+function assertWiki(){
+  assert.equal(location.hash,'#/wiki');
+  assert.equal(pill.hidden,true);
+  assert.equal(tabs.children.some(tab=>tab.classList.contains('is-on')),false);
+  assert.ok(elements.get('view-wiki').classList.contains('is-active'));
+}
+if(initialId==='wiki')assertWiki();else assertLens(initialId);
 for(const button of buttons){
   pill.listeners.click({target:button});
   dispatchEvent(new CustomEvent('hashchange'));
@@ -103,6 +109,12 @@ for(const tagName of ['INPUT','TEXTAREA','SELECT']){
   assert.equal(location.hash,'#/connectors');
 }
 document.activeElement=null;
+await registry.switchTo('wiki');
+assertWiki();
+dispatchEvent({type:'keydown',key:'7'});
+assertWiki(); // Wiki is routable but does not consume a numbered shortcut
+dispatchEvent({type:'keydown',key:'5'});
+assert.equal(location.hash,'#/secrets');
 await registry.switchTo('dashboard');
 elements.get('tab-projects').listeners.click();
 assertLens('projects'); // keep the existing List route/tab action
@@ -111,8 +123,8 @@ assertLens('projects'); // keep the existing List route/tab action
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
-    def test_default_and_existing_deep_links_keep_projects_context(self) -> None:
-        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/unknown"):
+    def test_default_deep_links_and_numbered_navigation(self) -> None:
+        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/wiki", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

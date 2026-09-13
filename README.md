@@ -212,7 +212,7 @@ Everything else on the network happens because you asked for it: `git fetch` whe
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, first run, local data layout, configuration, Windows |
 | [DEVELOPING.md](DEVELOPING.md) | Architecture, adding an agent, validation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, ground rules, PR process |
-| **In-app Wiki** — `/space/#/wiki` | Compact offline overview bundled with the running build; detailed online guides open in a new tab |
+| **In-app Wiki** — `/space/#/wiki` | Open Wiki at the top right for a compact offline overview; detailed online guides open in a new tab |
 | **`/docs`** on a running server | API reference (changes with the active agent) |
 | [space_ui/README.md](space_ui/README.md) | The browser UI |
 | [plugin/README.md](plugin/README.md) | Claude Code / Codex plugin |

@@ -53,8 +53,7 @@ class InboxDocsTests(unittest.TestCase):
         readme = read("space_ui/README.md")
         self.assertIn("## Inbox tab", readme)
         # the count moves whenever a tab lands upstream; pin the Inbox entry itself
-        self.assertIn("**Sessions**, **Inbox**, **Wiki**", readme)
-        self.assertNotIn("Six top-level tabs", readme)
+        self.assertIn("**Sessions**, **Inbox**, **Setup**", readme)
         self.assertIn("`js/views/inbox.js`", readme)
         self.assertIn("css/inbox.css", readme)
         for route in (

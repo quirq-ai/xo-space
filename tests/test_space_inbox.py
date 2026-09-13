@@ -27,10 +27,9 @@ class SpaceInboxCompositionTests(unittest.TestCase):
             app,
         )
         self.assertIn("registerView(inboxView);", app)
-        # Inbox sits between Sessions and Wiki in the nav; the registration
-        # order mirrors that so the import list reads like the tab bar.
+        # Inbox sits between Sessions and Setup in the primary nav.
         self.assertLess(app.index("registerView(sessionsView);"), app.index("registerView(inboxView);"))
-        self.assertLess(app.index("registerView(inboxView);"), app.index("registerView(wikiView);"))
+        self.assertLess(app.index("registerView(inboxView);"), app.index("registerView(secretsView);"))
 
     def test_badge_starts_after_the_registry_in_its_own_bulkhead(self) -> None:
         app = read("js/app.js")

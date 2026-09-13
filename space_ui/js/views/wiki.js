@@ -94,8 +94,8 @@ let visible=false;
 let pendingTopic=null;
 
 export default {
-  /* Preserve the Wiki tab, #/wiki route, and fifth top-level hotkey. */
-  id:'wiki',label:'Wiki',order:7,
+  /* The resource link opens Wiki; it does not occupy a primary tab/hotkey. */
+  id:'wiki',label:'Wiki',order:7,nav:false,
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;

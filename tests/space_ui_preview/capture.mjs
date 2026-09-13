@@ -62,11 +62,11 @@ try {
   if(!screenshotsOnly) {
     assert.equal(new URL(page.url()).hash, '#/dashboard', 'Dashboard is the initial view');
     assert.deepEqual(await page.locator('.tabs button').evaluateAll(buttons => buttons.map(b => b.id)),
-      ['tab-projects', 'tab-time', 'tab-sessions', 'tab-inbox', 'tab-wiki', 'tab-secrets', 'tab-connectors']);
+      ['tab-projects', 'tab-time', 'tab-sessions', 'tab-inbox', 'tab-secrets', 'tab-connectors']);
     assert.deepEqual(await page.locator('[data-files-lens]').allTextContents(),
       ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default Dashboard; exact seven-tab order; five Projects lenses');
+    report.checks.push('Default Dashboard; exact six-tab order; five Projects lenses');
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
@@ -104,11 +104,20 @@ try {
     }
     assert.ok(requests.length > beforeNavigations, 'Dashboard/Graph switches exercise actual dataset reloads');
     report.checks.push('Versioned source preview survives every Projects lens, including dataset reloads; stable switch position');
-    await page.locator('#tab-wiki').click();
+    const beforeWikiNavigations = requests.length;
+    await page.locator('#wiki-link').click();
+    await page.waitForFunction(() => location.hash === '#/wiki');
+    await page.locator('#view-wiki').waitFor({state: 'visible'});
+    assert.equal(context.pages().length, 1, 'Wiki opens in the same tab');
+    assert.equal(requests.length, beforeWikiNavigations, 'Wiki uses local hash navigation');
+    await page.locator('#wiki-link[aria-current="page"]').waitFor();
+    assert.equal(await page.locator('.tabs .is-on').count(), 0, 'Wiki selects no primary tab');
+    assert.equal(await page.locator('#fileslens').isHidden(), true);
     assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), false);
-    report.checks.push('Leaving Projects closes the preview');
+    report.checks.push('Wiki resource opens locally, marks itself active and closes the Projects preview');
     await page.locator('#tab-projects').click();
     await page.waitForFunction(() => location.hash === '#/projects');
+    await page.waitForFunction(() => !document.querySelector('#wiki-link').hasAttribute('aria-current'));
     report.checks.push('Top-level Projects preserves the List route');
 
     for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing']) {
@@ -118,7 +127,13 @@ try {
     }
     report.checks.push('Every existing Projects lens deep link selects the correct tab and lens');
 
-    const tabIds = ['projects', 'time', 'sessions', 'inbox', 'wiki', 'secrets', 'connectors'];
+    await page.goto(origin + '/space/#/wiki', {waitUntil: 'networkidle'});
+    await page.locator('#view-wiki').waitFor({state: 'visible'});
+    await page.locator('#wiki-link[aria-current="page"]').waitFor();
+    assert.equal(await page.locator('.tabs .is-on').count(), 0);
+    report.checks.push('Wiki deep link remains routable without a primary tab');
+
+    const tabIds = ['projects', 'time', 'sessions', 'inbox', 'secrets', 'connectors'];
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
@@ -126,7 +141,9 @@ try {
       await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
-    report.checks.push('Number keys 1–7 select Projects, Timeline, Sessions, Inbox, Wiki, Setup, Connectors');
+    await page.keyboard.press('7');
+    assert.equal(new URL(page.url()).hash, '#/connectors', 'Only six primary tabs consume number keys');
+    report.checks.push('Number keys 1–6 select Projects, Timeline, Sessions, Inbox, Setup, Connectors');
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});
