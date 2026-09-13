@@ -269,7 +269,7 @@ def apply(*, force: bool = False) -> bool:
     scaffold()
     sweep_abandoned()
     now = time.monotonic()
-    if not force and (now - _last_build) < refresh_seconds():
+    if not force and _last_build > 0.0 and (now - _last_build) < refresh_seconds():
         return False
     _last_build = now
     _build_all()
