@@ -829,8 +829,19 @@ the toolkit lock before answering busy.
 `interval_s` (60 to 86400), `collectors` (ids from `collectors.py`, the read-only
 catalog: `gmail` `unread` and `inbox`, `googlecalendar` `upcoming`, `notion`
 `recent_pages`, `slack` `recent`, `telegram` `updates`; every other toolkit has
-an empty list). The poller never creates a folder on its own and never polls a
-toolkit without a `config.json`. Every collector's `tools/call` goes over the
+an empty list). `googlecalendar` `upcoming` reads every calendar in the
+account's list in one call (`GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS`): a
+`primary`-only read misses shared and secondary calendars, which is where most
+people keep the events they expect to see. A calendar that fails inside that
+otherwise successful answer is reported in `last_error` (the spec's
+`warn_keys`) while the other calendars' events still land. The poller never
+creates a folder on its own and never polls a toolkit without a `config.json`.
+Composio's model-facing error texts ("No active connection found ... call
+COMPOSIO_MANAGE_CONNECTIONS", "[Session Restriction]", a provider's quota
+message) are reworded for a person before they reach `last_error`
+(`poller.humanize_error`), and an error object is reduced to its `message`
+(`mcp_client.error_text`), so the card and the Inbox say "reconnect it from
+the Connectors tab" rather than printing a JSON blob. Every collector's `tools/call` goes over the
 same Composio MCP upstream the agent proxy uses, on the one session per poll
 described above: the entry comes from
 `composio_service.build_mcp_server_entry(user_id)` and the session is

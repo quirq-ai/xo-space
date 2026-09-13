@@ -265,7 +265,7 @@ attempted, the MCP session died mid-poll" and the next poll starts afresh.
 ```
 
 Collectors are read-only tools from the catalog in `collectors.py`: `gmail`
-`unread` (default) and `inbox`, `googlecalendar` `upcoming` (default),
+`unread` (default) and `inbox`, `googlecalendar` `upcoming` (default; every calendar in the account's list, not `primary` alone),
 `notion` `recent_pages` (default), `slack` `recent` (messages from the last
 day, default), `telegram` `updates` (new messages to the bot, default; no
 links, since private chats have no permalink); every other toolkit has none

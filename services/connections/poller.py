@@ -172,6 +172,26 @@ async def resolve_user_id() -> Optional[str]:
         return None
 
 
+_NO_ACTIVE_CONNECTION = "No active connection found for toolkit"
+_SESSION_RESTRICTION = "[Session Restriction]"
+_RATE_LIMIT_MARKS = ("Quota exceeded", "rateLimitExceeded", "userRateLimitExceeded", "Rate limit", "429")
+
+
+def humanize_error(toolkit: str, text: str) -> str:
+    """Composio's tool-router texts are written for a model ("call
+    COMPOSIO_MANAGE_CONNECTIONS ..."); the ones a poll meets most are
+    reworded for ``last_error``, the card and the Inbox. Anything else
+    passes through unchanged."""
+    if _NO_ACTIVE_CONNECTION in text:
+        return (f"{toolkit} is no longer connected on Composio (the sign-in expired or was revoked): "
+                f"reconnect it from the Connectors tab")
+    if _SESSION_RESTRICTION in text:
+        return f"{toolkit} is turned off for this workspace's Composio session: turn it on from the Connectors tab"
+    if any(mark in text for mark in _RATE_LIMIT_MARKS):
+        return "the provider's rate limit was hit (queries per minute); the next poll retries"
+    return text
+
+
 def _fail(toolkit: str, message: str, now_text: str) -> dict:
     """A poll that could not run its collectors: stamp ``last_poll_at`` and
     the error, leave ``last_ok_at`` alone, never touch ``events.jsonl``."""
@@ -182,10 +202,13 @@ def _fail(toolkit: str, message: str, now_text: str) -> dict:
 
 
 async def _run_collector(toolkit: str, spec: dict, session: mcp_client.McpSession, state_doc: dict,
-                         now: datetime, tool_names: list[str]) -> int:
+                         now: datetime, tool_names: list[str]) -> tuple[int, list[str]]:
     """One collector over the poll's open ``session``: call (directly, or
     through the session's executor when the slug is not listed), unwrap,
-    map, dedupe, append, remember. Returns the number of events appended.
+    map, dedupe, append, remember. Returns the number of events appended
+    and the warnings the tool reported inside its successful envelope (the
+    spec's ``warn_keys``, for example one calendar out of three failing);
+    those join ``last_error`` while the events that did arrive are kept.
     Raises on any failure; Composio's envelope with ``successful`` false
     (``isError`` false, so the session raised nothing) is an
     :class:`mcp_client.McpError` with stage ``execute`` and no status."""
@@ -197,9 +220,10 @@ async def _run_collector(toolkit: str, spec: dict, session: mcp_client.McpSessio
     payload = mcp_client.tool_result_json(result)
     if isinstance(payload, dict) and payload.get("successful") is False:
         # Composio's envelope: isError false with successful false is a silent failure.
-        raise mcp_client.McpError(str(payload.get("error") or "tool reported failure")[:store.ERROR_MAX],
+        raise mcp_client.McpError((mcp_client.error_text(payload.get("error")) or "tool reported failure")[:store.ERROR_MAX],
                                   stage="execute")
     items = collectors.extract_items(spec, payload, toolkit=toolkit, now=now)
+    warnings = collectors.extract_warnings(spec, payload)
     seen = set(state_doc["cursors"].get(spec["id"], {}).get("seen", []))
     fresh: list[dict] = []
     for item in items:
@@ -210,7 +234,9 @@ async def _run_collector(toolkit: str, spec: dict, session: mcp_client.McpSessio
     appended = store.append_events(toolkit, fresh) if fresh else 0
     store.remember_seen(state_doc, spec["id"], [item["key"] for item in fresh])
     logger.debug("connections poller: %s/%s: %d item(s), %d new", toolkit, spec["id"], len(items), appended)
-    return appended
+    for warning in warnings:
+        logger.warning("connections poller: %s/%s: %s", toolkit, spec["id"], warning)
+    return appended, warnings
 
 
 def _session_gone(exc: BaseException) -> bool:
@@ -349,13 +375,15 @@ async def _poll_locked(toolkit: str, user_id) -> dict:
         specs = [(cid, spec) for cid, spec in specs if spec is not None]     # unknown ids are skipped
         for index, (collector_id, spec) in enumerate(specs):
             try:
-                added += await _run_collector(toolkit, spec, session, state_doc, now, tool_names)
+                appended, warnings = await _run_collector(toolkit, spec, session, state_doc, now, tool_names)
+                added += appended
+                errors.extend(f"{collector_id}: {warning}" for warning in warnings)
             except asyncio.TimeoutError:
                 errors.append(f"{collector_id}: timed out after {CALL_TIMEOUT_S + _GRACE_S:.0f}s")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                text = str(exc)[:200] or type(exc).__name__
+                text = humanize_error(toolkit, str(exc)[:300] or type(exc).__name__)[:200]
                 errors.append(f"{collector_id}: {text}")
                 logger.warning("connections poller: %s/%s failed: %s", toolkit, collector_id, text)
                 if _session_lost(exc):

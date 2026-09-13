@@ -5,7 +5,13 @@ A collector spec is data, not code::
 
     {"id", "label", "tool", "args", "list_keys", "id_keys", "title_keys",
      "body_keys", "ts_keys", "url_keys" (optional), "url_template" (optional),
-     "default" (optional bool)}
+     "warn_keys" (optional), "warn_label" (optional), "default" (optional bool)}
+
+``warn_keys`` name paths (a dict of id to message, or a list of messages)
+where a tool reports partial failures inside a *successful* envelope, such
+as the calendar tool's ``errors_by_calendar``; :func:`extract_warnings`
+turns them into lines for ``last_error`` while the items that did arrive
+are still appended.
 
 ``tool`` is always a read-only Composio slug (category ``read`` in
 ``connectors/composio/categories.py``; a test pins that). ``args`` may
@@ -61,13 +67,25 @@ _CATALOG.update({
          "args": {"query": "in:inbox newer_than:1d", "max_results": 20}, **_GMAIL_MAP},
     ],
     "googlecalendar": [
+        # One call across every calendar in the account's list: a "primary"-only
+        # read misses shared and secondary calendars, which is where most people
+        # keep the events they expect to see. Composio answers
+        # {events: [{event: {...}, source_calendar_id, source_calendar_summary}],
+        #  summary_view: [{event_id, title, start, end, calendar, display_url}],
+        #  calendars_queried: [...], errors_by_calendar: {calendar_id: message}}
+        # with successful true even when one calendar failed, so the per-calendar
+        # failures are declared as warn_keys and reach last_error. The
+        # summary_view keys are fallbacks for a "minimal" answer.
         {"id": "upcoming", "label": "Upcoming events (next 7 days)", "default": True,
-         "tool": "GOOGLECALENDAR_EVENTS_LIST",
-         "args": {"calendarId": "primary", "timeMin": _PLACEHOLDER_NOW, "timeMax": _PLACEHOLDER_7D,
-                  "singleEvents": True, "orderBy": "startTime", "maxResults": 25},
-         "list_keys": ["items", "data.items", "events", "data.events"],
-         "id_keys": ["id"], "title_keys": ["summary"], "body_keys": ["description", "location"],
-         "ts_keys": ["start.dateTime", "start.date", "updated"], "url_keys": ["htmlLink"]},
+         "tool": "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS",
+         "args": {"time_min": _PLACEHOLDER_NOW, "time_max": _PLACEHOLDER_7D, "single_events": True,
+                  "response_detail": "full", "max_results_per_calendar": 25},
+         "list_keys": ["events", "data.events", "summary_view", "data.summary_view"],
+         "id_keys": ["event.id", "event_id"], "title_keys": ["event.summary", "title"],
+         "body_keys": ["event.description", "event.location", "source_calendar_summary", "calendar"],
+         "ts_keys": ["event.start.dateTime", "event.start.date", "event.updated", "start"],
+         "url_keys": ["event.htmlLink", "event.display_url", "display_url"],
+         "warn_keys": ["errors_by_calendar", "data.errors_by_calendar"], "warn_label": "calendar"},
     ],
     "notion": [
         {"id": "recent_pages", "label": "Recently edited pages", "default": True,
@@ -267,6 +285,31 @@ def _typed_title(element: dict) -> Optional[str]:
             if text.strip():
                 return text
     return None
+
+
+def extract_warnings(spec: dict, payload) -> list[str]:
+    """Partial failures a tool reports inside a successful envelope, read from
+    the spec's ``warn_keys`` (the first path holding a non-empty dict or
+    list wins). One short line per run: how many sources failed and the
+    first messages, so ``last_error`` explains a poll that "succeeded" with
+    fewer items than expected. An absent or empty container is no warning."""
+    if not isinstance(payload, dict):
+        return []
+    label = str(spec.get("warn_label") or "source")
+    for path in spec.get("warn_keys") or []:
+        found = lookup(payload, path)
+        if isinstance(found, dict) and found:
+            entries = [f"{_one_line(str(k))[:60]}: {_one_line(str(v))[:120]}" for k, v in list(found.items())[:3]]
+            count = len(found)
+        elif isinstance(found, list) and found:
+            entries = [_one_line(str(v))[:120] for v in found[:3]]
+            count = len(found)
+        else:
+            continue
+        more = count - len(entries)
+        tail = f"; and {more} more" if more > 0 else ""
+        return [f"{count} {label}(s) failed: " + "; ".join(entries) + tail]
+    return []
 
 
 def extract_items(spec: dict, payload, *, toolkit: str, now: datetime) -> list[dict]:

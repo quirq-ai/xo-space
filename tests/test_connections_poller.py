@@ -105,7 +105,7 @@ class _Base(unittest.TestCase):
         self.entry = patch.object(poller.composio_service, "build_mcp_server_entry", return_value=ENTRY)
         # The session lists the collector slugs directly, so the default path is a
         # plain tools/call; the routing tests swap this for the executor-only list.
-        FakeSession.reset(["GMAIL_FETCH_EMAILS", "GOOGLECALENDAR_EVENTS_LIST", "NOTION_SEARCH_NOTION_PAGE"],
+        FakeSession.reset(["GMAIL_FETCH_EMAILS", "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS", "NOTION_SEARCH_NOTION_PAGE"],
                           envelope([message(1), message(2)]))
         self.mocks = {"open": FakeSession.open_mock, "names": FakeSession.list_mock, "call": FakeSession.call_mock}
         for name, p in (("known", self.known), ("aaccount", self.aaccount), ("scope", self.scope),
@@ -282,6 +282,54 @@ class CollectorFailureTests(_Base):
 
         exc = self.run_(scenario())
         self.assertEqual((exc.stage, exc.status, str(exc)), ("execute", None, "scope missing"))
+
+    def test_no_active_connection_is_reworded_for_a_person(self) -> None:
+        """Composio's tool router answers a toolkit whose connected account
+        expired or was revoked with an instruction meant for a model; the
+        person reads a reconnect hint instead."""
+        store.write_config("gmail")
+        self.mocks["call"].side_effect = McpError(
+            "No active connection found for toolkit(s) 'gmail' in this session. To fix this, call "
+            "COMPOSIO_MANAGE_CONNECTIONS with toolkits=['gmail'] to establish a connection, then retry this tool call.",
+            stage="execute")
+        out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(out["error"], "unread: gmail is no longer connected on Composio (the sign-in expired or "
+                                       "was revoked): reconnect it from the Connectors tab")
+        self.assertNotIn("COMPOSIO_MANAGE_CONNECTIONS", store.read_state("gmail")["last_error"])
+
+    def test_an_error_object_in_the_envelope_reads_as_its_message(self) -> None:
+        store.write_config("gmail")
+        self.mocks["call"].return_value = envelope([], successful=False, error={"message": "boom"})
+        self.assertEqual(self.run_(poller.poll_connection("gmail"))["error"], "unread: boom")
+
+    def test_a_provider_quota_error_is_reworded(self) -> None:
+        store.write_config("gmail")
+        self.mocks["call"].return_value = envelope(
+            [], successful=False,
+            error={"error": {"code": 403, "message": "Quota exceeded for quota metric 'Queries' and limit "
+                                                       "'Queries per minute' of service 'calendar-json.googleapis.com'"}})
+        out = self.run_(poller.poll_connection("gmail"))
+        self.assertEqual(out["error"], "unread: the provider's rate limit was hit (queries per minute); the next poll retries")
+
+    def test_calendar_warnings_reach_last_error_while_its_events_land(self) -> None:
+        """The all-calendars tool answers successful true with one calendar's
+        failure inside errors_by_calendar: the event that did arrive is
+        appended, the failure is in last_error, and last_ok_at stays unset."""
+        store.write_config("googlecalendar")
+        payload = {"successful": True, "error": None, "data": {
+            "events": [{"event": {"id": "ev1", "summary": "Standup", "start": {"dateTime": "2026-09-12T09:00:00Z"},
+                                  "htmlLink": "https://calendar.google.com/event?eid=1"},
+                        "source_calendar_id": "team@group.calendar.google.com", "source_calendar_summary": "Team"}],
+            "summary_view": [], "calendars_queried": [{"id": "primary"}, {"id": "team@group.calendar.google.com"}],
+            "errors_by_calendar": {"primary": "403 Quota exceeded for quota metric 'Queries'"}}}
+        self.mocks["call"].return_value = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+        out = self.run_(poller.poll_connection("googlecalendar"))
+        self.assertEqual((out["polled"], out["new_events"]), (True, 1))
+        self.assertTrue(out["error"].startswith("upcoming: 1 calendar(s) failed: primary: 403 Quota exceeded"), out["error"])
+        state_doc = store.read_state("googlecalendar")
+        self.assertEqual((state_doc["events_total"], state_doc["last_ok_at"]), (1, None))
+        lines = (store.connection_dir("googlecalendar") / "events.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(line)["title"] for line in lines], ["Standup"])
 
     def test_mapping_exception_is_isolated_and_truncated(self) -> None:
         store.write_config("gmail")
@@ -559,7 +607,9 @@ class SessionRoutingTests(_Base):
         ]
         out = self.run_(poller.poll_connection("gmail"))
         self.assertEqual(out["new_events"], 1)
-        self.assertTrue(out["error"].startswith("unread: [Session Restriction]"), out["error"])
+        # Composio's "[Session Restriction]" is reworded for a person (humanize_error)
+        self.assertEqual(out["error"], "unread: gmail is turned off for this workspace's Composio session: "
+                                       "turn it on from the Connectors tab")
         self.assertEqual([e["key"] for e in self.events()], ["m3"])
 
     def test_tools_list_failure_is_a_poll_failure_without_events(self) -> None:

@@ -228,6 +228,33 @@ def _text_result(payload: Any) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
 
 
+def error_text(error: Any) -> str:
+    """One readable line from a tool error, for ``last_error`` and the card:
+    the ``message`` of an error object (Google nests it as
+    ``error.message``), the same out of a JSON string holding one, or the
+    value as text. Never the repr of a dict."""
+    if error is None:
+        return ""
+    if isinstance(error, str):
+        stripped = error.strip()
+        if stripped.startswith("{"):
+            try:
+                return error_text(json.loads(stripped))
+            except ValueError:
+                return error
+        return error
+    if isinstance(error, dict):
+        inner = error.get("error")
+        if isinstance(inner, (dict, str)) and inner:
+            return error_text(inner)
+        for key in ("message", "detail", "description"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return json.dumps(error)[:_TOOL_ERROR_MAX]
+    return str(error)
+
+
 def _unwrap_executor(payload: Any, slug: str) -> dict:
     """The executor answers ``{data: {results: [one per requested tool]}}``
     where a result is ``{tool_slug, index, response: {successful, data}}`` or
@@ -238,11 +265,11 @@ def _unwrap_executor(payload: Any, slug: str) -> dict:
     first = next((r for r in results if isinstance(r, dict)), None) if isinstance(results, list) else None
     if first is None:
         if isinstance(payload, dict) and payload.get("successful") is False:
-            raise McpError(str(payload.get("error") or "executor reported failure")[:_TOOL_ERROR_MAX],
+            raise McpError((error_text(payload.get("error")) or "executor reported failure")[:_TOOL_ERROR_MAX],
                            stage="execute")
         raise McpError(f"{EXECUTOR_TOOL} returned no result for {slug}", stage="execute")
     if first.get("error"):
-        raise McpError(str(first["error"])[:_TOOL_ERROR_MAX], stage="execute")
+        raise McpError(error_text(first["error"])[:_TOOL_ERROR_MAX], stage="execute")
     response = first.get("response")
     if isinstance(response, dict) and ("successful" in response or "data" in response):
         return {"successful": response.get("successful", True), "data": response.get("data", {}),
