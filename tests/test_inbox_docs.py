@@ -133,7 +133,8 @@ class InboxDocsTests(unittest.TestCase):
         dev = read("DEVELOPING.md")
         self.assertIn("inbox/", dev)
         # the package sits beside swarm_api, not under cowork_agent
-        services_block = dev[dev.index("services/\n"):dev.index("  cowork_agent/\n")]
+        start = dev.index("services/  ")
+        services_block = dev[start:dev.index("  cowork_agent/  ", start)]
         self.assertIn("  inbox/", services_block)
         self.assertNotIn("cowork_agent/inbox", dev)
         self.assertIn("~/.quirq/inbox.json", dev)

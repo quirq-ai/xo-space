@@ -760,7 +760,7 @@ async def lifespan(app: FastAPI):
     # events.jsonl, which the Inbox's connections feeder reads.
     _connections_poll_task = None
     try:
-        from services.cowork_agent.connections.poller import (
+        from services.connections.poller import (
             poller_enabled as connections_poller_enabled,
             start_connections_poller,
             tick_seconds as connections_tick_seconds,

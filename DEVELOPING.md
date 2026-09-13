@@ -52,16 +52,24 @@ routers/                          broker routes only — NO agent branching
                                     project_sharing, inbox.py, connections.py)
     legacy/                       frozen URL aliases (openclaw_usage)
 
-services/
+services/                         Placement rule: only what is specific to running an agent lives
+                                    under cowork_agent/; anything a person uses as much as the agent
+                                    does (the Inbox, connections, the swarm client) is a top-level package.
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
   inbox/                          the Space Inbox (a property of the Space, not of any agent): store
                                     (~/.quirq/inbox.json read/write, retention) feeders (timeline,
                                     todos, sharing, issues, connections) service (the router-facing
                                     surface); routes in routers/cowork_agent/bff/inbox.py
+  connections/                    connections polling for the Inbox (a property of the Space): store
+                                    (~/.quirq/connections/<toolkit>/ config, state, events)
+                                    collectors (the read-only catalog per toolkit) mcp_client
+                                    (streamable-HTTP JSON-RPC over httpx) poller (the background
+                                    loop) service (the router-facing surface); routes in
+                                    routers/cowork_agent/bff/connections.py
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
-  cowork_agent/
+  cowork_agent/                   what it takes to run an agent (see the placement rule above)
     adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
       base.py loader.py cli_status.py usage_common.py   contract + shared helpers
       <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
@@ -73,12 +81,6 @@ services/
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
-    connections/                     connections polling for the Inbox (core, agent-free): store
-                                    (~/.quirq/connections/<toolkit>/ config, state, events)
-                                    collectors (the read-only catalog per toolkit) mcp_client
-                                    (streamable-HTTP JSON-RPC over httpx) poller (the background
-                                    loop) service (the router-facing surface); routes in
-                                    bff/connections.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/
@@ -252,6 +254,26 @@ exceptions:
 ---
 
 ## 7. Conventions
+
+### Placement: cowork_agent/ is for the agent, services/ is for the Space
+
+Only code that is specific to running an agent belongs under
+`services/cowork_agent/`: the adapters and their loader, the engine and
+registry, session and chat plumbing, skill installation, the watcher that
+tails an agent's native store. Anything a person uses as much as the agent
+does is a property of the Space and lives as a top-level package under
+`services/`: the Inbox (`services/inbox/`), connections polling
+(`services/connections/`), the swarm client (`services/swarm_api/`). The
+test is the consumer, not the dependency: connections polling talks to
+Composio, which the agent also uses, but a person configures and reads it
+from the Connectors and Inbox tabs, so it is Space code. By the same test
+the connectors themselves (`services/cowork_agent/connectors/`, Composio
+included) serve people as much as agents and are candidates for the same
+move; they stay where they are until someone takes that on, because moving
+them touches upstream-owned routes and tests. New code should not add to
+the backlog: put it at the top level unless it exists only to run an agent.
+Routes are unaffected by this rule; the `/api/*` surface stays under
+`routers/cowork_agent/`.
 
 ### One executor for external commands
 
@@ -735,7 +757,7 @@ with `"*"` as the target origin, so **the listener validates `event.origin`**; t
 ### 10.8 Connections polling
 
 The Inbox's `connections` feeder is fed by a background poller in
-`services/cowork_agent/connections/` (routes in
+`services/connections/` (routes in
 `routers/cowork_agent/bff/connections.py`, four paths under `/api/connections`).
 It is core code: no agent names, no adapter imports, and the router imports
 only `service.py`.

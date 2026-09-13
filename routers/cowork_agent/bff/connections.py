@@ -8,7 +8,7 @@ the Connectors tab's Polling drawer).
   POST   /api/connections/{toolkit}/poll        poll now, ignoring enabled and interval; the poll summary
   GET    /api/connections/{toolkit}/events      {toolkit, events: [...]} newest-first, limit 1..500
 
-Thin over services.cowork_agent.connections.service (typed errors become
+Thin over services.connections.service (typed errors become
 HTTP here). The toolkit path value is checked against the id shape before
 any service call so an unknown id is a 404 with {code, message} and never
 reaches the filesystem. Bodies are strict: a string where an int or a bool
@@ -23,7 +23,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
-from services.cowork_agent.connections import service
+from services.connections import service
 
 router = APIRouter()
 

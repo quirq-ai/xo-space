@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cowork_agent.connections import store
-from services.cowork_agent.connections.store import ConnectionsError
+from services.connections import store
+from services.connections.store import ConnectionsError
 
 BAD_IDS = ["..", ".", "", "Gmail", "a/b", "a-b", "x" * 41, "g mail", None, 7, "../gmail"]
 
@@ -143,7 +143,7 @@ class ConfigTests(_Base):
         raw = {"enabled": "false", "interval_s": "300", "collectors": ["unread", "unread", "nope", 3],
                "toolkit": "someone_else", "schema": 2}
         self.write_file("gmail", "config.json", json.dumps(raw))
-        with self.assertLogs("services.cowork_agent.connections.store", level="WARNING") as logs:
+        with self.assertLogs("services.connections.store", level="WARNING") as logs:
             doc = store.read_config("gmail")
         self.assertEqual((doc["enabled"], doc["interval_s"], doc["collectors"], doc["toolkit"]),
                          (False, 300, ["unread"], "gmail"))
@@ -158,7 +158,7 @@ class ConfigTests(_Base):
                 self.assertEqual(store.read_config("gmail")["enabled"], expected)
         for raw in ("maybe", 2, None, [], {}, 1.0):
             with self.subTest(raw=raw), \
-                 self.assertLogs("services.cowork_agent.connections.store", level="WARNING") as logs:
+                 self.assertLogs("services.connections.store", level="WARNING") as logs:
                 self.write_file("gmail", "config.json", json.dumps({"enabled": raw}))
                 self.assertFalse(store.read_config("gmail")["enabled"], "an unreadable intent never polls")
                 self.assertTrue(any("enabled" in line for line in logs.output))
@@ -166,12 +166,12 @@ class ConfigTests(_Base):
     def test_a_rewrite_repairs_what_the_lenient_read_replaced(self) -> None:
         self.write_file("gmail", "config.json",
                         json.dumps({"interval_s": 5, "collectors": "unread", "note": "keep me"}))
-        with self.assertLogs("services.cowork_agent.connections.store", level="WARNING"):
+        with self.assertLogs("services.connections.store", level="WARNING"):
             store.write_config("gmail", enabled=False)
         on_disk = self.read_file("gmail", "config.json")
         self.assertEqual((on_disk["enabled"], on_disk["interval_s"], on_disk["collectors"], on_disk["note"]),
                          (False, 900, ["unread"], "keep me"))
-        with self.assertNoLogs("services.cowork_agent.connections.store", level="WARNING"):
+        with self.assertNoLogs("services.connections.store", level="WARNING"):
             self.assertEqual(store.read_config("gmail")["interval_s"], 900)
 
     def test_lenient_read_falls_back_for_bad_interval_and_collectors(self) -> None:

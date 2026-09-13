@@ -12,6 +12,7 @@
 - Keep business logic in focused clients/services (thin route handlers).
 - Preserve request/response contracts unless explicitly asked to change.
 - Routes that serve the xo-cowork frontend live under `routers/cowork_agent/`, with shared helpers under `services/cowork_agent/`.
+- Placement rule of thumb: only functions specific to running an agent go under `services/cowork_agent/`. Anything a person uses as much as the agent does (the Inbox, connections polling, the swarm client) is a property of the Space and is a top-level package under `services/` (`services/inbox/`, `services/connections/`, `services/swarm_api/`). Judge by the consumer, not the dependency: connections depend on Composio, which the agent also uses, and still belong at the top level. See DEVELOPING.md section 7.
 
 ## Agent-modular architecture (read before touching core)
 

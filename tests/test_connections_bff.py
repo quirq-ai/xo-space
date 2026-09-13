@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from routers.cowork_agent.bff import connections as routes
 from routers.cowork_agent.bff import bff_routers, connections_router, inbox_router
-from services.cowork_agent.connections import service
+from services.connections import service
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -169,7 +169,7 @@ class ConnectionsRoutesTests(unittest.TestCase):
         self.assertNotRegex(src, r"^\s*(import os|from os |import pathlib|from pathlib)", "BFF rule P2")
         self.assertNotRegex(src, r"openclaw|hermes|claude_code|codex|antigravity")
         self.assertIsNone(re.search("[\\u2013\\u2014]", src))
-        self.assertIn("from services.cowork_agent.connections import service", src)
+        self.assertIn("from services.connections import service", src)
 
 
 if __name__ == "__main__":

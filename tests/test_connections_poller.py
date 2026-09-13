@@ -19,9 +19,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.connections import collectors, mcp_client, poller, store
-from services.cowork_agent.connections import service as connections_service
-from services.cowork_agent.connections.mcp_client import McpError
+from services.connections import collectors, mcp_client, poller, store
+from services.connections import service as connections_service
+from services.connections.mcp_client import McpError
 from services.inbox import service as inbox_service
 
 ENTRY = {"type": "http", "url": "https://mcp.example.test/mcp", "headers": {"Authorization": "Bearer t"}}
@@ -382,7 +382,9 @@ class EnvTests(unittest.TestCase):
 
     def test_module_names_no_agent_and_uses_no_dashes(self) -> None:
         import re
-        root = Path(__file__).resolve().parents[1] / "services" / "cowork_agent" / "connections"
+        # a top-level services package: what a person uses as much as the agent does is Space code
+        root = Path(__file__).resolve().parents[1] / "services" / "connections"
+        self.assertFalse((root.parent / "cowork_agent" / "connections").exists())
         for name in ("__init__", "store", "collectors", "mcp_client", "poller", "service"):
             src = (root / f"{name}.py").read_text(encoding="utf-8")
             with self.subTest(module=name):

@@ -225,7 +225,12 @@ class ConnectionsDocsTests(unittest.TestCase):
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
         self.assertIn("project_sharing, inbox.py, connections.py)", layout)
         self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
-        self.assertIn("    connections/", layout)
+        # top level under services/, beside inbox/ and swarm_api/, never under cowork_agent/
+        start = layout.index("services/  ")
+        services_block = layout[start:layout.index("  cowork_agent/  ", start)]
+        self.assertIn("  connections/", services_block)
+        self.assertNotIn("cowork_agent/connections", dev)
+        self.assertIn("### Placement: cowork_agent/ is for the agent, services/ is for the Space", dev)
         for module in ("store", "collectors", "mcp_client", "poller", "service"):
             self.assertIn(module, layout)
         self.assertIn("bff/connections.py", layout)

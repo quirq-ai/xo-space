@@ -25,7 +25,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple, Optional
 
-from services.cowork_agent.connections import store as connections_store
+from services.connections import store as connections_store
 from services.cowork_agent.project_layout import xo_dir
 from services.cowork_agent.project_sharing import status as sharing_status
 from services.cowork_agent.scopes import resolve_scope

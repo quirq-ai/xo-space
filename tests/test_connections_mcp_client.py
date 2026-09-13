@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import httpx
 
-from services.cowork_agent.connections import mcp_client
-from services.cowork_agent.connections.mcp_client import McpError
+from services.connections import mcp_client
+from services.connections.mcp_client import McpError
 
 TOKEN = "sk-composio-secret-token-1234567890"
 API_KEY = "apikey-abcdef1234567890"
@@ -250,7 +250,7 @@ class CallToolTests(_Base):
 
     def test_logs_never_carry_headers_or_bodies(self) -> None:
         up = self.use(Upstream(call="secret body " + TOKEN, call_status=500))
-        with self.assertLogs("services.cowork_agent.connections.mcp_client", level="DEBUG") as logs:
+        with self.assertLogs("services.connections.mcp_client", level="DEBUG") as logs:
             with self.assertRaises(McpError):
                 self.call()
         joined = "\n".join(logs.output)

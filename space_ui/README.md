@@ -212,7 +212,7 @@ than the cursor surfaces nothing until it collects something newer (delete
 The `connections` feeder reads what a background poller collected from the
 Composio connections (Gmail, Google Calendar, Notion, Slack, Telegram) over the same MCP
 upstream the agent proxy uses. Everything lives in
-`services/cowork_agent/connections/` (store, collectors, mcp_client, poller,
+`services/connections/` (store, collectors, mcp_client, poller,
 service) and in one folder per toolkit, hand-maintainable in the same spirit
 as `inbox.json`:
 

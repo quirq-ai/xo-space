@@ -9,6 +9,9 @@
 ## Architecture conventions
 
 - Put endpoint modules in `routers/` via `APIRouter`.
+- Placement: only code specific to running an agent lives under `services/cowork_agent/`; what a person
+  uses as much as the agent does (Inbox, connections polling, the swarm client) is a top-level package
+  under `services/`. Judge by the consumer, not the dependency (DEVELOPING.md section 7).
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
 - Every external command runs through `utils/commands.py` (`run` / `run_spec` over an
