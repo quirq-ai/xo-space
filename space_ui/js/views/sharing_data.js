@@ -1,4 +1,4 @@
-/* Project sharing — the data half of the Sharing pane (views/sharing.js is
+/* Project sharing: the data half of the Sharing pane (views/sharing.js is
    the paint half). Not a view: one status poll, the BFF calls, and the small
    shared vocabulary (escape, relative time, short ids, the clone and invite
    text). Nothing here touches the DOM.
@@ -6,8 +6,8 @@
    One source of truth: the last GET /api/project-sharing/status snapshot.
    "Is this shared" is always answered from it, never from /members, so a
    card's chip and its member rows can never disagree. A missing entry is
-   NOT proof of "not shared" — status is in-memory server-side and restarts
-   empty — so absence and answer get different states:
+   NOT proof of "not shared" (status is in-memory server-side and restarts
+   empty), so absence and answer get different states:
      unknown   no snapshot yet, or the last check failed
      disabled  the loop is parked (no id / not signed in / switched off)
      solo      the relay checked and this repo is not shared
@@ -16,16 +16,10 @@
 import {API_BASE,apiFetch} from '../core/api.js';
 import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 
-export const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-export function rel(iso){
-  if(!iso)return'—';
-  const s=(Date.now()-new Date(iso).getTime())/1000;
-  if(!isFinite(s))return'—';
-  if(s<45)return'just now';
-  if(s<3600)return Math.floor(s/60)+'m ago';
-  if(s<86400)return Math.floor(s/3600)+'h ago';
-  return Math.floor(s/86400)+'d ago';
-}
+/* esc and rel are the shared core helpers, re-exported so the pane keeps
+   importing its vocabulary from one place (rel is '' for a missing stamp
+   and a calendar date past 30 days) */
+export {esc,rel} from '../core/ui.js';
 export const shortHash=h=>String(h||'').slice(0,10);
 /* A workspace id is long and opaque; rows only need enough of it to tell
    members apart. The full id is the hover title and the copy payload. */
@@ -100,15 +94,15 @@ export function consumeNewClone(){
 
 export const REASON={
   disabled:'sharing is switched off (PROJECT_SHARING_ENABLED=false)',
-  no_workspace_id:'no workspace id — set XO_SPACE_ID in .env and restart',
+  no_workspace_id:'no workspace id: set XO_SPACE_ID in .env and restart',
   no_auth:'sign in to XO (or set XO_API_KEY) to share projects',
 };
 export const parked=()=>!!status&&status.cadence==='parked';
 
 /* How many OTHER workspaces can see the repo: the swarm's active-row count
    minus this one. The owner row never goes away, so a repo whose last member
-   was revoked still comes back as a member with a count of 1 — that is "not
-   shared" to a person. null when the swarm did not report a count (older
+   was revoked still comes back as a member with a count of 1, and that is
+   "not shared" to a person. null when the swarm did not report a count (older
    server), in which case "shared" is still the honest answer. */
 export function others(e){
   const m=e&&e.members;
@@ -128,13 +122,13 @@ export function entryFor(projectId){
 }
 /* Every repo the relay knows, normalised for the pane:
      mine      cloned here (has a project id) and someone OTHER than this
-               workspace can see it — the swarm keeps the group (and the
+               workspace can see it: the swarm keeps the group (and the
                owner row) after the last member is revoked, so `shared`
                alone would list a repo nobody else can see; others()===0 is
                "not shared" to a person and leaves the rail
      incoming  shared with this workspace, not cloned here yet
    Per-repo timestamps and the last fetch error ride along; the behind count
-   does not live in the snapshot — the pane asks /commits per project. */
+   does not live in the snapshot: the pane asks /commits per project. */
 export function repos(){
   if(!status)return[];
   return Object.entries(status.repos||{}).map(([repo,r])=>({
@@ -176,6 +170,5 @@ export const share=(id,ws)=>apiFetch(P(id)+'/share',{method:'POST',body:{workspa
 export const revoke=(id,ws)=>apiFetch(P(id)+'/revoke',{method:'POST',body:{workspace_id:ws}});
 export const apply=id=>apiFetch(P(id)+'/apply',{method:'POST',body:{}});
 export const checkNow=()=>apiFetch(API_BASE+'/api/project-sharing/check',{method:'POST',body:{}});
-/* one wording for a failed call, everywhere */
-export const failText=res=>res.notImplemented?'not available for the active agent'
-  :res.offline?'xo-space is unreachable':String(res.error||'request failed');
+/* one wording for a failed call, everywhere: the core helper, re-exported for sharing.js */
+export {failText} from '../core/api.js';

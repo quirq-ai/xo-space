@@ -1,5 +1,5 @@
 /* Connectors tab. Mirrors the Setup tab's card/badge/button vocabulary under a
-   .conn- prefix — those classes are per-view by convention, not shared, so the
+   .conn- prefix: those classes are per-view by convention, not shared, so the
    rules are restated here rather than imported. Tokens come from base.css. */
 
 /* The registry auto-creates this section; without an explicit overflow it

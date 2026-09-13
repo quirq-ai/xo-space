@@ -1,7 +1,8 @@
 /* View registry: builds the tab nav from registered views, assigns hotkeys
-   1..n, syncs the URL hash (#/<id>, deep-linkable), lazy-mounts each view on
-   first activation, and isolates a view's failure to its own section — the
-   other tabs keep working. The registry knows the view contract, never the
+   1..n (ignored while an input, textarea or select has focus), syncs the URL
+   hash (#/<id>, deep-linkable), lazy-mounts each view on first activation,
+   and isolates a view's failure to its own section: the other tabs keep
+   working. The registry knows the view contract, never the
    views themselves (the same seam philosophy as the backend's capability
    loader).
 
@@ -17,7 +18,7 @@
        show() {}, hide() {},    // optional, on tab switches
      }
    The section is created inside #stage automatically when index.html does
-   not already carry one — markup-heavy views keep theirs in index.html,
+   not already carry one: markup-heavy views keep theirs in index.html,
    render-everything views need no HTML edit at all.
    ctx = {switchTo}. Views never import each other; cross-view jumps go
    through ctx.switchTo(id). */
@@ -105,7 +106,9 @@ export function startRegistry({defaultView}){
     return b;
   }));
   addEventListener('keydown',e=>{
-    if(/INPUT|TEXTAREA/.test(document.activeElement?.tagName||''))return;
+    /* a digit typed into a field, a textarea or a select menu is input, not
+       a tab switch */
+    if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||''))return;
     if(e.key.length!==1||e.key<'1'||e.key>'9')return;
     const i=e.key.charCodeAt(0)-49;
     if(i<navViews.length)switchTo(navViews[i].id);

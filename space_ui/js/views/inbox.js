@@ -6,33 +6,19 @@
    statuses: new (unseen), seen (expanded once), done. Every field of a row
    is untrusted (agents write timeline content, anyone can POST), so every
    string is escaped before it reaches innerHTML. Independent of the other
-   tabs: own fetch, own poll, own failure card. */
-import {API_BASE,apiFetch} from '../core/api.js';
+   tabs: own fetch, own poll, own failure card. The escape, the relative
+   time, the pill strip and the failure wording come from core; the
+   connections wording comes from core/connections.js, shared with the
+   Connectors tab so one payload never reads two ways. */
+import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
-import {toast} from '../core/ui.js';
+import {esc,pills,rel,toast} from '../core/ui.js';
+import {collectorLabels,every,pollLine} from '../core/connections.js';
 
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
   return isFinite(t)?new Date(t).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 };
-function rel(iso){
-  if(!iso)return'';
-  const s=(Date.now()-new Date(iso).getTime())/1000;
-  if(!isFinite(s))return'';
-  if(s<60)return'just now';
-  if(s<3600)return Math.floor(s/60)+'m ago';
-  if(s<86400)return Math.floor(s/3600)+'h ago';
-  if(s<86400*30)return Math.floor(s/86400)+'d ago';
-  return new Date(iso).toLocaleDateString(undefined,{dateStyle:'medium'});
-}
-/* the same three-way split every view uses: unreachable, unsupported, or
-   the API's own words */
-function failText(res){
-  if(res.offline)return'xo-space is unreachable';
-  if(res.notImplemented)return'not available for the active agent';
-  return res.error||'request failed';
-}
 /* The API validates links on write, but a hand-edited inbox.json reaches
    the page as-is until the next normalising write; never hand the previewer
    a path the file API would refuse anyway. */
@@ -45,18 +31,26 @@ const safePath=p=>typeof p==='string'&&p.length>0&&p.length<=500
 const safeUrl=u=>typeof u==='string'&&/^https?:\/\//i.test(u)?u:'';
 
 /* ── tab badge ─────────────────────────────────────────────────────────────
-   Unseen count on the Inbox tab button. Started by app.js after the registry
-   built the buttons; the view feeds it the counts it already has so a
-   mutation never costs a second request. Never throws: a failed fetch leaves
+   Unseen count on the Inbox tab button, appended beside the label the
+   registry painted there (the label itself is never rewritten here).
+   Started by app.js after the registry built the buttons; the view feeds it
+   the counts it already has so a mutation never costs a second request, and
+   its own 60 s poll rests while the view is on screen, where the view's
+   30 s read already carries the counts. Never throws: a failed fetch leaves
    the tab exactly as it is. */
 let lastBadge=null;
+let shown=false;            /* the view is on screen: its own poll feeds the badge */
 function paintBadge(n){
   const b=document.getElementById('tab-inbox');
   if(!b)return;
   n=Math.max(0,Math.floor(Number(n)||0));
   if(n===lastBadge)return; /* no DOM churn on an unchanged count */
   lastBadge=n;
-  b.innerHTML=n>0?'Inbox<b class="inb-badge">'+n+'</b>':'Inbox';
+  let badge=b.querySelector('.inb-badge');
+  if(n>0){
+    if(!badge){badge=document.createElement('b');badge.className='inb-badge';b.appendChild(badge);}
+    badge.textContent=String(n);
+  }else if(badge)badge.remove();
 }
 export async function refreshInboxBadge(counts){
   try{
@@ -68,9 +62,10 @@ export async function refreshInboxBadge(counts){
     paintBadge(counts.new);
   }catch(err){console.error('Inbox badge:',err);}
 }
+function startBadgePoll(){setSlottedInterval('inbox-badge',()=>refreshInboxBadge(),60000);}
 export function initInboxBadge(){
   refreshInboxBadge();
-  setSlottedInterval('inbox-badge',()=>refreshInboxBadge(),60000);
+  if(!shown)startBadgePoll(); /* a deep link may have shown the view already */
 }
 
 /* ── view ─────────────────────────────────────────────────────────────── */
@@ -90,24 +85,32 @@ const busy=new Set();       /* ids with a write in flight */
 
 /* ── source filter ────────────────────────────────────────────────────────
    Client-side over the loaded page (limit 200): picking a source never
-   fetches. "agents" is the catch-all for anything not written by a named
-   feeder, so a row from a feeder added later still lands somewhere. */
-const SOURCES=[['all','All'],['issues','Issues'],['connections','Connections'],
-  ['workspace','Workspace'],['sharing','Sharing'],['agents','Agents']];
+   fetches. One row per pill, naming the feeder sources it covers, so adding
+   a feeder is one entry here. "agents" is the catch-all for anything not
+   written by a named feeder, so a row from a feeder added later still lands
+   somewhere. */
+const SOURCES=[
+  {id:'all',label:'All',sources:[]},
+  {id:'issues',label:'Issues',sources:['issues']},
+  {id:'connections',label:'Connections',sources:['connections']},
+  {id:'workspace',label:'Workspace',sources:['timeline','todos']},
+  {id:'sharing',label:'Sharing',sources:['sharing']},
+  {id:'agents',label:'Agents',sources:[]},
+];
+const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);
 let srcFilter='all';
 function sourceOf(it){
   const s=typeof it.source==='string'?it.source:'';
-  if(s==='issues'||s==='connections'||s==='sharing')return s;
-  if(s==='timeline'||s==='todos')return'workspace';
-  return'agents';
+  const row=SOURCES.find(r=>r.sources.includes(s));
+  return row?row.id:'agents';
 }
 const matchesSource=it=>srcFilter==='all'||sourceOf(it)===srcFilter;
 
 /* ── connections section ──────────────────────────────────────────────────
    What the connections poller is watching (GET /api/connections), shown
    above the rows. Its own fetch, token and failure line: a slow or failed
-   read here never delays or hides the inbox rows. These calls go same-origin
-   like connectors.js does; they are not part of the /api/inbox family. */
+   read here never delays or hides the inbox rows. Same API_BASE as every
+   other call on this page; they are not part of the /api/inbox family. */
 let conns=null;             /* last good GET /api/connections payload */
 let connsFailed=null;       /* last failed response, one muted line */
 let connsOpen=null;         /* null = auto: open while any entry has an error */
@@ -126,12 +129,19 @@ export default {
   },
   show(){
     /* mount just fetched; a return to the tab re-reads, then the poll keeps
-       the list live while it is on screen */
+       the list live while it is on screen. The badge poll rests meanwhile:
+       every read here paints the badge from its own counts. */
+    shown=true;
+    clearSlottedInterval('inbox-badge');
     if(root&&Date.now()-lastLoad>4000)load();
     if(root)loadConns();
     setSlottedInterval('inbox-poll',load,30000);
   },
-  hide(){clearSlottedInterval('inbox-poll');}
+  hide(){
+    shown=false;
+    clearSlottedInterval('inbox-poll');
+    startBadgePoll();
+  }
 };
 
 const skeleton=()=>'<div class="inb-rows">'+'<div class="inb-skel"></div>'.repeat(4)+'</div>';
@@ -150,13 +160,43 @@ async function load(){
     for(const id of [...expanded])if(!ids.has(id))expanded.delete(id);
     refreshInboxBadge(data.counts); /* counts cover the whole file, not the filter */
   }else failed=res;
+  if(paintKey()===painted){settle();return;} /* nothing new: leave focus and scroll alone */
   render();
 }
 
+/* ── painting ─────────────────────────────────────────────────────────────
+   What the last paint was made from: the payload and every local flag the
+   paint reads. A poll whose fresh read keys the same leaves the DOM alone,
+   so keyboard focus and the scroll inside an expanded body survive the
+   30 s tick; anything else repaints with focus put back on the control
+   that had it. */
+let painted='';
+const paintKey=()=>JSON.stringify([data,filter,srcFilter,failed&&failText(failed),loadingRows,marking,
+  [...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
+/* the focused control as a selector over the data-* it carries, so the same
+   one can be found again once the rows are rebuilt */
+function focusSelector(){
+  const a=document.activeElement;
+  if(!a||!root||!root.contains(a))return'';
+  const keys=['act','id','toolkit','filter','src'].filter(k=>a.dataset[k]!==undefined);
+  return keys.map(k=>'[data-'+k+'="'+CSS.escape(a.dataset[k])+'"]').join('');
+}
 function render(){
   if(!root)return;
   const box=root.querySelector('.inb');
-  if(box)box.innerHTML=head()+sources()+connsHTML()+body();
+  if(!box)return;
+  const sel=focusSelector();
+  box.innerHTML=head()+sources()+connsHTML()+body();
+  painted=paintKey();
+  if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
+}
+/* the parts that move without a repaint: buttons a write disabled, the
+   Refresh button, and the relative times, which an unchanged read still ages */
+function settle(){
+  syncBusy();
+  const r=root.querySelector('button[data-act="refresh"]');
+  if(r)r.disabled=false;
+  root.querySelectorAll('[data-ts]').forEach(el=>{el.textContent=rel(el.dataset.ts);});
 }
 function summary(c){
   return c.new+' new · '+(c.new+c.seen)+' open · '+c.done+' done';
@@ -167,11 +207,7 @@ function head(){
     +'<span class="inb-eyebrow">Inbox</span>'
     +'<span class="inb-sum">'+(data?esc(summary(c)):'loading…')+'</span>'
     +'<span class="inb-spacer"></span>'
-    +'<div class="inb-filter" role="group" aria-label="Filter inbox">'
-      +FILTERS.map(([k,label])=>'<button type="button" data-filter="'+k+'"'
-        +(filter===k?' class="is-on" aria-pressed="true"':' aria-pressed="false"')
-        +'>'+label+'</button>').join('')
-    +'</div>'
+    +pills(FILTERS,filter,'filter','Filter inbox','inb-filter')
     +(c.new>0?'<button class="inb-btn" type="button" data-act="mark-all"'
       +(marking?' disabled':'')+' title="Mark every new item on this page as seen">Mark all seen</button>':'')
     +'<button class="inb-btn" type="button" data-act="refresh" title="Re-read the inbox">'
@@ -180,11 +216,7 @@ function head(){
 }
 /* the source pills, a second strip under the header */
 function sources(){
-  return'<div class="inb-src" role="group" aria-label="Filter by source">'
-    +SOURCES.map(([k,label])=>'<button type="button" data-src="'+k+'"'
-      +(srcFilter===k?' class="is-on" aria-pressed="true"':' aria-pressed="false"')
-      +'>'+label+'</button>').join('')
-  +'</div>';
+  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src');
 }
 function body(){
   if(!data&&failed)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
@@ -216,7 +248,7 @@ function rowHTML(it){
       +'<span class="inb-kind">'+esc(it.kind)+'</span>'
       +'<span class="inb-title">'+esc(it.title)+'</span>'
       +(it.project_id?'<span class="inb-proj">'+esc(it.project_id)+'</span>':'')
-      +'<span class="inb-when" title="'+esc(dtfmt(it.ts))+'">'+esc(rel(it.ts))+'</span>'
+      +'<span class="inb-when" data-ts="'+esc(it.ts)+'" title="'+esc(dtfmt(it.ts))+'">'+esc(rel(it.ts))+'</span>'
     +'</button>'
     +(open?'<div class="inb-body" id="inb-body-'+id+'">'
       +(it.body?'<pre class="inb-text">'+esc(it.body)+'</pre>':'<div class="inb-note">no details</div>')
@@ -235,17 +267,6 @@ function rowHTML(it){
 /* ── connections section rendering ─────────────────────────────────────── */
 const polled=()=>((conns&&conns.connections)||[]).filter(c=>c&&typeof c==='object'&&(c.configured||c.connected_here));
 const connsIsOpen=()=>connsOpen===null?polled().some(c=>c.last_error):connsOpen;
-function every(s){
-  s=Number(s)||0;
-  if(s>0&&s%3600===0)return'every '+(s/3600)+' h';
-  return'every '+Math.max(1,Math.round(s/60))+' min';
-}
-function collectorLabels(c){
-  const byId=new Map((Array.isArray(c.available_collectors)?c.available_collectors:[])
-    .filter(a=>a&&typeof a==='object').map(a=>[a.id,a.label||a.id]));
-  const ids=Array.isArray(c.collectors)?c.collectors:[];
-  return ids.length?ids.map(id=>byId.get(id)||id).join(', '):'no collectors';
-}
 function connsHTML(){
   if(!conns){
     if(connsFailed)return'<div class="inb-conns"><div class="inb-conn-meta">Connections: '+esc(failText(connsFailed))+'</div></div>';
@@ -270,9 +291,10 @@ function connsHTML(){
 function connRowHTML(c){
   const tk=esc(c.toolkit);
   const off=connBusy.has(c.toolkit)?' disabled':'';
-  const when=c.last_error
-    ?'<span class="inb-conn-meta is-error" title="'+esc(c.last_error)+'">'+esc(c.last_error)+'</span>'
-    :'<span class="inb-conn-meta">'+(c.last_poll_at?'last poll '+esc(rel(c.last_poll_at)):'never polled')+'</span>';
+  const line=pollLine(c);
+  const when=line.error
+    ?'<span class="inb-conn-meta is-error" title="'+esc(line.error)+'">'+esc(line.error)+'</span>'
+    :'<span class="inb-conn-meta">'+esc(line.text)+'</span>';
   return'<div class="inb-conn-row" data-toolkit="'+tk+'">'
     +'<b>'+esc(c.display_name||c.toolkit)+'</b>'
     +'<span class="inb-conn-meta">'+esc(collectorLabels(c))+' · '+esc(every(c.interval_s))
@@ -314,7 +336,7 @@ function setFilter(k){
 }
 /* a source pill only repaints: the page is already here */
 function setSource(k){
-  if(k===srcFilter||!SOURCES.some(([s])=>s===k))return;
+  if(k===srcFilter||!SOURCES.some(s=>s.id===k))return;
   srcFilter=k;
   render();
 }
@@ -361,21 +383,23 @@ function syncBusy(){
     if(b.dataset.act!=='toggle'&&b.dataset.act!=='open')b.disabled=busy.has(b.dataset.id);
   });
 }
-/* Every new item on this page, one PATCH each, in order: the file is
-   rewritten once per write, and ordered writes never race each other. A
-   failed one does not stop the rest. */
+/* Every new item on this page in one PATCH /api/inbox {ids, status}: the
+   file is rewritten once for the whole batch, and the reply says how many
+   actually changed and which ids were gone by then. A failed request
+   changes nothing here and says why in the same words as every other
+   failed write. */
 async function markAllSeen(){
   if(marking||!data||dataFilter!==filter)return;
   const ids=(data.items||[]).filter(it=>it.status==='new').map(it=>it.id);
   if(!ids.length){toast('no new items in this list');return;}
   marking=true;render();
-  let lost=0;
-  for(const id of ids){
-    const res=await apiFetch(API_BASE+'/api/inbox/'+encodeURIComponent(id),{method:'PATCH',body:{status:'seen'}});
-    if(!res.ok)lost++;
-  }
+  const res=await apiFetch(API_BASE+'/api/inbox',{method:'PATCH',body:{ids,status:'seen'}});
   marking=false;
-  if(lost)toast(lost+' of '+ids.length+' could not be marked seen');
+  if(!res.ok)toast('mark all seen failed: '+failText(res));
+  else{
+    const missing=res.data&&Array.isArray(res.data.missing)?res.data.missing.length:0;
+    if(missing)toast(missing+' of '+ids.length+' were already gone');
+  }
   await load();
 }
 /* Open: a file link previews it in the Files tab; a view link jumps there;
@@ -399,10 +423,11 @@ function openLink(it){
 /* ── connections section data ──────────────────────────────────────────── */
 async function loadConns(){
   const mine=++connsToken;
-  const res=await apiFetch('/api/connections');
+  const res=await apiFetch(API_BASE+'/api/connections');
   if(mine!==connsToken)return; /* a newer read owns the section */
   if(res.ok&&res.data){conns=res.data;connsFailed=null;}
   else connsFailed=res;
+  if(paintKey()===painted)return; /* the section reads the same: no repaint */
   render();
 }
 /* Poll now: one POST, then both the section (new poll state) and the rows
@@ -410,7 +435,7 @@ async function loadConns(){
 async function pollConn(toolkit){
   if(typeof toolkit!=='string'||!toolkit||connBusy.has(toolkit))return;
   connBusy.add(toolkit);render();
-  const res=await apiFetch('/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'});
+  const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'});
   connBusy.delete(toolkit);
   if(!res.ok)toast('poll failed: '+failText(res));
   else{

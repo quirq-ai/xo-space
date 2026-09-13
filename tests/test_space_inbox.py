@@ -16,13 +16,14 @@ class SpaceInboxCompositionTests(unittest.TestCase):
     """The Inbox tab is composed into the shell through explicit seams: one
     import and one registerView in app.js, one badge starter after the
     registry, one stylesheet link, and a view module that talks to exactly
-    one route family. These assertions pin those seams so a refactor cannot
-    silently drop the tab, its badge, or its stylesheet."""
+    two route families (the inbox rows and the connections it shows above
+    them). These assertions pin those seams so a refactor cannot silently
+    drop the tab, its badge, or its stylesheet."""
 
     def test_view_is_imported_and_registered_with_a_cache_buster(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260911-connections1';",
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260913-inboxfix1';",
             app,
         )
         self.assertIn("registerView(inboxView);", app)
@@ -42,7 +43,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260911-connections1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
-        self.assertIn('src="js/app.js?v=20260911-connections1"', html)
+        self.assertIn('src="js/app.js?v=20260913-inboxfix1"', html)
         # the registry creates #view-inbox itself; no section markup needed
         self.assertNotIn('id="view-inbox"', html)
 
@@ -54,19 +55,22 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         self.assertIn("show()", src)
         self.assertIn("hide()", src)
 
-    def test_module_talks_only_to_the_inbox_route(self) -> None:
+    def test_module_talks_only_to_the_inbox_and_connections_routes(self) -> None:
         src = read("js/views/inbox.js")
         paths = re.findall(r"API_BASE\+'([^']*)'", src)
         self.assertTrue(paths, "inbox.js makes no API calls")
-        # every API_BASE+ is followed by a literal, and every literal is the inbox
+        # every API_BASE+ is followed by a literal, and every literal is the
+        # inbox or the connections section it shows above the rows
         self.assertEqual(len(paths), src.count("API_BASE+"))
         for path in paths:
-            self.assertTrue(path.startswith("/api/inbox"), path)
+            self.assertTrue(path.startswith("/api/inbox") or path.startswith("/api/connections"), path)
         self.assertIn("'/api/inbox?status=open&limit=1'", src)          # the badge
         self.assertIn("'/api/inbox?status='+encodeURIComponent(filter)+'&limit=200'", src)
         self.assertIn("'/api/inbox/'+encodeURIComponent(id)", src)      # PATCH and DELETE
         self.assertIn("method:'PATCH'", src)
         self.assertIn("method:'DELETE'", src)
+        self.assertIn("'/api/connections'", src)                        # the section
+        self.assertIn("'/api/connections/'+encodeURIComponent(toolkit)+'/poll'", src)   # Poll now
         # never raw fetch: apiFetch forwards the page query and classifies failures
         self.assertNotIn("fetch(", src.replace("apiFetch(", ""))
 
@@ -77,9 +81,13 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         self.assertIn("clearSlottedInterval('inbox-poll')", src)
         self.assertIn("export function initInboxBadge()", src)
         self.assertIn("export async function refreshInboxBadge(", src)
-        # the badge is coerced, never interpolated from a server string
+        # the badge is coerced, never interpolated from a server string, and
+        # is a node appended beside the label the registry painted, so the
+        # label itself is never rewritten here
         self.assertIn("Number(n)", src)
-        self.assertIn("'Inbox<b class=\"inb-badge\">'+n+'</b>':'Inbox'", src)
+        self.assertIn("badge=document.createElement('b');badge.className='inb-badge';b.appendChild(badge);", src)
+        self.assertIn("badge.textContent=String(n);", src)
+        self.assertNotIn("'Inbox<b", src)
         self.assertIn("document.getElementById('tab-inbox')", src)
         css = read("css/inbox.css")
         self.assertIn(".inb-badge", css)
@@ -87,8 +95,14 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_failures_and_empty_state_read_like_the_other_tabs(self) -> None:
         src = read("js/views/inbox.js")
-        self.assertIn("xo-space is unreachable", src)
-        self.assertIn("not available for the active agent", src)
+        # the failure wording is core's (failText in core/api.js), so every
+        # tab says the same thing; the view imports it rather than restating it
+        self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", src)
+        self.assertIn("failText(failed)", src)
+        api = read("js/core/api.js")
+        self.assertIn("export function failText(res)", api)
+        self.assertIn("xo-space is unreachable", api)
+        self.assertIn("not available for the active agent", api)
         self.assertIn("Nothing in the inbox.", src)
         self.assertIn("Sessions, todos and shares arriving in the workspace land here.", src)
 

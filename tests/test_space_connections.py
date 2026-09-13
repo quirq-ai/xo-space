@@ -6,7 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
-STAMP = "20260911-connections1"
+# the JS stamp (app.js and every view import it carries); the two stylesheets
+# this feature added kept their own stamps when the JS moved on
+STAMP = "20260913-inboxfix1"
+INBOX_CSS_STAMP = "20260911-connections1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -24,14 +27,15 @@ def slice_between(src: str, start: str, end: str) -> str:
 
 
 class InboxSourceFilterTests(unittest.TestCase):
-    """Source pills filter the loaded page in the browser: six labels, one
-    data-src attribute per pill, and a setSource that repaints without a
-    fetch."""
+    """Source pills filter the loaded page in the browser: six labels from
+    one SOURCES table, one data-src attribute per pill (painted by core's
+    pills()), and a setSource that repaints without a fetch."""
 
     def setUp(self) -> None:
         self.src = read("js/views/inbox.js")
 
     def test_six_source_pills_are_rendered_with_data_src(self) -> None:
+        table = slice_between(self.src, "const SOURCES=[", "];")
         for key, label in (
             ("all", "All"),
             ("issues", "Issues"),
@@ -40,17 +44,26 @@ class InboxSourceFilterTests(unittest.TestCase):
             ("sharing", "Sharing"),
             ("agents", "Agents"),
         ):
-            self.assertIn("['" + key + "','" + label + "']", self.src)
-        self.assertIn('data-src="', self.src)
-        self.assertIn('<div class="inb-src" role="group" aria-label="Filter by source">', self.src)
+            self.assertIn("{id:'" + key + "',label:'" + label + "',sources:[", table)
+        self.assertIn("const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);", self.src)
+        # the strip is core's pill builder; it paints the wrapper and data-src
+        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src')", self.src)
+        ui = read("js/core/ui.js")
+        self.assertIn("'<div class=\"'+esc(cls||'pills-'+attr)+'\" role=\"group\" aria-label=\"'+esc(ariaLabel)+'\">'", ui)
+        self.assertIn("'<button type=\"button\" data-'+attr+'=\"'+esc(k)+'\"'", ui)
         self.assertIn("button[data-src]", self.src)
 
     def test_source_mapping_matches_the_feeder_names(self) -> None:
+        # the feeder names live in the table, one row per pill
+        table = slice_between(self.src, "const SOURCES=[", "];")
+        self.assertIn("{id:'issues',label:'Issues',sources:['issues']}", table)
+        self.assertIn("{id:'connections',label:'Connections',sources:['connections']}", table)
+        self.assertIn("{id:'sharing',label:'Sharing',sources:['sharing']}", table)
+        self.assertIn("{id:'workspace',label:'Workspace',sources:['timeline','todos']}", table)
+        self.assertIn("{id:'agents',label:'Agents',sources:[]}", table)
         body = slice_between(self.src, "function sourceOf(it){", "const matchesSource")
-        self.assertIn("s==='issues'||s==='connections'||s==='sharing'", body)
-        self.assertIn("s==='timeline'||s==='todos'", body)
-        self.assertIn("return'workspace'", body)
-        self.assertIn("return'agents'", body)
+        self.assertIn("SOURCES.find(r=>r.sources.includes(s))", body)
+        self.assertIn("return row?row.id:'agents';", body)
         self.assertIn("srcFilter==='all'||sourceOf(it)===srcFilter", self.src)
 
     def test_picking_a_source_never_fetches(self) -> None:
@@ -89,18 +102,19 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         self.src = read("js/views/inbox.js")
 
     def test_section_reads_the_connections_route_without_a_session_header(self) -> None:
-        self.assertIn("apiFetch('/api/connections')", self.src)
+        self.assertIn("apiFetch(API_BASE+'/api/connections')", self.src)
         self.assertIn(
-            "apiFetch('/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'})",
+            "apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'})",
             self.src,
         )
-        for m in re.finditer(r"apiFetch\('/api/connections[^\n]*", self.src):
+        for m in re.finditer(r"apiFetch\(API_BASE\+'/api/connections[^\n]*", self.src):
             self.assertNotIn("sessionHeaders", m.group(0))
             self.assertNotIn("headers", m.group(0))
-        # the inbox family keeps API_BASE; the connections calls are the only
-        # same-origin bare paths, so the existing "inbox only" pin still holds
+        # every call joins the API_BASE family (no bare same-origin path is
+        # left), and the family is exactly the inbox rows plus this section
+        self.assertNotRegex(self.src, r"apiFetch\('/")
         for path in re.findall(r"API_BASE\+'([^']*)'", self.src):
-            self.assertTrue(path.startswith("/api/inbox"), path)
+            self.assertTrue(path.startswith("/api/inbox") or path.startswith("/api/connections"), path)
 
     def test_section_has_its_own_token_and_failure_line(self) -> None:
         body = slice_between(self.src, "async function loadConns(){", "/* Poll now")
@@ -128,11 +142,16 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         self.assertIn(">Poll now</button>", self.src)
         self.assertIn(">Configure</button>", self.src)
         self.assertIn("case'conn-config':switchTo('connectors');break;", self.src)
-        self.assertIn("'no collectors'", self.src)
-        self.assertIn("'never polled'", self.src)
+        # the wording is core/connections.js's, shared with the Connectors
+        # drawer so one payload never reads two ways
+        self.assertIn("import {collectorLabels,every,pollLine} from '../core/connections.js';", self.src)
+        self.assertIn("const line=pollLine(c);", self.src)
+        conn = read("js/core/connections.js")
+        self.assertIn("'no collectors'", conn)
+        self.assertIn("'never polled'", conn)
         self.assertIn('<span class="inb-conn-meta is-error"', self.src)
         # every server string is escaped on the way into innerHTML
-        for expr in ("c.toolkit", "c.display_name||c.toolkit", "c.last_error", "collectorLabels(c)"):
+        for expr in ("c.toolkit", "c.display_name||c.toolkit", "line.error", "line.text", "collectorLabels(c)"):
             self.assertIn("esc(" + expr + ")", self.src)
 
     def test_collapsed_by_default_unless_an_entry_errored(self) -> None:
@@ -209,31 +228,38 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         self.assertIn('data-action="poll-save">Save</button>', self.drawer)
         self.assertIn('data-action="poll-now"', self.drawer)
         self.assertIn(">Poll now</button>", self.drawer)
-        self.assertIn("'Never polled'", self.drawer)
+        # "Never polled" is core/connections.js's line, capitalised here
+        self.assertIn("import {pollLine} from '../core/connections.js';", self.view)
+        self.assertIn("const line=pollLine(c);", self.drawer)
+        self.assertIn("esc(cap(line.text))", self.drawer)
+        self.assertIn("'never polled'", read("js/core/connections.js"))
         self.assertIn('<div class="conn-poll-status is-error">', self.drawer)
         # defaults are checked when the connection is not configured yet
         self.assertIn("available.filter(a=>a.default).map(a=>a.id)", self.drawer)
         # server strings go through esc before innerHTML
-        for expr in ("a.id", "a.label||a.id", "c.last_error", "t.id"):
+        for expr in ("a.id", "a.label||a.id", "line.error", "t.id"):
             self.assertIn("esc(" + expr + ")", self.drawer)
         self.assertIn("CSS.escape(toolkitId)", self.drawer)
 
     def test_connections_calls_carry_no_session_header(self) -> None:
-        self.assertIn("apiFetch('/api/connections/'+encodeURIComponent(toolkitId))", self.view)
+        # every call goes through API_BASE like the rest of the UI
+        self.assertIn("apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId))", self.view)
         self.assertIn(
-            "apiFetch('/api/connections/'+encodeURIComponent(toolkitId),{method:'PUT',body})",
+            "apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId),{method:'PUT',body})",
             self.view,
         )
         self.assertIn(
-            "apiFetch('/api/connections/'+encodeURIComponent(toolkitId)+'/poll',{method:'POST'})",
+            "apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/poll',{method:'POST'})",
             self.view,
         )
-        calls = re.findall(r"apiFetch\('/api/connections[^\n]*", self.view)
+        self.assertNotRegex(self.view, r"apiFetch\('/")
+        calls = re.findall(r"apiFetch\(API_BASE\+'/api/connections[^\n]*", self.view)
         self.assertEqual(len(calls), 3)
         for call in calls:
             self.assertNotIn("sessionHeaders", call)
             self.assertNotIn("headers", call)
         # the Composio routes still carry it
+        self.assertIn("const BASE=API_BASE+'/api/connectors/composio';", self.view)
         self.assertIn("apiFetch(BASE+'/toolkits',{headers:sessionHeaders()})", self.view)
 
     def test_save_sends_the_three_fields_and_disables_while_in_flight(self) -> None:
@@ -273,29 +299,32 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
 
 
 class CacheBusterTests(unittest.TestCase):
-    """The five stamps move together; index.html's app.js stamp is what makes
-    a browser re-import the per-view URLs at all."""
+    """The JS stamps move together; index.html's app.js stamp is what makes
+    a browser re-import the per-view URLs at all. The core modules every
+    view imports bare (api.js, ui.js, connections.js) are stamped once, in
+    index.html's import map, so every importer shares one fresh instance."""
 
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
             "import inboxView,{initInboxBadge} from './views/inbox.js?v=" + STAMP + "';", app
         )
-        # connectors.js moved on again when Slack and Telegram landed (scheme-aware Connect)
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260911-slacktg1" + "';", app)
-        # the core/api.js import forms are a known quirk, left exactly as they were
-        self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/inbox.js"))
-        self.assertIn(
-            "import {apiFetch} from '../core/api.js?v=20260911-detailerror1';",
-            read("js/views/connectors.js"),
-        )
+        self.assertIn("import connectorsView from './views/connectors.js?v=" + STAMP + "';", app)
+        # both views import core/api.js bare: the stamp is the import map's
+        self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
+        self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
+        html = read("index.html")
+        for name in ("api.js", "ui.js", "connections.js"):
+            self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + STAMP + '"', html)
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + STAMP + '">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + INBOX_CSS_STAMP + '">', html)
         # connectors.css moved on again after the action row learned to wrap (4 buttons)
         self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260911-connections2">', html)
         self.assertIn('src="js/app.js?v=' + STAMP + '"', html)
+        # the import map is read before app.js is, or it rewrites nothing
+        self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))
 
 
 class HygieneTests(unittest.TestCase):
