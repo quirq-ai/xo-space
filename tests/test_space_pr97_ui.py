@@ -684,13 +684,12 @@ class AccountLabelTests(unittest.TestCase):
     """The connected account name (spec: account_label on every entry of
     GET /api/connections, POST /api/connections/{toolkit}/account to resolve
     it): two pure helpers in core, a span in the Inbox row, a chip on the
-    Connectors card, a note in the Polling drawer, and the wiki lines."""
+    Connectors card, and a note in the Polling drawer."""
 
     def setUp(self) -> None:
         self.core = read("js/core/connections.js")
         self.inbox = read("js/views/inbox.js")
         self.view = read("js/views/connectors.js")
-        self.wiki = read("js/views/wiki.js")
 
     def test_core_exports_the_two_pure_helpers(self) -> None:
         self.assertIn("export function accountLabel(c){", self.core)
@@ -828,25 +827,6 @@ class AccountLabelTests(unittest.TestCase):
         self.assertTrue(out["escapedChips"])
         self.assertTrue(out["escapedNote"])
 
-    def test_wiki_names_the_account_file_and_the_account_name(self) -> None:
-        tree = self.wiki[self.wiki.index('<pre class="wiki-tree">~/.quirq/'):]
-        lines = tree[: tree.index("</pre>")].splitlines()
-        i = next(n for n, line in enumerate(lines) if line.startswith("├── connections/"))
-        self.assertEqual(
-            lines[i + 1],
-            "│   ├── accounts.json           # which account each toolkit's session is bound to (email), "
-            "refreshed daily or when the pin changes",
-        )
-        self.assertTrue(lines[i + 2].startswith("│   └── &lt;toolkit&gt;/"))
-        for needle in ("['Watch the connections'", "['Collect into Inbox'", "'GET /api/connections · POST /api/connections/{toolkit}/account'"):
-            row = self.wiki[self.wiki.index(needle):]
-            row = row[: row.index("],")]
-            self.assertIn("account", row, needle)
-            self.assertIsNone(DASHES.search(row), needle)
-        self.assertIn("the account name it polls as", self.wiki)
-        self.assertIn("The drawer names the account it polls as (Polling as", self.wiki)
-        self.assertIn("~/.quirq/connections/accounts.json", self.wiki)
-
     def test_touched_stylesheets_carry_no_dashes(self) -> None:
         for rel in ("css/inbox.css", "css/connectors.css"):
             self.assertIsNone(DASHES.search(read(rel)), rel)
@@ -883,12 +863,15 @@ class ShellTests(unittest.TestCase):
         for view in ("inbox", "connectors", "sharing"):
             self.assertIn("./views/" + view + ".js?v=" + STAMP + "'", app)
         projects_stamp = "20260914-projectslens1"
-        for view in ("atlas", "projects", "wiki"):
+        for view in ("atlas", "projects"):
             self.assertIn("./views/" + view + ".js?v=" + projects_stamp + "'", app)
-        for core in ("registry", "lens-switch", "preview"):
+        for core in ("registry", "lens-switch"):
             self.assertIn("./core/" + core + ".js?v=" + projects_stamp + "'", app)
+        self.assertRegex(app, r"\./core/preview\.js\?v=\d{8}-[a-z0-9]+'")
         html = read("index.html")
-        self.assertIn('src="js/app.js?v=' + projects_stamp + '"', html)
+        # Later view changes legitimately advance the shell and Wiki stamps;
+        # test_space_wiki checks that the cache-bust chain stays intact.
+        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the account chip and span are styled by these two; a stale sheet
         # next to a fresh module leaves the chip uppercased
         for sheet in ("inbox", "connectors"):
@@ -912,16 +895,6 @@ class ShellTests(unittest.TestCase):
             for name in self.CORE_MAPPED:
                 self.assertNotRegex(src, r"core/" + re.escape(name) + r"\?v=", str(path))
                 self.assertNotRegex(src, r"from '\./" + re.escape(name) + r"\?v=", str(path))
-
-    def test_wiki_labels_inbox_json_machine_local_and_lists_five_toolkits(self) -> None:
-        wiki = read("js/views/wiki.js")
-        self.assertIn("['~/.quirq/inbox.json',", wiki)
-        row = wiki[wiki.index("['~/.quirq/inbox.json',"):]
-        row = row[: row.index("],")]
-        self.assertIn("'Machine-local .quirq file'", row)
-        self.assertNotIn("Workspace .xo file", row)
-        self.assertIn("# gmail, googlecalendar, notion, slack, telegram", wiki)
-        self.assertIn("<code>googlecalendar</code>, <code>notion</code>, <code>slack</code>,\n            <code>telegram</code>)", wiki)
 
     def test_touched_files_carry_no_dashes(self) -> None:
         for rel in ("js/core/ui.js", "js/core/api.js", "js/core/connections.js", "js/core/registry.js",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -11,11 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def view_contract(view: str) -> str:
     """The `export default {...}` head of a Space view module.
 
-    Nav assertions have to be scoped to this slice, not run against the whole
-    file: wiki.js is mostly documentation prose that legitimately quotes the
-    view contract (``nav:false``, ``parent:'secrets'``) while describing how
-    the app is wired, and a whole-file assertNotIn would fail on the docs
-    rather than on the behaviour it means to pin.
+    Scope nav assertions to the registration contract so strings in rendered
+    content cannot be mistaken for view configuration.
     """
     source = (
         ROOT / "space_ui" / "js" / "views" / f"{view}.js"
@@ -25,6 +24,88 @@ def view_contract(view: str) -> str:
 
 
 class SpaceWikiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_overview_preserves_local_navigation_and_legacy_help_requests(self) -> None:
+        """Existing help requests find a section without replacing the
+        overview, including requests received before mount or while hidden."""
+        script = r"""
+          import fs from 'node:fs';
+          import vm from 'node:vm';
+          import assert from 'node:assert/strict';
+
+          const listeners=new Map(),clicks=new Map(),nodes=new Map(),opened=[];
+          let focused=null,renders=0,markup='';
+          const main={scrollTop:0,getBoundingClientRect:()=>({top:100})};
+          const root={
+            set innerHTML(value){
+              markup=value;renders++;
+              for(const [index,match] of [...value.matchAll(/id="([^"]+)"/g)].entries()){
+                const id=match[1],classes=new Set(),top=200+index*50;
+                nodes.set(id,{id,
+                  classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),contains:x=>classes.has(x)},
+                  getBoundingClientRect:()=>({top:top-main.scrollTop}),
+                  focus:options=>{focused={id,preventScroll:options?.preventScroll};}
+                });
+              }
+            },
+            get innerHTML(){return markup;},
+            addEventListener:(name,fn)=>clicks.set(name,fn),
+            contains:node=>node.owner===root,
+            querySelector:selector=>selector==='.wiki-main'?main:nodes.get(selector.slice(1)),
+            querySelectorAll:selector=>selector==='.is-highlighted'
+              ? [...nodes.values()].filter(node=>node.classList.contains('is-highlighted')):[]
+          };
+          const context={addEventListener:(name,fn)=>listeners.set(name,fn)};
+          // No network boundary is provided: mounting this local overview
+          // must not depend on downloading the detailed manual.
+          vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8')
+            .replace('export default','globalThis.view ='),context);
+          const view=context.view,emit=id=>listeners.get('space:wiki-page')({detail:id});
+
+          emit('first-run');
+          await view.mount(root,{switchTo:id=>opened.push(id)});
+          assert.equal(focused,null,'wait until the Wiki pane is visible');
+          const overview=root.innerHTML;
+          assert.equal((overview.match(/data-wiki-topic=/g)||[]).length,9);
+          view.show();
+          assert.equal(focused.id,'wiki-quickstart');
+          assert.equal(focused.preventScroll,true);
+          assert.ok(main.scrollTop>0);
+
+          emit('tab-quirq');
+          assert.equal(focused.id,'wiki-observability');
+          assert.equal(nodes.get('wiki-quickstart').classList.contains('is-highlighted'),false);
+          assert.equal(nodes.get('wiki-observability').classList.contains('is-highlighted'),true);
+          assert.equal(root.innerHTML,overview,'help navigation preserves every overview section');
+          assert.equal(renders,1);
+
+          for(const invalid of ['missing','toString','__proto__'])emit(invalid);
+          assert.equal(focused.id,'wiki-observability');
+          view.hide();
+          emit('spacewalk');
+          assert.equal(focused.id,'wiki-observability','hidden Wiki must not steal focus');
+          view.show();
+          assert.equal(focused.id,'wiki-sessions');
+          main.scrollTop=41;
+          view.hide();view.show();
+          assert.equal(main.scrollTop,41,'ordinary return preserves scroll');
+
+          // Follow a real rendered local-action target through ctx.switchTo.
+          assert.match(overview,/data-open-tab="sharing"/);
+          const button={owner:root,dataset:{openTab:'sharing'}};
+          clicks.get('click')({target:{closest:()=>button}});
+          assert.deepEqual(opened,['sharing']);
+          clicks.get('click')({target:{closest:()=>null}});
+          clicks.get('click')({target:{closest:()=>({dataset:{openTab:'secrets'}})}});
+          assert.deepEqual(opened,['sharing']);
+        """
+        result = subprocess.run(
+            [shutil.which("node"), "--input-type=module", "-e", script,
+             str(ROOT / "space_ui/js/views/wiki.js")],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_wiki_view_is_registered_and_styled(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
@@ -32,6 +113,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("import wikiView from './views/wiki.js?v=", app)
         self.assertIn("registerView(wikiView);", app)
         self.assertIn('href="css/wiki.css?v=', index)
+        self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
         # The wiki stays between Inbox (order 5) and Setup (order 9).
         # Hidden child lenses consume no hotkeys, so Wiki is top-level key 5.
         contract = view_contract("wiki")
@@ -164,151 +246,6 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("space:focus-project", projects)
         self.assertIn("space:focus-project", atlas)
 
-    def test_wiki_documents_the_storage_boundary_and_flow_pages(self) -> None:
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("Storage & data map", wiki)
-        self.assertIn("Install & run locally", wiki)
-        self.assertIn("raw.githubusercontent.com", wiki)
-        self.assertIn("no clone or checkout", wiki)
-        self.assertIn("localhost:5002", wiki)
-        self.assertIn("./cowork-api.sh dev", wiki)
-        self.assertIn("127.0.0.1:5002", wiki)
-        self.assertIn("How the watcher works", wiki)
-        self.assertIn("Everything in .xo", wiki)
-        self.assertIn("Everything in .quirq", wiki)
-        self.assertIn("secrets.env", wiki)
-        self.assertIn("Building useful flows", wiki)
-        self.assertIn("Collaborative version history", wiki)
-        self.assertIn(
-            "watcher/activity/projects/&lt;id&gt;.json",
-            wiki,
-        )
-        self.assertIn("GET /api/xo-projects/{id}/activity", wiki)
-        self.assertIn("GET /api/xo-projects/{id}/timeline?limit=100", wiki)
-
-    def test_wiki_documents_collaborative_version_control_design(self) -> None:
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("id:'collaboration'", wiki)
-        self.assertIn("collaboration:collaborationArticle", wiki)
-        self.assertIn("Do not version the directory", wiki)
-        self.assertIn("Yjs + Hocuspocus + PostgreSQL", wiki)
-        self.assertIn("Synchronization history", wiki)
-        self.assertIn("User-visible version history", wiki)
-        self.assertIn("Operational disaster recovery", wiki)
-        self.assertIn("Restore as a new latest version", wiki)
-        self.assertIn("watcher/activity/**", wiki)
-        self.assertIn("secret reference IDs", wiki)
-        self.assertIn("Automerge Repo", wiki)
-        self.assertIn("Liveblocks + Yjs", wiki)
-        self.assertIn("docs.yjs.dev/api/document-updates", wiki)
-        self.assertIn("support.google.com/docs/answer/190843", wiki)
-        # The stylesheet must be cache-busted, but pinning the literal stamp
-        # turns every legitimate bump into a red test (see the app.js stamp
-        # test above for the same reasoning): assert the shape, not the value.
-        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
-        self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
-
-    def test_wiki_documents_space_walk_session_replay(self) -> None:
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("id:'spacewalk'", wiki)
-        self.assertIn("spacewalk:spaceWalkArticle", wiki)
-        self.assertIn("Space Walk session replay", wiki)
-        self.assertIn("Sessions replayed as light", wiki)
-        self.assertIn("bin/spacewalk serve --port 8765", wiki)
-        # The local-except-the-judge carve-out the upstream README also makes.
-        self.assertIn("Replay is entirely local", wiki)
-        self.assertIn("The one exception is the optional", wiki)
-        self.assertNotIn("Everything runs locally", wiki)
-        # The touch lattice and its data-encoding palette (hexes live in the
-        # token table only, so the lattice table cannot drift from them).
-        self.assertIn("edit &gt; read &gt; hit", wiki)
-        self.assertIn("#6a6700", wiki)
-        self.assertIn("#5399d1", wiki)
-        self.assertIn("#78a31e", wiki)
-        self.assertNotIn("validated for color-vision", wiki)
-        # Geometry facts verified against the Space Walk source tree.
-        self.assertIn("squarified-treemap-v1", wiki)
-        self.assertIn("sqrt(max(lines, bytes/4096, 16))", wiki)
-        self.assertIn("160-bucket histogram", wiki)
-        # Per-session observability grading, not per-harness.
-        self.assertIn("session, not per harness", wiki)
-        # Boundaries: a trace is transcript-adjacent, and nothing is written back.
-        self.assertIn("A trace is not <code>.xo</code>-safe", wiki)
-        self.assertIn("~/.spacewalk/judge", wiki)
-        # Failure handling, the idiom every other long article carries.
-        self.assertIn("Interpretation and troubleshooting", wiki)
-        self.assertIn("Tilde on the error count", wiki)
-        # HTTP surface, CLI, and the judge report cache.
-        self.assertIn("GET /api/sessions/{selector}/snapshot", wiki)
-        self.assertIn("spacewalk analyze &lt;session&gt;", wiki)
-        self.assertIn("~/.spacewalk/reports/&lt;sessionKey&gt;.json", wiki)
-        # Quirq recipes cross-link the Quirq view (opened from Setup) and
-        # the upstream project. data-open-tab routes through ctx.switchTo,
-        # which reaches nav:false views just as well as tabs.
-        self.assertIn('data-open-tab="quirq"', wiki)
-        self.assertIn("Recipe 5 · Is inference changing S₁ at all?", wiki)
-        self.assertIn("https://github.com/cosmtrek/mindwalk", wiki)
-        # Calculator routes are callable as printed, and the quirq citations
-        # match the corpus: Definition 4 attributes rescue, O alone corrects.
-        self.assertIn(
-            "GET /api/repo/compare?path=&lt;repo&gt;&amp;from=u42-s0&amp;to=u42-s1",
-            wiki,
-        )
-        self.assertIn("human rescue attributed to the rescued unit", wiki)
-        self.assertIn("QER*(T) = QER(T)·(1 − O(T))", wiki)
-        self.assertIn("$65/h loaded rate", wiki)
-        self.assertNotIn("that A2 says must be", wiki)
-        # The cache-bust chain itself is checked structurally in
-        # test_cache_bust_chain_is_intact, not pinned to a literal here.
-
-    def test_wiki_has_a_dedicated_guide_for_every_reachable_view(self) -> None:
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
-        # Every navbar tab, plus the Dashboard lens and Quirq state view.
-        # The renamed Projects guide preserves its existing tab-files id.
-        for page_id in (
-            "tab-dashboard",
-            "tab-files",
-            "tab-timeline",
-            "tab-sessions",
-            "tab-inbox",
-            "tab-wiki",
-            "tab-quirq",
-            "tab-setup",
-            "tab-connectors",
-        ):
-            self.assertIn(f"id:'{page_id}'", wiki)
-            self.assertIn(f"'{page_id}':", wiki)
-        # Chat is hidden from the tab bar and unregistered, so it gets no
-        # guide; Projects keeps the existing tab-files guide id.
-        self.assertNotIn("id:'tab-chat'", wiki)
-        self.assertNotIn("id:'tab-graph'", wiki)
-        self.assertNotIn("id:'tab-projects'", wiki)
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
-        self.assertNotIn("registerView(chatView)", app)
-        self.assertIn("newest at the top", wiki)
-        self.assertNotIn("Six Degrees", wiki)
-        self.assertIn("one page per tab", wiki)
-        self.assertIn("space:wiki-page", wiki)
-        self.assertIn("title:'Projects tab'", wiki)
-        self.assertIn("title:'Dashboard lens'", wiki)
-        self.assertNotIn("title:'Files tab'", wiki)
-        self.assertNotIn("title:'Dashboard tab'", wiki)
-        self.assertIn("Space opens on Dashboard by default", wiki)
-        self.assertIn("clicking Projects or pressing 1 opens List", wiki)
-        self.assertIn("Projects 1, Timeline 2, Sessions 3, Inbox 4, Wiki 5, Setup 6, Connectors 7", wiki)
-
     def test_dashboard_todos_are_ui_state_not_graph_data(self) -> None:
         """Clicking a Dashboard project shows its todos on the map and in the
         panel — without ever putting them in the graph model.
@@ -354,10 +291,6 @@ class SpaceWikiTests(unittest.TestCase):
         tree = (ROOT / "space_ui" / "js" / "views" / "tree.js").read_text(
             encoding="utf-8"
         )
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
         self.assertIn("import treeView from './views/tree.js?v=", app)
         self.assertIn("registerView(treeView);", app)
         contract = view_contract("tree")
@@ -383,8 +316,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("space:view", registry)
         # it reads the same dataset as the Graph
         self.assertIn("/xo/space.json", tree)
-        # clicking a file previews it; it must not navigate. The Graph
-        # hand-off lives in the previewer, as an explicit button.
+        # Clicking a file previews it without changing the selected lens.
         self.assertIn("space:preview-file", tree)
         self.assertNotIn("space:focus-project", tree)
         # horizontal: the root is at depth 0 on the left and every level of
@@ -406,16 +338,6 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("is-growing", tree)
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
-        # The manual must describe the same five-lens hierarchy as the shell.
-        self.assertIn("five lenses", wiki)
-        self.assertIn("Dashboard | List | Graph | Tree | Sharing", wiki)
-        self.assertIn("#/tree", wiki)
-        self.assertIn("/api/xo-projects/{id}/tree", wiki)
-        self.assertNotIn("one home, two lenses", wiki)
-        self.assertNotIn("one home, three lenses", wiki)
-        self.assertNotIn("one home, four lenses", wiki)
-        self.assertNotIn("'List | Graph lens switch'", wiki)
-        self.assertNotIn("'List | Graph | Tree lens switch'", wiki)
 
     def test_sharing_lens_is_the_fifth_projects_lens(self) -> None:
         """Sharing is a lens of the Projects tab (issue #83) and the whole of
@@ -437,10 +359,6 @@ class SpaceWikiTests(unittest.TestCase):
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
-            encoding="utf-8"
-        )
-
         # registered as a nav-less child of Projects, like Tree
         self.assertIn("import sharingView from './views/sharing.js?v=", app)
         self.assertIn("registerView(sharingView);", app)
@@ -464,13 +382,6 @@ class SpaceWikiTests(unittest.TestCase):
         # the List lens carries no sharing surface any more
         self.assertNotIn("sharing_data.js", projects)
         self.assertNotIn("sharingPanel", projects)
-        # the wiki keeps the lens facts true
-        self.assertIn("#/sharing", wiki)
-        self.assertIn("/api/project-sharing/status", wiki)
-        self.assertIn("Apply", wiki)
-        self.assertIn("Check now", wiki)
-        self.assertIn("copy invite", wiki)
-        self.assertNotIn("Sharing panel", wiki.split("files:{")[1].split("timeline:{")[0])
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
         """The List drawer browses a project folder by folder, and the wire
@@ -668,21 +579,9 @@ class SpaceWikiTests(unittest.TestCase):
         # Nothing may be installed beyond requirements.txt.
         self.assertIn("QUIRQ_SKIP_BOOT_INSTALL", code)
 
-    def test_first_run_is_explained_in_wiki_docs_and_the_empty_state(self) -> None:
-        """An empty Projects List explains first run. The wiki page, the two
-        docs and the empty state itself must all say what a project is and
-        the three ways to get one — and agree on the API call."""
-
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(encoding="utf-8")
-        self.assertIn("id:'first-run'", wiki)
-        self.assertIn("'first-run':firstRunArticle", wiki)
-        self.assertIn("Your first run", wiki)
-        self.assertIn("direct child folder of the workspace", wiki)
-        self.assertIn("POST /api/files/mkdir", wiki)
-        self.assertIn("xo-projects", wiki)
-        # In-article cross-link from the install guide to the first-run page.
-        self.assertIn('data-wiki-link="first-run"', wiki)
-        self.assertIn("data-wiki-link", wiki.split("function pageButton")[0])
+    def test_first_run_is_explained_in_installation_docs_and_the_empty_state(self) -> None:
+        """The empty state and local installation guide agree on project
+        creation; the compact Wiki receives the existing help event."""
 
         projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
         self.assertIn("data-first-run", projects)
@@ -692,13 +591,12 @@ class SpaceWikiTests(unittest.TestCase):
 
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for doc in (guide, wiki):
-            self.assertIn("Your first run", doc)
-            self.assertIn("/api/files/mkdir", doc)
-            # The first run is only empty if the directory was: a busy
-            # directory lists every folder as an unscaffolded project, and
-            # both full tellings must say so.
-            self.assertIn("unscaffolded", doc)
+        self.assertIn("Your first run", guide)
+        self.assertIn("/api/files/mkdir", guide)
+        self.assertIn("direct child folder of the workspace", guide)
+        self.assertIn("xo-projects", guide)
+        # A busy directory lists existing folders as unscaffolded projects.
+        self.assertIn("unscaffolded", guide)
         # The 2026-08-29 README rewrite tells the short version on purpose
         # and hands off to the guide: pin the empty state, the "First run"
         # paragraph, and the hand-off link instead of the full walkthrough.
@@ -707,33 +605,6 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("INSTALLATION.md", readme)
         self.assertIn("## Your first run", guide)
         self.assertIn("uv pip install --python", guide)
-        # The cross-link buttons need a rule, or they render as stock buttons.
-        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(encoding="utf-8")
-        self.assertIn(".wiki-link{", css)
-
-    def test_wiki_steps_keep_extra_children_out_of_the_counter_column(self) -> None:
-        """Install-page steps put a <code> between the title and the body.
-
-        The wide layout is a 3-track grid (counter | title | body). Grid
-        auto-placement then drops the paragraph into the 38px counter
-        column, which on a QHD viewport reads as a single vertical strip
-        of letters. Pin the explicit columns so a command or a second
-        paragraph stays in the body track on every width.
-        """
-        css = (ROOT / "space_ui" / "css" / "wiki.css").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(
-            "grid-template-columns:38px 205px minmax(0,1fr)",
-            css,
-        )
-        self.assertIn(".wiki-steps li>:not(b){grid-column:3}", css)
-        # The 900px stack must move title AND body into column 2. Pinning
-        # only p leaves a sibling <code> in the counter track.
-        self.assertIn(
-            ".wiki-steps b,.wiki-steps li>:not(b){grid-column:2;grid-row:auto}",
-            css,
-        )
 
     def test_contributing_guide_matches_how_the_repo_actually_works(self) -> None:
         """CONTRIBUTING.md is the front door for outside contributors. The
@@ -791,9 +662,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("rev-parse --abbrev-ref HEAD", code)
 
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
-        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(encoding="utf-8")
-        for doc in (guide, wiki):
-            self.assertIn("./xo-space/install.sh", doc)
+        self.assertIn("./xo-space/install.sh", guide)
 
     def test_installer_claims_no_container_only_capabilities(self) -> None:
         """Setting either would make the Setup tab offer a restart control

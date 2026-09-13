@@ -42,10 +42,10 @@
     border:1px solid var(--line);border-radius:8px;padding:10px 14px}
   .nodata button{font:600 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
     color:#14100a;background:var(--accent);border-radius:999px;padding:9px 18px}
-  /* the full single-row topbar (brand + 6 tabs + root picker + search) needs
-     ~1400px; below that, reflow to two rows instead of overflowing the page */
+  @media (max-width:1640px){ .brand>span:not(.mark){display:none} }
+  /* Reflow the seven tabs below the brand, graph controls and resource links. */
   @media (max-width:1400px){
-    .topbar{grid-template-columns:auto 1fr;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
+    .topbar{grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
     .tabs{
       grid-column:1/-1;grid-row:2;width:100%;max-width:calc(100vw - 28px);
       justify-self:stretch;justify-content:flex-start;overflow-x:auto;scrollbar-width:none
@@ -53,6 +53,8 @@
     .tabs::-webkit-scrollbar{display:none}
     .tabs button{flex:0 0 auto}
     .tright{grid-column:2;grid-row:1}
+    .resource-links{grid-column:3;grid-row:1}
+    .rootdd{left:0;right:auto;width:min(280px,calc(100vw - 28px))}
     body{grid-template-rows:auto 1fr var(--footer-h)}
   }
   @media (max-width:960px){ .brand span{display:none} #hint{display:none} }
@@ -62,10 +64,15 @@
     #panel{width:100%}
     footer .attrib{display:none}
   }
+  @media (max-width:640px){
+    .topbar{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto auto}
+    .resource-links{grid-column:2;grid-row:1;justify-self:end}
+    .tright{grid-column:1/-1;grid-row:2;max-width:none}
+    .tabs{grid-row:3}
+  }
   /* Keep the root picker and search inside the viewport alongside the brand
      when all five Projects lenses are available on a phone. */
   @media (max-width:480px){
-    .topbar{grid-template-columns:auto minmax(0,1fr)}
     #root-btn .rlab{display:none}
     #root-btn b{max-width:56px}
     .searchwrap{min-width:0}

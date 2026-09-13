@@ -64,7 +64,7 @@
 
   /* ---------------- detail panel ---------------- */
   #panel{
-    position:fixed;top:var(--topbar-h);right:0;bottom:var(--footer-h);width:352px;z-index:50;
+    position:fixed;top:var(--topbar-inset,var(--topbar-h));right:0;bottom:var(--footer-h);width:352px;z-index:50;
     background:rgba(13,16,20,.96);backdrop-filter:blur(18px);border-left:1px solid var(--line);
     transform:translateX(102%);transition:transform .32s var(--ease);
     display:flex;flex-direction:column;

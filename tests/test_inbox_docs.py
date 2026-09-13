@@ -36,56 +36,9 @@ def squash(text: str) -> str:
 
 
 class InboxDocsTests(unittest.TestCase):
-    """The Inbox tab is documented in five places that drift independently:
-    the wiki (PAGES, ARTICLES, TAB_GUIDES, and the .xo catalog table), the
-    quirq output contract, the space_ui README, the developer guide, and the
-    xo-projects skill. These pins fail when one of them forgets the tab."""
-
-    def test_wiki_has_an_inbox_tab_guide(self) -> None:
-        wiki = read("space_ui/js/views/wiki.js")
-        # the same two pins test_space_wiki uses for every reachable view:
-        # a PAGES entry (navigation) and an ARTICLES entry (content)
-        self.assertIn("id:'tab-inbox'", wiki)
-        self.assertIn("'tab-inbox':", wiki)
-        self.assertIn("tabGuideArticle('inbox')", wiki)
-        # the guide carries every field tabGuideArticle() reads, or the page
-        # throws at render time and shows blank
-        guides = wiki.index("const TAB_GUIDES=")
-        start = wiki.index("\n  inbox:{", guides)
-        end = wiki.index("\n  wiki:{", start)
-        guide = wiki[start:end]
-        for field in (
-            "tab:'inbox'",
-            "name:'Inbox'",
-            "kicker:",
-            "title:",
-            "intro:",
-            "facts:",
-            "jobs:",
-            "sources:",
-            "steps:",
-            "checks:",
-            "note:",
-        ):
-            self.assertIn(field, guide)
-        self.assertIn("/api/inbox", guide)
-        self.assertIn("inbox.json", guide)
-        self.assertIsNone(DASHES.search(guide))
-        # the tab sits between Sessions and Wiki, so the wiki prose that placed
-        # Wiki "between Sessions and Setup" is retired with it
-        self.assertIn("between Inbox and Setup", wiki)
-        self.assertNotIn("between Sessions and Setup", wiki)
-
-    def test_wiki_catalogs_place_inbox_json_under_quirq_not_xo(self) -> None:
-        wiki = read("space_ui/js/views/wiki.js")
-        table = wiki[wiki.index("Workspace tier · <code>&lt;XO root&gt;/.xo/</code>"):]
-        table = table[: table.index("</table>")]
-        self.assertNotIn("<code>inbox.json</code>", table, "the inbox is machine-local, not a .xo file")
-        quirq = wiki[wiki.index("<pre class=\"wiki-tree\">~/.quirq/"):]
-        self.assertIn("inbox.json", quirq[: quirq.index("</pre>")])
-        self.assertIn("<header><code>inbox.json</code><span>the Space Inbox</span></header>", wiki)
-        self.assertIn("timeline, todos, sharing, issues, connections", wiki)
-        self.assertNotIn("&lt;XO root&gt;/.xo/inbox.json", wiki)
+    """The local Inbox API and storage references stay aligned: the Quirq
+    output contract, Space UI README, developer guide, and xo-projects skill.
+    The compact Wiki's navigation is covered by test_space_wiki."""
 
     def test_quirq_catalog_describes_inbox_json_as_machine_local(self) -> None:
         self.assertEqual(

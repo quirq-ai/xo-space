@@ -208,11 +208,11 @@ Everything else on the network happens because you asked for it: `git fetch` whe
 
 | Where | What |
 |---|---|
-| [docs.xo.builders](https://docs.xo.builders) | Product docs: [architecture](https://docs.xo.builders/docs), [installing Space](https://docs.xo.builders/docs/space/install-space), [UI walkthrough](https://docs.xo.builders/docs/space/space-walk), [quirq](https://docs.xo.builders/docs/quirq), the managed cloud |
+| [Space documentation](https://docs.quirq.ai/docs/space) | Full guides: [installation](https://docs.quirq.ai/docs/space/install-space), [UI walkthrough](https://docs.quirq.ai/docs/space/space-walk), [Observability](https://docs.quirq.ai/docs/space/observability) |
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, first run, local data layout, configuration, Windows |
 | [DEVELOPING.md](DEVELOPING.md) | Architecture, adding an agent, validation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, ground rules, PR process |
-| **In-app Wiki** — `/space/#/wiki` | Operating manual matched to the running build: every tab, the `.xo` data catalog, watcher internals |
+| **In-app Wiki** — `/space/#/wiki` | Compact offline overview bundled with the running build; detailed online guides open in a new tab |
 | **`/docs`** on a running server | API reference (changes with the active agent) |
 | [space_ui/README.md](space_ui/README.md) | The browser UI |
 | [plugin/README.md](plugin/README.md) | Claude Code / Codex plugin |
@@ -261,7 +261,7 @@ Not to self-host — everything local works signed out. An account is what conne
 
 ## Support
 
-Need help? [Open an issue](https://github.com/quirq-ai/xo-space/issues) — bugs, questions and ideas all go there; say if you're not sure it's a bug. The in-app Wiki (`/space/#/wiki`) is the manual for the exact build you're running, and [docs.xo.builders](https://docs.xo.builders) covers the product. For security issues, don't post details — open an issue titled *"Security: request for a private channel"* and a maintainer will reply.
+Need help? [Open an issue](https://github.com/quirq-ai/xo-space/issues) — bugs, questions and ideas all go there; say if you're not sure it's a bug. The in-app Wiki (`/space/#/wiki`) is a compact offline overview; [Space documentation](https://docs.quirq.ai/docs/space) contains the full guides. For security issues, don't post details — open an issue titled *"Security: request for a private channel"* and a maintainer will reply.
 
 ---
 

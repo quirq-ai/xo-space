@@ -118,17 +118,29 @@ function restoreAfterReload(){
     const width=Math.min(g.width,innerWidth),height=Math.min(g.height,innerHeight);
     el.style.width=width+'px';el.style.height=height+'px';
     el.style.left=Math.min(Math.max(g.left,64-width),innerWidth-64)+'px';
-    el.style.top=Math.min(Math.max(g.top,0),innerHeight-48)+'px';
+    el.style.top=clampTop(g.top)+'px';
     el.style.right='auto';
   }
   open(file,saved);
 }
 
+function clampTop(top){
+  const inset=Math.ceil(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0);
+  return Math.min(Math.max(top,inset),Math.max(inset,innerHeight-48));
+}
+
 /* Drag by the header. The stylesheet anchors the window to the top-right by
    default; the first drag converts that to explicit left/top once, and from
    then on the coordinates are the source of truth. Clamped so the header can
-   never leave the viewport — a window you cannot grab cannot be recovered. */
+   never leave the viewport or sit behind responsive navigation. */
 function initDrag(){
+  const keepHeaderClear=()=>{
+    const top=parseFloat(el.style.top);
+    if(Number.isFinite(top))el.style.top=clampTop(top)+'px';
+  };
+  addEventListener('resize',keepHeaderClear);
+  const topbar=document.querySelector('.topbar');
+  if(topbar&&typeof ResizeObserver==='function')new ResizeObserver(keepHeaderClear).observe(topbar);
   const header=el.querySelector('header');
   header.addEventListener('pointerdown',e=>{
     if(e.button!==0||e.target.closest('button,select'))return;
@@ -139,7 +151,7 @@ function initDrag(){
     header.setPointerCapture(e.pointerId);
     const move=ev=>{
       el.style.left=Math.min(Math.max(ev.clientX-dx,64-el.offsetWidth),innerWidth-64)+'px';
-      el.style.top=Math.min(Math.max(ev.clientY-dy,0),innerHeight-48)+'px';
+      el.style.top=clampTop(ev.clientY-dy)+'px';
     };
     const up=()=>{
       header.removeEventListener('pointermove',move);

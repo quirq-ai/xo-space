@@ -47,12 +47,13 @@ class PreviewNavigationTests(unittest.TestCase):
               insertAdjacentHTML(_where,html){this._html+=html;},setPointerCapture(){}
             };
           }
-          function page({hash='#/projects',store=storage(),respond,items=history}={}){
+          function page({hash='#/projects',store=storage(),respond,items=history,topbarHeight=58}={}){
             const ids=['preview','preview-body','preview-version','preview-name','preview-path',
               'preview-meta','preview-source','preview-close','header'];
             const els=Object.fromEntries(ids.map(id=>[id,element(id)]));
             els.preview.querySelector=selector=>els[selector.replace(/^#/,'')];
-            const listeners=new Map(),calls=[];
+            const listeners=new Map(),calls=[],observers=[];
+            const topbar={getBoundingClientRect:()=>({bottom:topbarHeight})};
             const apiFetch=async url=>{
               calls.push(url);
               const custom=respond?.(url);
@@ -61,12 +62,14 @@ class PreviewNavigationTests(unittest.TestCase):
               return payload(url.includes('commit=')?'historic body':'working body');
             };
             const env={location:{hash},sessionStorage:store,innerWidth:1280,innerHeight:900,
-              document:{getElementById:id=>els[id]},API_BASE:'',apiFetch,
+              document:{getElementById:id=>els[id],querySelector:s=>s==='.topbar'?topbar:null},API_BASE:'',apiFetch,
+              ResizeObserver:class{constructor(callback){observers.push(callback);}observe(){}},
               mdToHtml:text=>'<rendered>'+text+'</rendered>',console,
               addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(fn);}};
             vm.createContext(env);vm.runInContext(source,env);env.initPreview();
             const emit=(name,detail)=>{for(const fn of listeners.get(name)||[])fn({detail});};
             return {els,calls,store,env,emit,
+              resizeTopbar(height){topbarHeight=height;observers.forEach(callback=>callback());},
               open:()=>emit('space:preview-file',{project:'demo',path:'readme.md',name:'Read me'}),
               click:id=>els.preview.fire('click',{target:{closest:s=>s==='#'+id?els[id]:null}}),
               switchTo(id,tab){env.location.hash='#/'+id;emit('space:view',{id,tab});},
@@ -112,6 +115,25 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(restored.els.preview.style.width,'610px');
           assert.equal(restored.els.preview.style.height,'520px');
           assert.equal(page({hash:'#/dashboard',store:p.store}).isOpen(),false,'one-shot restore');
+
+          // The expanded navbar clears both restored and dragged headers,
+          // without changing the saved dimensions or fetched file/version.
+          const expanded=page({hash:'#/dashboard',store:storage(new Map([[key,snapshot]])),topbarHeight:142});
+          await settle();
+          assert.equal(expanded.els.preview.style.top,'142px');
+          assert.equal(expanded.els.preview.style.width,'610px');
+          assert.equal(expanded.els.preview.style.height,'520px');
+          const expandedBody=expanded.els['preview-body'].innerHTML;
+          expanded.els.header.fire('pointerdown',{button:0,target:{closest:()=>null},clientX:500,clientY:140,pointerId:1});
+          expanded.els.header.fire('pointermove',{clientX:500,clientY:0});
+          assert.equal(expanded.els.preview.style.top,'142px','drag stays below navbar');
+          expanded.els.header.fire('pointerup');
+          expanded.resizeTopbar(180);
+          assert.equal(expanded.els.preview.style.top,'180px','navbar reflow clears an existing inline position');
+          expanded.env.innerHeight=210;expanded.emit('resize');
+          assert.equal(expanded.els.preview.style.top,'180px','navbar boundary wins in a short viewport');
+          assert.equal(expanded.els['preview-body'].innerHTML,expandedBody);
+          assert.equal(expanded.calls.length,3,'position changes never refetch content');
 
           restored.switchTo('time','time');
           assert.equal(restored.isOpen(),false);

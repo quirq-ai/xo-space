@@ -208,7 +208,7 @@ class GitOnlyDatesTests(unittest.TestCase):
 
 
 class TimelineModeWiringTests(unittest.TestCase):
-    """The UI pieces exist and stay wired the way the wiki claims."""
+    """The Timeline controls stay connected to their data and renderer."""
 
     def test_index_carries_the_mode_toggle(self) -> None:
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
@@ -232,15 +232,6 @@ class TimelineModeWiringTests(unittest.TestCase):
             ROOT / "services" / "cowork_agent" / "visualizer" / "space_index.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"gitHistory": git_history', source)
-
-    def test_wiki_documents_the_modes(self) -> None:
-        wiki = (
-            ROOT / "space_ui" / "js" / "views" / "wiki.js"
-        ).read_text(encoding="utf-8")
-        self.assertIn("By file / By project modes", wiki)
-        self.assertIn("gitHistory", wiki)
-        self.assertIn("No By project toggle", wiki)
-
 
 if __name__ == "__main__":
     unittest.main()

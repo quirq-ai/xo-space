@@ -360,7 +360,7 @@ class CacheBusterTests(unittest.TestCase):
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + INBOX_CSS_STAMP + '">', html)
         # connectors.css carries the account chip's rule, so it moved with the JS
         self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=' + STAMP + '">', html)
-        self.assertIn('src="js/app.js?v=20260914-projectslens1"', html)
+        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))
 

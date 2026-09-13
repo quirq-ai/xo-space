@@ -29,95 +29,11 @@ def lines_with(text: str, needle: str) -> list[str]:
 
 
 class ConnectionsDocsTests(unittest.TestCase):
-    """Connections polling and the two new Inbox feeders are documented in six
-    places that drift independently: the wiki (the Inbox and Connectors tab
-    guides plus the .quirq catalog page), the quirq catalog descriptions, the
-    space_ui README, the developer guide, .env.example, and the xo-projects
-    skill reference. These pins fail when one of them forgets the feature."""
+    """Keep local API/catalog references aligned with connection behavior.
 
-    # ------------------------------------------------------------- wiki
-    def _inbox_guide(self) -> str:
-        wiki = read("space_ui/js/views/wiki.js")
-        guides = wiki.index("const TAB_GUIDES=")
-        start = wiki.index("\n  inbox:{", guides)
-        return wiki[start: wiki.index("\n  wiki:{", start)]
-
-    def _connectors_guide(self) -> str:
-        wiki = read("space_ui/js/views/wiki.js")
-        guides = wiki.index("const TAB_GUIDES=")
-        start = wiki.index("\n  connectors:{", guides)
-        return wiki[start: wiki.index("function tabGuideArticle", start)]
-
-    def test_wiki_inbox_guide_covers_the_two_feeders_filter_section_and_url(self) -> None:
-        guide = self._inbox_guide()
-        self.assertIn("Five feeders fill it", guide)
-        self.assertNotIn("Three feeders", guide)
-        self.assertIn("'five feeders + API'", guide)
-        self.assertIn("'source filter'", guide)
-        # the two feeder inputs, in the sources table
-        self.assertIn("'~/.quirq/projects/<pid>/github/issues.json'", guide)
-        self.assertIn("'~/.quirq/connections/<toolkit>/events.jsonl'", guide)
-        self.assertIn("issue:&lt;project&gt;:&lt;number&gt;", guide)
-        self.assertIn("connection:&lt;toolkit&gt;:&lt;collector&gt;:&lt;id&gt;", guide)
-        self.assertIn("last 7 days", guide)
-        self.assertIn("last 24 hours", guide)
-        # the auto-close rule is the one thing a reader must not misread
-        self.assertIn("every mirror was readable", guide)
-        # the source filter, the Connections section, and the url field
-        self.assertIn("['Filter by source'", guide)
-        self.assertIn("All, Issues, Connections, Workspace, Sharing, and Agents", guide)
-        self.assertIn("['Watch the connections'", guide)
-        self.assertIn("'GET /api/connections · POST /api/connections/{toolkit}/poll'", guide)
-        self.assertIn("No connections polled yet", guide)
-        self.assertIn("Open link", guide)
-        self.assertIn("link, and url", guide)
-        self.assertIn("XO_CONNECTIONS_POLL_ENABLED", guide)
-        self.assertIsNone(DASHES.search(guide))
-        for agent in AGENT_NAMES:
-            self.assertNotIn(agent, guide)
-
-    def test_wiki_connectors_guide_mentions_the_polling_drawer(self) -> None:
-        guide = self._connectors_guide()
-        self.assertIn("['Collect into Inbox'", guide)
-        self.assertIn("'GET/PUT/DELETE /api/connections/{toolkit} · POST /api/connections/{toolkit}/poll'", guide)
-        self.assertIn("['Polling shows an error'", guide)
-        self.assertIn("nothing is stored until Save", guide)
-        self.assertIn("carry no session header", guide)
-        # only the added lines are held to the dash rule; the older lines of
-        # this guide predate it
-        for needle in ("Collect into Inbox", "/api/connections/{toolkit} ·", "Polling shows an error"):
-            for line in lines_with(guide, needle):
-                self.assertIsNone(DASHES.search(line), line)
-                for agent in AGENT_NAMES:
-                    self.assertNotIn(agent, line)
-
-    def test_wiki_quirq_catalog_page_lists_the_connections_folder(self) -> None:
-        wiki = read("space_ui/js/views/wiki.js")
-        page = wiki[wiki.index("function quirqDataArticle()"):]
-        page = page[: page.index("function ", 10)]
-        # the directory map, in the same style as its neighbours
-        self.assertIn("├── connections/", page)
-        self.assertIn("&lt;toolkit&gt;/", page)
-        for name in ("config.json", "state.json", "events.jsonl"):
-            self.assertIn(name, page)
-        self.assertIn("events.&lt;stamp&gt;.jsonl, three kept", page)
-        # the file-by-file article
-        article_start = page.index("<code>connections/&lt;toolkit&gt;/</code>")
-        article = page[page.rindex('<article class="wiki-file">', 0, article_start): page.index("</article>", article_start)]
-        self.assertIn("per-connection polling", article)
-        self.assertIn("Rotated files are history only", article)
-        self.assertIn("24 hour bootstrap floor", article)
-        self.assertIn("DELETE /api/connections/{toolkit}", article)
-        self.assertIsNone(DASHES.search(article))
-        for line in lines_with(page, "connections/"):
-            self.assertIsNone(DASHES.search(line), line)
-
-    def test_wiki_quirq_catalog_row_counts_five_feeders(self) -> None:
-        # inbox.json is machine-local now: its catalog entry lives on the .quirq page
-        wiki = read("space_ui/js/views/wiki.js")
-        article = wiki[wiki.index("<header><code>inbox.json</code><span>the Space Inbox</span></header>"):]
-        article = article[: article.index("</article>")]
-        self.assertIn("five feeders (timeline, todos, sharing, issues, connections)", article)
+    Detailed user guides live in xo-docs. The compact Wiki's navigation is
+    covered separately by test_space_wiki.
+    """
 
     # ------------------------------------------------------------- quirq catalog
     def test_quirq_catalog_describes_the_connections_tree(self) -> None:

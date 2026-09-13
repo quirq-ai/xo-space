@@ -28,8 +28,8 @@ workspace, the *XO root* — and shows what is there.
 
 - **An empty directory:** the Projects List says **No projects in this workspace yet**,
   and Dashboard, Graph, Tree and Timeline draw the same empty map. Setup and
-  Wiki work fully; Sessions shows *no data* until a runtime has run a session
-  on this machine.
+  the offline Wiki overview work fully; Sessions shows *no data* until a
+  runtime has run a session on this machine.
 - **A directory that already holds folders:** every non-hidden folder is
   listed as a project on the spot — your existing repos, scratch folders, and
   the `xo-space` checkout the installer just made — each marked
@@ -38,6 +38,9 @@ workspace, the *XO root* — and shows what is there.
   picture. If that is not the collection you meant, point the XO root at a
   narrower directory from the Setup tab; it changes which folders are listed
   and never moves files.
+
+The Wiki overview links to the [full Space guides](https://docs.quirq.ai/docs/space),
+which open online in a new tab.
 
 **A project is a direct child folder of the workspace.** The folder name is
 the project id, and the watcher lists every non-hidden folder it finds on its

@@ -43,7 +43,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-accounts1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
-        self.assertIn('src="js/app.js?v=20260914-projectslens1"', html)
+        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the registry creates #view-inbox itself; no section markup needed
         self.assertNotIn('id="view-inbox"', html)
 

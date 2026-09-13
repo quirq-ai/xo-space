@@ -21,7 +21,6 @@ PROJECTS_JS = ROOT / "space_ui" / "js" / "views" / "projects.js"
 PROJECTS_CSS = ROOT / "space_ui" / "css" / "projects.css"
 INDEX_HTML = ROOT / "space_ui" / "index.html"
 APP_JS = ROOT / "space_ui" / "js" / "app.js"
-WIKI_JS = ROOT / "space_ui" / "js" / "views" / "wiki.js"
 MODELS_PY = ROOT / "routers" / "cowork_agent" / "bff" / "_visualizer_models.py"
 VISUALIZER_PY = ROOT / "routers" / "cowork_agent" / "bff" / "visualizer.py"
 
@@ -132,15 +131,6 @@ class IssuesPanelTests(unittest.TestCase):
 
 
 class IssuesDocsTests(unittest.TestCase):
-    def test_the_wiki_files_guide_describes_the_panel(self) -> None:
-        wiki = WIKI_JS.read_text(encoding="utf-8")
-        files = wiki.split("files:{")[1].split("timeline:{")[0]
-        self.assertIn("Issues panel", files)
-        self.assertIn("/github/issues", files)
-        # the two facts a reader gets wrong without being told
-        self.assertIn("mirror", files)
-        self.assertIn("Refresh", files)
-
     def test_cache_stamps_were_bumped_for_this_change(self) -> None:
         """A stale stamp ships the new markup against the old stylesheet."""
         index = INDEX_HTML.read_text(encoding="utf-8")
