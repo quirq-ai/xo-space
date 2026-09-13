@@ -1,14 +1,14 @@
-"""What this workspace may reach — the per-workspace half of connector isolation.
+"""What this workspace may reach: the per-workspace half of connector isolation.
 
 Composio connections are **account-wide**, so "which workspace is this?" does not answer
 "what can it touch?". This store does.
 
 Two decisions per toolkit, both scoped to this workspace:
 
-* ``enabled`` — whether the toolkit reaches the agent at all. Becomes the session's
+* ``enabled``: whether the toolkit reaches the agent at all. Becomes the session's
   ``toolkits: {"enable": [...]}`` allowlist, which Composio checks *before* it looks up a
   connection.
-* ``connected_account_ids`` — which of the account's connections back it. Becomes the
+* ``connected_account_ids``: which of the account's connections back it. Becomes the
   session's ``connected_accounts`` pin, which Composio treats as an exact override with
   no fallback.
 
@@ -141,8 +141,8 @@ def set_toolkit(
     """Set this workspace's opinion about one toolkit. Partial: None leaves a field alone.
 
     ``max_accounts`` mirrors the session's multi-account cap. Composio rejects a session
-    that pins more accounts than the cap allows — and a non-multi-account session caps at
-    one — so the excess is dropped here, where it can be reported, rather than at session
+    that pins more accounts than the cap allows (and a non-multi-account session caps at
+    one), so the excess is dropped here, where it can be reported, rather than at session
     creation where it would take every other toolkit down with it.
     """
     result: Dict[str, object] = {}
@@ -176,7 +176,7 @@ def set_toolkit(
 def unlink_account(toolkit_id: str, connected_account_id: str) -> Dict[str, object]:
     """Drop one connected account from this workspace, leaving it connected elsewhere.
 
-    The account itself is untouched in Composio — this is "not here", not "delete". A
+    The account itself is untouched in Composio: this is "not here", not "delete". A
     toolkit left with no pins is switched off, so it stops appearing to the agent rather
     than silently reverting to Composio's most-recently-connected default.
     """
@@ -226,7 +226,7 @@ def prune_to(live_account_ids: Iterable[str]) -> bool:
                 entry["enabled"] = False
             current[toolkit_id] = entry
 
-    # Read first so the common case — nothing stale — takes no lock and no write.
+    # Read first so the common case (nothing stale) takes no lock and no write.
     snapshot = load()
     if not any(
         cid not in live

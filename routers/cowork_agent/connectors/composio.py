@@ -175,7 +175,7 @@ async def disconnect(
     body: DisconnectBody,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
-    """Delete a connected account. **Account-wide** — every workspace loses it.
+    """Delete a connected account. **Account-wide**: every workspace loses it.
 
     Since connections belong to the account, this is destructive well beyond the
     workspace making the call, and the UI confirms it. To stop using a connection *here*
@@ -184,7 +184,7 @@ async def disconnect(
     Other workspaces cannot be reached to clean their pins; their next session build
     prunes the dead id itself (see ``service.prune_scope_to_live_accounts``).
 
-    Ownership is checked by xo-swarm-api now, not here — it is the only thing that
+    Ownership is checked by xo-swarm-api now, not here: it is the only thing that
     actually knows which account this connection belongs to. ``disconnect`` raises
     ``ValueError`` when it says "not yours, or gone".
     """
@@ -265,7 +265,7 @@ async def put_toolkit_scope(
 ) -> JSONResponse:
     """Choose what this workspace reaches for one toolkit.
 
-    A pinned account must be one the XO account actually holds — validated here so a
+    A pinned account must be one the XO account actually holds, validated here so a
     typo is a 422 naming the id, rather than a session creation that fails for every
     toolkit at once.
     """
@@ -313,7 +313,7 @@ async def list_toolkit_accounts(
     gets when it names none.
 
     The account list is account-wide, so a connection made in a sibling workspace shows
-    up here unpinned — ready to be enabled, not silently in use.
+    up here unpinned: ready to be enabled, not silently in use.
     """
     try:
         accounts = composio_service.list_toolkit_accounts(user_id, toolkit)

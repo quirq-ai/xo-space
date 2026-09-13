@@ -2,17 +2,21 @@
 
 Composio is addressed by the **bare Clerk account id**. This module is the client for
 ``GET /auth/workspace-principal``, a pure identity lookup that reads no database on either
-side; it answers ``{account_id, space_id}``.
+side; it answers ``{account_id, space_id}`` (``workspace_id`` before xo-swarm-api #41;
+only ``account_id`` is read).
 
 **Connections are account-wide**, and spaces are separated inside the Composio
-tool-router session — see :mod:`.space_scope`. Never compose the account and space
+tool-router session (see :mod:`.space_scope`). Never compose the account and space
 into one key: an account connected under such a key is unreachable from an account-scoped
 session, because Composio requires a pinned account to belong to the session's ``user_id``.
 
 ``XO_SPACE_ID`` (:func:`space_id`) is how this install names itself. It is sent to the
-swarm as the ``space_id`` parameter here and in the session mint, and it stamps
-``sessions.json`` — the ownership check that stops a store restored from another space
-being adopted. It is never sent to Composio, and it is not a key in any store.
+swarm as the ``space_id`` parameter here and in the session mint (dual-sent as the
+retired ``workspace_id`` too until xo-swarm-api #41 is deployed), and it stamps
+``sessions.json``: the ownership check that stops a store restored from another space
+being adopted. It is never sent to Composio, and it is not a key in any store. A 422
+from the swarm is split by :func:`identity_field_gap`: a field it does not know is a
+deploy gap, a value it rejects is this install's ``XO_SPACE_ID`` being wrong.
 
 The account id is cached for the life of the pod. A swarm that cannot be reached falls
 back to the cached value, then to the account recorded in this pod's own store
@@ -51,20 +55,29 @@ _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 class StateUnavailable(RuntimeError):
     """The swarm could not answer.
 
-    ``authoritative`` separates "the owner said no" (401/403 — never masked, never served
+    ``authoritative`` separates "the owner said no" (401/403: never masked, never served
     from a stale cache) from "the owner could not be reached" (retryable, and the caller
     may serve a stale answer). The boot installer turns the first into "fix it and
     restart" and the second into "the next sweep retries".
+
+    ``deploy_gap`` marks a swarm deployed behind this install: no identity route yet
+    (``not_found``), or a 422 whose validation error says the identity *field* is
+    missing or unknown because it predates the ``space_id`` rename (xo-swarm-api #41;
+    :func:`identity_field_gap`). Neither is a refusal, so the caller may fall back to
+    what it already knows, as it would during an outage. A 422 that rejects the id's
+    *value* is this install's ``XO_SPACE_ID`` being wrong, and stays authoritative.
     """
 
     def __init__(
         self, message: str, *, authoritative: bool = False, not_found: bool = False,
+        deploy_gap: bool = False,
     ) -> None:
         super().__init__(message)
         self.authoritative = authoritative
         # A 404 on the identity path is a deploy-ordering slip, not a refusal: the swarm
         # predates the route. The caller decides what to do about it.
         self.not_found = not_found
+        self.deploy_gap = deploy_gap or not_found
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +86,7 @@ class StateUnavailable(RuntimeError):
 
 _LOCK = threading.Lock()
 _ALOCK: Optional[asyncio.Lock] = None
-# (account_id, expires_at, fetched_at, payload) — one value for the life of the pod.
+# (account_id, expires_at, fetched_at, payload): one value for the life of the pod.
 _IDENTITY: Optional[tuple[str, float, float, dict]] = None
 # What this pod's own store says its rows belong to. No expiry: it is a fact about local
 # data, and it is what lets a pod that has booted once ride out a swarm outage.
@@ -98,7 +111,7 @@ def _alock() -> asyncio.Lock:
 
 
 # ---------------------------------------------------------------------------
-# Transport — the single seam tests patch
+# Transport: the single seam tests patch
 # ---------------------------------------------------------------------------
 
 def _endpoint() -> tuple[str, dict[str, str]]:
@@ -140,9 +153,20 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
             authoritative=True,
         )
     if resp.status_code == 422:
+        if identity_field_gap(resp):
+            # The swarm validated the request and does not know the identity field this
+            # install sends: it predates the space_id rename (xo-swarm-api #41). A
+            # deploy gap, exactly like the 404 above, not a refusal.
+            raise StateUnavailable(
+                f"xo-swarm-api predates the space_id field (HTTP 422): "
+                f"{resp.text[:200]}",
+                deploy_gap=True,
+            )
+        # The swarm read the id and rejected its value (or something else about the
+        # request): an answer, so no cache and no store fallback. Check XO_SPACE_ID.
         raise StateUnavailable(
-            f"xo-swarm-api refused the identity request as invalid (HTTP 422): "
-            f"{resp.text[:200]}",
+            f"xo-swarm-api refused the identity request as invalid (HTTP 422); check "
+            f"{SPACE_ENV}: {resp.text[:200]}",
             authoritative=True,
         )
     if resp.status_code >= 400:
@@ -159,8 +183,46 @@ def _interpret(resp: httpx.Response, url: str) -> Any:
         ) from exc
 
 
-# The id the swarm knows this Space by — the same value project sharing and usage
-# reporting send — so one install has exactly one identity, on Coder and off. It names
+# The names the identity has gone by on the wire: ``workspace_id`` before xo-swarm-api
+# #41, ``space_id`` after. Drop ``workspace_id`` once xo-swarm-api #41 is deployed.
+_IDENTITY_FIELDS = ("workspace_id", "space_id")
+# The pydantic error types that mean the two sides disagree on the field's *name*: the
+# swarm declares one this install did not send, or this install sent one it forbids.
+_IDENTITY_GAP_TYPES = ("missing", "extra_forbidden")
+
+
+def identity_field_gap(resp: httpx.Response) -> bool:
+    """Whether a 422 is the swarm not knowing the identity field: a deploy gap.
+
+    True only for a pydantic error list (``{"detail": [...]}``) holding an entry of type
+    ``missing`` or ``extra_forbidden`` whose ``loc`` ends in ``workspace_id`` or
+    ``space_id``: the swarm and this install disagree on the *name* of the field, which
+    is what a swarm that predates xo-swarm-api #41 looks like.
+
+    Everything else stays authoritative. In particular a string ``detail`` is the
+    swarm's own validator rejecting the *value* it did read ("workspace_id is required",
+    "longer than 128", "must contain only letters, digits, '-' and '_'"): that is this
+    install's ``XO_SPACE_ID`` being wrong, which merely mentions the field's name and is
+    not a deploy gap. Shared with the session mint route, which sees the same validator.
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not isinstance(detail, list):
+        return False
+    for entry in detail:
+        if not isinstance(entry, dict) or entry.get("type") not in _IDENTITY_GAP_TYPES:
+            continue
+        loc = entry.get("loc")
+        if isinstance(loc, (list, tuple)) and loc and loc[-1] in _IDENTITY_FIELDS:
+            return True
+    return False
+
+
+# The id the swarm knows this Space by (the same value project sharing and usage
+# reporting send), so one install has exactly one identity, on Coder and off. It names
 # this install to xo-swarm-api and stamps ``sessions.json``, so a store restored from a
 # *different* space is discarded rather than adopted along with that space's connector
 # scope. ``space_scope.json`` carries the same stamp informationally (:func:`space_stamp`).
@@ -175,8 +237,8 @@ class SpaceIdentityUnavailable(StateUnavailable):
     A :class:`StateUnavailable` subclass, and authoritative: the space id is read *inside*
     the identity fetch, so a plain ``RuntimeError`` here would escape the soft paths
     (chat, ``/api/tools``) that only guard against ``StateUnavailable`` and surface as a
-    500. As an authoritative refusal it degrades the way a rejected credential does —
-    no stale cache, no store fallback — which is right: an install that cannot name
+    500. As an authoritative refusal it degrades the way a rejected credential does:
+    no stale cache, no store fallback, which is right: an install that cannot name
     itself has no business being served another space's cached answer.
     """
 
@@ -213,7 +275,7 @@ def space_stamp(existing: object = None) -> Optional[str]:
     complete one recorded; otherwise None.
 
     Informational, and for ``space_scope.json`` only: that store writes without it and
-    nothing compares it on read. ``sessions.json`` is different — its stamp is an
+    nothing compares it on read. ``sessions.json`` is different: its stamp is an
     ownership check, taken from :func:`space_id`, which fails closed.
     """
     value = (os.getenv(SPACE_ENV) or "").strip()
@@ -257,8 +319,15 @@ def identity_payload() -> dict:
     """This pod's identity from xo-swarm-api: account and space.
 
     The account id is a constant for the life of the pod, so the answer is cached. The
-    space id is echoed back for symmetry only — this install already knows its own, and
+    space id is echoed back for symmetry only: this install already knows its own, and
     :func:`space_id` is the authority.
+
+    The request names this install by ``space_id``, and by ``workspace_id`` too until
+    xo-swarm-api #41 is deployed. A swarm behind this install (no route yet, or no
+    ``space_id`` field yet) is a deploy gap, not a refusal: the cached identity, then
+    the account this pod's own store records, are served as they would be in an outage.
+    A 422 that rejects the id's *value* is authoritative: nothing cached or stored is
+    served for a name the swarm has just refused.
 
     Raises :class:`StateUnavailable`. Callers that must not fail closed (the boot
     installer, the soft chat/tools paths) catch it.
@@ -272,14 +341,23 @@ def identity_payload() -> dict:
             return dict(cached[3])
 
     try:
-        payload = _request(params={"space_id": space_id()})
+        # Dual-sent: the deployed swarm reads workspace_id, xo-swarm-api #41 reads
+        # space_id, and each ignores the field it does not know. Drop workspace_id once
+        # xo-swarm-api #41 is deployed.
+        mine = space_id()
+        payload = _request(params={"workspace_id": mine, "space_id": mine})
     except StateUnavailable as exc:
         # A deploy gap must not take Composio down when the store already names its owner.
-        deploy_gap = exc.not_found
-        if deploy_gap:
+        deploy_gap = exc.deploy_gap
+        if exc.not_found:
             log.error(
                 "composio_state: xo-swarm-api has no %s. Deploy the swarm before this "
                 "space.", IDENTITY_PATH,
+            )
+        elif deploy_gap:
+            log.error(
+                "composio_state: xo-swarm-api predates the space_id field (%s). Deploy "
+                "xo-swarm-api #41 before this space.", exc,
             )
         with _LOCK:
             stale = _IDENTITY
@@ -300,7 +378,7 @@ def identity_payload() -> dict:
             return {"account_id": _ACCOUNT_FROM_STORE, "space_id": None}
         raise
 
-    # Verbatim — no strip, no normalisation. Composio stores this string against every
+    # Verbatim: no strip, no normalisation. Composio stores this string against every
     # connected account, so the bytes that arrive are the bytes that must be used.
     value = payload.get("account_id") or ""
     if not value:

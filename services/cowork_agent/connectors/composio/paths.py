@@ -21,7 +21,7 @@ _CHECKOUT_DATA_DIR = Path(__file__).resolve().parents[4] / "data"
 
 
 def store_dir() -> Path:
-    """The directory both stores live in. Never created here — the writer mkdirs."""
+    """The directory both stores live in. Never created here; the writer mkdirs."""
     configured = (os.getenv("COMPOSIO_STORE_DIR", "") or "").strip()
     return Path(configured).expanduser() if configured else _DEFAULT_STORE_DIR
 

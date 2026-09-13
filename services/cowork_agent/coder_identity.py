@@ -14,18 +14,28 @@ def _env(name: str) -> Optional[str]:
     return (os.getenv(name, "") or "").strip() or None
 
 
-def workspace_id() -> Optional[str]:
-    """``XO_SPACE_ID``: the id the swarm knows this Space by. ``None`` when unset."""
+def xo_space_id() -> Optional[str]:
+    """``XO_SPACE_ID`` verbatim: the id the swarm knows this Space by, on Coder and off.
+    ``None`` when unset.
+
+    The one identity every XO-facing call sends (project sharing, usage reporting, the
+    Composio identity lookup and session mint) and the stamp on ``sessions.json``.
+    ``CODER_WORKSPACE_ID`` is never read; the composite :func:`space_id` is a label."""
     return _env("XO_SPACE_ID")
 
 
+def workspace_id() -> Optional[str]:
+    """Alias of :func:`xo_space_id`, kept for callers that predate the rename."""
+    return xo_space_id()
+
+
 def workspace_name() -> Optional[str]:
-    """``CODER_WORKSPACE_NAME`` — e.g. ``collabse``."""
+    """``CODER_WORKSPACE_NAME``, e.g. ``collabse``."""
     return _env("CODER_WORKSPACE_NAME")
 
 
 def owner_name() -> Optional[str]:
-    """``CODER_WORKSPACE_OWNER_NAME`` — e.g. ``ankitdwivedi``."""
+    """``CODER_WORKSPACE_OWNER_NAME``, e.g. ``ankitdwivedi``."""
     return _env("CODER_WORKSPACE_OWNER_NAME")
 
 

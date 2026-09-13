@@ -1,6 +1,6 @@
 """Which individual Composio actions this workspace has switched off.
 
-One document per pod, and a pod is one workspace — so there is no user or workspace level
+One document per pod, and a pod is one workspace, so there is no user or workspace level
 in the shape. v3 dropped the v2 ``users`` map, which only ever held one row.
 
 Only *disabled* slugs are ever stored, which is what makes an action added to a toolkit
@@ -69,7 +69,7 @@ def load_prefs() -> Dict[str, Dict[str, bool]]:
     retired tenant key, and a pod only ever wrote one row of it, so taking the single row
     is lossless. A document with several rows means a store restored from elsewhere; the
     rows are merged rather than guessed between, which can only ever *disable* more than
-    intended — the safe direction.
+    intended (the safe direction).
     """
     _migrate()
     data = read_json(_store_path())

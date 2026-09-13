@@ -1,5 +1,5 @@
 """
-usage_sync.py — Daily usage sync to xo-swarm-api.
+usage_sync.py: Daily usage sync to xo-swarm-api.
 
 Runs as an asyncio background task started from the FastAPI lifespan. The
 parsing/aggregation work lives in the active agent's
@@ -141,24 +141,24 @@ async def _key_accepted(state: dict) -> bool:
 
     Same endpoint, empty record list: the request carries only the token,
     passes through exactly the auth dependency the real report passes
-    through, and stores nothing on success. Anything but 200 fails closed —
+    through, and stores nothing on success. Anything but 200 fails closed:
     a token the swarm has not accepted sends no usage data, so "reported
     only when the key is valid" is literally true, not just "stored only
     when the key is valid". The outcome is persisted for the Setup tab.
     """
     probe = await swarm_usage.probe_key()
     if probe.offline or probe.unauthenticated:
-        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({probe.detail}) — nothing sent, will retry next cycle")
+        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({probe.detail}); nothing sent, will retry next cycle")
         _record_key_probe(state, "unverified", None)
         return False
     if probe.ok:
         _record_key_probe(state, "accepted", probe.status)
         return True
     if probe.status in (401, 403):
-        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status}) — nothing sent. Fix or remove the key in .env.")
+        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status}); nothing sent. Fix or remove the key in .env.")
         _record_key_probe(state, "rejected", probe.status)
     else:
-        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status} — nothing sent, will retry next cycle")
+        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status}; nothing sent, will retry next cycle")
         _record_key_probe(state, "unverified", probe.status)
     return False
 
@@ -167,7 +167,7 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
     from routers.auth.auth import get_auth_token
 
     if not get_auth_token():
-        print(f"{_timestamp_prefix()} usage_sync: not authenticated — skipping report (nothing sent)")
+        print(f"{_timestamp_prefix()} usage_sync: not authenticated; skipping report (nothing sent)")
         return
     if not await _key_accepted(state):
         return
@@ -197,9 +197,9 @@ def usage_reporting_status() -> dict:
     """One fact for the Setup tab: is anything being reported?
 
     ``status`` is one of:
-      - "off"      no key set — nothing is sent, not even a placeholder
+      - "off"      no key set; nothing is sent, not even a placeholder
       - "on"       key set and accepted by xo-swarm-api on the last probe
-      - "blocked"  key set but rejected (HTTP 401/403) — nothing is sent
+      - "blocked"  key set but rejected (HTTP 401/403); nothing is sent
       - "pending"  key set, no conclusive probe yet (first sync still to
                    run, or the last probe could not reach the swarm)
 
@@ -229,7 +229,7 @@ def usage_reporting_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Core sync — delegates parsing/aggregation to the active agent's module
+# Core sync: delegates parsing/aggregation to the active agent's module
 # ---------------------------------------------------------------------------
 
 
@@ -240,6 +240,9 @@ async def _run_sync(is_backfill: bool = False) -> None:
     nothing, posts a zero-valued placeholder whose ``note`` column explains
     why so the analytics surface still shows the sync ran.
     """
+    # Since the rename to XO_SPACE_ID the `workspace_id` column carries the Space id
+    # (the same value as `project_id`), no longer Coder's workspace id. The wire field
+    # keeps its name so the analytics consumer's schema is unchanged; its meaning moved.
     workspace_id = os.getenv("XO_SPACE_ID") or "unknown"
     workspace_name = os.getenv("CODER_WORKSPACE_NAME") or None
     project_id = os.getenv("XO_SPACE_ID") or None
@@ -251,7 +254,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
         mod = load_usage_module()
     except Exception as e:
         note = f"failed to load active agent's usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -262,7 +265,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
         aggregated = mod.sync_payload(since_date=last_synced_date)
     except Exception as e:
         note = f"aggregation failed in agent usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -282,7 +285,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
             note = f"no new entries since watermark {last_synced_date}"
         else:
             note = "session files present but contained no usage entries"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -336,7 +339,7 @@ async def start_usage_sync_scheduler() -> None:
     1. If no watermark exists, run full backfill.
     2. Then run daily at SYNC_HOUR_UTC:00 UTC.
 
-    Errors are caught and logged — a failure never crashes the server.
+    Errors are caught and logged; a failure never crashes the server.
     """
     await asyncio.sleep(5)
 

@@ -1,8 +1,8 @@
-"""``GET /xo-auth/session/self`` — the pass-through to xo-swarm-api's mint.
+"""``GET /xo-auth/session/self``: the pass-through to xo-swarm-api's mint.
 
 Minting moved to the swarm (``POST /auth/session/self``). This route no longer generates
 an id; it presents this backend's XO credential, supplies the one thing the swarm cannot
-know — this install's space id — and records what comes back so the next request can be
+know (this install's space id) and records what comes back so the next request can be
 checked locally.
 
 Hermetic: httpx is never allowed to leave the process, and the credential is patched, so
@@ -89,7 +89,11 @@ class MintTests(_Base):
 
         _, kwargs = post.call_args
         self.assertEqual(kwargs["headers"], {"Authorization": "Bearer tok"})
-        self.assertEqual(kwargs["json"], {"space_id": WORKSPACE})
+        # Dual-sent until xo-swarm-api #41 is deployed: the deployed swarm declares
+        # workspace_id, #41 declares space_id, and each ignores the other.
+        self.assertEqual(
+            kwargs["json"], {"workspace_id": WORKSPACE, "space_id": WORKSPACE},
+        )
 
     async def test_xo_space_id_is_the_only_space_identity(self) -> None:
         # One flow on Coder and off: the id the swarm knows this Space by, the same
@@ -105,7 +109,56 @@ class MintTests(_Base):
 
         self.assertEqual(result["session_id"], MINTED)
         _, kwargs = post.call_args
-        self.assertEqual(kwargs["json"], {"space_id": "space-local"})
+        self.assertEqual(
+            kwargs["json"], {"workspace_id": "space-local", "space_id": "space-local"},
+        )
+
+    async def test_coder_workspace_id_never_reaches_the_swarm(self) -> None:
+        # XO_SPACE_ID is the identity everywhere. Coder's own id is not read, even when
+        # the pod sets it, and under neither name.
+        swarm, post = self._swarm(
+            _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
+        )
+        env = {"XO_SPACE_ID": "space-local", "CODER_WORKSPACE_ID": "coder-uuid-0001"}
+        with swarm, patch.dict("os.environ", env), \
+                patch.object(composio_session, "get_auth_token", return_value="tok"):
+            await composio_session.xo_auth_session_self()
+
+        _, kwargs = post.call_args
+        self.assertEqual(set(kwargs["json"].values()), {"space-local"})
+        self.assertNotIn("coder-uuid-0001", str(kwargs))
+
+    @staticmethod
+    def _swarm_reading(field: str):
+        """A swarm whose mint model declares exactly one identity field.
+
+        Pydantic ignores fields a model does not declare, so the body is accepted when
+        `field` is in it and 422s naming `field` otherwise: the deployed swarm
+        (workspace_id) and xo-swarm-api #41 (space_id) in turn.
+        """
+        def _post(url, headers=None, json=None):
+            if field in (json or {}):
+                return _response(200, {"session_id": MINTED, "account_id": ACCOUNT})
+            return _response(422, {"detail": [{
+                "type": "missing", "loc": ["body", field], "msg": "Field required",
+            }]})
+
+        client = SimpleNamespace(post=AsyncMock(side_effect=_post))
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return patch.object(composio_session.httpx, "AsyncClient", return_value=ctx)
+
+    async def test_the_dual_send_mints_on_a_swarm_that_reads_either_field(self) -> None:
+        # Both shapes must work until xo-swarm-api #41 is deployed everywhere.
+        for field in ("workspace_id", "space_id"):
+            with self.subTest(swarm_reads=field):
+                session_identity._SESSIONS.clear()
+                with self._swarm_reading(field), \
+                        patch.object(composio_session, "get_auth_token", return_value="tok"):
+                    result = await composio_session.xo_auth_session_self()
+                self.assertEqual(result["session_id"], MINTED)
+                self.assertTrue(session_identity.is_valid(MINTED))
 
     async def test_the_tenant_key_never_reaches_the_browser(self) -> None:
         swarm, _ = self._swarm(
@@ -167,6 +220,34 @@ class RefusalTests(_Base):
     async def test_a_swarm_without_the_route_is_a_deploy_gap_not_a_sign_out(self) -> None:
         exc = await self._fails_with(503, response=_response(404, text=""))
         self.assertIn("Deploy the swarm", exc.detail["error"])
+
+    async def test_a_swarm_that_predates_space_id_is_a_503_naming_the_fix(self) -> None:
+        # The pre-#41 validation error is a deploy gap and is reported as one: an
+        # actionable message, not a raw pydantic dump, and never a sign-out.
+        body = {"detail": [{"type": "missing", "loc": ["body", "space_id"],
+                            "msg": "Field required", "input": {}}]}
+        exc = await self._fails_with(503, response=_response(422, body))
+        self.assertIn("xo-swarm-api #41", exc.detail["error"])
+        self.assertIn("space_id", exc.detail["error"])
+        # The upstream text is carried for the operator; the request headers never are.
+        self.assertIn("Field required", exc.detail["upstream"])
+        self.assertNotIn("Authorization", str(exc.detail))
+        self.assertNotIn("Bearer", str(exc.detail))
+        self.assertEqual(session_identity._SESSIONS, {})
+
+    async def test_a_rejected_space_id_value_is_a_503_naming_the_variable(self) -> None:
+        # The swarm's own validator refuses the value it read: a string detail, and the
+        # only 422 a dual-sent body can draw from either swarm version. That is
+        # XO_SPACE_ID being wrong on this install, so the diagnosis leads with the
+        # variable and never sends the operator to deploy xo-swarm-api #41, which
+        # would change nothing.
+        body = {"detail": "workspace_id must contain only letters, digits, '-' and '_'"}
+        exc = await self._fails_with(503, response=_response(422, body))
+        self.assertIn(state.SPACE_ENV, exc.detail["error"])
+        self.assertNotIn("#41", exc.detail["error"])
+        self.assertIn("must contain only letters", exc.detail["upstream"])
+        self.assertNotIn("Authorization", str(exc.detail))
+        self.assertEqual(session_identity._SESSIONS, {})
 
     async def test_an_empty_session_id_is_refused_rather_than_handed_on(self) -> None:
         await self._fails_with(503, response=_response(200, {"session_id": ""}))
