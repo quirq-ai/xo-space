@@ -27,9 +27,37 @@ from config.models.codex import CodexCodeClient
 from utils.local_port import LocalPortsUnavailableError, resolve_server_port
 from utils.commands import run, run_sync, spawn_detached
 
+
+def _prune_blank_env_shadows(dotenv_path: Path) -> None:
+    """Drop variables exported blank that the checkout's ``.env`` can fill.
+
+    A var exported *empty* — a launcher that always exports ``XO_SPACE_ID``,
+    say, whether or not it has one — is still present in ``os.environ``, and
+    python-dotenv skips a key on membership, not truthiness. Plain
+    ``load_dotenv()`` would therefore leave the blank in place and the ``.env``
+    value would never land: exporting empty ends up worse than not exporting
+    at all. The symptom is a configured value reading as unset (sharing parks
+    on an empty ``XO_SPACE_ID`` despite ``.env`` naming the workspace).
+
+    Only keys ``.env`` has a non-empty value for are dropped, so a variable
+    that legitimately uses ``""`` as an off switch keeps its blank, and a
+    non-empty export still outranks the file. Runs before ``_shell_env_keys``
+    is snapshotted so roots.env precedence stays consistent with it.
+    """
+    try:
+        values = dotenv_values(dotenv_path)
+    except OSError:
+        return
+    for key, value in (values or {}).items():
+        if (value or "").strip() and not os.environ.get(key, "").strip():
+            os.environ.pop(key, None)
+
+
 # Load environment variables. Keys already exported by the shell (or by
 # docker -e / compose) are recorded first: they outrank every file below,
-# exactly as install.sh orders them.
+# exactly as install.sh orders them — but only when they actually carry a
+# value, which is what the prune above guarantees.
+_prune_blank_env_shadows(Path(__file__).resolve().parent / ".env")
 _shell_env_keys = frozenset(os.environ)
 load_dotenv()
 
@@ -856,6 +884,10 @@ app.include_router(providers_router)
 from routers.cowork_agent import all_routers as cowork_agent_routers
 for _r in cowork_agent_routers:
     app.include_router(_r)
+
+# Local layer: the command scheduler's API (jobs run by the watcher tick).
+from routers.schedules import router as schedules_router
+app.include_router(schedules_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space

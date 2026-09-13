@@ -10,14 +10,12 @@ Callers must write new state beneath :func:`quirq_state_dir`.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-
-def quirq_state_dir() -> Path:
-    """Return the canonical machine-local Quirq state directory."""
-    configured = (os.getenv("QUIRQ_STATE_ROOT", "") or "").strip()
-    return Path(configured).expanduser() if configured else Path.home() / ".quirq"
+# Defined once, below the services layer, so utils/ code (the command
+# scheduler) can share it without importing services/. This module stays the
+# documented entry point for service code.
+from utils.runtime_env import quirq_state_dir  # noqa: F401  (re-export)
 
 
 def legacy_state_dir() -> Path:

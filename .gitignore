@@ -67,7 +67,7 @@ docs/
 ARCHITECTURE.md
 SECURITY-AUDIT.md
 
-# Connector secrets (created at runtime by gdrive/onedrive/vercel/github/manus)
+# Connector secrets (created at runtime by gdrive/onedrive/vercel/github)
 mcp-tokens.json
 token.json
 rclone.conf

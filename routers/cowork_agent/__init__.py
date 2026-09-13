@@ -22,7 +22,6 @@ from .connectors.gdrive import router as gdrive_router
 from .connectors.github_cli import router as github_cli_router
 from .connectors.github_pat import router as github_pat_router
 from .connectors.magicpath import router as magicpath_router
-from .connectors.manus import router as manus_router
 from .connectors.composio_mcp_proxy import router as mcp_proxy_router
 from .misc import router as misc_router
 from .onboarding import router as onboarding_router
@@ -79,7 +78,6 @@ all_routers: list[APIRouter] = [
     vercel_router,
     composio_router,
     mcp_proxy_router,
-    manus_router,
     *bff_routers,
     xo_projects_sync_router,
 ]

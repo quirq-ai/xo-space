@@ -1,7 +1,7 @@
 """
 token_store — the single owner of token.json.
 
-Every connector (github, vercel, manus, ...) persists its credentials as a
+Every connector (github, vercel, ...) persists its credentials as a
 provider-keyed entry in one shared JSON file at ``~/.config/token.json``.
 This module is the ONLY place that knows the file's location, its on-disk
 shape, and its read/write semantics. Connectors get/set/delete by provider key
