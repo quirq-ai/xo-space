@@ -109,6 +109,52 @@ class InboxRoutesTests(unittest.TestCase):
             self.assertEqual(client().patch("/api/inbox/deadbeef", json={}).status_code, 422)
             self.assertEqual(client().patch("/api/inbox/deadbeef", json={"status": "seen", "x": 1}).status_code, 422)
 
+    def test_patch_batch_maps_the_service_and_rejects_loose_bodies(self) -> None:
+        with patch.object(service, "update_many", return_value={"updated": 2, "missing": ["ffffffff"]}) as um:
+            r = client().patch("/api/inbox", json={"ids": ["deadbeef", "cafebabe", "ffffffff"], "status": "seen"})
+            self.assertEqual((r.status_code, r.json()), (200, {"updated": 2, "missing": ["ffffffff"]}))
+            um.assert_called_once_with(["deadbeef", "cafebabe", "ffffffff"], "seen")
+        for code in ("invalid_value", "invalid_status"):
+            with self.subTest(code=code):
+                with patch.object(service, "update_many", side_effect=service.InboxError(code, "bad")):
+                    r = client().patch("/api/inbox", json={"ids": ["deadbeef"], "status": "seen"})
+                self.assertEqual((r.status_code, r.json()["detail"]), (400, {"code": code, "message": "bad"}))
+        with patch.object(service, "update_many") as um:
+            for body in ({"ids": ["deadbeef"], "status": "seen", "x": 1},   # unknown key
+                         {"ids": "deadbeef", "status": "seen"},             # not a list
+                         {"ids": [7], "status": "seen"},                     # not strings
+                         {"ids": [None], "status": "seen"},
+                         {"ids": ["deadbeef"]},                              # no status
+                         {"status": "seen"},                                 # no ids
+                         {"ids": ["deadbeef"], "status": 3}):
+                with self.subTest(body=body):
+                    self.assertEqual(client().patch("/api/inbox", json=body).status_code, 422)
+            um.assert_not_called()
+
+    def test_patch_batch_through_the_real_service(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "QUIRQ_STATE_ROOT": tmp + "/.quirq"}):
+                service._reset_throttle()
+                c = client()
+                a = c.post("/api/inbox", json={"title": "a"}).json()["id"]
+                b = c.post("/api/inbox", json={"title": "b"}).json()["id"]
+                r = c.patch("/api/inbox", json={"ids": [a, "ffffffff", b, "nope"], "status": "seen"})
+                self.assertEqual((r.status_code, r.json()), (200, {"updated": 2, "missing": ["ffffffff", "nope"]}))
+                r = c.patch("/api/inbox", json={"ids": [a, b], "status": "seen"})
+                self.assertEqual((r.status_code, r.json()), (200, {"updated": 0, "missing": []}), "idempotent")
+                self.assertEqual(c.get("/api/inbox").json()["counts"], {"new": 0, "seen": 2, "done": 0})
+                r = c.patch("/api/inbox", json={"ids": [], "status": "seen"})
+                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
+                r = c.patch("/api/inbox", json={"ids": ["deadbeef"] * 501, "status": "seen"})
+                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
+                r = c.patch("/api/inbox", json={"ids": [a], "status": "archived"})
+                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_status"))
+                self.assertEqual(c.patch("/api/inbox", json={"ids": [a], "status": "done", "x": 1}).status_code, 422)
+                # the single-item route is unchanged
+                self.assertEqual(c.patch(f"/api/inbox/{a}", json={"status": "done"}).json()["status"], "done")
+                self.assertEqual(c.get("/api/inbox?status=done").json()["items"][0]["id"], a)
+                service._reset_throttle()
+
     def test_delete_is_idempotent_in_shape(self) -> None:
         for deleted in (True, False):
             with patch.object(service, "delete_item", return_value=deleted) as de:
@@ -123,6 +169,17 @@ class InboxRoutesTests(unittest.TestCase):
         self.assertEqual(bff_routers.index(inbox_routes.router), bff_routers.index(sharing_router) + 1)
         paths = {route.path for route in inbox_routes.router.routes}
         self.assertEqual(paths, {"/api/inbox", "/api/inbox/{item_id}"})
+        methods = {(m, route.path) for route in inbox_routes.router.routes for m in route.methods}
+        self.assertEqual(methods, {("GET", "/api/inbox"), ("POST", "/api/inbox"), ("PATCH", "/api/inbox"),
+                                   ("PATCH", "/api/inbox/{item_id}"), ("DELETE", "/api/inbox/{item_id}")})
+
+    def test_router_reuses_the_service_id_shape_and_list_statuses(self) -> None:
+        # one definition of each, owned by the service; the router never redefines them
+        self.assertIs(inbox_routes.ITEM_ID_RE, service.ID_RE)
+        self.assertIs(inbox_routes.LIST_STATUSES, service.LIST_STATUSES)
+        self.assertEqual(service.LIST_STATUSES, ("open", "done", "all"))
+        self.assertIsNotNone(service.ID_RE.fullmatch("deadbeef"))
+        self.assertIsNone(service.ID_RE.fullmatch("DEADBEEF"))
 
 
 if __name__ == "__main__":

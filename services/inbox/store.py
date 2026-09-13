@@ -4,18 +4,30 @@ Machine-local, next to the polled connections and the derived workspace
 views: what a person has seen or done here is this install's state, not
 something a project folder should carry into git or a sync. A file left at
 the pre-2026-09-11 location, ``<XO root>/.xo/inbox.json``, is moved here
-once on first use.
+once on first use, whether that use is a read or a write, always under
+the file lock.
 
 Every write goes through :func:`modify` (``flock.locked`` around one
 read-modify-write, ``write_json_atomic`` for the swap), so the API and
 the feeders never clobber each other. A person may hand-edit the file, so
 :func:`normalize_document` runs on every read: missing keys get defaults,
 unknown keys (top level and per item) survive, items without a valid id or
-title are dropped with a WARN, a bad status becomes ``new`` and an
-unparsable ``ts`` becomes now (logged).
+title are dropped with a WARN, a bad status becomes ``new``, an
+unparsable ``ts`` becomes now (logged) and ``auto_closed`` survives only
+as the literal ``True``.
+
+``auto_closed`` is set by :func:`close_missing` and tells a later
+:func:`upsert_many` that the ``done`` came from a feeder, so the item
+resurfaces as ``new`` when its key is reported again (an issue reopened, a
+todo blocked again), taking the reported ``ts`` so it sorts to the top
+like a new item instead of staying buried at its first position. A status
+a person set through :func:`set_status` never carries the flag, so their
+own "Done" sticks.
 
 Timestamps are stored as the producer wrote them (``Z``, ``+00:00`` or
-naive) and are only ever compared through :func:`parse_ts`.
+naive) and are only ever compared through :func:`parse_ts` (from
+:mod:`services.timestamps`; re-exported here because the feeders and the
+tests reach it as ``store.parse_ts``).
 """
 
 from __future__ import annotations
@@ -28,11 +40,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.project_layout import workspace_xo_dir
-from services.cowork_agent.visualizer.atomic_write import write_json_atomic
-from services.cowork_agent.visualizer.flock import locked
-from services.cowork_agent.visualizer.reader import read_json
+from services.errors import ServiceError
+from services.storage.atomic_write import write_json_atomic
+from services.storage.flock import locked
+from services.storage.paths import quirq_state_dir
+from services.storage.reader import read_json
+from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -54,37 +68,13 @@ SOURCE_RE = re.compile(r"[a-z0-9_:-]{1,40}")
 KIND_RE = re.compile(r"[a-z0-9_.:-]{1,60}")
 PROJECT_ID_RE = re.compile(r"[A-Za-z0-9_:\-\.]{1,200}")
 VIEW_RE = re.compile(r"[a-z0-9_-]{1,40}")
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-class InboxError(Exception):
+class InboxError(ServiceError):
     """Typed failure the router maps to ``HTTPException(status, {code, message})``."""
 
-    def __init__(self, code: str, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.code, self.message, self.status = code, message, status
 
-
-# ── Time and validation helpers ─────────────────────────────────────────────
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_ts(value) -> Optional[datetime]:
-    """ISO-8601 string (``Z``, offset or naive, treated as UTC) to an aware
-    UTC datetime; ``None`` on anything else."""
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text[-1] in "Zz":
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+# ── Validation helpers ──────────────────────────────────────────────────────
 
 
 def is_project_id(value) -> bool:
@@ -177,6 +167,8 @@ def _normalize_item(raw, now_text: str) -> Optional[dict]:
     it["link"] = validate_link(it.get("link"))
     it["url"] = it.get("url") if is_url(it.get("url")) else None   # lenient: a bad hand edit is dropped, never fatal
     it["key"] = it.get("key") if isinstance(it.get("key"), str) else None
+    if it.get("auto_closed") is not True:
+        it.pop("auto_closed", None)
     return it
 
 
@@ -263,10 +255,17 @@ def _adopt_legacy(path: Path) -> None:
 
 def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
     """``(document, ok)``. ``ok`` is False when the file exists with content
-    that is not JSON; callers must not overwrite it in that case."""
+    that is not JSON; callers must not overwrite it in that case.
+
+    Called without a path (the unlocked readers: ``refresh``, ``list_items``)
+    it adopts a legacy file first, under the same lock :func:`modify` holds
+    for its own adoption, so a reader and a writer never both move the file.
+    The ``is_file`` check in front keeps the steady-state read lock-free."""
     if path is None:
         path = inbox_path()
-        _adopt_legacy(path)
+        if _legacy_path().is_file():
+            with locked(path):
+                _adopt_legacy(path)
     raw = read_json(path)
     ok = True
     if raw is None and path.is_file():
@@ -282,9 +281,19 @@ def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
 def modify(fn: Callable[[dict], bool], *, now: Optional[datetime] = None) -> dict:
     """Locked read-modify-write. ``fn`` edits the normalised document in
     place and returns whether anything changed; the file is written (after
-    retention and re-sorting) only then, so a read never creates it."""
+    retention and re-sorting) only then, so a read never creates it.
+
+    The legacy file is adopted inside the lock, before the read: a write
+    that lands first after an upgrade would otherwise shadow the old file
+    forever (``load_document`` only adopts when called without a path), and
+    doing it under the lock keeps two writers from both trying the move.
+    A reader adopts under the same lock (see :func:`load_document`): the
+    move is only a rename when ``.xo`` and ``~/.quirq`` share a filesystem,
+    and ``shutil.move`` otherwise copies then unlinks, so an unlocked
+    reader could copy beside this writer and hand it a half-copied file."""
     path = inbox_path()
     with locked(path):
+        _adopt_legacy(path)
         doc, ok = load_document(path)
         if not ok:
             # path-free on purpose: load_document already logged the full path,
@@ -321,7 +330,15 @@ def add_item(doc: dict, item: dict) -> dict:
 def upsert_many(doc: dict, items: list[dict]) -> bool:
     """Keyed, status-preserving ingest: an existing key gets title/body/link/url
     refreshed in place; a new key is appended with a fresh id. Items without
-    a key are always appended. Returns whether the document changed."""
+    a key are always appended. Returns whether the document changed.
+
+    One exception to status preservation: an item :func:`close_missing`
+    marked done (``auto_closed`` is True) goes back to ``new`` when its key
+    is reported again, since the feeder is saying it is open once more. It
+    also takes the reported ``ts`` (now when the report has none), so the
+    resurfaced item sorts to the top like a new one; ``ts`` is otherwise
+    never refreshed, so a still-open item keeps its place. A done without
+    the flag was a person's choice and stays done."""
     ids = {it["id"] for it in doc["items"]}
     by_key = {it["key"]: it for it in doc["items"] if it.get("key")}
     changed = False
@@ -339,12 +356,18 @@ def upsert_many(doc: dict, items: list[dict]) -> bool:
             if cur.get(field) != item.get(field):
                 cur[field] = item.get(field)
                 changed = True
+        if cur["status"] == "done" and cur.get("auto_closed") is True:
+            cur["status"] = "new"
+            cur["ts"] = item.get("ts") or now_iso()
+            del cur["auto_closed"]
+            changed = True
     return changed
 
 
 def close_missing(doc: dict, key_prefix: str, watched: frozenset[str]) -> bool:
     """Mark open items whose key starts with ``key_prefix`` but is no longer
-    watched as done. Selection is by key, never by source: a keyless item
+    watched as done, flagged ``auto_closed`` so :func:`upsert_many` can
+    reopen them. Selection is by key, never by source: a keyless item
     (API-created, whatever ``source`` it declares) is never touched."""
     if not isinstance(key_prefix, str) or not key_prefix:
         raise ValueError("close_missing needs a non-empty key prefix")
@@ -353,8 +376,20 @@ def close_missing(doc: dict, key_prefix: str, watched: frozenset[str]) -> bool:
         key = it.get("key")
         if isinstance(key, str) and key.startswith(key_prefix) and it["status"] != "done" and key not in watched:
             it["status"] = "done"
+            it["auto_closed"] = True
             changed = True
     return changed
+
+
+def set_status(it: dict, status: str) -> bool:
+    """A person's edit (PATCH): set ``status`` and drop ``auto_closed``, so
+    an item they touched is never reopened on a feeder's say-so. Returns
+    whether the item changed at all (status or flag), which is what decides
+    the write; callers count a status change on their own."""
+    flag = it.pop("auto_closed", None) is not None
+    changed = it["status"] != status
+    it["status"] = status
+    return changed or flag
 
 
 def find_item(doc: dict, item_id: str) -> Optional[dict]:

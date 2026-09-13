@@ -12,7 +12,15 @@ Three modules, one router-facing surface:
                   of polled connections into items.
 * :mod:`service`  what ``routers/cowork_agent/bff/inbox.py`` imports:
                   ``refresh``, ``list_items``, ``create_item``,
-                  ``update_item``, ``delete_item`` and ``InboxError``.
+                  ``update_item``, ``update_many`` (the batch
+                  ``PATCH /api/inbox``), ``delete_item`` and ``InboxError``.
+
+Built on the shared Space modules: ``services.storage`` (the locked,
+atomic file primitives and the state root), ``services.timestamps``
+(``parse_ts``, ``now_iso``) and ``services.errors`` (``InboxError`` is a
+``ServiceError``). Reads ``services.connections`` (the ``connections``
+feeder, and ``service`` registers a new-events listener there); that
+package never imports this one.
 
 Core code: names no agent and imports nothing from the adapters tree.
 """

@@ -104,7 +104,8 @@
           "description": "Where the Open link action goes (the issue page, the mail, the calendar event). An invalid value is dropped on read."
         },
         "status":     { "type": "string", "enum": ["new", "seen", "done"] },
-        "key":        { "type": ["string", "null"], "description": "Stable dedup identity for ingested items; API-created items carry none." }
+        "key":        { "type": ["string", "null"], "description": "Stable dedup identity for ingested items; API-created items carry none." },
+        "auto_closed": { "type": "boolean", "const": true, "description": "Present only when a feeder marked the item done because its key left the watched set; the item goes back to new, taking the reported ts so it sorts like a new item, if the key returns. A status set through the API removes it; any value other than true is dropped on read." }
       }
     }
   }

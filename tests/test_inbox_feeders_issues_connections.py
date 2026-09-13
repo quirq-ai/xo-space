@@ -204,6 +204,28 @@ class IssuesFeederTests(_Base):
         self.assertEqual({it["key"]: it["status"] for it in self.inbox()["items"]},
                          {"issue:proj:1": "new", "issue:proj:2": "done"})
 
+    def test_a_reopened_issue_resurfaces_but_a_persons_done_sticks(self) -> None:
+        self.mirror("proj", [row(1, updated_at=ago(hours=2)), row(2, updated_at=ago(hours=2))])
+        service.refresh(force=True)
+        first = {it["key"]: it for it in self.inbox()["items"]}
+        self.assertEqual({k: v["status"] for k, v in first.items()}, {"issue:proj:1": "new", "issue:proj:2": "new"})
+        # a person is done with #2; #1 gets closed on GitHub
+        service.update_item(first["issue:proj:2"]["id"], "done")
+        self.mirror("proj", [row(1, state="closed", updated_at=ago(hours=1)), row(2, updated_at=ago(hours=2))])
+        service.refresh(force=True)
+        items = {it["key"]: it for it in self.inbox()["items"]}
+        self.assertEqual((items["issue:proj:1"]["status"], items["issue:proj:1"]["auto_closed"]), ("done", True))
+        self.assertEqual(items["issue:proj:2"]["status"], "done")
+        self.assertNotIn("auto_closed", items["issue:proj:2"])
+        # both reopened on GitHub (a reopen bumps updated_at past the cursor)
+        self.mirror("proj", [row(1, updated_at=ago(minutes=10)), row(2, updated_at=ago(minutes=10))])
+        self.assertTrue(service.refresh(force=True))
+        items = {it["key"]: it for it in self.inbox()["items"]}
+        self.assertEqual((items["issue:proj:1"]["id"], items["issue:proj:1"]["status"]),
+                         (first["issue:proj:1"]["id"], "new"), "the feeder's own close is undone by the reopen")
+        self.assertNotIn("auto_closed", items["issue:proj:1"])
+        self.assertEqual(items["issue:proj:2"]["status"], "done", "a person's Done is never undone by the feeder")
+
     def test_disabled_source_reads_no_mirror(self) -> None:
         self.mirror("proj", [row(1)])
         with patch.object(github_mirror, "mirror_path") as mp, patch.object(github_mirror, "read_mirror") as rm:
@@ -360,6 +382,9 @@ class InboxUrlFieldTests(_Base):
         self.assertIn("connections", schema["properties"]["cursors"]["properties"])
         url = schema["definitions"]["item"]["properties"]["url"]
         self.assertEqual((url["type"], url["maxLength"], url["pattern"]), (["string", "null"], 2000, "^https?://"))
+        flag = schema["definitions"]["item"]["properties"]["auto_closed"]
+        self.assertEqual((flag["type"], flag["const"]), ("boolean", True))
+        self.assertNotIn("auto_closed", schema["definitions"]["item"]["required"])
 
     def test_no_dashes_or_agent_names_or_router_imports_in_the_feeders(self) -> None:
         for rel in ("services/inbox/feeders.py", "services/inbox/store.py",

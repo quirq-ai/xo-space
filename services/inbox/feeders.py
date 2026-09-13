@@ -30,8 +30,8 @@ from services.cowork_agent.project_layout import xo_dir
 from services.cowork_agent.project_sharing import status as sharing_status
 from services.cowork_agent.scopes import resolve_scope
 from services.cowork_agent.visualizer import github_mirror, workspace_index
-from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
+from services.storage.reader import read_json
 
 from . import store
 

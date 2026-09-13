@@ -229,6 +229,8 @@ class InboxStoreTests(unittest.TestCase):
             self.write_todos("proj", [{"id": "t1", "content": "c", "status": "blocked"}])
             service.refresh(force=True)
             self.assertEqual(len(entered), 4)
+            service.update_many([created["id"], "ffffffff", "00000001"], "done")
+            self.assertEqual(len(entered), 5, "a batch is one locked read-modify-write")
         self.assertTrue(all(Path(p).resolve() == self.path().resolve() for p in entered))
 
     def test_malformed_file_is_never_overwritten(self) -> None:
@@ -415,7 +417,21 @@ class InboxStoreTests(unittest.TestCase):
         doc = self.read()
         self.assertEqual({it["key"] for it in doc["items"]}, {"todo.blocked:proj:t1", "sharing:error:r:2026-09-10T10:00:00+00:00"})
         self.assertNotIn("timeline", doc["cursors"])
-        self.assertIsNone(service._last_refresh_monotonic, "a failed run must not arm the throttle")
+        self.assertIsNotNone(service._last_refresh_monotonic, "a failed run still arms the throttle")
+
+    def test_a_failing_feeder_still_arms_the_throttle(self) -> None:
+        # the badge polls every 60 s and the tab every 30 s; a feeder that
+        # keeps raising must not turn each of those reads into a full ingest
+        boom = Mock(side_effect=RuntimeError("timeline exploded"))
+        quiet = Mock(return_value=feeders.FeedResult([], None, None))
+        with patch.object(feeders, "timeline", boom), patch.object(feeders, "sharing", quiet), \
+             self.assertLogs(service.logger, level="WARNING"):
+            self.assertFalse(service.refresh(force=True))
+            self.assertFalse(service.refresh())
+            self.assertEqual(service.list_items()["items"], [])
+        self.assertEqual((boom.call_count, quiet.call_count), (1, 1),
+                         "calls within INGEST_MIN_INTERVAL_S must not re-run the feeders")
+        self.assertIsNotNone(service._last_refresh_monotonic)
 
     def test_refresh_is_throttled_and_list_swallows_refresh_errors(self) -> None:
         calls = Mock(return_value=feeders.FeedResult([], None, None))
@@ -430,6 +446,145 @@ class InboxStoreTests(unittest.TestCase):
              patch.object(feeders, "sharing", Mock(return_value=feeders.FeedResult([store.build_item(title="x", key="k")], None, None))):
             service._reset_throttle()
             self.assertEqual(service.list_items()["items"], [])
+            self.assertIsNotNone(service._last_refresh_monotonic, "a run that reached the feeders is stamped even when the write fails")
+
+    # ── auto_closed: a feeder's close reopens, a person's done sticks ───────
+
+    @staticmethod
+    def _blocked(title: str, ts: str | None = None) -> feeders.FeedResult:
+        it = store.build_item(title=title, key="todo.blocked:proj:t1", source="todos", kind="todo.blocked", ts=ts)
+        return feeders.FeedResult([it], None, feeders.Watched("todo.", frozenset({"todo.blocked:proj:t1"})))
+
+    _UNBLOCKED = feeders.FeedResult([], None, feeders.Watched("todo.", frozenset()))
+
+    def test_close_missing_flags_the_close_and_upsert_reopens_it(self) -> None:
+        doc = store.normalize_document({})
+        reported = store.build_item(title="Issue #1 in p: t", key="issue:p:1", source="issues", kind="issue.open")
+        self.assertTrue(store.upsert_many(doc, [reported]))
+        self.assertTrue(store.close_missing(doc, "issue:", frozenset()))
+        it = doc["items"][0]
+        self.assertEqual((it["status"], it["auto_closed"]), ("done", True))
+        self.assertFalse(store.close_missing(doc, "issue:", frozenset()), "already done: nothing to close again")
+        # the feeder reports the key again (reopened on GitHub): back to new, flag gone
+        self.assertTrue(store.upsert_many(doc, [dict(reported)]))
+        self.assertEqual(it["status"], "new")
+        self.assertNotIn("auto_closed", it)
+        self.assertFalse(store.upsert_many(doc, [dict(reported)]), "a second report changes nothing")
+
+    def test_a_reopened_item_takes_the_reported_ts_and_sorts_first(self) -> None:
+        # reopened with its first ts, an old item would sort back behind
+        # everything newer and fall outside the slice the UI shows
+        doc = store.normalize_document({"items": [item(1, ts=iso(NOW))]})
+        old = store.build_item(title="Issue #1 in p: t", key="issue:p:1", source="issues", kind="issue.open",
+                               ts=iso(NOW - timedelta(days=40)))
+        store.upsert_many(doc, [old])
+        self.assertTrue(store.close_missing(doc, "issue:", frozenset()))
+        again = dict(old, ts=iso(NOW + timedelta(hours=1)))
+        self.assertTrue(store.upsert_many(doc, [again]))
+        it = next(i for i in doc["items"] if i.get("key") == "issue:p:1")
+        self.assertEqual((it["status"], it["ts"]), ("new", iso(NOW + timedelta(hours=1))))
+        self.assertEqual(store.sort_newest_first(doc["items"])[0]["key"], "issue:p:1")
+        # a still-open item is never re-dated: a refreshed title keeps its place
+        self.assertTrue(store.upsert_many(doc, [dict(again, title="renamed", ts=iso(NOW + timedelta(days=2)))]))
+        self.assertEqual(it["ts"], iso(NOW + timedelta(hours=1)))
+        # a report without a ts dates the reopen now
+        self.assertTrue(store.close_missing(doc, "issue:", frozenset()))
+        self.assertTrue(store.upsert_many(doc, [{k: v for k, v in again.items() if k != "ts"}]))
+        self.assertEqual(it["status"], "new")
+        self.assertGreater(store.parse_ts(it["ts"]), NOW + timedelta(hours=1))
+
+    def test_a_persons_done_survives_the_feeder_reporting_the_key_again(self) -> None:
+        reported = store.build_item(title="Issue #1 in p: t", key="issue:p:1", source="issues", kind="issue.open")
+        open_issue = feeders.FeedResult([reported], None, feeders.Watched("issue:", frozenset({"issue:p:1"})))
+        with patch.object(feeders, "issues", Mock(return_value=open_issue)):
+            service.refresh(force=True)
+            it = self.by_key("issue:p:1")
+            self.assertEqual(service.update_item(it["id"], "done")["status"], "done")
+            self.assertFalse(service.refresh(force=True))
+        again = self.by_key("issue:p:1")
+        self.assertEqual((again["id"], again["status"]), (it["id"], "done"))
+        self.assertNotIn("auto_closed", again)
+
+    def test_a_todo_blocked_again_resurfaces_after_its_auto_close(self) -> None:
+        with patch.object(feeders, "todos", Mock(side_effect=[
+                self._blocked("Todo blocked in proj: a", ts=iso(NOW)), self._UNBLOCKED,
+                self._blocked("Todo blocked in proj: b", ts=iso(NOW + timedelta(days=1)))])):
+            service.refresh(force=True)
+            first = self.by_key("todo.blocked:proj:t1")
+            self.assertEqual((first["status"], first["ts"]), ("new", iso(NOW)))
+            service.refresh(force=True)
+            closed = self.by_key("todo.blocked:proj:t1")
+            self.assertEqual((closed["status"], closed["auto_closed"]), ("done", True))
+            self.assertTrue(service.refresh(force=True))
+        back = self.by_key("todo.blocked:proj:t1")
+        self.assertEqual((back["id"], back["status"], back["title"]), (first["id"], "new", "Todo blocked in proj: b"))
+        self.assertNotIn("auto_closed", back)
+        # re-dated to the report that reopened it, so it surfaces at the top
+        self.assertEqual(back["ts"], iso(NOW + timedelta(days=1)))
+
+    def test_update_item_and_update_many_clear_auto_closed(self) -> None:
+        with patch.object(feeders, "todos", Mock(side_effect=[self._blocked("x"), self._UNBLOCKED])):
+            service.refresh(force=True)
+            service.refresh(force=True)
+        it = self.by_key("todo.blocked:proj:t1")
+        self.assertTrue(it["auto_closed"])
+        # confirming "done" changes no status but drops the flag, and that is written
+        updated = service.update_item(it["id"], "done")
+        self.assertEqual(updated["status"], "done")
+        self.assertNotIn("auto_closed", updated)
+        self.assertNotIn("auto_closed", self.by_key("todo.blocked:proj:t1"))
+        # the same through the batch route
+        doc = self.read()
+        doc["items"][0]["auto_closed"] = True
+        self.write(doc)
+        self.assertTrue(self.by_key("todo.blocked:proj:t1")["auto_closed"])
+        self.assertEqual(service.update_many([it["id"]], "done"), {"updated": 0, "missing": []})
+        self.assertNotIn("auto_closed", self.by_key("todo.blocked:proj:t1"))
+        # and a reopen by hand leaves nothing behind for the feeder to undo
+        doc = self.read()
+        doc["items"][0]["auto_closed"] = True
+        self.write(doc)
+        self.assertEqual(service.update_item(it["id"], "new")["status"], "new")
+        self.assertNotIn("auto_closed", self.by_key("todo.blocked:proj:t1"))
+
+    def test_auto_closed_survives_only_as_the_literal_true(self) -> None:
+        self.write({"items": [{**item(1, status="done"), "auto_closed": True},
+                              {**item(2, status="done"), "auto_closed": "yes"},
+                              {**item(3, status="done"), "auto_closed": 1},
+                              {**item(4), "auto_closed": False}]})
+        flags = {it["id"]: it.get("auto_closed", "absent") for it in service.list_items(status="all")["items"]}
+        self.assertEqual(flags, {"00000001": True, "00000002": "absent", "00000003": "absent", "00000004": "absent"})
+
+    # ── update_many ─────────────────────────────────────────────────────────
+
+    def test_update_many_counts_changes_reports_missing_in_order_and_is_idempotent(self) -> None:
+        a, b, c = (service.create_item(t) for t in ("a", "b", "c"))
+        service.update_item(c["id"], "seen")
+        res = service.update_many([a["id"], "ffffffff", b["id"], "nope", c["id"], a["id"], None], "seen")
+        self.assertEqual(res, {"updated": 2, "missing": ["ffffffff", "nope", None]})
+        self.assertEqual({it["id"]: it["status"] for it in self.read()["items"]},
+                         {a["id"]: "seen", b["id"]: "seen", c["id"]: "seen"})
+        with patch.object(store, "write_json_atomic") as write:
+            self.assertEqual(service.update_many([a["id"], "ffffffff", b["id"]], "seen"),
+                             {"updated": 0, "missing": ["ffffffff"]})
+            write.assert_not_called()
+        self.assertEqual(service.update_many([a["id"], b["id"], c["id"]], "done")["updated"], 3)
+        self.assertEqual(service.list_items()["counts"], {"new": 0, "seen": 0, "done": 3})
+
+    def test_update_many_validates_before_touching_the_file(self) -> None:
+        for ids in ([], ["deadbeef"] * (service.UPDATE_MANY_MAX + 1), "deadbeef", None):
+            with self.subTest(ids=ids):
+                with self.assertRaises(store.InboxError) as cm:
+                    service.update_many(ids, "seen")
+                self.assertEqual((cm.exception.code, cm.exception.status), ("invalid_value", 400))
+        with self.assertRaises(store.InboxError) as cm:
+            service.update_many(["deadbeef"], "archived")
+        self.assertEqual((cm.exception.code, cm.exception.status), ("invalid_status", 400))
+        self.assertFalse(self.path().exists())
+        # exactly the cap, every id unknown: one call, no write
+        res = service.update_many([f"{i:08x}" for i in range(service.UPDATE_MANY_MAX)], "done")
+        self.assertEqual((res["updated"], len(res["missing"])), (0, service.UPDATE_MANY_MAX))
+        self.assertFalse(self.path().exists(), "unknown ids change nothing, so the file is never created")
 
 
 if __name__ == "__main__":
@@ -478,3 +633,49 @@ class InboxLocationTests(unittest.TestCase):
         doc, _ = store.load_document()
         self.assertEqual([it["id"] for it in doc["items"]], ["bbbbbbbb"])
         self.assertTrue(legacy.exists(), "left alone: the new file wins and the old one is not touched")
+
+    def test_a_read_adopts_the_legacy_file_under_the_lock_then_reads_lock_free(self) -> None:
+        # shutil.move copies then unlinks across filesystems, so an unlocked
+        # reader could copy beside a locked writer and hand it a half-copied file
+        legacy = self.root / ".xo" / "inbox.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema": 1, "items": []}))
+        entered: list[Path] = []
+        held: list[bool] = []
+        moved_under_lock: list[bool] = []
+
+        @contextmanager
+        def fake_locked(path):
+            entered.append(path)
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+
+        real_move = shutil.move
+
+        def fake_move(src, dst):
+            moved_under_lock.append(bool(held))
+            return real_move(src, dst)
+
+        with patch.object(store, "locked", fake_locked), patch.object(shutil, "move", fake_move):
+            _doc, ok = store.load_document()
+            self.assertTrue(ok)
+            self.assertEqual(moved_under_lock, [True], "the move happens inside locked(), like a write's")
+            self.assertEqual([Path(p) for p in entered], [store.inbox_path()])
+            store.load_document()
+            self.assertEqual(len(entered), 1, "once adopted, a read takes no lock")
+        self.assertFalse(legacy.exists())
+        self.assertTrue(store.inbox_path().is_file())
+
+    def test_a_write_that_comes_first_after_the_upgrade_adopts_the_legacy_file(self) -> None:
+        legacy = self.root / ".xo" / "inbox.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema": 1, "items": [
+            {"id": "aaaaaaaa", "ts": "2026-09-10T00:00:00Z", "title": "carried over", "status": "seen"}]}))
+        created = service.create_item("the first call is a POST")
+        ids = {it["id"] for it in service.list_items(status="all")["items"]}
+        self.assertEqual(ids, {"aaaaaaaa", created["id"]}, "the old items and the new one share one file")
+        self.assertFalse(legacy.exists(), "moved, not copied: nothing is left behind in .xo")
+        self.assertTrue(store.inbox_path().is_file())
