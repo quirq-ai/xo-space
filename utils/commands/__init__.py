@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from services.cowork_agent.local_state import quirq_state_dir
+from utils.runtime_env import quirq_state_dir
 
 log = logging.getLogger(__name__)
 
@@ -82,9 +82,15 @@ _INLINE_SECRET_RE = re.compile(
 _TOKEN_PREFIX_RE = re.compile(
     r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b"
 )
-_COMMAND_LOG_WARNING_EMITTED = False
-_FAILED_COMMAND_LOG_PATHS: set[str] = set()
-_COMMAND_LOG_STATE_LOCK = threading.Lock()
+# One lock for everything the log writer touches: the size check, the
+# rotation rename and the append happen as one step, so two threads finishing
+# commands together (scheduler jobs, a request shelling out) cannot both
+# rotate the same file. It is held for one small append, never while a
+# process runs. The warned set makes "unwritable log" a one-line warning per
+# destination; writes are always retried, so a transient failure costs one
+# entry rather than the rest of the record.
+_COMMAND_LOG_LOCK = threading.Lock()
+_WARNED_COMMAND_LOG_PATHS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -160,12 +166,13 @@ def _cap_log_output(text: str) -> str:
     return text[:head] + marker + text[-tail:]
 
 
-def _render_output(result: CommandResult) -> str:
+def _render_output(result: CommandResult, *, cap: bool = True) -> str:
     if result.stderr:
         combined = f"{result.output}[stderr]\n{result.stderr}" if result.output else f"[stderr]\n{result.stderr}"
     else:
         combined = result.output
-    return _cap_log_output(_redact_text(combined))
+    redacted = _redact_text(combined)
+    return _cap_log_output(redacted) if cap else redacted
 
 
 def _command_log_status(result: CommandResult) -> str:
@@ -188,34 +195,30 @@ def _default_command_log_path() -> Path | None:
     return Path(override).expanduser() if override else quirq_state_dir() / "commands.log"
 
 
-def _iter_log_paths(log_path: str | Path | None) -> list[Path]:
-    seen: set[str] = set()
-    paths: list[Path] = []
+def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:
+    """Destinations for one entry as (path, is_shared). The shared file is the
+    runner's own commands.log: bounded per entry and rotated, because every
+    command in the process feeds it. A caller's explicit `log_path` is that
+    caller's complete record (a scheduler job, a provisioning run): redacted,
+    but never capped or rotated — retention there is the caller's business."""
+    paths: list[tuple[Path, bool]] = []
     default_path = _default_command_log_path()
-    explicit_path = Path(log_path).expanduser() if log_path is not None else None
-    with _COMMAND_LOG_STATE_LOCK:
-        failed_paths = set(_FAILED_COMMAND_LOG_PATHS)
-    for candidate in (default_path, explicit_path):
-        if candidate is None:
-            continue
-        key = os.path.abspath(str(candidate))
-        if key in seen or key in failed_paths:
-            continue
-        seen.add(key)
-        paths.append(candidate)
+    if default_path is not None:
+        paths.append((default_path, True))
+    if log_path is not None:
+        explicit_path = Path(log_path).expanduser()
+        if default_path is None or os.path.abspath(str(explicit_path)) != os.path.abspath(str(default_path)):
+            paths.append((explicit_path, False))
     return paths
 
 
 def _warn_logging_failed(path: Path, exc: Exception) -> None:
-    global _COMMAND_LOG_WARNING_EMITTED
-    with _COMMAND_LOG_STATE_LOCK:
-        _FAILED_COMMAND_LOG_PATHS.add(os.path.abspath(str(path)))
-        should_warn = not _COMMAND_LOG_WARNING_EMITTED
-        if should_warn:
-            _COMMAND_LOG_WARNING_EMITTED = True
-    if not should_warn:
-        return
-    log.warning("command logging disabled after failure writing %s: %s", path, exc)
+    key = os.path.abspath(str(path))
+    with _COMMAND_LOG_LOCK:
+        if key in _WARNED_COMMAND_LOG_PATHS:
+            return
+        _WARNED_COMMAND_LOG_PATHS.add(key)
+    log.warning("command log entry dropped, cannot write %s: %s", path, exc)
 
 
 def _emit_logs(
@@ -227,10 +230,10 @@ def _emit_logs(
     result: CommandResult,
     log_path: str | Path | None,
 ) -> None:
-    entry = _render_log_entry(ts, label, argv, result, cwd=cwd)
-    for path in _iter_log_paths(log_path):
+    for path, shared in _iter_log_paths(log_path):
         try:
-            _write_log(path, entry)
+            entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared)
+            _write_log(path, entry, rotate=shared)
         except Exception as exc:  # noqa: BLE001 - logging must never affect command execution
             _warn_logging_failed(path, exc)
 
@@ -242,10 +245,11 @@ def _render_log_entry(
     result: CommandResult,
     *,
     cwd: str | Path | None = None,
+    cap: bool = True,
 ) -> str:
     header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
     cmdline = " ".join(repr(a) if " " in a else a for a in _redact_argv(argv))
-    output = _render_output(result)
+    output = _render_output(result, cap=cap)
     if output and not output.endswith("\n"):
         output += "\n"
     where = str(Path(cwd).expanduser()) if cwd is not None else os.getcwd()
@@ -299,16 +303,17 @@ def spawn_detached(
     return result
 
 
-def _write_log(log_path: Path, entry: str) -> None:
+def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
     entry_bytes = entry.encode("utf-8")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    if log_path.exists() and log_path.stat().st_size + len(entry_bytes) > _COMMAND_LOG_MAX_BYTES:
-        rotated = log_path.with_name(f"{log_path.name}.1")
-        with contextlib.suppress(FileNotFoundError):
-            rotated.unlink()
-        log_path.replace(rotated)
-    with log_path.open("ab") as f:
-        f.write(entry_bytes)
+    with _COMMAND_LOG_LOCK:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if rotate and log_path.exists() and log_path.stat().st_size + len(entry_bytes) > _COMMAND_LOG_MAX_BYTES:
+            rotated = log_path.with_name(f"{log_path.name}.1")
+            with contextlib.suppress(FileNotFoundError):
+                rotated.unlink()
+            log_path.replace(rotated)
+        with log_path.open("ab") as f:
+            f.write(entry_bytes)
 
 
 def _kill_tree(proc) -> None:

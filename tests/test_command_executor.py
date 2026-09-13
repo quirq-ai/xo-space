@@ -77,6 +77,22 @@ class RunSpecTests(unittest.TestCase):
     """The runner is the one place that may spawn a process, so these are the
     only tests in the suite that do; they spawn this interpreter."""
 
+    def setUp(self) -> None:
+        # Hermetic: every run logs to a throwaway state root, never to the
+        # developer's ~/.quirq, and the shell's own QUIRQ_COMMAND_LOG* settings
+        # cannot leak in. Tests that need a specific root patch over this one.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_root = Path(self._tmp.name) / ".quirq"
+        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.state_root)}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for key in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH"):
+            os.environ.pop(key, None)
+        warned = patch.object(commands, "_WARNED_COMMAND_LOG_PATHS", set())
+        warned.start()
+        self.addCleanup(warned.stop)
+
     def test_runs_and_reports_exit_code_and_output(self) -> None:
         spec = CommandSpec.from_json({"argv": [sys.executable, "-c", "import sys; print('hi'); sys.exit(3)"], "timeout": 30})
         res = run(run_spec(spec))
@@ -233,16 +249,103 @@ class RunSpecTests(unittest.TestCase):
     def test_logging_failure_warns_once_and_does_not_change_result(self) -> None:
         from utils.commands import run_sync
 
-        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": "/tmp/quirq-tests"}, clear=False), \
-             patch.object(commands, "_write_log", side_effect=OSError("disk full")), \
-             patch.object(commands.log, "warning") as warning, \
-             patch.object(commands, "_COMMAND_LOG_WARNING_EMITTED", False), \
-             patch.object(commands, "_FAILED_COMMAND_LOG_PATHS", set()):
+        # A regular file where the log's parent directory should be: every
+        # write fails for real, on every platform, without mocking the writer.
+        blocker = Path(self._tmp.name) / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": str(blocker / "commands.log")}, clear=False), \
+             patch.object(commands.log, "warning") as warning:
             first = run_sync([sys.executable, "-c", "print('one')"], timeout=30)
             second = run_sync([sys.executable, "-c", "print('two')"], timeout=30)
         self.assertTrue(first.ok)
         self.assertTrue(second.ok)
         self.assertEqual(warning.call_count, 1)
+
+    def test_logging_resumes_when_the_destination_becomes_writable_again(self) -> None:
+        """One failed write must not silence the log for the rest of the
+        process: a transient error costs one line, not the whole record."""
+        from utils.commands import run_sync
+
+        blocker = Path(self._tmp.name) / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        target = blocker / "commands.log"
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": str(target)}, clear=False), \
+             patch.object(commands.log, "warning") as warning:
+            run_sync([sys.executable, "-c", "print('lost line')"], timeout=30)
+            blocker.unlink()
+            run_sync([sys.executable, "-c", "print('recorded line')"], timeout=30)
+        self.assertEqual(warning.call_count, 1)
+        text = target.read_text(encoding="utf-8")
+        self.assertIn("recorded line", text)
+        self.assertNotIn("lost line", text)
+
+    def test_logging_failure_warns_once_per_destination(self) -> None:
+        from utils.commands import run_sync
+
+        blocker = Path(self._tmp.name) / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": str(blocker / "commands.log")}, clear=False), \
+             patch.object(commands.log, "warning") as warning:
+            run_sync([sys.executable, "-c", "print('x')"], log_path=blocker / "job.log", timeout=30)
+            run_sync([sys.executable, "-c", "print('y')"], log_path=blocker / "job.log", timeout=30)
+        self.assertEqual(warning.call_count, 2)
+
+    def test_explicit_log_path_keeps_full_output_while_default_log_is_capped(self) -> None:
+        """The shared commands.log is an aggregate and is bounded; a caller's
+        own log (a scheduler job, a provisioning run) is the complete record."""
+        from utils.commands import run_sync
+
+        job_log = Path(self._tmp.name) / "job.log"
+        payload = "A" * 5000
+        # Built in the child, so the argv line (never capped) does not carry it.
+        result = run_sync([sys.executable, "-c", "print('A' * 5000)"], log_path=job_log, timeout=30)
+        self.assertTrue(result.ok)
+        shared = (self.state_root / "commands.log").read_text(encoding="utf-8")
+        own = job_log.read_text(encoding="utf-8")
+        self.assertIn("...[truncated ", shared)
+        self.assertNotIn(payload, shared)
+        self.assertIn(payload, own)
+        self.assertNotIn("...[truncated ", own)
+
+    def test_explicit_log_path_is_redacted_but_never_rotated(self) -> None:
+        from utils.commands import run_sync
+
+        job_log = Path(self._tmp.name) / "job.log"
+        with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
+            run_sync([sys.executable, "-c", "print('first entry payload')"], log_path=job_log, timeout=30)
+            run_sync([sys.executable, "-c", "print('ghp_secretvalue')"], log_path=job_log, timeout=30)
+        own = job_log.read_text(encoding="utf-8")
+        self.assertIn("first entry payload", own)
+        self.assertIn("[REDACTED]", own)
+        self.assertNotIn("ghp_secretvalue", own)
+        self.assertFalse(job_log.with_name("job.log.1").exists())
+        self.assertTrue((self.state_root / "commands.log.1").exists())
+
+    def test_concurrent_writers_rotate_without_racing(self) -> None:
+        """Scheduler jobs finish on threads while requests shell out on others;
+        all of them append to one file. Rotation must be atomic across them or
+        a second writer renames a file the first already moved."""
+        import threading
+
+        target = self.state_root / "commands.log"
+        entry = "x" * 64 + "\n"
+        errors: list[BaseException] = []
+
+        def writer() -> None:
+            try:
+                for _ in range(300):
+                    commands._write_log(target, entry, rotate=True)
+            except BaseException as exc:  # noqa: BLE001 - the point is to catch any race
+                errors.append(exc)
+
+        with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", len(entry) * 3):
+            threads = [threading.Thread(target=writer) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(target.exists())
 
     @unittest.skipIf(os.name != "posix", "process groups are POSIX")
     def test_timeout_kills_the_whole_process_group(self) -> None:

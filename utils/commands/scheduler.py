@@ -15,7 +15,9 @@ Files, all under ``<quirq state>/scheduler/`` (mode 0600 where supported):
     state.json       next_run / last_run / running_since / last_result —
                      written only by the tick and by run_now
     runs/<id>.jsonl  append-only run history, newest last
-    logs/<id>.log    the executor's own log of every run (full output)
+    logs/<id>.log    the executor's own log of every run (full output,
+                     credentials redacted; never capped or rotated — that
+                     only happens to the shared commands.log)
 
 Two files, two owners: a re-registration cannot clobber a ``next_run`` and a
 tick cannot clobber a definition. The scheduler never imports the watcher
