@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("XO_SPACE_ROOT") or Path(__file__).resolve().parents[1])
 UI = ROOT / "space_ui"
-STAMP = "20260913-inboxfix1"
+STAMP = "20260913-inboxfix2"
 DASHES = re.compile("[\\u2013\\u2014]")
 
 
@@ -238,6 +238,113 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn("const safeUrl=u=>typeof u==='string'&&/^https?:\\/\\//i.test(u)?u:'';", self.src)
         self.assertIn('target="_blank" rel="noopener noreferrer"', self.src)
 
+    def test_tool_pills_narrow_connections_by_toolkit(self) -> None:
+        self.assertIn(
+            "const toolOf=it=>sourceOf(it)==='connections'&&typeof it.kind==='string'?it.kind.split('.')[0]:'';",
+            self.src,
+        )
+        self.assertIn("toolFilter,'tool','Filter connections by tool','inb-tools')", self.src)
+        self.assertIn("button[data-tool]", self.src)
+        self.assertIn("const paintKey=()=>JSON.stringify([data,filter,srcFilter,toolFilter,", self.src)
+        self.assertIn("'src','tool'].filter(", self.src)
+        # picking a tool repaints the loaded page, like a source pill
+        set_tool = slice_between(self.src, "function setTool(k){", "/* Expanding a new item")
+        self.assertIn("render();", set_tool)
+        self.assertNotIn("load(", set_tool)
+        self.assertNotIn("apiFetch(", set_tool)
+        self.assertIn("toolFilter='all';", slice_between(self.src, "function setSource(k){", "function setTool(k){"))
+        self.assertIn("esc(tool.name)", self.src)
+        self.assertIn(".inb-tools{", read("css/inbox.css"))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_tool_pills_behaviour_under_node(self) -> None:
+        out = run_node(INBOX_TOOL_PROBE)
+        self.assertEqual(out["allTitles"], ["Mail one", "Slack one", "Slack two", "Old notion", "Issue one"])
+        self.assertTrue(out["toolsHiddenOnAll"])
+        self.assertEqual(out["connTitles"], ["Mail one", "Slack one", "Slack two", "Old notion"])
+        # polled toolkits first (a polled one with no rows still gets a pill),
+        # then a toolkit only a loaded row names
+        self.assertEqual(out["pills"], [["all", "All tools · 4"], ["gmail", "Gmail · 1"], ["slack", "Slack · 2"],
+                                        ["googlemeet", "Google Meet · 0"], ["notion", "notion · 1"]])
+        self.assertEqual(out["slackTitles"], ["Slack one", "Slack two"])
+        self.assertTrue(out["slackOn"])
+        self.assertTrue(out["meetEmpty"])
+        self.assertTrue(out["bogusIgnored"])
+        self.assertEqual(out["issueTitles"], ["Issue one"])
+        self.assertTrue(out["resetToAll"])
+        self.assertEqual(out["fetchedOnPick"], 0)
+
+
+# Drives views/inbox.js through its delegated click listener over a DOM stub:
+# the rows and the pills are read back out of the painted html. Output: one
+# JSON line.
+INBOX_TOOL_PROBE = r"""
+const UI=process.argv[process.argv.length-1];
+globalThis.location={pathname:'/space/',search:'',origin:'http://space.test'};
+globalThis.CSS={escape:s=>s};
+globalThis.addEventListener=()=>{};
+globalThis.document={getElementById:()=>null,activeElement:null};
+
+const ts='2026-09-13T10:00:00Z';
+const row=(id,source,kind,title)=>({id,ts,source,kind,title,status:'seen',project_id:null});
+const ITEMS=[row('a1','connections','gmail.inbox','Mail one'),row('a2','connections','slack.recent','Slack one'),
+  row('a3','connections','slack.recent','Slack two'),row('a4','connections','notion.pages','Old notion'),
+  row('a5','issues','issue.open','Issue one')];
+const conn=(toolkit,display_name)=>({toolkit,display_name,configured:true,enabled:true,interval_s:300,collectors:[]});
+const CONNS={poller_enabled:true,signed_in:true,
+  connections:[conn('gmail','Gmail'),conn('slack','Slack'),conn('googlemeet','Google Meet')]};
+const fetches=[];
+globalThis.fetch=async url=>{
+  const path=url.replace(/\?.*$/,'');
+  fetches.push(path);
+  const json=data=>({ok:true,status:200,json:async()=>data});
+  if(path==='/api/inbox')return json({items:ITEMS,counts:{new:0,seen:5,done:0}});
+  if(path==='/api/connections')return json(CONNS);
+  throw new Error('unexpected '+url);
+};
+
+const box={innerHTML:'',querySelector:()=>null};
+let listener=null;
+const root={
+  set innerHTML(html){box.innerHTML=html;},
+  get innerHTML(){return box.innerHTML;},
+  addEventListener(type,fn){listener=fn;},
+  querySelector(sel){return sel==='.inb'?box:null;},
+  querySelectorAll(){return[];},
+};
+const settle=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setTimeout(r,0));};
+const click=dataset=>listener({target:{closest:()=>({dataset,disabled:false})}});
+const html=()=>box.innerHTML;
+const titles=()=>[...html().matchAll(/<span class="inb-title">([^<]*)<\/span>/g)].map(m=>m[1]);
+const toolPills=()=>[...html().matchAll(/<button type="button" data-tool="([^"]+)"[^>]*>([^<]*)<\/button>/g)]
+  .map(m=>[m[1],m[2]]);
+
+const view=(await import(UI+'/js/views/inbox.js')).default;
+await view.mount(root,{switchTo:()=>{}});
+await settle();
+const out={};
+out.allTitles=titles();
+out.toolsHiddenOnAll=toolPills().length===0;
+const before=fetches.length;
+click({src:'connections'});await settle();
+out.connTitles=titles();
+out.pills=toolPills();
+click({tool:'slack'});await settle();
+out.slackTitles=titles();
+out.slackOn=/data-tool="slack" class="is-on"/.test(html());
+click({tool:'googlemeet'});await settle();
+out.meetEmpty=html().includes('Nothing from Google Meet on this page.');
+click({tool:'bogus'});await settle();
+out.bogusIgnored=/data-tool="googlemeet" class="is-on"/.test(html());
+click({src:'issues'});await settle();
+out.issueTitles=titles();
+click({src:'connections'});await settle();
+out.resetToAll=/data-tool="all" class="is-on"/.test(html());
+out.fetchedOnPick=fetches.length-before;
+console.log(JSON.stringify(out));
+process.exit(0);
+"""
+
 
 # Drives views/connectors.js through its own delegated click listener over
 # a DOM stub just big enough for the Polling drawer: the grid keeps the
@@ -322,6 +429,7 @@ const root={
     if(sel.startsWith('#err-'))return{hidden:true,textContent:''};
     if(sel.startsWith('#poll-')){const m=grid.drawers[sel.slice(6)];return m?drawerEl(m):null;}
     if(sel==='.conn-card[data-toolkit]')return grid._html.includes('conn-card')?{}:null;
+    if(sel.startsWith('.conn-card[data-toolkit="'))return{};
     throw new Error('unstubbed selector '+sel);
   },
 };
@@ -333,6 +441,7 @@ function click(toolkit,action){
 const settle=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setTimeout(r,0));};
 const gmail=()=>grid.drawers.gmail;
 const snap=d=>d?{enabled:d.enabled,interval:d.interval,cal:!!d.collectors.cal,mail:!!d.collectors.mail}:null;
+const cls=id=>((grid._html.match(new RegExp('<article class="([^"]*)" data-toolkit="'+id+'"'))||[])[1]||'');
 const out={};
 
 const view=(await import(UI+'/js/views/connectors.js')).default;
@@ -343,6 +452,9 @@ out.cards=(grid._html.match(/<article class="conn-card/g)||[]).length;
 /* open gmail's drawer: painted from the server's copy */
 click('gmail','polling');await settle();
 out.opened=snap(gmail());
+/* the open card spans the row; both connected cards carry the footer row */
+out.expandedOnOpen={gmail:cls('gmail').includes('is-expanded'),slack:cls('slack').includes('is-expanded')};
+out.toolsRows=(grid._html.match(/<div class="conn-card-tools">/g)||[]).length;
 
 /* edit the form, then repaint three times through the Actions toggle of
    the other card (open: two paints, close: one): every paint after the
@@ -383,6 +495,7 @@ gmail().interval='300';
 click('slack','actions');await settle();
 click('gmail','polling');await settle();
 out.hidden=!gmail();
+out.collapsedOnHide=!cls('gmail').includes('is-expanded');
 click('gmail','polling');await settle();
 out.reopenedAfterHide=snap(gmail());
 
@@ -460,6 +573,9 @@ class ConnectorsViewTests(unittest.TestCase):
         self.assertEqual(out["cards"], 2)
         server = {"enabled": True, "interval": "900", "cal": False, "mail": True}
         self.assertEqual(out["opened"], server)
+        self.assertEqual(out["expandedOnOpen"], {"gmail": True, "slack": False})
+        self.assertEqual(out["toolsRows"], 2)
+        self.assertTrue(out["collapsedOnHide"])
         # the edit survives every one of the three repaints (the paint order
         # bug flipped it on the first and third)
         self.assertEqual(out["paintsAfterEdit"], 3)
@@ -486,6 +602,21 @@ class ConnectorsViewTests(unittest.TestCase):
         self.assertIn("esc(line.error)", status)
         self.assertIn("esc(cap(line.text))", status)
         self.assertNotIn("'Never polled'", status)
+
+    def test_grid_rows_stay_even_and_an_open_drawer_spans_the_row(self) -> None:
+        css = read("css/connectors.css")
+        self.assertIn("grid-auto-flow:row dense;gap:12px;align-items:stretch}", css)
+        self.assertIn(".conn-card{display:flex;flex-direction:column;", css)
+        self.assertIn(".conn-card.is-expanded{grid-column:1 / -1;", css)
+        self.assertIn(".conn-card-body{padding:0 18px;flex:1 0 auto}", css)
+        self.assertIn(".conn-card-tools{", css)
+        self.assertIn(".conn-poll-collectors{", css)
+        card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
+        self.assertIn("const expanded=open||(polling&&connected);", card)
+        self.assertIn("(expanded?' is-expanded':'')", card)
+        self.assertIn("+(tools?'<div class=\"conn-card-tools\">':'')", card)
+        toggle = slice_between(self.view, "async function togglePolling(", "function closeOtherPolling(")
+        self.assertIn("revealCard(toolkitId);", toggle)
 
 
 class SessionModuleTests(unittest.TestCase):

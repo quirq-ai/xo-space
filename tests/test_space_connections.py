@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
 # the JS stamp (app.js and every view import it carries); the two stylesheets
 # this feature added kept their own stamps when the JS moved on
-STAMP = "20260913-inboxfix1"
-INBOX_CSS_STAMP = "20260911-connections1"
+STAMP = "20260913-inboxfix2"
+INBOX_CSS_STAMP = "20260913-inboxtools1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -72,7 +72,7 @@ class InboxSourceFilterTests(unittest.TestCase):
         self.assertNotIn("load(", body)
         self.assertNotIn("apiFetch(", body)
         # the rows are filtered from the loaded page, not re-requested
-        self.assertIn("const items=all.filter(matchesSource);", self.src)
+        self.assertIn("const items=all.filter(it=>matchesSource(it)&&matchesTool(it));", self.src)
         self.assertIn("Nothing from this source on this page.", self.src)
         # the unfiltered empty state is unchanged
         self.assertIn("Nothing in the inbox.", self.src)
@@ -321,7 +321,7 @@ class CacheBusterTests(unittest.TestCase):
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + INBOX_CSS_STAMP + '">', html)
         # connectors.css moved on again after the action row learned to wrap (4 buttons)
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260911-connections2">', html)
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260913-connections3">', html)
         self.assertIn('src="js/app.js?v=' + STAMP + '"', html)
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

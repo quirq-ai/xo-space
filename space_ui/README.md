@@ -36,7 +36,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/wiki.js` | The Wiki view: bundled, version-matched operating documentation. It includes storage architecture, watcher internals, complete `.xo` / `.quirq` data catalogs (durable project tier, machine-local runtime tier, workspace tier), and flow-building recipes. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from Setup's header button (`#/quirq`). |
 | `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, managed restart. |
-| `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. The only view that authenticates (`js/core/session.js`). |
+| `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Cards in a grid row share its height, Actions and Polling sit in a footer row of their own, and a card with a drawer open spans the whole row (the dense grid flow fills the gap it leaves), the Polling drawer in two columns. The only view that authenticates (`js/core/session.js`). |
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
 The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`, mount/show/hide)
@@ -138,7 +138,11 @@ tab is shown; while Inbox is open the view's own 30 s read feeds it).
   Delete. Filter pills Open (new plus seen) | Done | All; source pills
   All | Issues | Connections | Workspace | Sharing | Agents narrow the
   loaded page on the client and never fetch (Workspace is `timeline` plus
-  `todos`, Agents is every source that is not a feeder); "Mark all seen"
+  `todos`, Agents is every source that is not a feeder). Under Connections
+  a third strip of tool pills (All tools, then one per polled toolkit plus
+  any toolkit a loaded row names, each with its row count) narrows to one
+  toolkit, read from the `<toolkit>.` prefix of the row's kind; picking
+  another source resets it to All tools. "Mark all seen"
   shows only while there are new items; Refresh re-fetches.
 - Connections section: between the header strip and the rows, one line per
   toolkit from `GET /api/connections` that is configured for polling or

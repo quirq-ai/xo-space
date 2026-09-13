@@ -106,6 +106,30 @@ function sourceOf(it){
 }
 const matchesSource=it=>srcFilter==='all'||sourceOf(it)===srcFilter;
 
+/* ── tool filter ──────────────────────────────────────────────────────────
+   Under the Connections pill, a third strip with one pill per toolkit, so
+   Gmail rows and Slack rows can be read apart. A connections row names its
+   toolkit as the prefix of its kind (the feeder writes <toolkit>.<collector>).
+   The pills are the toolkits being polled, then any toolkit a loaded row
+   still names (one polled earlier and since removed), each with its row
+   count on this page. Client-side like the source pills: never fetches. */
+let toolFilter='all';
+const toolOf=it=>sourceOf(it)==='connections'&&typeof it.kind==='string'?it.kind.split('.')[0]:'';
+const matchesTool=it=>srcFilter!=='connections'||toolFilter==='all'||toolOf(it)===toolFilter;
+function toolList(){
+  const names=new Map(polled().map(c=>[String(c.toolkit),String(c.display_name||c.toolkit)]));
+  const tally=new Map();
+  for(const it of (data&&data.items)||[]){
+    const tk=toolOf(it);
+    if(!tk)continue;
+    tally.set(tk,(tally.get(tk)||0)+1);
+    if(!names.has(tk))names.set(tk,tk);
+  }
+  /* the picked tool keeps its pill even when a re-read no longer names it */
+  if(toolFilter!=='all'&&!names.has(toolFilter))names.set(toolFilter,toolFilter);
+  return[...names].map(([id,name])=>({id,name,n:tally.get(id)||0}));
+}
+
 /* ── connections section ──────────────────────────────────────────────────
    What the connections poller is watching (GET /api/connections), shown
    above the rows. Its own fetch, token and failure line: a slow or failed
@@ -171,14 +195,14 @@ async function load(){
    30 s tick; anything else repaints with focus put back on the control
    that had it. */
 let painted='';
-const paintKey=()=>JSON.stringify([data,filter,srcFilter,failed&&failText(failed),loadingRows,marking,
+const paintKey=()=>JSON.stringify([data,filter,srcFilter,toolFilter,failed&&failText(failed),loadingRows,marking,
   [...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
 /* the focused control as a selector over the data-* it carries, so the same
    one can be found again once the rows are rebuilt */
 function focusSelector(){
   const a=document.activeElement;
   if(!a||!root||!root.contains(a))return'';
-  const keys=['act','id','toolkit','filter','src'].filter(k=>a.dataset[k]!==undefined);
+  const keys=['act','id','toolkit','filter','src','tool'].filter(k=>a.dataset[k]!==undefined);
   return keys.map(k=>'[data-'+k+'="'+CSS.escape(a.dataset[k])+'"]').join('');
 }
 function render(){
@@ -214,9 +238,19 @@ function head(){
       +'&#8635; Refresh</button>'
   +'</div>';
 }
-/* the source pills, a second strip under the header */
+/* the source pills, a second strip under the header, then the tool pills */
 function sources(){
-  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src');
+  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src')+tools();
+}
+/* the tool pills: only while Connections is picked, and only once there is a
+   toolkit to name */
+function tools(){
+  if(srcFilter!=='connections')return'';
+  const list=toolList();
+  if(!list.length)return'';
+  const total=list.reduce((sum,t)=>sum+t.n,0);
+  return pills([['all','All tools · '+total],...list.map(t=>[t.id,t.name+' · '+t.n])],
+    toolFilter,'tool','Filter connections by tool','inb-tools');
 }
 function body(){
   if(!data&&failed)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
@@ -225,10 +259,13 @@ function body(){
      another filter, so it must not be shown under this pill */
   if(failed&&dataFilter!==filter)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
   const all=data.items||[];
-  const items=all.filter(matchesSource);
+  const items=all.filter(it=>matchesSource(it)&&matchesTool(it));
   const stale=failed?'<div class="inb-fail">'+esc(failText(failed))+' · showing the last good read</div>':'';
   if(!all.length)return stale+'<div class="inb-empty"><b>Nothing in the inbox.</b>'
     +'<p>Sessions, todos and shares arriving in the workspace land here.</p></div>';
+  const tool=srcFilter==='connections'&&toolFilter!=='all'?toolList().find(t=>t.id===toolFilter):null;
+  if(!items.length&&tool)return stale+'<div class="inb-empty"><b>Nothing from '+esc(tool.name)+' on this page.</b>'
+    +'<p>Its rows land here after its next poll. Pick All tools to see every connection.</p></div>';
   if(!items.length)return stale+'<div class="inb-empty"><b>Nothing from this source on this page.</b>'
     +'<p>The source pills filter the loaded page only. Pick All to see every row.</p></div>';
   return stale+'<div class="inb-rows">'+items.map(rowHTML).join('')+'</div>';
@@ -309,10 +346,11 @@ function connRowHTML(c){
 
 /* one delegated listener: rows are rebuilt on every paint, the listener is not */
 function onClick(e){
-  const b=e.target.closest('button[data-act],button[data-filter],button[data-src]');
+  const b=e.target.closest('button[data-act],button[data-filter],button[data-src],button[data-tool]');
   if(!b||b.disabled)return;
   if(b.dataset.filter){setFilter(b.dataset.filter);return;}
   if(b.dataset.src){setSource(b.dataset.src);return;}
+  if(b.dataset.tool){setTool(b.dataset.tool);return;}
   const id=b.dataset.id;
   switch(b.dataset.act){
     case'refresh':b.disabled=true;load();break;
@@ -338,6 +376,13 @@ function setFilter(k){
 function setSource(k){
   if(k===srcFilter||!SOURCES.some(s=>s.id===k))return;
   srcFilter=k;
+  toolFilter='all'; /* a tool pick belongs to the Connections strip it was made in */
+  render();
+}
+/* a tool pill only repaints too; an id no pill carries is ignored */
+function setTool(k){
+  if(k===toolFilter||(k!=='all'&&!toolList().some(t=>t.id===k)))return;
+  toolFilter=k;
   render();
 }
 /* Expanding a new item is the act of seeing it: one PATCH, only while it is

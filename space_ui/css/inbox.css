@@ -99,6 +99,16 @@
   .inb-src button.is-on{color:var(--accent);border-color:rgba(168,217,79,.4);background:var(--bg-3)}
   .inb-src button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
+  /* tool pills: a third strip, only under Connections, one pill per toolkit.
+     Indented behind a rule so it reads as a child of the Connections pill. */
+  .inb-tools{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 14px;padding-left:12px;
+    border-left:2px solid var(--line-soft)}
+  .inb-tools button{font:500 10.5px var(--mono);color:var(--ink-3);border:1px solid var(--line-soft);
+    border-radius:999px;padding:4px 11px;background:transparent;transition:all .16s var(--ease)}
+  .inb-tools button:hover{color:var(--ink);border-color:var(--line)}
+  .inb-tools button.is-on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
+  .inb-tools button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
   /* an item's external link is a real anchor wearing the button style */
   a.inb-btn{text-decoration:none;display:inline-flex;align-items:center}
 

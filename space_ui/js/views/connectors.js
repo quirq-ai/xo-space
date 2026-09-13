@@ -31,7 +31,7 @@
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
-import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260913-inboxfix1';
+import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260913-inboxfix2';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
@@ -228,7 +228,11 @@ function renderCard(t){
   const status=statusOf(t);
   const open=openToolkit===t.id;
   const polling=openPolling===t.id;
-  return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
+  /* a card with a drawer open takes the whole grid row (connectors.css) */
+  const expanded=open||(polling&&connected);
+  const tools=connected&&(enabled||polling);
+  return'<article class="conn-card'+(connected&&enabled?' is-on':'')+(expanded?' is-expanded':'')
+      +'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
         +'<span>'+esc(t.slug||'')+'</span>'
@@ -264,6 +268,11 @@ function renderCard(t){
         ?'<button class="conn-secondary is-danger" data-action="disconnect">'
           +'Delete connection&hellip;</button>'
         :'')
+    +'</div>'
+    /* Actions and Polling configure a connection rather than toggle it, so they
+       sit in a footer row of their own: every connected card keeps the same two
+       rows of controls instead of wrapping four buttons unevenly. */
+    +(tools?'<div class="conn-card-tools">':'')
       +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
@@ -274,7 +283,7 @@ function renderCard(t){
         ?'<button class="conn-secondary" data-action="polling">'
           +(polling?'Hide polling':'Polling')+'</button>'
         :'')
-    +'</div>'
+    +(tools?'</div>':'')
     +(open?renderActions(t.id):'')
     /* The drawer needs a connection, not "enabled here": a fresh connect opens
        it before the workspace has turned the toolkit on, and it says so. */
@@ -307,22 +316,29 @@ function renderPolling(t,enabled){
     /* a hand-edited interval outside the menu is kept, not silently rounded */
     +(INTERVALS.some(([s])=>s===interval)?''
       :'<option value="'+interval+'" selected>'+interval+' s (from config.json)</option>');
+  /* two columns in the full-width card: the schedule and its buttons on the
+     left, what to collect on the right (one column on a narrow screen) */
   return wrap(
-    (enabled?'':'<p class="conn-poll-note">Turn it on here first: polling reads through this '
-      +'workspace&rsquo;s connection.</p>')
-    +'<p class="conn-poll-note">What the poller collects into the Inbox, and how often. '
-      +'Nothing is saved until you press Save.</p>'
-    +'<label class="conn-poll-row"><input type="checkbox" data-poll="enabled"'
-      +(collect?' checked':'')+'> Collect into Inbox</label>'
-    +'<label class="conn-poll-row">Every <select data-poll="interval">'+options+'</select></label>'
-    +available.map(a=>
-      '<label class="conn-poll-row"><input type="checkbox" data-poll="collector" value="'+esc(a.id)+'"'
-        +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
-    +pollStatus(t.id,c)
-    +'<div class="conn-poll-acts">'
-      +'<button class="conn-primary" data-action="poll-save">Save</button>'
-      +'<button class="conn-secondary" data-action="poll-now"'
-        +(c.configured?'':' disabled title="Save first"')+'>Poll now</button>'
+    '<div class="conn-poll-main">'
+      +(enabled?'':'<p class="conn-poll-note">Turn it on here first: polling reads through this '
+        +'workspace&rsquo;s connection.</p>')
+      +'<p class="conn-poll-note">What the poller collects into the Inbox, and how often. '
+        +'Nothing is saved until you press Save.</p>'
+      +'<label class="conn-poll-row"><input type="checkbox" data-poll="enabled"'
+        +(collect?' checked':'')+'> Collect into Inbox</label>'
+      +'<label class="conn-poll-row">Every <select data-poll="interval">'+options+'</select></label>'
+      +pollStatus(t.id,c)
+      +'<div class="conn-poll-acts">'
+        +'<button class="conn-primary" data-action="poll-save">Save</button>'
+        +'<button class="conn-secondary" data-action="poll-now"'
+          +(c.configured?'':' disabled title="Save first"')+'>Poll now</button>'
+      +'</div>'
+    +'</div>'
+    +'<div class="conn-poll-collectors" role="group" aria-label="Collectors">'
+      +'<span class="conn-poll-heading">Collectors</span>'
+      +available.map(a=>
+        '<label class="conn-poll-row"><input type="checkbox" data-poll="collector" value="'+esc(a.id)+'"'
+          +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
     +'</div>');
 }
 
@@ -349,8 +365,16 @@ async function togglePolling(toolkitId){
   closeOtherPolling(toolkitId);
   openPolling=toolkitId;
   renderGrid();
+  revealCard(toolkitId);
   if(pollCache[toolkitId]===undefined)await loadPolling(toolkitId);
   if(openPolling===toolkitId)renderGrid();
+}
+
+/* A card with a drawer open spans the whole row, and the grid's dense flow can
+   move it below the cards that were beside it: keep it on screen. */
+function revealCard(toolkitId){
+  const card=root.querySelector('.conn-card[data-toolkit="'+CSS.escape(toolkitId)+'"]');
+  if(card&&card.scrollIntoView)card.scrollIntoView({block:'nearest',behavior:'smooth'});
 }
 
 /* One drawer at a time: opening one closes whichever other was open, and
@@ -639,6 +663,7 @@ async function toggleDrawer(toolkitId){
   openToolkit=toolkitId;
   if(toolsCache[toolkitId]===undefined){
     renderGrid();
+    revealCard(toolkitId);
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/tools',
       {headers:sessionHeaders()});
     toolsCache[toolkitId]=res.ok&&res.data?(res.data.tools||[]):null;
