@@ -1,4 +1,4 @@
-"""The GitHub issue poller — a standalone loop, deliberately not a watcher sink."""
+"""The GitHub issue poller: a standalone loop, deliberately not a watcher sink."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from services.cowork_agent.connectors.github.issues import (
 )
 from services.cowork_agent.visualizer import github_mirror
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
+from services.periodic import run_forever
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,7 @@ class _Budget:
 
     def pause_until_reset(self, rate: RateLimit, reason: str) -> None:
         """
-        Back off honouring GitHub's own ``resetAt`` — no extra call needed, the
+        Back off honouring GitHub's own ``resetAt``: no extra call needed, the
         poll's own response carried it.
         """
         seconds = _parse_reset(rate.reset_at or self.reset_at)
@@ -222,7 +223,7 @@ class _Budget:
 
 
 #: Module-level, because §6.3 requires **one** global budget rather than per-
-#: project timers — a per-project view cannot see the ceiling it is
+#: project timers: a per-project view cannot see the ceiling it is
 #: collectively approaching.
 _budget = _Budget()
 
@@ -272,7 +273,7 @@ def _warn_once(key: str, message: str, *args: object) -> None:
 # ── Credential changes ───────────────────────────────────────────────────────
 # A poll that fails with ``not_authenticated`` pauses the whole poller for
 # ``_GLOBAL_PAUSE_S``. That is right while no credential exists and wrong the
-# moment one arrives, so signing in is *detected* rather than waited out —
+# moment one arrives, so signing in is *detected* rather than waited out;
 # otherwise a sign-in is followed by up to ten more minutes of the error it
 # just fixed.
 
@@ -314,8 +315,8 @@ def _auth_signature() -> tuple[bool, str]:
 
     The digest is what makes *swapping* identities count as a change and not
     only acquiring one: a different account can see a different set of
-    repositories, so the same backoff deserves clearing. Tokens are hashed —
-    never held, never logged — because this runs every tick in the same process
+    repositories, so the same backoff deserves clearing. Tokens are hashed
+    (never held, never logged) because this runs every tick in the same process
     as the log handlers.
 
     The three sources are the three a poll would actually use, in the order
@@ -344,7 +345,7 @@ def _auth_signature() -> tuple[bool, str]:
         stamp = _gh_hosts_file().stat().st_mtime_ns
         material.append(f"cli:{stamp}")
     except OSError:
-        # Absent, or unreadable — either way there is no session to report.
+        # Absent, or unreadable: either way there is no session to report.
         pass
     return bool(material), "|".join(material)
 
@@ -358,7 +359,7 @@ def note_auth_change() -> bool:
     lifted = _budget.resume_if_caused_by(_AUTH_PAUSE_KINDS)
     # Every per-repo verdict was reached under the old credential, so none of
     # them outlive it. ``bad_remote`` is the one a new token cannot fix, and
-    # re-testing it costs a single poll — cheaper than maintaining a second
+    # re-testing it costs a single poll, cheaper than maintaining a second
     # index of *why* each repo is resting.
     _cooldowns.clear()
     # The next failure should be able to speak again rather than being
@@ -371,7 +372,7 @@ def note_auth_change() -> bool:
 def detect_auth_change() -> bool:
     """Notice a credential that appeared or changed since the last tick.
 
-    This is the half that covers a sign-in the API never saw — ``gh auth login``
+    This is the half that covers a sign-in the API never saw: ``gh auth login``
     run in a terminal. A sign-in *through* the connector does not wait for it:
     ``save_github_token`` calls :func:`note_auth_change` directly.
     """
@@ -392,7 +393,7 @@ def detect_auth_change() -> bool:
     was_present, _ = previous
     if not present_now:
         # Signed out. The next poll fails and backs off on its own, which is
-        # the right answer — there is nothing to clear.
+        # the right answer: there is nothing to clear.
         logger.info("github poller: the GitHub credential went away")
         return False
     lifted = note_auth_change()
@@ -492,7 +493,7 @@ async def poll_project(
 
     # Neither branch fires when the budget stopped us before the first page:
     # nothing was fetched and nothing failed, so the mirror is left exactly as
-    # it was — which is the correct answer, not a missing one.
+    # it was, which is the correct answer, not a missing one.
     if pages:
         github_mirror.record_pages(
             project, repo=repo, pages=pages, complete=complete
@@ -558,7 +559,7 @@ class PollOutcome:
     """What :func:`poll_project_now` did. Never an exception."""
 
     #: ``True`` iff a poll actually ran (it may still have failed against
-    #: GitHub — that is recorded in the mirror, not here).
+    #: GitHub; that is recorded in the mirror, not here).
     polled: bool
     #: Why it did not, when it did not: ``disabled``, ``no_remote``,
     #: ``paused``, ``no_cli``, ``cooldown``, ``in_flight``, ``timeout`` or
@@ -659,7 +660,7 @@ async def poll_once() -> dict:
 
     # Membership is the remote and nothing else: every project under the XO
     # root whose ``project.json:git.remote_url`` points at github.com is polled,
-    # every tick. The budget and the per-repo cool-downs below bound the cost —
+    # every tick. The budget and the per-repo cool-downs below bound the cost;
     # there is no selection step.
     rows: list[tuple[str, RepoRef]] = []
     try:
@@ -753,8 +754,19 @@ def _warn_if_budget_is_close(points_this_tick: int) -> None:
 _STARTUP_DELAY_S = 20.0
 
 
+async def _tick() -> None:
+    """One pass of the loop: poll what is due, note a tick that did something."""
+    summary = await poll_once()
+    if summary["polled"] or summary["skipped"]:
+        logger.debug("github poller: %s", summary)
+
+
 async def start_github_poller() -> None:
-    """Entry point for the background task (mirrors ``usage_sync``)."""
+    """Entry point for the background task (mirrors ``usage_sync``). The
+    enabled check and the startup delay stay here because their log lines
+    are this poller's; the loop itself (tick, log a failure and go on,
+    sleep ``poll_interval_seconds()`` re-read each pass, stop on cancel) is
+    :func:`services.periodic.run_forever`."""
     if not poller_enabled():
         logger.info("github poller: disabled by %s", ENV_ENABLED)
         return
@@ -766,14 +778,4 @@ async def start_github_poller() -> None:
         "GraphQL budget %d/hour)",
         interval, max_pages(), GRAPHQL_HOURLY_BUDGET,
     )
-
-    while True:
-        try:
-            summary = await poll_once()
-            if summary["polled"] or summary["skipped"]:
-                logger.debug("github poller: %s", summary)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("github poller: tick failed (non-fatal)", exc_info=True)
-        await asyncio.sleep(poll_interval_seconds())
+    await run_forever("github poller", _tick, interval_s=poll_interval_seconds, logger=logger)
