@@ -879,11 +879,16 @@ class ShellTests(unittest.TestCase):
 
     def test_stamps_moved_together(self) -> None:
         app = read("js/app.js")
-        for view in ("inbox", "wiki", "connectors", "sharing"):
+        # Assets unchanged by the Projects navigation change keep their URLs.
+        for view in ("inbox", "connectors", "sharing"):
             self.assertIn("./views/" + view + ".js?v=" + STAMP + "'", app)
-        self.assertIn("./core/registry.js?v=" + STAMP + "'", app)  # registry.js changed too
+        projects_stamp = "20260914-projectslens1"
+        for view in ("atlas", "projects", "wiki"):
+            self.assertIn("./views/" + view + ".js?v=" + projects_stamp + "'", app)
+        for core in ("registry", "lens-switch", "preview"):
+            self.assertIn("./core/" + core + ".js?v=" + projects_stamp + "'", app)
         html = read("index.html")
-        self.assertIn('src="js/app.js?v=' + STAMP + '"', html)
+        self.assertIn('src="js/app.js?v=' + projects_stamp + '"', html)
         # the account chip and span are styled by these two; a stale sheet
         # next to a fresh module leaves the chip uppercased
         for sheet in ("inbox", "connectors"):

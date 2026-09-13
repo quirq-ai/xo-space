@@ -56,7 +56,7 @@ curl -fsSL https://quirq.ai/install | sh      # then open http://localhost:5002/
 
 <table>
   <tr>
-    <td width="50%"><img src="brand/screenshots/files-list.png" alt="Files list: one row per project with counts, activity and descriptions"><br><sub><b>Files</b> — every project in the workspace, which agent is active in it, last activity.</sub></td>
+    <td width="50%"><img src="brand/screenshots/files-list.png" alt="Projects List: one row per project with counts, activity and descriptions"><br><sub><b>Projects</b> — every project in the workspace, which agent is active in it, last activity.</sub></td>
     <td width="50%"><img src="brand/screenshots/timeline.png" alt="Timeline: commit history in parallel lanes"><br><sub><b>Timeline</b> — every project's git history in parallel lanes; click a commit for the 3D snapshot.</sub></td>
   </tr>
   <tr>
@@ -117,7 +117,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 
 Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes gateway URLs and tokens, Google Drive/Vercel connector settings) are documented in [`.env.example`](.env.example). Roots, the state directory and watcher timing: [INSTALLATION.md](INSTALLATION.md#configuration).
 
-**First run.** The Files tab lists every folder in the directory you installed in. An empty directory shows *No projects in this workspace yet* — `mkdir` or clone a project there, or ask your agent to "create an xo-project". Before the first chat, check Setup: the agent CLI is on PATH (`npm install -g @anthropic-ai/claude-code`) and a credential is saved. Full walkthrough: [INSTALLATION.md](INSTALLATION.md).
+**First run.** Space opens on Dashboard, the first lens under **Projects**. The lens switch is **Dashboard | List | Graph | Tree | Sharing**. Clicking the Projects tab opens List (`#/projects`), which lists every folder in the directory you installed in. An empty List shows *No projects in this workspace yet* — `mkdir` or clone a project there, or ask your agent to "create an xo-project". Before the first chat, check Setup: the agent CLI is on PATH (`npm install -g @anthropic-ai/claude-code`) and a credential is saved. Full walkthrough: [INSTALLATION.md](INSTALLATION.md).
 
 ### XO Managed Cloud
 

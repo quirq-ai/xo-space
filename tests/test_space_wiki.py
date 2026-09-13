@@ -32,9 +32,8 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("import wikiView from './views/wiki.js?v=", app)
         self.assertIn("registerView(wikiView);", app)
         self.assertIn('href="css/wiki.css?v=', index)
-        # The wiki is a top-level tab of its own. Order 7 is load-bearing:
-        # it keeps Wiki between Sessions (4) and Setup (9), which is the nav
-        # slot — and therefore the number hotkey — Quirq used to hold.
+        # The wiki stays between Inbox (order 5) and Setup (order 9).
+        # Hidden child lenses consume no hotkeys, so Wiki is top-level key 5.
         contract = view_contract("wiki")
         self.assertIn("id:'wiki',label:'Wiki',order:7,", contract)
         self.assertNotIn("nav:false", contract)
@@ -150,8 +149,8 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("view-six", index)
         self.assertNotIn("SIX DEGREES", atlas)
         self.assertNotIn("sixView", atlas)
-        # Graph and Projects merged into one Files tab that lands on the
-        # List lens; the Graph is the nav-less second lens behind the pill.
+        # Projects opens List; Dashboard and Graph are nav-less siblings
+        # behind the same lens switch.
         # The dept-filter chips row is gone from the canvas.
         # the lens switch is one element in the shell, not a copy per lens
         self.assertIn('id="fileslens"', index)
@@ -161,7 +160,7 @@ class SpaceWikiTests(unittest.TestCase):
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        self.assertIn("id:'projects',label:'Files',order:1", projects)
+        self.assertIn("id:'projects',label:'Projects',order:1", projects)
         self.assertIn("space:focus-project", projects)
         self.assertIn("space:focus-project", atlas)
 
@@ -276,14 +275,14 @@ class SpaceWikiTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        # Every navbar tab, plus Quirq — which has no tab of its own but is
-        # reachable from Setup's header and by #/quirq, so it still earns a
-        # guide. Adding a navbar tab without a guide should fail here.
+        # Every navbar tab, plus the Dashboard lens and Quirq state view.
+        # The renamed Projects guide preserves its existing tab-files id.
         for page_id in (
             "tab-dashboard",
             "tab-files",
             "tab-timeline",
             "tab-sessions",
+            "tab-inbox",
             "tab-wiki",
             "tab-quirq",
             "tab-setup",
@@ -292,7 +291,7 @@ class SpaceWikiTests(unittest.TestCase):
             self.assertIn(f"id:'{page_id}'", wiki)
             self.assertIn(f"'{page_id}':", wiki)
         # Chat is hidden from the tab bar and unregistered, so it gets no
-        # guide; Graph and Projects merged into the Files tab and its guide.
+        # guide; Projects keeps the existing tab-files guide id.
         self.assertNotIn("id:'tab-chat'", wiki)
         self.assertNotIn("id:'tab-graph'", wiki)
         self.assertNotIn("id:'tab-projects'", wiki)
@@ -302,6 +301,13 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("Six Degrees", wiki)
         self.assertIn("one page per tab", wiki)
         self.assertIn("space:wiki-page", wiki)
+        self.assertIn("title:'Projects tab'", wiki)
+        self.assertIn("title:'Dashboard lens'", wiki)
+        self.assertNotIn("title:'Files tab'", wiki)
+        self.assertNotIn("title:'Dashboard tab'", wiki)
+        self.assertIn("Space opens on Dashboard by default", wiki)
+        self.assertIn("clicking Projects or pressing 1 opens List", wiki)
+        self.assertIn("Projects 1, Timeline 2, Sessions 3, Inbox 4, Wiki 5, Setup 6, Connectors 7", wiki)
 
     def test_dashboard_todos_are_ui_state_not_graph_data(self) -> None:
         """Clicking a Dashboard project shows its todos on the map and in the
@@ -337,10 +343,9 @@ class SpaceWikiTests(unittest.TestCase):
                 "from the dataset, not from a view interaction",
             )
 
-    def test_tree_lens_is_the_third_files_lens(self) -> None:
-        """Tree is a lens of the Files tab, not a tab of its own, and both
-        pills offer all three lenses. A pill that lists a lens the registry
-        does not know about is a dead button."""
+    def test_tree_lens_is_the_fourth_projects_lens(self) -> None:
+        """The shared Projects switch offers Dashboard, List, Graph, Tree,
+        Sharing in order; every lens is registered and Tree stays a child."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         projects = (
@@ -362,8 +367,10 @@ class SpaceWikiTests(unittest.TestCase):
         # One renderer, one position. Three copies in three containers is
         # what made the control jump when you used it, so the views must not
         # render it at all.
-        for lens in ("projects", "graph", "tree", "sharing"):
-            self.assertIn(f'data-files-lens="{lens}"', index)
+        self.assertEqual(
+            re.findall(r'data-files-lens="([^"]+)"', index),
+            ["dashboard", "projects", "graph", "tree", "sharing"],
+        )
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
         switcher = (
@@ -399,20 +406,19 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("is-growing", tree)
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
-        # Wiki Files guide must stay aligned with the four-lens UI (drift here
-        # is how "two lenses" docs survive after Tree ships, or "three" after
-        # Sharing).
-        self.assertIn("four lenses", wiki)
-        self.assertIn("List | Graph | Tree | Sharing", wiki)
+        # The manual must describe the same five-lens hierarchy as the shell.
+        self.assertIn("five lenses", wiki)
+        self.assertIn("Dashboard | List | Graph | Tree | Sharing", wiki)
         self.assertIn("#/tree", wiki)
         self.assertIn("/api/xo-projects/{id}/tree", wiki)
         self.assertNotIn("one home, two lenses", wiki)
         self.assertNotIn("one home, three lenses", wiki)
+        self.assertNotIn("one home, four lenses", wiki)
         self.assertNotIn("'List | Graph lens switch'", wiki)
         self.assertNotIn("'List | Graph | Tree lens switch'", wiki)
 
-    def test_sharing_lens_is_the_fourth_files_lens(self) -> None:
-        """Sharing is a lens of the Files tab (issue #83) and the whole of
+    def test_sharing_lens_is_the_fifth_projects_lens(self) -> None:
+        """Sharing is a lens of the Projects tab (issue #83) and the whole of
         project sharing in the UI: rail (inbox + shared projects) and detail
         (commits + Apply, members + share/revoke). The List lens carries no
         sharing surface; tests/test_space_project_sharing.py pins the pane's
@@ -435,7 +441,7 @@ class SpaceWikiTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        # registered as a nav-less child of Files, like Tree
+        # registered as a nav-less child of Projects, like Tree
         self.assertIn("import sharingView from './views/sharing.js?v=", app)
         self.assertIn("registerView(sharingView);", app)
         contract = view_contract("sharing")
@@ -467,7 +473,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("Sharing panel", wiki.split("files:{")[1].split("timeline:{")[0])
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
-        """The Files drawer browses a project folder by folder, and the wire
+        """The List drawer browses a project folder by folder, and the wire
         model carries the detail it renders."""
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
@@ -556,7 +562,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("max_bytes", layout)
 
     def test_files_list_rows_carry_signal_and_are_operable(self) -> None:
-        """The List lens is the Files tab's landing view; a row has to say
+        """The List lens opens from the Projects tab; a row has to say
         something. It fills its columns from workspace-wide requests — four
         in total, not four per project — and its header is a real button."""
         projects = (
@@ -663,7 +669,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("QUIRQ_SKIP_BOOT_INSTALL", code)
 
     def test_first_run_is_explained_in_wiki_docs_and_the_empty_state(self) -> None:
-        """A fresh install opens on an empty Files tab. The wiki page, the two
+        """An empty Projects List explains first run. The wiki page, the two
         docs and the empty state itself must all say what a project is and
         the three ways to get one — and agree on the API call."""
 

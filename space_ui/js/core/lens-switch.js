@@ -1,13 +1,13 @@
-/* The Files lens switch.
+/* The Projects lens switch.
 
-   Files is one tab with four lenses — List, Graph, Tree and Sharing — and
-   the switch between them belongs to the tab, not to any one lens. It used
+   Projects is one tab with five lenses: Dashboard, List, Graph, Tree and Sharing.
+   The switch between them belongs to the tab, not to any one lens. It used
    to be rendered per lens: an overlay pinned to the canvas in Graph, and a
    header child in List and in Tree. Three renderers meant three positions,
    so the control jumped as you used it.
 
    Here it is one element in the stage (index.html), shown whenever the active
-   view belongs to the Files tab and hidden otherwise.
+   view belongs to the Projects tab and hidden otherwise.
 
    It navigates by hash rather than importing the registry's switchTo. With no
    bundler, `registry.js` and `registry.js?v=123` are two different modules to
@@ -16,7 +16,7 @@
    whose switchTo silently does nothing. The registry already listens for
    hashchange, and the hash is the app's real route. */
 
-const LENSES = ['projects', 'graph', 'tree', 'sharing'];
+const LENSES = ['dashboard', 'projects', 'graph', 'tree', 'sharing'];
 
 export function initLensSwitch(){
   const el = document.getElementById('fileslens');
@@ -28,7 +28,7 @@ export function initLensSwitch(){
   });
 
   const sync = (id, tab) => {
-    /* Files owns the tab id 'projects'; Graph and Tree are its nav-less
+    /* The List view owns 'projects'; the other four lenses are its nav-less
        children and report the same tab. */
     const mine = tab === 'projects' || LENSES.includes(id);
     el.hidden = !mine;

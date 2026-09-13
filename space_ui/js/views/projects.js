@@ -351,9 +351,9 @@ let filter='',sortK='activity';
 const SORTS=[['activity','Activity'],['name','Name'],['files','Files'],['created','Created']];
 
 export default {
-  /* The Files tab lands here, on the List lens; the Graph and Tree lenses are
-     nav:false with parent:'projects' so this tab stays lit for all three. */
-  id:'projects',label:'Files',order:1,
+  /* The Projects tab opens List. Its four other lenses report the same
+     parent:'projects', keeping this tab lit across all five views. */
+  id:'projects',label:'Projects',order:1,
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;

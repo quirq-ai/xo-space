@@ -60,16 +60,16 @@ const PAGES=[
     summary:'Session traces, the repository citymap, the two 3D scenes, the optional judge, and quirq recipes.'
   },
   {
-    id:'tab-dashboard',
-    section:'Tab guides',
-    title:'Dashboard tab',
-    summary:'See every XO project grouped by Engineering, Ops, Documentation, Research, or Marketing.'
-  },
-  {
     id:'tab-files',
     section:'Tab guides',
-    title:'Files tab',
-    summary:'One home for the workspace: List for ops and browsing, Graph for relationships, Tree for hierarchy, Sharing for what is synced with other workspaces: four lenses, one tab.'
+    title:'Projects tab',
+    summary:'One home for the workspace: Dashboard for project environments, List for ops and browsing, Graph for relationships, Tree for hierarchy, Sharing for what is synced with other workspaces: five lenses, one tab.'
+  },
+  {
+    id:'tab-dashboard',
+    section:'Tab guides',
+    title:'Dashboard lens',
+    summary:'See every XO project grouped by Engineering, Ops, Documentation, Research, or Marketing.'
   },
   {
     id:'tab-timeline',
@@ -213,9 +213,9 @@ const TAB_GUIDES={
   dashboard:{
     tab:'dashboard',
     name:'Dashboard',
-    kicker:'Tab guide · Project environments',
+    kicker:'Projects lens guide · Project environments',
     title:'Dashboard: projects inside purpose environments',
-    intro:'Dashboard follows main’s Inbox graph model. Each discovered XO project is one visible node. Engineering, Ops, Documentation, Research, and Marketing are not project nodes: each is a softly filled, dashed enclosure around the projects that belong to that environment.',
+    intro:'Dashboard is the first lens under Projects and the default Space route. Each discovered XO project is one visible node. Engineering, Ops, Documentation, Research, and Marketing are not project nodes: each is a softly filled, dashed enclosure around the projects that belong to that environment.',
     facts:['one node per project','five enclosing environments','overlapping membership','read-only'],
     jobs:[
       ['Survey the workspace','Read each colored boundary as a collection of projects with a shared purpose, not as one aggregate node.'],
@@ -231,7 +231,7 @@ const TAB_GUIDES={
       ['GET /api/xo-projects/{id}/todos','Fetched when a project node is selected; feeds the todo satellites and the panel list. Held in the browser for 20 seconds per project, so re-selecting is instant.','Live project todos']
     ],
     steps:[
-      ['Enter Dashboard','It is the first top-level tab and the default Space route.'],
+      ['Enter Dashboard','Space opens here by default. In Projects, pick Dashboard in the lens switch, or open #/dashboard; Projects stays highlighted.'],
       ['Read the map','The map renders immediately: project nodes, five labeled anchors, and the dashed environment boundaries around their members.'],
       ['Read a boundary','The tinted area is the environment. Its small internal group point is only a layout/focus anchor; it is not the environment’s data representation.'],
       ['Focus','Click a project or environment anchor; double-click an anchor to expand or collapse its primary project set. Selecting a project also loads its todos: up to 28 orbit the node as satellites, and the panel lists them in status order.'],
@@ -245,16 +245,17 @@ const TAB_GUIDES={
       ['Environment has no boundary','An empty environment keeps its label but has no project area to enclose.'],
       ['Graph switches with a reload','That reset is intentional so Dashboard and Graph never share stale physics or selection state.']
     ],
-    note:'Dashboard environments are collections of project nodes. The dashed hull is the collection; the anchor only gives the physics, label, and focus a stable target. Dashboard and the Files graph are read-only and write neither project files, .xo, nor .quirq.'
+    note:'Dashboard environments are collections of project nodes. The dashed hull is the collection; the anchor only gives the physics, label, and focus a stable target. Dashboard and the Projects graph are read-only and write neither project files, .xo, nor .quirq.'
   },
   files:{
     tab:'projects',
-    name:'Files',
+    name:'Projects',
     kicker:'Tab guide · Workspace map and project state',
-    title:'Files: one home, four lenses',
-    intro:'Files is one top-level tab with four lenses behind a List | Graph | Tree | Sharing pill. It lands on List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, recent events, and the project’s GitHub issues. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy: folders as columns, files stacked beside their parent. Sharing is the whole of project sharing: a rail with the “shared with you” inbox and every project shared from this machine, and a detail panel with the commits waiting on origin, an Apply button, the members, and the share form. List, Graph and Tree are read-only; Sharing is where a project is shared, a member revoked, and new commits applied.',
-    facts:['lands on List','List | Graph | Tree | Sharing lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','GitHub issues in the drawer','Sharing: rail + detail, Apply, Check now, copy invite','portable .xo history','live .quirq presence','read-only except Sharing'],
+    title:'Projects: one home, five lenses',
+    intro:'Projects is one top-level tab with five lenses behind a Dashboard | List | Graph | Tree | Sharing pill. Space opens on Dashboard, which groups projects by purpose and shows their todos. Clicking the Projects tab opens List: every project operationally, with a per-project drawer that browses the filesystem folder-by-folder and shows todos, open sessions, recent events, and the project’s GitHub issues. Graph maps the same workspace as projects, clusters, artifacts, and cross-links. Tree reads the same space.json dataset as a horizontal hierarchy: folders as columns, files stacked beside their parent. Sharing is the whole of project sharing: a rail with the “shared with you” inbox and every project shared from this machine, and a detail panel with the commits waiting on origin, an Apply button, the members, and the share form. List, Graph and Tree are read-only; Sharing is where a project is shared, a member revoked, and new commits applied.',
+    facts:['Space opens on Dashboard','Projects tab opens List','Dashboard | List | Graph | Tree | Sharing lens switch','map from .xo/space.json','List filter + sort','pan/zoom Graph and Tree','drawer file explorer','file previewer','GitHub issues in the drawer','Sharing: rail + detail, Apply, Check now, copy invite','portable .xo history','live .quirq presence','read-only except Sharing'],
     jobs:[
+      ['Survey the workspace','Use Dashboard to see each project inside its purpose environments and select a project to read its todos.'],
       ['Share and sync a project','Open the Sharing lens. “+ Share a project” swaps a composer into the panel: pick a project with a git origin, paste the recipient’s workspace id, Share. The rail lists every project shared from here, work waiting first, each with one sync state (N new · not applied / in sync / fetch failed); the “Shared with you” inbox above it shows incoming repos and their auto-clone state with the one thing to click when only you can move it on (Connect GitHub, clone by hand). Select a row for its commits, members and share form; Apply fast-forwards to origin in one click; “Check now” asks the relay to check instead of waiting out the minute; “copy invite” puts your workspace id and what to click on the clipboard as one line.'],
       ['Find an artifact','In Graph, search by title, tag, project, or cluster and fly to the matching node. In Tree, expand folders and filter by name; click a file to open it in the previewer, then use the previewer’s Graph button if you want that leaf focused on the map.'],
       ['Understand relationships','Select a Graph node to inspect its neighborhood and follow parent, cluster, and cross-project ties.'],
@@ -267,7 +268,8 @@ const TAB_GUIDES={
       ['Read a file','Three surfaces open the same floating window: a file row in Tree, a file row in the List drawer’s Files panel, and “Preview file” in Graph’s detail panel. Markdown renders, HTML renders inside a sandboxed iframe cut off from the app, everything else shows as escaped source; a Source toggle shows the raw text, a version dropdown shows the file as any commit left it, and Escape closes it.']
     ],
     sources:[
-      ['GET /xo/space.json','Serves &lt;XO root&gt;/.xo/space.json, built by build_space_data() from the XO projects root and portable project metadata; feeds Graph, Tree and the Files List counts.','Workspace .xo file'],
+      ['GET /xo/dashboard.json','The categorized project map used by the Dashboard lens; see the Dashboard lens guide for its environments and todo interactions.','Dashboard lens'],
+      ['GET /xo/space.json','Serves &lt;XO root&gt;/.xo/space.json, built by build_space_data() from the XO projects root and portable project metadata; feeds Graph, Tree and the Projects List counts.','Workspace .xo file'],
       ['<XO root>/<project>/.xo/project.json','Gates a project’s appearance in Graph and Tree, and supplies its display name; the List additionally shows folders that have no project.json, marked unscaffolded. A missing description falls back server-side to the first paragraph of the project’s README.md, PROJECT.md, or OBJECTIVES.md. The folder name under the XO root is the project id: a stale name inside this file never overrides it. Dates, git history, and cross-ties come from the project’s git log, not from .xo session data.','Portable project identity'],
       ['GET /api/xo-projects','Names, descriptions, and created dates for every direct child of the XO root. The List pairs it with GET /api/xo-projects/activity and GET /api/xo-projects/timeline?limit=200 for the live and last-active columns: four workspace-wide requests in total, whatever the project count.','List lens catalog'],
       ['GET /api/xo-projects/{id}/tree?relative_path=…','Bounded, path-safe folder listing for the List drawer’s Files panel: one folder at a time, each row carrying is_dir, size_bytes, modified_at, and (for a folder) how many entries it holds.','List drawer explorer'],
@@ -278,7 +280,8 @@ const TAB_GUIDES={
       ['GET /api/xo-projects/{id}/commits · /members · POST …/share · …/revoke · …/apply','Per project: recent commits on origin/&lt;branch&gt; with the behind count (the rail asks limit=5 per project), the member list from the swarm, the two swarm writes, and apply: git merge --ff-only origin/&lt;branch&gt;, the one write the relay ever makes to a working tree. A diverged branch or local changes make git refuse, and the pane shows git’s reason; the by-hand command stays beside the button.','Sharing detail panel']
     ],
     steps:[
-      ['Pick a lens','Files opens in List; switch with the List | Graph | Tree | Sharing pill. #/projects, #/graph, #/tree, and #/sharing deep-link each lens.'],
+      ['Pick a lens','Use Dashboard | List | Graph | Tree | Sharing. Space opens on Dashboard by default; clicking Projects or pressing 1 opens List. #/dashboard, #/projects, #/graph, #/tree, and #/sharing deep-link each lens.'],
+      ['Use numbered shortcuts','Projects 1, Timeline 2, Sessions 3, Inbox 4, Wiki 5, Setup 6, Connectors 7. Number keys do not switch tabs while an input, textarea or select is focused.'],
       ['Search','Press / for the top-bar search (it is global, on every tab). List has its own “Filter projects…” box and sorts by Activity, Name, Files or Created; Tree has a name filter in its header.'],
       ['Focus','Click a Graph node; double-click clusters to expand or collapse. In Tree, click folders to expand columns; click a file to preview it: the tree keeps its camera and its expansion state, and the previewer’s Graph button is the explicit way to move.'],
       ['Expand one row','In List each drawer panel loads independently, so one failed data source does not hide the others.'],
@@ -300,9 +303,9 @@ const TAB_GUIDES={
       ['Unexpected root label','Graph root is an in-view lens, not the host XO directory configured in Setup.'],
       ['Stale result','Nothing is generated per request. &lt;XO root&gt;/.xo/space.json is rebuilt by the watcher at most every 30 seconds (XO_VIEWS_REFRESH_S) and by a request only once the file is older than 120 seconds (XO_VIEW_MAX_AGE_S), so a reader can be up to two minutes behind. List Refresh re-fetches the project catalog and any open drawer.'],
       ['Tree shows fewer columns than expected','Intentional: files stack beside their folder so horizontal distance means depth only.'],
-      ['No List | Graph | Tree pill on Dashboard','Intentional: Dashboard shares the canvas but is its own tab, not a Files lens.']
+      ['Which tab is active on Dashboard','Projects stays highlighted and the Dashboard lens button is selected. The same switch stays in place across all five lenses.']
     ],
-    note:'Files reads derived metadata and project structure. It never writes project files, .xo, or .quirq; the watcher owns .xo writes.'
+    note:'Projects reads derived metadata and project structure. It never writes project files, .xo, or .quirq; the watcher owns .xo writes.'
   },
   timeline:{
     tab:'time',
@@ -313,7 +316,7 @@ const TAB_GUIDES={
     facts:['same graph dataset','By file / By project modes','parallel git histories','every project gets a lane','newest at the top','wheel zoom + drag pan','year chips','lane filter','date scrubber','playback mode'],
     jobs:[
       ['Replay growth','Scrub or play through the workspace to see artifacts appear in chronological order.'],
-      ['Compare project momentum','Switch to By project to read every project’s git history in parallel: one column per project, one dot per commit day, sized by commits. Projects without a repository keep a lane, drawn dark and captioned, so the count never disagrees with Files.'],
+      ['Compare project momentum','Switch to By project to read every project’s git history in parallel: one column per project, one dot per commit day, sized by commits. Projects without a repository keep a lane, drawn dark and captioned, so the count never disagrees with Projects.'],
       ['Narrow the window','Wheel to zoom the time axis, drag to pan it, or click a year chip to jump; “Filter projects…” hides lanes by name. Shift+wheel pans sideways once the lanes outgrow the pane.'],
       ['Trace one cluster','Open a cluster from Graph and carry its related artifacts into a focused timeline trace (a By-file tool; starting one switches the mode back and resets any zoomed window).']
     ],
@@ -372,7 +375,7 @@ const TAB_GUIDES={
       ['Prompts unavailable','That runtime may not support prompt details, or its native transcript may have been cleaned up.'],
       ['New session missing','Wait for ingestion, then Refresh. &lt;XO root&gt;/.xo/sessions.json is rebuilt by the watcher at most every 30 seconds, and a request rebuilds it only once the file is older than 120 seconds: Refresh re-reads the file, it does not force a rebuild.']
     ],
-    note:'Sessions reads native runtime stores without modifying them. Files remains the better tab for todos, live presence, and normalized .xo/.quirq history.'
+    note:'Sessions reads native runtime stores without modifying them. Projects remains the better tab for todos, live presence, and normalized .xo/.quirq history.'
   },
   inbox:{
     tab:'inbox',
@@ -384,7 +387,7 @@ const TAB_GUIDES={
     jobs:[
       ['See what is new','The tab badge counts new items and the header line reads the new, open, and done totals. Open lists new plus seen, Done lists what was handled, All lists everything the file holds.'],
       ['Handle an item','Click a row to expand it; that marks a new item seen. The actions row offers Open (when the item links somewhere), Open link (when the item carries an http or https url, opened in a new tab), Done or Reopen, and Delete. Mark all seen clears every new item on the page at once.'],
-      ['Follow the link','Open jumps to where the item came from: Sessions for a session start, Files for a todo, a share, or an issue, Connectors for a polled connection, and the file previewer when the item names a project file. Open link leaves Space for the issue or the mail, event, or page itself.'],
+      ['Follow the link','Open jumps to where the item came from: Sessions for a session start, Projects for a todo, a share, or an issue, Connectors for a polled connection, and the file previewer when the item names a project file. Open link leaves Space for the issue or the mail, event, or page itself.'],
       ['Filter by source','The pills All, Issues, Connections, Workspace, Sharing, and Agents narrow the loaded page on the client and never fetch. Issues is the issues feeder, Connections the polled connections, Workspace the timeline and todos feeders, Sharing the relay, and Agents everything posted through the API.'],
       ['Watch the connections','The Connections section above the rows lists every toolkit that is polled or connected here with the account name it polls as (the email, once the server has resolved it), its collectors, cadence, and last poll or error. Poll now runs its collectors at once and reloads the list; Configure jumps to the Connectors tab. It opens by itself when an entry carries an error and stays collapsed to a count otherwise.'],
       ['Post your own','Agents and scripts POST to /api/inbox with a title and an optional body, kind, project, link, and url. Those items carry no dedup key, so the feeders never touch them.']
@@ -401,7 +404,7 @@ const TAB_GUIDES={
       ['GET /api/connections · POST /api/connections/{toolkit}/poll','The Connections section: one line per toolkit that is configured for polling or connected here, with collectors, cadence, and last poll or error. Loaded on every show with its own request, so a failed load shows one muted line and never blocks the rows.','Connections section']
     ],
     steps:[
-      ['Open Inbox','It is the fifth top-level tab, between Sessions and Wiki, and deep-links at #/inbox.'],
+      ['Open Inbox','It is the fourth top-level tab, between Sessions and Wiki, and deep-links at #/inbox.'],
       ['Read the counts','The summary line and the badge come from the whole file, not from the current filter.'],
       ['Filter','Open is the default; switch to Done to review what was handled, or All to see everything. The source pills under them narrow the loaded page further without a fetch.'],
       ['Check Connections','The Connections section reads No connections polled yet until a toolkit is connected on the Connectors tab and its Polling drawer is saved. Poll now runs the collectors at once; Configure opens that drawer.'],
@@ -474,7 +477,7 @@ const TAB_GUIDES={
       ['Open Quirq','Use the Open Quirq state button in Setup’s header, or go straight to #/quirq.'],
       ['Read the split map','Compare the blue machine-local side with the green portable project side.'],
       ['Check freshness','Use updated times and watcher status before treating a snapshot as current.'],
-      ['Open project data','Jump to Files for API-rendered todos, presence, and recent events.'],
+      ['Open project data','Jump to Projects for API-rendered todos, presence, and recent events.'],
       ['Inspect structure','Use State tree for current .quirq files; contents remain protected.']
     ],
     checks:[
@@ -483,7 +486,7 @@ const TAB_GUIDES={
       ['No offsets.json','Some sources use other cursor types, or no supported records have been tailed yet.'],
       ['Credential count only','Values are deliberately write-only and remain masked.']
     ],
-    note:'Use Quirq to understand where data lives. Use Files to consume project state and Setup to change runtime behavior.'
+    note:'Use Quirq to understand where data lives. Use Projects to consume project state and Setup to change runtime behavior.'
   },
   setup:{
     tab:'secrets',
@@ -576,7 +579,7 @@ function tabGuideArticle(id){
       </header>
 
       <section class="wiki-section">
-        <h2>What this tab is for</h2>
+        <h2>What this view is for</h2>
         <div class="wiki-decision-list">
           ${guide.jobs.map(([title,text])=>`<div><b>${title}</b><p>${text}</p></div>`).join('')}
         </div>
@@ -609,7 +612,9 @@ function tabGuideArticle(id){
         resizable from its corner, and the view keeps its camera and its
         expansion state. When the file lives in a git repository, a version
         dropdown in the header renders the document as any commit left it.
-        The window belongs to Files: switching to any other tab closes it.</p>
+        The window stays open across all five Projects lenses, retaining its
+        selected version, Source mode, position and size even when Dashboard
+        and Graph reload their datasets. Switching to any other tab closes it.</p>
         <p>How a file renders is a security contract, not a display
         preference. Markdown goes through the escape-first renderer, which
         escapes the source before it transforms it and emits only fixed,
@@ -771,7 +776,7 @@ function firstRunArticle(){
         <h1>What you see first depends on where you ran the installer.</h1>
         <p>Quirq does not create work for you: it watches one directory (the
         one you ran the installer in, your <b>workspace</b>) and shows what
-        is in it. Run it in an empty directory and the Files tab is empty.
+        is in it. Run it in an empty directory and the Projects List is empty.
         Run it in a directory that already holds folders and every one of
         them is listed as a project on the spot. Both are correct; this page
         explains what you are looking at either way and how to get a real
@@ -787,7 +792,7 @@ function firstRunArticle(){
       <section class="wiki-section">
         <h2>What you are looking at</h2>
         <div class="wiki-decision-list">
-          <div><b>An empty directory</b><p>Files says <i>No projects in this
+          <div><b>An empty directory</b><p>The Projects List says <i>No projects in this
           workspace yet</i>. Dashboard, Graph, Tree and Timeline draw the
           same empty map. Setup and Wiki are fully alive; Sessions lists the
           runtimes it can read and shows <i>no data</i> until one of them has
@@ -803,8 +808,8 @@ function firstRunArticle(){
           <button class="wiki-link" data-open-tab="secrets">Setup</button>:
           it changes which folders are listed and never moves files.</p></div>
         </div>
-        <p class="wiki-note">Either way the tabs read one map: the List, Graph
-        and Tree lenses of Files, the Dashboard and the Timeline all show the
+        <p class="wiki-note">Either way the views read one map: the Dashboard, List, Graph
+        and Tree lenses of Projects and the Timeline all show the
         same set of folders, and all update within a watcher tick.</p>
       </section>
 
@@ -867,10 +872,10 @@ function firstRunArticle(){
           <table class="wiki-table">
             <thead><tr><th>Once you have…</th><th>…this appears</th></tr></thead>
             <tbody>
-              <tr><td>any folder in the workspace</td><td>Files (List, Graph, Tree), the project drawer's file browser, Dashboard node</td></tr>
+              <tr><td>any folder in the workspace</td><td>Projects (Dashboard, List, Graph, Tree), the project drawer's file browser</td></tr>
               <tr><td>a scaffolded project</td><td>identity and description from <code>.xo/project.json</code>, todos in the drawer and orbiting on Dashboard</td></tr>
               <tr><td>a <code>.git</code> inside the project</td><td>Timeline lane with commit history; file dates in Graph and Tree (folders without git are drawn as dark lanes, not dropped)</td></tr>
-              <tr><td>an agent session in the project</td><td>live badge and last activity in Files, events in the drawer, entries in Sessions</td></tr>
+              <tr><td>an agent session in the project</td><td>live badge and last activity in Projects, events in the drawer, entries in Sessions</td></tr>
               <tr><td>credentials in Setup or <code>.env</code></td><td>chat through the API, connectors, backup and restore</td></tr>
             </tbody>
           </table>
@@ -965,9 +970,9 @@ function installationArticle(){
           and piping that to <code>bash</code> yourself does the same thing.</p></li>
           <li><b>Open the workspace.</b>
           <code>http://localhost:5002/space/</code>
-          <p>It opens on the Files tab: empty if the directory was empty,
-          otherwise listing every folder that was already there as a
-          project. Both are expected: <button class="wiki-link"
+          <p>It opens on Dashboard under Projects. Click Projects to open
+          List: empty if the directory was empty, otherwise listing every
+          folder that was already there as a project. Both are expected: <button class="wiki-link"
           data-wiki-link="first-run">Your first run</button> explains what
           you are looking at and how to get a real project in.</p>
           <p>Press Ctrl-C to stop the server. To start it again without
@@ -1462,7 +1467,7 @@ function xoDataArticle(){
             <thead><tr><th>File</th><th>Where</th><th>What it contains</th><th>How it is produced</th></tr></thead>
             <tbody>
               <tr><td><code>space.json</code></td><td>.xo</td><td>The Space record: the captured Space id, its label, the two roots, and the agent backends attached to it. Not the graph: the graph it used to hold is derived state and moved to <code>~/.quirq/workspace/graph.json</code>, where <code>GET /xo/space.json</code> still reads it.</td><td>one writer, at most every XO_SPACE_REFRESH_S (60s) and only when something changes</td></tr>
-              <tr><td><code>graph.json</code></td><td><code>~/.quirq/workspace</code></td><td>The workspace graph the Graph, Tree and Files List read: projects, folders, files, derived ties, git history. Served at <code>GET /xo/space.json</code>.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on demand when a request finds it stale</td></tr>
+              <tr><td><code>graph.json</code></td><td><code>~/.quirq/workspace</code></td><td>The workspace graph the Graph, Tree and Projects List read: projects, folders, files, derived ties, git history. Served at <code>GET /xo/space.json</code>.</td><td>watcher, at most every XO_VIEWS_REFRESH_S (30s), plus on demand when a request finds it stale</td></tr>
               <tr><td><code>dashboard.json</code></td><td><code>~/.quirq/workspace</code></td><td>The same scan as the graph, collapsed into five purpose environments.</td><td>same tick as the graph: one scan feeds both</td></tr>
               <tr><td><code>sessions.json</code></td><td><code>~/.quirq/workspace</code></td><td>Session telemetry merged across every runtime that reports it.</td><td>same tick</td></tr>
               <tr><td><code>projects.json</code></td><td>.xo</td><td>The projects registry: every project directory the watcher discovered, keyed by directory name, each with its <code>pid</code>, whether it is scaffolded, and its git origin. <code>by_pid</code> is a derived reverse index in the same file; its values are always arrays, so a pid that appears in two folders raises an alarm instead of losing one of them.</td><td>rebuilt every tick and written only when it changes; git origins refresh at most every XO_GIT_PROVENANCE_REFRESH_S (300s)</td></tr>
@@ -2266,7 +2271,7 @@ function flowsArticle(){
       <section class="wiki-section">
         <h2>Flow 0 · “What does Space itself read?”</h2>
         <div class="wiki-recipe">
-          <div class="wiki-recipe-step"><small>1</small><b>The map</b><code>GET /xo/space.json</code><p>Projects, folders, files, derived ties and per-project git history. Graph, Tree and the Files List’s file counts all read this one payload.</p></div>
+          <div class="wiki-recipe-step"><small>1</small><b>The map</b><code>GET /xo/space.json</code><p>Projects, folders, files, derived ties and per-project git history. Graph, Tree and the Projects List’s file counts all read this one payload.</p></div>
           <i>→</i>
           <div class="wiki-recipe-step"><small>2</small><b>The projection</b><code>GET /xo/dashboard.json</code><p>The same scan collapsed into five purpose environments. Same schema, so one renderer serves both.</p></div>
           <i>→</i>

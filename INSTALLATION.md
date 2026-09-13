@@ -26,7 +26,7 @@ What you see first depends on where you ran the installer. Quirq does not
 create anything for you: it watches the directory you installed in — your
 workspace, the *XO root* — and shows what is there.
 
-- **An empty directory:** Files says **No projects in this workspace yet**,
+- **An empty directory:** the Projects List says **No projects in this workspace yet**,
   and Dashboard, Graph, Tree and Timeline draw the same empty map. Setup and
   Wiki work fully; Sessions shows *no data* until a runtime has run a session
   on this machine.
@@ -66,8 +66,12 @@ Three ways to get a project in:
    folder exists). The root is printed by the installer (`XO projects:`),
    shown in the Setup tab, and returned by `GET /api/config/workspace`.
 
-Tabs fill in stages: any folder lights up Files (List, Graph, Tree) and a
-Dashboard node; a scaffolded project adds identity and todos; a `.git` inside
+Space opens on Dashboard, the first lens under Projects. Its lens switch is
+**Dashboard | List | Graph | Tree | Sharing**. Clicking Projects opens List
+(`#/projects`); `#/dashboard` still opens Dashboard directly.
+
+Tabs fill in stages: any folder lights up Projects (Dashboard, List, Graph,
+Tree); a scaffolded project adds identity and todos; a `.git` inside
 the project adds a Timeline lane and file dates; an agent session adds live
 badges, drawer events and Sessions telemetry; credentials (Setup or `.env`)
 enable chat, connectors and backup. Nothing is required just to browse.

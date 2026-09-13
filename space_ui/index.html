@@ -5,11 +5,11 @@
 </head><body>
 <link rel="stylesheet" href="css/base.css?v=20260817-a11y1">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260817-lens1">
+<link rel="stylesheet" href="css/graph.css?v=20260914-projectslens1">
 <link rel="stylesheet" href="css/sessions.css?v=20260725-sessions2">
 <link rel="stylesheet" href="css/timeline.css?v=20260825-timeline1">
-<link rel="stylesheet" href="css/chrome.css?v=20260813-timeline2">
-<link rel="stylesheet" href="css/projects.css?v=20260911-issues1">
+<link rel="stylesheet" href="css/chrome.css?v=20260914-projectslens1">
+<link rel="stylesheet" href="css/projects.css?v=20260914-projectslens1">
 <link rel="stylesheet" href="css/sharing.css?v=20260910-sharingpane1">
 <link rel="stylesheet" href="css/inbox.css?v=20260914-accounts1">
 <link rel="stylesheet" href="css/wiki.css?v=20260906-steps1">
@@ -50,12 +50,13 @@
 </div>
 
 <main id="stage">
-  <!-- Files lens switch: one element for all four lenses, owned by
+  <!-- Projects lens switch: one element for all five lenses, owned by
        core/lens-switch.js. It sits in the stage rather than inside a view so
        that switching lens cannot move it. -->
   <div id="fileslens" hidden>
     <div class="fileslens-inner">
-      <div class="atlas-lens-switch" role="group" aria-label="Files lens">
+      <div class="atlas-lens-switch" role="group" aria-label="Projects lens">
+        <button type="button" data-files-lens="dashboard">Dashboard</button>
         <button type="button" data-files-lens="projects">List</button>
         <button type="button" data-files-lens="graph">Graph</button>
         <button type="button" data-files-lens="tree">Tree</button>
@@ -172,6 +173,6 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260914-accounts1"></script>
+<script type="module" src="js/app.js?v=20260914-projectslens1"></script>
 
 </body></html>

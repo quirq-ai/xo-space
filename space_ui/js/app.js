@@ -1,19 +1,19 @@
 /* Entry point. Adding a view = create js/views/<name>.js exporting the view
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
-import {registerView,startRegistry} from './core/registry.js?v=20260914-accounts1';
+import {registerView,startRegistry} from './core/registry.js?v=20260914-projectslens1';
 import {initServerWidget} from './core/server-widget.js?v=20260825-rename1';
-import {initLensSwitch} from './core/lens-switch.js?v=20260910-sharinglens1';
-import {initPreview} from './core/preview.js?v=20260827-htmlfix1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260825-review1';
+import {initLensSwitch} from './core/lens-switch.js?v=20260914-projectslens1';
+import {initPreview} from './core/preview.js?v=20260914-projectslens1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-projectslens1';
 import sessionsView from './views/sessions.js?v=20260825-rename1';
 import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-accounts1';
-import projectsView from './views/projects.js?v=20260911-issues1';
+import projectsView from './views/projects.js?v=20260914-projectslens1';
 import treeView from './views/tree.js?v=20260825-rename1';
 import sharingView from './views/sharing.js?v=20260914-accounts1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-accounts1';
+import wikiView from './views/wiki.js?v=20260914-projectslens1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260828-reporting1';
 import connectorsView from './views/connectors.js?v=20260914-accounts1';

@@ -48,6 +48,7 @@ function ensureBoot(requestedDataset){
   const dataset=DATASETS[requestedDataset]?requestedDataset:savedDataset();
   if(bootPromise&&bootDataset!==dataset){
     rememberDataset(dataset);
+    dispatchEvent(new CustomEvent('space:before-atlas-reload'));
     location.reload();
     return new Promise(()=>{});
   }
@@ -97,10 +98,10 @@ function atlasView(id,label,order,lens,dataset=null){
 }
 export const dashboardView={
   ...atlasView('dashboard','Dashboard',0,'graph','dashboard'),
-  section:'graph'
+  section:'graph',nav:false,parent:'projects'
 };
-/* Files lands on the List lens (the projects view owns the nav tab); the
-   Graph is its second lens, reachable from the pill or #/graph. */
+/* Projects owns the nav tab and the List route. Dashboard is the default
+   landing lens; Graph is the third lens, reachable from the pill or #/graph. */
 export const graphView={
   ...atlasView('graph','Graph',1,'graph','graph'),
   nav:false,parent:'projects'
@@ -108,7 +109,7 @@ export const graphView={
 /* Timeline is pinned to the workspace dataset (space.json): plotting the
    Dashboard's 5-environment projection there has no git history and reads
    as broken. Arriving from Dashboard costs one dataset-switch reload, the
-   same hop Dashboard ↔ Files already makes. */
+   same hop Dashboard ↔ Graph already makes. */
 export const timeView=atlasView('time','Timeline',2,'time','graph');
 
 function boot(DATA,DATA_SOURCE){
@@ -970,7 +971,7 @@ const SAT_DOTS=28;    /* dots drawn — beyond this the orbit reads as noise */
 const SAT_ROWS=40;    /* rows listed in the panel */
 const SAT_TTL=20000;  /* ms a fetched list stays fresh (re-click is instant) */
 const SAT_MIN_K=.55;  /* below this zoom, dots would collide with sibling nodes */
-/* Same order the Files tab lists todos in (projects.js). Duplicated rather
+/* Same order the Projects tab lists todos in (projects.js). Duplicated rather
    than imported: views never import each other (see the registry contract).
    The status set is owned by services/cowork_agent/visualizer/todo_status.py;
    tests/test_todo_status.py fails if these three stop matching it. */
@@ -1383,7 +1384,7 @@ const GITHIST=DATA.gitHistory||{};
 const histLanes=Object.keys(CAT).filter(cat=>(GITHIST[cat]||[]).length);
 const hasHist=histLanes.length>0;
 /* Both modes plot git dates only, so a project with no repository has no
-   lane at all. Files counts every project; without this note the Timeline
+   lane at all. Projects counts every project; without this note the Timeline
    silently shows fewer and reads as broken data rather than as the absence
    of git history it actually is. */
 const fileLanes=()=>Object.keys(CAT).filter(cat=>LEAVES.some(n=>n.cat===cat&&n.date));
@@ -1473,7 +1474,7 @@ function buildTimeline(){
   computeRange();
   histDots=[];
   /* Every project gets a lane, including the ones with nothing to plot.
-     Dropping them made the Timeline disagree with Files about how many
+     Dropping them made the Timeline disagree with Projects about how many
      projects exist, and a reader cannot tell "no history" from "missing".
      An empty lane is drawn dark and labelled instead. */
   const allLanes=Object.keys(CAT);

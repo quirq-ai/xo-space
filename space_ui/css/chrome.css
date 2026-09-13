@@ -62,6 +62,17 @@
     #panel{width:100%}
     footer .attrib{display:none}
   }
+  /* Keep the root picker and search inside the viewport alongside the brand
+     when all five Projects lenses are available on a phone. */
+  @media (max-width:480px){
+    .topbar{grid-template-columns:auto minmax(0,1fr)}
+    #root-btn .rlab{display:none}
+    #root-btn b{max-width:56px}
+    .searchwrap{min-width:0}
+    footer{min-width:0}
+    footer .srv{flex:none;white-space:nowrap}
+    footer .meta{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  }
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
   }
