@@ -499,6 +499,9 @@ class CommandSpec:
             argv = split_command(obj["command"])
         else:
             raise CommandSpecError("command spec needs argv (preferred) or command")
+        # Both input forms share the same argument checks. Flags are valid
+        # arguments, but the executable itself cannot be an option.
+        argv = [safe_arg(arg, allow_option=index > 0) for index, arg in enumerate(argv)]
         cwd = obj.get("cwd")
         if cwd is not None and (not isinstance(cwd, str) or not cwd):
             raise CommandSpecError("cwd must be a non-empty string")

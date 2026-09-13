@@ -437,7 +437,7 @@ const TAB_GUIDES={
     name:'Setup',
     kicker:'Tab guide · Local runtime configuration',
     title:'Setup: configure this installation',
-    intro:'Setup controls host storage roots, the active chat backend, watcher coverage and cadence, native runtime mounts, write-only credentials, managed process restarts, and git-backed self-update of the xo-space checkout.',
+    intro:'Setup controls host storage roots, the active chat backend, watcher coverage and cadence, native runtime mounts, write-only credentials, server restarts, saved local commands with run history, and git-backed self-update of the xo-space checkout.',
     facts:['typed settings','write-only secrets','root-aware','restart truthful','git self-update'],
     jobs:[
       ['Choose storage','View and configure the host XO projects root and machine-local .quirq root.'],
@@ -451,14 +451,20 @@ const TAB_GUIDES={
       ['GET/PUT /api/runtime-config','Reads and validates agent and watcher settings in .quirq/runtime.env.','Non-secret configuration'],
       ['PUT /api/runtime-config/roots','Writes the desired host roots to .quirq/roots.env, which the server reads at startup; an exported shell or container value still outranks it.','Storage root configuration'],
       ['GET/PATCH/DELETE /api/secrets','Returns names/status and writes values to .quirq/secrets.env.','Write-only credentials'],
-      ['POST /api/runtime-config/restart','Restarts only an installer-managed local container.','Managed process control']
+      ['GET /space/server/status + POST /space/server/restart','Reports restart_mode and restarts managed containers or native cowork-api.sh installs. Localhost-only; foreground returns 409.','Process control'],
+      ['GET/POST/PUT/DELETE /api/schedules + POST /api/schedules/{id}/run','One store and executor for manual commands and intervals. Writes and Run are localhost-only.','Commands'],
+      ['GET /api/schedules/{id}/runs','Newest 20 results in the Runs drawer: status, return code, duration and escaped output tail. Full output stays at the displayed log path.','Run history']
     ],
     steps:[
       ['Confirm paths','Compare the configured roots with what the running server reports.'],
       ['Inspect stored state','The header’s Open Quirq state button opens the machine-local watcher state beside the portable .xo output.'],
       ['Save roots','Saved roots are applied at startup: restart the server, or run the one-command installer on a managed container, which also remaps its bind mounts.'],
       ['Save runtime','Review the pending-restart banner before applying process-time changes.'],
-      ['Add credentials','Choose a manifest-recommended key, save it, then restart when requested.']
+      ['Add credentials','Choose a manifest-recommended key, save it, then restart when requested.'],
+      ['Restart server','Use the hero button beside Refresh status, Apply & restart, or the same button after an update. Restart takes a few seconds; the pill may go red before it returns, then every tab reloads.'],
+      ['Restart modes','managed: SIGTERM and the container supervisor; native: detached cowork-api.sh restart with a matching pid file; foreground: disabled button with Ctrl-C and re-run.'],
+      ['Add command','Save a name, description, command line or argv JSON, cwd and timeout. Leave interval blank for manual only; an interval adds a Runs every N chip. Nothing is seeded.'],
+      ['Run and review','Run disables while executing and polls every three seconds. Runs shows the latest 20 records. Edit changes the definition; Delete keeps history and logs on disk under <quirq state>/scheduler/.']
     ],
     checks:[
       ['Root not applied','Saving only queues it. Restart the server (or rerun the displayed installer) to boot on the new roots; every tab then reads the same XO root.'],
@@ -1480,6 +1486,11 @@ function quirqDataArticle(){
 ├── roots.env                   # mode 0600; storage roots, read at server startup
 ├── quirq.log                   # server output appended by the installer's run loop
 ├── secrets.env                 # mode 0600; write-only credentials from Setup (when QUIRQ_SECRETS_FILE points here — the installer does)
+├── scheduler/                  # saved commands and interval jobs
+│   ├── jobs.json               # definitions, descriptions, optional interval
+│   ├── state.json              # next run, running since, last result
+│   ├── runs/&lt;id&gt;.jsonl      # append-only run history
+│   └── logs/&lt;id&gt;.log        # full command output
 ├── projects/
 │   └── &lt;pid&gt;/                # per-project runtime tier, keyed by project.json:pid
 │       ├── stats.json
@@ -1503,15 +1514,26 @@ function quirqDataArticle(){
         │   └── &lt;project-id&gt;.json
         └── workspace.json</pre>
         <p class="wiki-note">One <code>rm -rf ~/.quirq</code> is a clean total
-        reset: everything under it is re-derivable, and nothing under it is
-        the only copy of anything. That property is the whole point of the
-        split, and it is why the replay cursors live in the same root as the
-        totals they protect.</p>
+        reset: derived statistics can be rebuilt with their replay cursors, but
+        saved commands, run history, runtime settings and credentials are lost.
+        Keep a local copy of those files if you need them.</p>
       </section>
 
       <section class="wiki-section">
         <h2>File-by-file catalog</h2>
         <div class="wiki-file-list">
+          <article class="wiki-file">
+            <header><code>scheduler/</code><span>commands and run history</span></header>
+            <p>Setup saves command definitions in <code>jobs.json</code>. A null
+            interval means manual only; the tick never launches it. Execution
+            uses the command utility with the server’s environment and a required
+            timeout. Manual and interval runs share one concurrency limit.</p>
+            <p><code>state.json</code> holds running and last-result state;
+            <code>runs/&lt;id&gt;.jsonl</code> keeps every result with a 2000-character
+            output tail, and <code>logs/&lt;id&gt;.log</code> keeps full output.
+            Deleting a definition keeps both files. These are local user records,
+            not project-synced data or a reporting source.</p>
+          </article>
           <article class="wiki-file">
             <header><code>state.json</code><span>installation state</span></header>
             <p>Currently stores <code>onboarding_completed</code> and

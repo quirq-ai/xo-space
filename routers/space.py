@@ -24,6 +24,7 @@ DEFAULT_SPACE_DIR = str(Path(__file__).resolve().parent.parent / "space_ui")
 SPACE_DIR = Path(os.getenv("SPACE_DIR", DEFAULT_SPACE_DIR)).expanduser()
 
 router = APIRouter(prefix="/space", tags=["space"])
+_SERVER_INSTANCE = str(time.time_ns())
 
 
 def _is_local(request: Request) -> bool:
@@ -34,8 +35,12 @@ def _is_local(request: Request) -> bool:
 @router.get("/server/status")
 async def space_server_status():
     """Lightweight status for the Space UI widget (also see /health)."""
+    from services.cowork_agent.runtime_config import restart_mode
+
     return {
         "status": "on",
+        "instance_id": _SERVER_INSTANCE,
+        "restart_mode": restart_mode(),
         "pid": os.getpid(),
         "space_dir": str(SPACE_DIR),
         "space_dir_exists": SPACE_DIR.exists(),
@@ -54,6 +59,30 @@ async def space_server_stop(request: Request):
 
     asyncio.get_running_loop().create_task(_terminate_soon())
     return {"status": "stopping", "restart": "./cowork-api.sh start"}
+
+
+@router.post("/server/restart")
+async def space_server_restart(request: Request):
+    """Restart through the install's supervisor; never start a second server."""
+    if not _is_local(request):
+        raise HTTPException(status_code=403, detail="restart is allowed from localhost only")
+    from services.cowork_agent.runtime_config import REPO_ROOT, restart_mode
+    from utils.commands import spawn_detached
+
+    mode = restart_mode()
+    if mode == "foreground":
+        raise HTTPException(status_code=409, detail="Ctrl-C and re-run the server from the terminal where you launched it.")
+    if mode == "native":
+        result = spawn_detached(["./cowork-api.sh", "restart"], cwd=REPO_ROOT)
+        if not result.ok:
+            raise HTTPException(status_code=503, detail=f"Could not start the restart script: {result.output}")
+    else:
+        async def _terminate_soon():
+            await asyncio.sleep(0.4)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        asyncio.get_running_loop().create_task(_terminate_soon())
+    return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
 
 
 @router.get("/update/status")

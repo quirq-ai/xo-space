@@ -1,4 +1,4 @@
-"""Fixed-interval command scheduler: the job store and the tick.
+"""Manual and fixed-interval commands: the job store and the tick.
 
 Design: docs/superpowers/specs/2026-09-11-command-scheduler-design.md.
 
@@ -13,7 +13,7 @@ Files, all under ``<quirq state>/scheduler/`` (mode 0600 where supported):
 
     jobs.json        definitions — written only by registration
     state.json       next_run / last_run / running_since / last_result —
-                     written only by the tick and by run_now
+                     written by registration, tick, run_now and read-time harvest
     runs/<id>.jsonl  append-only run history, newest last
     logs/<id>.log    the executor's own log of every run (full output)
 
@@ -58,7 +58,7 @@ OUTPUT_TAIL_CHARS = 2000
 
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
-_DEFINITION_KEYS = frozenset({"name", "command", "every_seconds", "project_id", "enabled"})
+_DEFINITION_KEYS = frozenset({"name", "description", "command", "every_seconds", "project_id", "enabled"})
 
 
 class SchedulerError(Exception):
@@ -71,6 +71,10 @@ class UnknownJobError(SchedulerError):
 
 class JobRunningError(SchedulerError):
     """The job already has a run in progress (single-flight)."""
+
+
+class ConcurrencyLimitError(SchedulerError):
+    """All command execution slots are occupied."""
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -225,16 +229,19 @@ def validate_definition(payload: Any) -> dict:
     name = payload.get("name")
     if not isinstance(name, str) or not _NAME_RE.match(name):
         raise ValueError("name must be 1-64 characters: letters, digits, space, '_', '.', '-'")
+    description = payload.get("description")
+    if description is not None and not isinstance(description, str):
+        raise ValueError("description must be a string when given")
     if "command" not in payload:
         raise ValueError("command is required (a JSON object: argv, timeout, optional cwd/env)")
     spec = CommandSpec.from_json(payload["command"])  # CommandSpecError is a ValueError
     if spec.timeout is None:
         raise ValueError("command.timeout is required: a scheduled job without one could run forever")
     every = payload.get("every_seconds")
-    if isinstance(every, bool) or not isinstance(every, int) or every < 1:
-        raise ValueError("every_seconds must be a positive integer")
+    if every is not None and (isinstance(every, bool) or not isinstance(every, int) or every < 1):
+        raise ValueError("every_seconds must be a positive integer or null (manual only)")
     tick = tick_interval_seconds()
-    if every < tick:
+    if every is not None and every < tick:
         # The scheduler looks once per tick; a shorter interval is polling,
         # not scheduling, and could not be honoured.
         raise ValueError(
@@ -255,6 +262,7 @@ def validate_definition(payload: Any) -> dict:
         command["env"] = spec.env
     return {
         "name": name,
+        "description": description,
         "project_id": project_id,
         "command": command,
         "every_seconds": every,
@@ -272,7 +280,8 @@ def _new_id(name: str, taken: Mapping[str, Any]) -> str:
 
 def _initial_state(job: Mapping[str, Any], now: datetime) -> dict:
     return {
-        "next_run": stamp(now + timedelta(seconds=int(job["every_seconds"]))),
+        "next_run": (stamp(now + timedelta(seconds=job["every_seconds"]))
+                     if job.get("every_seconds") is not None else None),
         "last_run": None,
         "running_since": None,
         "last_result": None,
@@ -331,13 +340,13 @@ def get_job(job_id: str) -> dict:
         job = _read_doc(jobs_file())["jobs"].get(job_id)
         if job is None:
             raise UnknownJobError(job_id)
-        return _view(job, _read_doc(state_file())["jobs"].get(job_id))
+        return _view(job, _harvest_for_read()["jobs"].get(job_id))
 
 
 def list_jobs() -> list[dict]:
     with _lock:
         jobs = _read_doc(jobs_file())["jobs"]
-        state = _read_doc(state_file())["jobs"]
+        state = _harvest_for_read()["jobs"]
         return [_view(jobs[k], state.get(k)) for k in sorted(jobs)]
 
 
@@ -356,7 +365,7 @@ def update_job(job_id: str, payload: Any, *, now: Optional[datetime] = None) -> 
         jobs["jobs"][job_id] = job
         entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
         if definition["every_seconds"] != old.get("every_seconds"):
-            entry["next_run"] = stamp(now + timedelta(seconds=definition["every_seconds"]))
+            entry["next_run"] = _initial_state(job, now)["next_run"]
         _write_doc(jobs_file(), jobs)
         _write_doc(state_file(), state)
         return _view(job, entry)
@@ -381,6 +390,7 @@ def list_runs(job_id: str, limit: int = 20) -> list[dict]:
     with _lock:
         if job_id not in _read_doc(jobs_file())["jobs"]:
             raise UnknownJobError(job_id)
+        _harvest_for_read()
     try:
         lines = runs_file(job_id).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
@@ -494,6 +504,20 @@ def _sweep(state: dict, now: datetime) -> list[str]:
     return lost
 
 
+def _harvest_for_read() -> dict:
+    """Refresh results without launching jobs, including with the watcher off.
+
+    Lock held. Reads and run_now share this so a completed run immediately
+    frees its slot and every result is persisted before another run starts.
+    """
+    state = _read_doc(state_file())
+    finished = _harvest(state)
+    lost = _sweep(state, now_utc())
+    if finished or lost:
+        _write_doc(state_file(), state)
+    return state
+
+
 # ── The tick ─────────────────────────────────────────────────────────────────
 
 
@@ -528,7 +552,7 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
     needs writing (a launch writes the file itself, before the process
     exists, and returns False). Lock held."""
     job_id = str(job["id"])
-    if not job.get("enabled", True):
+    if not job.get("enabled", True) or job.get("every_seconds") is None:
         return False
     entry = state["jobs"].get(job_id)
     if entry is None:
@@ -623,17 +647,19 @@ def tick(now: Optional[datetime] = None) -> TickReport:
 
 def run_now(job_id: str, *, now: Optional[datetime] = None) -> dict:
     """Start the job immediately (``trigger: manual``). Ignores ``enabled`` —
-    a manual run is how an agent tests a job before trusting it — and the
-    concurrency cap, and does not touch ``next_run``. Single-flight still
-    holds: a job that is running raises ``JobRunningError``."""
+    a manual run is how an agent tests a job before trusting it — and
+    does not touch ``next_run``. Single-flight and the shared concurrency cap
+    apply to manual runs too."""
     now = _resolve_now(now)
     with _lock:
         job = _read_doc(jobs_file())["jobs"].get(job_id)
         if job is None:
             raise UnknownJobError(job_id)
+        state = _harvest_for_read()
         if job_id in _running:
             raise JobRunningError(f"{job_id} already has a run in progress")
-        state = _read_doc(state_file())
+        if len(_running) >= max_concurrent():
+            raise ConcurrencyLimitError(f"command concurrency limit ({max_concurrent()}) reached; try again when a run finishes")
         entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
         entry["running_since"] = stamp(now)
         _write_doc(state_file(), state)

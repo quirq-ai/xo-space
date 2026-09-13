@@ -4,8 +4,8 @@ Thin handlers over ``utils/commands/scheduler.py`` (the scheduling half of
 the command utility): parse → call it → map its typed errors to HTTP. Lives at
 the top of ``routers/`` beside ``space.py`` and ``xo_data.py`` because it is
 part of xo-space's local layer, not the broker's Plane B surface; ``server.py``
-mounts it directly. Same auth posture as the other local routes: nothing
-beyond what the server applies globally.
+mounts it directly. Writes and manual execution are localhost-only, like
+Space's process controls.
 
 The body of POST/PUT is passed to the service as a plain dict so that every
 validation failure — a wrong type included — is one ``400`` with the
@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from utils.commands import scheduler
 from utils.commands.scheduler import (
+    ConcurrencyLimitError,
     JobRunningError,
     SchedulerError,
     UnknownJobError,
@@ -29,13 +30,20 @@ from utils.commands.scheduler import (
 router = APIRouter()
 
 
+def _require_local(request: Request) -> None:
+    from routers.space import _is_local
+
+    if not _is_local(request):
+        raise HTTPException(status_code=403, detail="commands can be changed or run from localhost only")
+
+
 def _call(fn, *args, **kwargs):
     """Run a service call and translate its errors."""
     try:
         return fn(*args, **kwargs)
     except UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=f"no such job: {exc}") from exc
-    except JobRunningError as exc:
+    except (JobRunningError, ConcurrencyLimitError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:  # includes CommandSpecError
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -48,7 +56,7 @@ def list_schedules() -> dict:
     return {"jobs": _call(scheduler.list_jobs)}
 
 
-@router.post("/api/schedules", status_code=201)
+@router.post("/api/schedules", status_code=201, dependencies=[Depends(_require_local)])
 def create_schedule(body: Any = Body(...)) -> dict:
     return _call(scheduler.create_job, body)
 
@@ -58,18 +66,18 @@ def get_schedule(job_id: str) -> dict:
     return _call(scheduler.get_job, job_id)
 
 
-@router.put("/api/schedules/{job_id}")
+@router.put("/api/schedules/{job_id}", dependencies=[Depends(_require_local)])
 def update_schedule(job_id: str, body: Any = Body(...)) -> dict:
     return _call(scheduler.update_job, job_id, body)
 
 
-@router.delete("/api/schedules/{job_id}")
+@router.delete("/api/schedules/{job_id}", dependencies=[Depends(_require_local)])
 def delete_schedule(job_id: str) -> dict:
     _call(scheduler.delete_job, job_id)
     return {"ok": True, "deleted": job_id}
 
 
-@router.post("/api/schedules/{job_id}/run", status_code=202)
+@router.post("/api/schedules/{job_id}/run", status_code=202, dependencies=[Depends(_require_local)])
 def run_schedule_now(job_id: str) -> dict:
     job = _call(scheduler.run_now, job_id)
     return {"ok": True, "started": True, "job": job}
@@ -77,4 +85,5 @@ def run_schedule_now(job_id: str) -> dict:
 
 @router.get("/api/schedules/{job_id}/runs")
 def list_schedule_runs(job_id: str, limit: int = Query(20, ge=1, le=500)) -> dict:
-    return {"job_id": job_id, "runs": _call(scheduler.list_runs, job_id, limit)}
+    return {"job_id": job_id, "runs": _call(scheduler.list_runs, job_id, limit),
+            "log_path": str(scheduler.log_file(job_id))}

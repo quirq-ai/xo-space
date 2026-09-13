@@ -42,6 +42,30 @@ INSTALL_COMMAND = "curl -fsSL https://quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000
+REPO_ROOT = Path(__file__).resolve().parents[2]
+NATIVE_PID_FILE = Path("/tmp/xo-space.pid")  # cowork-api.sh's process manager
+
+
+def restart_mode() -> str:
+    """Only restart a supervisor-managed process or our native runner.
+
+    The native pid can be the server itself or its bash wrapper. A stale
+    pid file (or another checkout's server) must not enable process control.
+    Reload workers are foreground development processes, not managed servers.
+    """
+    if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
+        return "managed"
+    if _as_bool(os.getenv("UVICORN_RELOAD"), default=False):
+        return "foreground"
+    script = REPO_ROOT / "cowork-api.sh"
+    if script.is_file() and os.access(script, os.X_OK):
+        try:
+            pid = int(NATIVE_PID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return "foreground"
+        if pid > 1 and pid in {os.getpid(), os.getppid()}:
+            return "native"
+    return "foreground"
 
 
 def _secrets_fingerprint() -> str:
@@ -578,10 +602,8 @@ def runtime_status() -> dict[str, Any]:
         "applied": applied,
         "restart_required": bool(reasons),
         "restart_reasons": reasons,
-        "restart_supported": _as_bool(
-            os.getenv("QUIRQ_ALLOW_SELF_RESTART"),
-            default=False,
-        ),
+        "restart_supported": restart_mode() != "foreground",
+        "restart_mode": restart_mode(),
         "managed_container": _as_bool(
             os.getenv("QUIRQ_MANAGED_CONTAINER"),
             default=False,

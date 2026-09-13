@@ -5,16 +5,23 @@
 import {API_BASE,apiFetch} from './api.js';
 import {setSlottedInterval} from './store.js';
 
+let updateServer=()=>{};
+
+/* Setup uses the same probe while restarting, so the pill and the reload
+   decision reflect the same response. */
+export async function pollServer(){
+  const r=await apiFetch(API_BASE+'/space/server/status');
+  updateServer(r.ok);
+  return r;
+}
+
 export function initServerWidget(){
   const srvPip=document.getElementById('srv-pip');
   const srvText=document.getElementById('srv-text');
   const srvBtn=document.getElementById('srv-btn');
   const srvPop=document.getElementById('srvpop');
   let srvOn=null;
-  async function pollServer(){
-    const r=await apiFetch(API_BASE+'/space/server/status');
-    setSrv(r.ok);
-  }
+  updateServer=setSrv;
   function setSrv(on){
     if(srvOn===on)return;
     srvOn=on;

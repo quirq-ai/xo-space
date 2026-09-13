@@ -246,7 +246,7 @@ exceptions:
 
 Every subprocess xo-space starts goes through the `utils/commands/` package
 (`__init__.py` is the executor; `scheduler.py`, beside it, runs registered
-commands on a fixed interval — see `docs/command-scheduler.md`):
+commands manually or on a fixed interval):
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
 argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
 described as data (the skill catalog, manifests, future automation). The
@@ -267,6 +267,38 @@ anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
 `subprocess` / `create_subprocess_exec` call and an `import subprocess` are
 allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
 only shrink. Converting a file means removing it from that list.
+
+
+### Setup process controls and commands
+
+`GET /space/server/status` reports `restart_mode` and an `instance_id` that
+changes on each process start. Setup's **Restart server**, **Apply & restart**
+and post-update button all call the localhost-only `POST /space/server/restart`.
+The old `/api/runtime-config/restart` URL remains a localhost-only alias.
+
+| Mode | Detection | Restart behavior |
+|---|---|---|
+| `managed` | `QUIRQ_MANAGED_CONTAINER` is true | Deferred SIGTERM; the supervisor brings the process back. |
+| `native` | `cowork-api.sh` is executable and `/tmp/xo-space.pid` identifies this server or its wrapper | `spawn_detached(["./cowork-api.sh", "restart"], cwd=<checkout>)`; the runner preserves its own restart helper while stopping the old process. |
+| `foreground` | No matching native pid or managed supervisor; includes reload mode | HTTP 409, disabled UI control with “Ctrl-C and re-run”. |
+
+The footer and Setup share a status probe; Setup reloads only after a new
+instance responds, including in containers where the PID can stay the same.
+
+The Commands card uses `/api/schedules` and the existing `CommandSpec` executor.
+`every_seconds` may be omitted or null for manual-only jobs; the tick never
+launches those jobs. `description` is optional. An interval change resets the
+schedule grid; switching to manual clears `next_run` and keeps the history.
+All create/update/delete/run routes are localhost-only. Manual execution keeps
+single-flight and `XO_SCHEDULER_MAX_CONCURRENT` (409 when busy). GETs and run_now
+harvest completed runs without launching jobs, so manual results stay visible
+with the watcher disabled. A timeout is required for every saved command.
+
+Files live under `<quirq state>/scheduler/`: `jobs.json` definitions, `state.json`
+execution state, append-only `runs/<id>.jsonl` history and `logs/<id>.log` full
+output. Deleting a definition keeps its history and logs. The UI shows the latest
+20 records, each with status, return code, duration and up to 2000 output characters.
+These saved commands and results are user data; deleting the state root loses them.
 
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via

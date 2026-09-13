@@ -41,7 +41,7 @@ class SchedulerApiTests(unittest.TestCase):
         scheduler.reset_state()
         app = FastAPI()
         app.include_router(router)
-        self.client = TestClient(app)
+        self.client = TestClient(app, client=("127.0.0.1", 12345))
 
     def tearDown(self) -> None:
         for run in list(scheduler._running.values()):

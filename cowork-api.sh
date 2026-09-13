@@ -238,8 +238,13 @@ kill_process_tree() {
     local root_pid="$1"
     [ -z "$root_pid" ] && return 0
 
-    # Kill known children first, then the parent.
-    pkill -P "$root_pid" 2>/dev/null || true
+    # A restart requested by the API is itself a child of the old server.
+    # Its separate session survives the parent, but pkill -P would kill it.
+    local child_pid
+    for child_pid in $(pgrep -P "$root_pid" 2>/dev/null || true); do
+        [ "$child_pid" = "$$" ] && continue
+        kill_pid_graceful "$child_pid"
+    done
     kill_pid_graceful "$root_pid"
 }
 
@@ -348,6 +353,8 @@ stop_api() {
 
 restart_api() {
     acquire_lock
+    # Allow the API's restart response to flush before stopping its process.
+    sleep 0.4
     stop_api
     sleep 1
     start_api

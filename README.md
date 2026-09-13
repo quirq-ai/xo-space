@@ -200,6 +200,8 @@ To see what your install decided: the status is the first thing on the Setup tab
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
+Saved commands in Setup run locally with the server’s environment. Their definitions, results and output logs stay under `<quirq state>/scheduler/`; the Commands card adds no reporting. A command you choose can make its own network requests.
+
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
 ---

@@ -24,7 +24,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers (toast). |
-| `js/core/server-widget.js` | Footer server pill (status poll + stop). |
+| `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Dashboard + Graph + Timeline — three lenses over one dataset, one shared closure, three exported views. |
 | `js/views/sessions.js` | The Sessions view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. |
@@ -33,7 +33,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered — no tab. |
 | `js/views/wiki.js` | The Wiki view: bundled, version-matched operating documentation. It includes storage architecture, watcher internals, complete `.xo` / `.quirq` data catalogs (durable project tier, machine-local runtime tier, workspace tier), and flow-building recipes. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state — watcher infrastructure and the derived runtime tier — beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own — `nav:false, parent:'secrets'`, opened from Setup's header button (`#/quirq`). |
-| `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, managed restart. |
+| `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, server restart and saved commands. |
+| `js/views/setup-commands.js` | Setup’s Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
 The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`, mount/show/hide)
@@ -70,6 +71,48 @@ Local change vs upstream xo-atlas: `simTick()` clamps per-tick node velocity
 to 60 units — generated data can put 100+ leaves in one cluster, whose summed
 spring stiffness makes the original explicit-Euler sim diverge (positions hit
 1e20 and the canvas goes blank).
+
+## Setup tab: restart and commands
+
+**Restart server** lives in the hero beside **Refresh status**. **Apply & restart**
+and the self-update card use the same `/space/server/restart` route. Restart takes
+a few seconds; the footer pill may go offline before it returns. The page reloads
+when a new server instance responds, so every tab loads the updated code.
+
+| `restart_mode` | How it works |
+|---|---|
+| `managed` | SIGTERM lets the container supervisor restart the server. |
+| `native` | The pid file belongs to `./cowork-api.sh start`; a detached `./cowork-api.sh restart` stops and starts it. |
+| `foreground` | No supervisor or matching pid file: the button is disabled with “Ctrl-C and re-run”. The route returns 409. |
+
+The footer still has no process start control: its Start hint copies a terminal
+command. Process restart belongs on Setup.
+
+**Commands** starts empty. Use **Add command** to save a name, optional description,
+command line or argv JSON, optional working directory, required timeout and optional
+interval. Leave the interval blank for manual-only execution. A command line is
+split without a shell; validation errors appear in the card. Interval jobs show a
+“Runs every N” chip and use the watcher. **Edit** preserves existing environment,
+project and enabled settings.
+
+**Run** executes through the command utility and disables while running. The card
+polls the job every three seconds until the status and duration appear. **Runs**
+opens a drawer with the latest 20 results and escaped output tails, plus the full
+log path as text. A concurrent run or a full shared execution limit returns 409.
+Restart, command writes and runs are localhost-only; remote requests receive 403.
+
+Definitions and every result stay under `<quirq state>/scheduler/`:
+
+```text
+scheduler/
+├── jobs.json          # saved commands, intervals and descriptions
+├── state.json         # next run, running since, last result
+├── runs/<id>.jsonl    # append-only history, 2000-character output tails
+└── logs/<id>.log      # full output from every run
+```
+
+Deleting a command keeps its history and logs on disk. Commands run locally with
+the server's environment, including when the watcher is disabled for manual runs.
 
 ## Sessions tab
 

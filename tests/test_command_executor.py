@@ -36,6 +36,10 @@ class CommandSpecTests(unittest.TestCase):
         bad = [
             {},                                           # nothing to run
             {"argv": []},                                 # empty
+            {"argv": ["-git"]},                           # option in place of executable
+            {"command": "-git status"},
+            {"command": "git '\u0000'"},
+            {"command": "git ''"},
             {"argv": ["git", 3]},                         # non-string
             {"argv": ["git"], "command": "git"},          # both forms
             {"argv": ["git"], "shell": True},             # unknown key (there is no shell knob)

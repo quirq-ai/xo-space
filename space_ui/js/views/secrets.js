@@ -6,6 +6,8 @@
    project `.xo` data. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
+import {pollServer} from '../core/server-widget.js?v=20260913-commands1';
+import {mountCommands} from './setup-commands.js';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -23,6 +25,9 @@ let secretCancelButton=null;
 let secretError=null;
 let editingKey=null;
 let loading=false;
+let commands=null;
+let serverData=null;
+let restarting=false;
 
 export default {
   id:'secrets',label:'Setup',order:9,
@@ -31,9 +36,10 @@ export default {
     switchTo=ctx.switchTo;
     renderShell();
     bindEvents();
+    commands=mountCommands(root.querySelector('#setup-commands'));
     await loadAll();
   },
-  show(){/* Preserve an in-progress credential while switching tabs. */}
+  show(){commands?.refresh(); /* Preserve in-progress forms while switching tabs. */}
 };
 
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount (opens the Quirq view) */
@@ -50,8 +56,11 @@ function renderShell(){
         +'<div class="setup-hero-actions">'
           +'<button class="setup-refresh" id="setup-quirq" type="button">Open Quirq state</button>'
           +'<button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>'
+          +'<button class="setup-restart" id="setup-restart" data-restart type="button" disabled>Restart server</button>'
         +'</div>'
       +'</header>'
+      +'<p class="setup-restart-hint" id="setup-restart-hint" role="status"></p>'
+      +'<div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>'
       +'<div class="setup-alert" id="setup-alert">'
         +'<span aria-hidden="true">◆</span>'
         +'<div><b>Loading effective configuration…</b><p>Checking storage, runtime sources, and restart state.</p></div>'
@@ -113,7 +122,7 @@ function renderShell(){
             +'<div class="setup-form-error" id="runtime-error" role="alert" hidden></div>'
             +'<div class="setup-actions">'
               +'<button class="setup-primary" id="runtime-save" type="submit">Save runtime</button>'
-              +'<button class="setup-restart" id="runtime-restart" type="button" hidden>Apply &amp; restart</button>'
+              +'<button class="setup-restart" id="runtime-restart" data-restart type="button" hidden>Apply &amp; restart</button>'
             +'</div>'
           +'</form>'
         +'</section>'
@@ -156,9 +165,11 @@ function renderShell(){
           +'<div class="setup-actions">'
             +'<button class="setup-secondary" id="update-check" type="button">Check for updates</button>'
             +'<button class="setup-primary" id="update-apply" type="button" hidden>Update now</button>'
+            +'<button class="setup-restart" id="update-restart" data-restart type="button" hidden>Restart server</button>'
           +'</div>'
         +'</div>'
       +'</section>'
+      +'<section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>'
       +'<section class="setup-boundary">'
         +'<div><span>Portable project data</span><b>&lt;project&gt;/.xo/</b><p>Session indexes, todos, timelines, stats, memory, and project identity. The watcher owns writes.</p></div>'
         +'<em>stays separate from</em>'
@@ -181,7 +192,7 @@ function bindEvents(){
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
-  root.querySelector('#runtime-restart').addEventListener('click',restartRuntime);
+  root.querySelectorAll('[data-restart]').forEach(button=>button.addEventListener('click',restartRuntime));
   secretForm.addEventListener('submit',saveSecret);
   secretCancelButton.addEventListener('click',resetSecretForm);
   root.querySelector('#secret-toggle').addEventListener('click',toggleSecretValue);
@@ -264,21 +275,27 @@ async function applyUpdate(){
   renderUpdateState(
     `<p><b>Updated</b> ${commitLine(r.to)} (${r.commits} commit${r.commits===1?'':'s'}).</p>`
     +`<p>${esc(r.message)}</p>`
-    +(r.requirements_changed?'':'<p>Use Apply &amp; restart above (managed installs), or Ctrl-C and re-run the server, to start the new version.</p>'),
+    +(r.requirements_changed?'':'<p>Restart to load the new version.</p>'),
     'Restart needed'
   );
+  root.querySelector('#update-restart').hidden=false;
+  renderRestartButtons();
 }
 
 async function loadAll(){
   if(loading)return;
   loading=true;
   root.querySelector('#setup-refresh').disabled=true;
-  const [runtimeRes,secretsRes]=await Promise.all([
+  const [runtimeRes,secretsRes,serverRes]=await Promise.all([
     apiFetch('/api/runtime-config'),
-    apiFetch('/api/secrets')
+    apiFetch('/api/secrets'),
+    pollServer(),
+    commands.refresh()
   ]);
   loading=false;
   root.querySelector('#setup-refresh').disabled=false;
+  serverData=serverRes.ok?serverRes.data:null;
+  renderRestartButtons();
 
   if(runtimeRes.ok){
     runtimeData=runtimeRes.data;
@@ -316,15 +333,7 @@ function renderRuntime(){
 
   const restartButton=root.querySelector('#runtime-restart');
   restartButton.hidden=!runtimeData.restart_required;
-  restartButton.disabled=!runtimeData.restart_supported;
-  /* a re-render after a restart lands on the same element: nothing is in
-     flight any more, whatever the previous pass left on it */
-  restartButton.classList.remove('is-busy');
-  restartButton.textContent=runtimeData.restart_supported?'Apply & restart':'Restart from terminal';
-  /* the disabled state is the instruction; say so on hover instead of
-     letting a dead button look like a stuck one */
-  restartButton.title=runtimeData.restart_supported?''
-    :'This process is not installer-managed — restart it from the terminal where you launched it.';
+  renderRestartButtons();
 
   renderUsageReporting();
 
@@ -577,36 +586,49 @@ async function copyRootCommand(){
 }
 
 async function restartRuntime(){
-  if(!runtimeData?.restart_supported){
-    showRuntimeError('Run the installer command again to restart this non-managed process.');
-    return;
-  }
+  if(restarting||!['managed','native'].includes(serverData?.restart_mode))return;
   if(!confirm('Restart Quirq now? The page will reconnect automatically.'))return;
-  const button=root.querySelector('#runtime-restart');
-  setBusy(button,true);
-  button.textContent='Restarting…';
-  const res=await apiFetch('/api/runtime-config/restart',{method:'POST'});
-  if(!res.ok){
-    setBusy(button,false);
-    button.textContent='Apply & restart';
-    showRuntimeError(res.error);
+  restarting=true;
+  renderRestartButtons();
+  const error=root.querySelector('#setup-restart-error');
+  error.hidden=true;
+  const previousInstance=serverData.instance_id;
+  const res=await apiFetch('/space/server/restart',{method:'POST'});
+  if(!res.ok&&!res.offline){
+    restarting=false;
+    renderRestartButtons();
+    error.textContent=res.error;
+    error.hidden=false;
     return;
   }
   const alert=root.querySelector('#setup-alert');
   alert.className='setup-alert is-pending';
-  alert.innerHTML='<span aria-hidden="true">◆</span><div><b>Quirq is restarting…</b><p>Waiting for the container to become healthy with the saved runtime.</p></div>';
+  alert.innerHTML='<span aria-hidden="true">◆</span><div><b>Quirq is restarting…</b><p>Waiting for the new server. The server pill may briefly go offline.</p></div>';
   for(let attempt=0;attempt<60;attempt+=1){
     await delay(1000);
-    const probe=await apiFetch('/health?setup_restart_probe='+attempt);
-    if(probe.ok){
-      toast('Runtime restarted');
-      await loadAll();
+    const probe=await pollServer();
+    if(probe.ok&&probe.data.instance_id&&probe.data.instance_id!==(res.data?.instance_id||previousInstance)){
+      location.reload();
       return;
     }
   }
-  setBusy(button,false);
-  button.textContent='Retry restart';
-  showRuntimeError('The restart is taking longer than expected. Refresh status after the container becomes healthy.');
+  restarting=false;
+  renderRestartButtons();
+  error.textContent='The restart is taking longer than expected. Refresh status or check the server log.';
+  error.hidden=false;
+}
+
+function renderRestartButtons(){
+  const supported=['managed','native'].includes(serverData?.restart_mode);
+  const hint=!serverData?'Server status unavailable. Refresh status to retry.'
+    :supported?'':'Ctrl-C and re-run the server from the terminal where you launched it.';
+  root.querySelector('#setup-restart-hint').textContent=restarting?'Restarting…':hint;
+  root.querySelectorAll('[data-restart]').forEach(button=>{
+    setBusy(button,restarting);
+    button.disabled=restarting||!supported;
+    button.title=hint;
+    button.textContent=restarting?'Restarting…':button.id==='runtime-restart'?'Apply & restart':'Restart server';
+  });
 }
 
 function handleRecommendedSecret(event){
