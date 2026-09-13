@@ -19,9 +19,14 @@ The loop never creates a folder, never polls a toolkit without a
 ``asyncio.Lock`` makes a "poll now" from the route and the loop's own tick
 take turns (a forced "poll now" waits up to :data:`FORCE_WAIT_S` for the
 tick to finish, any other second caller is answered "busy"); ``flock`` in
-the store is the cross-process guard. Each poll lists the session's tools
-once: a slug that is exposed is called directly, anything else runs through
-Composio's executor tool (see ``mcp_client.execute_tool``).
+the store is the cross-process guard. Each poll opens one MCP session
+(``mcp_client.McpSession``: the handshake once, closed when the poll ends)
+and lists its tools once: a slug that is exposed is called directly,
+anything else runs through Composio's executor tool (see
+``McpSession.execute_tool``). A session that is gone upstream is replaced
+exactly once per poll; one that dies mid-poll (a collector's ``tools/call``
+answers HTTP 404) ends the collector loop, the collectors after it are
+recorded as not attempted, and the next poll's handshake replaces it.
 """
 
 from __future__ import annotations
@@ -34,7 +39,8 @@ from typing import Optional
 
 from services.cowork_agent.connectors.composio import service as composio_service
 from services.cowork_agent.connectors.composio import state, space_scope
-from services.inbox.store import parse_ts
+from services.periodic import run_forever
+from services.timestamps import parse_ts
 
 from . import collectors, mcp_client, store
 
@@ -46,11 +52,13 @@ ENV_TICK = "XO_CONNECTIONS_POLL_TICK_S"
 DEFAULT_TICK_S = 30.0
 MIN_TICK_S = 5.0
 _STARTUP_DELAY_S = 5.0
-#: Read timeout for one tool call; the wait_for cap adds :data:`_GRACE_S`.
+#: The session's httpx read timeout (wide enough for a tool call, so one
+#: client serves the whole poll); the per-call wait_for cap adds :data:`_GRACE_S`.
 CALL_TIMEOUT_S = 60.0
 _GRACE_S = 15.0
 #: One ``tools/list`` per poll, so a collector knows whether its slug is exposed
-#: directly or must run through the session's executor tool.
+#: directly or must run through the session's executor tool. The handshake and
+#: the listing share this wait_for cap (plus :data:`_GRACE_S`).
 LIST_TIMEOUT_S = 30.0
 #: A forced poll ("poll now") waits this long for the loop to release the lock
 #: before answering "busy".
@@ -58,6 +66,8 @@ FORCE_WAIT_S = 25.0
 
 NOT_SIGNED_IN = "not signed in to XO (no account id)"
 NO_TOOLKITS = "no toolkits are turned on in this workspace"
+#: Recorded for every collector after the one whose ``tools/call`` found the session gone.
+SESSION_LOST = "not attempted, the MCP session died mid-poll"
 
 #: ``poll_connection(user_id=...)`` default: resolve the identity here.
 _UNRESOLVED = object()
@@ -171,20 +181,24 @@ def _fail(toolkit: str, message: str, now_text: str) -> dict:
     return _outcome(toolkit, error=message)
 
 
-async def _run_collector(toolkit: str, spec: dict, entry: dict, state_doc: dict, now: datetime,
-                         tool_names: list[str]) -> int:
-    """One collector: call (directly, or through the session's executor when
-    the slug is not listed), unwrap, map, dedupe, append, remember. Returns
-    the number of events appended. Raises on any failure."""
+async def _run_collector(toolkit: str, spec: dict, session: mcp_client.McpSession, state_doc: dict,
+                         now: datetime, tool_names: list[str]) -> int:
+    """One collector over the poll's open ``session``: call (directly, or
+    through the session's executor when the slug is not listed), unwrap,
+    map, dedupe, append, remember. Returns the number of events appended.
+    Raises on any failure; Composio's envelope with ``successful`` false
+    (``isError`` false, so the session raised nothing) is an
+    :class:`mcp_client.McpError` with stage ``execute`` and no status."""
     args = collectors.render_args(spec, now)
     result = await asyncio.wait_for(
-        mcp_client.execute_tool(entry, spec["tool"], args, tool_names=tool_names, timeout_s=CALL_TIMEOUT_S),
+        session.execute_tool(spec["tool"], args, tool_names=tool_names),
         CALL_TIMEOUT_S + _GRACE_S,
     )
     payload = mcp_client.tool_result_json(result)
     if isinstance(payload, dict) and payload.get("successful") is False:
         # Composio's envelope: isError false with successful false is a silent failure.
-        raise mcp_client.McpError(str(payload.get("error") or "tool reported failure")[:store.ERROR_MAX])
+        raise mcp_client.McpError(str(payload.get("error") or "tool reported failure")[:store.ERROR_MAX],
+                                  stage="execute")
     items = collectors.extract_items(spec, payload, toolkit=toolkit, now=now)
     seen = set(state_doc["cursors"].get(spec["id"], {}).get("seen", []))
     fresh: list[dict] = []
@@ -203,28 +217,58 @@ def _session_gone(exc: BaseException) -> bool:
     """Composio answers ``initialize`` with HTTP 404 ("Tool router session
     ... not found") once the session behind the cached MCP url has been
     deleted or expired upstream. The swarm still updates its own record for
-    that id, so nothing else ever notices; the poller has to."""
-    text = str(exc)
-    return "initialize failed: HTTP 404" in text
+    that id, so nothing else ever notices; the poller has to. Read from the
+    error's ``stage`` and ``status``, never from its text."""
+    return isinstance(exc, mcp_client.McpError) and exc.stage == "initialize" and exc.status == 404
 
 
-async def _list_tools_healing(user_id: str, entry: dict) -> tuple[dict, list[str]]:
-    """``tools/list`` for ``entry``; on a dead session, invalidate it, mint a
-    fresh entry and try exactly once more. Returns the entry the names
-    belong to, so the collectors run against the live session."""
+def _session_lost(exc: BaseException) -> bool:
+    """A session that died mid-poll: a collector's ``tools/call`` answered
+    HTTP 404, which streamable HTTP reserves for a request on a session the
+    server has terminated. Nothing later in the poll can succeed on it, so
+    the collector loop stops; the next poll's handshake replaces it (through
+    :func:`_session_gone` when Composio's tool-router session is what died).
+    Read from ``stage`` and ``status``, never from the text."""
+    return isinstance(exc, mcp_client.McpError) and exc.stage == "tools/call" and exc.status == 404
+
+
+async def _open_and_list(entry: dict) -> tuple[mcp_client.McpSession, list[str]]:
+    """Open one session on ``entry`` and list its tools, both under the
+    listing cap. The session comes back open (the caller closes it); it is
+    closed here when the handshake or the listing fails, and a close that
+    fails itself is logged so the handshake or listing error is what
+    propagates (the dead-session check reads it)."""
+    session = mcp_client.McpSession(entry, timeout_s=CALL_TIMEOUT_S)
+
+    async def handshake_and_list() -> list[str]:
+        await session.open()
+        return await session.list_tools()
+
     try:
-        names = await asyncio.wait_for(mcp_client.list_tools(entry, timeout_s=LIST_TIMEOUT_S),
-                                       LIST_TIMEOUT_S + _GRACE_S)
-        return entry, names
+        names = await asyncio.wait_for(handshake_and_list(), LIST_TIMEOUT_S + _GRACE_S)
+    except BaseException:
+        try:
+            await session.close()
+        except Exception as exc:
+            logger.debug("connections poller: closing a failed session raised %s", type(exc).__name__)
+        raise
+    return session, names
+
+
+async def _list_tools_healing(user_id: str, entry: dict) -> tuple[mcp_client.McpSession, list[str]]:
+    """Open the poll's session on ``entry`` and list its tools; on a dead
+    session, invalidate it, mint a fresh entry and open a new session
+    exactly once more. Returns the open session the names belong to, so
+    every collector runs against the live one; the caller closes it."""
+    try:
+        return await _open_and_list(entry)
     except mcp_client.McpError as exc:
         if not _session_gone(exc):
             raise
         logger.info("connections poller: the Composio session is gone upstream; minting a fresh one")
     await asyncio.to_thread(composio_service.invalidate_session)
     entry = await asyncio.to_thread(composio_service.build_mcp_server_entry, user_id)
-    names = await asyncio.wait_for(mcp_client.list_tools(entry, timeout_s=LIST_TIMEOUT_S),
-                                   LIST_TIMEOUT_S + _GRACE_S)
-    return entry, names
+    return await _open_and_list(entry)
 
 
 # ── One connection ───────────────────────────────────────────────────────────
@@ -261,7 +305,10 @@ async def poll_connection(toolkit: str, *, force: bool = False, user_id=_UNRESOL
 
 
 async def _poll_locked(toolkit: str, user_id) -> dict:
-    """The body of :func:`poll_connection`, run with the toolkit's lock held."""
+    """The body of :func:`poll_connection`, run with the toolkit's lock held.
+    Collectors run in config order over the one session; a collector whose
+    ``tools/call`` finds the session gone (:func:`_session_lost`) ends the
+    loop, and the collectors after it are recorded as :data:`SESSION_LOST`."""
     config = _read_config(toolkit)      # re-read: a DELETE meanwhile must not be undone
     if config is None:
         return _outcome(toolkit, skipped="not_configured")
@@ -288,7 +335,7 @@ async def _poll_locked(toolkit: str, user_id) -> dict:
         return _fail(toolkit, f"session unavailable: {str(exc)[:250]}", now_text)
 
     try:
-        entry, tool_names = await _list_tools_healing(user_id, entry)
+        session, tool_names = await _list_tools_healing(user_id, entry)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -297,20 +344,28 @@ async def _poll_locked(toolkit: str, user_id) -> dict:
     state_doc = store.read_state(toolkit)
     errors: list[str] = []
     added = 0
-    for collector_id in config["collectors"]:
-        spec = collectors.collector(toolkit, collector_id)
-        if spec is None:
-            continue
-        try:
-            added += await _run_collector(toolkit, spec, entry, state_doc, now, tool_names)
-        except asyncio.TimeoutError:
-            errors.append(f"{collector_id}: timed out after {CALL_TIMEOUT_S + _GRACE_S:.0f}s")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            text = str(exc)[:200] or type(exc).__name__
-            errors.append(f"{collector_id}: {text}")
-            logger.warning("connections poller: %s/%s failed: %s", toolkit, collector_id, text)
+    try:
+        specs = [(cid, collectors.collector(toolkit, cid)) for cid in config["collectors"]]
+        specs = [(cid, spec) for cid, spec in specs if spec is not None]     # unknown ids are skipped
+        for index, (collector_id, spec) in enumerate(specs):
+            try:
+                added += await _run_collector(toolkit, spec, session, state_doc, now, tool_names)
+            except asyncio.TimeoutError:
+                errors.append(f"{collector_id}: timed out after {CALL_TIMEOUT_S + _GRACE_S:.0f}s")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                text = str(exc)[:200] or type(exc).__name__
+                errors.append(f"{collector_id}: {text}")
+                logger.warning("connections poller: %s/%s failed: %s", toolkit, collector_id, text)
+                if _session_lost(exc):
+                    rest = [cid for cid, _ in specs[index + 1:]]
+                    errors.extend(f"{cid}: {SESSION_LOST}" for cid in rest)
+                    logger.info("connections poller: %s: the MCP session died mid-poll; %d collector(s) not attempted",
+                                toolkit, len(rest))
+                    break
+    finally:
+        await session.close()
     last_error = "; ".join(errors)[:store.ERROR_MAX] or None
     fields = dict(last_poll_at=now_text, last_error=last_error, cursors=state_doc["cursors"],
                   events_total=state_doc["events_total"] + added)
@@ -358,20 +413,22 @@ async def poll_once() -> dict:
 # ── The loop ─────────────────────────────────────────────────────────────────
 
 
+async def _tick() -> None:
+    """One pass of the loop: poll what is due, note a tick that did something."""
+    summary = await poll_once()
+    if summary["polled"] or summary["errors"]:
+        logger.debug("connections poller: %s", summary)
+
+
 async def start_connections_poller() -> None:
-    """Entry point for the background task (mirrors the GitHub poller)."""
+    """Entry point for the background task (mirrors the GitHub poller). The
+    enabled check and the startup delay stay here because their log lines
+    are this poller's; the loop itself (tick, log a failure and go on,
+    sleep ``tick_seconds()`` re-read each pass, stop on cancel) is
+    :func:`services.periodic.run_forever`."""
     if not poller_enabled():
         logger.info("connections poller: disabled by %s", ENV_ENABLED)
         return
     await asyncio.sleep(_STARTUP_DELAY_S)
     logger.info("connections poller: started (%.0fs tick)", tick_seconds())
-    while True:
-        try:
-            summary = await poll_once()
-            if summary["polled"] or summary["errors"]:
-                logger.debug("connections poller: %s", summary)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("connections poller: tick failed (non-fatal)", exc_info=True)
-        await asyncio.sleep(tick_seconds())
+    await run_forever("connections poller", _tick, interval_s=tick_seconds, logger=logger)

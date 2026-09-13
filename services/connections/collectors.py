@@ -32,17 +32,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from services.cowork_agent.connectors.composio.service import TOOLKITS
-from services.inbox.store import parse_ts
+# iso and TS_FORMAT stay reachable as collectors.iso / collectors.TS_FORMAT
+from services.timestamps import EPOCH as _EPOCH, TS_FORMAT, aware as _aware, iso, parse_ts  # noqa: F401
 
 TITLE_MAX, BODY_MAX = 300, 4000
-TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _PLACEHOLDER_NOW, _PLACEHOLDER_7D = "{now_iso}", "{now_plus_7d_iso}"
 _PLACEHOLDER_YESTERDAY = "{yesterday_date}"
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DIGITS_RE = re.compile(r"\d+")
 _DECIMAL_RE = re.compile(r"\d+\.\d+")       # Slack message ts: "1725000000.000100"
 _EPOCH_MS_THRESHOLD = 1e11        # anything larger is milliseconds, not seconds
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 _GMAIL_MAP = {
     "list_keys": ["messages", "data.messages", "items"],
@@ -130,14 +129,6 @@ def default_ids(toolkit: str) -> list[str]:
 
 
 # ── Time ─────────────────────────────────────────────────────────────────────
-
-
-def _aware(now: datetime) -> datetime:
-    return (now if now.tzinfo else now.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def iso(dt: datetime) -> str:
-    return _aware(dt).strftime(TS_FORMAT)
 
 
 def _from_epoch(number) -> Optional[datetime]:

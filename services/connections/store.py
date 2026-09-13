@@ -40,11 +40,12 @@ from pathlib import Path
 from typing import Optional
 
 from services.cowork_agent.connectors.composio.service import TOOLKITS
-from services.inbox.store import parse_ts
-from services.cowork_agent.local_state import quirq_state_dir
-from services.cowork_agent.visualizer.atomic_write import append_jsonl, write_json_atomic
-from services.cowork_agent.visualizer.flock import locked
-from services.cowork_agent.visualizer.reader import read_json, read_jsonl_tail_reverse
+from services.errors import ServiceError
+from services.storage.atomic_write import append_jsonl, write_json_atomic
+from services.storage.flock import locked
+from services.storage.paths import quirq_state_dir
+from services.storage.reader import read_json, read_jsonl_tail_reverse
+from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts
 
 from . import collectors
 
@@ -60,21 +61,12 @@ STATE_FIELDS = ("last_poll_at", "last_ok_at", "last_error", "cursors", "events_t
 _ROTATE_BYTES = 2 * 1024 * 1024      # tests patch this; never write 2 MB to exercise it
 _MAX_ROTATIONS_KEEP = 3
 _ROTATION_RE = re.compile(r"events\.\d{8}T\d{6}Z\.jsonl")
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 
 
-class ConnectionsError(Exception):
+class ConnectionsError(ServiceError):
     """Typed failure the router maps to ``HTTPException(status, {code, message})``."""
-
-    def __init__(self, code: str, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.code, self.message, self.status = code, message, status
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ── Paths and toolkit validation ────────────────────────────────────────────
@@ -394,7 +386,9 @@ def read_events(toolkit: str, limit: int = 50, types=None) -> list[dict]:
 def remove(toolkit: str) -> bool:
     """``shutil.rmtree`` of that one folder, only when it is a real directory
     sitting directly under :func:`connections_dir` (no symlink, no escape).
-    ``False`` when there is nothing to remove."""
+    ``False`` when there is nothing to remove, or when either escape check
+    refuses (both are real checks, never ``assert``: that safety net would
+    vanish under ``python -O``)."""
     _check_toolkit(toolkit)
     root = connections_dir()
     target = root / toolkit
@@ -407,6 +401,8 @@ def remove(toolkit: str) -> bool:
     if resolved.parent != root_resolved:
         logger.warning("connections: refusing to remove %s (outside %s)", toolkit, root)
         return False
-    assert root_resolved in resolved.parents, "remove() target escaped connections_dir()"
+    if root_resolved not in resolved.parents:
+        logger.warning("connections: refusing to remove %s (escaped %s)", toolkit, root)
+        return False
     shutil.rmtree(resolved)
     return True

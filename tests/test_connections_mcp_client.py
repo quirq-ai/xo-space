@@ -403,3 +403,208 @@ class ExecuteToolTests(_Base):
         self.use(Upstream(call=answer))
         result = run(mcp_client.call_tool(ENTRY, "X", {}, raise_on_tool_error=False))
         self.assertTrue(result["isError"])
+
+
+class EchoUpstream(RouterUpstream):
+    """A :class:`RouterUpstream` whose ``tools/call`` answer carries the
+    request's own id, the way a real server does, so a call later in a
+    session (id 3, 4, ...) is matched by id rather than by the fallback."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content) if request.content else {}
+        if message.get("method") == "tools/call":
+            self.requests.append(request)
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": message.get("id"), "result": RESULT})
+        return super().handler(request)
+
+
+def methods(up: Upstream) -> list[str]:
+    return [r.method if r.method == "DELETE" else json.loads(r.content).get("method") for r in up.requests]
+
+
+class McpSessionTests(_Base):
+    """One handshake, many requests: the session keeps the client and the
+    session id, and every request carries its own JSON-RPC id."""
+
+    def test_one_handshake_serves_a_listing_and_many_calls(self) -> None:
+        up = self.use(EchoUpstream(tools=["A", "B"]))
+
+        async def scenario():
+            async with mcp_client.McpSession(ENTRY, timeout_s=5.0) as session:
+                names = await session.list_tools()
+                first = await session.call_tool("A", {"n": 1})
+                second = await session.call_tool("B", {"n": 2})
+                third = await session.execute_tool("A", {"n": 3}, tool_names=names)
+            return names, first, second, third
+
+        names, first, second, third = run(scenario())
+        self.assertEqual(names, ["A", "B"])
+        self.assertEqual((first, second, third), (RESULT, RESULT, RESULT))
+        self.assertEqual(methods(up), ["initialize", "notifications/initialized", "tools/list",
+                                       "tools/call", "tools/call", "tools/call", "DELETE"])
+        ids = [b.get("id") for b in up.bodies() if isinstance(b, dict) and "id" in b]
+        self.assertEqual(ids, [1, 2, 3, 4, 5], "distinct ids, counted up within the session")
+        self.assertNotIn("mcp-session-id", up.requests[0].headers)
+        for req in up.requests[1:]:
+            self.assertEqual(req.headers["mcp-session-id"], "sess-1")
+            self.assertEqual(req.headers["Authorization"], f"Bearer {TOKEN}")
+        calls = [b["params"]["arguments"] for b in up.bodies() if isinstance(b, dict) and b.get("method") == "tools/call"]
+        self.assertEqual(calls, [{"n": 1}, {"n": 2}, {"n": 3}])
+
+    def test_execute_tool_lists_on_the_same_session_when_names_are_not_given(self) -> None:
+        up = self.use(EchoUpstream(tools=["A"]))
+
+        async def scenario():
+            async with mcp_client.McpSession(ENTRY) as session:
+                return await session.execute_tool("A", {})
+
+        self.assertEqual(run(scenario()), RESULT)
+        self.assertEqual(methods(up), ["initialize", "notifications/initialized", "tools/list", "tools/call", "DELETE"])
+
+    def test_close_is_idempotent_and_a_closed_or_unopened_session_refuses_requests(self) -> None:
+        up = self.use(Upstream())
+
+        async def scenario():
+            session = mcp_client.McpSession(ENTRY)
+            with self.assertRaises(McpError) as before:
+                await session.list_tools()
+            await session.open()
+            await session.close()
+            await session.close()
+            with self.assertRaises(McpError) as after:
+                await session.call_tool("X", {})
+            return before.exception, after.exception
+
+        before, after = run(scenario())
+        self.assertEqual((before.stage, before.status, after.stage, after.status), ("session", None, "session", None))
+        self.assertEqual(methods(up), ["initialize", "notifications/initialized", "DELETE"], "one DELETE")
+
+    def test_failed_handshake_closes_the_client_and_sends_no_delete(self) -> None:
+        up = self.use(Upstream(init_status=500, init_body="down"))
+        session = mcp_client.McpSession(ENTRY)
+        with self.assertRaises(McpError) as ctx:
+            run(session.open())
+        self.assertEqual((ctx.exception.stage, ctx.exception.status), ("initialize", 500))
+        run(session.close())
+        with self.assertRaises(McpError) as ctx:
+            run(session.call_tool("X", {}))
+        self.assertEqual(ctx.exception.stage, "session", "the client is gone after a failed handshake")
+        self.assertEqual(methods(up), ["initialize"])
+
+    def test_the_one_shot_wrappers_open_and_close_a_session_each(self) -> None:
+        up = self.use(EchoUpstream(tools=["A"]))
+        run(mcp_client.list_tools(ENTRY))
+        run(mcp_client.call_tool(ENTRY, "A", {}))
+        run(mcp_client.execute_tool(ENTRY, "A", {}, tool_names=["A"]))
+        self.assertEqual(methods(up), ["initialize", "notifications/initialized", "tools/list", "DELETE",
+                                       "initialize", "notifications/initialized", "tools/call", "DELETE",
+                                       "initialize", "notifications/initialized", "tools/call", "DELETE"])
+
+    def test_a_session_opens_once(self) -> None:
+        """A second open, on the open session or after close, is refused with
+        stage ``session``: the live client is neither leaked nor replaced, no
+        second handshake goes out, and the session keeps working."""
+        up = self.use(EchoUpstream(tools=["A"]))
+
+        async def scenario():
+            session = mcp_client.McpSession(ENTRY)
+            await session.open()
+            client = session._client
+            with self.assertRaises(McpError) as again:
+                await session.open()
+            self.assertIs(session._client, client, "the live client is kept")
+            result = await session.call_tool("A", {})
+            await session.close()
+            with self.assertRaises(McpError) as after_close:
+                await session.open()
+            return again.exception, result, after_close.exception
+
+        again, result, after_close = run(scenario())
+        self.assertEqual((again.stage, again.status), ("session", None))
+        self.assertEqual((after_close.stage, after_close.status), ("session", None))
+        self.assertEqual(result, RESULT)
+        self.assertEqual(methods(up), ["initialize", "notifications/initialized", "tools/call", "DELETE"],
+                         "one handshake, one DELETE")
+
+
+class McpErrorStageTests(_Base):
+    """Every raise site stamps ``stage`` and ``status``; the poller reads
+    those (a dead Composio session is ``initialize`` + 404), never the text."""
+
+    def _raised(self, coro) -> McpError:
+        with self.assertRaises(McpError) as ctx:
+            run(coro)
+        return ctx.exception
+
+    def test_initialize_carries_its_http_status(self) -> None:
+        for status in (302, 404, 500):
+            with self.subTest(status=status):
+                up = Upstream(init_status=status, init_body="gone")
+                with patch.object(mcp_client, "_TRANSPORT", httpx.MockTransport(up.handler)):
+                    exc = self._raised(mcp_client.call_tool(ENTRY, "X", {}))
+                self.assertEqual((exc.stage, exc.status), ("initialize", status))
+                self.assertTrue(str(exc).startswith(f"initialize failed: HTTP {status}"))
+
+    def test_transport_failures_carry_the_stage_and_no_status(self) -> None:
+        self.use(Upstream(init_exc=httpx.ConnectError("boom")))
+        exc = self._raised(mcp_client.call_tool(ENTRY, "X", {}))
+        self.assertEqual((exc.stage, exc.status), ("initialize", None))
+        plain = Upstream()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if json.loads(request.content).get("method") == "notifications/initialized":
+                raise httpx.ReadTimeout("slow")
+            return plain.handler(request)
+
+        with patch.object(mcp_client, "_TRANSPORT", httpx.MockTransport(handler)):
+            exc = self._raised(mcp_client.call_tool(ENTRY, "X", {}))
+        self.assertEqual((exc.stage, exc.status), ("notifications/initialized", None))
+        self.assertEqual(str(exc), "notifications/initialized: ReadTimeout while calling the MCP upstream")
+
+    def test_tools_call_http_json_rpc_and_tool_errors(self) -> None:
+        cases = [
+            (Upstream(call="down", call_status=502), 502),
+            (Upstream(call={"jsonrpc": "2.0", "id": 2, "error": {"message": "bad"}}), 200),
+            (Upstream(call=""), 200),
+            (Upstream(call={"jsonrpc": "2.0", "id": 2, "result": "text"}), 200),
+            (Upstream(call={"jsonrpc": "2.0", "id": 2, "result": {"isError": True}}), 200),
+        ]
+        for up, status in cases:
+            with self.subTest(body=up.call, status=status):
+                with patch.object(mcp_client, "_TRANSPORT", httpx.MockTransport(up.handler)):
+                    exc = self._raised(mcp_client.call_tool(ENTRY, "X", {}))
+                self.assertEqual((exc.stage, exc.status), ("tools/call", status))
+
+    def test_tools_list_failure(self) -> None:
+        class Down(RouterUpstream):
+            def handler(self, request: httpx.Request) -> httpx.Response:
+                message = json.loads(request.content) if request.content else {}
+                if message.get("method") == "tools/list":
+                    self.requests.append(request)
+                    return httpx.Response(503, content=b"busy")
+                return super().handler(request)
+
+        self.use(Down(tools=[]))
+        exc = self._raised(mcp_client.list_tools(ENTRY))
+        self.assertEqual((exc.stage, exc.status), ("tools/list", 503))
+        self.assertTrue(str(exc).startswith("tools/list failed: HTTP 503"))
+
+    def test_entry_and_executor_decisions(self) -> None:
+        exc = self._raised(mcp_client.call_tool({}, "X", {}))
+        self.assertEqual((exc.stage, exc.status, str(exc)), ("entry", None, "MCP entry has no url"))
+        exc = self._raised(mcp_client.execute_tool(ENTRY, "X", {}, tool_names=["OTHER"]))
+        self.assertEqual((exc.stage, exc.status), ("execute", None))
+        answer = router_call([{"tool_slug": "X", "index": 0, "error": "restricted"}], is_error=True)
+        self.use(RouterUpstream(tools=[mcp_client.EXECUTOR_TOOL], call=answer))
+        exc = self._raised(mcp_client.execute_tool(ENTRY, "X", {}, tool_names=[mcp_client.EXECUTOR_TOOL]))
+        self.assertEqual((exc.stage, exc.status, str(exc)), ("execute", None, "restricted"))
+        empty = router_call([])
+        with patch.object(mcp_client, "_TRANSPORT",
+                          httpx.MockTransport(RouterUpstream(tools=[mcp_client.EXECUTOR_TOOL], call=empty).handler)):
+            exc = self._raised(mcp_client.execute_tool(ENTRY, "X", {}, tool_names=[mcp_client.EXECUTOR_TOOL]))
+        self.assertEqual((exc.stage, exc.status), ("execute", None))
+
+    def test_a_plain_error_has_neither(self) -> None:
+        exc = McpError("just text")
+        self.assertEqual((exc.stage, exc.status, str(exc)), (None, None, "just text"))
+        self.assertIsInstance(exc, RuntimeError)

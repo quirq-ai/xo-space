@@ -7,12 +7,13 @@ by writing 2 MB."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from services.connections import store
 from services.connections.store import ConnectionsError
@@ -361,6 +362,25 @@ class RemoveTests(_Base):
                 store.remove(bad)
         self.assertTrue(self.root.is_dir())
         self.assertTrue((self.root / ".quirq").is_dir() or not self.conns().exists())
+
+    def test_the_second_escape_check_is_real_not_an_assert(self) -> None:
+        """A resolver that says the target's parent is the root but the root
+        is not among its parents (only a broken resolver can) is refused
+        with a WARN and nothing is removed. An ``assert`` would raise here,
+        and under ``python -O`` it would vanish and let rmtree run."""
+        store.write_config("gmail")
+        root_resolved = self.conns().resolve()
+        odd = MagicMock(name="resolved")
+        odd.parent = root_resolved
+        odd.parents = []
+        with patch.object(Path, "resolve", side_effect=[odd, root_resolved]), \
+             patch.object(store.shutil, "rmtree") as rmtree, \
+             self.assertLogs("services.connections.store", level="WARNING") as logs:
+            self.assertFalse(store.remove("gmail"))
+        rmtree.assert_not_called()
+        self.assertTrue(any("escaped" in line for line in logs.output), logs.output)
+        self.assertTrue((self.conns() / "gmail" / "config.json").is_file())
+        self.assertNotIn("assert ", inspect.getsource(store.remove))
 
 
 if __name__ == "__main__":

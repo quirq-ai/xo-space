@@ -10,7 +10,10 @@ fields) so the Connectors tab's Polling drawer can render a form before a
 
 Core code: names no agent and imports nothing from the adapters tree.
 ``signed_in`` looks at the auth router lazily (inside the function) so
-importing this module never pulls a router in at load time.
+importing this module never pulls a router in at load time. ``poll_now``
+tells the listeners registered through :func:`register_new_events_listener`
+when a poll collected something; the inbox registers one, this package
+never imports the inbox.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from .store import ConnectionsError  # re-exported: the router catches service.C
 __all__ = [
     "ConnectionsError", "UNSET", "list_connections", "get_connection", "configure",
     "events", "remove", "poll_now", "signed_in", "poller_enabled",
+    "register_new_events_listener",
 ]
 
 logger = logging.getLogger(__name__)
@@ -150,30 +154,47 @@ async def poll_now(toolkit: str) -> dict:
     interval. The poll summary: ``{"toolkit", "polled", "new_events",
     "error", "skipped"}``.
 
-    When the poll collected something, the inbox is asked to ingest at once
-    (best-effort): the Inbox tab reloads its rows through ``GET /api/inbox``
-    right after this call, and that read throttles its own ingest to one
-    per few seconds, so without this nudge the fresh events would sit in
+    When the poll collected something, every listener registered through
+    :func:`register_new_events_listener` is awaited (best-effort, see
+    :func:`_notify_new_events`). The inbox registers one to ingest at once:
+    the Inbox tab reloads its rows through ``GET /api/inbox`` right after
+    this call, and that read throttles its own ingest to one per few
+    seconds, so without the nudge the fresh events would sit in
     ``events.jsonl`` until the next tick."""
     _check_known(toolkit)
     outcome = await poller.poll_connection(toolkit, force=True)
     if outcome.get("new_events"):
-        await _refresh_inbox(toolkit)
+        await _notify_new_events(toolkit)
     return outcome
 
 
-async def _refresh_inbox(toolkit: str) -> None:
-    """Forced inbox ingest off the event loop; a failure is logged and
-    swallowed (the events are on disk and the next inbox read picks them
-    up). Imported lazily: the inbox package reads this package's store, so
-    the dependency stays one-way at import time."""
-    try:
-        from services.inbox import service as inbox_service
-        await asyncio.to_thread(inbox_service.refresh, force=True)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.warning("connections: inbox refresh after polling %s failed", toolkit, exc_info=True)
+# ── New-events listeners ─────────────────────────────────────────────────────
+# The dependency points one way: the inbox knows about connections (its
+# feeder reads this package's events, and it registers a listener here at
+# import time); this package never imports the inbox.
+
+_new_events_listeners: list = []
+
+
+def register_new_events_listener(fn) -> None:
+    """Register ``async fn(toolkit)`` to run after a :func:`poll_now` that
+    collected something. Registering the same callable again is a no-op."""
+    if not any(existing is fn for existing in _new_events_listeners):
+        _new_events_listeners.append(fn)
+
+
+async def _notify_new_events(toolkit: str) -> None:
+    """Await every listener in registration order. A listener that fails is
+    logged and skipped (the events are on disk; its next own read picks
+    them up); cancellation propagates."""
+    for fn in list(_new_events_listeners):
+        try:
+            await fn(toolkit)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("connections: listener %s failed after polling %s",
+                           getattr(fn, "__qualname__", repr(fn)), toolkit, exc_info=True)
 
 
 # ── Status ───────────────────────────────────────────────────────────────────
