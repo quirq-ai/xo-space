@@ -31,8 +31,8 @@ from utils.commands import run, run_sync, spawn_detached
 def _prune_blank_env_shadows(dotenv_path: Path) -> None:
     """Drop variables exported blank that the checkout's ``.env`` can fill.
 
-    A var exported *empty* — a launcher that always exports ``XO_SPACE_ID``,
-    say, whether or not it has one — is still present in ``os.environ``, and
+    A var exported *empty* (a launcher that always exports ``XO_SPACE_ID``,
+    say, whether or not it has one) is still present in ``os.environ``, and
     python-dotenv skips a key on membership, not truthiness. Plain
     ``load_dotenv()`` would therefore leave the blank in place and the ``.env``
     value would never land: exporting empty ends up worse than not exporting
@@ -55,7 +55,7 @@ def _prune_blank_env_shadows(dotenv_path: Path) -> None:
 
 # Load environment variables. Keys already exported by the shell (or by
 # docker -e / compose) are recorded first: they outrank every file below,
-# exactly as install.sh orders them — but only when they actually carry a
+# exactly as install.sh orders them, but only when they actually carry a
 # value, which is what the prune above guarantees.
 _prune_blank_env_shadows(Path(__file__).resolve().parent / ".env")
 _shell_env_keys = frozenset(os.environ)
@@ -63,7 +63,7 @@ load_dotenv()
 
 
 def _load_storage_roots() -> None:
-    """Apply ``<state root>/roots.env`` — the storage roots the Setup tab writes.
+    """Apply ``<state root>/roots.env``: the storage roots the Setup tab writes.
 
     Precedence, mirroring install.sh: shell/container env > roots.env >
     the checkout's .env. Loading it here is what makes the Setup tab's XO
@@ -381,7 +381,7 @@ def _session_telemetry_daemons(action: str) -> None:
     Deliberately not gated by QUIRQ_SKIP_BOOT_INSTALL: starting a process that
     pip already installed is not installing software.
 
-    Non-fatal in both directions — a provider that fails to start must not
+    Non-fatal in both directions: a provider that fails to start must not
     block the boot, and one that fails to stop must not hang the shutdown.
     """
 
@@ -411,7 +411,7 @@ def _boot_installs_disabled() -> bool:
     """Whether the boot-time system-dependency installers are switched off.
 
     Set QUIRQ_SKIP_BOOT_INSTALL=1 for deployments that must not download or
-    install anything beyond requirements.txt — the Docker-free native runner
+    install anything beyond requirements.txt: the Docker-free native runner
     does, because it runs on a user's own machine rather than a disposable
     container. Defaults to off, so container and Coder boots are unchanged.
 
@@ -430,25 +430,25 @@ def _run_agent_setup() -> None:
     """Run config/agents/<AGENT_NAME>/setup.sh once at boot.
 
     Dispatches by the AGENT_NAME env var (e.g. AGENT_NAME=openclaw → runs
-    config/agents/openclaw/setup.sh). Idempotent — re-runs on every boot
+    config/agents/openclaw/setup.sh). Idempotent: re-runs on every boot
     but each step (apt install, node install, openclaw CLI install,
     gateway start) is gated on its own "already installed?" check.
     Non-fatal: a failure here logs and returns so the API still comes
     up for debugging.
     """
     if _boot_installs_disabled():
-        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set — skipping agent bootstrap")
+        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping agent bootstrap")
         return
 
     agent = (os.getenv("AGENT_NAME", "") or "").strip()
     if not agent:
-        print("🔧 AGENT_NAME unset — skipping agent bootstrap")
+        print("🔧 AGENT_NAME unset, skipping agent bootstrap")
         return
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
     if not os.path.isfile(script):
-        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}) — skipping")
+        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}), skipping")
         return
 
     print(f"🔧 Running agent setup for AGENT_NAME={agent}...")
@@ -470,7 +470,7 @@ def _run_agent_setup() -> None:
         elif result.returncode == 0:
             print(f"✅ Agent setup ({agent}) completed")
         else:
-            print(f"⚠️ Agent setup ({agent}) exited with code {result.returncode} (non-fatal — server will still start)")
+            print(f"⚠️ Agent setup ({agent}) exited with code {result.returncode} (non-fatal, server will still start)")
     except Exception as e:
         print(f"⚠️ Agent setup ({agent}) failed (non-fatal): {e}")
 
@@ -486,17 +486,17 @@ def _install_shared_deps() -> None:
     Non-fatal: a failure logs and returns so the API still comes up.
     """
     if _boot_installs_disabled():
-        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set — skipping shared dep install")
+        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping shared dep install")
         return
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(repo_root, "scripts", "install_shared_deps.sh")
     if not os.path.isfile(script):
-        print(f"⚠️ No shared-deps script (expected at {script}) — skipping")
+        print(f"⚠️ No shared-deps script (expected at {script}), skipping")
         return
 
     # Invoke via `bash <script>` (below), which does not require the script's
-    # executable bit — so we deliberately do NOT chmod it. chmod-ing on every
+    # executable bit, so we deliberately do NOT chmod it. chmod-ing on every
     # boot would flip the tracked mode (644 → 755) and surface the file as a
     # spurious git change in the workspace.
     print("🔧 Ensuring shared system deps (rclone, gh, gnupg)...")
@@ -505,7 +505,7 @@ def _install_shared_deps() -> None:
         # gh .deb + apt). Steady-state re-runs finish in seconds.
         #
         # The server is typically launched as venv/bin/python WITHOUT venv
-        # activation, so venv/bin is not on PATH — but console scripts pip
+        # activation, so venv/bin is not on PATH, but console scripts pip
         # installs for us (e.g. `argus`) live exactly there, next to the
         # interpreter. Prepend it so the script sees them.
         env = os.environ.copy()
@@ -519,7 +519,7 @@ def _install_shared_deps() -> None:
         elif result.returncode == 0:
             print("✅ Shared dep check completed")
         else:
-            print(f"⚠️ Shared dep install exited with code {result.returncode} (non-fatal — server will still start)")
+            print(f"⚠️ Shared dep install exited with code {result.returncode} (non-fatal, server will still start)")
     except Exception as e:
         print(f"⚠️ Shared dep install failed (non-fatal): {e}")
 
@@ -530,7 +530,7 @@ def _write_install_pointer() -> None:
 
     One fixed path, dynamic contents: ~/.config/quirq/install.json (XDG
     honoured), rewritten on every boot because it is a last-known-location
-    hint, not configuration — port fallbacks and relocated roots must show
+    hint, not configuration: port fallbacks and relocated roots must show
     up here. Consumers verify the recorded paths still exist before
     trusting them, so a stale file after an uninstall is harmless.
     """
@@ -660,7 +660,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ rclone startup skipped (non-fatal): {exc}")
 
-    # Check gnupg availability (required by xo-projects-sync; non-fatal — does NOT install).
+    # Check gnupg availability (required by xo-projects-sync; non-fatal, does NOT install).
     # Mirrors the rclone pattern: surface missing system deps at boot so they don't
     # only appear as confused 500s on the first /setup attempt.
     try:
@@ -668,7 +668,7 @@ async def lifespan(app: FastAPI):
         check_gpg_available()
         print("   gnupg: available (xo-projects-sync ready)")
     except Exception as exc:
-        print(f"⚠️ gnupg not available — xo-projects-sync /setup will return 500 until installed: {exc}")
+        print(f"⚠️ gnupg not available: xo-projects-sync /setup will return 500 until installed: {exc}")
 
     # Install bundled skills into Claude Code and OpenClaw skill dirs (non-fatal)
     try:
@@ -677,7 +677,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Skill install failed (non-fatal): {exc}")
 
-    # Install the active agent's declared boot-time skills — catalog names listed
+    # Install the active agent's declared boot-time skills: catalog names listed
     # under "startup_skills" in config/agents/<AGENT_NAME>/settings.json. Agents
     # that declare none install nothing. Backgrounded because these shell out to
     # the network (npx/git); boot must not wait on them.
@@ -692,7 +692,7 @@ async def lifespan(app: FastAPI):
     # Point every agent that supports it at this workspace's Composio MCP proxy, and
     # keep it that way: one sweep now, retries with backoff while XO is unreachable,
     # then a periodic reconcile (COMPOSIO_MCP_RECONCILE_INTERVAL). This is the only
-    # install path — there is no manual endpoint. Backgrounded because resolving the
+    # install path; there is no manual endpoint. Backgrounded because resolving the
     # workspace-scoped principal costs one XO round trip; boot must not wait on it.
     # Installs nothing when the backend holds no XO credential or has no workspace
     # identity. Non-fatal.
@@ -738,7 +738,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Tier migration skipped (non-fatal): {e}")
 
-    # GitHub issue poller — refreshes the runtime issue mirror for every
+    # GitHub issue poller: refreshes the runtime issue mirror for every
     # project with a github.com remote (docs/workitems-plan.md §6).
     _github_poll_task = None
     try:
@@ -773,7 +773,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
 
-    # Visualizer watcher — materialises portable project metadata from the
+    # Visualizer watcher: materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
     _watcher_enabled = (
@@ -905,7 +905,7 @@ app.include_router(models_router)
 app.include_router(channels_router)
 app.include_router(providers_router)
 
-# Cowork Agent API (migrated from bridge/) — serves the xo-cowork frontend.
+# Cowork Agent API (migrated from bridge/): serves the xo-cowork frontend.
 from routers.cowork_agent import all_routers as cowork_agent_routers
 for _r in cowork_agent_routers:
     app.include_router(_r)
@@ -933,7 +933,7 @@ async def root(request: Request):
     ``/space/``; API clients and health checks still receive the JSON status.
     This lets the workspace root URL land on the UI when the API is proxied at
     the port root (e.g. a Coder subdomain app whose base is the port itself,
-    not ``/space``) — the UI then talks to the API same-origin.
+    not ``/space``); the UI then talks to the API same-origin.
     """
     if "text/html" in request.headers.get("accept", ""):
         # Carry the query string across the redirect (still percent-encoded),
@@ -1025,8 +1025,8 @@ async def gateway_restart():
 async def app_restart():
     """Restart the XO Space API app process via cowork-api.sh."""
     # Timestamped marker: a restart kills every in-flight subprocess (e.g. a
-    # pending auth login) — correlate this line with mid-flow failures.
-    print(f"[app] restart requested at {datetime.datetime.now().isoformat()} — killing process tree")
+    # pending auth login); correlate this line with mid-flow failures.
+    print(f"[app] restart requested at {datetime.datetime.now().isoformat()}, killing process tree")
     script = (Path(__file__).resolve().parent / "cowork-api.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App restart script not found")

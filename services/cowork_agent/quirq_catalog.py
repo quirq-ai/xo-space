@@ -428,7 +428,7 @@ def _watcher(root: Path) -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
 
-    # Observed liveness. Everything above this line is *configuration* — it
+    # Observed liveness. Everything above this line is *configuration*: it
     # says what the watcher was asked to do, never whether the loop is running.
     heartbeat_path = root / "watcher" / "heartbeat.json"
     heartbeat = _read_json(heartbeat_path)
@@ -543,7 +543,7 @@ def _contract_status(
 
 
 def _project_outputs() -> dict[str, Any]:
-    # Same root helper as every other tab — see project_layout.
+    # Same root helper as every other tab; see project_layout.
     projects_root = xo_projects_root()
     host_root = (
         os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or ""
