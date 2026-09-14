@@ -33,6 +33,9 @@ STATE_DIR = settings_dir()
 STATE_FILE = STATE_DIR / "onboarding.json"
 LEGACY_STATE_FILE = legacy_state_dir() / "state.json"
 
+#: On-disk revision of the onboarding document.
+STATE_SCHEMA = 1
+
 
 def _read() -> dict[str, Any]:
     source_path = STATE_FILE if STATE_FILE.exists() else LEGACY_STATE_FILE
@@ -57,7 +60,7 @@ def _atomic_write(payload: dict[str, Any]) -> None:
     fd, tmp_path = tempfile.mkstemp(prefix=".state-", suffix=".json", dir=STATE_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
+            json.dump({**payload, "schema": STATE_SCHEMA}, f, indent=2, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, STATE_FILE)

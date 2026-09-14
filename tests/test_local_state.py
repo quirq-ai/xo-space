@@ -46,7 +46,7 @@ class LocalStateTests(unittest.TestCase):
                 loaded = xo_cowork_state.get_state()
 
             self.assertEqual(loaded, original)
-            self.assertEqual(json.loads(quirq_file.read_text(encoding="utf-8")), original)
+            self.assertEqual(json.loads(quirq_file.read_text(encoding="utf-8")), {**original, "schema": 1})
             self.assertEqual(json.loads(legacy_file.read_text(encoding="utf-8")), original)
 
     def test_jsonl_offsets_migrate_to_quirq_on_flush(self) -> None:

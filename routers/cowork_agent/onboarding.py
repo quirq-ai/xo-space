@@ -29,6 +29,6 @@ def onboarding_status():
 def onboarding_complete():
     update_state({
         "onboarding_completed": True,
-        "onboarding_completed_at": datetime.now(timezone.utc).isoformat(),
+        "onboarding_completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     })
     return {"ok": True}
