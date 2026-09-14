@@ -1,0 +1,34 @@
+.setup-project-tools{display:flex;align-items:center;gap:8px}
+.setup-project-notice{padding:12px 20px;color:#e2ae5b;font-size:12px;line-height:1.55}
+.setup-project-list{max-height:380px;overflow-y:auto}
+.setup-project-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 20px}
+.setup-project-row+.setup-project-row{border-top:1px solid var(--line-soft)}
+.setup-project-row>div{min-width:0}.setup-project-row b{display:block;font:500 13px var(--sans);overflow-wrap:anywhere}
+.setup-project-row code{display:block;color:var(--ink-3);font:400 10.5px var(--mono);margin-top:5px;overflow-wrap:anywhere}
+.setup-project-row p{margin-top:7px;font-size:11px;color:var(--ink-3);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.setup-project-row>button{flex-shrink:0}.setup-project-row>button:hover{color:#e1937d;border-color:#9b5947}
+.setup-project-form{padding:20px;border-bottom:1px solid var(--line-soft);background:var(--bg)}
+.setup-project-form h4,.setup-project-removal h4{font:500 16px var(--sans)}
+.setup-project-form>p,.setup-project-removal>p{font-size:12px;line-height:1.6;color:var(--ink-3);margin-top:8px}
+.setup-project-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.setup-projects label{display:block;margin:16px 0 7px;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-projects label>span{font-size:10px;font-weight:400;color:var(--ink-3);margin-left:4px}
+.setup-projects input{display:block;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);color:var(--ink);font:400 12px var(--mono)}
+.setup-projects input:disabled{opacity:.55}.setup-projects button:disabled{cursor:not-allowed;opacity:.45}
+.setup-project-removal{padding:20px;border-top:1px solid rgba(225,147,125,.35);background:rgba(225,147,125,.035)}
+.setup-project-removal>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.setup-project-removal>header>div{min-width:0}.setup-project-removal>header>div>code{display:block;color:var(--ink-3);font:400 11px var(--mono);margin-top:7px;overflow-wrap:anywhere}
+.setup-project-removal h4:focus{outline:none}.setup-project-removal label code{overflow-wrap:anywhere}
+.setup-project-removal h5{font:500 12px var(--sans);margin:20px 0 7px}
+.setup-project-member{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+.setup-project-member>div:first-child{min-width:0}.setup-project-member b{display:block;font:500 12px var(--mono);overflow-wrap:anywhere}
+.setup-project-member small,.setup-project-member code{display:block;font:400 10.5px var(--mono);line-height:1.5;color:var(--ink-3);margin-top:5px;overflow-wrap:anywhere}
+.setup-project-member>button{flex-shrink:0}
+.setup-project-revoke-confirm{display:flex;flex-direction:column;gap:9px;align-items:flex-end;flex-shrink:0}
+.setup-project-revoke-confirm>span{font-size:11px;color:#e1937d}.setup-project-revoke-confirm>div{display:flex;gap:8px}
+.setup-project-blockers{display:flex;flex-direction:column;gap:6px;margin-top:16px}.setup-project-blockers p{font-size:12px;line-height:1.55;color:#e2ae5b}
+.setup-project-access-note{font-size:12px;line-height:1.55;color:var(--ink-3);margin-top:18px}
+.setup-project-access-note.is-error{color:#e1937d}.setup-project-access-note.is-good{color:var(--accent)}
+.setup-project-delete,.setup-project-danger{padding:9px 13px;border:1px solid rgba(225,147,125,.55);border-radius:8px;color:#e1937d;font:500 12px var(--sans);background:rgba(225,147,125,.06)}
+.setup-project-delete:hover:not(:disabled),.setup-project-danger:hover:not(:disabled){background:rgba(225,147,125,.14)}
+@media(max-width:650px){.setup-project-row,.setup-project-form,.setup-project-removal{padding:15px}.setup-project-fields{grid-template-columns:1fr;gap:0}.setup-project-member{flex-wrap:wrap;gap:10px}.setup-project-revoke-confirm{align-items:flex-start;flex-shrink:1}.setup-project-tools{gap:6px}}

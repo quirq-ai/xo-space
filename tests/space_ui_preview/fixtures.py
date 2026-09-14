@@ -61,6 +61,21 @@ def catalog():
     ]}
 
 
+def project_removal(project_id):
+    """Fictional access review only; the preview never removes project files."""
+    shared = project_id == "aurora-console"
+    members = [{"workspace_id": WORKSPACE_ID, "role": "owner", "status": "active",
+                "is_self": True, "can_revoke": False}]
+    if shared:
+        members.extend({"workspace_id": workspace, "role": "member", "status": "active",
+                        "is_self": False, "can_revoke": True}
+                       for workspace in ("demo-workspace-summit", "demo-workspace-coast"))
+    return {"project_id": project_id, "can_remove": not shared,
+            "repo": f"github.com/fictional-workspace/{project_id}", "members": members,
+            "peers": [], "blockers": [{"code": "shared_project",
+                "message": "Revoke access for every other Space before removing this project."}] if shared else []}
+
+
 def paths_for(project):
     kind = project[3]
     common = ["README.md", "PLAN.md", "AGENTS.md"]

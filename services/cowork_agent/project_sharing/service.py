@@ -49,15 +49,23 @@ class SwarmError(RelayError):
 
 def status_snapshot() -> dict:
     snap = status.snapshot()
+    root = xo_projects_root()
     snap["own_workspace_id"] = config.workspace_id()
     snap["watch_branch"] = config.watch_branch()
     # "did XO Space clone this?" comes from the per-repo state file, so it is
     # still answerable after a restart when the in-memory event is gone.
     for repo, entry in snap.get("repos", {}).items():
         entry["auto_cloned_at"] = state.load_cloned_at(repo)
+        entry["auto_clone_suppressed"] = state.is_removed(repo, root)
+        project = entry.get("project")
+        if entry["auto_clone_suppressed"] and project and not (root / project).is_dir():
+            # A poll can still carry its previous local mapping when deletion
+            # completes. Keep remote membership visible without a ghost clone.
+            entry["project"] = None
+            entry["available"] = bool(entry.get("shared"))
     # The UI builds the clone command for "shared with you" repos from this;
     # a clone anywhere else is invisible to the relay.
-    snap["projects_root"] = str(xo_projects_root())
+    snap["projects_root"] = str(root)
     return snap
 
 

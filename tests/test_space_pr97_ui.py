@@ -881,7 +881,7 @@ class SharingViewTests(unittest.TestCase):
         self.assertIn("[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')", pane)
         self.assertNotIn("' · '+rel(k.date)", pane)
         self.assertNotIn("const dtfmt=", pane)  # was unused
-        self.assertIn("from './sharing_data.js?v=" + STAMP + "';", pane)
+        self.assertIn("from './sharing_data.js?v=20260914-projectmanage1';", pane)
 
 
 class ShellTests(unittest.TestCase):
@@ -895,23 +895,24 @@ class ShellTests(unittest.TestCase):
         app = read("js/app.js")
         # Contextual controls refreshed their participating views. Inbox
         # advanced again for Jobs/results; unchanged resources keep their URLs.
-        self.assertIn("./views/sharing.js?v=" + STAMP + "'", app)
+        project_stamp = "20260914-projectmanage1"
+        self.assertIn("./views/sharing.js?v=" + project_stamp + "'", app)
         context_stamp = "20260914-context1"
         for view in ("tree",):
-            self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
+            self.assertIn("./views/" + view + ".js?v=" + project_stamp + "'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-results1"
         self.assertIn("./views/inbox.js?v=20260914-setupidentity1'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
         # lens switch advanced together to carry the new pill.
         timeline_stamp = "20260914-timelinelens1"
-        self.assertIn("./views/atlas.js?v=" + timeline_stamp + "'", app)
+        self.assertIn("./views/atlas.js?v=" + project_stamp + "'", app)
         # The Sessions tab was renamed to Agents: its view and the Wiki topic
         # that documents it advanced together to carry the new label.
         agents_stamp = "20260914-agentstab1"
         self.assertIn("./views/sessions.js?v=" + agents_stamp + "'", app)
         self.assertIn("./views/wiki.js?v=20260914-setupidentity1'", app)
-        self.assertIn("./views/projects.js?v=20260914-setupidentity1'", app)
+        self.assertIn("./views/projects.js?v=" + project_stamp + "'", app)
         for core in ("registry", "toolbar"):
             self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
         self.assertIn("./core/lens-switch.js?v=" + timeline_stamp + "'", app)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -94,3 +95,50 @@ def save_cursor(repo: str, seq: int) -> None:
     data = _read(repo)
     data["cursor"] = int(seq)
     _write(repo, data)
+
+
+def removed_path(repo: str, root: Path) -> Path:
+    """A removal belongs to one projects root and one repository identity.
+
+    Kept separate from cursor/report state: those read-modify-write updates
+    must never erase a person's decision to remove their local copy.
+    """
+    key = json.dumps([str(Path(root).resolve()), repo], separators=(",", ":"))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return relay_state_dir() / "removed" / f"{digest}.json"
+
+
+def is_removed(repo: str, root: Path) -> bool:
+    """Existence is the signal, even for an unreadable or malformed marker."""
+    try:
+        removed_path(repo, root).lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def mark_removed(repo: str, root: Path) -> None:
+    """Persist before removing a checked local project; propagate write errors.
+
+    Creating the marker is enough to suppress cloning, so an interrupted write
+    remains conservative. O_EXCL makes concurrent removals idempotent and never
+    follows a marker symlink. This file is not touched by relay bookmarks.
+    """
+    path = removed_path(repo, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump({"repo": repo, "projects_root": str(Path(root).resolve())}, handle)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def clear_removed(repo: str, root: Path) -> None:
+    """Only a successful explicit re-add clears this root's matching marker."""
+    removed_path(repo, root).unlink(missing_ok=True)

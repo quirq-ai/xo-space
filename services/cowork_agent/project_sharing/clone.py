@@ -42,7 +42,7 @@ _NOT_FOUND_MARKERS = ("repository not found", "not found")
 
 @dataclass(frozen=True)
 class CloneResult:
-    state: str            # cloned | already | exists | needs_auth | error
+    state: str            # cloned | already | exists | needs_auth | removed | error
     project: str | None   # folder name under the projects root
     detail: str = ""
     had_token: bool = False
@@ -127,15 +127,20 @@ def _last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-async def clone_shared_repo(repo: str) -> CloneResult:
+async def clone_shared_repo(repo: str, *, automatic: bool = True) -> CloneResult:
     root = project_layout.xo_projects_root()
     name = repo.rsplit("/", 1)[-1] or "project"
     dirname = project_layout.resolve_project_dirname(name)
     target = root / dirname
 
+    if automatic and state.is_removed(repo, root):
+        return CloneResult("removed", dirname, "local copy was removed")
+
     if target.exists():
         origin = normalize_repo(await git_ops.origin_url(target)) if (target / ".git").is_dir() else None
         if origin == repo:
+            if not automatic:
+                state.clear_removed(repo, root)
             return CloneResult("already", dirname, "already cloned here")
         return CloneResult("exists", dirname,
                            f"a folder named {dirname!r} already exists here and is not this repo")
@@ -161,6 +166,15 @@ async def clone_shared_repo(repo: str) -> CloneResult:
             return CloneResult("no_access", dirname,
                                f"{who}, but that account cannot see this repo", had_token)
         return CloneResult(state_name, dirname, _last_line(stderr) or "git clone failed", had_token)
+    # A removal can happen while Git is running. Recheck without an await
+    # before publishing the temporary clone, so a pending tick cannot restore
+    # the folder after the deletion response has completed.
+    if automatic and state.is_removed(repo, root):
+        shutil.rmtree(tmp, ignore_errors=True)
+        return CloneResult("removed", dirname, "local copy was removed", had_token)
+    if target.exists() or target.is_symlink():
+        shutil.rmtree(tmp, ignore_errors=True)
+        return CloneResult("exists", dirname, "a project folder appeared while cloning", had_token)
     try:
         tmp.rename(target)
     except OSError as exc:
@@ -168,4 +182,6 @@ async def clone_shared_repo(repo: str) -> CloneResult:
         return CloneResult("error", dirname, f"could not move clone into place: {exc}", had_token)
     # Remember that XO Space, not the user, put this folder here (survives restarts).
     state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat())
+    if not automatic:
+        state.clear_removed(repo, root)
     return CloneResult("cloned", dirname, "", had_token)

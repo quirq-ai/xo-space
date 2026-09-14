@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.project_sharing import clone, config, git_ops, poller, status
+from services.cowork_agent.project_sharing import clone, config, git_ops, poller, state, status
 
 R = "github.com/acme/trip-planner"
 
@@ -147,6 +147,68 @@ class CloneFunctionTests(unittest.TestCase):
         self.assertTrue((self.root / ".keep").exists())
         self.assertTrue((self.root / "real").exists())
 
+    def test_removed_repo_is_not_automatically_cloned(self) -> None:
+        state.mark_removed(R, self.root)
+        with patch.object(git_ops, "clone", new=AsyncMock()) as gclone:
+            res = run(clone.clone_shared_repo(R))
+        self.assertEqual(res.state, "removed")
+        gclone.assert_not_awaited()
+        self.assertFalse((self.root / "trip-planner").exists())
+
+    def test_removal_during_clone_prevents_publishing_the_folder(self) -> None:
+        async def pending_clone(url, dest, **kwargs):
+            (Path(dest) / ".git").mkdir(parents=True)
+            state.mark_removed(R, self.root)
+            return True, "", False
+
+        with patch.object(git_ops, "clone", new=pending_clone):
+            res = run(clone.clone_shared_repo(R))
+        self.assertEqual(res.state, "removed")
+        self.assertFalse((self.root / "trip-planner").exists())
+        self.assertFalse((self.root / ".trip-planner.cloning").exists())
+        self.assertTrue(state.is_removed(R, self.root))
+        self.assertIsNone(state.load_cloned_at(R))
+
+    def test_successful_explicit_readd_clears_only_its_removal(self) -> None:
+        other = "github.com/acme/other"
+        state.mark_removed(R, self.root)
+        state.mark_removed(other, self.root)
+
+        async def explicit_clone(url, dest, **kwargs):
+            (Path(dest) / ".git").mkdir(parents=True)
+            return True, "", False
+
+        with patch.object(git_ops, "clone", new=explicit_clone):
+            res = run(clone.clone_shared_repo(R, automatic=False))
+        self.assertEqual(res.state, "cloned")
+        self.assertFalse(state.is_removed(R, self.root))
+        self.assertTrue(state.is_removed(other, self.root))
+
+    def test_failed_explicit_readd_preserves_the_removal(self) -> None:
+        state.mark_removed(R, self.root)
+        with patch.object(git_ops, "clone", new=AsyncMock(return_value=(False, "offline", False))):
+            res = run(clone.clone_shared_repo(R, automatic=False))
+        self.assertEqual(res.state, "error")
+        self.assertTrue(state.is_removed(R, self.root))
+
+    def test_folder_created_during_clone_is_not_replaced(self) -> None:
+        appeared = {}
+
+        async def pending_clone(url, dest, **kwargs):
+            (Path(dest) / ".git").mkdir(parents=True)
+            target = self.root / "trip-planner"
+            target.mkdir()
+            appeared["inode"] = target.stat().st_ino
+            return True, "", False
+
+        with patch.object(git_ops, "clone", new=pending_clone):
+            res = run(clone.clone_shared_repo(R))
+        target = self.root / "trip-planner"
+        self.assertEqual(res.state, "exists")
+        self.assertEqual(target.stat().st_ino, appeared["inode"])
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse((self.root / ".trip-planner.cloning").exists())
+
 
 class AutoCloneInTickTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -186,6 +248,16 @@ class AutoCloneInTickTests(unittest.TestCase):
     def test_kill_switch_prevents_cloning(self) -> None:
         with patch.dict(os.environ, {"PROJECT_SHARING_AUTO_CLONE": "false"}):
             _, cl = self._tick(clone.CloneResult("cloned", "trip-planner"))
+        cl.assert_not_called()
+
+    def test_removed_owner_only_membership_is_not_recloned(self) -> None:
+        state.mark_removed(R, self.root)
+        _, cl = self._tick(clone.CloneResult("cloned", "trip-planner"))
+        cl.assert_not_called()
+        # Resetting in-memory relay state does not forget a local removal.
+        status.reset()
+        poller.reset_for_tests()
+        _, cl = self._tick(clone.CloneResult("cloned", "trip-planner"))
         cl.assert_not_called()
 
     def test_needs_auth_is_not_retried_until_a_token_appears(self) -> None:

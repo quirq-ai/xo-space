@@ -340,6 +340,8 @@ const PANELS=[
 ];
 
 let root=null,items=null,expanded=null;
+let catalogDirty=false,catalogRevision=0;
+addEventListener('space:projects-changed',()=>{catalogDirty=true;catalogRevision++;});
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount */
 let refreshToolbar=()=>{};
 /* Workspace-wide rollups: four requests total, whatever the project count.
@@ -372,13 +374,14 @@ export default {
     el.innerHTML='<div class="prj">'+skeleton()+'</div>';
     await loadList();
   },
-  show(){/* keep whatever the user had open; Refresh re-fetches */}
+  show(){if(catalogDirty)loadList(); /* Keep filters and open details on ordinary navigation. */}
 };
 
 const skeleton=()=>'<div class="prj-head"></div><div class="prj-rows">'
   +'<div class="prj-skel"></div>'.repeat(4)+'</div>';
 
 async function loadList(){
+  const revision=catalogRevision;
   const box=root.querySelector('.prj');
   const btn=root.querySelector('#prj-refresh');
   if(btn){btn.disabled=true;btn.classList.add('is-busy');}
@@ -390,12 +393,14 @@ async function loadList(){
     apiFetch(API_BASE+'/api/xo-projects/activity'),
     apiFetch(API_BASE+'/api/xo-projects/timeline?limit=200'),
   ]);
+  if(revision!==catalogRevision)return loadList();
   if(!list.ok){
     box.innerHTML=head(0)+panelFail(list);
     bindHead();
     return;
   }
   items=list.data.items||[];
+  catalogDirty=false;
   counts=ws.byProject||new Map();
   capped=!!ws.totalsCapped;
   live=new Map();

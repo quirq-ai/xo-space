@@ -10,7 +10,8 @@ import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-setupflow1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
-import {mountSetupSearch} from './setup-search.js?v=20260914-setupapps1';
+import {mountSetupSearch} from './setup-search.js?v=20260914-projectmanage1';
+import {mountProjects} from './setup-projects.js?v=20260914-projectmanage1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -30,6 +31,7 @@ let editingKey=null;
 let loading=false;
 let commands=null;
 let identity=null;
+let projectsManager=null;
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -64,6 +66,10 @@ function mountSetup(el,ctx){
     renderShell();
     bindEvents();
     setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
+    projectsManager=mountProjects(root.querySelector('#setup-projects'),{
+      onChange:detail=>dispatchEvent(new CustomEvent(detail?.action==='access'?'space:project-access-changed':'space:projects-changed',{detail})),
+      onDraftChange:()=>renderJourney(),
+    });
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
     identity.refresh();
@@ -83,7 +89,7 @@ export default {
   id:'setup',label:'Setup',order:9,
   toolbar:setupToolbar,
   mount(el,ctx){return mountSetup(el,ctx);},
-  show(){commands?.refresh(); /* Preserve in-progress forms while switching tabs. */}
+  show(){commands?.refresh();if(currentPanel==='agent')projectsManager?.refresh(); /* Preserve in-progress forms while switching tabs. */}
 };
 
 export const secretsView={
@@ -151,6 +157,7 @@ function renderShell(){
             <div class="setup-sources" id="setup-sources"><div class="setup-empty">Checking agents…</div></div>
           </section>
           <button class="setup-secondary" type="button" data-setup-go="secrets">Manage secrets →</button>
+          <section class="setup-card setup-projects" id="setup-projects" aria-label="Projects"></section>
           <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="activity">Next: Activity →</button></footer>
         </section>
 
@@ -237,6 +244,7 @@ function selectPanel(panel,{focus=false}={}){
   if(!target)return;
   setupSearch?.clear();
   currentPanel=panel;
+  if(panel==='agent')projectsManager?.refresh();
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
@@ -290,7 +298,7 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();});
+  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();if(currentPanel==='agent')projectsManager?.refresh();});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
@@ -438,7 +446,7 @@ function renderRuntime(){
 function renderJourney(){
   const steps=setupSteps(runtimeUnavailable?null:runtimeData);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty=panel=>panel==='secrets'?credentialDraft:drafts[panel];
+  const dirty=panel=>panel==='secrets'?credentialDraft:!!drafts[panel]||(panel==='agent'&&projectsManager?.hasDraft());
   const secretsStep=root.querySelector('#setup-step-secrets');
   secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
   secretsStep.className=credentialDraft?'is-pending':'';

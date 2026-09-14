@@ -138,6 +138,7 @@ export function repos(){
     others:others(r),
     lastFetchAt:r.last_fetch_at||null,lastError:r.last_error||null,
     clone:r.clone||null,autoClonedAt:r.auto_cloned_at||null,
+    autoCloneSuppressed:r.auto_clone_suppressed===true,
   })).filter(r=>r.mine||r.incoming);
 }
 

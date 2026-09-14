@@ -197,6 +197,8 @@ async def _pick_clone_candidate(available: list[str]) -> str | None:
     now = time.time()
     token_checked: bool | None = None
     for repo in sorted(available):
+        if state.is_removed(repo, xo_projects_root()):
+            continue
         c = (repos.get(repo) or {}).get("clone")
         if c is None:
             return repo

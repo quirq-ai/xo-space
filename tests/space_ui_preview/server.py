@@ -61,7 +61,7 @@ class Handler(SimpleHTTPRequestHandler):
         if route:
             self.json_response(route())
             return
-        match = re.fullmatch(r"/api/xo-projects/([^/]+)/(tree|todos|activity|timeline|file|file-history|commits|members|github/issues)", path)
+        match = re.fullmatch(r"/api/xo-projects/([^/]+)/(tree|todos|activity|timeline|file|file-history|commits|members|removal|github/issues)", path)
         if match and match[1] in {p[0] for p in fixtures.PROJECTS}:
             pid, operation = match.groups()
             relative = query.get("relative_path", [""])[0]
@@ -73,6 +73,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "file": lambda: fixtures.file_payload(pid, relative, query.get("commit")),
                 "file-history": lambda: {"project_id": pid, "relative_path": relative, "is_repo": True, "items": fixtures.commits(pid)["commits"]},
                 "commits": lambda: fixtures.commits(pid),
+                "removal": lambda: fixtures.project_removal(pid),
                 "members": lambda: {"own_workspace_id": fixtures.WORKSPACE_ID, "members": [
                     {"workspace_id": fixtures.WORKSPACE_ID, "role": "owner", "status": "active", "bound": True},
                     {"workspace_id": "demo-workspace-summit", "role": "member", "status": "active", "bound": True}]},

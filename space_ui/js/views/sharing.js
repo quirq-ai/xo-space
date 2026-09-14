@@ -23,7 +23,7 @@ import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
   cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260914-accounts1';
+  checkNow,failText} from './sharing_data.js?v=20260914-projectmanage1';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 
@@ -38,6 +38,9 @@ let composer=null;        /* null | {pick,filter,ws} */
 let busy=new Set();       /* project ids with a write in flight */
 let confirmRevoke=null;   /* {id,ws} while a revoke waits for Confirm */
 let renderedAt=0;
+let catalogDirty=false;
+addEventListener('space:projects-changed',()=>{catalogDirty=true;});
+addEventListener('space:project-access-changed',()=>{catalogDirty=true;members.clear();});
 
 export default {
   /* No tab of its own: the Files tab owns the nav slot and this is its
@@ -58,7 +61,7 @@ export default {
   },
   /* Coming back to the lens re-reads; right after mount the paint is fresh
      and a second read would only repeat it. */
-  show(){if(root&&Date.now()-renderedAt>2000)refresh();}
+  show(){if(root&&(catalogDirty||Date.now()-renderedAt>2000)){catalogDirty=false;refresh();}}
 };
 
 const skeleton=()=>'<div class="prj-head"></div><div class="prj-rows">'
@@ -130,8 +133,9 @@ function model(){
     let state='pending',need=null;
     if(r.incoming){
       const st=r.clone&&r.clone.state;
-      state=st||'available';
-      if(st==='needs_auth')need='auth';
+      state=r.autoCloneSuppressed?'removed':st||'available';
+      if(r.autoCloneSuppressed)need='restore';
+      else if(st==='needs_auth')need='auth';
       else if(st==='no_access'||st==='exists'||st==='error')need='manual';
       else if(st==='cloning')need='cloning';
     }else if(behind>0){state='behind';need='apply';}
@@ -203,7 +207,11 @@ function stripHTML(){
    person can move it on, offers the one thing to click. */
 function inboxRow(r){
   let what='',why='',acts='';
-  if(r.need==='auth'){
+  if(r.need==='restore'){
+    what='removed from this Space';
+    why='automatic cloning is paused';
+    acts='<button class="sess-refresh is-sm" type="button" data-act="restore">Clone in Setup</button>';
+  }else if(r.need==='auth'){
     what='private repo · needs GitHub';
     why='connect GitHub once; XO Space clones it on the next check';
     acts='<button class="sess-refresh is-sm" type="button" data-act="connect">Connect GitHub</button>'
@@ -270,6 +278,7 @@ function stateChip(r){
     case'no_access':return'<span class="tchip st-blocked">no access</span>';
     case'exists':return'<span class="tchip st-blocked">folder in the way</span>';
     case'available':return'<span class="tchip st-available">shared with you</span>';
+    case'removed':return'<span class="tchip st-quiet">removed locally</span>';
     default:return r.incoming?'<span class="tchip st-blocked">clone failed</span>':'<span class="tchip">checking…</span>';
   }
 }
@@ -486,7 +495,11 @@ async function onClick(e){
       render();
       return;
     case'apply':return doApply(id);
-    case'connect':return go('secrets');
+    case'connect':return go('connectors');
+    case'restore':
+      await go('setup');
+      dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'agent'}}));
+      return;
     case'list':
       /* views never import each other: switch to List and tell it which
          drawer to open; it parks the request until its catalog is loaded */

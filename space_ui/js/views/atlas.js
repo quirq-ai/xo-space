@@ -14,6 +14,27 @@ let refreshToolbar=()=>{};
 const hooks={};  /* boot() assigns lifecycle hooks here once it has run */
 let bootPromise=null;
 let bootDataset=null;
+let projectsDirty=false;
+addEventListener('space:projects-changed',()=>{
+  if(bootPromise){projectsDirty=true;showProjectRefresh();}
+});
+
+/* The atlas builds a simulation once. Offer its existing reload explicitly
+   so changing a project never discards unfinished Setup forms automatically. */
+function showProjectRefresh(){
+  if(!projectsDirty)return;
+  for(const id of ['view-graph','view-time']){
+    const view=document.getElementById(id);
+    if(!view||view.querySelector('.atlas-project-refresh'))continue;
+    const notice=document.createElement('div');
+    notice.className='atlas-project-refresh';notice.setAttribute('role','status');
+    notice.innerHTML='<span>Projects changed.</span><button type="button">Reload map</button>';
+    notice.querySelector('button').addEventListener('click',()=>{
+      dispatchEvent(new CustomEvent('space:before-atlas-reload'));location.reload();
+    });
+    view.appendChild(notice);
+  }
+}
 
 /* Cross-lens focus: the List's "Map" action and the previewer's Graph button
    dispatch space:focus-project; if the graph has not booted yet the request is

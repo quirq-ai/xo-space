@@ -7,6 +7,7 @@ const SETTINGS=[
   ['workspace','Projects folder','Workspace · Folders','root directory path projects','#xo-root-input'],
   ['workspace','Space data folder','Workspace · Folders','quirq settings storage directory credentials','#quirq-root-input'],
   ['agent','Agent & access','Choose the agent for new chats','runtime cli install authentication','#runtime-agent'],
+  ['agent','Projects','Clone a repository or remove a local project','git add delete remove shared sharing revoke access','#setup-projects-title'],
   ['activity','Activity sources','Choose which agent activity appears in Space','watcher sessions history automatic telemetry','#runtime-source-mode'],
   ['activity','Activity interval','Activity · Advanced','watcher polling seconds frequency','#runtime-interval'],
   ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],

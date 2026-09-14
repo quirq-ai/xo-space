@@ -1,4 +1,4 @@
-# Space: the workspace knowledge graph UI
+# Space UI
 
 An explorable map of `~/xo-projects`. Four top-level tabs: **Projects**
 (Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
@@ -133,7 +133,7 @@ spring stiffness makes the original explicit-Euler sim diverge (positions hit
 Three setup steps keep one section visible at a time:
 
 1. **Workspace** shows the Space ID, configured workspace name/owner, verified XO user ID and GitHub account, then the projects and Space data folders. Applied paths and connection diagnostics are expandable.
-2. **Agent & access** selects the chat agent, shows its installation/folder checks and recommended credential actions, and links to Secrets for saved environment values. Other agents and detailed paths are collapsed.
+2. **Agent & access** selects the chat agent, shows installation checks and recommended credentials, and manages local projects. **Add project** clones a Git repository into the projects folder. **Remove** checks sharing, lists individual access grants and collaborators, and requires typing the folder name before local deletion. Other agents and detailed paths are collapsed.
 3. **Activity** controls automatic collection and source coverage. The check interval sits under Advanced; usage-reporting status stays visible here.
 
 **Next** moves between steps without saving. All forms stay mounted, so section
@@ -162,6 +162,26 @@ accounts use the existing rclone add, authorization, cancel and remove routes;
 Removing a remote does not delete cloud files. Account apps retain their
 workspace toggles, account labels, action permissions and Inbox polling.
 No installation or sign-in starts from a native status refresh.
+
+Project management uses `POST /api/xo-projects` with `repository_url` and
+`project_id`, `GET /api/xo-projects/{id}/removal`, and `DELETE /api/xo-projects/{id}`
+with `confirm_project_id`. Existing folders are never overwritten. Removal
+checks both workspace sharing grants and the local collaborator roster; each
+grant must be revoked individually, and each other collaborator removed.
+Unavailable or malformed access checks block removal. The server repeats its
+checks when Delete is pressed, regardless of the earlier preview. Deletion
+removes local files; it does not delete the remote repository or backups.
+Automatic sharing clones remember the local removal so they do not recreate
+the folder. Explicitly cloning it again restores it. Projects List, Tree and
+Sharing refresh on return; a previously opened map offers **Reload map** without
+automatically discarding Setup drafts.
+
+For never-shared Git repositories, XO Swarm must support `GET /commits/members`
+returning `200` with `members: []` when its sharing ledger has no rows. Older
+versions return the same `403` as an inaccessible shared repository; Space
+keeps removal blocked in that case. Deploy the companion `members_for_user`
+change before enabling removal of never-shared repositories. Existing shared
+repositories still require an active, bound caller and individual revocation.
 
 **Restart server**, **Apply & restart** and the update action appear in Server,
 with only the relevant restart button visible. They use `/space/server/restart`. Restart takes

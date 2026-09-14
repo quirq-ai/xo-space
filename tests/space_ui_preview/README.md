@@ -65,6 +65,7 @@ save/poll races, validation conflicts, and desktop/mobile layouts:
 node tests/space_ui_preview/setup-state.mjs
 node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
 node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
+node tests/space_ui_preview/setup-projects.mjs /tmp/space-setup-projects
 node tests/space_ui_preview/native-connectors.mjs /tmp/space-native-connectors
 node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
@@ -78,6 +79,12 @@ loads and refresh/save races, unavailable status, and desktop/mobile layouts.
 All settings and credential writes use fictional browser fixtures. The pure
 state check covers pending-change priority and factual summaries without
 inferring authentication or live activity from installation checks.
+
+The project check covers Git cloning, individual access revocation, local-roster
+removal, typed deletion confirmation, stale replies, changed memberships, retained
+drafts and refreshed project lists. The read-only preview shows a shared removal
+review for Aurora Console; browser tests intercept all project mutations. Backend
+tests separately exercise file deletion and clone publication in temporary folders.
 
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and

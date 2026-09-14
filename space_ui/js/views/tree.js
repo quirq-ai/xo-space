@@ -42,6 +42,8 @@ let model=null;      /* the tree, or null before the first load */
 let open=new Set();  /* expanded keys */
 let filter='';
 let loading=false;
+let projectsDirty=false,projectsRevision=0;
+addEventListener('space:projects-changed',()=>{projectsDirty=true;projectsRevision++;});
 const expandedStacks=new Set(); /* leaf cards showing all of their files */
 let seen=new Set();             /* keys on screen last render — the rest are new */
 let growing=false;              /* this render came from an expand: draw branches in */
@@ -132,7 +134,7 @@ export default {
     root.addEventListener('wheel',onWheel,{passive:false});
     await load();
   },
-  show(){if(model===null&&!loading)load();}
+  show(){if((model===null||projectsDirty)&&!loading)load();}
 };
 
 /* ── model ────────────────────────────────────────────────────────────────
@@ -182,18 +184,21 @@ function build(data){
 }
 
 async function load(){
+  const revision=projectsRevision;
   loading=true;
   const res=await apiFetch(API_BASE+'/xo/space.json');
   loading=false;
+  if(revision!==projectsRevision)return load();
   if(!res.ok){
     root.querySelector('.tv').innerHTML=
       '<div class="prj-note">'+esc(res.offline?'xo-space is unreachable':res.error)+'</div>';
     return;
   }
-  model=build(res.data);
+  const firstLoad=model===null;
+  model=build(res.data);projectsDirty=false;
   /* Start from the root: the workspace open, its projects closed. The first
      screen is an index of the workspace, not 1500 rows. */
-  open=new Set(['']);
+  if(firstLoad)open=new Set(['']);
   render();
 }
 
