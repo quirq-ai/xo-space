@@ -47,14 +47,50 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from utils.runtime_env import quirq_state_dir
+
+log = logging.getLogger(__name__)
+
+_COMMAND_LOG_MAX_BYTES = 5 * 1024 * 1024
+_COMMAND_LOG_ENTRY_CAP_CHARS = 4096
+_REDACTED = "[REDACTED]"
+_SENSITIVE_FLAGS = frozenset({
+    "--access-token",
+    "--api-key",
+    "--auth-token",
+    "--code",
+    "--password",
+    "--secret",
+    "--token",
+})
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization:\s*(?:basic|bearer|token)\s+)(\S+)")
+_INLINE_SECRET_RE = re.compile(
+    r"(?i)(--(?:access-token|api-key|auth-token|code|password|secret|token)\b\s*[=:]\s*)(\S+)"
+)
+_TOKEN_PREFIX_RE = re.compile(
+    r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b"
+)
+# One lock for everything the log writer touches: the size check, the
+# rotation rename and the append happen as one step, so two threads finishing
+# commands together (scheduler jobs, a request shelling out) cannot both
+# rotate the same file. It is held for one small append, never while a
+# process runs. The warned set makes "unwritable log" a one-line warning per
+# destination; writes are always retried, so a transient failure costs one
+# entry rather than the rest of the record.
+_COMMAND_LOG_LOCK = threading.Lock()
+_WARNED_COMMAND_LOG_PATHS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -87,19 +123,137 @@ class CommandResult:
         return self.output
 
 
-def _render_log_entry(ts: str, label: str, argv: Sequence[str], result: CommandResult) -> str:
-    header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
-    cmdline = " ".join(repr(a) if " " in a else a for a in argv)
-    rc = (
+def _redact_text(text: str) -> str:
+    redacted = _AUTH_HEADER_RE.sub(rf"\1{_REDACTED}", text)
+    redacted = _INLINE_SECRET_RE.sub(rf"\1{_REDACTED}", redacted)
+    return _TOKEN_PREFIX_RE.sub(_REDACTED, redacted)
+
+
+def _is_sensitive_flag(token: str) -> bool:
+    name = token.split("=", 1)[0].lower()
+    return name in _SENSITIVE_FLAGS
+
+
+def _redact_argv(argv: Sequence[str]) -> list[str]:
+    redacted: list[str] = []
+    redact_next = False
+    for token in argv:
+        token = str(token)
+        if redact_next:
+            redacted.append(_REDACTED)
+            redact_next = False
+            continue
+        if _is_sensitive_flag(token):
+            if "=" in token:
+                redacted.append(_redact_text(token))
+            else:
+                redacted.append(token)
+                redact_next = True
+            continue
+        redacted.append(_redact_text(token))
+    return redacted
+
+
+def _cap_log_output(text: str) -> str:
+    if len(text) <= _COMMAND_LOG_ENTRY_CAP_CHARS:
+        return text
+    marker = f"\n...[truncated {len(text) - _COMMAND_LOG_ENTRY_CAP_CHARS} chars]...\n"
+    if len(marker) >= _COMMAND_LOG_ENTRY_CAP_CHARS:
+        return marker[:_COMMAND_LOG_ENTRY_CAP_CHARS]
+    keep = _COMMAND_LOG_ENTRY_CAP_CHARS - len(marker)
+    head = keep // 2
+    tail = keep - head
+    return text[:head] + marker + text[-tail:]
+
+
+def _render_output(result: CommandResult, *, cap: bool = True) -> str:
+    if result.stderr:
+        combined = f"{result.output}[stderr]\n{result.stderr}" if result.output else f"[stderr]\n{result.stderr}"
+    else:
+        combined = result.output
+    redacted = _redact_text(combined)
+    return _cap_log_output(redacted) if cap else redacted
+
+
+def _command_log_status(result: CommandResult) -> str:
+    return (
         "timeout" if result.timed_out
         else "missing-binary" if result.binary_missing
         else "exception" if result.exception is not None
         else str(result.returncode)
     )
-    tail = result.output
-    if tail and not tail.endswith("\n"):
-        tail += "\n"
-    return f"{header}$ {cmdline}\n{tail}[exit {rc}]\n"
+
+
+def _default_command_logging_enabled() -> bool:
+    return ((os.getenv("QUIRQ_COMMAND_LOG", "") or "").strip().lower() != "off")
+
+
+def _default_command_log_path() -> Path | None:
+    if not _default_command_logging_enabled():
+        return None
+    override = (os.getenv("QUIRQ_COMMAND_LOG_PATH", "") or "").strip()
+    return Path(override).expanduser() if override else quirq_state_dir() / "commands.log"
+
+
+def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:
+    """Destinations for one entry as (path, is_shared). The shared file is the
+    runner's own commands.log: bounded per entry and rotated, because every
+    command in the process feeds it. A caller's explicit `log_path` is that
+    caller's complete record (a scheduler job, a provisioning run): redacted,
+    but never capped or rotated — retention there is the caller's business."""
+    paths: list[tuple[Path, bool]] = []
+    default_path = _default_command_log_path()
+    if default_path is not None:
+        paths.append((default_path, True))
+    if log_path is not None:
+        explicit_path = Path(log_path).expanduser()
+        if default_path is None or os.path.abspath(str(explicit_path)) != os.path.abspath(str(default_path)):
+            paths.append((explicit_path, False))
+    return paths
+
+
+def _warn_logging_failed(path: Path, exc: Exception) -> None:
+    key = os.path.abspath(str(path))
+    with _COMMAND_LOG_LOCK:
+        if key in _WARNED_COMMAND_LOG_PATHS:
+            return
+        _WARNED_COMMAND_LOG_PATHS.add(key)
+    log.warning("command log entry dropped, cannot write %s: %s", path, exc)
+
+
+def _emit_logs(
+    *,
+    ts: str,
+    label: str,
+    argv: Sequence[str],
+    cwd: str | Path | None,
+    result: CommandResult,
+    log_path: str | Path | None,
+) -> None:
+    for path, shared in _iter_log_paths(log_path):
+        try:
+            entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared)
+            _write_log(path, entry, rotate=shared)
+        except Exception as exc:  # noqa: BLE001 - logging must never affect command execution
+            _warn_logging_failed(path, exc)
+
+
+def _render_log_entry(
+    ts: str,
+    label: str,
+    argv: Sequence[str],
+    result: CommandResult,
+    *,
+    cwd: str | Path | None = None,
+    cap: bool = True,
+) -> str:
+    header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
+    cmdline = " ".join(repr(a) if " " in a else a for a in _redact_argv(argv))
+    output = _render_output(result, cap=cap)
+    if output and not output.endswith("\n"):
+        output += "\n"
+    where = str(Path(cwd).expanduser()) if cwd is not None else os.getcwd()
+    return f"{header}$ {cmdline}\ncwd: {where}\n[{_command_log_status(result)}; {result.duration_seconds:.3f}s]\n{output}"
 
 
 def _text(value) -> str:
@@ -135,18 +289,31 @@ def spawn_detached(
             start_new_session=True,
         )
     except FileNotFoundError:
-        return CommandResult(argv=argv_list, returncode=-1, output=f"{argv_list[0]} not found in PATH",
-                             duration_seconds=0.0, binary_missing=True)
+        result = CommandResult(argv=argv_list, returncode=-1, output=f"{argv_list[0]} not found in PATH",
+                               duration_seconds=0.0, binary_missing=True)
+        _emit_logs(ts=datetime.now(timezone.utc).isoformat(), label="", argv=argv_list, cwd=cwd, result=result, log_path=None)
+        return result
     except Exception as e:  # noqa: BLE001
-        return CommandResult(argv=argv_list, returncode=-1, output=f"[exception] {e}",
-                             duration_seconds=0.0, exception=str(e))
-    return CommandResult(argv=argv_list, returncode=0, output="", duration_seconds=0.0)
+        result = CommandResult(argv=argv_list, returncode=-1, output=f"[exception] {e}",
+                               duration_seconds=0.0, exception=str(e))
+        _emit_logs(ts=datetime.now(timezone.utc).isoformat(), label="", argv=argv_list, cwd=cwd, result=result, log_path=None)
+        return result
+    result = CommandResult(argv=argv_list, returncode=0, output="", duration_seconds=0.0)
+    _emit_logs(ts=datetime.now(timezone.utc).isoformat(), label="detached", argv=argv_list, cwd=cwd, result=result, log_path=None)
+    return result
 
 
-def _write_log(log_path: Path, entry: str) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as f:
-        f.write(entry)
+def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
+    entry_bytes = entry.encode("utf-8")
+    with _COMMAND_LOG_LOCK:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if rotate and log_path.exists() and log_path.stat().st_size + len(entry_bytes) > _COMMAND_LOG_MAX_BYTES:
+            rotated = log_path.with_name(f"{log_path.name}.1")
+            with contextlib.suppress(FileNotFoundError):
+                rotated.unlink()
+            log_path.replace(rotated)
+        with log_path.open("ab") as f:
+            f.write(entry_bytes)
 
 
 def _kill_tree(proc) -> None:
@@ -227,8 +394,7 @@ async def run(
             duration_seconds=0.0,
             binary_missing=True,
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
     except Exception as e:  # noqa: BLE001 — surface as CommandResult, never raise
         result = CommandResult(
@@ -238,8 +404,7 @@ async def run(
             duration_seconds=0.0,
             exception=str(e),
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
 
     try:
@@ -260,8 +425,7 @@ async def run(
             duration_seconds=asyncio.get_event_loop().time() - started,
             timed_out=True,
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
 
     duration = asyncio.get_event_loop().time() - started
@@ -272,8 +436,7 @@ async def run(
         duration_seconds=duration,
         stderr=(stderr or b"").decode(errors="replace") if separate_stderr else "",
     )
-    if log_path is not None:
-        _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
     return result
 
 
@@ -322,8 +485,7 @@ def run_sync(
             duration_seconds=0.0,
             binary_missing=True,
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
     except subprocess.TimeoutExpired as e:
         result = CommandResult(
@@ -333,8 +495,7 @@ def run_sync(
             duration_seconds=time.monotonic() - started,
             timed_out=True,
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
     except Exception as e:  # noqa: BLE001
         result = CommandResult(
@@ -344,8 +505,7 @@ def run_sync(
             duration_seconds=time.monotonic() - started,
             exception=str(e),
         )
-        if log_path is not None:
-            _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
 
     out = _text(completed.stdout)
@@ -357,8 +517,7 @@ def run_sync(
         duration_seconds=time.monotonic() - started,
         stderr=err if separate_stderr else "",
     )
-    if log_path is not None:
-        _write_log(Path(log_path), _render_log_entry(ts, log_label, argv_list, result))
+    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
     return result
 
 

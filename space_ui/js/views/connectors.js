@@ -1,8 +1,8 @@
-/* Connectors tab — Composio toolkits.
+/* Connectors tab: Composio toolkits.
 
    The eight toolkits are OAuth2-only. Identity is the XO account id resolved from
    an X-XO-Session header, so every call here goes through core/session.js. Nothing
-   on this page — or on this server — holds a provider credential; xo-swarm-api
+   on this page (or on this server) holds a provider credential; xo-swarm-api
    keeps the Composio API key and runs every Composio call itself, so the browser
    only ever sees status.
 
@@ -12,6 +12,10 @@
    A card can be connected and off, which is the normal state for a workspace that
    did not run the OAuth flow itself. Hence two controls: "Turn off here" edits
    only this workspace, "Delete connection" removes it account-wide.
+   A third, read-only fact per connected card is WHICH account the session is
+   bound to (an email for Gmail and Google Calendar): read with the grid from
+   GET /api/connections, resolved live through POST /api/connections/<id>/account
+   when the read had none, and shown as a chip. Never a control, never blocking.
 
    Three failure modes are first-class states, not errors to hide:
      - no XO session      -> the backend holds no credential to identify you
@@ -21,19 +25,23 @@
    Connect opens the provider in a popup. The callback page posts back to its
    opener, but it posts to "*", so the listener below verifies the origin. A
    popup can also be blocked or dismissed silently, so the postMessage is only
-   an accelerator — the status poll is what actually decides. */
-/* core/api.js is imported with a stamp here (the other views import it bare):
-   this view needs apiFetch's `headers` option, which was added at that stamp,
-   and StaticFiles sends no Cache-Control — a browser holding the older bare
-   URL would drop the session header and strand this tab on "sign in to XO". */
-import {apiFetch} from '../core/api.js?v=20260904-tenancy1';
-import {toast} from '../core/ui.js';
-import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260903-connectors1';
+   an accelerator: the status poll is what actually decides.
 
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+   Every call goes through API_BASE like the rest of the UI (same-origin under
+   /space/, the dev fallback otherwise). core/api.js is imported bare, the
+   same specifier every other view uses, so the browser holds one instance of
+   the fetch layer; the escape, the relative time and the polling wording come
+   from core too (core/connections.js is shared with the Inbox). */
+import {API_BASE,apiFetch} from '../core/api.js';
+import {esc,toast} from '../core/ui.js';
+import {pollLine} from '../core/connections.js';
+import {accountLabel,accountLine} from '../core/connections.js';
+import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260914-accounts1';
+
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
 
-const BASE='/api/connectors/composio';
+const BASE=API_BASE+'/api/connectors/composio';
 const POLL_ATTEMPTS=150;   /* 150 x 2s = 5 min, the usual provider consent window */
 const POLL_INTERVAL=2000;
 
@@ -43,9 +51,41 @@ let openToolkit=null;      /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
+let filter='';
+
+/* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
+   one open id, one cache. The connections routes are workspace-local files under
+   .quirq, not Composio, so these calls carry no session header. */
+let openPolling=null;      /* id of the expanded Polling drawer, if any */
+let pollCache={};          /* toolkit id -> GET /api/connections/<id> payload; null on failure */
+let pollNotes={};          /* toolkit id -> one-line result of the last "Poll now" */
+/* The drawer is an uncontrolled form: until Save its state lives only in the
+   DOM, and the grid is rebuilt by Refresh, by the Actions toggle of any card
+   and by a connect landing. So every grid paint first reads the open drawer's
+   form into a draft, the drawer is painted from the draft when one exists,
+   and Save or closing the drawer (Hide polling, opening another toolkit's
+   drawer, turning the toolkit off, deleting the connection) discards it. The
+   paint right after Save reads the server's copy, not the form. */
+let pollDraft={};          /* toolkit id -> {enabled, interval_s, collectors} not yet saved */
+const INTERVALS=[[300,'5 min'],[900,'15 min'],[1800,'30 min'],[3600,'1 hour'],
+  [21600,'6 hours'],[86400,'24 hours']];
+
+/* Account labels (spec: connected account name). Filled once per grid load
+   from GET /api/connections, never per card; a connected toolkit turned on
+   here that the read left unlabelled is asked once per load through
+   POST /api/connections/<id>/account, and a label that arrives is written
+   into its card in place. Both calls are workspace-local: no session header. */
+let accountCache={};       /* toolkit id -> {account_label, account_checked_at} */
+let accountAsked=new Set(); /* ids POSTed this load; reset by every load (Refresh included) */
+const accountInFlight=new Set(); /* ids with a POST in flight, kept across loads: one request per toolkit */
 
 export default {
   id:'connectors',label:'Connectors',order:10,
+  toolbar:{search:{
+    placeholder:'Filter connectors…',
+    getValue:()=>filter,
+    setValue(value){filter=String(value??'');applyFilter();},
+  }},
   async mount(el){
     root=el;
     renderShell();
@@ -74,6 +114,7 @@ function renderShell(){
       +'<section class="conn-grid" id="conn-grid" aria-label="Composio toolkits">'
         +'<div class="conn-empty">Loading connectors&hellip;</div>'
       +'</section>'
+      +'<div class="conn-empty" id="conn-no-match" role="status" hidden></div>'
     +'</div>';
 }
 
@@ -96,14 +137,21 @@ async function loadAll(){
     const session=await ensureSession();
     if(!session){renderSignedOut();return;}
 
+    /* the account labels ride alongside the listing; awaited before the
+       paint so the cards come up labelled, never awaited past a failure */
+    accountAsked=new Set();
+    const accounts=loadAccounts();
+
     /* Listing also starts the server's MCP-gateway sweep in the background, so
        opening this tab (or pressing Refresh) does what the old "Reinstall MCP
-       gateway" button did — the agent's wiring is never installed by hand. */
+       gateway" button did: the agent's wiring is never installed by hand. */
     const list=await apiFetch(BASE+'/toolkits',{headers:sessionHeaders()});
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
+    await accounts;
     renderGrid();
+    askAccounts();
   }finally{
     loading=false;
   }
@@ -113,17 +161,17 @@ function renderSignedOut(){
   setAlert('pending',
     'Sign in to XO to use connectors',
     (sessionError()||'')+' Connections belong to your XO account, so this page needs an '
-      +'identity. Set XO_API_KEY in .env, or sign in from the app, then refresh.');
-  root.querySelector('#conn-grid').innerHTML=
-    '<div class="conn-empty">No identity &mdash; nothing to show yet.</div>';
+      +'identity. Set XO_API_KEY and XO_SPACE_ID in .env, or sign in from the app, then '
+      +'refresh.');
+  paintGrid(()=>'<div class="conn-empty">No identity &mdash; nothing to show yet.</div>');
 }
 
 /* The /toolkits route is the only source of the toolkit list, so when it fails
    there are no tiles to draw. Say precisely which of the two causes it was. */
 function renderListFailure(res){
   /* SwarmComposioError's message always contains the literal "COMPOSIO_API_KEY"
-     (swarm_client.py) for an authoritative failure — no key configured on
-     xo-swarm-api, or this backend's XO credential rejected — so matching it
+     (swarm_client.py) for an authoritative failure (no key configured on
+     xo-swarm-api, or this backend's XO credential rejected), so matching it
      names the cause with confidence. A bare 500 is *not* proof of one: any
      other server-side fault in the route (a Composio outage, an unreachable
      xo-swarm-api) is rendered by FastAPI as the same plain-text 500 with no
@@ -158,13 +206,19 @@ function renderListFailure(res){
     setAlert('error','Could not list connectors',esc(res.error||''));
     note=res.error||'Unavailable.';
   }
-  root.querySelector('#conn-grid').innerHTML=
-    '<div class="conn-empty'+(notConfigured?'':' is-error')+'">'+esc(note)+'</div>';
+  paintGrid(()=>'<div class="conn-empty'+(notConfigured?'':' is-error')+'">'+esc(note)+'</div>');
 }
 
 /* ---------- rendering ---------- */
 
 function isConnected(t){return String(t.status||'').toUpperCase()==='ACTIVE';}
+function schemeOf(toolkitId){
+  const t=toolkits.find(x=>x.id===toolkitId);
+  return (t&&Array.isArray(t.schemes)&&t.schemes[0])||'OAUTH2';
+}
+/* what a person is asked for when they press Connect */
+const SCHEME_LABEL={OAUTH2:'OAuth sign-in',API_KEY:'API key or bot token',BEARER_TOKEN:'access token',BASIC:'username and password'};
+const schemeLabel=s=>SCHEME_LABEL[String(s||'').toUpperCase()]||String(s||'');
 function isEnabledHere(t){return !!t.workspace_enabled;}
 
 /* Connections are account-wide; reach is not. A toolkit connected on the account but
@@ -176,13 +230,44 @@ function statusOf(t){
   return{text:'On in this workspace',cls:'is-good'};
 }
 
-function renderGrid(){
-  const grid=root.querySelector('#conn-grid');
+/* Every write to the grid goes through here. The open Polling drawer's
+   unsaved form is read into its draft FIRST, and only then is build() run:
+   renderCard paints the drawer from that draft, so building before the
+   snapshot would paint the previous snapshot and file the fresh edits away
+   for the paint after (a form that flips between edited and saved values
+   on every repaint). The one paint that must not read the form is the one
+   right after Save: the form in the DOM is the pre-save one and the
+   server's copy is the truth, so savePolling passes snapshot:false. */
+function paintGrid(build,{snapshot=true}={}){
+  if(snapshot)snapshotPollDraft();
+  root.querySelector('#conn-grid').innerHTML=build();
+  applyFilter();
+}
+function renderGrid(opts){
   if(!toolkits.length){
-    grid.innerHTML='<div class="conn-empty">No toolkits are registered on this server.</div>';
+    paintGrid(()=>'<div class="conn-empty">No toolkits are registered on this server.</div>',opts);
     return;
   }
-  grid.innerHTML=toolkits.map(renderCard).join('');
+  paintGrid(()=>toolkits.map(renderCard).join(''),opts);
+}
+
+/* Filter in place: replacing cards while someone authorizes, saves a poll
+   draft or toggles an action would detach its controls and lose live state. */
+function applyFilter(){
+  if(!root)return;
+  const q=filter.trim().toLowerCase();
+  const cards=root.querySelectorAll('.conn-card[data-toolkit]');
+  let shown=0;
+  for(const card of cards){
+    const t=toolkits.find(t=>t.id===card.dataset.toolkit);
+    const fields=t?[t.id,t.slug,t.display_name,t.description,
+      isConnected(t)?accountLabel(accountCache[t.id]):'']:[];
+    card.hidden=!!q&&!fields.some(value=>String(value??'').toLowerCase().includes(q));
+    if(!card.hidden)shown++;
+  }
+  const note=root.querySelector('#conn-no-match');
+  note.hidden=!cards.length||shown>0;
+  note.textContent=note.hidden?'':'No connectors match “'+filter.trim()+'”. Clear the search to show all connectors.';
 }
 
 function renderCard(t){
@@ -190,6 +275,8 @@ function renderCard(t){
   const enabled=isEnabledHere(t);
   const status=statusOf(t);
   const open=openToolkit===t.id;
+  const polling=openPolling===t.id;
+  const acct=accountLabel(accountCache[t.id]);
   return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
@@ -200,13 +287,21 @@ function renderCard(t){
     +'</div>'
     +'<div class="conn-card-body">'
       +'<div class="conn-facts">'
-        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).join(', '))+'</span>'
+        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
+        /* which account the session is bound to; only a connection has one */
+        +(connected&&acct
+          ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
+          :'')
       +'</div>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
           +'workspace&rsquo;s agent use it.</p>'
+        :'')
+      +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
+        ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))
+          +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'.</p>'
         :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
@@ -226,9 +321,240 @@ function renderCard(t){
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
         :'')
+      /* Polling: connected and on here, or already open (the auto-opened drawer
+         after a connect needs a way to close before the toolkit is on here). */
+      +(connected&&(enabled||polling)
+        ?'<button class="conn-secondary" data-action="polling">'
+          +(polling?'Hide polling':'Polling')+'</button>'
+        :'')
     +'</div>'
     +(open?renderActions(t.id):'')
+    /* The drawer needs a connection, not "enabled here": a fresh connect opens
+       it before the workspace has turned the toolkit on, and it says so. */
+    +(polling&&connected?renderPolling(t,enabled):'')
     +'</article>';
+}
+
+/* ---------- polling ---------- */
+
+function renderPolling(t,enabled){
+  const c=pollCache[t.id];
+  const wrap=inner=>'<div class="conn-poll" id="poll-'+esc(t.id)+'">'+inner+'</div>';
+  if(c===undefined)return wrap('<div class="conn-empty">Loading polling settings&hellip;</div>');
+  if(c===null)return wrap('<div class="conn-empty is-error">Could not load polling settings.</div>');
+  const available=(Array.isArray(c.available_collectors)?c.available_collectors:[])
+    .filter(a=>a&&typeof a==='object'&&typeof a.id==='string');
+  if(!available.length)return wrap('<div class="conn-empty">No collectors available for this toolkit yet.</div>');
+  /* unsaved edits (the draft) win; else an unconfigured connection starts
+     from the catalog defaults and a configured one shows exactly what
+     config.json says */
+  const draft=pollDraft[t.id];
+  const chosen=new Set(draft?draft.collectors
+    :c.configured
+      ?(Array.isArray(c.collectors)?c.collectors:[])
+      :available.filter(a=>a.default).map(a=>a.id));
+  const interval=draft?draft.interval_s:(Number(c.interval_s)||900);
+  const collect=draft?draft.enabled:!!c.enabled;
+  /* the drawer's own read carries the label; the card's cache covers a
+     lookup that landed after the drawer loaded */
+  const acct=accountLine(c)||accountLine(accountCache[t.id]);
+  const options=INTERVALS.map(([s,label])=>
+      '<option value="'+s+'"'+(s===interval?' selected':'')+'>'+label+'</option>').join('')
+    /* a hand-edited interval outside the menu is kept, not silently rounded */
+    +(INTERVALS.some(([s])=>s===interval)?''
+      :'<option value="'+interval+'" selected>'+interval+' s (from config.json)</option>');
+  return wrap(
+    (enabled?'':'<p class="conn-poll-note">Turn it on here first: polling reads through this '
+      +'workspace&rsquo;s connection.</p>')
+    +'<p class="conn-poll-note">What the poller collects into the Inbox, and how often. '
+      +'Nothing is saved until you press Save.</p>'
+    +'<label class="conn-poll-row"><input type="checkbox" data-poll="enabled"'
+      +(collect?' checked':'')+'> Collect into Inbox</label>'
+    +'<label class="conn-poll-row">Every <select data-poll="interval">'+options+'</select></label>'
+    +(acct?'<p class="conn-poll-note conn-poll-account">Polling '+esc(acct)+'</p>':'')
+    +available.map(a=>
+      '<label class="conn-poll-row"><input type="checkbox" data-poll="collector" value="'+esc(a.id)+'"'
+        +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
+    +pollStatus(t.id,c)
+    +'<div class="conn-poll-acts">'
+      +'<button class="conn-primary" data-action="poll-save">Save</button>'
+      +'<button class="conn-secondary" data-action="poll-now"'
+        +(c.configured?'':' disabled title="Save first"')+'>Poll now</button>'
+    +'</div>');
+}
+
+/* one line: the last "Poll now" result (if any), then the last error in the
+   error style, else the last poll time, else "Never polled"; the wording is
+   core/connections.js's pollLine, the same line the Inbox shows */
+function pollStatus(toolkitId,c){
+  const note=pollNotes[toolkitId]?esc(pollNotes[toolkitId])+' &middot; ':'';
+  const line=pollLine(c);
+  if(line.error)return'<div class="conn-poll-status is-error">'+note+esc(line.error)+'</div>';
+  const total=Number(c.events_total)||0;
+  const when=esc(cap(line.text))
+    +(c.last_poll_at&&total?' &middot; '+total+' collected so far':'');
+  return'<div class="conn-poll-status">'+note+when+'</div>';
+}
+
+async function togglePolling(toolkitId){
+  if(openPolling===toolkitId){
+    openPolling=null;
+    delete pollDraft[toolkitId]; /* closing the drawer discards unsaved edits */
+    renderGrid();
+    return;
+  }
+  closeOtherPolling(toolkitId);
+  openPolling=toolkitId;
+  renderGrid();
+  if(pollCache[toolkitId]===undefined)await loadPolling(toolkitId);
+  if(openPolling===toolkitId)renderGrid();
+}
+
+/* One drawer at a time: opening one closes whichever other was open, and
+   that close discards the other's unsaved edits, the same as pressing its
+   Hide polling would. Called before openPolling is reassigned. */
+function closeOtherPolling(toolkitId){
+  if(openPolling!==null&&openPolling!==toolkitId)delete pollDraft[openPolling];
+}
+
+async function loadPolling(toolkitId){
+  const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId));
+  pollCache[toolkitId]=res.ok&&res.data?res.data:null;
+  return res;
+}
+
+/* the open drawer's form, read before a paint replaces it; a drawer still
+   loading has no form and keeps whatever draft it had */
+function snapshotPollDraft(){
+  if(openPolling===null)return;
+  const form=readPollForm(openPolling);
+  if(form)pollDraft[openPolling]=form;
+}
+
+function readPollForm(toolkitId){
+  const drawer=root.querySelector('#poll-'+CSS.escape(toolkitId));
+  if(!drawer)return null;
+  const enabled=drawer.querySelector('input[data-poll="enabled"]');
+  const interval=drawer.querySelector('select[data-poll="interval"]');
+  if(!enabled||!interval)return null;
+  return{
+    enabled:enabled.checked,
+    interval_s:Number(interval.value),
+    collectors:[...drawer.querySelectorAll('input[data-poll="collector"]:checked')].map(i=>i.value),
+  };
+}
+
+async function savePolling(toolkitId,button){
+  const body=readPollForm(toolkitId);
+  if(!body)return;
+  cardError(toolkitId,'');
+  setBusy(button,true);
+  try{
+    const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId),{method:'PUT',body});
+    if(!res.ok||!res.data){cardError(toolkitId,res.error||'Could not save polling settings.');return;}
+    pollCache[toolkitId]=res.data;
+    delete pollDraft[toolkitId]; /* saved: the server's copy is the form now */
+    delete pollNotes[toolkitId];
+    toast(labelFor(toolkitId)+' polling saved');
+    /* painted from the server's copy (res.data), not from the form just
+       submitted: that form is still in the DOM, and a snapshot would file it
+       as a draft again and mask whatever the server normalised */
+    if(openPolling===toolkitId)renderGrid({snapshot:false});
+  }finally{
+    setBusy(button,false);
+  }
+}
+
+async function pollNow(toolkitId,button){
+  cardError(toolkitId,'');
+  setBusy(button,true);
+  try{
+    const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/poll',{method:'POST'});
+    if(!res.ok||!res.data){cardError(toolkitId,res.error||'Poll failed.');return;}
+    const r=res.data;
+    pollNotes[toolkitId]=r.skipped?'Poll skipped ('+String(r.skipped)+')'
+      :r.error?'Poll failed'
+      :'Polled just now: '+(Number(r.new_events)||0)+' new';
+    /* the server is the truth for last_poll_at and last_error: re-read, repaint */
+    await loadPolling(toolkitId);
+    if(openPolling===toolkitId)renderGrid();
+  }finally{
+    setBusy(button,false);
+  }
+}
+
+/* ---------- accounts ---------- */
+
+/* One read per grid load, never per card: the list route carries every
+   toolkit's account_label, so the cards paint with whatever the server
+   already knows. A failed read keeps the labels of the previous load. */
+async function loadAccounts(){
+  const path=API_BASE+'/api/connections';
+  const res=await apiFetch(path);
+  const rows=res.ok&&res.data&&Array.isArray(res.data.connections)?res.data.connections:null;
+  if(!rows)return;
+  const next={};
+  for(const c of rows){
+    if(!c||typeof c!=='object'||typeof c.toolkit!=='string')continue;
+    next[c.toolkit]={account_label:accountLabel(c)||null,account_checked_at:c.account_checked_at||null};
+  }
+  accountCache=next;
+}
+
+/* A connected toolkit turned on here that the read left unlabelled gets one
+   live lookup per load; the server answers from its cache for a minute, so
+   a Refresh right after costs no provider call. Not awaited by loadAll: a
+   slow provider must not hold the Refresh button. */
+function askAccounts(){
+  for(const t of toolkits){
+    if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;
+    if(accountAsked.has(t.id)||accountInFlight.has(t.id))continue;
+    accountAsked.add(t.id);
+    resolveAccount(t.id);
+  }
+}
+
+async function resolveAccount(toolkitId){
+  accountInFlight.add(toolkitId);
+  try{
+    const path=API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/account';
+    const res=await apiFetch(path,{method:'POST'});
+    /* no retry: an error with no label (a provider fault, a toolkit with no
+       lookup yet) leaves the card exactly as it is */
+    const label=res.ok&&res.data?accountLabel(res.data):'';
+    if(!label)return;
+    accountCache[toolkitId]={account_label:label,account_checked_at:res.data.account_checked_at||null};
+    paintAccount(toolkitId,label);
+    applyFilter();
+  }finally{
+    accountInFlight.delete(toolkitId);
+  }
+}
+
+/* The label lands in place, never through a grid repaint: a lookup answers
+   at any moment after the load, and rebuilding the grid then would hide a
+   card error a failed Save, Poll now or scope change just showed, and
+   re-enable the button of a connect or delete still in flight (its later
+   setBusy would reach a detached node). The next full paint reads
+   accountCache and draws the same chip and note. Nothing to do when the
+   card is gone or its toolkit is no longer connected (deleted meanwhile). */
+function paintAccount(toolkitId,label){
+  const toolkit=toolkits.find(t=>t.id===toolkitId);
+  if(!toolkit||!isConnected(toolkit))return;
+  const card=root.querySelector('.conn-card[data-toolkit="'+CSS.escape(toolkitId)+'"]');
+  if(!card)return;
+  const facts=card.querySelector('.conn-facts');
+  if(facts&&!facts.querySelector('.conn-account'))
+    facts.insertAdjacentHTML('beforeend',
+      '<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(label)+'</span>');
+  /* an open drawer gets its "Polling as" note under the interval row, the
+     spot renderPolling gives it */
+  const drawer=card.querySelector('.conn-poll');
+  if(!drawer||drawer.querySelector('.conn-poll-account'))return;
+  const interval=drawer.querySelector('select[data-poll="interval"]');
+  const row=interval&&interval.closest('label');
+  if(row)row.insertAdjacentHTML('afterend',
+    '<p class="conn-poll-note conn-poll-account">Polling '+esc(accountLine(accountCache[toolkitId]))+'</p>');
 }
 
 function renderActions(toolkitId){
@@ -291,6 +617,9 @@ function handleGridAction(event){
   else if(button.dataset.action==='unlink')setScope(id,false,button);
   else if(button.dataset.action==='disconnect')disconnect(id,button);
   else if(button.dataset.action==='actions')toggleDrawer(id);
+  else if(button.dataset.action==='polling')togglePolling(id);
+  else if(button.dataset.action==='poll-save')savePolling(id,button);
+  else if(button.dataset.action==='poll-now')pollNow(id,button);
 }
 
 async function connect(toolkitId,button){
@@ -300,8 +629,10 @@ async function connect(toolkitId,button){
      is blocked by default in most browsers. */
   const popup=window.open('','composio-auth','width=560,height=760');
   try{
+    /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
+       the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:'OAUTH2'},headers:sessionHeaders(),
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},headers:sessionHeaders(),
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();
@@ -331,7 +662,7 @@ function connectErrorText(res,toolkitId){
     return'This toolkit has no auth config on the server. Create one in the '
       +'Composio dashboard and set COMPOSIO_AUTH_CONFIG_'
       +String(toolkitId).toUpperCase()+' where this install reads its Composio '
-      +'credentials — your XO account, or locally in self-host mode.';
+      +'credentials: your XO account, or locally in self-host mode.';
   }
   if(res.offline)return'xo-space is unreachable.';
   return res.error||'Could not start authorization.';
@@ -351,7 +682,16 @@ async function pollUntilConnected(toolkitId,requestId,popup){
     if(status==='ACTIVE'){
       if(popup&&!popup.closed)popup.close();
       toast(labelFor(toolkitId)+' connected');
+      /* Open the Polling drawer for the toolkit that just connected, so the
+         interval and the data to collect get picked right away. Set BEFORE
+         loadAll(): it re-renders the grid, and a drawer flagged afterwards
+         would be lost. Nothing is persisted until Save. */
+      closeOtherPolling(toolkitId);
+      openPolling=toolkitId;
+      delete pollCache[toolkitId];
       await loadAll();
+      await loadPolling(toolkitId);
+      if(openPolling===toolkitId&&root.querySelector('.conn-card[data-toolkit]'))renderGrid();
       return;
     }
     if(status==='FAILED'){
@@ -367,7 +707,7 @@ async function pollUntilConnected(toolkitId,requestId,popup){
 }
 
 /* Turning a toolkit on or off for THIS workspace only. Nothing is deleted, and no
-   other workspace is affected — the whole reason connections became account-wide. */
+   other workspace is affected: the whole reason connections became account-wide. */
 async function setScope(toolkitId,enabled,button){
   const toolkit=toolkits.find(t=>t.id===toolkitId);
   if(!toolkit)return;
@@ -384,6 +724,8 @@ async function setScope(toolkitId,enabled,button){
     if(!res.ok){cardError(toolkitId,res.error||'Could not save that change.');return;}
     toast(labelFor(toolkitId)+(enabled?' on in this workspace':' off in this workspace'));
     if(!enabled&&openToolkit===toolkitId)openToolkit=null;
+    if(!enabled&&openPolling===toolkitId)openPolling=null;
+    if(!enabled)delete pollDraft[toolkitId]; /* the drawer closes with the toolkit */
     await loadAll();
   }finally{
     setBusy(button,false);
@@ -412,7 +754,11 @@ async function disconnect(toolkitId,button){
     if(!res.ok){cardError(toolkitId,res.error||'Delete failed.');return;}
     toast(labelFor(toolkitId)+' connection deleted');
     if(openToolkit===toolkitId)openToolkit=null;
+    if(openPolling===toolkitId)openPolling=null;
     delete toolsCache[toolkitId];
+    delete pollCache[toolkitId];
+    delete pollDraft[toolkitId];
+    delete pollNotes[toolkitId];
     await loadAll();
   }finally{
     setBusy(button,false);

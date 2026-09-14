@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -174,11 +173,10 @@ class WorkspaceViewFileTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                # Relative to now, not 0.0: time.monotonic() is seconds since
-                # boot on Linux/macOS, so on a freshly booted machine (a CI
-                # runner) "now - 0.0" can be INSIDE the pinned window and the
-                # first apply() gets throttled before it ever builds.
-                views._last_build = time.monotonic() - 7200.0
+                # The first tick should always build: ``_last_build`` starts at
+                # 0.0 in-process and must not be treated as a recent build on a
+                # freshly booted host where monotonic() is still small.
+                views._last_build = 0.0
                 self.assertTrue(views.apply())     # first tick builds
                 self.assertFalse(views.apply())    # second is not due
 

@@ -240,8 +240,33 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "GitHub issue mirror, re-fetched by the poller"
         if relative_path.endswith("/workitems"):
             return "Live workitem claims for this machine"
+        # Connections polling (Inbox): one folder per polled toolkit. The
+        # per-toolkit rule is scoped to exactly two segments so a deeper
+        # directory does not inherit it.
+        if relative_path == "connections":
+            return (
+                "Per-connection polling: config, state, and collected events, "
+                "one folder per toolkit"
+            )
+        if (
+            relative_path.startswith("connections/")
+            and len(Path(relative_path).parts) == 2
+        ):
+            return "Polled connection: what to collect, how often, and what arrived"
         return "Directory"
     name = Path(relative_path).name
+    if relative_path == "inbox.json":
+        return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
+    # Files under connections/ come first: the generic state.json rule below
+    # would otherwise claim a connection's state.json, and the events rule is
+    # scoped here so an unrelated events* file elsewhere keeps its own label.
+    if relative_path.startswith("connections/"):
+        if name == "config.json":
+            return "What to collect and how often; hand-editable"
+        if name == "state.json":
+            return "Poll cursors and the last result"
+        if name.startswith("events"):
+            return "Collected items, append-only, rotated at 2 MB"
     if name == "state.json":
         return "Installation and onboarding state"
     if name == "runtime.env":
@@ -403,7 +428,7 @@ def _watcher(root: Path) -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
 
-    # Observed liveness. Everything above this line is *configuration* — it
+    # Observed liveness. Everything above this line is *configuration*: it
     # says what the watcher was asked to do, never whether the loop is running.
     heartbeat_path = root / "watcher" / "heartbeat.json"
     heartbeat = _read_json(heartbeat_path)
@@ -518,7 +543,7 @@ def _contract_status(
 
 
 def _project_outputs() -> dict[str, Any]:
-    # Same root helper as every other tab — see project_layout.
+    # Same root helper as every other tab; see project_layout.
     projects_root = xo_projects_root()
     host_root = (
         os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or ""

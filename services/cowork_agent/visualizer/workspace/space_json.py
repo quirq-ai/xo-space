@@ -1,4 +1,4 @@
-"""``<XO root>/.xo/space.json`` — the Space record (syncplan §5.3)."""
+"""``<XO root>/.xo/space.json``: the Space record (syncplan §5.3)."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ OWNS = frozenset(
         "$schema",
         "schema",
         "space_id",
+        "xo_space_id",
+        # the pre-2026-09-11 name of the same field; owned so the stale key is dropped
         "coder_workspace_id",
         "owner_user_id",
         "created_at",
@@ -81,7 +83,7 @@ def path() -> Path:
 
 
 def space_id() -> Optional[str]:
-    """The Space id — ``<owner>:<workspace>_<last6>``, ``None`` off Coder."""
+    """The Space id: ``<owner>:<workspace>_<last6>`` on Coder, ``XO_SPACE_ID`` otherwise."""
     return coder_identity.space_id()
 
 
@@ -178,7 +180,7 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
     if not isinstance(created_at, str) or not created_at:
         created_at = stamp
 
-    # A stored owner is never overwritten — the same rule ``project.json``
+    # A stored owner is never overwritten, the same rule ``project.json``
     # follows, and for the same reason: a Space changing hands is far rarer
     # than a momentarily unreadable auth state, and reassigning ownership by
     # accident is not recoverable from the record itself.
@@ -191,8 +193,8 @@ def build(current: Optional[dict] = None, *, now: Optional[datetime] = None) -> 
         "$schema": "xo/space.schema.json",
         "schema": SCHEMA,
         "space_id": space_id(),
-        # The id Coder actually assigned, verbatim.
-        "coder_workspace_id": coder_identity.workspace_id(),
+        # XO_SPACE_ID verbatim: the id the swarm knows this Space by.
+        "xo_space_id": coder_identity.workspace_id(),
         "label": _label(),
         "owner_user_id": owner,
         "created_at": created_at,
@@ -236,8 +238,8 @@ def _apply_body() -> bool:
     except Exception:
         current = None
 
-    # What sits at this path on an existing install is the *old graph* — a
-    # derived document that now lives in ~/.quirq/workspace/graph.json — or a
+    # What sits at this path on an existing install is the *old graph* (a
+    # derived document that now lives in ~/.quirq/workspace/graph.json), or a
     # scaffold placeholder, or an unparseable file.
     legacy = not isinstance(current, dict) or current.get("schema") != SCHEMA
 

@@ -2,14 +2,14 @@
 
 Two halves, matching the module:
 
-*Reader* — the ``"mcp"`` block in each ``config/agents/<name>/manifest.json`` parses,
+*Reader*: the ``"mcp"`` block in each ``config/agents/<name>/manifest.json`` parses,
 resolves to the right file, and a malformed block degrades to ``None`` instead of
 raising on the boot path.
 
-*Writer* — the shipped blocks actually edit the four config shapes correctly. The
+*Writer*: the shipped blocks actually edit the four config shapes correctly. The
 thing most worth protecting is the TOML splice: codex's config is hand-written with
 comments, and it is edited as text rather than round-tripped through a parser, so the
-tests pin both halves — the composio table lands, and everything else survives
+tests pin both halves: the composio table lands, and everything else survives
 untouched.
 
 Every test redirects at a temp file (via ``dataclasses.replace`` on the target, or
@@ -46,7 +46,7 @@ def _target(agent: str, path: Path) -> mcp.McpTarget:
 def _target_with_legacy(agent: str, path: Path, *names: str) -> mcp.McpTarget:
     """The agent's block with ``legacy_names`` grafted on.
 
-    No agent ships ``legacy_names`` any more — the rename it was added for is
+    No agent ships ``legacy_names`` any more: the rename it was added for is
     done, and every config has since been rewritten. The purge itself stays: it
     is what stops a renamed server being registered twice (and its stale proxy
     token being offered to the model alongside the live one), so the next rename
@@ -76,7 +76,7 @@ class _TempConfig(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Reader — the manifest blocks
+# Reader: the manifest blocks
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -236,7 +236,7 @@ class ManifestBlockRejectionTests(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Writer — TOML (codex)
+# Writer: TOML (codex)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -274,7 +274,7 @@ class TomlWriterTests(_TempConfig):
         # retired instruction, then reported current on the next pass.
         self._write(
             "[mcp_servers.composio]\n"
-            "# Managed by xo-space — rewritten by\n"
+            "# Managed by xo-space, rewritten by\n"
             "# POST /api/connectors/composio/refresh-gateway.\n"
             f'url = "{PROXY}"\n'
             "enabled = true\n"
@@ -405,7 +405,7 @@ class TomlWriterTests(_TempConfig):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Writer — JSON (claude_code) and nested JSON + prune (openclaw)
+# Writer: JSON (claude_code) and nested JSON + prune (openclaw)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -479,15 +479,15 @@ class JsonWriterTests(_TempConfig):
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o644)
 
     def test_non_ascii_prose_is_not_rewritten_as_escapes(self) -> None:
-        # ~/.claude.json is ~44 KB of the CLI's own prose. Escaping every em dash
-        # would churn thousands of untouched lines on each token refresh and bury
-        # the one line that actually changed.
-        self._write(json.dumps({"note": "a — b · c"}, ensure_ascii=False))
+        # ~/.claude.json is ~44 KB of the CLI's own prose. Escaping every non-ASCII
+        # character would churn thousands of untouched lines on each token refresh
+        # and bury the one line that actually changed.
+        self._write(json.dumps({"note": "a ü b · c"}, ensure_ascii=False))
         self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
         text = self._text()
-        self.assertIn("a — b · c", text)
-        self.assertNotIn("\\u2014", text)
-        self.assertEqual(json.loads(text)["note"], "a — b · c")
+        self.assertIn("a ü b · c", text)
+        self.assertNotIn("\\u00fc", text)
+        self.assertEqual(json.loads(text)["note"], "a ü b · c")
 
 
 class NestedJsonAndPruneTests(_TempConfig):
@@ -522,7 +522,7 @@ class NestedJsonAndPruneTests(_TempConfig):
         self.assertEqual(entries["slack"], {"x": 1})
 
     def test_a_stale_plugin_entry_alone_still_counts_as_a_change(self) -> None:
-        # The server entry is already current, but the prune target is not — the
+        # The server entry is already current, but the prune target is not: the
         # install must not report "already current" and leave it behind.
         self._write("{}")
         mcp.apply(self.target, PROXY)
@@ -541,7 +541,7 @@ class NestedJsonAndPruneTests(_TempConfig):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Writer — YAML (hermes)
+# Writer: YAML (hermes)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -599,17 +599,17 @@ class GatewayWiringTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # install_into_gateway mints a proxy token, which writes the session
-        # store and takes a lock under quirq state. Both are redirected here —
+        # store and takes a lock under quirq state. Both are redirected here;
         # see the header of tests/test_composio.py for the same three traps.
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
 
-        # The session store is stamped with this pod's workspace, so writing one
-        # requires CODER_WORKSPACE_ID to be set.
+        # The session store is stamped with this install's space, so writing one
+        # requires XO_SPACE_ID to be set.
         env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
-            composio_state.WORKSPACE_ENV: "ws-test",
+            composio_state.SPACE_ENV: "ws-test",
         })
         env.start()
         self.addCleanup(env.stop)
@@ -621,7 +621,7 @@ class GatewayWiringTests(unittest.TestCase):
                 tmp / "data" / "composio_sessions.json",
             ),
             # Emptied, or migration moves the developer's REAL store into this temp
-            # dir and deletes it — the third trap in tests/test_composio.py.
+            # dir and deletes it: the third trap in tests/test_composio.py.
             patch.object(composio_service, "_LEGACY_SESSIONS_PATHS", ()),
         ):
             patcher.start()

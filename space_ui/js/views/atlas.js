@@ -10,6 +10,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
+let refreshToolbar=()=>{};
 const hooks={};  /* boot() assigns lifecycle hooks here once it has run */
 let bootPromise=null;
 let bootDataset=null;
@@ -48,6 +49,7 @@ function ensureBoot(requestedDataset){
   const dataset=DATASETS[requestedDataset]?requestedDataset:savedDataset();
   if(bootPromise&&bootDataset!==dataset){
     rememberDataset(dataset);
+    dispatchEvent(new CustomEvent('space:before-atlas-reload'));
     location.reload();
     return new Promise(()=>{});
   }
@@ -83,8 +85,16 @@ function renderNoData(el,dataset){
 function atlasView(id,label,order,lens,dataset=null){
   return{
     id,label,order,
+    toolbar:()=>lens==='graph'
+      ?{graph:true,disabled:!hooks.setActiveView}
+      :{search:{
+        placeholder:'Filter timeline projects…',
+        getValue:()=>hooks.getTimelineFilter?.()||'',
+        setValue:value=>hooks.setTimelineFilter?.(value),
+      },disabled:!hooks.setTimelineFilter},
     async mount(el,ctx){
       go=ctx.switchTo;
+      refreshToolbar=ctx.refreshToolbar||(()=>{});
       el.querySelectorAll('[data-atlas-lens]').forEach(button=>{
         button.addEventListener('click',()=>go(button.dataset.atlasLens));
       });
@@ -97,10 +107,10 @@ function atlasView(id,label,order,lens,dataset=null){
 }
 export const dashboardView={
   ...atlasView('dashboard','Dashboard',0,'graph','dashboard'),
-  section:'graph'
+  section:'graph',nav:false,parent:'projects'
 };
-/* Files lands on the List lens (the projects view owns the nav tab); the
-   Graph is its second lens, reachable from the pill or #/graph. */
+/* Projects owns the nav tab and the List route. Dashboard is the default
+   landing lens; Graph is the third lens, reachable from the pill or #/graph. */
 export const graphView={
   ...atlasView('graph','Graph',1,'graph','graph'),
   nav:false,parent:'projects'
@@ -108,7 +118,7 @@ export const graphView={
 /* Timeline is pinned to the workspace dataset (space.json): plotting the
    Dashboard's 5-environment projection there has no git history and reads
    as broken. Arriving from Dashboard costs one dataset-switch reload, the
-   same hop Dashboard ↔ Files already makes. */
+   same hop Dashboard ↔ Graph already makes. */
 export const timeView=atlasView('time','Timeline',2,'time','graph');
 
 function boot(DATA,DATA_SOURCE){
@@ -764,6 +774,7 @@ function computeDepths(rid){
   return m;
 }
 function setRoot(id){
+  if(view!=='graph')return;
   if(rootId===id){closeRootDD();return;}
   const old=byId.get(rootId);
   old.fx=null;old.fy=null;
@@ -785,6 +796,7 @@ function setRoot(id){
 }
 function closeRootDD(){rootdd.classList.remove('is-open');}
 document.getElementById('root-btn').addEventListener('click',e=>{
+  if(view!=='graph')return;
   e.stopPropagation();
   rootdd.classList.toggle('is-open');
   if(rootdd.classList.contains('is-open')){
@@ -970,7 +982,7 @@ const SAT_DOTS=28;    /* dots drawn — beyond this the orbit reads as noise */
 const SAT_ROWS=40;    /* rows listed in the panel */
 const SAT_TTL=20000;  /* ms a fetched list stays fresh (re-click is instant) */
 const SAT_MIN_K=.55;  /* below this zoom, dots would collide with sibling nodes */
-/* Same order the Files tab lists todos in (projects.js). Duplicated rather
+/* Same order the Projects tab lists todos in (projects.js). Duplicated rather
    than imported: views never import each other (see the registry contract).
    The status set is owned by services/cowork_agent/visualizer/todo_status.py;
    tests/test_todo_status.py fails if these three stop matching it. */
@@ -1238,7 +1250,13 @@ function acRow(n,idx,q){
   return {col,name,meta,dia};
 }
 function wireAC(input,acEl,onPick){
-  let items=[],act=-1;
+  let items=[],act=-1,blurTimer=null;
+  const clear=()=>{
+    clearTimeout(blurTimer);
+    items=[];act=-1;
+    acEl.classList.remove('is-open');
+    acEl.innerHTML='';
+  };
   const render=q=>{
     if(!items.length&&q){acEl.innerHTML=`<div class="empty">No match in this workspace<small>${LEAVES.length} ${noun} mapped</small></div>`;acEl.classList.add('is-open');return;}
     acEl.innerHTML=items.map(([sc,n,idx],i)=>{
@@ -1249,26 +1267,34 @@ function wireAC(input,acEl,onPick){
     acEl.classList.toggle('is-open',items.length>0);
   };
   const pickI=i=>{
-    if(i<0||i>=items.length)return;
+    if(view!=='graph'||i<0||i>=items.length)return;
     const n=items[i][1];
-    acEl.classList.remove('is-open');items=[];act=-1;
+    clear();
     input.value=n.label;
     onPick(n);
   };
-  input.addEventListener('input',()=>{items=rankMatches(input.value);act=items.length?0:-1;render(input.value.trim().toLowerCase());});
-  input.addEventListener('keydown',e=>{
-    if(e.key==='ArrowDown'){act=(act+1)%items.length;render(input.value.toLowerCase());e.preventDefault();}
-    else if(e.key==='ArrowUp'){act=(act-1+items.length)%items.length;render(input.value.toLowerCase());e.preventDefault();}
-    else if(e.key==='Enter'){pickI(act>=0?act:0);e.preventDefault();}
-    else if(e.key==='Escape'){acEl.classList.remove('is-open');items=[];input.blur();}
+  input.addEventListener('input',()=>{
+    if(view!=='graph'){clear();return;}
+    clearTimeout(blurTimer);
+    items=rankMatches(input.value);act=items.length?0:-1;
+    render(input.value.trim().toLowerCase());
   });
-  input.addEventListener('blur',()=>setTimeout(()=>acEl.classList.remove('is-open'),140));
+  input.addEventListener('keydown',e=>{
+    if(view!=='graph')return;
+    if(e.key==='ArrowDown'&&items.length){act=(act+1)%items.length;render(input.value.toLowerCase());e.preventDefault();}
+    else if(e.key==='ArrowUp'&&items.length){act=(act-1+items.length)%items.length;render(input.value.toLowerCase());e.preventDefault();}
+    else if(e.key==='Enter'){pickI(act>=0?act:0);e.preventDefault();}
+    else if(e.key==='Escape'){input.blur();clear();}
+  });
+  input.addEventListener('blur',()=>{blurTimer=setTimeout(clear,140);});
   acEl.addEventListener('pointerdown',e=>{
+    if(view!=='graph')return;
     const b=e.target.closest('button');
     if(b){e.preventDefault();pickI(+b.dataset.i);}
   });
+  return clear;
 }
-wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
+const clearSearchAC=wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
   ensureShown(n);
   go(graphRoute);
   clearPath();
@@ -1279,16 +1305,16 @@ wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
   toast('Found '+n.label);
   document.getElementById('q').value='';
 });
-wireAC(document.getElementById('root-q'),document.getElementById('root-ac'),n=>setRoot(n.id));
+const clearRootAC=wireAC(document.getElementById('root-q'),document.getElementById('root-ac'),n=>setRoot(n.id));
 document.getElementById('root-q').addEventListener('keydown',e=>{
-  if(e.key==='Escape')closeRootDD();
+  if(view==='graph'&&e.key==='Escape')closeRootDD();
 });
 
 /* ============================== VIEWS + GLOBAL KEYS ==============================
    Tab/section toggling now lives in core/registry.js. The atlas keeps only
    its internal notion of which of its lenses is active — it gates the sim
-   loop and timeline rebuilds — plus the search-focus and clear keys. */
-let view='graph';
+   loop and timeline rebuilds — plus its own clear key. The shell owns '/'. */
+let view=null;
 /* List → Graph jump: focus the project's hub (graph dataset, `p_<id>`) or
    its project node (dashboard dataset, plain id). Unknown ids no-op. */
 hooks.focusProject=()=>{
@@ -1303,6 +1329,11 @@ hooks.focusProject=()=>{
 };
 hooks.setActiveView=v=>{
   view=v;
+  if(v!=='graph'){
+    closeRootDD();
+    if(['q','root-q'].includes(document.activeElement?.id))document.activeElement.blur();
+    clearSearchAC();clearRootAC();
+  }
   document.querySelectorAll('[data-atlas-lens]').forEach(button=>{
     button.classList.toggle('is-on',button.dataset.atlasLens===v);
   });
@@ -1311,8 +1342,9 @@ hooks.setActiveView=v=>{
   if(v==='time'){requestAnimationFrame(()=>{buildTimeline();if(tTrace)drawTrace();});}
 };
 addEventListener('keydown',e=>{
-  const typing=/INPUT|TEXTAREA/.test(document.activeElement?.tagName||'');
-  if(e.key==='/'&&!typing){e.preventDefault();document.getElementById('q').focus();return;}
+  if(!view||e.defaultPrevented)return;
+  const active=document.activeElement;
+  const typing=/INPUT|TEXTAREA|SELECT/.test(active?.tagName||'')||active?.isContentEditable;
   if(typing)return;
   if(e.key==='Escape'){clearFocus();clearPath();hideHC();}
 });
@@ -1331,6 +1363,16 @@ let laneFilter='';
 let tRebuildRAF=null;
 /* one rebuild per frame, however many wheel ticks arrive */
 function scheduleBuild(){cancelAnimationFrame(tRebuildRAF);tRebuildRAF=requestAnimationFrame(buildTimeline);}
+hooks.getTimelineFilter=()=>laneFilter;
+hooks.setTimelineFilter=value=>{
+  if(view!=='time')return;
+  const next=String(value??'');
+  if(next===laneFilter)return;
+  laneFilter=next;
+  document.getElementById('tlanes').value=laneFilter;
+  scheduleBuild();
+  refreshToolbar();
+};
 function setView(a,b){
   a=Math.max(TF0,a);b=Math.min(TF1,b);
   if(b-a<MIN_SPAN){const mid=(a+b)/2;a=Math.max(TF0,mid-MIN_SPAN/2);b=Math.min(TF1,a+MIN_SPAN);}
@@ -1366,7 +1408,7 @@ document.getElementById('tyears').addEventListener('click',e=>{
   setView(+new Date(y,0,1),+new Date(y+1,0,1));
 });
 document.getElementById('tlanes').addEventListener('input',e=>{
-  laneFilter=e.target.value;scheduleBuild();
+  hooks.setTimelineFilter(e.target.value);
 });
 const SVGNS='http://www.w3.org/2000/svg';
 let tNow=T1G,tPlaying=false,tTrace=null;
@@ -1383,7 +1425,7 @@ const GITHIST=DATA.gitHistory||{};
 const histLanes=Object.keys(CAT).filter(cat=>(GITHIST[cat]||[]).length);
 const hasHist=histLanes.length>0;
 /* Both modes plot git dates only, so a project with no repository has no
-   lane at all. Files counts every project; without this note the Timeline
+   lane at all. Projects counts every project; without this note the Timeline
    silently shows fewer and reads as broken data rather than as the absence
    of git history it actually is. */
 const fileLanes=()=>Object.keys(CAT).filter(cat=>LEAVES.some(n=>n.cat===cat&&n.date));
@@ -1473,7 +1515,7 @@ function buildTimeline(){
   computeRange();
   histDots=[];
   /* Every project gets a lane, including the ones with nothing to plot.
-     Dropping them made the Timeline disagree with Files about how many
+     Dropping them made the Timeline disagree with Projects about how many
      projects exist, and a reader cannot tell "no history" from "missing".
      An empty lane is drawn dark and labelled instead. */
   const allLanes=Object.keys(CAT);

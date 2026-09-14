@@ -1,5 +1,5 @@
 /* Connectors tab. Mirrors the Setup tab's card/badge/button vocabulary under a
-   .conn- prefix — those classes are per-view by convention, not shared, so the
+   .conn- prefix: those classes are per-view by convention, not shared, so the
    rules are restated here rather than imported. Tokens come from base.css. */
 
 /* The registry auto-creates this section; without an explicit overflow it
@@ -50,13 +50,16 @@
 .conn-card-note{margin:9px 0 0;font-size:11.5px;line-height:1.45;color:var(--ink-3)}
 .conn-facts{display:flex;flex-wrap:wrap;gap:6px}
 .conn-fact{font:500 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
+/* the account the session is bound to: an email, so never uppercased, and
+   clipped rather than allowed to widen the card */
+.conn-account{text-transform:none;letter-spacing:0;font-size:10px;color:var(--ink-2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .conn-card-error{
   margin-top:11px;padding:9px 11px;border:1px solid rgba(200,103,76,.35);border-radius:8px;
   background:rgba(200,103,76,.08);color:#e1937d;font-size:11.5px;line-height:1.45
 }
 
-.conn-card-acts{display:flex;gap:8px;padding:14px 18px 17px}
+.conn-card-acts{display:flex;gap:8px;padding:14px 18px 17px;flex-wrap:wrap}
 .conn-primary,.conn-secondary{
   border-radius:999px;padding:8px 16px;font:700 10px var(--mono);letter-spacing:.1em;
   text-transform:uppercase;cursor:pointer;border:1px solid transparent
@@ -89,3 +92,24 @@
   .conn-hero{flex-direction:column}
   .conn-grid{grid-template-columns:1fr}
 }
+
+/* Polling drawer: what the connections poller collects into the Inbox for this
+   toolkit, and how often. Same drawer pattern as .conn-actions above; the
+   buttons reuse .conn-primary / .conn-secondary. */
+.conn-poll{border-top:1px solid var(--line-soft);padding:13px 18px 16px;display:flex;flex-direction:column;gap:7px}
+.conn-poll-note{margin:0 0 3px;color:var(--ink-3);font-size:11px;line-height:1.5}
+/* "Polling as <email>", above the collectors; a long address wraps */
+.conn-poll-account{color:var(--ink-2);word-break:break-all}
+.conn-poll-row{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--ink-2);cursor:pointer}
+.conn-poll-row:hover{color:var(--ink)}
+.conn-poll-row input{accent-color:var(--accent-deep);cursor:pointer}
+.conn-poll-row select{
+  background:var(--bg-3);color:var(--ink);border:1px solid var(--line);border-radius:8px;
+  padding:5px 8px;font:500 10.5px var(--mono);cursor:pointer
+}
+.conn-poll-row select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* last poll, last error, or the result of a Poll now; the error style is the
+   card error's colour, not its box, so it stays one quiet line */
+.conn-poll-status{margin-top:4px;font:400 10.5px var(--mono);letter-spacing:.04em;color:var(--ink-3);line-height:1.5;word-break:break-word}
+.conn-poll-status.is-error{color:#e1937d}
+.conn-poll-acts{display:flex;gap:8px;margin-top:6px}

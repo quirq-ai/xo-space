@@ -1,15 +1,17 @@
   /* graph overlays */
   .ov{position:absolute;z-index:10;pointer-events:none}
   .ov>*{pointer-events:auto}
-  /* Files lens pill (List | Graph) at the top left */
+  /* Projects lens pill at the top left */
   /* The lens switch is shell chrome: one element in #stage, at one position,
-     over whichever Files lens is showing. It never re-renders on a switch. */
+     over whichever Projects lens is showing. It never re-renders on a switch. */
   #fileslens{position:absolute;top:0;left:0;right:0;z-index:14;padding:22px 0 0;
     pointer-events:none}
   #fileslens[hidden]{display:none}
   .fileslens-inner{max-width:1180px;margin:0 auto;padding:0 26px;
     display:flex;align-items:center}
-  #fileslens .atlas-lens-switch{pointer-events:auto}
+  #fileslens .atlas-lens-switch{pointer-events:auto;max-width:100%;overflow-x:auto}
+  #fileslens .atlas-lens-switch button{flex:none}
+  @media(max-width:480px){.fileslens-inner{padding:0 12px}}
   #hint{top:52px;left:18px;max-width:430px;font-size:11.5px;line-height:1.65;color:var(--ink-3);transition:opacity .5s var(--ease)}
   #hint b{color:var(--ink-2);font-weight:500}
   /* wrap: with dozens of generated projects a single row would overflow the
@@ -62,7 +64,7 @@
 
   /* ---------------- detail panel ---------------- */
   #panel{
-    position:fixed;top:var(--topbar-h);right:0;bottom:var(--footer-h);width:352px;z-index:50;
+    position:fixed;top:var(--topbar-inset,var(--topbar-h));right:0;bottom:var(--footer-h);width:352px;z-index:50;
     background:rgba(13,16,20,.96);backdrop-filter:blur(18px);border-left:1px solid var(--line);
     transform:translateX(102%);transition:transform .32s var(--ease);
     display:flex;flex-direction:column;

@@ -95,8 +95,8 @@ Open an issue with:
   log — `<state root>/quirq.log` for the installer path, `/tmp/xo-space.log`
   for `cowork-api.sh`. **Redact tokens and keys before pasting** (`/health`
   reports presence, not values, on purpose; logs may not).
-- For UI bugs: the browser, a screenshot, and the Wiki tab's page for that view
-  if it contradicts what you saw.
+- For UI bugs: the browser, a screenshot, and the relevant
+  [Space guide](https://docs.quirq.ai/docs/space) if it contradicts what you saw.
 
 If you are not sure it is a bug, open the issue anyway and say so.
 
@@ -188,7 +188,7 @@ server.py                      app wiring, lifespan, both planes
 routers/                       HTTP only — cowork_agent/ (Plane B /api/*), auth/, status/, space.py, xo_data.py
 services/cowork_agent/         the broker: engine, adapters/, registry/, connectors/, visualizer/, xo_projects_sync/
 config/agents/<name>/          per-runtime manifest, capabilities, settings, setup.sh
-space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the in-app manual
+space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the offline overview
 install.sh · cowork-api.sh · quirq   the three ways to run it
 tests/                         xo-space's own unittest suite
 plugin/ · .agents/             the Claude Code / Codex plugin bundles (kept in sync by a script)
@@ -214,8 +214,9 @@ capability modules you need (`usage.py`, `models.py`, `sessions.py`,
 - Bump the `?v=` cache stamp of every module you touch in `js/app.js` (and
   the `app.js` stamp in `index.html` if a view stamp moves; CSS stamps live in
   `index.html`). Otherwise browsers keep the old file.
-- Update the view's tab guide in `js/views/wiki.js` in the same PR. The wiki
-  is the manual for the exact build the user runs; stale pages are bugs.
+- Update `js/views/wiki.js` when the offline overview or its navigation changes.
+  Maintain detailed UI guides in `xo-docs`, published at
+  <https://docs.quirq.ai/docs/space>; Wiki opens those guides in a new tab.
 - `node --check` each module you edit.
 
 ## Testing and validation
@@ -246,21 +247,22 @@ bash tests/install_sh_harness.sh
 
 Add a test with every behaviour change. `tests/` is a flat `unittest` suite,
 one `TestCase` per module, hermetic (temp dirs; never a real `~/.quirq` or
-`.env`). Docs and wiki text are pinned by `tests/test_space_wiki.py` — when a
-rename breaks a pin, update the pin to the new name rather than reinstating the
-old one.
+`.env`). `tests/test_space_wiki.py` checks the overview's integration and
+repository documentation contracts. Update obsolete expectations when a
+contract changes; do not restore removed manual pages to satisfy a text pin.
 
 ## Docs move with code
 
 The docs are part of the product, and several are pinned by tests. When you
-change… update in the same PR:
+change… update the corresponding repository reference and coordinate any
+detailed guide changes in `xo-docs`:
 
 | Change | Also update |
 |---|---|
-| the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant page of `space_ui/js/views/wiki.js` |
-| any view's behaviour | its tab guide in `wiki.js` |
-| `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the wiki's *Install & run locally* / *Your first run* pages |
-| what a first-time user sees | the three places must agree: `INSTALLATION.md` "Your first run", the README quick start, the wiki `first-run` page |
+| the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in `xo-docs` |
+| any view's behaviour | its Space UI guide in `xo-docs`; update `wiki.js` if the overview or navigation changes |
+| `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in `xo-docs` |
+| what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in `xo-docs` must agree |
 | what leaves the machine | README "What leaves your machine" — keep the heading verbatim; `install.sh` prints a pointer to it |
 
 The README only references files that exist on `main`; it states the repo's
@@ -329,10 +331,10 @@ hides CRs, so don't trust it for that check.
 
 - **Issues** — bugs, features, questions:
   <https://github.com/quirq-ai/xo-space/issues>.
-- **The in-app Wiki** — `http://localhost:5002/space/` → Wiki. Sixteen
-  version-matched pages; the maintained manual (the GitHub wiki is empty on
-  purpose).
-- **Docs site** — <https://docs.quirq.ai/docs/space/>.
+- **The in-app Wiki** — `http://localhost:5002/space/` → Wiki at the top right. A compact
+  overview bundled with the running build and available offline, with links
+  to the detailed online guides in a new tab.
+- **Full Space guides** — <https://docs.quirq.ai/docs/space>.
 - **Licence** — MIT, see [LICENSE](LICENSE).
 
 Be kind and specific. Assume the other person is doing their best with the

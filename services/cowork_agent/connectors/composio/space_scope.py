@@ -1,14 +1,14 @@
-"""What this workspace may reach — the per-workspace half of connector isolation.
+"""What this workspace may reach: the per-workspace half of connector isolation.
 
 Composio connections are **account-wide**, so "which workspace is this?" does not answer
 "what can it touch?". This store does.
 
 Two decisions per toolkit, both scoped to this workspace:
 
-* ``enabled`` — whether the toolkit reaches the agent at all. Becomes the session's
+* ``enabled``: whether the toolkit reaches the agent at all. Becomes the session's
   ``toolkits: {"enable": [...]}`` allowlist, which Composio checks *before* it looks up a
   connection.
-* ``connected_account_ids`` — which of the account's connections back it. Becomes the
+* ``connected_account_ids``: which of the account's connections back it. Becomes the
   session's ``connected_accounts`` pin, which Composio treats as an exact override with
   no fallback.
 
@@ -27,20 +27,33 @@ import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from services.cowork_agent.connectors.composio import paths
+from services.cowork_agent.connectors.composio import paths, state
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.reader import read_json
 
 log = logging.getLogger(__name__)
 
-_SCOPE_PATH = paths.store_dir() / "workspace_scope.json"
+_SCOPE_PATH = paths.store_dir() / "space_scope.json"
+# The store's name before the space_id rename. Moved on first access, so a toolkit a user
+# had enabled does not silently read as off.
+_LEGACY_SCOPE_PATHS = (paths.store_dir() / "workspace_scope.json",)
 
 STORE_VERSION = 1
 
 
 def _store_path() -> Path:
     return _SCOPE_PATH
+
+
+def _migrate() -> None:
+    """Move a ``workspace_scope.json`` left by an older build to ``space_scope.json``.
+
+    Routed through ``_store_path()`` rather than ``_SCOPE_PATH`` because that function is
+    the seam tests redirect, so migration follows the redirect with them. No mode: the
+    scope is not a secret.
+    """
+    paths.migrate_legacy(_store_path(), _LEGACY_SCOPE_PATHS)
 
 
 def _coerce_entry(raw: object) -> Dict[str, object]:
@@ -57,6 +70,7 @@ def _coerce_entry(raw: object) -> Dict[str, object]:
 
 def load() -> Dict[str, Dict[str, object]]:
     """Every toolkit this workspace has an opinion about. Absent means off."""
+    _migrate()
     data = read_json(_store_path())
     if not isinstance(data, dict):
         return {}
@@ -98,11 +112,22 @@ def pins() -> Dict[str, List[str]]:
 
 
 def _write(mutate) -> Dict[str, Dict[str, object]]:
+    """Lock, re-read, mutate, atomically replace.
+
+    Stamps the ``space_id`` this scope was written under (:func:`state.space_stamp`), as
+    ``sessions.json`` does. Informational only: :func:`load` never compares it.
+    """
     path = _store_path()
+    # Before the lock: the sentinel is keyed on the store's absolute path.
+    _migrate()
     with locked(path):
         current = load()
         mutate(current)
-        write_json_atomic(path, {"version": STORE_VERSION, "toolkits": current})
+        write_json_atomic(path, {
+            "version": STORE_VERSION,
+            "space_id": state.space_stamp(read_json(path)),
+            "toolkits": current,
+        })
     return current
 
 
@@ -116,8 +141,8 @@ def set_toolkit(
     """Set this workspace's opinion about one toolkit. Partial: None leaves a field alone.
 
     ``max_accounts`` mirrors the session's multi-account cap. Composio rejects a session
-    that pins more accounts than the cap allows — and a non-multi-account session caps at
-    one — so the excess is dropped here, where it can be reported, rather than at session
+    that pins more accounts than the cap allows (and a non-multi-account session caps at
+    one), so the excess is dropped here, where it can be reported, rather than at session
     creation where it would take every other toolkit down with it.
     """
     result: Dict[str, object] = {}
@@ -151,7 +176,7 @@ def set_toolkit(
 def unlink_account(toolkit_id: str, connected_account_id: str) -> Dict[str, object]:
     """Drop one connected account from this workspace, leaving it connected elsewhere.
 
-    The account itself is untouched in Composio — this is "not here", not "delete". A
+    The account itself is untouched in Composio: this is "not here", not "delete". A
     toolkit left with no pins is switched off, so it stops appearing to the agent rather
     than silently reverting to Composio's most-recently-connected default.
     """
@@ -201,7 +226,7 @@ def prune_to(live_account_ids: Iterable[str]) -> bool:
                 entry["enabled"] = False
             current[toolkit_id] = entry
 
-    # Read first so the common case — nothing stale — takes no lock and no write.
+    # Read first so the common case (nothing stale) takes no lock and no write.
     snapshot = load()
     if not any(
         cid not in live

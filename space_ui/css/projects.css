@@ -1,6 +1,6 @@
-  /* ---------------- projects tab (Files → List lens) ---------------- */
+  /* ---------------- Projects tab: List lens ---------------- */
   #view-projects{overflow-y:auto}
-  /* Every Files lens uses the same centred column and the same top gap, so
+  /* Every Projects lens uses the same centred column and the same top gap, so
      the shell's lens switch sits in one place and the headers line up. */
   .prj{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
 
@@ -110,6 +110,16 @@
     .prj-num{grid-area:files}
     .prj-when{grid-area:when;justify-content:flex-end}
     .prj-panels{grid-template-columns:minmax(0,1fr)}
+  }
+  @media (max-width:480px){
+    .prj{padding-left:12px;padding-right:12px}
+    .prj-line{display:block;position:relative;padding-right:0}
+    .prj-row-head{width:100%;padding:14px 16px;gap:8px 10px;
+      grid-template-columns:14px minmax(0,1fr);
+      grid-template-areas:'c n' '. live' '. files' '. when'}
+    .prj-name small{white-space:normal}
+    .prj-when{justify-content:flex-start;padding-right:80px}
+    .prj-map{position:absolute;right:14px;bottom:14px}
   }
 
   /* Tree lens — the workspace as a horizontal tree that grows left to right.

@@ -5,13 +5,13 @@ exactly one Composio ``user_id`` for its whole lifetime.
 
 This is a **gate**, not a resolver:
 
-1. does the request carry a live session id? — so the browser tab has been vouched for
-   by a backend that holds a working XO credential;
+1. does the request carry a live session id? (so the browser tab has been vouched for
+   by a backend that holds a working XO credential);
 2. hand back the pod's account id, fetched from xo-swarm-api and cached in :mod:`.state`.
 
 Which connections a *particular* workspace may use is a property of the Composio session,
-decided in :mod:`.workspace_scope`, not here. A missing ``CODER_WORKSPACE_ID`` is not
-checked here either.
+decided in :mod:`.space_scope`, not here. A missing ``XO_SPACE_ID`` is not checked
+here either.
 """
 
 from __future__ import annotations
