@@ -7,6 +7,28 @@ import {openCommandResults} from '../core/command-results.js?v=20260914-results1
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
 const duration=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toFixed(2)+'s';
+
+function agentPrompt(){
+  // Deliberately omit the page query string: it can contain proxy credentials.
+  const space=location.protocol==='http:'||location.protocol==='https:'?location.origin:'the running Space server';
+  return `Add the commands I describe to Saved commands in XO Space (${space}).
+
+Use the Space HTTP API from the machine running Space; command writes require a local client. For a remote Space URL, use that server's configured loopback address and port. If the API is unavailable or read-only, report that rather than writing scheduler files directly.
+
+1. Get any missing command details from me: what to run and its working directory. Use an argv array and an absolute working directory. Commands run without a shell; shell operators are not interpreted.
+2. GET /api/schedules and check existing jobs to avoid duplicates.
+3. POST /api/schedules with Content-Type: application/json. Adapt this example to my command; do not save the placeholders:
+{
+  "name": "Short command name",
+  "description": "What it does",
+  "command": {"argv": ["executable", "argument"], "cwd": "/absolute/project/path", "timeout": 30},
+  "every_seconds": null,
+  "enabled": true
+}
+Use a positive timeout in seconds. Keep every_seconds null for manual runs unless I explicitly request a schedule; an interval must be a positive integer at least as long as the configured watcher tick. Intervals require the watcher and scheduler to be enabled. Keep credentials out of command arguments and descriptions.
+4. Verify the saved job with GET /api/schedules/{id}, then report its name and ID. Do not execute it unless I ask. I can click Run in Setup → Commands and open its Inbox for results.
+5. If I request execution, POST /api/schedules/{id}/run, then check GET /api/schedules/{id} and GET /api/schedules/{id}/runs for completion. The runs response includes log_path. By default, full logs are in ~/.quirq/scheduler/logs/{id}.log and run history in ~/.quirq/scheduler/runs/{id}.jsonl; a custom state root can change these paths.`;
+}
 function relativeTime(value){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000));
   if(!Number.isFinite(seconds))return 'unknown time';
@@ -21,9 +43,17 @@ export function mountCommands(root){
   let saving=false,polling=false,revision=0;
   const busy=new Set();
   root.innerHTML=`
-    <div class="setup-card-head"><div><h3>Saved commands</h3></div>
-      <button type="button" class="setup-secondary" id="command-add">Add command</button></div>
+    <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3>Saved commands</h3>
+      <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding commands with an agent" aria-describedby="command-help-tip">i</button>
+        <span id="command-help-tip" role="tooltip" hidden>Copy the prompt and paste it into your agent. It explains how to add commands to this list through Space’s API.</span></span></div>
+      <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-secondary" id="command-add">Add command</button></div></div>
     <div class="setup-command-body">
+      <span id="command-prompt-status" class="setup-command-copy-status" role="status"></span>
+      <div id="command-prompt-fallback" class="setup-command-prompt" hidden>
+        <label for="command-prompt-text">Agent prompt — select and copy</label>
+        <textarea id="command-prompt-text" readonly rows="8" spellcheck="false"></textarea>
+        <button type="button" class="setup-secondary" id="command-prompt-close">Close</button>
+      </div>
       <div class="setup-form-error" id="command-error" role="alert" hidden></div>
       <form id="command-form" class="setup-command-form" novalidate hidden>
         <h3 id="command-form-title">Add command</h3>
@@ -54,6 +84,32 @@ export function mountCommands(root){
   const list=root.querySelector('#command-list');
   const field=name=>form.elements.namedItem(name);
   function showError(message){error.textContent=message||'';error.hidden=!message;}
+
+  const help=root.querySelector('#command-help'),tip=root.querySelector('#command-help-tip');
+  const helpArea=help.parentElement;
+  helpArea.addEventListener('mouseenter',()=>{tip.hidden=false;});
+  helpArea.addEventListener('mouseleave',()=>{if(document.activeElement!==help)tip.hidden=true;});
+  help.addEventListener('focus',()=>{tip.hidden=false;});
+  help.addEventListener('blur',()=>{tip.hidden=true;});
+  help.addEventListener('click',()=>{tip.hidden=false;});
+  help.addEventListener('keydown',event=>{if(event.key==='Escape'){tip.hidden=true;event.stopPropagation();}});
+  root.querySelector('#command-copy-prompt').addEventListener('click',async()=>{
+    const prompt=agentPrompt(),status=root.querySelector('#command-prompt-status');
+    const fallback=root.querySelector('#command-prompt-fallback');
+    try{
+      await navigator.clipboard.writeText(prompt);
+      fallback.hidden=true;status.textContent='Prompt copied. Paste it into your agent.';
+    }catch{
+      fallback.hidden=false;status.textContent='Clipboard unavailable. Copy the prompt below.';
+      const textarea=root.querySelector('#command-prompt-text');
+      textarea.value=prompt;textarea.focus();textarea.select();
+    }
+  });
+  root.querySelector('#command-prompt-close').addEventListener('click',()=>{
+    root.querySelector('#command-prompt-fallback').hidden=true;
+    root.querySelector('#command-prompt-status').textContent='';
+    root.querySelector('#command-copy-prompt').focus();
+  });
 
   function render(){
     list.innerHTML=jobs.length?jobs.map(job=>{

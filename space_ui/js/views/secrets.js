@@ -7,7 +7,7 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260914-setupflow1';
+import {mountCommands} from './setup-commands.js?v=20260914-commandhelp1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
 import {mountSetupSearch} from './setup-search.js?v=20260914-projectmanage1';
@@ -198,7 +198,9 @@ function renderShell(){
         </section>
 
         <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-commands-title" tabindex="-1">Commands</h2><p>Save commands, run them here, and open Inbox for results.</p></header>
+          <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Commands</h2>
+            <p>Click <b>Run</b> to execute on this Space’s machine. Open the command’s <b>Inbox</b> for results and recent output. Intervals run automatically while the watcher and scheduler are enabled.</p>
+            <p>Logs: <code>~/.quirq/scheduler/logs/&lt;command-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;command-id&gt;.jsonl</code><br>These are the default paths. Inbox shows the exact log path for your Space.</p></header>
           <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
         </section>
 

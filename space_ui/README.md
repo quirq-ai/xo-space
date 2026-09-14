@@ -204,6 +204,13 @@ split without a shell; validation errors appear in the card. Interval jobs show 
 “Runs every N” chip and use the watcher. **Edit** preserves existing environment,
 project and enabled settings.
 
+The information tooltip beside **Saved commands** explains **Copy agent prompt**.
+The copied prompt gives the local API recipe, checks for existing jobs, defaults
+to manual execution and asks the agent to verify the saved command. It excludes
+page query parameters. If clipboard access is unavailable, a selectable prompt
+appears without changing a command draft. The page also shows how to run commands,
+the default log/history paths and where to find the exact log path in Inbox.
+
 **Run** executes through the command utility and disables while running. The card
 polls the job every three seconds until the status and duration appear. The row
 shows its configured working directory and a preview of the latest result.
