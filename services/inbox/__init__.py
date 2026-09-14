@@ -2,8 +2,12 @@
 information that arrived in the workspace, its seen/done state, and the
 feeder cursors.
 
-Three modules, one router-facing surface:
+Four modules, one router-facing surface:
 
+* :mod:`policy`   the declarative loading rules: per source, the cold-start
+                  window, rows read per run, cursor future-slack, and the
+                  per-source retention quota. Read by ``feeders`` and
+                  ``store``; imports nothing from the package.
 * :mod:`store`    the file (normalisation, validation, retention, locked
                   read-modify-write, keyed upserts).
 * :mod:`feeders`  best-effort readers that turn the workspace timeline,
