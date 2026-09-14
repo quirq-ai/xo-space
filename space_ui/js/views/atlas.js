@@ -6,24 +6,30 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-files2';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
+import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};
 let hooks={};
 let bootDataset=null,bootRevision=0,activeAtlasId=null;
+let rootPicker=null,pendingRoot=null;
 let timelineFilter=''; // page query survives rebuilding another projection
 const datasetReads=new Map();
 addEventListener('space:view',event=>{
   const id=event.detail?.id;
   activeAtlasId=['dashboard','graph','time'].includes(id)?id:null;
+  const projects=event.detail?.tab==='projects'||['dashboard','graph','time','project-list','tree','sharing'].includes(id);
+  rootPicker?.setContext(projects?id==='dashboard'?'dashboard':'graph':null);
+  if(pendingRoot&&id!==(pendingRoot.dataset==='dashboard'?'dashboard':'graph'))pendingRoot=null;
   bootRevision++; // a late dataset read cannot reclaim another page
 });
 let projectsDirty=false;
 addEventListener('space:projects-changed',()=>{
   datasetReads.clear();bootRevision++;projectsDirty=true;
+  rootPicker?.invalidate();
   if(bootDataset||activeAtlasId)showProjectRefresh();
 });
 
@@ -54,6 +60,7 @@ function showProjectRefresh(){
    core/section-nav.js — so it cannot move when the page changes.) */
 let pendingFocus=null;
 addEventListener('space:focus-project',e=>{
+  pendingRoot=null;
   pendingFocus=String(e.detail||'');
   if(bootDataset==='graph'&&['graph','time'].includes(activeAtlasId))hooks.focusProject?.();
 });
@@ -63,6 +70,38 @@ const DATASETS={
   graph:{url:API_BASE+'/xo/space.json',label:'Graph'}
 };
 const DATASET_KEY='space.atlasDataset';
+
+async function readDataset(dataset){
+  if(!datasetReads.has(dataset)){
+    const controller=new AbortController();let timer;
+    const request=Promise.race([
+      apiFetch(DATASETS[dataset].url,{signal:controller.signal}),
+      new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve({ok:false,error:'Graph data request timed out'});},12000);}),
+    ]).finally(()=>clearTimeout(timer));
+    datasetReads.set(dataset,request);
+  }
+  const request=datasetReads.get(dataset),response=await request;
+  if(!response.ok){if(datasetReads.get(dataset)===request)datasetReads.delete(dataset);throw new Error(response.error);}
+  return response.data;
+}
+
+export function initProjectRootPicker({switchTo}){
+  if(rootPicker)return;
+  go=switchTo;
+  rootPicker=createProjectRootPicker({readDataset,onPick:({dataset,id})=>{
+    pendingFocus=null;
+    pendingRoot={dataset,id};
+    const page=dataset==='dashboard'?'dashboard':'graph';
+    if(activeAtlasId===page&&bootDataset===dataset&&hooks.setRoot&&!projectsDirty){applyRootSelection(dataset);return;}
+    go(projectPage(page).route);
+  }});
+  rootPicker?.setContext(null);
+}
+
+function applyRootSelection(dataset){
+  const requested=pendingRoot?.dataset===dataset?pendingRoot.id:rootPicker?.selectedRoot(dataset);
+  if(requested&&hooks.setRoot?.(requested)&&pendingRoot?.dataset===dataset)pendingRoot=null;
+}
 
 function savedDataset(){
   try{
@@ -81,22 +120,21 @@ function rememberDataset(dataset){
 async function ensureBoot(dataset,force=false){
   const page=activeAtlasId;
   if(!page||(page==='dashboard'?'dashboard':'graph')!==dataset)return false;
-  if(!force&&bootDataset===dataset&&hooks.setActiveView)return true;
+  if(!force&&bootDataset===dataset&&hooks.setActiveView&&!(projectsDirty&&pendingRoot?.dataset===dataset))return true;
   const revision=++bootRevision;
   const source=DATASETS[dataset];
-  if(!datasetReads.has(dataset))datasetReads.set(dataset,apiFetch(source.url));
-  const res=await datasetReads.get(dataset);
+  const data=await readDataset(dataset);
   if(revision!==bootRevision||activeAtlasId!==page)return false;
-  if(!res.ok){datasetReads.delete(dataset);throw new Error(res.error);}
   hooks.dispose?.();hooks={};
-  for(const id of ['panel','hc','crumb','rootdd','qac','root-ac']){
+  for(const id of ['panel','hc','crumb','qac']){
     document.getElementById(id)?.classList.remove('is-open','is-on');
   }
   for(const node of document.querySelectorAll('.atlas-project-refresh,.nodata'))node.remove();
   bootDataset=dataset;rememberDataset(dataset);projectsDirty=false;
   document.getElementById('tclear').hidden=true;
-  document.getElementById('q').value='';document.getElementById('root-q').value='';
-  try{boot(res.data,source.label,dataset);}
+  document.getElementById('q').value='';
+  rootPicker?.setData(dataset,data);
+  try{boot(data,source.label,dataset);}
   catch(error){hooks.dispose?.();hooks={};bootDataset=null;throw error;}
   return true;
 }
@@ -303,8 +341,6 @@ const HUB_R=520;
 /* root id comes from the data — never hardcode it ('xo' today, anything
    tomorrow); byId.get(unknown).fx throws and kills boot. */
 const root=byId.get(DATA.root.id);root.fx=0;root.fy=0;
-document.getElementById('root-name').textContent=DATA.root.label;
-document.getElementById('root-reset').textContent='Reset to '+DATA.root.label;
 HUBS.forEach(h=>{h.ax=Math.cos(HUB_ANGLE[h.cat])*HUB_R;h.ay=Math.sin(HUB_ANGLE[h.cat])*HUB_R;h.x=h.ax;h.y=h.ay;});
 /* Each project owns an equal sector of the circle; its cluster fan must stay
    inside it. A fixed .5 rad step wraps the whole circle once a project has
@@ -826,7 +862,6 @@ listen(gcv,'wheel',e=>{
 listen(document.getElementById('crumb-clear'),'click',()=>{clearFocus();clearPath();});
 
 /* ============================== RE-ROOT ============================== */
-const rootdd=document.getElementById('rootdd');
 function computeDepths(rid){
   const m=new Map([[rid,0]]);
   let fr=[rid];
@@ -840,8 +875,8 @@ function computeDepths(rid){
   return m;
 }
 function setRoot(id){
-  if(view!=='graph')return;
-  if(rootId===id){closeRootDD();return;}
+  if(view!=='graph'||!byId.has(id))return false;
+  if(rootId===id){rootPicker?.setRoot(bootDataset,byId.get(id));return true;}
   const old=byId.get(rootId);
   old.fx=null;old.fy=null;
   rootId=id;
@@ -853,29 +888,13 @@ function setRoot(id){
     r.fx=r.x;r.fy=r.y;rootDepths=computeDepths(id);
   }
   clearFocus();clearPath();
-  document.getElementById('root-name').textContent=r.label;
+  rootPicker?.setRoot(bootDataset,r);
   reheat(.8);
-  go(graphRoute);
   flyTo(r.fx,r.fy,Math.min(Math.max(cam.k,.55),.9),900);
   toast(id===DATA.root.id?'Back to the full space':'Rooted on '+r.label);
-  closeRootDD();
+  return true;
 }
-function closeRootDD(){rootdd.classList.remove('is-open');}
-listen(document.getElementById('root-btn'),'click',e=>{
-  if(view!=='graph')return;
-  e.stopPropagation();
-  rootdd.classList.toggle('is-open');
-  if(rootdd.classList.contains('is-open')){
-    const q=document.getElementById('root-q');
-    q.value='';q.focus();
-  }
-});
-listen(document.getElementById('root-reset'),'click',()=>setRoot(DATA.root.id));
-listen(rootdd,'click',e=>e.stopPropagation());
-listen(window,'click',e=>{
-  if(!rootdd.classList.contains('is-open'))return;
-  if(!e.target.closest('.rootpick'))closeRootDD();
-});
+hooks.setRoot=setRoot;
 
 /* legend + counts */
 {
@@ -1371,10 +1390,6 @@ const clearSearchAC=wireAC(document.getElementById('q'),document.getElementById(
   toast('Found '+n.label);
   document.getElementById('q').value='';
 });
-const clearRootAC=wireAC(document.getElementById('root-q'),document.getElementById('root-ac'),n=>setRoot(n.id));
-listen(document.getElementById('root-q'),'keydown',e=>{
-  if(view==='graph'&&e.key==='Escape')closeRootDD();
-});
 
 /* ============================== VIEWS + GLOBAL KEYS ==============================
    Tab/section toggling now lives in core/registry.js. The atlas keeps only
@@ -1396,9 +1411,8 @@ hooks.focusProject=()=>{
 hooks.setActiveView=v=>{
   view=v;
   if(v!=='graph'){
-    closeRootDD();
-    if(['q','root-q'].includes(document.activeElement?.id))document.activeElement.blur();
-    clearSearchAC();clearRootAC();
+    if(document.activeElement?.id==='q')document.activeElement.blur();
+    clearSearchAC();
   }
   document.querySelectorAll('[data-atlas-lens]').forEach(button=>{
     button.classList.toggle('is-on',button.dataset.atlasLens===v);
@@ -1406,6 +1420,8 @@ hooks.setActiveView=v=>{
   hideHC();
   if(v==='graph'&&GW<50)resize(); /* booted while hidden (deep link): size the canvas now */
   if(v==='time'){requestAnimationFrame(()=>{buildTimeline();if(tTrace)drawTrace();});}
+  if(v==='graph')applyRootSelection(bootDataset);
+  if(v==='graph'||v==='time')hooks.focusProject();
 };
 listen(window,'keydown',e=>{
   if(!view||e.defaultPrevented)return;
@@ -2099,6 +2115,5 @@ function frame(now){
 }
 requestAnimationFrame(frame);
 renderTimelineState();
-hooks.focusProject(); /* consume a List→Graph jump parked before boot */
 
 }

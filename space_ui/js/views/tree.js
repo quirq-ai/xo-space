@@ -1,4 +1,4 @@
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-files2';
 /* Tree — the third Files lens, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped

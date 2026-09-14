@@ -16,7 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-navigation1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-files2';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -588,12 +588,12 @@ function openLink(it){
   if(!l||typeof l!=='object')return;
   const project=typeof l.project==='string'&&PROJ_RE.test(l.project)?l.project:'';
   if(project&&safePath(l.path)){
-    switchTo('projects/list');
+    switchTo('projects/files/list');
     dispatchEvent(new CustomEvent('space:preview-file',{detail:{project,path:l.path}}));
     return;
   }
-  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/list':l.view);return;}
-  if(project)switchTo('projects/list');
+  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/files/list':l.view);return;}
+  if(project)switchTo('projects/files/list');
 }
 
 /* ── connections section data ──────────────────────────────────────────── */

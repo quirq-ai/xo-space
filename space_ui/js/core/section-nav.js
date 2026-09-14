@@ -1,9 +1,10 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-navigation1';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-files2';
 
-const GROUPS={projects:PROJECT_PAGES,agents:AGENT_PAGES,inbox:INBOX_PAGES};
-const PAGES=new Map(Object.values(GROUPS).flat().map(page=>[page.id,page]));
+const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
+const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
+const FILE_IDS=new Set(FILE_VIEWS.map(page=>page.id));
 const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
 
 export function initSectionNav(){
@@ -13,6 +14,7 @@ export function initSectionNav(){
   if(!nav||!stage||nav.dataset.initialized)return;
   nav.dataset.initialized='true';
   let parent=null,active=null,height=-1,frame=0;
+  let lastFile=FILE_VIEWS[0];
 
   function measure(){
     const next=nav.hidden?0:Math.ceil(nav.getBoundingClientRect().height);
@@ -26,26 +28,32 @@ export function initSectionNav(){
 
   function revealCurrent(){
     const links=nav.querySelector('.section-nav-links');
-    const link=nav.querySelector('[aria-current="page"]');
-    if(!links||!link)return;
-    const bounds=links.getBoundingClientRect(),selected=link.getBoundingClientRect();
-    if(selected.left<bounds.left)links.scrollLeft-=bounds.left-selected.left;
-    else if(selected.right>bounds.right)links.scrollLeft+=selected.right-bounds.right;
+    const scope=links?.querySelector('[data-section-page][aria-current="page"]');
+    if(!links||!scope)return;
+    const bounds=links.getBoundingClientRect(),selected=scope.getBoundingClientRect();
+    if(selected.right>bounds.right)links.scrollLeft+=selected.right-bounds.right;
+    else if(selected.left<bounds.left)links.scrollLeft-=bounds.left-selected.left;
   }
 
   function render(group){
     const inner=document.createElement('div');inner.className='section-nav-inner';
-    const heading=document.createElement('span');heading.className='section-nav-label';
-    heading.textContent=PRIMARY_TABS.find(tab=>tab.id===group)?.label||group;
+    const label=PRIMARY_TABS.find(tab=>tab.id===group)?.label||group;
     const links=document.createElement('div');links.className='section-nav-links';
     for(const page of GROUPS[group]){
       const link=document.createElement('a');
-      link.href='#/'+page.route;link.textContent=page.label;
+      link.href='#/'+(page.id==='files'?lastFile.route:page.route);link.textContent=page.label;
       link.dataset.sectionPage=page.id;
       links.appendChild(link);
     }
-    inner.append(heading,links);
+    inner.appendChild(links);
     if(group==='projects'){
+      const modes=document.createElement('div');modes.className='section-nav-file-views';
+      modes.setAttribute('role','group');modes.setAttribute('aria-label','File view');modes.hidden=true;
+      for(const view of FILE_VIEWS){
+        const option=document.createElement('a');option.href='#/'+view.route;
+        option.textContent=view.label;option.dataset.fileMode=view.id;modes.appendChild(option);
+      }
+      inner.appendChild(modes);
       const actions=document.createElement('div');actions.className='section-nav-actions';
       if(graphRoot)actions.appendChild(graphRoot);
       const manage=document.createElement('a');
@@ -53,11 +61,11 @@ export function initSectionNav(){
       manage.textContent='Manage projects';actions.appendChild(manage);inner.appendChild(actions);
     }
     const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
-    // Keep the existing picker mounted even on other sections: the atlas
-    // owns its listeners and state, while the toolbar owns its visibility.
+    // Keep the same picker node mounted. Its controller owns state,
+    // listeners and visibility; section navigation only places it.
     nav.replaceChildren(inner,title,...(group!=='projects'&&graphRoot?[graphRoot]:[]));
     nav.dataset.section=group;
-    nav.setAttribute('aria-label',heading.textContent+' pages');
+    nav.setAttribute('aria-label',label+' pages');
   }
 
   function sync(detail={}){
@@ -68,10 +76,19 @@ export function initSectionNav(){
     if(nav.hidden){parent=null;active=null;measure();return;}
     if(group!==parent){render(group);parent=group;}
     active=page.id;
+    const filesActive=group==='projects'&&FILE_IDS.has(page.id);
+    if(filesActive)lastFile=page;
     const section=document.getElementById('view-'+(detail.section||page.section||page.id));
     section?.classList.add('has-section-nav');
     for(const link of nav.querySelectorAll('[data-section-page]')){
-      if(link.dataset.sectionPage===page.id)link.setAttribute('aria-current','page');
+      if(link.dataset.sectionPage===(filesActive?'files':page.id))link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
+      if(link.dataset.sectionPage==='files')link.href='#/'+lastFile.route;
+    }
+    const modes=nav.querySelector('.section-nav-file-views');
+    if(modes)modes.hidden=!filesActive;
+    for(const link of nav.querySelectorAll('[data-file-mode]')){
+      if(filesActive&&link.dataset.fileMode===page.id)link.setAttribute('aria-current','page');
       else link.removeAttribute('aria-current');
     }
     const title=nav.querySelector('.section-page-title');

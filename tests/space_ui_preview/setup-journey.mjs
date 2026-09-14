@@ -174,7 +174,7 @@ try{
   assert.equal(await panel('projects').locator('#setup-projects').count(),1);
   assert.equal(await panel('projects').locator('#runtime-form,#activity-form').count(),0);
   await page.locator('#setup-open-projects').click();
-  await page.waitForURL('**/#/projects/list');
+  await page.waitForURL('**/#/projects/files/list');
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();
   assert.equal(new URL(page.url()).hash,'#/setup/workspace','The primary Setup button consistently opens Workspace');
   for(const legacy of ['agent','activity']){
@@ -327,9 +327,9 @@ try{
     await page.reload({waitUntil:'networkidle'});await expectSection(id);
   }
   for(const [alias,id] of [['setup','workspace'],['connectors','connectors'],['secrets','secrets']]){
-    await page.goto(origin+'/space/#/projects/list',{waitUntil:'networkidle'});
+    await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'networkidle'});
     await page.goto(origin+'/space/#/'+alias,{waitUntil:'networkidle'});await expectSection(id);
-    await page.goBack();await page.waitForURL('**/#/projects/list');
+    await page.goBack();await page.waitForURL('**/#/projects/files/list');
     assert.equal(await page.locator('#view-projects.is-active').count(),1,'Alias normalization does not add an extra history entry');
     await page.goForward();await expectSection(id);
   }

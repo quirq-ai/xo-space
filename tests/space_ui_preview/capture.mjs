@@ -3,7 +3,7 @@
    No DOM, CSS, asset or response substitutions: screenshots show the app.
    Install Playwright normally, or provide PLAYWRIGHT_MODULE=/path/to/index.mjs. */
 import assert from 'node:assert/strict';
-import {routeFor,projectPageId} from './routes.mjs';
+import {routeFor,projectPageSelector,openProjectPage} from './routes.mjs';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -46,9 +46,9 @@ async function screenshot(name) {
   await page.screenshot({path: resolve(output, name), animations: 'disabled'});
 }
 async function lens(id) {
-  await page.locator(`[data-section-page="${projectPageId(id)}"]`).click();
-  await page.waitForFunction(({route,id}) => location.hash === route
-    && document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', {route:routeFor(id),id:projectPageId(id)});
+  await openProjectPage(page,id);
+  await page.waitForFunction(({route,selector}) => location.hash === route
+    && document.querySelector(selector)?.getAttribute('aria-current') === 'page', {route:routeFor(id),selector:projectPageSelector(id)});
   await page.waitForLoadState('networkidle');
   if(id === 'projects') await page.locator('.prj-row').first().waitFor();
   if(id === 'sharing') await page.locator('.shl-detail').waitFor();
@@ -114,7 +114,7 @@ async function projectChrome() {
     }
     for(const id of ['tree','sharing','projects']) {
       await lens(id);await sameRoot();
-      assert.equal(await page.locator('#root-btn').isVisible(),false,id+' does not show map-only controls');
+      assert.equal(await page.locator('#root-btn').isVisible(),true,id+' retains the shared Projects root picker');
       if(id!=='projects')assert.equal(await page.locator('.section-page-context:visible').count(),0,id+' has no visible context hero');
     }
   }
@@ -138,16 +138,17 @@ try {
     assert.deepEqual(await page.locator('.tabs a').evaluateAll(buttons => buttons.map(b => b.id)),
       ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-setup']);
     assert.deepEqual(await page.locator('[data-section-page]').allTextContents(),
-      ['Overview', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
+      ['Overview', 'Files', 'Sharing', 'Timeline']);
+    assert.equal(await page.locator('.section-nav-label:visible').count(),0,'Navigation does not repeat the primary section label');
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default Overview; exact four-section order; six Projects pages');
+    report.checks.push('Default Overview; four Projects pages with Files grouping the original List, Graph and Tree');
     await projectChrome();
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
 
   if(screenshotsOnly) {
-    await page.goto(origin + '/space/#/projects/list', {waitUntil: 'networkidle'});
+    await page.goto(origin + '/space/#/projects/files/list', {waitUntil: 'networkidle'});
     await page.locator('.prj-row').first().waitFor();
   } else await lens('projects');
   assert.equal(await page.locator('.prj-row').count(), 10);
@@ -209,7 +210,7 @@ try {
 
     for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
       await page.goto(origin + '/space/' + routeFor(id), {waitUntil: 'networkidle'});
-      await page.waitForFunction(id => document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', projectPageId(id));
+      await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-current') === 'page', projectPageSelector(id));
       assert.equal(await page.locator('#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects Projects`);
     }
     report.checks.push('Every existing Projects page deep link selects the correct tab and lens');
@@ -241,12 +242,14 @@ try {
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});
-      await page.goto(origin + '/space/#/projects/list', {waitUntil: 'networkidle'});
+      await page.goto(origin + '/space/#/projects/files/list', {waitUntil: 'networkidle'});
       await page.locator('.prj-row').first().waitFor();
       const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
       for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
-        const button = page.locator(`[data-section-page="${projectPageId(id)}"]`);
+        if(['projects','graph','tree'].includes(id)&&!await page.locator(projectPageSelector(id)).isVisible())
+          await page.locator('#section-nav [data-section-page="files"]').click();
+        const button = page.locator(projectPageSelector(id));
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);
         await lens(id);

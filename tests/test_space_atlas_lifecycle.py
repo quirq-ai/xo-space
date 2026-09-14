@@ -31,6 +31,7 @@ function element(id=''){
   };
 }
 const context={
+  AbortController,setTimeout,clearTimeout,
   API_BASE:'',projectPage:id=>({id}),toast(){},
   addEventListener:(type,handler)=>events.set(type,handler),
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
@@ -44,7 +45,7 @@ const context={
 };
 vm.createContext(context);
 let source=fs.readFileSync('space_ui/js/views/atlas.js','utf8')
-  .replace(/^import .*?;\n/gm,'').replaceAll('export const ','const ');
+  .replace(/^import .*?;\n/gm,'').replaceAll('export const ','const ').replaceAll('export function ','function ');
 // The lifecycle under test is real. The canvas engine is represented by its
 // public hooks; actual engine interactions are exercised in the browser suite.
 source=source.slice(0,source.indexOf('function boot(DATA,DATA_SOURCE,bootDataset){'))+`

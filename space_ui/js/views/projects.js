@@ -1,7 +1,7 @@
 /* Projects catalog and on-demand Files, Activity and Issues details.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-files2';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 

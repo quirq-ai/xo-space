@@ -896,18 +896,19 @@ class ShellTests(unittest.TestCase):
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
         navigation_stamp = "20260914-navigation1"
-        for view in ("sharing", "inbox", "wiki", "quirq", "setup", "tree", "atlas", "sessions"):
-            self.assertIn("./views/" + view + ".js?v=" + navigation_stamp + "'", app)
-        for module in ("registry", "navigation"):
-            self.assertIn("./core/" + module + ".js?v=" + navigation_stamp + "'", app)
+        self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
+        self.assertIn("./core/registry.js?v=" + navigation_stamp + "'", app)
+        files_stamp = "20260914-files2"
+        for view in ("sharing", "inbox", "quirq", "setup", "tree", "atlas", "sessions", "projects"):
+            self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
+        for module in ("navigation", "toolbar", "section-nav", "preview"):
+            self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
         compact_stamp = "20260914-projectcompact1"
-        for path in ("views/projects", "core/toolbar", "core/section-nav", "core/preview"):
-            self.assertIn("./" + path + ".js?v=" + compact_stamp + "'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
         self.assertIn('href="css/projects.css?v=' + compact_stamp + '"', html)
-        self.assertIn('href="css/navigation.css?v=' + compact_stamp + '"', html)
+        self.assertIn('href="css/navigation.css?v=' + files_stamp + '"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
@@ -929,7 +930,8 @@ class ShellTests(unittest.TestCase):
         self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
         imports = json.loads(m.group(1))["imports"]
         for name in self.CORE_MAPPED:
-            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + STAMP, name)
+            stamp = "20260914-files2" if name == "api.js" else STAMP
+            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + stamp, name)
         # one instance means every importer uses the bare specifier
         for path in sorted((UI / "js").rglob("*.js")):
             src = path.read_text(encoding="utf-8")

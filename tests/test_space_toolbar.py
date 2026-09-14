@@ -213,14 +213,14 @@ assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElemen
 document.activeElement=null;key('/');assert.equal(document.activeElement,input);
 searchable=false;secondContext.refreshToolbar();
 assert.equal(controls.hidden,true);assert.equal(document.activeElement,null);
+graphRoot.hidden=true; // The independent Projects root controller owns this state.
 await registry.switchTo('graph');
-assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,false);assert.equal(meta.hidden,false);
+assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,true);assert.equal(meta.hidden,false);
 key('/');assert.equal(document.activeElement,graphInput);
-for(const id of ['rootdd','qac','root-ac'])elements.get(id).classList.add('is-open');
-rootInput.focus();assert.equal(document.activeElement,rootInput);
+elements.get('qac').classList.add('is-open');
 await registry.switchTo('wiki');
 assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
 assert.equal(key('/').defaultPrevented,false);
-for(const id of ['rootdd','qac','root-ac'])assert.equal(elements.get(id).classList.contains('is-open'),false);
+assert.equal(elements.get('qac').classList.contains('is-open'),false);
 secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'none');
 """)

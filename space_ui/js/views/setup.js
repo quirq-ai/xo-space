@@ -181,7 +181,7 @@ function bindEvents(){
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
   addEventListener('space:setup-section',event=>openPanel(event.detail?.panel,{focus:true}));
-  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects/list'));
+  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects/files/list'));
   root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('setup/server/details'));
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
     root.querySelector(selector).addEventListener('input',event=>{

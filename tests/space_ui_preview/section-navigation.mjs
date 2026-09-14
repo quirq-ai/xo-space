@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {openProjectList} from './routes.mjs';
+import {openProjectList,openProjectPage,projectPageSelector} from './routes.mjs';
 
 const origin=process.env.SPACE_PREVIEW_URL||'http://127.0.0.1:5100';
 const endpoint=new URL(origin);
@@ -47,13 +47,15 @@ await context.route('**/*',async route=>{
     totals:{files:0,bytes:0},watcher:{enabled:false},activity:{},tree:[],project_outputs:{project_count:10}});
   return route.continue();
 });
-const groups={projects:[['dashboard','overview','Overview'],['project-list','list','List'],['graph','graph','Graph'],
-  ['tree','tree','Tree'],['sharing','sharing','Sharing'],['time','timeline','Timeline']],
+const groups={projects:[['dashboard','overview','Overview'],['project-list','files/list','List'],['graph','files/graph','Graph'],
+  ['tree','files/tree','Tree'],['sharing','sharing','Sharing'],['time','timeline','Timeline']],
   agents:['overview','sessions','tools','models','trends'].map(slug=>['agents-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
   inbox:['items','connections','jobs'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)])};
 const defaults={projects:'projects/overview',agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace'};
 const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,
-  dashboard:'projects/overview',list:'projects/list',graph:'projects/graph',tree:'projects/tree',sharing:'projects/sharing',
+  dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',sharing:'projects/sharing',
+  'projects/files':'projects/files/list','projects/list':'projects/files/list',
+  'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
   time:'projects/timeline',timeline:'projects/timeline',sessions:'agents/overview',
   connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
 const checked=text=>{report.checks.push(text);console.log(text);};
@@ -63,17 +65,37 @@ async function expectRoute(route){
   assert.equal(await page.locator('.tabs [aria-current="page"]').getAttribute('id'),'tab-'+group);
   assert.equal(await page.locator('.view.is-active').count(),1,'Only one mounted view is visible');
   if(definition){
-    await page.locator('#section-nav [data-section-page="'+definition[0]+'"][aria-current="page"]').waitFor();
-    assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[
+    const file=group==='projects'&&definition[1].startsWith('files/');
+    const selector=group==='projects'?projectPageSelector(definition[0]):'#section-nav [data-section-page="'+definition[0]+'"]';
+    await page.locator(selector+'[aria-current="page"]').waitFor();
+    if(group==='projects'){
+      assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.sectionPage,node.textContent])),
+        [['A','dashboard','Overview'],['A','files','Files'],['A','sharing','Sharing'],['A','time','Timeline']]);
+      assert.equal(await page.locator('.section-nav-file-views').isVisible(),file);
+      if(file){
+        assert.equal(await page.locator('.section-nav-file-views').evaluate(node=>
+          !node.closest('.section-nav-links')&&node.nextElementSibling?.classList.contains('section-nav-actions')),true,
+          'Files modes are a separate control group before root and Manage');
+        assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('aria-current'),'page');
+        assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/'+route);
+        assert.deepEqual(await page.locator('#section-nav [data-file-mode]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.fileMode,node.getAttribute('href'),node.textContent])),
+          [['A','project-list','#/projects/files/list','List'],['A','graph','#/projects/files/graph','Graph'],['A','tree','#/projects/files/tree','Tree']]);
+      }
+    }else assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[
       node.tagName,node.dataset.sectionPage,node.getAttribute('href'),node.textContent])),
       groups[group].map(([id,slug,label])=>['A',id,'#/'+group+'/'+slug,label]));
-    assert.equal(await page.locator('#section-nav [aria-current="page"]').count(),1);
+    assert.equal(await page.locator('#section-nav [aria-current="page"]').count(),file?2:1);
+    assert.equal(await page.locator('.section-nav-label').count(),0,'Section labels are not repeated');
   }else assert.equal(await page.locator('#section-nav').isHidden(),true);
   if(group==='setup'&&route!=='setup/server/details')await page.locator('#setup-panel-'+route.split('/')[1]).waitFor({state:'visible'});
   if(group==='inbox')await page.locator('.inb-'+route.split('/')[1]+'-page').waitFor({state:'visible'});
 }
 async function go(route){await page.evaluate(route=>{location.hash='#/'+route;},route);await expectRoute(route);}
 async function leaf(id){
+  if(groups.projects.some(([key])=>key===id)){
+    await openProjectPage(page,id==='project-list'?'projects':id);
+    await expectRoute('projects/'+groups.projects.find(([key])=>key===id)[1]);return;
+  }
   const link=page.locator('#section-nav [data-section-page="'+id+'"]');
   const route=(await link.getAttribute('href')).slice(2);
   await link.click();await expectRoute(route);
@@ -81,11 +103,24 @@ async function leaf(id){
 async function layout(label){
   const box=await page.evaluate(()=>{
     const view=document.querySelector('.view.is-active'),nav=document.querySelector('#section-nav');
+    const rect=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+    const projects=nav.dataset.section==='projects';
     return{width:innerWidth,scroll:document.documentElement.scrollWidth,viewTop:view.getBoundingClientRect().top,
-      navBottom:nav.hidden?null:nav.getBoundingClientRect().bottom,withNav:view.classList.contains('has-section-nav')};
+      navBottom:nav.hidden?null:nav.getBoundingClientRect().bottom,withNav:view.classList.contains('has-section-nav'),
+      scopes:projects?[...nav.querySelectorAll('.section-nav-links > a')].map(rect):[],
+      scopeArea:projects?rect(nav.querySelector('.section-nav-links')):null,
+      modes:projects&&!nav.querySelector('.section-nav-file-views').hidden?rect(nav.querySelector('.section-nav-file-views')):null,
+      actions:projects?rect(nav.querySelector('.section-nav-actions')):null};
   });
   assert.ok(box.scroll<=box.width,label+' has no document overflow');
   if(box.withNav)assert.ok(box.viewTop>=box.navBottom-1,label+' content viewport clears secondary navigation');
+  for(const scope of box.scopes)assert.ok(scope.left>=box.scopeArea.left-1&&scope.right<=box.scopeArea.right+1,
+    label+' scope links remain fully visible');
+  if(box.scopes.length&&box.width<=480){
+    assert.ok(box.scopes.every(scope=>Math.abs(scope.top-box.scopes[0].top)<1),label+' four scopes share the first phone row');
+    assert.ok(Math.max(...box.scopes.map(scope=>scope.bottom))<=Math.min(box.actions.top,box.modes?.top??Infinity)+1,
+      label+' mode and root controls follow the scope links');
+  }
   report.layouts.push({label,...box});
 }
 async function screenshot(name){await page.mouse.move(2,998);await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
@@ -104,13 +139,17 @@ try{
   }
   await openProjectList(page);await page.locator('.prj-row').first().waitFor();
   await page.locator('#tab-projects').click();await expectRoute('projects/overview');
-  await leaf('project-list');await expectRoute('projects/list');
+  await leaf('project-list');await expectRoute('projects/files/list');
   const historyBefore=await page.evaluate(()=>history.length);
   await leaf('project-list');assert.equal(await page.evaluate(()=>history.length),historyBefore);
-  await leaf('tree');await expectRoute('projects/tree');await page.goBack();await expectRoute('projects/list');
-  await page.goBack();await expectRoute('projects/overview');await page.goForward();await expectRoute('projects/list');
-  await page.evaluate(()=>{location.hash='#/tree';});await expectRoute('projects/tree');
-  await page.goBack();await expectRoute('projects/list');
+  await leaf('tree');await expectRoute('projects/files/tree');await page.goBack();await expectRoute('projects/files/list');
+  await page.goBack();await expectRoute('projects/overview');await page.goForward();await expectRoute('projects/files/list');
+  await page.evaluate(()=>{location.hash='#/tree';});await expectRoute('projects/files/tree');
+  await page.goBack();await expectRoute('projects/files/list');
+  await leaf('tree');await leaf('sharing');
+  assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/projects/files/tree');
+  await page.locator('#section-nav [data-section-page="files"]').click();await expectRoute('projects/files/tree');
+  await leaf('project-list');
   checked('Projects defaults to Overview; List has a separate identity, and browser history has one entry per navigation.');
   const search=page.locator('#view-search');
   await search.fill('aurora');
@@ -137,13 +176,13 @@ try{
   assert.equal(await page.locator('#preview.is-open').count(),0);
   await openProjectList(page);await page.locator('#prj-add').click();await expectRoute('setup/projects');
   await go('setup/workspace');await page.locator('#xo-root-input').fill('/fictional/retained-draft');
-  await go('projects/list');await page.locator('#prjp-files .fx-row.is-dir').first().click();
+  await go('projects/files/list');await page.locator('#prjp-files .fx-row.is-dir').first().click();
   await page.locator('#prjp-files .fx-here').waitFor();
   const folder=await page.locator('#prjp-files .fx-crumbs').textContent();
-  for(const route of ['projects/overview','projects/graph','projects/timeline','projects/overview'])await go(route);
+  for(const route of ['projects/overview','projects/files/graph','projects/timeline','projects/overview'])await go(route);
   await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
   await page.locator('#root-btn').click();await page.waitForFunction(()=>!document.querySelector('#rootdd').classList.contains('is-open'));
-  await go('projects/list');assert.equal(await page.locator('#prjp-files .fx-crumbs').textContent(),folder);
+  await go('projects/files/list');assert.equal(await page.locator('#prjp-files .fx-crumbs').textContent(),folder);
   assert.equal(await search.inputValue(),'aurora');
   await page.locator('#tab-projects').click();await expectRoute(defaults.projects);
   await page.locator('#tab-setup').click();await expectRoute(defaults.setup);
@@ -155,11 +194,11 @@ try{
   await leaf('agents-sessions');await expectRoute('agents/sessions');assert.equal(await search.inputValue(),'Aurora');
   await page.locator('#tab-agents').click();await expectRoute('agents/overview');assert.equal(await search.isVisible(),false);
   await go('inbox/items');await page.locator('[data-id="legacy-project"][data-act="toggle"]').click();
-  await page.locator('[data-id="legacy-project"][data-act="open"]').click();await expectRoute('projects/list');
+  await page.locator('[data-id="legacy-project"][data-act="open"]').click();await expectRoute('projects/files/list');
   await go('inbox/items');await page.locator('[data-id="file-handoff"][data-act="toggle"]').click();
-  await page.locator('[data-id="file-handoff"][data-act="open"]').click();await expectRoute('projects/list');
+  await page.locator('[data-id="file-handoff"][data-act="open"]').click();await expectRoute('projects/files/list');
   await page.locator('#preview.is-open').waitFor();await page.locator('#preview-body .pv-md').waitFor();
-  await go('projects/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/list');
+  await go('projects/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/files/list');
   await page.locator('.prj-row-head[aria-expanded="true"]').waitFor();
   checked('Agents page routes own their toolbar while preserving queries; Inbox legacy/file links and Sharing still open List.');
   for(const [index,[group,route]] of Object.entries(defaults).entries()){
@@ -177,7 +216,7 @@ try{
     for(const route of captures){
       await go(route);await page.waitForLoadState('networkidle');
       await page.locator('.view.is-active').evaluate(node=>{node.scrollTop=0;});
-      await layout(route+'-'+width);await screenshot(route.replace('/','-')+'-'+width+'.png');
+      await layout(route+'-'+width);await screenshot(route.replaceAll('/','-')+'-'+width+'.png');
     }
   }
   checked('All Projects pages and representative Agents, Inbox and Setup pages fit 1440px, 390px and 320px.');

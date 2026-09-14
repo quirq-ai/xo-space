@@ -116,10 +116,10 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         src = read("js/views/inbox.js")
         # the previewer closes on any non-Files view, so the switch comes first
         self.assertIn(
-            "switchTo('projects/list');\n    dispatchEvent(new CustomEvent('space:preview-file'",
+            "switchTo('projects/files/list');\n    dispatchEvent(new CustomEvent('space:preview-file'",
             src,
         )
-        self.assertIn("switchTo(l.view==='projects'?'projects/list':l.view)", src)
+        self.assertIn("switchTo(l.view==='projects'?'projects/files/list':l.view)", src)
 
     def test_mark_all_seen_is_page_bounded_and_seen_is_patched_once(self) -> None:
         src = read("js/views/inbox.js")

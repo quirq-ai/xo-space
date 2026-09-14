@@ -4,17 +4,16 @@
 export function initToolbar(){
   const topbar=document.querySelector('.topbar');
   const controls=document.getElementById('toolbar-controls');
-  const graphRoot=document.getElementById('graph-root');
   const graphSearch=document.getElementById('graph-search');
   const localSearch=document.getElementById('view-search-wrap');
   const input=document.getElementById('view-search');
   const clear=document.getElementById('view-search-clear');
   const hint=document.getElementById('view-search-hint');
   const graphInput=document.getElementById('q');
-  if(!topbar||!controls||!graphRoot||!graphSearch||!localSearch||!input||!clear)return;
+  if(!topbar||!controls||!graphSearch||!localSearch||!input||!clear)return;
   let current=null,descriptor=null,search=null;
   const closeGraphMenus=()=>{
-    for(const id of ['rootdd','qac','root-ac'])document.getElementById(id)?.classList.remove('is-open');
+    document.getElementById('qac')?.classList.remove('is-open');
   };
   function render(){
     let config=null;
@@ -25,7 +24,6 @@ export function initToolbar(){
     const mode=graph?'graph':search?'search':'none';
     topbar.dataset.toolbar=mode;
     controls.hidden=mode==='none';
-    graphRoot.hidden=!graph;
     graphSearch.hidden=!graph;
     localSearch.hidden=!search;
     if(!graph)closeGraphMenus();
@@ -33,8 +31,6 @@ export function initToolbar(){
     if(meta)meta.hidden=!graph;
     const disabled=!!config?.disabled;
     if(graphInput)graphInput.disabled=disabled;
-    const rootButton=document.getElementById('root-btn');
-    if(rootButton)rootButton.disabled=disabled;
     if(search){
       input.placeholder=search.placeholder||'Search this page…';
       input.setAttribute('aria-label',search.label||input.placeholder.replace(/…$/, ''));
@@ -47,7 +43,7 @@ export function initToolbar(){
     }
     const focused=document.activeElement;
     if(focused&&(
-      (!graph&&(graphRoot.contains(focused)||graphSearch.contains(focused)))||
+      (!graph&&graphSearch.contains(focused))||
       (controls.hidden&&controls.contains(focused))||
       (!search&&localSearch.contains(focused))
     ))focused.blur();

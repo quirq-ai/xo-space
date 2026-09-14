@@ -129,10 +129,10 @@ assert.equal(app.intervals.has('inbox-conns-poll'),false);
 assert.equal(app.intervals.has('inbox-poll'),true);
 assert.equal(app.intervals.has('inbox-badge'),false);
 app.evaluate("openLink({link:{view:'projects',project:'sample',path:'README.md'}})");
-assert.deepEqual(app.opened,['projects/list']);
+assert.deepEqual(app.opened,['projects/files/list']);
 assert.equal(app.events[0].type,'space:preview-file');
 app.evaluate("openLink({link:{view:'projects',project:'sample'}});openLink({link:{view:'agents'}})");
-assert.deepEqual(app.opened,['projects/list','projects/list','agents']);
+assert.deepEqual(app.opened,['projects/files/list','projects/files/list','agents']);
 """)
 
     def test_jobs_reentry_discards_old_read_and_keeps_results_available(self) -> None:

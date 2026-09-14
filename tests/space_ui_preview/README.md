@@ -30,9 +30,15 @@ the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
 The full check verifies the four primary sections, Projects Overview default,
-all six Projects pages and canonical routes, native secondary links, historical
+Overview / Files / Sharing / Timeline, the Files List / Graph / Tree modes and
+canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
+
+`projects-root.mjs` checks direct List, Tree and Sharing loads, root search
+without booting a hidden graph, selection into Files Graph, browser history,
+Timeline root selection, and leaving Projects during a pending metadata read. It blocks service writes
+and external requests; run it with the same environment variables as `capture.mjs`.
 It fails on console errors, uncaught page errors and unsuccessful HTTP responses.
 
 For the complete section and route contract, run:

@@ -165,7 +165,7 @@ async function layout(label){
 }
 
 try{
-  await page.goto(origin+'/space/#/projects/list',{waitUntil:'domcontentloaded'});
+  await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'domcontentloaded'});
   await aurora.waitFor({timeout:5000});
   await within(Promise.all([graphHold.arrived.promise,activityHold.arrived.promise,timelineHold.arrived.promise]),'optional summary requests start');
   assert.equal(await page.locator('.prj-row:visible').count(),catalog.length);
@@ -263,7 +263,7 @@ try{
 
   await page.locator('#prj-add').click();await page.waitForURL('**/#/setup/projects');
   await page.locator('#setup-projects').waitFor();assert.deepEqual(report.writes,[]);
-  await openProjectList(page);await page.waitForURL('**/#/projects/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
   checked('Add project opens canonical Setup Projects and returning restores the current drawer and folder.');
 

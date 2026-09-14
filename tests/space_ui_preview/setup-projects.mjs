@@ -1,7 +1,7 @@
 /* Project management uses fictional browser fixtures exclusively. Every clone,
    revoke, roster change and deletion is intercepted before reaching a server. */
 import assert from 'node:assert/strict';
-import {openProjectList} from './routes.mjs';
+import {openProjectList,openProjectPage} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -138,13 +138,13 @@ try{
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Project search keeps the clone draft mounted');
   await page.locator('#setup-project-refresh').click();
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
-  await openProjectList(page);await page.waitForURL('**/#/projects/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await page.locator('#prj-row-solo-demo').waitFor();
   assert.doesNotMatch(await page.locator('body').textContent(),/a workspace knowledge graph/i);
   await page.locator('#view-search').fill('demo');
   // Boot the graph before the catalog changes so later checks exercise the
   // existing atlas rather than a fresh map loaded after the mutation.
-  await page.locator('[data-section-page="graph"]').click();
+  await openProjectPage(page,'graph');
   await page.waitForFunction(()=>document.querySelector('#q')?.placeholder.match(/Search \d+/));
   assert.equal(await page.locator('.atlas-project-refresh').count(),0);
   await page.locator('#tab-setup').click();await chooseProjects();
@@ -265,8 +265,7 @@ try{
   await openProjectList(page);await page.waitForLoadState('networkidle');
   const graphReads=report.requests.filter(request=>request.path==='/xo/space.json').length;
   for(const lens of ['graph','time']){
-    await page.locator('[data-section-page="'+lens+'"]').click();
-    await page.waitForURL('**/#/projects/'+(lens==='time'?'timeline':lens));
+    await openProjectPage(page,lens);
     await page.locator('#view-'+lens+'.is-active').waitFor();
     await page.waitForLoadState('networkidle');
     if(lens==='graph')await page.waitForFunction(()=>!document.querySelector('#q').disabled);

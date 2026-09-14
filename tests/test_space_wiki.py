@@ -329,10 +329,9 @@ class SpaceWikiTests(unittest.TestCase):
                 "from the dataset, not from a view interaction",
             )
 
-    def test_tree_lens_is_the_fourth_projects_lens(self) -> None:
-        """The shared Projects switch offers Dashboard, List, Graph, Tree,
-        Sharing, Timeline in order; every lens is registered and Tree stays a
-        child."""
+    def test_tree_remains_a_files_mode_within_projects(self) -> None:
+        """Files groups the existing List, Graph and Tree renderers; Tree
+        keeps its own route and remains a child of Projects."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         projects = (
@@ -349,7 +348,7 @@ class SpaceWikiTests(unittest.TestCase):
         # what made the control jump when you used it, so the views must not
         # render it at all.
         navigation = (ROOT / "space_ui/js/core/navigation.js").read_text(encoding="utf-8")
-        self.assertIn("['tree','tree','Tree'", navigation)
+        self.assertIn("['tree','files/tree','Tree'", navigation)
         self.assertNotIn("data-files-lens", index)
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
@@ -386,7 +385,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
 
-    def test_sharing_lens_is_the_fifth_projects_lens(self) -> None:
+    def test_sharing_remains_a_projects_page(self) -> None:
         """Sharing is a lens of the Projects tab (issue #83) and the whole of
         project sharing in the UI: rail (inbox + shared projects) and detail
         (commits + Apply, members + share/revoke). The List lens carries no
@@ -428,7 +427,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("sharing_data.js", projects)
         self.assertNotIn("sharingPanel", projects)
 
-    def test_timeline_is_the_sixth_projects_lens_not_a_top_level_tab(self) -> None:
+    def test_timeline_is_the_last_projects_page_not_a_top_level_tab(self) -> None:
         """Timeline moved out of the primary nav and became the last lens of
         the Projects tab: a nav-less child that reports the Projects tab, its
         pill added to the shared switch and the lens list (issue: Timeline

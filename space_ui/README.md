@@ -7,16 +7,21 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 | Section | Default route | Pages |
 |---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, List, Graph, Tree, Sharing, Timeline |
+| Projects (`1`) | `#/projects/overview` | Overview, Files (List, Graph, Tree), Sharing, Timeline |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Projects, Connectors, Secrets, Commands, Server |
 
-Space starts at Projects Overview. List has its own route, `#/projects/list`;
-clicking Projects or pressing `1` always opens Overview. The section roots
+Space starts at Projects Overview. **Files** contains the existing List, Graph
+and Tree views at `#/projects/files/list`, `#/projects/files/graph` and
+`#/projects/files/tree`. Its link remembers the last view used; a direct
+`#/projects/files` link opens List. Clicking Projects or pressing `1` always
+opens Overview. The section roots
 `#/projects`, `#/agents`, `#/inbox`, and `#/setup` normalize to their defaults.
 Legacy `#/dashboard`, `#/graph`, `#/tree`, `#/sharing`, and `#/time` links open
-the corresponding Projects page. Connectors and Secrets keep their aliases
+the corresponding Projects page. The previous `#/projects/list`,
+`#/projects/graph` and `#/projects/tree` links also remain valid and normalize
+to the corresponding Files route. Connectors and Secrets keep their aliases
 `#/connectors` and `#/secrets`. Technical details is a child of Setup Server at
 `#/setup/server/details`; `#/quirq` remains an alias. Stored Inbox links using
 `view: "projects"` continue to open List; that API value is independent of the
@@ -31,7 +36,9 @@ section. The overview itself works offline.
 
 The toolbar adapts to the active page. Projects Overview and Graph keep map
 autocomplete in the topbar; the root picker sits immediately left of **Manage projects**
-in the Projects navigation. Projects page descriptions are removed to leave more room
+on every Projects page. Choosing a node from Files List, Files Tree, Sharing or
+Timeline opens Files Graph rooted on that node. The secondary navigation does
+not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, and
 the Agents session list have their own search; typing there keeps you on that page.
 Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
@@ -72,20 +79,20 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, and per-view failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
 | `js/core/section-nav.js` | One shared secondary navigation strip; native links follow the current section and mark the active page. |
+| `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
 | `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
 | `js/core/connections.js` | Pure formatters over one `GET /api/connections` entry: `every` (cadence), `collectorLabels`, `pollLine` (last poll or the error). Shared by the Inbox's Connections section and Setup Connectors so both read the same. |
 | `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
-
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Projects Overview, Graph and Timeline. Changing projections rebuilds only the atlas engine, disposes its listeners and frames, and ignores superseded reads; the document and other mounted pages remain intact. |
 | `js/views/sessions.js` | Five Agents routes under `#/agents/`, sharing one mounted telemetry view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
 | `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
-| `js/views/projects.js` | The Projects List page: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Registers only the `project-list` page at `#/projects/list`; the Projects section belongs to the shared navigation definitions. |
+| `js/views/projects.js` | The Projects List page: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Registers only the `project-list` page at `#/projects/files/list`; the Projects section belongs to the shared navigation definitions. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
-| `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/tree`. |
+| `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/files/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |

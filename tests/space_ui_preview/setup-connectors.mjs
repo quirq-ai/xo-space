@@ -155,7 +155,7 @@ try{
   await setupSearch.fill('DEMO_UNSAVED_TOKEN');
   assert.equal(await page.locator('.setup-search-result').count(),0,'Secret key drafts never enter the search index');
   await setupSearch.fill('folder');
-  await openProjectList(page);await page.waitForURL('**/#/projects/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await page.locator('#tab-setup').click();
   await panel('workspace').waitFor();
   assert.equal(await setupSearch.inputValue(),'','Returning through Setup opens Workspace with its search cleared');
@@ -197,7 +197,7 @@ try{
   await choose('workspace');
   assert.equal(await page.locator('#xo-root-input').inputValue(),'/demo/unsaved-connectors-test');
   await choose('connectors');assert.equal(await search.inputValue(),'gmail');
-  await openProjectList(page);await page.waitForURL('**/#/projects/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();await choose('connectors');
   assert.equal(await search.inputValue(),'gmail');
   for(const handle of [host,folderNode,credentialNode,pollNode,actionNode])
@@ -218,10 +218,10 @@ try{
   const authorization=holdStatus=gate();
   await page.locator('[data-toolkit="telegram"] [data-action="connect"]').click();
   await authorization.arrived.promise;
-  await choose('server');await openProjectList(page);await page.waitForURL('**/#/projects/list');
+  await choose('server');await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   authorization.release.resolve();
   await page.locator('#poll-telegram [data-poll="interval"]').waitFor({state:'attached'});
-  assert.equal(new URL(page.url()).hash,'#/projects/list','Completing authorization cannot navigate away from the current tab');
+  assert.equal(new URL(page.url()).hash,'#/projects/files/list','Completing authorization cannot navigate away from the current tab');
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();
   await choose('connectors');await page.locator('#poll-telegram').waitFor();
   assert.match(await page.locator('[data-toolkit="telegram"]').textContent(),/Off in this workspace/);
@@ -251,11 +251,11 @@ try{
   assert.equal(count('/api/connectors/composio/toolkits'),before+1);
   await direct.locator('#setup-nav [data-setup-go="workspace"]').click();
   await direct.waitForURL('**/#/setup/workspace');
-  await openProjectList(direct);await direct.waitForURL('**/#/projects/list');
+  await openProjectList(direct);await direct.waitForURL('**/#/projects/files/list');
   const runtimeResponse=direct.waitForResponse(response=>new URL(response.url()).pathname==='/api/runtime-config');
   runtime.release.resolve();await runtimeResponse;
   await direct.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
-  assert.equal(new URL(direct.url()).hash,'#/projects/list','A delayed initial Setup read cannot reclaim navigation');
+  assert.equal(new URL(direct.url()).hash,'#/projects/files/list','A delayed initial Setup read cannot reclaim navigation');
   assert.equal(await direct.locator('#view-projects.is-active').count(),1);
   await direct.locator('#tab-setup').click();
   await direct.locator('#setup-panel-workspace').waitFor();

@@ -70,7 +70,7 @@ function renderShell(){
         +'<div class="quirq-storage-actions">'
           +'<p id="quirq-legacy-note"></p>'
           +'<div>'
-            +'<button type="button" data-go-view="projects/list">Open project data</button>'
+            +'<button type="button" data-go-view="projects/files/list">Open project data</button>'
             +'<button type="button" data-wiki-page="xo-data">Read the .xo catalog</button>'
             +'<button type="button" data-wiki-page="watcher">Read watcher internals</button>'
           +'</div>'

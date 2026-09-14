@@ -1,4 +1,4 @@
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-files2';
 /* Sharing: the fourth Files lens, and the whole of project sharing in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -504,7 +504,7 @@ async function onClick(e){
     case'list':
       /* views never import each other: switch to List and tell it which
          drawer to open; it parks the request until its catalog is loaded */
-      go('projects/list');
+      go('projects/files/list');
       dispatchEvent(new CustomEvent('space:open-project',{detail:id}));
       return;
     case'pick':

@@ -3,7 +3,7 @@
    Quirq GET responses below are synthetic; all non-GET requests are blocked.
    Screenshots capture the actual app without replacing visual DOM or CSS. */
 import assert from 'node:assert/strict';
-import {routeFor,projectPageId,openProjectList} from './routes.mjs';
+import {routeFor,openProjectList,openProjectPage} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -68,7 +68,7 @@ async function expectMode(id){
     &&(mode!=='search'||(!document.getElementById('view-search').disabled
       &&document.getElementById('view-search').placeholder===placeholder))
     &&(mode!=='graph'||!document.getElementById('q').disabled),{id,mode,placeholder:placeholders[id],route:routeFor(id)});
-  assert.equal(await page.locator('#root-btn').isVisible(),mode==='graph',id+' root picker');
+  assert.equal(await page.locator('#root-btn').isVisible(),['dashboard','projects','graph','tree','sharing','time'].includes(id),id+' root picker');
   assert.equal(await graphSearch.isVisible(),mode==='graph',id+' graph search');
   assert.equal(await search.isVisible(),mode==='search',id+' local search');
   assert.equal(await page.locator('#toolbar-controls').isHidden(),mode==='none',id+' controls');
@@ -85,9 +85,7 @@ async function go(id){
     await page.locator('#setup-nav [data-setup-go="server"]').click();
     await page.locator('#setup-quirq').click();
   }else{
-    if(!await page.locator('#section-nav [data-section-page="'+projectPageId(id)+'"]').isVisible())
-      await page.locator('#tab-projects').click();
-    await page.locator('[data-section-page="'+projectPageId(id)+'"]').click();
+    await openProjectPage(page,id);
   }
   await expectMode(id);
   if(id==='time'){

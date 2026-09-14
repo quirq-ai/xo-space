@@ -6,11 +6,18 @@ const pages=(parent,entries)=>Object.freeze(entries.map(([id,slug,label,aliases=
 
 export const PROJECT_PAGES=pages('projects',[
   ['dashboard','overview','Overview',['dashboard']],
-  ['project-list','list','List',['list']],
-  ['graph','graph','Graph',['graph']],
-  ['tree','tree','Tree',['tree']],
+  ['project-list','files/list','List',['list','projects/list','projects/files']],
+  ['graph','files/graph','Graph',['graph','projects/graph']],
+  ['tree','files/tree','Tree',['tree','projects/tree']],
   ['sharing','sharing','Sharing',['sharing']],
   ['time','timeline','Timeline',['time','timeline']],
+]);
+export const FILE_VIEWS=Object.freeze(PROJECT_PAGES.filter(page=>['project-list','graph','tree'].includes(page.id)));
+export const PROJECT_SECTIONS=Object.freeze([
+  PROJECT_PAGES.find(page=>page.id==='dashboard'),
+  Object.freeze({id:'files',route:'projects/files',label:'Files',parent:'projects'}),
+  PROJECT_PAGES.find(page=>page.id==='sharing'),
+  PROJECT_PAGES.find(page=>page.id==='time'),
 ]);
 export const AGENT_PAGES=Object.freeze(pages('agents',[
   ['agents-overview','overview','Overview'],
