@@ -71,13 +71,13 @@ for(const [,name] of app.matchAll(/registerView\((\w+)\);/g)){
   registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
 }
 registry.startRegistry({defaultView:'dashboard'});
-const expectedTabs=['projects','time','sessions','inbox','secrets','connectors'];
+const expectedTabs=['projects','sessions','inbox','secrets','connectors'];
 assert.deepEqual(tabs.children.map(tab=>tab.id),expectedTabs.map(id=>'tab-'+id));
-assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing']);
-assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing']);
+assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing','time']);
+assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing','Timeline']);
 assert.equal(tabs.children[0].innerHTML,'Projects');
 const initial=process.argv[1].replace(/^#\//,'');
-const initialId=['dashboard','projects','graph','tree','sharing','wiki'].includes(initial)?initial:'dashboard';
+const initialId=['dashboard','projects','graph','tree','sharing','time','wiki'].includes(initial)?initial:'dashboard';
 function assertLens(id){
   assert.equal(location.hash,'#/'+id);
   assert.equal(pill.hidden,false);
@@ -113,8 +113,8 @@ await registry.switchTo('wiki');
 assertWiki();
 dispatchEvent({type:'keydown',key:'7'});
 assertWiki(); // Wiki is routable but does not consume a numbered shortcut
-dispatchEvent({type:'keydown',key:'5'});
-assert.equal(location.hash,'#/secrets');
+dispatchEvent({type:'keydown',key:'4'});
+assert.equal(location.hash,'#/secrets'); // Setup is the 4th tab now Timeline left the top bar
 await registry.switchTo('dashboard');
 elements.get('tab-projects').listeners.click();
 assertLens('projects'); // keep the existing List route/tab action
@@ -124,7 +124,7 @@ assertLens('projects'); // keep the existing List route/tab action
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/wiki", "#/unknown"):
+        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/time", "#/wiki", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

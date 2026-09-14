@@ -115,11 +115,17 @@ export const graphView={
   ...atlasView('graph','Graph',1,'graph','graph'),
   nav:false,parent:'projects'
 };
-/* Timeline is pinned to the workspace dataset (space.json): plotting the
-   Dashboard's 5-environment projection there has no git history and reads
-   as broken. Arriving from Dashboard costs one dataset-switch reload, the
-   same hop Dashboard ↔ Graph already makes. */
-export const timeView=atlasView('time','Timeline',2,'time','graph');
+/* Timeline is the last lens under Projects, not a top-level tab: it reads a
+   projection of the same workspace the other lenses do, so it belongs behind
+   the shared Projects switch rather than in the primary nav.
+   It is pinned to the workspace dataset (space.json): plotting the Dashboard's
+   5-environment projection there has no git history and reads as broken.
+   Arriving from Dashboard costs one dataset-switch reload, the same hop
+   Dashboard ↔ Graph already makes. */
+export const timeView={
+  ...atlasView('time','Timeline',2,'time','graph'),
+  nav:false,parent:'projects'
+};
 
 function boot(DATA,DATA_SOURCE){
 /* ============================== MODEL FROM LOCAL DATA ==============================

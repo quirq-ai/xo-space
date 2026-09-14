@@ -1,6 +1,7 @@
 /* The Projects lens switch.
 
-   Projects is one tab with five lenses: Dashboard, List, Graph, Tree and Sharing.
+   Projects is one tab with six lenses: Dashboard, List, Graph, Tree, Sharing
+   and Timeline.
    The switch between them belongs to the tab, not to any one lens. It used
    to be rendered per lens: an overlay pinned to the canvas in Graph, and a
    header child in List and in Tree. Three renderers meant three positions,
@@ -16,7 +17,7 @@
    whose switchTo silently does nothing. The registry already listens for
    hashchange, and the hash is the app's real route. */
 
-const LENSES = ['dashboard', 'projects', 'graph', 'tree', 'sharing'];
+const LENSES = ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time'];
 
 export function initLensSwitch(){
   const el = document.getElementById('fileslens');
@@ -28,7 +29,7 @@ export function initLensSwitch(){
   });
 
   const sync = (id, tab) => {
-    /* The List view owns 'projects'; the other four lenses are its nav-less
+    /* The List view owns 'projects'; the other five lenses are its nav-less
        children and report the same tab. */
     const mine = tab === 'projects' || LENSES.includes(id);
     el.hidden = !mine;

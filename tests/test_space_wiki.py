@@ -282,7 +282,8 @@ class SpaceWikiTests(unittest.TestCase):
 
     def test_tree_lens_is_the_fourth_projects_lens(self) -> None:
         """The shared Projects switch offers Dashboard, List, Graph, Tree,
-        Sharing in order; every lens is registered and Tree stays a child."""
+        Sharing, Timeline in order; every lens is registered and Tree stays a
+        child."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         projects = (
@@ -302,7 +303,7 @@ class SpaceWikiTests(unittest.TestCase):
         # render it at all.
         self.assertEqual(
             re.findall(r'data-files-lens="([^"]+)"', index),
-            ["dashboard", "projects", "graph", "tree", "sharing"],
+            ["dashboard", "projects", "graph", "tree", "sharing", "time"],
         )
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
@@ -382,6 +383,33 @@ class SpaceWikiTests(unittest.TestCase):
         # the List lens carries no sharing surface any more
         self.assertNotIn("sharing_data.js", projects)
         self.assertNotIn("sharingPanel", projects)
+
+    def test_timeline_is_the_sixth_projects_lens_not_a_top_level_tab(self) -> None:
+        """Timeline moved out of the primary nav and became the last lens of
+        the Projects tab: a nav-less child that reports the Projects tab, its
+        pill added to the shared switch and the lens list (issue: Timeline
+        should not need top-level navigation)."""
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
+        atlas = (
+            ROOT / "space_ui" / "js" / "views" / "atlas.js"
+        ).read_text(encoding="utf-8")
+        switcher = (
+            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+        ).read_text(encoding="utf-8")
+
+        # still registered by app.js, exactly like the other atlas lenses
+        self.assertIn("registerView(timeView);", app)
+        # the timeView export is a nav-less child of Projects now
+        time_export = atlas.split("export const timeView=", 1)[1].split(";", 1)[0]
+        self.assertIn("'time','Timeline'", time_export)
+        self.assertIn("nav:false", time_export)
+        self.assertIn("parent:'projects'", time_export)
+        # its pill is the last one on the shared switch, and the switch knows it
+        self.assertEqual(
+            re.findall(r'data-files-lens="([^"]+)"', index)[-1], "time"
+        )
+        self.assertIn("'time'", switcher)
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
         """The List drawer browses a project folder by folder, and the wire

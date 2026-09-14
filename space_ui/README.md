@@ -1,15 +1,16 @@
 # Space: the workspace knowledge graph UI
 
-An explorable map of `~/xo-projects`. Six top-level tabs: **Projects**
-(Dashboard | List | Graph | Tree | Sharing lenses under one tab), **Timeline**,
+An explorable map of `~/xo-projects`. Five top-level tabs: **Projects**
+(Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
 **Sessions**, **Inbox**, **Setup**, and **Connectors**, plus the
 **Quirq** state view, which has no tab of its own and opens from Setup's header.
 
 Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
 the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
-to `#/graph`, `#/tree`, and `#/sharing` keep their meanings. The numbered
-shortcuts follow the top bar: Projects `1`, Timeline `2`, Sessions `3`, Inbox
-`4`, Setup `5`, Connectors `6`.
+to `#/graph`, `#/tree`, `#/sharing`, and `#/time` (Timeline) keep their
+meanings. The numbered shortcuts follow the top bar: Projects `1`, Sessions
+`2`, Inbox `3`, Setup `4`, Connectors `5`. Timeline is a lens of the Projects
+tab, reached from the Projects lens switch rather than a numbered shortcut.
 
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered

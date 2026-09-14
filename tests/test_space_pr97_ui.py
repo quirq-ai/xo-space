@@ -883,13 +883,17 @@ class ShellTests(unittest.TestCase):
         # advanced again for Jobs/results; unchanged resources keep their URLs.
         self.assertIn("./views/sharing.js?v=" + STAMP + "'", app)
         context_stamp = "20260914-context1"
-        for view in ("atlas", "projects", "tree", "sessions", "connectors"):
+        for view in ("projects", "tree", "sessions", "connectors"):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
         results_stamp = "20260914-results1"
         self.assertIn("./views/inbox.js?v=" + results_stamp + "'", app)
+        # Timeline became the last Projects lens: atlas (its lenses) and the
+        # lens switch advanced together to carry the new pill.
+        timeline_stamp = "20260914-timelinelens1"
+        self.assertIn("./views/atlas.js?v=" + timeline_stamp + "'", app)
         for core in ("registry", "toolbar"):
             self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
-        self.assertIn("./core/lens-switch.js?v=20260914-projectslens1'", app)
+        self.assertIn("./core/lens-switch.js?v=" + timeline_stamp + "'", app)
         self.assertRegex(app, r"\./core/preview\.js\?v=\d{8}-[a-z0-9]+'")
         html = read("index.html")
         # Later view changes legitimately advance the shell and Wiki stamps;
