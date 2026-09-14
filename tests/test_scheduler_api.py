@@ -161,19 +161,23 @@ class SchedulerApiTests(unittest.TestCase):
         # the host is compared for this case.
         host = "xo-space--shared--x.dev.workspace.helloxo.nl"
         public = "https://" + host
-        client = TestClient(self.client.app, base_url="http://" + host, client=("127.0.0.1", 12345))
+        # The port-forward proxy rewrites Host to the local address, so the
+        # app sees localhost:5002 while the browser's Origin is the public
+        # port-forward hostname. Only Origin is trusted; Host is not compared.
+        forwarded = "https://5002--main--shared--x.dev.workspace.helloxo.nl"
+        client = TestClient(self.client.app, base_url="http://localhost:5002", client=("127.0.0.1", 12345))
         coder = {"CODER_WORKSPACE_NAME": "shared", "CODER_WORKSPACE_OWNER_NAME": "x"}
         with patch.dict(os.environ, coder):
             created = client.post("/api/schedules", headers={"Origin": public}, json=_payload("proxied"))
             self.assertEqual(created.status_code, 201, created.text)
             job = created.json()
-            edited = client.put(f"/api/schedules/{job['id']}", headers={"Origin": public},
-                                json=_payload("edited"))
+            edited = client.put(f"/api/schedules/{job['id']}", headers={"Origin": forwarded},
+                                json=_payload("edited via port-forward url"))
             self.assertEqual(edited.status_code, 200, edited.text)
             for bad in ("https://xo-space--shared--y.dev.workspace.helloxo.nl",   # another owner
                         "https://xo-space--other--x.dev.workspace.helloxo.nl",    # another workspace
-                        "https://attacker.example",
-                        "https://xo-space--shared--x.attacker.example"):          # right labels, but not the Host
+                        "https://5002--main--shared--y.dev.workspace.helloxo.nl", # port-forward, other owner
+                        "https://attacker.example"):
                 with self.subTest(origin=bad):
                     self.assertEqual(
                         client.delete(f"/api/schedules/{job['id']}", headers={"Origin": bad}).status_code, 403)

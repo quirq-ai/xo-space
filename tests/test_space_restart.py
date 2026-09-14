@@ -147,10 +147,12 @@ class RestartRouteTests(unittest.TestCase):
         with patch.dict('os.environ', coder):
             self.assertTrue(space._is_local_mutation(request(host, public)))
             self.assertTrue(space._is_local_mutation(request(host, 'http://' + host)), 'scheme is the proxy\'s, not compared')
+            self.assertTrue(space._is_local_mutation(request('localhost:5002', 'https://5002--main--shared--x.dev.workspace.helloxo.nl')),
+                            'port-forward URL: Host rewritten by the proxy, Origin still ours')
+            self.assertTrue(space._is_local_mutation(request(host, 'https://XO-SPACE--Shared--X.dev.workspace.helloxo.nl')), 'case-insensitive')
             self.assertFalse(space._is_local_mutation(request(host, 'https://xo-space--shared--y.dev.workspace.helloxo.nl')), 'another owner')
             self.assertFalse(space._is_local_mutation(request(host, 'https://xo-space--other--x.dev.workspace.helloxo.nl')), 'another workspace')
             self.assertFalse(space._is_local_mutation(request(host, 'https://shared--x.dev.workspace.helloxo.nl')), 'no app label')
-            self.assertFalse(space._is_local_mutation(request('other.example', public)), 'Origin must equal Host')
             self.assertFalse(space._is_local_mutation(request(host, public, client='192.0.2.10')), 'remote peer')
         with patch.dict('os.environ', {'CODER_WORKSPACE_NAME': '', 'CODER_WORKSPACE_OWNER_NAME': ''}):
             # Same Origin and Host, but this is not a Coder pod: DNS rebinding

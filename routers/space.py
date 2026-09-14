@@ -58,15 +58,16 @@ _CODER_APP_LABEL = re.compile(r"[a-z0-9-]+")
 
 
 def _is_this_coder_workspace_host(host: str) -> bool:
-    """Whether ``host`` is one of *this* Coder workspace's app hostnames.
+    """Whether ``host`` is one of *this* Coder workspace's hostnames.
 
-    Coder serves a workspace app at ``<app>--<workspace>--<owner>.<domain>``
-    and tells the pod its workspace and owner names through the environment
-    (``coder_identity``). Its proxy forwards the real ``Host`` but adds no
-    forwarding headers (checked against the live proxy), so this is the one
-    signal that a public Origin is the pod's own front door rather than a
-    DNS-rebinding page. Off Coder both names are unset and nothing matches,
-    so a local install keeps refusing every public host.
+    Coder serves a workspace at ``<app>--<workspace>--<owner>.<domain>``
+    (apps) and ``<port>--<agent>--<workspace>--<owner>.<domain>`` (port
+    forwards), and tells the pod its workspace and owner names through the
+    environment (``coder_identity``). Its proxy adds no forwarding headers
+    (checked against the live proxy), so this is the one signal that a
+    public Origin is the pod's own front door rather than a DNS-rebinding
+    page. Off Coder both names are unset and nothing matches, so a local
+    install keeps refusing every public host.
     """
     from services.cowork_agent.coder_identity import owner_name, workspace_name
 
@@ -88,11 +89,14 @@ def _is_local_mutation(request: Request) -> bool:
 
     - the loopback origin the request was addressed to — a local install,
       where the browser and the server share the machine;
-    - this Coder workspace's own app hostname, when the pod runs under Coder
+    - this Coder workspace's own hostname, when the pod runs under Coder
       (``_is_this_coder_workspace_host``): the proxy connects from loopback
-      and the browser's Origin is the workspace URL. Only the host is
-      compared for that case — the proxy terminates TLS, so the scheme and
-      port the app sees are not the browser's.
+      and the browser's Origin is the workspace URL. Nothing else about the
+      request is compared for that case: the proxy terminates TLS, so the
+      scheme and port the app sees are not the browser's, and the
+      port-forward proxy (``<port>--<agent>--<workspace>--<owner>.…``)
+      rewrites ``Host`` as well. ``Origin`` is set by the browser and cannot
+      be claimed by a foreign page, so it is sufficient on its own.
 
     Any other public host is refused even when it equals the request's own
     Host: that is what stops a DNS-rebinding page, whose Origin equals the
@@ -113,8 +117,7 @@ def _is_local_mutation(request: Request) -> bool:
     except ValueError:
         loopback = False  # a public hostname
     if not loopback:
-        return (_is_this_coder_workspace_host(host)
-                and host.lower() == (request.url.hostname or "").lower())
+        return _is_this_coder_workspace_host(host)
     request_port = request.url.port
     if request_port is None:
         request_port = 443 if request.url.scheme == "https" else 80
