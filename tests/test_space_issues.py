@@ -1,14 +1,4 @@
-"""The Files drawer's Issues panel — the GitHub issue mirror, on screen.
-
-The backend already had every piece: services/cowork_agent/github_poller.py
-polls each project with a github.com remote, visualizer/github_mirror.py
-writes ~/.quirq/projects/<id>/github/issues.json, and
-GET /api/xo-projects/{id}/github/issues serves it with a `state` field that
-says which empty an empty answer is. Nothing rendered it. These tests pin the
-UI side of that contract the way test_space_wiki.py pins the rest of Space:
-by reading the source, because the panel is plain ES modules with no bundler
-and no DOM to drive here.
-"""
+"""Reusable Manage Issues preserve the existing GitHub mirror contract."""
 
 from __future__ import annotations
 
@@ -17,8 +7,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PROJECTS_JS = ROOT / "space_ui" / "js" / "views" / "projects.js"
-PROJECTS_CSS = ROOT / "space_ui" / "css" / "projects.css"
+ISSUES_JS = ROOT / "space_ui" / "js" / "core" / "project-issues.js"
+MANAGE_JS = ROOT / "space_ui" / "js" / "views" / "project-management.js"
+ISSUES_CSS = ROOT / "space_ui" / "css" / "project-management.css"
 INDEX_HTML = ROOT / "space_ui" / "index.html"
 APP_JS = ROOT / "space_ui" / "js" / "app.js"
 MODELS_PY = ROOT / "routers" / "cowork_agent" / "bff" / "_visualizer_models.py"
@@ -27,17 +18,15 @@ VISUALIZER_PY = ROOT / "routers" / "cowork_agent" / "bff" / "visualizer.py"
 
 class IssuesPanelTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.projects = PROJECTS_JS.read_text(encoding="utf-8")
+        self.issues = ISSUES_JS.read_text(encoding="utf-8")
 
-    def test_panel_reads_the_mirror_endpoint(self) -> None:
-        """One more drawer panel, wired the way the other four are."""
-        self.assertIn("key:'issues'", self.projects)
-        self.assertIn("/github/issues", self.projects)
-        # it is a PANELS entry, so it inherits the drawer's per-panel fetch
-        # and per-panel failure — not a fifth barrier on the row grid
-        panels = self.projects.split("const PANELS=[")[1].split("];")[0]
-        self.assertIn("render:rIssues", panels)
-        self.assertIn("bind:bindIssues", panels)
+    def test_component_reads_the_existing_mirror_only_when_loaded(self) -> None:
+        self.assertIn("/github/issues", self.issues)
+        self.assertIn("function load({force=false,refresh=false}", self.issues)
+        self.assertIn("createProjectIssues", MANAGE_JS.read_text())
+        projects = (ROOT / "space_ui/js/views/projects.js").read_text()
+        self.assertNotIn("/github/issues", projects)
+        self.assertNotIn("data-project-tab", projects)
 
     def test_every_empty_state_the_endpoint_can_report_is_rendered(self) -> None:
         """`state` exists so the panel can say WHY it is showing nothing; a
@@ -50,78 +39,73 @@ class IssuesPanelTests(unittest.TestCase):
                       "no_remote", "error"):
             self.assertIn(f'"{state}"', literal)
             if state != "ok":
-                self.assertIn(state, self.projects)
+                self.assertIn(state, self.issues)
         # each non-ok state carries its own sentence, not a shared one
-        empties = self.projects.split("const ISS_EMPTY={")[1].split("};")[0]
+        empties = self.issues.split("const EMPTY={")[1].split("};")[0]
         for state in ("no_remote", "never_polled", "issues_disabled", "empty"):
             self.assertIn(state, empties)
-        self.assertIn("Last poll failed:", self.projects)
+        self.assertIn("Last poll failed:", self.issues)
 
-    def test_filter_and_search_never_refetch(self) -> None:
-        """One response holds every mirror row, so narrowing is a repaint.
-        A refetching filter would be slower AND would spend GitHub budget to
-        answer a question already on screen."""
-        bind = self.projects.split("function bindIssues")[1].split("\nconst PANELS")[0]
-        self.assertIn("repaint", bind)
-        # only Refresh may reach the network
-        self.assertIn("issRefresh.add(id)", bind)
-        self.assertEqual(bind.count("fillPanel("), 1)
-        # the list is repainted, never the head: rebuilding the head would
-        # destroy the filter input mid-keystroke (renderRows' lesson)
-        self.assertIn(".iss-list", bind)
-        self.assertNotIn("iss-head", bind)
+    def test_filter_and_search_repaint_rows_without_replacing_controls(self) -> None:
+        handlers = self.issues.split("$('.iss-q').addEventListener")[1]
+        self.assertIn("paintRows()", handlers)
+        self.assertEqual(handlers.count("load({force:true})"), 1)
+        self.assertNotIn("innerHTML", handlers)
+        self.assertNotIn("request(", handlers)
 
-    def test_refresh_is_a_one_shot_flag(self) -> None:
-        """Every other fetch of this panel reads the mirror for free."""
-        self.assertIn("const issRefresh=new Set()", self.projects)
-        self.assertIn("issRefresh.delete(id)", self.projects)
-        self.assertIn("refresh=1", self.projects)
+    def test_only_explicit_refresh_polls_and_can_supersede_an_old_read(self) -> None:
+        self.assertIn("(force?'?refresh=1':'')", self.issues)
+        self.assertIn("if(data&&!force&&!refresh)return Promise.resolve(data)", self.issues)
+        self.assertIn("if(pending&&(!force||forcing))return pending", self.issues)
+        self.assertIn("mine!==generation", self.issues)
+        self.assertIn("readController?.abort()", self.issues)
 
     def test_a_bad_mirror_row_cannot_become_a_link(self) -> None:
         """Issue text is GitHub's, not ours. Titles and labels are escaped
         like everything else, and the href is only rendered for a real https
         URL — so a javascript: url degrades to plain text."""
-        row = self.projects.split("function issRow(it){")[1].split("\nlet issDeb")[0]
-        self.assertIn("/^https:\\/\\//i.test(String(it.url||''))", row)
+        row = self.issues.split("function issueRow(issue){")[1].split("export function")[0]
+        self.assertIn("url.protocol==='https:'", self.issues)
+        self.assertIn("url.hostname==='github.com'", self.issues)
+        self.assertIn("!url.username&&!url.password&&!url.port", self.issues)
         self.assertIn('rel="noopener noreferrer"', row)
-        self.assertIn("esc(it.title", row)
-        self.assertIn("esc(l)", row)
-        # escaping once at the source and again at a use site is how &amp;lt;
-        # ends up on screen
-        self.assertNotIn("esc(who)", row.split("const who=")[1].split("\n")[0])
+        self.assertIn("esc(issue.title", row)
+        self.assertIn("esc(label)", row)
+        self.assertIn("esc(who)", row)
+        self.assertNotIn("esc(assignee", row, "Assignee names are escaped once at rendering")
 
     def test_labels_absent_is_not_labels_empty(self) -> None:
         """The poller does not fetch labels, so it writes null — and an empty
         list would be the claim that the issue has none."""
         models = MODELS_PY.read_text(encoding="utf-8")
         self.assertIn("labels: Optional[list[str]] = None", models)
-        self.assertIn("(it.labels||[])", self.projects)
+        self.assertIn("list(issue.labels)", self.issues)
 
     def test_the_live_row_keeps_the_accent(self) -> None:
         """in_progress is the only thing in this panel that is happening right
         now, so it is the only thing that gets the accent chip."""
-        row = self.projects.split("function issRow(it){")[1]
-        self.assertIn("st-in_progress", row)
-        self.assertIn("in progress", self.projects)
-        self.assertIn("tracked", self.projects)
+        row = self.issues.split("function issueRow(issue){")[1]
+        self.assertIn("iss-work is-active", row)
+        self.assertIn("in progress", self.issues)
+        self.assertIn("tracked", self.issues)
 
     def test_closed_says_why_it_may_be_empty(self) -> None:
         """The poller asks for OPEN issues only; a closed row exists only for
         an issue Space watched close. "None" must not read as "this repo has
         no closed issues"."""
-        self.assertIn("watches it close", self.projects)
+        self.assertIn("watches it close", self.issues)
         poller = (ROOT / "services" / "cowork_agent" / "connectors" / "github"
                   / "issues.py").read_text(encoding="utf-8")
         self.assertIn("states: [OPEN]", poller)
 
-    def test_panel_width_is_a_property_not_a_key_check(self) -> None:
-        """Two wide panels now, so the drawer asks the panel, not its name."""
-        self.assertIn("panel.wide?' prj-panel-wide':''", self.projects)
-        self.assertNotIn("pn.key==='files'?' prj-panel-wide'", self.projects)
-        self.assertIn("pn.skel||1", self.projects)
+    def test_each_project_component_owns_its_controls_and_read_lifecycle(self) -> None:
+        self.assertIn("const element=document.createElement('section')", self.issues)
+        self.assertIn("let data=null,state='open',query=''", self.issues)
+        self.assertIn("destroy(){disposed=true;readController?.abort()", self.issues)
+        self.assertIn("data?.project_id===id", self.issues)
 
     def test_rows_are_links_out_and_styled_as_links(self) -> None:
-        css = PROJECTS_CSS.read_text(encoding="utf-8")
+        css = ISSUES_CSS.read_text(encoding="utf-8")
         self.assertIn(".iss-row", css)
         self.assertIn("a.iss-row:hover", css)
         self.assertIn("a.iss-row:focus-visible", css)

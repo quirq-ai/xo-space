@@ -1,15 +1,37 @@
 /* Project creation and local removal. The server is the authority for every
    removal check; a missing or stale sharing response never enables deletion. */
-import {apiFetch,failText} from '../core/api.js';
+import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {createProjectShare,isProjectSharing} from '../core/project-share.js?v=20260914-manage1';
+import {createProjectIssues} from '../core/project-issues.js?v=20260914-details1';
 
-const base='/api/xo-projects';
+const base=API_BASE+'/api/xo-projects';
 const path=id=>base+'/'+encodeURIComponent(id);
 const text=value=>typeof value==='string'?value.trim():'';
 const PROJECT_ID=/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+let nextDetailsId=0;
 
-export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{}}={}){
+/* Only verified GitHub origins become browser URLs. Credentials, fragments,
+   query strings, path traversal and other hosts never reach the clipboard. */
+export function githubBrowserUrl(remote){
+  const raw=text(remote);if(!raw||/[\s\\%]/.test(raw)||/(?:^|\/)\.{1,2}(?:\/|$)/.test(raw))return null;
+  let pathname;
+  const ssh=raw.match(/^git@github\.com:([^?#]+)$/i);
+  if(ssh)pathname=ssh[1];
+  else try{
+    const url=new URL(raw);
+    if(url.hostname!=='github.com'||url.password||url.search||url.hash
+      ||!['https:','ssh:'].includes(url.protocol)
+      ||(url.protocol==='https:'&&(url.username||url.port))
+      ||(url.protocol==='ssh:'&&((url.username&&url.username!=='git')||(url.port&&url.port!=='22'))))return null;
+    pathname=url.pathname.replace(/^\//,'');
+  }catch{return null;}
+  const slug=pathname.replace(/\/$/,'').replace(/\.git$/i,'');
+  if(!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(slug)||['.','..'].includes(slug.split('/')[1]))return null;
+  return 'https://github.com/'+slug;
+}
+
+export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{},onViewActivity=()=>{}}={}){
   let items=[],catalogRevision=0,catalogLoading=false,catalogQueued=false,creating=false;
   let selected=null,detail=null,detailRevision=0,detailLoading=false,detailQueued=false;
   let busy=false,lastAction='',revokeConfirm=null,folderEdited=false;
@@ -68,32 +90,109 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     listStatus.textContent=message||(!items.length?'No projects in this Space yet.':'');
     listStatus.hidden=!listStatus.textContent;listStatus.classList.toggle('is-error',Boolean(message));
     const ids=new Set(items.map(item=>item.id));
-    for(const [id,row] of projectRows)if(!ids.has(id)){row.share.destroy();row.element.remove();projectRows.delete(id);}
+    for(const [id,row] of projectRows)if(!ids.has(id)){
+      row.share.destroy();row.issues.destroy();row.metadataController?.abort();row.element.remove();projectRows.delete(id);
+    }
     let position=listStatus.nextElementSibling;
     for(const item of items){
       let row=projectRows.get(item.id);
       if(!row){
         const element=document.createElement('div');element.className='manage-project-row';element.dataset.projectId=item.id;
-        element.innerHTML='<div class="manage-project-summary"></div><div class="manage-project-row-actions">'
+        const detailsId='manage-project-details-'+(++nextDetailsId);
+        element.innerHTML='<button type="button" class="manage-project-toggle" data-project-toggle="'+esc(item.id)+'" aria-expanded="false" aria-controls="'+detailsId+'">'
+          +'<span class="manage-project-chevron" aria-hidden="true">›</span><span class="manage-project-summary"></span></button><div class="manage-project-row-actions">'
+          +'<button class="setup-secondary" type="button" data-project-copy="'+esc(item.id)+'">Copy GitHub URL</button>'
           +'<button class="setup-secondary" type="button" data-project-share="'+esc(item.id)+'">Share</button>'
-          +'<button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>';
+          +'<button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>'
+          +'<p class="manage-project-copy-result" role="status" hidden></p>'
+          +'<div class="manage-project-details" id="'+detailsId+'" hidden>'
+          +'<div class="manage-project-overview"><p class="manage-project-description" hidden></p><dl class="manage-project-metadata"></dl>'
+          +'<button class="setup-secondary" type="button" data-project-activity="'+esc(item.id)+'">View activity</button></div></div>';
         const share=createProjectShare({projectId:item.id,onDraftChange:draftChanged,
           onBusyChange:()=>sharingChanged(item.id)});
-        row={element,share,summary:element.querySelector('.manage-project-summary'),
+        row={element,share,expanded:false,item,metadata:null,metadataLoaded:false,metadataPending:null,metadataError:'',
+          copyButton:element.querySelector('[data-project-copy]'),copyResult:element.querySelector('.manage-project-copy-result'),
+          toggle:element.querySelector('[data-project-toggle]'),details:element.querySelector('.manage-project-details'),
+          metadataNode:element.querySelector('.manage-project-metadata'),description:element.querySelector('.manage-project-description'),
+          summary:element.querySelector('.manage-project-summary'),
           shareButton:element.querySelector('[data-project-share]'),removeButton:element.querySelector('[data-project-remove]')};
-        share.setTrigger(row.shareButton);element.appendChild(share.element);projectRows.set(item.id,row);
+        row.issues=createProjectIssues({projectId:item.id});row.details.appendChild(row.issues.element);
+        share.setTrigger(row.shareButton);element.insertBefore(share.element,row.details);projectRows.set(item.id,row);
       }
-      const html='<b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>'
-        +(text(item.description)?'<p>'+esc(item.description)+'</p>':'');
+      row.item=item;
+      const html='<b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>';
       if(row.summary.innerHTML!==html)row.summary.innerHTML=html;
+      row.description.textContent=text(item.description);row.description.hidden=!row.description.textContent;
+      paintMetadata(row);
       row.share.setLabel(item.display_name||item.id);
       row.shareButton.setAttribute('aria-label','Share '+(item.display_name||item.id));
+      row.copyButton.setAttribute('aria-label','Copy GitHub URL for '+(item.display_name||item.id));
       if(row.element!==position)list.insertBefore(row.element,position);
       position=row.element.nextElementSibling;
     }
     list.scrollTop=scrollTop;
     if(focused?.isConnected&&focused.getClientRects().length)focused.focus({preventScroll:true});
     updateControls();
+  }
+  function paintMetadata(row){
+    const item=row.item,meta=row.metadata;
+    const created=text(item.created_at),date=created&&Number.isFinite(Date.parse(created))?new Date(created).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Not recorded';
+    const url=githubBrowserUrl(meta?.git?.remote_url);
+    const fields=[['Project ID','<code>'+esc(item.id)+'</code>'],[item.unscaffolded===true?'Folder modified':'Created',esc(date)],
+      ['Space metadata',item.unscaffolded===true?'Not present':item.unscaffolded===false?'Present':'Not recorded']];
+    if(text(meta?.pid))fields.push(['Project UUID','<code>'+esc(meta.pid)+'</code>']);
+    if(text(meta?.owner_user_id))fields.push(['Owner',esc(meta.owner_user_id)]);
+    if(text(meta?.git?.default_branch))fields.push(['Default branch','<code>'+esc(meta.git.default_branch)+'</code>']);
+    fields.push(['GitHub',url?'<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(url.replace('https://github.com/',''))+'</a>'
+      :esc(row.metadataPending?'Loading…':row.metadataError||(row.metadataLoaded?'No GitHub remote recorded.':'Not loaded'))]);
+    const html=fields.map(([label,value])=>'<div><dt>'+label+'</dt><dd>'+value+'</dd></div>').join('');
+    if(row.metadataNode.innerHTML!==html)row.metadataNode.innerHTML=html;
+  }
+  function loadMetadata(row,{refresh=false}={}){
+    if(row.metadataPending)return row.metadataPending;
+    if(row.metadataLoaded&&!refresh)return Promise.resolve(row.metadata);
+    const controller=new AbortController();row.metadataController=controller;
+    let timer;
+    const timeout=new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve({ok:false,error:'Project details took too long to load. Try again.'});},12000);});
+    row.metadataPending=(async()=>{
+      try{
+        const response=await Promise.race([apiFetch(path(row.item.id)+'/file?relative_path=.xo%2Fproject.json',{signal:controller.signal}),timeout]);
+        if(projectRows.get(row.item.id)!==row)return null;
+        if(response.status===404){row.metadata=null;row.metadataLoaded=true;row.metadataError='';return null;}
+        if(!response.ok){row.metadataError=failText(response);return null;}
+        if(response.data?.project_id!==row.item.id||response.data?.relative_path!=='.xo/project.json'||response.data.truncated===true)throw new Error('invalid metadata');
+        const metadata=JSON.parse(response.data.content);
+        if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))throw new Error('invalid metadata');
+        row.metadata=metadata;row.metadataLoaded=true;row.metadataError='';return metadata;
+      }catch{
+        if(projectRows.get(row.item.id)===row)row.metadataError='Project details could not be read. Try again.';
+        return null;
+      }finally{
+        clearTimeout(timer);row.metadataPending=null;row.metadataController=null;
+        if(projectRows.get(row.item.id)===row)paintMetadata(row);
+      }
+    })();
+    paintMetadata(row);return row.metadataPending;
+  }
+  function toggleProject(id){
+    const row=projectRows.get(id);if(!row)return;
+    row.expanded=!row.expanded;row.toggle.setAttribute('aria-expanded',String(row.expanded));row.details.hidden=!row.expanded;
+    if(row.expanded){loadMetadata(row);row.issues.load();}
+  }
+  async function copyGithub(id){
+    const row=projectRows.get(id);if(!row||row.copying)return;
+    row.copying=true;row.copyButton.disabled=true;row.copyButton.textContent='Copying…';
+    row.copyResult.hidden=true;row.copyResult.classList.remove('is-error');
+    try{
+      const metadata=await loadMetadata(row,{refresh:true});
+      if(projectRows.get(id)!==row)return;
+      const url=githubBrowserUrl(metadata?.git?.remote_url);
+      if(row.metadataError)throw new Error(row.metadataError);
+      if(!url)throw new Error('No GitHub URL is recorded for this project.');
+      try{await navigator.clipboard.writeText(url);}catch{throw new Error('Could not copy the URL. Open the project details to use its GitHub link.');}
+      row.copyResult.textContent='GitHub URL copied.';
+    }catch(error){row.copyResult.textContent=error.message;row.copyResult.classList.add('is-error');}
+    finally{row.copying=false;row.copyButton.disabled=false;row.copyButton.textContent='Copy GitHub URL';row.copyResult.hidden=false;}
   }
   function sharingChanged(id){
     if(selected===id){
@@ -239,6 +338,12 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
   $('#manage-project-remove-form').addEventListener('submit',remove);
   confirmInput.addEventListener('input',updateControls);
   el.addEventListener('click',event=>{
+    const toggle=event.target.closest('[data-project-toggle]');
+    if(toggle){toggleProject(toggle.dataset.projectToggle);return;}
+    const copy=event.target.closest('[data-project-copy]');
+    if(copy){copyGithub(copy.dataset.projectCopy);return;}
+    const activity=event.target.closest('[data-project-activity]');
+    if(activity){onViewActivity(activity.dataset.projectActivity);return;}
     const shareButton=event.target.closest('[data-project-share]');
     if(shareButton){if(!busy&&!creating)projectRows.get(shareButton.dataset.projectShare)?.share.open();return;}
     const removeButton=event.target.closest('[data-project-remove]');
@@ -253,6 +358,11 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     const peerConfirm=event.target.closest('[data-project-peer]');
     if(peerConfirm)revokeAccess(peerConfirm.dataset.projectPeer,'peer');
   });
-  async function refresh(){await Promise.all([refreshCatalog(),selected&&!busy?refreshDetail():Promise.resolve()]);}
+  async function refresh(){
+    await Promise.all([refreshCatalog(),selected&&!busy?refreshDetail():Promise.resolve()]);
+    await Promise.all([...projectRows.values()].filter(row=>row.expanded).flatMap(row=>[
+      loadMetadata(row,{refresh:true}),row.issues.load({refresh:true}),
+    ]));
+  }
   return {refresh,hasDraft,openAdd};
 }

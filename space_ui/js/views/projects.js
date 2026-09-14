@@ -1,4 +1,4 @@
-/* Projects catalog and on-demand Files, Activity and Issues details.
+/* Projects catalog and on-demand file browsing.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
 import {projectPage} from '../core/navigation.js?v=20260914-manage1';
@@ -47,46 +47,6 @@ function panelFail(res){
   if(res.notImplemented)return'<div class="prj-note">not available for the active agent</div>';
   if(res.offline)return'<div class="prj-note">xo-space is unreachable</div>';
   return'<div class="prj-note">'+esc(res.error)+'</div>';
-}
-
-/* status display order + chip class per todo status. The status vocabulary
-   itself is defined once, in Python — services/cowork_agent/visualizer/
-   todo_status.py — and tests/test_todo_status.py fails if the keys below stop
-   matching it. Only the ORDER is a UI decision (in_progress first). */
-const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
-const stChip=st=>'<span class="tchip st-'+esc(st)+'">'+esc(st.replace('_',' '))+'</span>';
-
-function rTodos(d){
-  const rows=[];
-  for(const [sid,sess] of Object.entries(d.sessions||{})){
-    for(const t of sess.todos||[])rows.push({t,runtime:sess.runtime||'',sid});
-  }
-  if(!rows.length)return'<div class="prj-note">no todos recorded yet</div>';
-  rows.sort((a,b)=>(ST_ORDER[a.t.status]??9)-(ST_ORDER[b.t.status]??9));
-  const shown=rows.slice(0,30);
-  return'<div class="prj-todos">'
-    +shown.map(({t,runtime})=>'<div class="prj-todo">'+stChip(t.status)
-      +'<span class="tcontent'+(t.status==='completed'||t.status==='cancelled'?' done':'')+'">'+esc(t.content)+'</span>'
-      +(runtime?'<span class="truntime">'+esc(runtime)+'</span>':'')+'</div>').join('')
-    +(rows.length>shown.length?'<div class="prj-note">+'+(rows.length-shown.length)+' more</div>':'')
-    +'</div>';
-}
-function rActivity(d){
-  const ss=d.open_sessions||[];
-  if(!ss.length)return'<div class="prj-note">no open sessions</div>';
-  return'<div class="prj-list">'+ss.map(s=>'<div class="prj-li">'
-    +'<b>'+esc(s.agent)+'</b>'+(s.runtime?' <span class="truntime">'+esc(s.runtime)+'</span>':'')
-    +'<span class="tmuted">opened '+rel(s.opened_at)+' · active '+rel(s.last_activity_at)+'</span>'
-    +'</div>').join('')+'</div>';
-}
-function rTimeline(d){
-  const evs=d.events||[];
-  if(!evs.length)return'<div class="prj-note">no events yet (the watcher hasn’t emitted any for this project)</div>';
-  return'<div class="prj-list">'+evs.slice(0,20).map(e=>'<div class="prj-li">'
-    +'<span class="tchip">'+esc(e.type)+'</span>'
-    +(e.runtime?'<span class="truntime">'+esc(e.runtime)+'</span>':'')
-    +'<span class="tmuted">'+rel(e.ts)+'</span>'
-    +'</div>').join('')+'</div>';
 }
 
 /* ── file explorer ──────────────────────────────────────────────────────────
@@ -157,183 +117,8 @@ function rTree(d){
 }
 const rel2=iso=>iso?rel(iso):'';
 
-/* ── GitHub issues ──────────────────────────────────────────────────────────
-   This panel reads the MIRROR, not GitHub: services/cowork_agent/
-   github_poller.py polls every project with a github.com remote and writes
-   ~/.quirq/projects/<id>/github/issues.json, and GET /github/issues serves
-   that. So the list is exactly as fresh as the last poll — the header says
-   when that was, and Refresh sends refresh=1, which makes the server poll
-   now instead of waiting out the interval.
-
-   State and search filter in the browser. One response carries every row the
-   mirror holds, so a filter that refetched would be slower AND would spend
-   GitHub budget to answer a question already on screen. Only Refresh costs a
-   call. Filter state is kept per project so reopening a drawer returns you to
-   the view you left, the way the file explorer's cwd does. */
-const issues=new Map();     /* projectId -> {data, state:'open'|'closed'|'all', q} */
-const issRefresh=new Set(); /* projects whose next fetch must re-poll GitHub */
-const issView=id=>{
-  if(!issues.has(id))issues.set(id,{data:null,state:'open',q:''});
-  return issues.get(id);
-};
-const ISS_STATES=[['open','Open'],['closed','Closed'],['all','All']];
-/* Which empty this is — the endpoint says so in `state`, and each one has a
-   different next action, so none of them may render as the same grey line. */
-const ISS_EMPTY={
-  no_remote:'No github.com remote, so there is nothing to mirror. Point the '
-    +'project’s origin at GitHub and the poller picks it up on its next tick.',
-  never_polled:'Not polled yet. Refresh asks the server to check GitHub now.',
-  issues_disabled:'Issues are turned off for this repository on GitHub.',
-  empty:'No open issues.',
-};
-function issFail(d){
-  if(d.state!=='error')return esc(ISS_EMPTY[d.state]||'No issues.');
-  const e=d.error||{};
-  return'Last poll failed: '+esc(e.message||e.kind||'unknown')
-    +(e.at?' <span class="tmuted">'+esc(rel(e.at))+'</span>':'');
-}
-/* The note for "the fetch was fine, your filter matched nothing". Closed gets
-   its own sentence: the poller only ever asks for OPEN issues, so a closed row
-   exists only for an issue Space watched close — "none" here is not a claim
-   that the repo has no closed issues. */
-function issNoMatch(v){
-  if(v.q.trim())return'Nothing matches “'+esc(v.q.trim())+'”.';
-  if(v.state==='closed')return'No closed issues recorded. Space keeps an issue '
-    +'once it watches it close; issues closed before it started watching stay on GitHub.';
-  return'No open issues.';
-}
-const issCount=(d,state)=>state==='all'?d.issues.length
-  :d.issues.filter(i=>i.state===state).length;
-
-function rIssues(d){
-  const id=d.project_id,v=issView(id);
-  v.data=d;
-  /* no remote is not a filterable list — it is a fact about the project */
-  if(d.state==='no_remote')return'<div class="prj-note">'+issFail(d)+'</div>';
-  return issHead(d,v)+'<div class="iss-list">'+issRows(id)+'</div>';
-}
-function issHead(d,v){
-  const open=issCount(d,'open');
-  return'<div class="iss-head">'
-    +'<span class="iss-meta">'
-      +(d.repo?'<b>'+esc(d.repo)+'</b>':'')
-      +'<span>'+open+' open'+(d.tracked?' · '+d.tracked+' tracked':'')+'</span>'
-      +(d.fetched_at?'<span class="tmuted">checked '+esc(rel(d.fetched_at))+'</span>'
-        :'<span class="tmuted">never checked</span>')
-    +'</span>'
-    +'<span class="prj-spacer"></span>'
-    +'<input class="tv-filter iss-q" type="search" placeholder="Filter issues…" '
-      +'autocomplete="off" spellcheck="false" aria-label="Filter issues" '
-      +'value="'+esc(v.q)+'">'
-    +'<div class="prj-sort" role="group" aria-label="Issue state">'
-      +ISS_STATES.map(([k,label])=>'<button type="button" data-iss-state="'+k+'"'
-        +(v.state===k?' class="is-on" aria-pressed="true"':' aria-pressed="false"')
-        +'>'+label+' '+issCount(d,k)+'</button>').join('')
-    +'</div>'
-    +'<button class="sess-refresh" data-iss-refresh type="button" '
-      +'title="Ask the server to poll GitHub now">&#8635; Refresh</button>'
-  +'</div>';
-}
-function issRows(id){
-  const v=issues.get(id);
-  if(!v||!v.data)return'';
-  const d=v.data;
-  if(d.state!=='ok')return'<div class="prj-note">'+issFail(d)+'</div>';
-  const q=v.q.trim().toLowerCase();
-  const rows=d.issues.filter(it=>
-    (v.state==='all'||it.state===v.state)
-    &&(!q
-      ||String(it.title||'').toLowerCase().includes(q)
-      ||('#'+it.number).includes(q)
-      ||(it.labels||[]).some(l=>String(l).toLowerCase().includes(q))
-      ||(it.assignees||[]).some(a=>String(a.login||'').toLowerCase().includes(q))));
-  if(!rows.length)return'<div class="prj-note">'+issNoMatch(v)+'</div>';
-  return rows.map(issRow).join('');
-}
-/* An issue row is a link out to GitHub — the one place in Space that leaves
-   the app, because the thing you do next with an issue (read it, comment,
-   close it) is not something a read-only map can offer. Titles and labels are
-   GitHub text, escaped like everything else; the href is only rendered when
-   it is really an https URL, so a bad mirror row degrades to plain text
-   rather than becoming a javascript: link. */
-function issRow(it){
-  const link=/^https:\/\//i.test(String(it.url||''));
-  const tag=link?'a':'div';
-  const labels=(it.labels||[]).slice(0,3)
-    .map(l=>'<span class="iss-label">'+esc(l)+'</span>').join('');
-  /* raw here, escaped at each interpolation — escaping once at the source and
-     again at a use site is how &amp;lt; ends up on screen */
-  const who=(it.assignees||[]).map(a=>String(a.login||'')).join(', ');
-  return'<'+tag+' class="iss-row'+(it.state==='closed'?' is-closed':'')+'"'
-    +(link?' href="'+esc(it.url)+'" target="_blank" rel="noopener noreferrer"':'')
-    +' title="'+esc((it.title||'')+(who?' — '+who:''))+'">'
-    +'<span class="iss-dot" aria-hidden="true"></span>'
-    +'<span class="iss-num">#'+esc(it.number||'?')+'</span>'
-    +'<span class="iss-title">'+esc(it.title||'(untitled)')+'</span>'
-    +'<span class="iss-chips">'+labels
-      +(it.in_progress?'<span class="tchip st-in_progress">in progress</span>'
-        :it.adopted?'<span class="tchip">tracked</span>':'')
-      +(who?'<span class="truntime">'+esc(who)+'</span>':'')
-    +'</span>'
-    +'<span class="iss-when">'+esc(rel2(it.updated_at))+'</span>'
-  +'</'+tag+'>';
-}
-let issDeb=null;
-function bindIssues(el,id){
-  const v=issues.get(id);
-  if(!v)return;
-  /* Repaint the LIST, never the head: rebuilding the head mid-keystroke
-     destroys the filter input and throws the caret to the end (the same
-     lesson renderRows() carries for the project list). */
-  const repaint=()=>{
-    const list=el.querySelector('.iss-list');
-    if(list)list.innerHTML=issRows(id);
-  };
-  el.querySelectorAll('[data-iss-state]').forEach(b=>b.addEventListener('click',()=>{
-    v.state=b.dataset.issState;
-    el.querySelectorAll('[data-iss-state]').forEach(x=>{
-      const on=x.dataset.issState===v.state;
-      x.classList.toggle('is-on',on);
-      x.setAttribute('aria-pressed',on?'true':'false');
-    });
-    repaint();
-  }));
-  const q=el.querySelector('.iss-q');
-  if(q)q.addEventListener('input',e=>{
-    v.q=e.target.value;
-    clearTimeout(issDeb);
-    issDeb=setTimeout(repaint,140);
-  });
-  const r=el.querySelector('[data-iss-refresh]');
-  if(r)r.addEventListener('click',()=>{
-    r.disabled=true;
-    issRefresh.add(id);
-    const list=el.querySelector('.iss-list');
-    if(list)list.innerHTML='<div class="prj-note">asking GitHub…</div>';
-    fillPanel(id,PANELS.find(pn=>pn.key==='issues'),{force:true});
-  });
-}
-
-const PANELS=[
-  {key:'files',   title:'Files',        wide:true, skel:3,
-                                        path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/tree'
-                                              +(cwd.get(id)?'?relative_path='+encodeURIComponent(cwd.get(id)):''),
-                                                                                                 render:rTree},
-  {key:'todos',   title:'Todos',        path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/todos',            render:rTodos},
-  {key:'activity',title:'Open sessions',path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/activity',         render:rActivity},
-  {key:'timeline',title:'Recent events',path:id=>'/api/xo-projects/'+encodeURIComponent(id)+'/timeline?limit=20',render:rTimeline},
-  /* Refresh is a one-shot flag rather than a path argument: the button sets
-     it, the next fetch spends it, and every other fetch of this panel reads
-     the mirror for free. */
-  {key:'issues',  title:'Issues',       wide:true, skel:3,
-                                        path:id=>{
-                                          const force=issRefresh.has(id);
-                                          issRefresh.delete(id);
-                                          return'/api/xo-projects/'+encodeURIComponent(id)
-                                            +'/github/issues'+(force?'?refresh=1':'');
-                                        },
-                                        render:rIssues, bind:bindIssues},
-];
+const filePath=id=>'/api/xo-projects/'+encodeURIComponent(id)+'/tree'
+  +(cwd.get(id)?'?relative_path='+encodeURIComponent(cwd.get(id)):'');
 
 let root=null,items=null,expanded=null;
 let catalogDirty=false,catalogRevision=0,loading=false,lastLoaded=0,pollTimer=null;
@@ -344,9 +129,6 @@ const feeds={counts:'loading',activity:'loading',timeline:'loading'};
 let filter='',viewFilter='all',sortK='activity',fdeb=null;
 const SORTS=[['activity','Recent activity'],['name','Name'],['files','Indexed files'],['created','Newest created']];
 const FILTERS=[['all','All projects'],['live','Live'],['pinned','Pinned']];
-const GROUPS=[{key:'files',label:'Files',panels:['files']},
-  {key:'activity',label:'Activity',panels:['todos','activity','timeline']},
-  {key:'issues',label:'Issues',panels:['issues']}];
 const rowNodes=new Map(),drawers=new Map(),shareForms=new Map();
 const pinKey='space.projects.pins.v1:'+String(API_BASE||location.origin||'local');
 let pinned=new Set();
@@ -620,74 +402,50 @@ function toggle(id){
 }
 function makeDrawer(id){
   const el=document.createElement('div');el.className='prj-drawer';el.id='prj-drawer-'+id;
-  el.innerHTML='<div class="prj-detail-head"><nav class="prj-detail-tabs" role="tablist" aria-label="Project details">'
-    +GROUPS.map(group=>'<button type="button" role="tab" data-project-tab="'+group.key+'" id="prj-tab-'+esc(id)+'-'+group.key+'" aria-controls="prj-detail-'+esc(id)+'-'+group.key+'">'+group.label+'</button>').join('')
-    +'</nav><button type="button" class="prj-detail-refresh">Refresh details</button></div>'
-    +GROUPS.map(group=>'<div class="prj-detail-group prj-panels" role="tabpanel" id="prj-detail-'+esc(id)+'-'+group.key+'" aria-labelledby="prj-tab-'+esc(id)+'-'+group.key+'" data-project-group="'+group.key+'">'
-      +group.panels.map(key=>{const panel=PANELS.find(p=>p.key===key);return'<section class="prj-panel'+(panel.wide?' prj-panel-wide':'')+'"><h3 class="prj-ptitle">'+panel.title+'</h3><div class="prj-pbody" id="prjp-'+key+'" data-panel="'+key+'"></div></section>';}).join('')+'</div>').join('');
-  const state={el,tab:'files',slots:new Map()};drawers.set(id,state);
-  el.querySelectorAll('[data-project-tab]').forEach((button,index)=>{
-    button.addEventListener('click',()=>selectDetail(id,button.dataset.projectTab));
-    button.addEventListener('keydown',event=>{
-      let next=null;if(event.key==='ArrowRight')next=(index+1)%GROUPS.length;if(event.key==='ArrowLeft')next=(index+GROUPS.length-1)%GROUPS.length;
-      if(event.key==='Home')next=0;if(event.key==='End')next=GROUPS.length-1;if(next===null)return;
-      event.preventDefault();selectDetail(id,GROUPS[next].key);el.querySelectorAll('[data-project-tab]')[next].focus();
-    });
-  });
+  el.setAttribute('role','region');el.setAttribute('aria-labelledby','prj-files-title-'+id);
+  el.innerHTML='<div class="prj-detail-head"><h2 class="prj-files-title" id="prj-files-title-'+esc(id)+'">Files</h2>'
+    +'<button type="button" class="prj-detail-refresh">Refresh files</button></div>'
+    +'<div class="prj-panel prj-panel-wide"><div class="prj-pbody" data-panel="files"></div></div>';
+  const state={el,slot:{version:0,loaded:false,pending:null,path:null}};drawers.set(id,state);
   el.querySelector('.prj-detail-refresh').addEventListener('click',()=>fillDrawer(id,true));
-  selectDetail(id,'files',false);return state;
+  return state;
 }
-function selectDetail(id,key,load=true){
-  const state=drawers.get(id);if(!state||!GROUPS.some(g=>g.key===key))return;
-  state.tab=key;
-  state.el.querySelectorAll('[data-project-tab]').forEach(button=>{const active=button.dataset.projectTab===key;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;});
-  state.el.querySelectorAll('[data-project-group]').forEach(group=>{group.hidden=group.dataset.projectGroup!==key;});
-  if(load)fillDrawer(id);
-}
-function fillDrawer(id,force=false){
+function fillDrawer(id,force=false){return fillFiles(id,{force});}
+async function fillFiles(id,{force=false}={}){
   const state=drawers.get(id);if(!state)return;
-  for(const key of GROUPS.find(group=>group.key===state.tab).panels){
-    if(force&&key==='issues')issRefresh.add(id);
-    fillPanel(id,PANELS.find(panel=>panel.key===key),{force});
-  }
-}
-async function fillPanel(id,pn,{force=false}={}){
-  const state=drawers.get(id);if(!state)return;
-  let slot=state.slots.get(pn.key);
-  if(!slot){slot={version:0,loaded:false,pending:null,path:null};state.slots.set(pn.key,slot);}
+  const slot=state.slot;
   if(!force&&(slot.loaded||slot.pending))return;
-  const version=++slot.version,path=API_BASE+pn.path(id),previous=slot.pending,previousPath=slot.path;
-  const el=state.el.querySelector('[data-panel="'+pn.key+'"]');
+  const version=++slot.version,path=API_BASE+filePath(id),previous=slot.pending,previousPath=slot.path;
+  const el=state.el.querySelector('[data-panel="files"]');
+  const button=state.el.querySelector('.prj-detail-refresh');
   const current=()=>drawers.get(id)===state&&slot.version===version;
   slot.path=path;slot.loaded=false;
-  el.setAttribute('aria-busy','true');
-  if(pn.key==='files'&&(!el.textContent||previousPath!==path)){
-    el.innerHTML=crumbs(id,cwd.get(id)||'')+'<div class="prj-note">Loading files…</div>';bindFiles(el,id,pn);
-  }else if(!el.textContent)el.innerHTML='<div class="prj-skel is-sm"></div>'.repeat(pn.skel||1);
+  el.setAttribute('aria-busy','true');button.disabled=true;
+  if(!el.textContent||previousPath!==path){
+    el.innerHTML=crumbs(id,cwd.get(id)||'')+'<div class="prj-note">Loading files…</div>';bindFiles(el,id);
+  }
   const run=(async()=>{
     // A forced refresh of the same URL waits for the shared GET, then reads
     // again. Its old result cannot paint after this generation was requested.
     if(force&&previous&&previousPath===path){await previous;if(!current())return;}
     let res=await boundedRead(apiFetch(path));
     if(!current())return;
-    if(!res.ok&&pn.key==='files'&&res.status===404&&cwd.get(id)){
-      cwd.set(id,'');res=await boundedRead(apiFetch(API_BASE+pn.path(id)));if(!current())return;
+    if(!res.ok&&res.status===404&&cwd.get(id)){
+      cwd.set(id,'');res=await boundedRead(apiFetch(API_BASE+filePath(id)));if(!current())return;
     }
     try{
-      if(res.ok&&pn.key==='files'&&(!res.data||res.data.project_id!==id||!Array.isArray(res.data.dirs)||!Array.isArray(res.data.files)))res={ok:false,error:'The folder could not be read.'};
-      el.innerHTML=res.ok?pn.render(res.data):(pn.key==='files'?crumbs(id,cwd.get(id)||''):'')+panelFail(res);
-      slot.loaded=true;
-      if(res.ok&&pn.bind)pn.bind(el,id);
-      if(pn.key==='files')bindFiles(el,id,pn);
-    }catch{el.innerHTML='<div class="prj-note">These details could not be read. Try refreshing.</div>';slot.loaded=true;}
-    el.removeAttribute('aria-busy');
+      if(res.ok&&(!res.data||res.data.project_id!==id||!Array.isArray(res.data.dirs)||!Array.isArray(res.data.files)))res={ok:false,error:'The folder could not be read.'};
+      el.innerHTML=res.ok?rTree(res.data):crumbs(id,cwd.get(id)||'')+panelFail(res);
+      slot.loaded=true;bindFiles(el,id);
+    }catch{el.innerHTML='<div class="prj-note">These files could not be read. Try refreshing.</div>';slot.loaded=true;}
+    el.removeAttribute('aria-busy');button.disabled=false;
   })();
   slot.pending=run;
   try{await run;}finally{if(current())slot.pending=null;}
 }
-function bindFiles(el,id,pn){
+function bindFiles(el,id){
   el.querySelectorAll('[data-cd]').forEach(button=>button.addEventListener('click',()=>{
-    cwd.set(id,button.dataset.cd);fillPanel(id,pn,{force:true});
+    cwd.set(id,button.dataset.cd);fillFiles(id,{force:true});
   }));
   el.querySelectorAll('[data-file]').forEach(button=>button.addEventListener('click',()=>dispatchEvent(new CustomEvent('space:preview-file',{
     detail:{project:button.dataset.project,path:button.dataset.file,name:button.querySelector('.fx-name').textContent}}))));

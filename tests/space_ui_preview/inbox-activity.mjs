@@ -32,7 +32,7 @@ const recent=[
   {at:'2026-09-14T07:00:00Z',repo,kind:'error',detail:'Fictional remote is unavailable'},
   {at:'invalid',repo,kind:'revoked',detail:malicious},null,
 ];
-let workspaceFailure=false,sharingFailure=false,liveFailure=false,sharingEmpty=false;
+let workspaceFailure=false,sharingFailure=false,liveFailure=false,todosFailure=false,sharingEmpty=false;
 const json=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url()),path=url.pathname;
@@ -44,6 +44,21 @@ await context.route('**/*',async route=>{
     {session_id:'live-a',project_id:'aurora-console',runtime:'codex',last_activity_at:timestamp},
     {session_id:'live-b',project_id:'orbit-api',runtime:'claude_code',last_activity_at:timestamp},
   ]},liveFailure?503:200);
+  const scoped=path.match(/^\/api\/xo-projects\/([^/]+)\/(activity|todos)$/);
+  if(scoped){
+    const [,project,kind]=scoped;
+    if(kind==='activity')return json(route,liveFailure?{detail:'fixture-secret-in-error'}:{project_id:project,open_sessions:[
+      {session_id:'scoped-'+project,agent:'Workspace agent',runtime:'codex',opened_at:timestamp,last_activity_at:timestamp},
+    ]},liveFailure?503:200);
+    if(todosFailure)return json(route,{detail:'fixture-secret-in-error'},503);
+    return json(route,{project_id:project,sessions:{'fictional-session':{runtime:'codex',todos:[
+      {id:'done',status:'completed',content:'Completed '+project+' review'},
+      {id:'active',status:'in_progress',content:'Current '+project+' work'},
+      {id:'blocked',status:'blocked',content:'Blocked '+project+' task'},
+      {id:'pending',status:'pending',content:'Pending '+project+' note'},
+      {id:'cancelled',status:'cancelled',content:'Cancelled '+project+' experiment'},
+    ]}}});
+  }
   if(/^\/api\/xo-projects(?:\/[^/]+)?\/timeline$/.test(path)){
     if(workspaceFailure)return json(route,{detail:'fixture-secret-in-error'},503);
     const project=path.match(/^\/api\/xo-projects\/([^/]+)\/timeline$/)?.[1];
@@ -83,6 +98,7 @@ try{
   await view('activity').locator('[data-activity-live-summary]').getByText('2 open sessions',{exact:true}).waitFor();
   await view('activity').locator('[data-activity-live]').click();
   assert.match(await view('activity').locator('[data-activity-live-rows]').textContent(),/Aurora Console/);
+  assert.equal(report.requests.some(path=>path.endsWith('/todos')),false,'All projects does not fetch every project todo list');
   checked('Workspace events render before optional names/live reads; malformed rows are reported, timestamps stay truthful, and event content cannot execute or expose unrelated fields.');
 
   await view('activity').locator('[data-activity-more]').click();await rowCount('activity',5);
@@ -92,6 +108,13 @@ try{
   await select('activity').selectOption('orbit-api');await rowCount('activity',0);
   await query().fill('Orbit');await rowCount('activity',2);
   assert.equal(report.requests.includes('/api/xo-projects/orbit-api/timeline?limit=200'),true);
+  await view('activity').locator('[data-activity-todos-summary]').getByText(/5/).waitFor();
+  const todoRows=view('activity').locator('[data-activity-todo-rows]');
+  assert.deepEqual(await todoRows.locator('.iac-todo-status').allTextContents(),['in progress','pending','blocked','completed','cancelled']);
+  assert.match(await todoRows.textContent(),/Current orbit-api work/);
+  assert.match(await view('activity').locator('[data-activity-live-rows]').textContent(),/Workspace agent/);
+  assert.ok(report.requests.includes('/api/xo-projects/orbit-api/activity'));
+  assert.ok(report.requests.includes('/api/xo-projects/orbit-api/todos'));
   checked('Load older follows the server cursor and deduplicates events; project selection requests that project history and intersects loaded-event search.');
 
   await go('sharing-activity');await rowCount('sharing-activity',4);
@@ -110,10 +133,11 @@ try{
   assert.match(await view('sharing-activity').locator('[data-activity-warning]').textContent(),/Previously loaded events/);
   assert.doesNotMatch(await view('sharing-activity').textContent(),/fixture-secret/);
   sharingFailure=false;await refresh();
-  await go('activity');workspaceFailure=true;liveFailure=true;await refresh();await rowCount('activity',2);
+  await go('activity');workspaceFailure=true;liveFailure=true;todosFailure=true;await refresh();await rowCount('activity',2);
   assert.match(await view('activity').locator('[data-activity-warning]').textContent(),/Previously loaded events.*Open sessions are unavailable/);
   assert.doesNotMatch(await view('activity').textContent(),/fixture-secret/);
-  workspaceFailure=false;liveFailure=false;await refresh();
+  assert.match(await view('activity').locator('[data-activity-warning]').textContent(),/todos/);
+  workspaceFailure=false;liveFailure=false;todosFailure=false;await refresh();
   assert.equal(await view('activity').locator('[data-activity-warning]').isVisible(),false);
   checked('Failed refreshes preserve readable history, identify unavailable live data, hide raw error payloads, and recover through the shared Refresh action.');
 
@@ -123,7 +147,9 @@ try{
   await select('activity').selectOption('aurora-console');await rowCount('activity',2);
   waiting.release.resolve();await page.waitForLoadState('networkidle');
   assert.equal(await select('activity').inputValue(),'aurora-console');assert.match(await rows('activity').first().textContent(),/Aurora Console/);
-  checked('A late history reply for an older project selection cannot replace the current project feed.');
+  assert.match(await todoRows.textContent(),/Current aurora-console work/);
+  assert.doesNotMatch(await todoRows.textContent(),/orbit-api/);
+  checked('A late history reply for an older project selection cannot replace the current project feed or selected todos.');
 
   for(const kind of ['activity','sharing-activity']){
     await go(kind);await query().fill('');await select(kind).selectOption('');

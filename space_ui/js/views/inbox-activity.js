@@ -21,6 +21,25 @@ const WORKSPACE_LABELS={
 const SHARING_LABELS={shared_with_you:'Shared with this Space',fetched:'Commits fetched',revoked:'Sharing access removed',
   cloned:'Project cloned',clone_failed:'Clone failed',error:'Sync failed'};
 const newestFirst=rows=>rows.sort((a,b)=>(b.ms??-Infinity)-(a.ms??-Infinity)||b.order-a.order);
+/* Status vocabulary lives in visualizer/todo_status.py; order is a UI choice. */
+const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
+const TODO_LIMIT=30;
+let pendingProject=null;
+addEventListener('space:activity-project',event=>{
+  const id=text(event.detail?.project_id);
+  if(id)pendingProject=id;
+});
+
+export function buildProjectTodos(payload){
+  const rows=[];
+  for(const [sessionId,session] of Object.entries(payload?.sessions||{})){
+    for(const todo of Array.isArray(session?.todos)?session.todos:[]){
+      if(!todo||!text(todo.status)||typeof todo.content!=='string')continue;
+      rows.push({id:text(todo.id),sessionId,runtime:text(session.runtime),status:text(todo.status),content:todo.content});
+    }
+  }
+  return rows.sort((a,b)=>(ST_ORDER[a.status]??9)-(ST_ORDER[b.status]??9));
+}
 
 export function buildWorkspaceEvents(payload,projectId=''){
   return newestFirst((Array.isArray(payload?.events)?payload.events:[]).flatMap((event,order)=>{
@@ -64,7 +83,8 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     let root=null,go=()=>{},refreshToolbar=()=>{},active=false,poll=null,generation=0,pending=null;
     let query='',project='',events=[],names=new Map(),snapshot=null,sessions=null,nextCursor=null;
     let hasSnapshot=false,loadedOlder=false,loading=false,loadingMore=false,lastLoaded=null;
-    let feedError='',catalogError='',liveError='',invalidRows=false;
+    let feedError='',catalogError='',liveError='',todosError='',invalidRows=false;
+    let todos=null,liveLoading=false,todosLoading=false;
     const reads=new Set(),rowNodes=new Map();
     const $=selector=>root.querySelector(selector);
     const title=sharing?'Sharing activity':'Activity';
@@ -91,6 +111,7 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       if(pending)return pending;
       if(older&&(!nextCursor||sharing))return;
       const revision=++generation,selected=project,before=older?nextCursor:'';
+      if(!older&&!sharing){liveLoading=true;todosLoading=Boolean(selected);}
       loading=!older;loadingMore=older;feedError='';render();
       const work=read(sharing?'/api/project-sharing/status':timelinePath(before)).then(result=>{
         if(!current(revision))return;
@@ -122,13 +143,26 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           }else catalogError='Project names could not be refreshed. Project IDs are still available.';
           render();
         }),
-        read('/api/xo-projects/activity').then(result=>{
+        read(selected?'/api/xo-projects/'+encodeURIComponent(selected)+'/activity':'/api/xo-projects/activity').then(result=>{
           if(!current(revision))return;
-          if(result.ok&&Array.isArray(result.data?.open_sessions)){
-            sessions=result.data.open_sessions.filter(session=>session&&text(session.session_id));liveError='';
+          liveLoading=false;
+          if(result.ok&&Array.isArray(result.data?.open_sessions)&&(!selected||result.data.project_id===selected)){
+            sessions=result.data.open_sessions.filter(session=>session&&text(session.session_id))
+              .map(session=>selected?{...session,project_id:selected}:session);liveError='';
           }else{sessions=null;liveError='Open sessions are unavailable.';}
           render();
         }),
+        ...(selected?[read('/api/xo-projects/'+encodeURIComponent(selected)+'/todos').then(result=>{
+          if(!current(revision))return;
+          todosLoading=false;
+          const data=result.data,entries=data?.sessions;
+          if(result.ok&&data.project_id===selected&&entries&&typeof entries==='object'&&!Array.isArray(entries)
+            &&Object.values(entries).every(session=>session&&Array.isArray(session.todos)
+              &&session.todos.every(todo=>todo&&text(todo.status)&&typeof todo.content==='string'))){
+            todos=buildProjectTodos(data);todosError='';
+          }else{todos=null;todosError='Project todos are unavailable. Try Refresh.';}
+          render();
+        })]:[]),
       ];
       pending=Promise.all([work,...extra]).finally(()=>{if(current(revision)){pending=null;render();refreshToolbar();}});
       return pending;
@@ -152,13 +186,32 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       const details=$('[data-activity-live]'),summary=$('[data-activity-live-summary]');
       const rows=(sessions||[]).filter(session=>!project||session.project_id===project);
       summary.textContent=(liveError||sessions===null)?'Open sessions unavailable':rows.length+' open '+(rows.length===1?'session':'sessions');
-      if(sessions===null&&!liveError)summary.textContent='Checking open sessions…';
+      if(liveLoading)summary.textContent=sessions===null?'Checking open sessions…':'Refreshing… · '+summary.textContent;
       details.classList.toggle('is-unavailable',sessions===null);
       $('[data-activity-live-rows]').innerHTML=rows.length?rows.map(session=>{
-        const time=text(session.last_activity_at)||text(session.opened_at),pid=text(session.project_id);
-        return'<div class="iac-session"><b>'+esc(names.get(pid)||pid||'Unassigned project')+'</b><span>'+esc(text(session.runtime)||text(session.agent)||'Session')+'</span>'
-          +'<time'+(stamp(time)!==null?' datetime="'+esc(time)+'"':'')+'>'+esc(dateLabel(time))+'</time></div>';
-      }).join(''):'<p class="iac-note">'+(sessions===null?'Try Refresh to check again.':'No open sessions are reported for this selection.')+'</p>';
+        const pid=text(session.project_id);
+        const sessionTime=(label,value)=>'<span>'+label+' <time'+(stamp(value)!==null?' datetime="'+esc(value)+'"':'')+' title="'+esc(dateLabel(value))+'">'+esc(dateLabel(value))+'</time></span>';
+        return'<div class="iac-session"><div class="iac-session-heading"><b>'+esc(text(session.agent)||'Session')+'</b>'
+          +(text(session.runtime)?'<span class="iac-runtime">'+esc(session.runtime)+'</span>':'')
+          +(!project?'<span>'+esc(names.get(pid)||pid||'Unassigned project')+'</span>':'')+'</div>'
+          +'<div class="iac-session-times">'+sessionTime('Opened',session.opened_at)+sessionTime('Last active',session.last_activity_at)+'</div>'
+          +'<code class="iac-session-id">'+esc(session.session_id)+'</code></div>';
+      }).join(''):'<p class="iac-note">'+(sessions===null?(liveLoading?'Checking this selection…':'Try Refresh to check again.'):'No open sessions are reported for this selection.')+'</p>';
+    }
+    function renderTodos(){
+      if(sharing)return;
+      const details=$('[data-activity-todos]'),summary=$('[data-activity-todos-summary]');
+      details.hidden=!project;$('[data-activity-todo-scope]').hidden=Boolean(project);
+      if(!project)return;
+      summary.textContent=todos===null?(todosLoading?'Loading project todos…':'Project todos unavailable'):todos.length+' '+(todos.length===1?'todo':'todos');
+      if(todosLoading&&todos!==null)summary.textContent='Refreshing… · '+summary.textContent;
+      const shown=(todos||[]).slice(0,TODO_LIMIT);
+      $('[data-activity-todo-rows]').innerHTML=todos===null?'<p class="iac-note">'+(todosLoading?'Loading todos for this project…':'Try Refresh to check again.')+'</p>'
+        :!todos.length?'<p class="iac-note">No todos are recorded for this project.</p>'
+        :shown.map(todo=>'<div class="iac-todo"><span class="iac-todo-status st-'+esc(todo.status)+'">'+esc(human(todo.status))+'</span>'
+          +'<span class="iac-todo-content'+(['completed','cancelled'].includes(todo.status)?' is-done':'')+'">'+esc(todo.content)+'</span>'
+          +(todo.runtime?'<span class="iac-runtime">'+esc(todo.runtime)+'</span>':'')+'</div>').join('')
+          +(todos.length>shown.length?'<p class="iac-note">Showing '+shown.length+' of '+todos.length+' todos · '+(todos.length-shown.length)+' more</p>':'');
     }
     function rowHTML(row){
       const subject=sharing?row.subject:names.get(row.projectId)||row.subject||'Workspace';
@@ -184,10 +237,10 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     }
     function render(){
       if(!root)return;
-      renderFilter();renderLive();
+      renderFilter();renderLive();renderTodos();
       const rows=filterActivityEvents(events,{query,project,names});renderRows(rows);
       $('[data-activity-summary]').textContent=(loading&&hasSnapshot?'Refreshing… · ':'')+(hasSnapshot?rows.length+' of '+events.length+' loaded events':feedError?'Activity unavailable':'Loading activity…');
-      const warnings=[feedError,catalogError,liveError,invalidRows?'Some activity records could not be read.':''];
+      const warnings=[feedError,catalogError,liveError,todosError,invalidRows?'Some activity records could not be read.':''];
       if(sharing&&snapshot?.cadence==='parked')warnings.push('Sharing is paused. Open Sharing for its connection status.');
       const warning=$('[data-activity-warning]');warning.textContent=warnings.filter(Boolean).join(' ');warning.hidden=!warning.textContent;
       const empty=$('[data-activity-empty]');empty.hidden=rows.length>0;
@@ -196,6 +249,20 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       const more=$('[data-activity-more]');more.hidden=sharing||!nextCursor;more.disabled=loading||loadingMore||!!pending;
       more.textContent=loadingMore?'Loading…':'Load older events';
       $('[data-activity-updated]').textContent=lastLoaded?'Updated '+dateLabel(lastLoaded):'';
+    }
+    function selectProject(value,{handoff=false}={}){
+      project=value;
+      if(sharing){render();return;}
+      if(handoff){query='';refreshToolbar();}
+      ++generation;cancelReads();events=[];hasSnapshot=false;loadedOlder=false;nextCursor=null;lastLoaded=null;
+      feedError='';liveError='';todosError='';invalidRows=false;sessions=null;todos=null;
+      if(project){$('[data-activity-live]').open=true;$('[data-activity-todos]').open=true;}
+      return refresh();
+    }
+    function openPendingProject(){
+      if(sharing||pendingProject===null)return false;
+      const selected=pendingProject;pendingProject=null;
+      selectProject(selected,{handoff:true});return true;
     }
     return{
       ...INBOX_PAGES.find(page=>page.id===id),section:id,
@@ -207,14 +274,16 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           +'<div class="iac-controls"><label for="'+id+'-project">'+(sharing?'Repository':'Project')+'</label><select id="'+id+'-project" data-activity-project-filter><option value="">All</option></select>'
           +'<span class="iac-retention">'+(sharing?'Latest 50 events · cleared when the server restarts':'Recent workspace events · search covers loaded events')+'</span></div>'
           +'<p class="iac-warning" data-activity-warning role="status" hidden></p>'
-          +(sharing?'':'<details class="iac-live" data-activity-live><summary data-activity-live-summary>Checking open sessions…</summary><div data-activity-live-rows></div></details>')
+          +(sharing?'':'<details class="iac-live" data-activity-live><summary data-activity-live-summary>Checking open sessions…</summary><div data-activity-live-rows></div></details>'
+            +'<p class="iac-todo-scope" data-activity-todo-scope>Select a project to see its todos and current sessions.</p>'
+            +'<details class="iac-live iac-todos" data-activity-todos hidden><summary data-activity-todos-summary>Project todos</summary><div data-activity-todo-rows></div></details>')
           +'<p class="iac-empty" data-activity-empty>Loading activity…</p><ol class="iac-events" data-activity-rows></ol>'
           +'<footer class="iac-footer"><button type="button" class="inb-btn" data-activity-more hidden>Load older events</button><span data-activity-updated></span></footer></div>';
         $('[data-activity-project-filter]').addEventListener('change',event=>{
-          project=event.target.value;
-          if(sharing){render();return;}
-          ++generation;cancelReads();events=[];hasSnapshot=false;loadedOlder=false;nextCursor=null;lastLoaded=null;feedError='';
-          refresh();
+          selectProject(event.target.value);
+        });
+        if(!sharing)addEventListener('space:activity-project',()=>{
+          if(active&&location.hash==='#/inbox/activity')openPendingProject();
         });
         $('[data-activity-more]').addEventListener('click',()=>refresh({older:true}));
         root.addEventListener('click',async event=>{
@@ -223,8 +292,14 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           if(await go('projects/files/list')===true&&location.hash==='#/projects/files/list')dispatchEvent(new CustomEvent('space:open-project',{detail:target}));
         });
       },
-      show(){active=true;clearInterval(poll);poll=setInterval(()=>{if(!pending)refresh();},pollMs);return refresh();},
-      hide(){active=false;clearInterval(poll);poll=null;++generation;cancelReads();loading=false;loadingMore=false;},
+      show(){
+        active=true;clearInterval(poll);poll=setInterval(()=>{if(!pending)refresh();},pollMs);
+        openPendingProject();
+        // Complete navigation before reads so a project handoff can replace
+        // the initial workspace request without waiting for unrelated data.
+        refresh().catch(error=>console.error('Activity refresh failed:',error));
+      },
+      hide(){active=false;clearInterval(poll);poll=null;++generation;cancelReads();loading=false;loadingMore=false;liveLoading=false;todosLoading=false;},
       refresh:()=>refresh(),
     };
   }

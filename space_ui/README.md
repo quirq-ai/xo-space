@@ -40,7 +40,9 @@ The toolbar adapts to the active page. Projects Overview and Graph keep map
 autocomplete in the topbar. Every Projects page keeps **Graph root** and
 **Refresh** together in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
-`#/setup/projects` link opens Manage. Refresh rereads the active page’s data without reloading the app, retaining its
+`#/setup/projects` link opens Manage. Cards start collapsed; expand one to see
+Issues and **View activity**. **Copy GitHub URL**, **Share** and **Remove** work
+independently of expansion. Refresh rereads the active page’s data without reloading the app, retaining its
 query, selected root and existing project drawers. Inbox Sharing keeps **Share a project**,
 **Check now**, and **Refresh** beside its own navigation.
 Each Files List and Manage project row has **Share**, which opens a Space ID form
@@ -107,14 +109,15 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/inbox-activity.js` | Independent workspace Activity and Sharing activity pages. Workspace events, live sessions and project names come from their existing read APIs; Sharing activity reads the relay’s recent-event buffer. |
 | `js/views/sharing.js` | Inbox Sharing management: shared repositories, incoming clones, commits, Apply, members, grants and revocations. Existing Sharing links normalize to `#/inbox/sharing`. |
-| `js/views/projects.js` | The Projects List page: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Registers only the `project-list` page at `#/projects/files/list`; the Projects section belongs to the shared navigation definitions. |
+| `js/views/projects.js` | Files List: searchable catalog, browser-local pins, Live filter and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Registers `project-list` at `#/projects/files/list`. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
 | `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/files/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
 | `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
-| `js/views/project-management.js` | Clone, local project list, inline sharing and removal/access-review controls, styled by `css/project-management.css`. |
+| `js/views/project-management.js` | Clone, collapsible project cards, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
+| `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through Refresh. Styled by `css/project-management.css`. |
 | `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |
 | `js/core/setup-sections.js` | Setup section IDs, labels, canonical routes and compatibility mappings for old section handoffs. |
@@ -331,8 +334,12 @@ retain their existing scope.
 **Activity** (`#/inbox/activity`) follows Jobs and shows recorded workspace
 project, session, task and file events. It reads `/api/xo-projects/timeline?limit=200`,
 with project names from `/api/xo-projects` and a separate open-session summary
-from `/api/xo-projects/activity`. Choosing a project uses that project's timeline;
-**Load older events** follows `next_cursor` with `before`. Search covers loaded events.
+from `/api/xo-projects/activity`. Choosing a project uses its `/timeline`, `/activity`
+and `/todos` endpoints. The selected project shows todos in status order and
+current sessions with their agent, runtime, session ID, opened time and last
+activity. All projects does not request every project’s todos. **View activity**
+in Manage selects that project and clears an older event search. **Load older
+events** follows `next_cursor` with `before`; search covers loaded events.
 
 **Sharing activity** (`#/inbox/sharing-activity`) follows Activity. It reads
 `recent` from `/api/project-sharing/status`: the latest 50 relay events, cleared

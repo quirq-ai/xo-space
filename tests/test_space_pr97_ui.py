@@ -904,20 +904,25 @@ class ShellTests(unittest.TestCase):
         for module in ("toolbar",):
             self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
         controls_stamp = "20260914-manage1"
-        for view in ("sharing", "tree", "atlas", "projects", "setup", "sessions", "inbox", "inbox-activity", "project-manage"):
+        for view in ("tree", "atlas", "setup", "sessions", "inbox"):
             self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
-        for module in ("section-nav", "navigation", "preview", "project-actions"):
+        for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + controls_stamp + "'", app)
+        for view in ("sharing", "projects", "inbox-activity", "project-manage"):
+            self.assertIn("./views/" + view + ".js?v=20260914-details1'", app)
+        self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=20260914-inboxshare1"', html)
+        self.assertIn('href="css/projects.css?v=20260914-details1"', html)
         self.assertIn('href="css/navigation.css?v=20260914-actions1"', html)
-        for sheet in ("project-share", "inbox-activity"):
+        for sheet in ("project-share",):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-inboxshare1"', html)
-        for sheet in ("project-management", "setup"):
+        for sheet in ("setup",):
             self.assertIn('href="css/' + sheet + '.css?v=' + controls_stamp + '"', html)
+        for sheet in ("project-management", "inbox-activity"):
+            self.assertIn('href="css/' + sheet + '.css?v=20260914-details1"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;

@@ -268,47 +268,6 @@
   .truntime{font:500 10.5px/1 var(--mono);color:var(--ink-3);flex:none}
   .tmuted{color:var(--ink-3);font-size:11.5px;margin-left:auto;flex:none}
 
-  /* ---- GitHub issues (drawer panel) ----
-     The mirror as a list: one row per issue, the state dot carrying open vs
-     closed and the accent reserved (as everywhere) for what is happening now
-     — an issue an agent is working right this second. Rows are links out to
-     GitHub, so they get the underline-on-hover of a link, not the fill of a
-     button. */
-  .iss-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-  .iss-meta{display:flex;align-items:baseline;gap:9px;min-width:0;flex-wrap:wrap;
-    font:400 11px var(--mono);color:var(--ink-3)}
-  .iss-meta b{font-weight:500;color:var(--ink-2)}
-  .iss-head .iss-q{width:170px}
-  .iss-list{display:flex;flex-direction:column}
-  .iss-row{display:grid;grid-template-columns:8px 46px minmax(0,1fr) auto auto;
-    gap:10px;align-items:baseline;padding:6px 7px;border-radius:7px;
-    color:var(--ink-2);text-decoration:none;
-    transition:background .16s var(--ease)}
-  .iss-row+.iss-row{box-shadow:inset 0 1px 0 var(--line-soft)}
-  a.iss-row:hover{background:var(--bg-3);color:var(--ink)}
-  a.iss-row:hover .iss-title{text-decoration:underline;text-underline-offset:2px}
-  a.iss-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  /* open is a ring, closed is filled and quiet — the same shape vocabulary
-     the graph uses for code vs document */
-  .iss-dot{width:8px;height:8px;border-radius:50%;align-self:center;
-    border:1.5px solid var(--accent);opacity:.75}
-  .iss-row.is-closed .iss-dot{background:var(--ink-4);border-color:var(--ink-4);opacity:.5}
-  .iss-num{font:400 11px var(--mono);color:var(--ink-4);text-align:right}
-  .iss-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
-  .iss-row.is-closed .iss-title{color:var(--ink-3)}
-  .iss-chips{display:flex;align-items:baseline;gap:6px;flex:none}
-  .iss-label{font:500 9.5px var(--mono);letter-spacing:.06em;color:var(--ink-3);
-    background:var(--bg-2);border:1px solid var(--line-soft);border-radius:999px;
-    padding:2px 7px;white-space:nowrap}
-  .iss-when{font:400 10.5px var(--mono);color:var(--ink-3);white-space:nowrap;
-    min-width:64px;text-align:right}
-  @media (max-width:900px){
-    /* the chips are the first thing to go: a title you cannot read is worse
-       than a label you cannot see */
-    .iss-row{grid-template-columns:8px 40px minmax(0,1fr) auto}
-    .iss-chips{display:none}
-  }
-
 /* Projects List. These overrides stay inside the List view: Tree and Sharing
    also use the foundation classes above. */
 #view-projects [hidden]{display:none!important}
@@ -338,7 +297,6 @@
 #view-projects .prj-rows{gap:8px}
 #view-projects .prj-row{border-radius:11px}
 #view-projects .prj-row.is-open{border-color:rgba(168,217,79,.24);background:var(--bg-2)}
-#view-projects .prj-line{display:flex;align-items:stretch;gap:8px;padding-right:12px}
 #view-projects .prj-row-head{padding:15px 4px 15px 17px;border-radius:11px 0 0 11px}
 #view-projects .prj-row-head:focus-visible{outline-offset:-2px}
 #view-projects .prj-name{gap:4px 8px}
@@ -348,8 +306,6 @@
 #view-projects .prj-num{flex-wrap:wrap;gap:3px 7px;white-space:normal;line-height:1.45}
 #view-projects .prj-num em{white-space:nowrap}
 #view-projects .prj-when{font-size:10px;line-height:1.45}
-#view-projects .prj-live{font-size:9px;letter-spacing:.06em}
-#view-projects .prj-live.is-idle{color:var(--ink-3)}
 #view-projects .prj-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;width:172px;min-width:172px;flex-shrink:0}
 #view-projects .prj-pin{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border:1px solid transparent;border-radius:8px;color:var(--ink-3);font-size:18px;line-height:1}
 #view-projects .prj-pin:hover{background:var(--bg-3);color:var(--ink)}
@@ -360,32 +316,17 @@
 
 #view-projects .prj-drawer{padding:0 16px 16px;border-top-color:var(--line-soft)}
 #view-projects .prj-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0}
-#view-projects .prj-detail-tabs{display:flex;align-items:center;gap:3px;min-width:0}
-#view-projects .prj-detail-tabs button{min-height:36px;padding:8px 12px;border:1px solid transparent;border-radius:7px;color:var(--ink-3);font:500 12px var(--sans)}
-#view-projects .prj-detail-tabs button:hover{color:var(--ink);background:var(--bg-3)}
-#view-projects .prj-detail-tabs button[aria-selected=true]{color:var(--ink);background:var(--bg-3);border-color:var(--line)}
+#view-projects .prj-files-title{margin:0;font:500 12px/1.4 var(--sans);color:var(--ink-2)}
 #view-projects .prj-detail-refresh{flex-shrink:0;min-height:34px;padding:7px 10px;font-size:11px}
-#view-projects .prj-panels{gap:10px}
 #view-projects .prj-panel{padding:14px;min-width:0;border-radius:8px;background:var(--bg)}
 #view-projects .prj-row.is-open .prj-panel{background:var(--bg)}
 #view-projects .prj-ptitle{font:500 11px/1.4 var(--sans);letter-spacing:0;text-transform:none;color:var(--ink-2);margin-bottom:11px}
-#view-projects .prj-todo,#view-projects .prj-li{flex-wrap:wrap;gap:5px 8px;line-height:1.5}
-#view-projects .prj-todo .tcontent,#view-projects .prj-li b{overflow-wrap:anywhere}
-#view-projects .prj-li .tmuted{flex:1 1 100%;margin-left:0;font-size:10.5px}
-#view-projects .prj-todos,#view-projects .prj-list{gap:10px;max-height:380px;overflow-y:auto}
 #view-projects .fx-crumbs{font-size:11px;line-height:1.6;overflow-wrap:anywhere}
 #view-projects .fx-crumb,#view-projects .fx-here{max-width:100%;overflow-wrap:anywhere;white-space:normal}
 #view-projects .fx-row{min-height:34px}
 #view-projects .fx-files .fx-row{grid-template-columns:14px minmax(0,1fr) 70px 80px;column-gap:10px}
 #view-projects .fx-dirs .fx-name{white-space:normal;overflow-wrap:anywhere}
 #view-projects .fx-meta{font-size:10px;letter-spacing:.03em;line-height:1.6}
-#view-projects .iss-meta{overflow-wrap:anywhere}
-#view-projects .iss-head .iss-q{max-width:100%;min-height:36px}
-#view-projects .iss-head .prj-sort{flex-wrap:wrap;border-radius:8px}
-#view-projects .iss-head .prj-sort button{min-height:30px;font:500 10.5px var(--sans);letter-spacing:0;text-transform:none;padding:6px 9px}
-#view-projects .iss-row{min-height:38px}
-#view-projects .iss-title{line-height:1.45}
-#view-projects .iss-chips{max-width:280px;overflow:hidden}
 #view-projects .prj-empty{padding:42px 22px;border-style:solid}
 #view-projects .prj-empty b{font:500 23px/1.25 var(--serif);margin-bottom:10px}
 #view-projects .prj-empty p{font-size:12px;line-height:1.7}
@@ -402,7 +343,6 @@
   #view-projects .prj-head>.prj-spacer{display:none}
   #view-projects .prj-filter-control,#view-projects .prj-sort-control{flex:1 1 130px;flex-direction:column;align-items:stretch;gap:6px}
   #view-projects #prj-filter,#view-projects #prj-sort{width:100%;min-width:0;min-height:40px}
-  #view-projects .prj-line{flex-direction:column;gap:0;padding-right:0}
   #view-projects .prj-row-head{width:100%;padding:14px 14px 10px;grid-template-columns:12px minmax(0,1fr) auto;grid-template-areas:'c n n' '. live when' '. files files';gap:6px 10px;border-radius:11px 11px 0 0}
   #view-projects .prj-when{justify-content:flex-end;padding-right:0}
   #view-projects .prj-row-actions{align-self:flex-end;width:auto;min-width:0;gap:7px;padding:0 12px 12px}
@@ -410,8 +350,6 @@
   #view-projects .prj-map,#view-projects .prj-share{min-height:40px;min-width:68px}
   #view-projects .prj-drawer{padding:0 12px 12px}
   #view-projects .prj-detail-head{flex-wrap:wrap;gap:8px;padding:12px 0}
-  #view-projects .prj-detail-tabs{flex:1 1 100%;gap:3px}
-  #view-projects .prj-detail-tabs button{flex:1;min-height:40px;padding:8px 9px}
   #view-projects .prj-detail-refresh{min-height:36px;margin-left:auto}
   #view-projects .prj-panel{padding:12px}
   #view-projects .fx-row{min-height:40px;font-size:12px}
@@ -422,11 +360,6 @@
   #view-projects .fx-files .fx-when{grid-column:2/-1;grid-row:2;text-align:left;min-width:0;font-size:10px}
   #view-projects .fx-dirs .fx-row{gap:8px;padding-left:3px;padding-right:3px}
   #view-projects .fx-dirs .fx-size{font-size:10px}
-  #view-projects .iss-head{gap:9px}
-  #view-projects .iss-head .iss-q{width:100%}
-  #view-projects .iss-row{grid-template-columns:7px 32px minmax(0,1fr);gap:4px 8px;padding:8px 3px}
-  #view-projects .iss-title{white-space:normal;overflow-wrap:anywhere;font-size:12px}
-  #view-projects .iss-when{grid-column:3;min-width:0;text-align:left;font-size:10px}
 }
 @media(max-width:480px){
   #view-projects .prj{padding-left:12px;padding-right:12px}

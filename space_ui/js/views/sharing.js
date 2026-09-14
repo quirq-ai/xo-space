@@ -21,7 +21,7 @@ import {setSectionActions} from '../core/section-nav.js?v=20260914-manage1';
    calls); this file only paints and handles events. One delegated click /
    submit / input listener on the section: the pane re-renders from state,
    so nothing is bound per element. */
-import {openProjectAdd} from '../core/project-actions.js?v=20260914-manage1';
+import {openProjectAdd} from '../core/project-actions.js?v=20260914-details1';
 import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,

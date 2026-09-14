@@ -95,13 +95,13 @@ try{
   assert.equal(await page.locator('#view-projects #prj-add,#view-projects #prj-refresh').count(),0);
   await page.locator('#view-search').fill('Aurora');await page.locator('#prj-row-aurora-console .prj-pin').click();
   await page.locator('#prj-filter').selectOption('pinned');await page.locator('#prj-row-aurora-console .prj-row-head').click();
-  await page.locator('#prjp-files [data-cd="src"]').click();await page.locator('#prjp-files [data-file="src/main.ts"]').waitFor();
+  await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] [data-cd="src"]').click();await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] [data-file="src/main.ts"]').waitFor();
   const drawer=await page.locator('#prj-drawer-aurora-console').elementHandle();
   await reread('projects','/api/xo-projects',async()=>{
     await page.getByText('Aurora Console refreshed 1',{exact:true}).waitFor();
     assert.equal(await page.locator('#view-search').inputValue(),'Aurora');assert.equal(await page.locator('#prj-filter').inputValue(),'pinned');
     assert.equal(await drawer.evaluate(node=>node===document.querySelector('#prj-drawer-aurora-console')),true);
-    await page.locator('#prjp-files [data-file="src/main.ts"]').waitFor();
+    await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] [data-file="src/main.ts"]').waitFor();
   });
   checked('Shared Refresh rereads the List catalog while preserving query, pins, drawer and current folder.');
   for(const [id,path] of [['dashboard','/xo/dashboard.json'],['graph','/xo/space.json']]){

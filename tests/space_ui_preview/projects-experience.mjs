@@ -2,7 +2,7 @@
 /* The real Projects UI against fictional, browser-owned API fixtures. No
    request can mutate a service or leave the local preview origin. */
 import assert from 'node:assert/strict';
-import {openProjectList} from './routes.mjs';
+import {openProjectList,openProjectPage} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -49,14 +49,6 @@ function tree(id,relative=''){
       relative_path:(relative?relative+'/':'')+(i===0?(relative?'implementation.ts':'README.md'):'review-note-'+String(i).padStart(2,'0')+'.md'),
       size_bytes:1000+i*80,modified_at:stamp}))};
 }
-function issues(id,{stale=false}={}){
-  return{project_id:id,state:'ok',repo:'fictional/'+id,tracked:1,fetched_at:stamp,
-    issues:[
-      {number:101,title:stale?'Stale mirror issue':'Improve keyboard navigation',state:'open',labels:['accessibility'],assignees:[{login:'demo-dev'}],updated_at:stamp,url:'https://github.com/fictional/'+id+'/issues/101'},
-      {number:102,title:'Tighten layout on phones',state:'open',labels:['design'],assignees:[],updated_at:stamp},
-      {number:90,title:'Restore keyboard focus after closing',state:'closed',labels:['accessibility'],assignees:[],updated_at:stamp},
-    ]};
-}
 const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return{promise,resolve};};
 const gate=()=>({arrived:deferred(),release:deferred(),done:deferred()});
 async function within(promise,label){
@@ -71,7 +63,6 @@ function hold(key,data,status=200){const pending=gate();allGates.push(pending);c
 function requestKey(url){
   const path=url.pathname;
   if(path.endsWith('/tree'))return path+(url.searchParams.get('relative_path')?'?relative_path='+url.searchParams.get('relative_path'):'');
-  if(path.endsWith('/github/issues'))return path+(url.searchParams.get('refresh')==='1'?'?refresh=1':'');
   return path;
 }
 const json=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
@@ -98,14 +89,7 @@ await context.route('**/*',async route=>{
   if(detail){
     const [,id,kind]=detail;
     if(kind==='tree')return json(route,tree(id,url.searchParams.get('relative_path')||''));
-    if(kind==='todos')return json(route,{project_id:id,sessions:{demo:{runtime:'local',todos:[
-      {id:'task-1',content:'Review release checklist',status:'in_progress'},
-      {id:'task-2',content:'Confirm responsive layouts',status:'pending'},
-      {id:'task-3',content:'Publish the updated guide',status:'completed'},
-    ]}}});
-    if(kind==='activity')return json(route,{open_sessions:[session(id)]});
-    if(kind==='timeline')return json(route,events(id));
-    return json(route,issues(id));
+    assert.fail('Files drawers must not request '+kind);
   }
   // Non-Projects shell and Setup reads are equally fictional.
   const ancillary={
@@ -136,14 +120,13 @@ page.on('console',message=>{
 const row=id=>page.locator('#prj-row-'+id);
 const aurora=row('aurora-console');
 const drawer=()=>page.locator('#prj-drawer-aurora-console');
-const body=key=>page.locator('#prjp-'+key);
+const body=key=>drawer().locator('[data-panel="'+key+'"]');
 const search=page.locator('#view-search');
 const count=key=>report.requests.filter(request=>request.key===key).length;
 const detailCounts=()=>Object.fromEntries(['tree','todos','activity','timeline','github/issues'].map(key=>[key,
   report.requests.filter(request=>request.path==='/api/xo-projects/aurora-console/'+key).length]));
 const visibleIDs=()=>page.locator('.prj-row:visible').evaluateAll(rows=>rows.map(row=>row.id.replace('prj-row-','')));
 const checked=message=>{report.checks.push(message);console.log(message);};
-async function selectGroup(group){await drawer().locator('[data-project-tab="'+group+'"]').click();}
 async function selectFilter(filter){await page.locator('#prj-filter').selectOption(filter);}
 async function screenshot(name){
   await page.mouse.move(2,990);await page.screenshot({path:resolve(output,name),animations:'disabled'});
@@ -226,7 +209,7 @@ try{
   await page.waitForFunction(()=>document.querySelectorAll('.prj-row:not([hidden])').length===1);
   assert.equal(await savedDrawer.evaluate(node=>node===document.querySelector('#prj-drawer-aurora-console')),true);
   assert.equal(await filePane.evaluate(node=>node.scrollTop),fileScroll);
-  assert.deepEqual(detailCounts(),beforeSort,'Sorting and search do not refetch detail groups');
+  assert.deepEqual(detailCounts(),beforeSort,'Sorting and search do not refetch file contents');
   await search.fill('');await selectFilter('pinned');await selectFilter('all');
   assert.equal(await savedDrawer.evaluate(node=>node===document.querySelector('#prj-drawer-aurora-console')),true);
   assert.equal(await filePane.evaluate(node=>node.scrollTop),fileScroll);
@@ -234,39 +217,13 @@ try{
   assert.equal(await header.getAttribute('aria-expanded'),'false');
   assert.equal(await header.evaluate(node=>node===document.activeElement),true,'Collapse retains keyboard focus');
   await page.keyboard.press('Space');await body('files').locator('[data-file="README.md"]').waitFor();
-  assert.deepEqual(detailCounts(),beforeSort,'Reopening retains the already loaded Files group');
+  assert.deepEqual(detailCounts(),beforeSort,'Reopening retains the already loaded file browser');
   checked('Keyboard expansion and collapse retain focus; sort/search/filter changes preserve drawer DOM, file scroll, and loaded requests.');
 
-  await selectGroup('activity');await body('todos').getByText('Review release checklist').waitFor();
-  await body('activity').getByText('workspace',{exact:true}).waitFor();
-  await body('timeline').getByText('project.updated').waitFor();
-  assert.deepEqual(detailCounts(),{tree:1,todos:1,activity:1,timeline:1,'github/issues':0});
-  const beforeRefresh=detailCounts();await drawer().locator('.prj-detail-refresh').click();
-  await page.waitForFunction(()=>!document.querySelector('.prj-detail-refresh')?.disabled);
-  await page.waitForTimeout(50);
-  assert.deepEqual(detailCounts(),{tree:beforeRefresh.tree,todos:2,activity:2,timeline:2,'github/issues':0});
-  checked('Activity lazily loads Todos, Open sessions and Events; group refresh only reloads those three sources.');
+  assert.equal(await drawer().locator('[data-project-tab],[data-project-group="activity"],[data-project-group="issues"]').count(),0,
+    'Files has no redundant detail tabs or hidden Activity/Issues groups');
+  checked('Expanded Files rows contain only the file browser, with no Activity or Issues requests.');
 
-  const oldIssues=hold('/api/xo-projects/aurora-console/github/issues',issues('aurora-console',{stale:true}));
-  await selectGroup('issues');await within(oldIssues.arrived.promise,'initial Issues mirror request');
-  await drawer().locator('.prj-detail-refresh').click();
-  await body('issues').getByText('Improve keyboard navigation').waitFor();
-  oldIssues.release.resolve();await within(oldIssues.done.promise,'older Issues mirror completes');
-  await page.waitForTimeout(50);
-  assert.equal(await body('issues').getByText('Stale mirror issue').count(),0,'Older mirror response cannot replace a newer forced refresh');
-  assert.equal(count('/api/xo-projects/aurora-console/github/issues?refresh=1'),1);
-  await body('issues').locator('[data-iss-state="all"]').click();
-  const issueSearch=body('issues').locator('.iss-q');await issueSearch.fill('keyboard');
-  await page.waitForFunction(()=>document.querySelectorAll('#prjp-issues .iss-row').length===2);
-  const searchNode=await issueSearch.elementHandle(),issuesBefore=detailCounts();
-  await selectGroup('files');await selectGroup('activity');await selectGroup('issues');
-  assert.equal(await issueSearch.inputValue(),'keyboard');
-  assert.equal(await body('issues').locator('[data-iss-state="all"]').getAttribute('aria-pressed'),'true');
-  assert.equal(await searchNode.evaluate(node=>node===document.querySelector('#prjp-issues .iss-q')),true);
-  assert.deepEqual(detailCounts(),issuesBefore);
-  checked('Issues retain local filters and controls across tabs; late mirror data cannot overwrite a newer refresh.');
-
-  await selectGroup('files');
   const oldTree=hold('/api/xo-projects/aurora-console/tree',tree('aurora-console'));
   await drawer().locator('.prj-detail-refresh').click();await within(oldTree.arrived.promise,'older root-tree refresh starts');
   await body('files').locator('[data-cd="src"]').click();
@@ -288,7 +245,7 @@ try{
   assert.equal(await search.inputValue(),'');
   assert.equal(await page.locator('#prj-filter').inputValue(),'all');
   assert.equal(await row('field-notes').locator('.prj-row-head').evaluate(node=>node===document.activeElement),true);
-  await header.click();await selectGroup('files');
+  await header.click();
   checked('The Sharing project handoff clears both query and view filter, opens its project, and focuses its row.');
 
   await body('files').locator('.fx-crumb[data-cd=""]').click();
@@ -299,16 +256,14 @@ try{
     if(await header.getAttribute('aria-expanded')==='true')await header.click();
     await page.locator('#view-projects').evaluate(node=>{node.scrollTop=0;});
     await layout('list-'+width);await screenshot('projects-list-'+width+'.png');
-    await header.click();await selectGroup('files');await drawer().scrollIntoViewIfNeeded();
+    await header.click();await drawer().scrollIntoViewIfNeeded();
     await layout('files-'+width);await screenshot('projects-files-'+width+'.png');
-    await selectGroup('activity');await drawer().scrollIntoViewIfNeeded();
-    await layout('activity-'+width);await screenshot('projects-activity-'+width+'.png');
     await search.fill('not-a-project-fixture');await page.getByText('No matching projects',{exact:true}).waitFor();
     await page.locator('#view-projects').evaluate(node=>{node.scrollTop=0;});
     await layout('empty-'+width);await screenshot('projects-empty-'+width+'.png');
     await page.locator('#view-projects').getByRole('button',{name:'Show all projects',exact:true}).click();
   }
-  checked('List, Files, Activity and empty results fit 1440px, 390px and 320px with no overflowing controls.');
+  checked('List, Files and empty results fit 1440px, 390px and 320px with no overflowing controls.');
   const beforeFailure=await aurora.elementHandle();
   const refreshFailure=hold('/api/xo-projects',{detail:'Catalog temporarily unavailable'},503);
   await page.locator('#project-refresh').click();await within(refreshFailure.arrived.promise,'catalog refresh failure arrives');

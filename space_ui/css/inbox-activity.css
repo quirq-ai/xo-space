@@ -13,10 +13,23 @@
 .iac-live{border:1px solid var(--line-soft);border-radius:10px;margin-bottom:18px;background:var(--bg-2)}
 .iac-live summary{padding:12px 15px;font-size:12px;color:var(--ink-2);cursor:pointer}
 .iac-live:not(.is-unavailable) summary::marker{color:var(--accent)}
-.iac-session{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;padding:10px 15px;border-top:1px solid var(--line-soft);font-size:11px;overflow-wrap:anywhere}
+.iac-session{display:grid;gap:7px;padding:12px 15px;border-top:1px solid var(--line-soft);font-size:11px;overflow-wrap:anywhere}
 .iac-session b{font-weight:500;color:var(--ink-2)}
 .iac-session span,.iac-session time{color:var(--ink-3)}
+.iac-session-heading,.iac-session-times{display:flex;align-items:baseline;gap:7px 16px;flex-wrap:wrap}
+.iac-session-id{font:400 10px/1.5 var(--mono);color:var(--ink-3)}
+.iac-runtime{font:400 10px/1.5 var(--mono);color:var(--ink-3);overflow-wrap:anywhere}
 .iac-note{padding:0 15px 12px;font-size:12px;color:var(--ink-3)}
+.iac-todo-scope{margin:0 0 18px;color:var(--ink-3);font-size:12px;line-height:1.5}
+.iac-todo{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:11px 15px;border-top:1px solid var(--line-soft);font-size:12px;line-height:1.6}
+.iac-todo-content{min-width:0;flex:1 1 180px;overflow-wrap:anywhere;color:var(--ink-2)}
+.iac-todo-content.is-done{color:var(--ink-3);text-decoration:line-through}
+/* Keep these status selectors aligned with visualizer/todo_status.py. */
+.iac-todo-status{font:500 10px/1.2 var(--mono);padding:3px 6px;border:1px solid var(--line);border-radius:5px;color:var(--ink-2);flex:none}
+.iac-todo-status.st-in_progress{color:var(--accent);border-color:var(--accent)}
+.iac-todo-status.st-pending{color:var(--ink-2)}
+.iac-todo-status.st-blocked{color:#e0b04c;border-color:#e0b04c}
+.iac-todo-status.st-completed,.iac-todo-status.st-cancelled{color:var(--ink-3)}
 .iac-events{list-style:none;padding:0;margin:0;border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);overflow:hidden}
 .iac-events:empty{display:none}
 .iac-event{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:14px;padding:16px 18px;align-items:start}
@@ -40,6 +53,6 @@
   .iac-retention{flex:1 1 100%;margin-left:0}.iac-controls select{flex:1;min-width:0;min-height:40px}
   .iac-event{grid-template-columns:6px minmax(0,1fr);gap:9px 11px;padding:14px}
   .iac-event-time{grid-column:2;flex-direction:row;gap:8px;flex-wrap:wrap;text-align:left;white-space:normal}
-  .iac-session{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.iac-session time{grid-column:1/-1}
+  .iac-session-times{gap:4px 12px}.iac-todo{gap:5px 8px}
 }
 @media(max-width:480px){.iac{padding-left:12px;padding-right:12px}.iac-head{margin-bottom:16px}}

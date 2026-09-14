@@ -54,8 +54,8 @@ across map changes, Inbox Activity and Sharing activity ordering, and Sharing
 legacy aliases resolving to Inbox. It captures all Projects pages
 and representative Agents, Inbox and Setup pages at 1440px, 390px and 320px,
 including content clearance below secondary navigation. The Projects check
-covers catalog availability, filtering, pins, lazy detail groups, retained
-drawers, and out-of-order responses. All service writes stay blocked or inside
+covers catalog availability, filtering, pins, file browsing, retained
+file drawers, and out-of-order folder responses. All service writes stay blocked or inside
 explicit browser-owned fixtures.
 
 For inline project sharing and the separate activity feeds:
@@ -69,7 +69,7 @@ node tests/space_ui_preview/project-actions.mjs /tmp/space-project-actions
 The inline check exercises both Files List and Manage: Space ID validation,
 cancellation, retained drafts, unchanged routes, mocked error/success responses,
 and duplicate submission protection across both lists. The activity check covers
-workspace history, open sessions, pagination, repository events, independent
+workspace history, scoped todos and session details, pagination, repository events, independent
 search/selection, escaped payloads, partial errors and late reads. Both capture
 1440px, 390px and 320px layouts. The actions check verifies per-page data refresh,
 retained filters/root/drawers, and the clone form inside Manage. Every write is
@@ -104,6 +104,7 @@ node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
 node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
 node tests/space_ui_preview/setup-projects.mjs /tmp/space-setup-projects
 node tests/space_ui_preview/manage-refresh-races.mjs /tmp/space-manage-refresh-races
+node tests/space_ui_preview/manage-details.mjs /tmp/space-manage-details
 node tests/space_ui_preview/native-connectors.mjs /tmp/space-native-connectors
 node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
@@ -126,7 +127,12 @@ review for Aurora Console; browser tests intercept all project mutations. Backen
 tests separately exercise file deletion and clone publication in temporary folders.
 The Manage refresh check holds catalog and access reads across a section change,
 then verifies re-entry fetches current data and never enables deletion from an old
-access response. It only uses fictional GET responses.
+access response. It only uses fictional GET responses. The Manage details check
+covers keyboard expansion, lazy Issues, retained issue filters and recorded closed
+history, safe GitHub URL copying, independent row actions and the Inbox activity
+handoff. Clipboard operations and API responses stay inside the browser fixture. Add
+`--screenshots-only` to capture normal collapsed/expanded Manage and selected-project
+Activity states without repeating the full behavioral checks.
 
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and

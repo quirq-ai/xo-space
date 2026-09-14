@@ -239,6 +239,30 @@ for(const [id,route,run] of [
 }
 """)
 
+    def test_activity_handoff_waits_for_current_activation_and_keeps_project_payload(self):
+        self.probe(r"""
+const activityEvents=()=>emitted.filter(event=>event.type==='space:activity-project');
+for(const [completed,hash,allowed] of [
+  [true,'#/inbox/activity',true],[false,'#/inbox/activity',false],
+  [undefined,'#/inbox/activity',false],[true,'#/projects/files/list',false],
+]){
+  emitted.length=0;
+  await actions.openProjectActivity(async route=>{
+    assert.equal(route,'inbox/activity');location.hash=hash;return completed;
+  },'alpha-project');
+  assert.equal(activityEvents().length,allowed?1:0);
+  if(allowed)assert.deepEqual(activityEvents()[0].detail,{project_id:'alpha-project'});
+}
+const mounted=gate();register({id:'inbox-activity',route:'inbox/activity',mount:()=>mounted.promise});
+register({id:'other',route:'projects/files/list'});emitted.length=0;
+const old=actions.openProjectActivity(registry.switchTo,'alpha-project');await settle();
+await registry.switchTo('other');const latest=registry.switchTo('inbox/activity');
+mounted.resolve();await Promise.all([old,latest]);
+assert.deepEqual(activityEvents(),[],'Same URL does not revive an older handoff');
+await actions.openProjectActivity(registry.switchTo,'beta-project');
+assert.deepEqual(activityEvents()[0].detail,{project_id:'beta-project'});
+""")
+
 
 if __name__ == "__main__":
     unittest.main()

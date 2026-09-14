@@ -13,3 +13,11 @@ export function initProjectActions(switchTo){
     if(event.detail?.panel==='projects')switchTo('projects/manage');
   });
 }
+
+export async function openProjectActivity(switchTo,projectId){
+  const id=typeof projectId==='string'?projectId.trim():'';
+  if(!id)return;
+  if((await switchTo('inbox/activity'))===true&&location.hash==='#/inbox/activity'){
+    dispatchEvent(new CustomEvent('space:activity-project',{detail:{project_id:id}}));
+  }
+}

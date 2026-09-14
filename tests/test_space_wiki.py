@@ -555,7 +555,7 @@ class SpaceWikiTests(unittest.TestCase):
         # live + last-active come from the workspace-scope endpoints
         self.assertIn("/api/xo-projects/activity", projects)
         self.assertIn("/api/xo-projects/timeline?limit=", projects)
-        self.assertNotIn("/todos'", projects.split("const PANELS")[0])
+        self.assertNotIn("/todos'", projects)
         # Operable: search, named filters, a select for sorting, and an Add
         # action. The browser harness checks retained drawers and lazy groups.
         self.assertIn("placeholder:'Filter projects…'", projects)
@@ -563,7 +563,9 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn('id="prj-add"', projects)
         self.assertIn("switchTo('projects/manage')", projects)
         self.assertIn('id="prj-filter"', projects)
-        self.assertIn("data-project-tab=", projects)
+        self.assertNotIn("data-project-tab=", projects)
+        self.assertIn('data-panel="files"', projects)
+        self.assertIn("Refresh files", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # accessible: a real button that reports its state, with Map outside
         # it (a button inside a button is invalid markup)
