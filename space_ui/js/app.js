@@ -13,7 +13,7 @@ import {createAgentViews} from './views/sessions.js?v=20260914-manage1';
 import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-manage1';
 import {createActivityViews} from './views/inbox-activity.js?v=20260914-details1';
 import projectsView from './views/projects.js?v=20260914-details1';
-import projectManageView from './views/project-manage.js?v=20260914-details1';
+import projectManageView from './views/project-manage.js?v=20260914-polish1';
 import treeView from './views/tree.js?v=20260914-manage1';
 import sharingView from './views/sharing.js?v=20260914-details1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js

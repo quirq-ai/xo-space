@@ -40,8 +40,10 @@ The toolbar adapts to the active page. Projects Overview and Graph keep map
 autocomplete in the topbar. Every Projects page keeps **Graph root** and
 **Refresh** together in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
-`#/setup/projects` link opens Manage. Cards start collapsed; expand one to see
-Issues and **View activity**. **Copy GitHub URL**, **Share** and **Remove** work
+`#/setup/projects` link opens Manage. Cards start collapsed; one card opens at a time to show
+Issues and **View activity**, while inline sharing drafts stay mounted. Copy icons
+beside recorded metadata copy its exact value; tooltips and keyboard focus identify
+each action. **Copy GitHub URL**, **Share** and **Remove** work
 independently of expansion. Refresh rereads the active page’s data without reloading the app, retaining its
 query, selected root and existing project drawers. Inbox Sharing keeps **Share a project**,
 **Check now**, and **Refresh** beside its own navigation.

@@ -128,11 +128,14 @@ tests separately exercise file deletion and clone publication in temporary folde
 The Manage refresh check holds catalog and access reads across a section change,
 then verifies re-entry fetches current data and never enables deletion from an old
 access response. It only uses fictional GET responses. The Manage details check
-covers keyboard expansion, lazy Issues, retained issue filters and recorded closed
+covers the single-open accordion, keyboard copy/tooltips, metadata refresh focus,
+lazy Issues, retained issue filters and recorded closed
 history, safe GitHub URL copying, independent row actions and the Inbox activity
 handoff. Clipboard operations and API responses stay inside the browser fixture. Add
 `--screenshots-only` to capture normal collapsed/expanded Manage and selected-project
-Activity states without repeating the full behavioral checks.
+Activity states without repeating the full behavioral checks. `--focus-only`
+isolates a held Issues refresh that removes repository controls, checking focus
+restoration and preserving a newer user selection.
 
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and

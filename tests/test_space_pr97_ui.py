@@ -908,8 +908,9 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + controls_stamp + "'", app)
-        for view in ("sharing", "projects", "inbox-activity", "project-manage"):
+        for view in ("sharing", "projects", "inbox-activity"):
             self.assertIn("./views/" + view + ".js?v=20260914-details1'", app)
+        self.assertIn("./views/project-manage.js?v=20260914-polish1'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
@@ -921,7 +922,8 @@ class ShellTests(unittest.TestCase):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-inboxshare1"', html)
         for sheet in ("setup",):
             self.assertIn('href="css/' + sheet + '.css?v=' + controls_stamp + '"', html)
-        for sheet in ("project-management", "inbox-activity"):
+        self.assertIn('href="css/project-management.css?v=20260914-polish1"', html)
+        for sheet in ("inbox-activity",):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-details1"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)

@@ -2,6 +2,7 @@
    only an explicit issue Refresh asks the server to poll GitHub immediately. */
 import {API_BASE,apiFetch,failText} from './api.js';
 import {esc,rel} from './ui.js';
+import {icon,copyButton} from './project-ui.js?v=20260914-polish1';
 
 const STATES=[['open','Open'],['closed','Closed'],['all','All']];
 const EMPTY={
@@ -36,17 +37,20 @@ function issueRow(issue){
 
 export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,timeoutMs=12000}){
   let data=null,state='open',query='',pending=null,disposed=false,readController=null,generation=0,forcing=false;
+  let restoreRefreshFocus=false;
   const element=document.createElement('section');element.className='project-issues';
   element.setAttribute('aria-label','Issues for '+projectId);
-  element.innerHTML='<header class="iss-heading"><h3>Issues</h3>'
-    +'<button class="setup-secondary" data-iss-refresh type="button" title="Ask the server to poll GitHub now">Refresh issues</button></header>'
-    +'<div class="iss-meta"></div><div class="iss-head">'
+  element.innerHTML='<header class="iss-heading"><h3>'+icon('issue')+'Issues</h3></header>'
+    +'<div class="iss-head"><div class="iss-meta"></div><div class="iss-controls">'
     +'<input class="iss-q" type="search" placeholder="Filter issues…" autocomplete="off" spellcheck="false" aria-label="Filter issues">'
     +'<div class="iss-states" role="group" aria-label="Issue state">'
     +STATES.map(([key,label])=>'<button type="button" data-iss-state="'+key+'" aria-pressed="'+(key===state)+'">'+label+' 0</button>').join('')
+    +'</div><button class="iss-refresh" data-iss-refresh type="button" aria-label="Refresh issues" data-tip="Check GitHub for updated issues">'+icon('refresh')+'<span>Refresh</span></button>'
     +'</div></div><p class="iss-status" role="status" hidden></p><div class="iss-list"></div>';
   const $=selector=>element.querySelector(selector);
   const refreshButton=$('[data-iss-refresh]'),status=$('.iss-status'),rows=$('.iss-list'),meta=$('.iss-meta');
+  meta.innerHTML='<span class="iss-repo" hidden>'+icon('github')+'<b></b>'+copyButton('issue repository','')+'</span><span data-iss-count></span><span data-iss-checked></span>';
+  const repoNode=meta.querySelector('.iss-repo'),repoName=repoNode.querySelector('b'),repoCopy=repoNode.querySelector('[data-copy-value]');
   function setStatus(message,error=false){status.textContent=message;status.hidden=!message;status.classList.toggle('is-error',error);}
   function paintRows(){
     if(!data){rows.innerHTML='';return;}
@@ -71,9 +75,22 @@ export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,ti
     if(rows.innerHTML!==html)rows.innerHTML=html;
   }
   function paintData(){
-    meta.innerHTML=(data.repo?'<b>'+esc(data.repo)+'</b>':'')+'<span>'+count(data,'open')+' open'
-      +(data.tracked?' · '+esc(data.tracked)+' tracked':'')+'</span>'
-      +(data.fetched_at?'<span title="'+esc(data.fetched_at)+'">checked '+esc(rel(data.fetched_at))+'</span>':'<span>never checked</span>');
+    const noRemote=data.state==='no_remote';
+    $('.iss-q').hidden=noRemote;$('.iss-states').hidden=noRemote;
+    const repo=typeof data.repo==='string'?data.repo:'';
+    const repoHadFocus=repoCopy===document.activeElement;
+    repoNode.hidden=!repo;repoName.textContent=repo;
+    if(repoCopy.dataset.copyValue!==repo){
+      repoCopy.dataset.copyValue=repo;delete repoCopy.dataset.copyState;repoCopy.dataset.tip='Copy issue repository';
+    }
+    if(!repo&&repoHadFocus){
+      if(refreshButton.disabled)restoreRefreshFocus=true;
+      else refreshButton.focus({preventScroll:true});
+    }
+    meta.querySelector('[data-iss-count]').textContent=!noRemote?count(data,'open')+' open'+(data.tracked?' · '+data.tracked+' tracked':''):'';
+    const checked=meta.querySelector('[data-iss-checked]');
+    checked.textContent=data.fetched_at?'checked '+rel(data.fetched_at):!noRemote?'never checked':'';
+    checked.title=data.fetched_at||'';
     for(const [key,label] of STATES){
       const button=$('[data-iss-state="'+key+'"]');button.textContent=label+' '+count(data,key);
       button.setAttribute('aria-pressed',String(state===key));
@@ -109,7 +126,12 @@ export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,ti
       }finally{
         clearTimeout(timer);
         if(mine===generation){pending=null;readController=null;forcing=false;
-          if(!disposed){refreshButton.disabled=false;element.removeAttribute('aria-busy');}}
+          if(!disposed){
+            refreshButton.disabled=false;element.removeAttribute('aria-busy');
+            if(restoreRefreshFocus&&element.getClientRects().length
+              &&[document.body,repoCopy].includes(document.activeElement))refreshButton.focus({preventScroll:true});
+            restoreRefreshFocus=false;
+          }}
       }
     })();
     return pending;

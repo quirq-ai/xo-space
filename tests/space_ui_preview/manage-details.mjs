@@ -6,14 +6,15 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 const origin=process.env.SPACE_PREVIEW_URL||'http://127.0.0.1:5101',endpoint=new URL(origin);
 assert.equal(endpoint.hostname,'127.0.0.1');assert.ok(!['5002','5112'].includes(endpoint.port));
-const captureOnly=process.argv.includes('--screenshots-only');
+const captureOnly=process.argv.includes('--screenshots-only'),focusOnly=process.argv.includes('--focus-only');
 const output=resolve(process.argv[2]||'/private/tmp/space-manage-details');await mkdir(output,{recursive:true});
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE?pathToFileURL(resolve(process.env.PLAYWRIGHT_MODULE)).href:'playwright');
 const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE||undefined});
 const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
 await context.addInitScript(()=>{
-  window.fixtureCopies=[];window.fixtureCopyDenied=false;
+  window.fixtureCopies=[];window.fixtureCopyDenied=false;window.fixtureCopyPause=false;window.fixtureReleaseCopy=null;
   Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{
+    if(window.fixtureCopyPause)await new Promise(done=>{window.fixtureReleaseCopy=done;});
     if(window.fixtureCopyDenied)throw new Error('Fictional clipboard denied');window.fixtureCopies.push(value);
   }}});
 });
@@ -22,8 +23,9 @@ const report={checks:[],screenshots:[],requests:[],errors:[],writes:[]};
 const gate=()=>{let resolve;const promise=new Promise(done=>resolve=done);return{promise,resolve};};
 const pending=[];let heldIssue=null,issueFailure=false,emptyClosed=false;
 const stamp='2026-09-14T10:00:00Z';
-const catalog=[{id:'alpha',display_name:'Aurora Console',description:'Release visibility for a fictional team.'},
-  {id:'beta',display_name:'Orbit API',description:'A fictional non-GitHub repository.'}];
+const catalog=[{id:'alpha',display_name:'Aurora Console',description:'Release visibility for a fictional team.',created_at:stamp,unscaffolded:false},
+  {id:'beta',display_name:'Orbit API — infrastructure and release observability',description:'A fictional non-GitHub repository.',created_at:stamp,unscaffolded:true}];
+const metadataFields={pid:'project-12345678-90ab-cdef-1234-567890abcdef',owner_user_id:'fictional-owner-with-a-long-workspace-identity',branch:'development/release-readiness-and-accessibility-review'};
 let metadata={alpha:'git@github.com:fictional/aurora.git',beta:'https://gitlab.com/fictional/orbit.git'};
 const issuePayload=(id,{stale=false}={})=>({project_id:id,state:'ok',repo:'fictional/'+id,tracked:1,fetched_at:stamp,
   issues:[{number:101,title:stale?'Stale mirror issue':'Improve keyboard navigation',state:'open',labels:['accessibility'],assignees:[{login:'demo-dev'}],updated_at:stamp,url:'https://github.com/fictional/'+id+'/issues/101'},
@@ -38,9 +40,9 @@ await context.route('**/*',async route=>{
   const detail=path.match(/^\/api\/xo-projects\/([^/]+)\/(file|github\/issues|removal|todos|activity|timeline)$/);
   if(detail){
     const [,id,kind]=detail;
-    if(kind==='file')return json(route,{project_id:id,relative_path:'.xo/project.json',content:JSON.stringify({git:{remote_url:metadata[id]}}),truncated:false});
+    if(kind==='file')return json(route,{project_id:id,relative_path:'.xo/project.json',content:JSON.stringify(id==='alpha'?{pid:metadataFields.pid,owner_user_id:metadataFields.owner_user_id,git:{remote_url:metadata[id],default_branch:metadataFields.branch}}:{git:{remote_url:metadata[id]}}),truncated:false});
     if(kind==='github/issues'){
-      if(heldIssue&&!url.searchParams.has('refresh')){const held=heldIssue;heldIssue=null;held.arrived.resolve();await held.release.promise;return json(route,issuePayload(id,{stale:true}));}
+      if(heldIssue&&Boolean(heldIssue.force)===url.searchParams.has('refresh')){const held=heldIssue;heldIssue=null;held.arrived.resolve();await held.release.promise;return json(route,held.data||issuePayload(id,{stale:true}));}
       return json(route,issueFailure?{project_id:id,state:'error',error:'Fixture issue service unavailable',issues:[]}:issuePayload(id));
     }
     if(kind==='removal')return json(route,{project_id:id,can_remove:false,repo:'github.com/fictional/'+id,
@@ -62,7 +64,27 @@ async function go(route){await page.evaluate(route=>{location.hash='#/'+route;},
   await page.locator(route==='projects/manage'?'#view-project-manage.is-active':'#view-inbox-activity.is-active').waitFor({state:'visible'});}
 async function screenshot(name){await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
 try{
-  if(captureOnly){
+  if(focusOnly){
+    await page.goto(origin+'/space/#/projects/manage',{waitUntil:'networkidle'});await toggle('alpha').click();
+    const refresh=details('alpha').locator('[data-iss-refresh]');
+    for(const moveFocus of [false,true]){
+      await issues('alpha').getByText('Improve keyboard navigation',{exact:true}).waitFor();
+      const repoCopy=details('alpha').locator('.iss-meta [data-copy-value]');await repoCopy.focus();
+      const held=heldIssue={force:true,data:{project_id:'alpha',state:'no_remote',repo:null,issues:[]},arrived:gate(),release:gate()};pending.push(held);
+      await refresh.evaluate(button=>button.click());await held.arrived.promise;
+      assert.equal(await refresh.isDisabled(),true);
+      const owner=details('alpha').locator('[data-project-field="owner"] [data-copy-value]');
+      if(moveFocus)await owner.focus();
+      held.release.resolve();await issues('alpha').getByText(/No github.com remote/).waitFor();
+      await page.waitForFunction(()=>!document.querySelector('[data-project-id="alpha"] [data-iss-refresh]').disabled);
+      assert.equal(await (moveFocus?owner:refresh).evaluate(node=>node===document.activeElement),true,
+        moveFocus?'No-remote completion preserves a newly selected control':'No-remote completion focuses Refresh after it becomes enabled');
+      if(!moveFocus){await page.getByRole('tooltip').waitFor();assert.equal(await page.getByRole('tooltip').textContent(),await refresh.getAttribute('data-tip'),'Restored focus describes Refresh, not the removed repository control');}
+      if(!moveFocus){await refresh.click();}
+    }
+    checked('A held forced refresh that removes repository controls restores enabled Refresh focus, while preserving focus moved elsewhere by the user.');
+    assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
+  }else if(captureOnly){
     await page.goto(origin+'/space/#/projects/manage',{waitUntil:'networkidle'});await toggle('alpha').waitFor();
     for(const state of ['collapsed','expanded']){
       if(state==='expanded'){
@@ -76,6 +98,18 @@ try{
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
         await screenshot('manage-'+state+'-'+width+'.png');
       }
+    }
+    for(const width of [1440,390,320]){
+      await page.setViewportSize({width,height:1000});
+      await details('alpha').locator('.project-issues').scrollIntoViewIfNeeded();
+      const issueCopy=details('alpha').locator('.iss-meta [data-copy-value]');
+      await issueCopy.evaluate(node=>node.blur());
+      await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+      await issueCopy.focus();
+      await page.getByRole('tooltip').waitFor();const tipBox=await page.getByRole('tooltip').boundingBox();
+      assert.ok(tipBox.x>=0&&tipBox.x+tipBox.width<=width,'Copy tooltip stays within the '+width+'px viewport');
+      await issueCopy.press('Escape');await page.getByRole('tooltip').waitFor({state:'hidden'});
+      await screenshot('manage-issues-'+width+'.png');
     }
     await row('alpha').locator('[data-project-activity]').click();await page.waitForURL('**/#/inbox/activity');
     await page.locator('[data-activity-todo-rows]').getByText('Current alpha task',{exact:true}).waitFor();
@@ -130,6 +164,19 @@ try{
   assert.equal(await query.inputValue(),'keyboard');assert.equal(await details('alpha').locator('[data-iss-state="all"]').getAttribute('aria-pressed'),'true');
   assert.equal(await input.evaluate(node=>node.isConnected&&node===document.querySelector('[data-project-id="alpha"] .iss-q')),true);
   assert.equal(report.requests.filter(path=>path.endsWith('/github/issues?refresh=1')).length,polls,'Re-entry may refresh the mirror without polling GitHub');
+  await toggle('beta').focus();await toggle('beta').press('Enter');
+  assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');
+  assert.equal(await toggle('beta').getAttribute('aria-expanded'),'true');
+  assert.equal(await page.locator('.manage-project-details:visible').count(),1);
+  await page.waitForLoadState('networkidle');
+  assert.equal(await details('beta').locator('[data-project-field="github"] [data-copy-value]').count(),0,'An unavailable GitHub value has no metadata copy control');
+  assert.equal(await toggle('beta').evaluate(node=>node===document.activeElement),true);
+  await toggle('alpha').focus();await toggle('alpha').press('Space');
+  assert.equal(await toggle('beta').getAttribute('aria-expanded'),'false');
+  assert.equal(await page.locator('.manage-project-details:visible').count(),1);
+  assert.equal(await query.inputValue(),'keyboard');
+  assert.equal(await input.evaluate(node=>node.isConnected),true,'Closing another card retains its issue controls');
+  checked('Manage is a single-open accordion; keyboard activation retains focus and closed cards keep their own issue state.');
   await query.fill('');await details('alpha').locator('[data-iss-state="closed"]').click();
   await issues('alpha').getByText('Restore keyboard focus',{exact:true}).waitFor();
   emptyClosed=true;await details('alpha').locator('[data-iss-refresh]').click();
@@ -141,17 +188,104 @@ try{
   await issues('alpha').getByText('Restore keyboard focus',{exact:true}).waitFor();
   checked('Issues retain filter controls through collapse/navigation, explain recorded closed history, and recover from explicit-refresh errors.');
 
+  const values={name:catalog[0].display_name,description:catalog[0].description,id:'alpha',created:stamp,
+    uuid:metadataFields.pid,owner:metadataFields.owner_user_id,branch:metadataFields.branch,github:'https://github.com/fictional/aurora'};
+  for(const [field,value] of Object.entries(values)){
+    const button=details('alpha').locator('[data-project-field="'+field+'"] [data-copy-value]');
+    await button.waitFor();assert.equal(await button.getAttribute('data-copy-value'),value,field+' has the exact source value');
+    const label=await button.getAttribute('aria-label');assert.ok(label?.startsWith('Copy '),field+' has an accessible action label');
+    assert.equal(await button.getAttribute('data-tip'),label,field+' has a named tooltip');
+    assert.equal(await button.locator('[data-icon="copy"]').count(),1,field+' uses the shared copy icon');
+    assert.equal(await button.locator('[data-icon="check"]').count(),1,field+' includes success feedback without rebuilding the button');
+    assert.equal(await button.textContent(),'');
+    const before=await page.evaluate(()=>window.fixtureCopies.length);
+    await button.focus();
+    await page.getByRole('tooltip').waitFor();assert.equal(await page.getByRole('tooltip').textContent(),label);
+    assert.equal(await button.getAttribute('aria-describedby'),await page.getByRole('tooltip').getAttribute('id'));
+    await button.press('Escape');await page.getByRole('tooltip').waitFor({state:'hidden'});
+    assert.equal(await button.evaluate(node=>node===document.activeElement),true,'Escape dismisses only the tooltip');
+    await button.press('Enter');
+    await page.waitForFunction(count=>window.fixtureCopies.length===count,before+1);
+    assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),value);
+    assert.equal(await button.evaluate(node=>node===document.activeElement),true,'Keyboard copy keeps focus for '+field);
+  }
+  assert.equal(await details('alpha').locator('[data-project-field="metadata"] [data-copy-value]').count(),0,'Derived availability is not a copied source value');
+  for(const field of ['name','id']){
+    const button=row('alpha').locator('[data-project-copy-field="'+field+'"]');
+    assert.equal(await button.getAttribute('data-copy-value'),values[field]);
+    assert.equal(await button.getAttribute('data-tip'),await button.getAttribute('aria-label'));
+    const before=await page.evaluate(()=>window.fixtureCopies.length);await button.focus();await button.press('Enter');
+    await page.waitForFunction(count=>window.fixtureCopies.length===count,before+1);
+    assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),values[field]);
+    assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'true','Header copies do not collapse a card');
+  }
+  await page.locator('#view-project-manage').evaluate(node=>{node.scrollTop=0;});
+  const cardBox=await row('alpha').boundingBox();
+  await page.mouse.click(cardBox.x+cardBox.width-8,cardBox.y+8);
+  assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false','Blank card header space is an expansion target');
+  await toggle('alpha').click();
+  await details('alpha').locator('[data-project-field="name"] .manage-project-value').click();
+  assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'true','Clicking detail text does not collapse its card');
+  const repoCopy=details('alpha').locator('.iss-meta [data-copy-value]');
+  const beforeRepo=await page.evaluate(()=>window.fixtureCopies.length);await repoCopy.focus();await repoCopy.press('Enter');
+  await page.waitForFunction(count=>window.fixtureCopies.length===count,beforeRepo+1);
+  assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),'fictional/alpha');
+  const repoCopyNode=await repoCopy.elementHandle();
+  await page.locator('#project-refresh').evaluate(button=>button.click());
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  assert.equal(await repoCopyNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Refreshing counts and time retains focused issue-repository copy control');
+  const owner=details('alpha').locator('[data-project-field="owner"] [data-copy-value]');
+  const ownerNode=await owner.elementHandle();await owner.focus();
+  await page.locator('#project-refresh').evaluate(button=>button.click());
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  assert.equal(await ownerNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Metadata refresh retains the same focused copy button');
+  const beforeDelayedCopy=await page.evaluate(()=>window.fixtureCopies.length),oldOwner=metadataFields.owner_user_id;
+  await page.evaluate(()=>{window.fixtureCopyPause=true;window.fixtureReleaseCopy=null;});await owner.press('Enter');
+  await page.waitForFunction(()=>typeof window.fixtureReleaseCopy==='function');
+  metadataFields.owner_user_id='fictional-owner-updated-after-refresh';
+  await page.locator('#project-refresh').evaluate(button=>button.click());
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  assert.equal(await ownerNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Changed metadata updates the value without replacing the focused button');
+  assert.equal(await owner.getAttribute('data-copy-value'),metadataFields.owner_user_id);
+  await page.evaluate(()=>{window.fixtureCopyPause=false;window.fixtureReleaseCopy();});
+  await page.waitForFunction(count=>window.fixtureCopies.length===count,beforeDelayedCopy+1);
+  assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),oldOwner,'The original clipboard operation copied its original value');
+  assert.notEqual(await owner.getAttribute('data-copy-state'),'done','Late clipboard completion cannot label the replacement value Copied');
+  assert.equal(await owner.getAttribute('data-tip'),await owner.getAttribute('aria-label'));
+  const beforeCopyFailure=await page.evaluate(()=>window.fixtureCopies.length);
+  await page.evaluate(()=>{window.fixtureCopyDenied=true;});await owner.press('Enter');
+  await page.waitForFunction(()=>document.querySelector('[data-project-field="owner"] [data-copy-value]').dataset.copyState==='error');
+  assert.equal(await page.evaluate(()=>window.fixtureCopies.length),beforeCopyFailure);
+  assert.match(await page.locator('#manage-projects > .project-copy-live').textContent(),/Could not copy/);
+  assert.equal(await owner.evaluate(node=>node===document.activeElement),true);
+  await page.evaluate(()=>{window.fixtureCopyDenied=false;});await owner.press('Enter');
+  await page.waitForFunction(count=>window.fixtureCopies.length===count,beforeCopyFailure+1);
+  assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),metadataFields.owner_user_id);
+  const savedOwner=metadataFields.owner_user_id;delete metadataFields.owner_user_id;
+  await owner.focus();await page.getByRole('tooltip').waitFor();
+  await page.locator('#project-refresh').evaluate(button=>button.click());
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  assert.equal(await ownerNode.evaluate(node=>node.isConnected),false);
+  assert.equal(await toggle('alpha').evaluate(node=>node===document.activeElement),true,'Removing focused metadata returns focus to its card');
+  await page.getByRole('tooltip').waitFor({state:'hidden'});
+  metadataFields.owner_user_id=savedOwner;
+  await page.locator('#project-refresh').evaluate(button=>button.click());await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  checked('Exact metadata copies, tooltips and focused controls survive refresh; stale clipboard feedback and removed-field tooltips are suppressed.');
+
   await toggle('alpha').click();
   await row('alpha').locator('[data-project-share]').click();
   const share=row('alpha').locator('.project-share');await share.locator('[name=workspace_id]').fill('fictional-recipient');
   assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');
+  await toggle('beta').click();assert.equal(await share.isVisible(),true,'Opening another card does not close an inline share draft');
+  assert.equal(await share.locator('[name=workspace_id]').inputValue(),'fictional-recipient');
   await toggle('alpha').click();await toggle('alpha').click();assert.equal(await share.locator('[name=workspace_id]').inputValue(),'fictional-recipient');
   await row('alpha').locator('[data-project-remove]').click();await page.locator('#manage-project-removal').waitFor();
   assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');assert.equal(await page.locator('#manage-project-delete').isDisabled(),true);
   await page.locator('#manage-project-close').click();await share.locator('[data-share-cancel]').click();
+  const copiesBeforeDenied=await page.evaluate(()=>window.fixtureCopies.length);
   await page.evaluate(()=>{window.fixtureCopyDenied=true;});await row('alpha').locator('[data-project-copy]').click();
   await row('alpha').locator('.manage-project-copy-result').getByText(/Could not copy the URL/).waitFor();
-  assert.equal(await page.evaluate(()=>window.fixtureCopies.length),1);
+  assert.equal(await page.evaluate(()=>window.fixtureCopies.length),copiesBeforeDenied);
   assert.equal(await row('alpha').locator('[data-project-copy]').isEnabled(),true,'Clipboard failure leaves retry available');
   assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');
   checked('Share, Remove and Copy stay independent of card expansion, preserve inline drafts, and perform no accidental project mutations.');
@@ -179,5 +313,5 @@ try{
   checked('Expanded Manage cards, issue filters and independent actions fit desktop, 390px and 320px screens.');
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
   }
-}catch(error){report.failure=error.stack;await page.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});throw error;}
+}catch(error){report.failure=error.stack;report.ui=await page.evaluate(()=>({width:innerWidth,active:{tag:document.activeElement?.tagName,classes:document.activeElement?.className,tip:document.activeElement?.dataset?.tip},tooltips:[...document.querySelectorAll('[role=tooltip]')].map(node=>({hidden:node.hidden,text:node.textContent}))})).catch(()=>null);await page.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});throw error;}
 finally{pending.forEach(item=>item.release.resolve());await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await browser.close();}
