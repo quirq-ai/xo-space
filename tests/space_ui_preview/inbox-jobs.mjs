@@ -67,7 +67,7 @@ await context.route('**/*',async route=>{
 const rows=page.locator('.inb-job-row');
 const item=id=>page.locator(`[data-job-id="${id}"]`);
 const refresh=()=>page.locator('[data-act="jobs-refresh"]').click();
-const inboxPage=name=>page.locator('#section-nav [href="#/inbox/'+name+'"]');
+const inboxPage=name=>page.locator('#section-nav [data-section-page="inbox-'+name+'"]');
 async function settled(){await page.locator('.inb-jobs[aria-busy="false"]').waitFor();}
 async function expectCount(count){await page.waitForFunction(count=>document.querySelectorAll('.inb-job-row').length===count,count);}
 try{
@@ -91,7 +91,8 @@ try{
   await inboxPage('jobs').click();await initial.arrived.promise;
   assert.match(await page.locator('.inb-jobs').textContent(),/Loading scheduled jobs/);
   assert.equal(await page.locator('.inb-connections-page').isVisible(),false);
-  assert.equal(await page.locator('#view-search').isVisible(),false,'Item search is absent from Jobs');
+  assert.equal(await page.locator('#view-search').isVisible(),true);
+  assert.equal(await page.locator('#view-search').getAttribute('placeholder'),'Find a page…','Jobs offers page navigation without changing the retained Items filter');
   initial.release.resolve();await expectCount(4);await settled();
   assert.equal(await page.locator('[data-job-id="manual"]').count(),0);
   assert.match(await item('half-minute').textContent(),/Every 30 s/);
@@ -214,7 +215,7 @@ try{
   await page.locator('#command-runs-close').click();
   await page.locator('[data-act="jobs-setup"]').click();
   await page.locator('#setup-panel-commands').waitFor();
-  assert.equal(await page.locator('#setup-nav [data-setup-go="commands"]').getAttribute('aria-current'),'step','Inbox opens command management directly');
+  assert.equal(await page.locator('#section-nav [data-setup-go="commands"]').getAttribute('aria-current'),'page','Inbox opens command management directly');
   await page.locator('[data-command-id="release-ready"]').waitFor();
   await page.locator('#setup-commands').evaluate(el=>el.scrollIntoView({block:'start'}));
   assert.equal(await page.locator('#command-form').isVisible(),false);

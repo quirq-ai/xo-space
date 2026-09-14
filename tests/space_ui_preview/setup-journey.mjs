@@ -98,12 +98,12 @@ const panel=id=>page.locator('#setup-panel-'+id);
 async function expectSection(id){
   await page.waitForURL('**/#/setup/'+id);await panel(id).waitFor();
   assert.equal(await page.locator('.setup-panel:visible').count(),1,'Only the routed section is visible');
-  assert.equal(await page.locator('#setup-nav [aria-current="step"]').count(),1);
-  assert.equal(await page.locator('#setup-nav [data-setup-go="'+id+'"]').getAttribute('aria-current'),'step');
+  assert.equal(await page.locator('#section-nav [data-section-page][aria-current="page"]').count(),1);
+  assert.equal(await page.locator('#section-nav [data-setup-go="'+id+'"]').getAttribute('aria-current'),'page');
   assert.equal(await page.locator('#tab-setup.is-on').count(),1,'Section URLs share the Setup primary tab');
 }
 async function choose(id){
-  await page.locator(`#setup-nav [data-setup-go="${id}"]`).click();
+  await page.locator(`#section-nav [data-setup-go="${id}"]`).click();
   await expectSection(id);
 }
 async function refresh(){
@@ -141,9 +141,9 @@ try{
   assert.doesNotMatch(await page.locator('#setup-alert').textContent(),/Unsaved changes/,'Restoring saved values clears the draft status');
   await panel('workspace').waitFor();
   assert.equal(await page.locator('.setup-panel:visible').count(),1);
-  assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
+  assert.deepEqual(await page.locator('#section-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
     sections);
-  assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>({tag:node.tagName,href:node.getAttribute('href')}))),
+  assert.deepEqual(await page.locator('#section-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>({tag:node.tagName,href:node.getAttribute('href')}))),
     sections.map(id=>({tag:'A',href:'#/setup/'+id})),'Every sidebar section has a copyable, openable canonical link');
   await panel('workspace').locator('.setup-step-footer [data-setup-go="intelligence"]').click();
   await panel('intelligence').waitFor();
@@ -157,8 +157,8 @@ try{
   await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_DRAFT');
   assert.match(await page.locator('#setup-alert').textContent(),/Unsaved changes/,'Credential drafts are included in setup status');
-  assert.match(await page.locator('#setup-nav [data-setup-go="secrets"]').textContent(),/Unsaved changes/,'Credential draft status belongs to Secrets');
-  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'A credential draft does not mark Intelligence as unsaved');
+  assert.match(await page.locator('#section-nav [data-setup-go="secrets"]').textContent(),/Unsaved changes/,'Credential draft status belongs to Secrets');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/,'A credential draft does not mark Intelligence as unsaved');
   await page.locator('#secret-cancel').click();
   assert.doesNotMatch(await page.locator('#setup-alert').textContent(),/Unsaved changes/);
   assert.equal(await page.locator('#secret-add').evaluate(el=>el===document.activeElement),true);
@@ -181,7 +181,7 @@ try{
     await choose('workspace');
     await page.evaluate(panel=>dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel}})),legacy);
     await panel('intelligence').waitFor();
-    assert.equal(await page.locator('#setup-nav [data-setup-go="intelligence"]').getAttribute('aria-current'),'step');
+    assert.equal(await page.locator('#section-nav [data-setup-go="intelligence"]').getAttribute('aria-current'),'page');
     assert.equal(new URL(page.url()).hash,'#/setup/intelligence','Legacy section handoffs use the canonical section URL');
     const control=legacy==='agent'?'#runtime-agent':'#runtime-source-mode';
     assert.equal(await page.locator(control).evaluate(node=>node===document.activeElement),true,'Legacy '+legacy+' handoff focuses its corresponding Intelligence control');
@@ -198,8 +198,8 @@ try{
 
   await page.locator('#xo-root-input').fill('/demo/next-projects');
   await choose('intelligence');await page.locator('#runtime-agent').selectOption('codex');
-  assert.match(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/);
-  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'Runtime drafts do not mark Projects as unsaved');
+  assert.match(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/);
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="projects"]').textContent(),/Unsaved changes/,'Runtime drafts do not mark Projects as unsaved');
   assert.match(await page.locator('#setup-sources .source-row:visible').textContent(),/Codex/);
   await choose('intelligence');await page.locator('#runtime-watcher').uncheck();
   await page.locator('#runtime-source-mode').selectOption('active');
@@ -255,22 +255,22 @@ try{
   assert.deepEqual(agentSave,{agent_name:'codex',watcher_enabled:true,watcher_interval_seconds:1,watcher_source_mode:'all'},
     'Agent Save retains the last saved activity settings, not its unsaved draft');
   await drafts();
-  assert.match(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Saving the agent keeps the unsaved activity form visible in Intelligence status');
+  assert.match(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/,'Saving the agent keeps the unsaved activity form visible in Intelligence status');
   await page.locator('#runtime-agent').selectOption('claude_code');
   await choose('intelligence');await save('#activity-save','/api/runtime-config');
   const activitySave=writes.filter(write=>write.path==='/api/runtime-config').at(-1).body;
   assert.deepEqual(activitySave,{agent_name:'codex',watcher_enabled:false,watcher_interval_seconds:5,watcher_source_mode:'active'},
     'Activity Save retains the saved agent, not its neighboring form draft');
   await drafts({agent:'claude_code'});
-  assert.match(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Saving activity keeps an unsaved agent choice');
-  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/);
+  assert.match(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/,'Saving activity keeps an unsaved agent choice');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="projects"]').textContent(),/Unsaved changes/);
   await choose('workspace');await save('#roots-save','/api/runtime-config/roots');
   assert.deepEqual(writes.filter(write=>write.path.endsWith('/roots')).at(-1).body,
     {xo_projects_root:'/demo/next-projects',quirq_state_root:'/demo/.quirq'});
   await drafts({agent:'claude_code'});
   assert.match(await page.locator('#setup-alert').textContent(),/Unsaved changes/);
   await choose('intelligence');await save('#runtime-save','/api/runtime-config');
-  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Intelligence clears only after both form drafts are saved');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/,'Intelligence clears only after both form drafts are saved');
   assert.match(await page.locator('#setup-alert').textContent(),/folder/i);
   assert.equal(await page.locator('#setup-alert [data-setup-go="workspace"]').count(),1);
   await choose('server');
@@ -314,7 +314,7 @@ try{
     for(const id of ['workspace','intelligence','projects','secrets','commands','server']){
       await choose(id);
       await page.waitForTimeout(350);
-      assert.ok(await page.locator('#setup-nav,.setup-panel:visible,.setup-panel:visible input,.setup-panel:visible select,.setup-panel:visible button').evaluateAll(nodes=>nodes.filter(el=>el.getClientRects().length).every(el=>{
+      assert.ok(await page.locator('#section-nav,.setup-panel:visible,.setup-panel:visible input,.setup-panel:visible select,.setup-panel:visible button').evaluateAll(nodes=>nodes.filter(el=>el.getClientRects().length).every(el=>{
         const rect=el.getBoundingClientRect();return rect.left>=-1&&rect.right<=innerWidth+1;
       })),`${width}px ${id} navigation and controls fit`);
       await page.screenshot({path:resolve(output,`setup-${id}-${width}.png`)});

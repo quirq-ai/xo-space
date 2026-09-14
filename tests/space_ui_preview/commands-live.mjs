@@ -41,7 +41,7 @@ await context.route('**/*',async route=>{
 let createdId=null;
 try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
-  await page.locator('#setup-nav [data-setup-go="commands"]').click();
+  await page.locator('#section-nav [data-setup-go="commands"]').click();
   await page.locator('#command-add').click();
   await page.locator('#command-name').fill('Verify isolated command execution');
   await page.locator('#command-description').fill('Print a fixture result with automatic jobs disabled.');

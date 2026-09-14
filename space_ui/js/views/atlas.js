@@ -1,3 +1,4 @@
+import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
 /* The atlas views (Dashboard, Graph, Timeline): lenses over one selected
    graph dataset. Dashboard uses dashboard.json while Graph uses space.json.
    They share the model, camera, selection state and cross-view actions
@@ -6,7 +7,7 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-unified1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 
@@ -140,6 +141,9 @@ function atlasView(id,label,order,lens,dataset=null){
       });
     },
     async show(){
+      if(lens==='graph'){
+        document.getElementById('atlas-page-header').innerHTML=pageHeader({title:'Projects',description:dataset==='dashboard'?'Projects grouped by environment.':'Projects, folders and files in this workspace.',actions:'<a class="space-button" href="#/projects/'+(dataset==='dashboard'?'graph':'overview')+'">'+(dataset==='dashboard'?'By project':'By environment')+'</a>'});
+      }
       refreshToolbar=toolbarRefresh;
       try{if(await ensureBoot(dataset)&&activeAtlasId===id){hooks.setActiveView?.(lens);toolbarRefresh();}}
       catch{if(activeAtlasId===id)renderNoData(host,dataset);}
@@ -228,7 +232,7 @@ const collectionLabel=DATA.meta.collectionLabel||'clusters';
 document.getElementById('q').placeholder=`Search ${LEAVES.length} ${noun}…`;
 document.getElementById('fmeta').textContent=
   `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
-document.querySelector('#view-time .thead h2').textContent='Timeline';
+document.querySelector('#view-time .thead h1').textContent='Timeline';
 if(DATA.meta.timelineSub){
   document.getElementById('tsub').textContent=DATA.meta.timelineSub;
 }
@@ -2041,7 +2045,7 @@ listen(tsvg,'click',e=>{
 /* ============================== BOOT ============================== */
 function resize(){
   dpr=Math.min(2,devicePixelRatio||1);
-  const r=document.getElementById('view-graph').getBoundingClientRect();
+  const r=(document.getElementById('atlas-surface')||document.getElementById('view-graph')).getBoundingClientRect();
   GW=r.width;GH=r.height;
   gcv.width=GW*dpr;gcv.height=GH*dpr;
   gcv.style.width=GW+'px';gcv.style.height=GH+'px';

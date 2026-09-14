@@ -1,26 +1,41 @@
 # Space UI
 
-An explorable map of `~/xo-projects`. Four primary sections share the same
-navigation structure: **Projects**, **Agents**, **Inbox**, and **Setup**.
-Primary links open a section's default page; the secondary links open its
-pages and can be copied, opened in another tab, or revisited with Back/Forward.
+Four primary sections share the same navigation: **Projects**, **Agents**,
+**Inbox**, and **Setup**. Each has **List | Graph | Tree** representation controls.
+List holds the existing forms and actions; Graph and Tree show relationships
+between the section's records. The page links select the content within List.
+All links support direct URLs and browser Back/Forward.
 
-| Section | Default route | Pages |
-|---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, List, Graph, Tree, Sharing, Timeline |
-| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
+| Section | Default List route | List pages |
+|---------|--------------------|------------|
+| Projects (`1`) | `#/projects/list` | Workspace, Timeline, Sharing |
+| Agents (`2`) | `#/agents/sessions` | Overview, Sessions, Tools, Models, Trends |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Projects, Connectors, Secrets, Commands, Server |
 
-Space starts at Projects Overview. List has its own route, `#/projects/list`;
-clicking Projects or pressing `1` always opens Overview. The section roots
-`#/projects`, `#/agents`, `#/inbox`, and `#/setup` normalize to their defaults.
-Legacy `#/dashboard`, `#/graph`, `#/tree`, `#/sharing`, and `#/time` links open
-the corresponding Projects page. Connectors and Secrets keep their aliases
-`#/connectors` and `#/secrets`. Technical details is a child of Setup Server at
-`#/setup/server/details`; `#/quirq` remains an alias. Stored Inbox links using
-`view: "projects"` continue to open List; that API value is independent of the
-Projects section URL.
+Space starts at Projects List. Each section's Graph and Tree use
+`#/<section>/graph` and `#/<section>/tree`. Switching back to List returns to
+that section's last List page, preserving drafts and open details. Primary links
+and `1`–`4` open the defaults above. Section roots (`#/projects`, `#/agents`,
+`#/inbox`, `#/setup`) normalize to those defaults.
+
+Projects Graph and Tree show workspace folders and files. Agents groups loaded
+sessions by runtime and project. Inbox groups items by source and project,
+connections by collector, and jobs by interval. Setup shows configuration areas
+and status without credential values. Select a record to inspect its metadata;
+**Open in List** returns to the existing controls. Agents, Inbox and Setup Graph and Tree share search
+and selection, and retain matching ancestors. Projects keeps its existing,
+independent folder filters and map search. Partial reads and capped datasets
+are labelled; Graph limits dense results and Tree includes every loaded record.
+Agents, Inbox and Setup refresh their data when returning from List or another
+section. Switching directly between Graph and Tree keeps the current snapshot;
+**Refresh** requests the latest data without resetting search or selection.
+
+Legacy `#/dashboard`, `#/projects/overview`, `#/graph`, `#/tree`, `#/sharing`,
+and `#/time` links remain available. Connectors and Secrets keep aliases
+`#/connectors` and `#/secrets`. Technical details lives at
+`#/setup/server/details`, with `#/quirq` as an alias. Stored Inbox links using
+`view: "projects"` continue to open the project catalog.
 
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered
@@ -32,8 +47,8 @@ section. The overview itself works offline.
 The toolbar adapts to the active page. Projects Overview and Graph keep the root
 picker and map autocomplete. List, Tree, Timeline, Setup, Inbox Items, and
 the Agents session list have their own search; typing there keeps you on that page.
-Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
-toolbar. On phones these pages also give back the empty toolbar row.
+Pages without a data filter keep the same search area with **Find a page…**.
+It searches navigation labels; choose a result or press Enter to open that page.
 
 | Page | Search scope |
 |------|--------------|
@@ -43,6 +58,7 @@ toolbar. On phones these pages also give back the empty toolbar row.
 | Setup | Setting names and topics. Choose a result to open its section; searches never read field values or credentials, and all unfinished forms stay mounted. |
 | Setup → Connectors | Workspace integrations and account apps by name, identifier, description, and connected account label. Filtering preserves open controls and unsaved edits. |
 | Inbox | Title, body, kind, source, and project in the loaded status page, intersected with the source filter. The matching count shows this scope. |
+| Agents, Inbox and Setup Graph/Tree | Loaded record names, kinds and displayed metadata; matching ancestors remain visible. |
 | Sessions list | Project, path, source, model, and session ID in the loaded sessions, intersected with the selected sources. Matching counts distinguish loaded rows from the total. |
 
 Each page remembers its query while you navigate within the app; a full
@@ -65,18 +81,21 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | Path | What it is |
 |------|------------|
 | `index.html` | Thin shell: markup + stylesheet links + an import map + the `js/app.js` entry. The import map is where `core/api.js`, `core/ui.js` and `core/connections.js` get their cache stamp: views import those three bare, the map rewrites every such import to one `?v=` URL (one module instance, fetched fresh after a bump); every other core module keeps the stamp on its import line. |
-| `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). |
+| `css/components.css` | Shared page spacing, headers, buttons, segmented controls, cards and form styles. View styles own only their specific layouts. |
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
 | `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, and per-view failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
-| `js/core/section-nav.js` | One shared secondary navigation strip; native links follow the current section and mark the active page. |
+| `js/core/section-nav.js` | One shared navigation bar with native links for content pages and List, Graph, Tree modes. List remembers the last page for each section. |
+| `js/core/page-layout.js` | Escaped page-header markup shared by the view controllers. |
+| `js/views/data-explorer.js` | Shared read-only Graph and Tree renderer for Agents, Inbox and Setup, with search, selection, inspection and List handoffs. |
+| `js/views/agent-data.js`, `inbox-data.js`, `setup-data.js` | Read-only adapters that normalize existing endpoint data into records and relationships; Setup summaries exclude credential values. |
 | `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
-| `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
+| `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs (explicit AbortSignal reads are independent), and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
+| `js/core/read-snapshot.js` | Bounded read-only snapshots for composite views: independent deadlines and AbortSignals let successful sources remain available when others fail. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
 | `js/core/connections.js` | Pure formatters over one `GET /api/connections` entry: `every` (cadence), `collectorLabels`, `pollLine` (last poll or the error). Shared by the Inbox's Connections section and Setup Connectors so both read the same. |
 | `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
-
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Projects Overview, Graph and Timeline. Changing projections rebuilds only the atlas engine, disposes its listeners and frames, and ignores superseded reads; the document and other mounted pages remain intact. |
 | `js/views/sessions.js` | Five Agents routes under `#/agents/`, sharing one mounted telemetry view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
@@ -97,7 +116,6 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
 | `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
-
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
 The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`/`toolbar`, mount/show/hide)
@@ -170,7 +188,7 @@ Every section has a URL that opens it directly:
 | Commands | `#/setup/commands` |
 | Server | `#/setup/server` |
 
-Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone in Setup** opens `#/setup/projects`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
+Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The shared page links open **Connectors**, **Secrets**, **Commands** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone in Setup** opens `#/setup/projects`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
 
 The topbar search stays visible throughout Setup. Search setting names such as
 “folders”, “secrets” or “restart”, then choose a result to open its control.

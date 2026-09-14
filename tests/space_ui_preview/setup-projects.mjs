@@ -107,7 +107,7 @@ const projectRoot=page.locator('#setup-projects'),removeButton=page.locator('#se
 const open=id=>projectRoot.locator('[data-project-remove="'+id+'"]');
 const totalDeletes=()=>report.writes.filter(write=>write.method==='DELETE'&&!write.path.includes('/peers/')).length;
 const checked=text=>{report.checks.push(text);console.log(text);};
-async function chooseProjects(){await page.locator('#setup-nav [data-setup-go="projects"]').click();await projectRoot.waitFor();await open('solo-demo').waitFor();}
+async function chooseProjects(){await page.locator('#section-nav [data-setup-go="projects"]').click();await projectRoot.waitFor();await open('solo-demo').waitFor();}
 async function openRemove(id){await open(id).click();await page.waitForFunction(id=>document.querySelector('#setup-project-removal-id')?.textContent===id&&!document.querySelector('#setup-project-recheck')?.disabled,id);}
 async function close(){await page.locator('#setup-project-close').click();}
 async function screenshot(name){await projectRoot.scrollIntoViewIfNeeded();await page.screenshot({path:resolve(output,name)});report.screenshots.push(name);}
@@ -124,12 +124,13 @@ try{
   await page.locator('#setup-project-repository').fill('https://github.com/fixture/example-project.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'example-project');
   await page.locator('#setup-project-id').fill('my-demo');
-  assert.match(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'Clone drafts belong to Projects');
-  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Clone drafts do not mark Intelligence as unsaved');
+  assert.match(await page.locator('#section-nav [data-setup-go="projects"]').textContent(),/Unsaved changes/,'Clone drafts belong to Projects');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/,'Clone drafts do not mark Intelligence as unsaved');
   await page.locator('#setup-project-repository').fill('git@github.com:fixture/changed-name.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'my-demo');
   const repositoryNode=await page.locator('#setup-project-repository').elementHandle();
-  await page.locator('#setup-nav [data-setup-go="intelligence"]').click();
+  await page.locator('#section-nav [data-setup-go="intelligence"]').click();
+  await page.locator('#setup-panel-intelligence').waitFor({state:'visible'});
   await page.locator('#view-search').fill('clone');
   await page.locator('.setup-search-result').filter({hasText:/Projects/}).click();
   await page.locator('#setup-panel-projects').waitFor();
@@ -137,14 +138,14 @@ try{
   assert.equal(await page.locator('#view-search').inputValue(),'');
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Project search keeps the clone draft mounted');
   await page.locator('#setup-project-refresh').click();
-  await page.locator('#setup-nav [data-setup-go="workspace"]').click();
+  await page.locator('#section-nav [data-setup-go="workspace"]').click();
   await openProjectList(page);await page.waitForURL('**/#/projects/list');
   await page.locator('#prj-row-solo-demo').waitFor();
   assert.doesNotMatch(await page.locator('body').textContent(),/a workspace knowledge graph/i);
   await page.locator('#view-search').fill('demo');
   // Boot the graph before the catalog changes so later checks exercise the
   // existing atlas rather than a fresh map loaded after the mutation.
-  await page.locator('[data-section-page="graph"]').click();
+  await page.locator('[data-view-mode="graph"]').click();
   await page.waitForFunction(()=>document.querySelector('#q')?.placeholder.match(/Search \d+/));
   assert.equal(await page.locator('.atlas-project-refresh').count(),0);
   await page.locator('#tab-setup').click();await chooseProjects();
@@ -158,7 +159,7 @@ try{
   assert.equal(await page.locator('#setup-project-cancel').isDisabled(),true);
   cloning.release.resolve();await open('my-demo').waitFor();
   assert.equal(await page.locator('#setup-project-form').isVisible(),false);
-  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'A confirmed clone clears its Projects draft');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="projects"]').textContent(),/Unsaved changes/,'A confirmed clone clears its Projects draft');
   assert.equal(await page.locator('#setup-project-notice').textContent(),'Project added; automatic restore remains paused.');
   assert.equal(report.writes.filter(write=>write.method==='POST'&&write.path==='/api/xo-projects').length,2);
   await openProjectList(page);await page.locator('#prj-row-my-demo').waitFor();
@@ -167,8 +168,8 @@ try{
   checked('Clone URL suggests a folder name until edited; drafts survive refresh/navigation, errors preserve input, and a pending clone cannot duplicate.');
 
   await openRemove('shared-demo');
-  assert.match(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'A pending removal review belongs to Projects');
-  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/);
+  assert.match(await page.locator('#section-nav [data-setup-go="projects"]').textContent(),/Unsaved changes/,'A pending removal review belongs to Projects');
+  assert.doesNotMatch(await page.locator('#section-nav [data-setup-go="intelligence"]').textContent(),/Unsaved changes/);
   assert.equal(await removeButton.isDisabled(),true);
   assert.equal(await projectRoot.locator('[data-project-revoke-start]').count(),2);
   assert.equal(await projectRoot.locator('[data-project-peer-start]').count(),1);
@@ -265,7 +266,7 @@ try{
   await openProjectList(page);await page.waitForLoadState('networkidle');
   const graphReads=report.requests.filter(request=>request.path==='/xo/space.json').length;
   for(const lens of ['graph','time']){
-    await page.locator('[data-section-page="'+lens+'"]').click();
+    await page.locator(lens==='time'?'[data-section-page="time"]':'[data-view-mode="'+lens+'"]').click();
     await page.waitForURL('**/#/projects/'+(lens==='time'?'timeline':lens));
     await page.locator('#view-'+lens+'.is-active').waitFor();
     await page.waitForLoadState('networkidle');
@@ -295,7 +296,7 @@ try{
   await suppressed.getByRole('button',{name:'Clone in Setup',exact:true}).click();
   await page.locator('#setup-panel-projects').waitFor();
   assert.equal(new URL(page.url()).hash,'#/setup/projects');
-  assert.equal(await page.locator('#setup-nav [data-setup-go="projects"]').getAttribute('aria-current'),'step');
+  assert.equal(await page.locator('#section-nav [data-setup-go="projects"]').getAttribute('aria-current'),'page');
   assert.equal(await draftNode.evaluate(node=>node.isConnected),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fixture/keep-this-draft.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'unsaved-project-folder');

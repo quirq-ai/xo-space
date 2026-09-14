@@ -71,8 +71,10 @@ await context.route('**/api/inbox**',async route=>{
 const search=page.locator('#view-search');
 const rows=page.locator('#sess-body tr[data-sid]');
 const caption=page.locator('#sess-body [role="status"]');
-async function waitSearch(visible){
-  await search.waitFor({state:visible?'visible':'hidden'});
+async function waitSearch(dataFilter){
+  await search.waitFor({state:'visible'});
+  await page.waitForFunction(dataFilter=>!document.querySelector('#view-search').disabled
+    &&(document.querySelector('#view-search').placeholder!=='Find a page…')===dataFilter,dataFilter);
 }
 async function setQuery(value){
   await search.fill(value);
@@ -80,13 +82,13 @@ async function setQuery(value){
 async function expectRows(count){
   await page.waitForFunction(count=>document.querySelectorAll('#sess-body tr[data-sid]').length===count,count);
 }
-const agentPage=sub=>page.locator('#section-nav [href="#/agents/'+sub+'"]');
-const inboxPage=sub=>page.locator('#section-nav [href="#/inbox/'+sub+'"]');
+const agentPage=sub=>page.locator('#section-nav [data-section-page="agents-'+sub+'"]');
+const inboxPage=sub=>page.locator('#section-nav [data-section-page="inbox-'+sub+'"]');
 
 try{
   await page.goto(origin+'/space/#/agents',{waitUntil:'networkidle'});
   await agentPage('overview').waitFor();
-  await waitSearch(false);
+  await waitSearch(true);
   await agentPage('sessions').click();
   await waitSearch(true);
   assert.equal(await search.getAttribute('placeholder'),'Search loaded sessions…');
@@ -168,7 +170,7 @@ try{
   await waitSearch(true);
   assert.equal(await search.inputValue(),'Previous','Inbox query survives its own page changes');
   await page.locator('#tab-agents').click();
-  await waitSearch(false);
+  await waitSearch(true);
   await agentPage('sessions').click();
   await waitSearch(true);
   assert.equal(await search.inputValue(),'','Agents retains its own cleared query');
@@ -180,7 +182,7 @@ try{
     await agentPage('overview').waitFor();
     for(const sub of ['overview','sessions','tools','models','trends']){
       await agentPage(sub).click();
-      await page.waitForFunction(sub=>document.querySelector('#section-nav [href="#/agents/'+sub+'"]')?.getAttribute('aria-current')==='page',sub);
+      await page.waitForFunction(sub=>document.querySelector('#section-nav [data-section-page="agents-'+sub+'"]')?.getAttribute('aria-current')==='page',sub);
       const bounds=await agentPage(sub).evaluate(link=>{
         const nav=link.closest('.section-nav-links').getBoundingClientRect();
         const box=link.getBoundingClientRect();

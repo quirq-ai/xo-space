@@ -1,7 +1,8 @@
+import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
 /* Projects catalog and on-demand Files, Activity and Issues details.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {projectPage} from '../core/navigation.js?v=20260914-unified1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -368,7 +369,7 @@ export default {
   }},
   async mount(el,ctx){
     root=el;switchTo=ctx.switchTo;refreshToolbar=ctx.refreshToolbar||(()=>{});
-    el.innerHTML='<div class="prj">'+head()+'<div id="prj-status" role="status"></div>'
+    el.innerHTML='<div class="prj space-page">'+head()+'<div id="prj-status" role="status"></div>'
       +'<div class="prj-body"><div class="prj-cols" aria-hidden="true"><div class="prj-cols-inner">'
       +'<span></span><span>Project</span><span>Status</span><span>Indexed files</span><span>Last active</span>'
       +'</div><span class="prj-cols-map"></span></div><div class="prj-rows"></div>'
@@ -467,10 +468,10 @@ function summary(shown){
     +(shown!==undefined&&shown!==items.length?' · '+shown+' shown':'');
 }
 function head(){
-  return '<header class="prj-hero"><div><h1>List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></div>'
-    +'<div class="prj-actions"><button type="button" class="setup-primary" id="prj-add">Add project</button>'
-    +'<button type="button" class="sess-refresh" id="prj-refresh" title="Refresh projects and activity">↻ Refresh</button></div></header>'
-    +'<div class="prj-head"><div class="prj-filters" role="group" aria-label="Filter projects">'
+  return pageHeader({title:'Projects',description:'Loading projects…',descriptionId:'prj-count',className:'prj-hero',actions:
+    '<button type="button" class="space-button is-primary" id="prj-add">Add project</button>'
+    +'<button type="button" class="space-button" id="prj-refresh" title="Refresh projects and activity">Refresh</button>'})
+    +'<div class="prj-head"><div class="prj-filters space-segmented" role="group" aria-label="Filter projects">'
     +FILTERS.map(([key,label])=>'<button type="button" data-project-filter="'+key+'" aria-pressed="'+(key===viewFilter)+'">'+label+' <span>—</span></button>').join('')
     +'</div><span class="prj-spacer"></span><label class="prj-sort-label" for="prj-sort">Sort by</label>'
     +'<select id="prj-sort">'+SORTS.map(([key,label])=>'<option value="'+key+'"'+(key===sortK?' selected':'')+'>'+label+'</option>').join('')+'</select></div>';
@@ -578,7 +579,7 @@ function rowHTML(p){
   return'<div class="prj-row" id="prj-row-'+esc(p.id)+'"><div class="prj-line">'
     +'<button class="prj-row-head" type="button" data-id="'+esc(p.id)+'" aria-expanded="false" aria-controls="prj-drawer-'+esc(p.id)+'">'+rowContent(p)+'</button>'
     +'<div class="prj-row-actions"><button class="prj-pin" type="button" aria-pressed="false">☆</button>'
-    +'<button class="prj-map" type="button" data-map="'+esc(p.id)+'" title="Focus '+esc(p.display_name||p.id)+' on the graph">Graph</button></div></div></div>';
+    +'<button class="prj-map space-button is-compact" type="button" data-map="'+esc(p.id)+'" title="Focus '+esc(p.display_name||p.id)+' on the graph">Graph</button></div></div></div>';
 }
 function updateRow(node,p){
   const open=expanded===p.id,button=node.querySelector('.prj-row-head');
@@ -608,7 +609,7 @@ function toggle(id){
 }
 function makeDrawer(id){
   const el=document.createElement('div');el.className='prj-drawer';el.id='prj-drawer-'+id;
-  el.innerHTML='<div class="prj-detail-head"><nav class="prj-detail-tabs" role="tablist" aria-label="Project details">'
+  el.innerHTML='<div class="prj-detail-head"><nav class="prj-detail-tabs space-segmented" role="tablist" aria-label="Project details">'
     +GROUPS.map(group=>'<button type="button" role="tab" data-project-tab="'+group.key+'" id="prj-tab-'+esc(id)+'-'+group.key+'" aria-controls="prj-detail-'+esc(id)+'-'+group.key+'">'+group.label+'</button>').join('')
     +'</nav><button type="button" class="prj-detail-refresh">Refresh details</button></div>'
     +GROUPS.map(group=>'<div class="prj-detail-group prj-panels" role="tabpanel" id="prj-detail-'+esc(id)+'-'+group.key+'" aria-labelledby="prj-tab-'+esc(id)+'-'+group.key+'" data-project-group="'+group.key+'">'

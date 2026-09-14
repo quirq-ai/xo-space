@@ -103,7 +103,7 @@ function observe(page){
 const page=await context.newPage();observe(page);
 const panel=id=>page.locator('#setup-panel-'+id);
 async function choose(id){
-  await page.locator('#setup-nav [data-setup-go="'+id+'"]').click();
+  await page.locator('#section-nav [data-setup-go="'+id+'"]').click();
   await panel(id).waitFor();
   await page.waitForFunction(({id,mode})=>location.hash==='#/setup/'+id
     &&document.querySelector('.topbar')?.dataset.toolbar===mode,{id,mode:'search'});
@@ -122,7 +122,7 @@ try{
   await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
   assert.deepEqual(await page.locator('.tabs a').evaluateAll(nodes=>nodes.map(node=>node.id)),
     ['tab-projects','tab-agents','tab-inbox','tab-setup']);
-  assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
+  assert.deepEqual(await page.locator('#section-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
     ['workspace','intelligence','projects','connectors','secrets','commands','server']);
   for(const id of ['intelligence','projects','secrets','commands','server','workspace'])await choose(id);
   assert.deepEqual(report.requests,[],'Ordinary Setup never mints a session, lists toolkits or resolves connector accounts');
@@ -168,14 +168,17 @@ try{
   await choose('connectors');await listing.arrived.promise;
   const host=await page.locator('#setup-connectors').elementHandle();
   await choose('workspace');
+  const workspaceFocus=await page.evaluateHandle(()=>document.activeElement);
+  assert.equal(await workspaceFocus.evaluate(node=>node.closest('#section-nav')!==null),true,
+    'Native panel navigation keeps focus on its link');
   listing.release.resolve();
   await page.locator('#setup-connectors .conn-card').first().waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/setup/workspace');
   assert.equal(await panel('workspace').isVisible(),true,'A delayed connector mount cannot reclaim the current panel');
   assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'search');
   assert.equal(await folderNode.evaluate(node=>node===document.activeElement),false);
-  assert.equal(await page.locator('#setup-workspace-title').evaluate(node=>node===document.activeElement),true,
-    'A delayed mount cannot steal panel heading focus');
+  assert.equal(await workspaceFocus.evaluate(node=>node===document.activeElement),true,
+    'A delayed mount cannot steal focus from the selected panel link');
   await choose('connectors');
   assert.equal(count('/xo-auth/session/self'),1);assert.equal(count('/api/connectors/composio/toolkits'),1);
   assert.equal(await page.locator('#view-connectors').count(),0);
@@ -230,7 +233,7 @@ try{
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
     await choose('connectors');
-    const bounds=await page.locator('#setup-nav,#setup-panel-connectors,.conn-card,.conn-card button,.conn-poll select').evaluateAll(nodes=>
+    const bounds=await page.locator('#section-nav,#setup-panel-connectors,.conn-card,.conn-card button,.conn-poll select').evaluateAll(nodes=>
       nodes.filter(node=>node.getClientRects().length).map(node=>{
         const rect=node.getBoundingClientRect();return{tag:node.tagName,cls:node.className,left:rect.left,right:rect.right};
       }));
@@ -249,7 +252,7 @@ try{
   assert.equal(await direct.locator('#view-setup.is-active').count(),1);
   assert.equal(await direct.locator('#tab-connectors,#view-connectors').count(),0);
   assert.equal(count('/api/connectors/composio/toolkits'),before+1);
-  await direct.locator('#setup-nav [data-setup-go="workspace"]').click();
+  await direct.locator('#section-nav [data-setup-go="workspace"]').click();
   await direct.waitForURL('**/#/setup/workspace');
   await openProjectList(direct);await direct.waitForURL('**/#/projects/list');
   const runtimeResponse=direct.waitForResponse(response=>new URL(response.url()).pathname==='/api/runtime-config');
@@ -259,7 +262,7 @@ try{
   assert.equal(await direct.locator('#view-projects.is-active').count(),1);
   await direct.locator('#tab-setup').click();
   await direct.locator('#setup-panel-workspace').waitFor();
-  await direct.locator('#setup-nav [data-setup-go="connectors"]').click();
+  await direct.locator('#section-nav [data-setup-go="connectors"]').click();
   await direct.waitForURL('**/#/setup/connectors');
   assert.equal(count('/api/connectors/composio/toolkits'),before+1,'Direct alias and Setup share one mounted controller');
   await direct.close();

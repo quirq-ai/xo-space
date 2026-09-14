@@ -60,14 +60,14 @@ export function mountCommands(root){
     <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3>Saved commands</h3>
       <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding commands with an agent" aria-describedby="command-help-tip">i</button>
         <span id="command-help-tip" role="tooltip" hidden>Copy a complete curl request for POST /api/schedules and paste it into your agent to add commands here.</span></span></div>
-      <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-secondary" id="command-add">Add command</button></div></div>
+      <div class="setup-command-tools"><button type="button" class="setup-secondary space-button" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-secondary space-button" id="command-add">Add command</button></div></div>
     <div class="setup-command-body">
       <p class="setup-command-endpoint"><span>Create job</span><code>POST ${esc(createEndpoint())}</code></p>
       <span id="command-prompt-status" class="setup-command-copy-status" role="status"></span>
       <div id="command-prompt-fallback" class="setup-command-prompt" hidden>
         <label for="command-prompt-text">Agent prompt — select and copy</label>
         <textarea id="command-prompt-text" readonly rows="8" spellcheck="false"></textarea>
-        <button type="button" class="setup-secondary" id="command-prompt-close">Close</button>
+        <button type="button" class="setup-secondary space-button" id="command-prompt-close">Close</button>
       </div>
       <div class="setup-form-error" id="command-error" role="alert" hidden></div>
       <form id="command-form" class="setup-command-form" novalidate hidden>
@@ -87,8 +87,8 @@ export function mountCommands(root){
         </div>
         <small>Leave blank for manual runs. Intervals run automatically through the watcher.</small>
         <div class="setup-actions">
-          <button class="setup-primary" id="command-save" type="submit">Save command</button>
-          <button class="setup-secondary" id="command-cancel" type="button">Cancel</button>
+          <button class="setup-primary space-button is-primary" id="command-save" type="submit">Save command</button>
+          <button class="setup-secondary space-button" id="command-cancel" type="button">Cancel</button>
         </div>
       </form>
       <div id="command-list"><div class="setup-empty">Loading commands…</div></div>
@@ -144,9 +144,9 @@ export function mountCommands(root){
             <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre></div>`:''}
         </div>
         <div class="setup-actions">
-          <button class="setup-primary" type="button" data-command-action="run"${running?' disabled':disabled}>${running?'Running…':'Run'}</button>
-          <button class="setup-secondary" type="button" data-command-action="runs" title="Open results and logs for this command"${disabled}>Inbox</button>
-          <button class="setup-secondary" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
+          <button class="setup-primary space-button is-primary" type="button" data-command-action="run"${running?' disabled':disabled}>${running?'Running…':'Run'}</button>
+          <button class="setup-secondary space-button" type="button" data-command-action="runs" title="Open results and logs for this command"${disabled}>Inbox</button>
+          <button class="setup-secondary space-button" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
           <button class="setup-secondary is-danger" type="button" data-command-action="delete"${disabled}>Delete</button>
         </div></article>`;
     }).join(''):'<div class="setup-empty"><b>No commands yet</b><span>Save a command, then run it here.</span></div>';

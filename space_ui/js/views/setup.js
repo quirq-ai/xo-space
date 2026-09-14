@@ -7,12 +7,12 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260914-commandhelp2';
+import {mountCommands} from './setup-commands.js?v=20260914-unified1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setuproutes1';
-import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
+import {mountIdentity} from './setup-identity.js?v=20260914-unified1';
 import {mountSetupSearch} from './setup-search.js?v=20260914-setuproutes1';
-import {mountProjects} from './setup-projects.js?v=20260914-setuproutes1';
-import {renderSetupShell} from './setup-shell.js?v=20260914-setuproutes1';
+import {mountProjects} from './setup-projects.js?v=20260914-unified1';
+import {renderSetupShell} from './setup-shell.js?v=20260914-unified1';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-setuproutes1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
@@ -29,6 +29,7 @@ let valueInput=null;
 let secretSaveButton=null;
 let secretCancelButton=null;
 let secretError=null;
+let sharedRefresh=null,sharedAlert=null,sharedRestartError=null;
 let editingKey=null;
 let loading=false;
 let commands=null;
@@ -106,6 +107,9 @@ function bindFormReferences(){
   secretSaveButton=root.querySelector('#secret-save');
   secretCancelButton=root.querySelector('#secret-cancel');
   secretError=root.querySelector('#secret-error');
+  sharedRefresh=root.querySelector('#setup-refresh');
+  sharedAlert=root.querySelector('#setup-alert');
+  sharedRestartError=root.querySelector('#setup-restart-error');
 }
 
 function hasFormDraft(panel){
@@ -121,6 +125,22 @@ function hasFormDraft(panel){
     ||Number(root.querySelector('#runtime-interval').value)!==configured.watcher_interval_seconds;
 }
 
+function movePanelChrome(){
+  const target=root.querySelector('#setup-panel-'+currentPanel);
+  if(!target)return;
+  let header=target.querySelector('.space-page-header');
+  if(currentPanel==='connectors'){
+    const mountedHeader=root.querySelector('#setup-connectors .space-page-header');
+    const placeholder=root.querySelector('#setup-connectors-placeholder');
+    placeholder.hidden=Boolean(mountedHeader);
+    header=mountedHeader||placeholder.querySelector('.space-page-header');
+    target.setAttribute('aria-labelledby',mountedHeader?'setup-connectors-title':'setup-connectors-loading-title');
+  }
+  if(!header)return;
+  header.querySelector('.space-page-actions').append(sharedRefresh);
+  header.after(sharedAlert,sharedRestartError);
+}
+
 function selectPanel(requested){
   const panel=resolveSetupSection(requested);
   if(!panel)return false;
@@ -130,16 +150,20 @@ function selectPanel(requested){
   currentPanel=panel;
   if(panel==='projects')projectsManager?.refresh();
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
-  root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
-    if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
-    else button.removeAttribute('aria-current');
-  });
+  movePanelChrome();
   if(panel==='connectors'&&!connectorMount&&connectorController){
     const host=root.querySelector('#setup-connectors');
-    connectorMount=connectorController.mount(host).catch(err=>{
+    connectorMount=Promise.resolve().then(()=>{
+      const pending=connectorController.mount(host);
+      movePanelChrome(); // renderShell is synchronous; status reads can stay pending.
+      return pending;
+    }).then(()=>{movePanelChrome();refreshSetupToolbar();}).catch(err=>{
       console.error('Connectors failed to load:',err);
+      const placeholder=root.querySelector('#setup-connectors-placeholder');
+      for(const node of [sharedRefresh,sharedAlert,sharedRestartError])if(host.contains(node))placeholder.append(node);
       host.innerHTML='<div class="setup-empty is-error" role="alert">Connectors could not load. <button type="button" data-connectors-retry>Try again</button></div>';
       connectorMount=null;
+      movePanelChrome();refreshSetupToolbar();
     });
   }
   refreshSetupToolbar();
@@ -159,7 +183,7 @@ async function openPanel(requested,{focus=false,target=null}={}){
   if(focus){
     root.scrollTop=0;
     const selector=target||(requested==='agent'?'#runtime-agent':requested==='activity'?'#runtime-source-mode':null);
-    const control=selector?root.querySelector(selector):root.querySelector('#setup-panel-'+panel+' h2');
+    const control=selector?root.querySelector(selector):root.querySelector('#setup-panel-'+panel+' .space-page-heading h1');
     const details=control?.closest('details');
     if(details)details.open=true;
     if(control&&!control.disabled)control.focus({preventScroll:true});
@@ -347,15 +371,14 @@ function renderJourney(){
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
   const dirty={workspace:formDrafts.workspace,intelligence:formDrafts.agent||formDrafts.activity,
     projects:projectsManager?.hasDraft()||false,secrets:credentialDraft};
-  const secretsStep=root.querySelector('#setup-step-secrets');
-  secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
-  secretsStep.className=credentialDraft?'is-pending':'';
+  const statuses={secrets:{text:credentialDraft?'Unsaved changes':'Environment values',tone:credentialDraft?'pending':'muted'}};
   for(const {id} of SETUP_STEPS){
-    const state=steps[id],el=root.querySelector('#setup-step-'+id);
+    const state=steps[id];
     const unavailable=runtimeUnavailable&&id!=='projects';
-    el.textContent=dirty[id]?'Unsaved changes':unavailable?'Unavailable':state.label;
-    el.className='is-'+(dirty[id]?'pending':unavailable?'error':state.tone);
+    statuses[id]={text:dirty[id]?'Unsaved changes':unavailable?'Unavailable':state.label,
+      tone:dirty[id]?'pending':unavailable?'error':state.tone};
   }
+  dispatchEvent(new CustomEvent('space:setup-status',{detail:{statuses}}));
   if(restarting||runtimeUnavailable)return;
   const unsaved=[...SETUP_STEPS.map(step=>step.id),'secrets'].filter(id=>dirty[id]);
   const alert=root.querySelector('#setup-alert');
@@ -363,12 +386,12 @@ function renderJourney(){
     const labels=Object.fromEntries([...SETUP_STEPS.map(({id,label})=>[id,label]),['secrets','Secrets']]);
     alert.className='setup-alert is-pending';
     alert.innerHTML='<div><b>Unsaved changes</b><p>'+esc(unsaved.map(id=>labels[id]).join(', '))+'</p></div>'
-      +'<button class="setup-secondary" type="button" data-setup-go="'+unsaved[0]+'">Review changes</button>';
+      +'<button class="setup-secondary space-button" type="button" data-setup-go="'+unsaved[0]+'">Review changes</button>';
   }else if(steps.next){
     const {panel,label,message}=steps.next;
     alert.className='setup-alert is-pending';
     alert.innerHTML='<div><b>'+esc(label)+'</b><p>'+esc(message)+'</p></div>'
-      +'<button class="setup-secondary" type="button" data-setup-go="'+panel+'">'+esc(label)+' →</button>';
+      +'<button class="setup-secondary space-button" type="button" data-setup-go="'+panel+'">'+esc(label)+' →</button>';
   }else{
     alert.className='setup-alert'+(runtimeData?' is-good':'');
     alert.innerHTML='<div><b>'+(runtimeData?'Settings applied':'Checking settings…')+'</b></div>';
@@ -511,7 +534,7 @@ function fact(text,tone){
 function renderRuntimeFailure(res){
   const alert=root.querySelector('#setup-alert');
   alert.className='setup-alert is-error';
-  alert.innerHTML='<div><b>Settings unavailable</b><p>'+esc(res.offline?'Space is restarting or unreachable.':res.error)+'</p></div><button class="setup-secondary" type="button" data-setup-retry>Retry</button>';
+  alert.innerHTML='<div><b>Settings unavailable</b><p>'+esc(res.offline?'Space is restarting or unreachable.':res.error)+'</p></div><button class="setup-secondary space-button" type="button" data-setup-retry>Retry</button>';
   renderJourney();
   root.querySelector('#usage-reporting').hidden=true;
   root.querySelector('#setup-overview').innerHTML='';

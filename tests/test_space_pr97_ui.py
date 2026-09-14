@@ -176,8 +176,8 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn("import {collectorLabels,every,pollLine} from '../core/connections.js';", self.src)
         for private in ("const esc=", "function rel(", "function failText(", "function every(", "function collectorLabels("):
             self.assertNotIn(private, self.src)
-        self.assertIn("pills(FILTERS,filter,'filter','Filter inbox','inb-filter')", self.src)
-        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src')", self.src)
+        self.assertIn("pills(FILTERS,filter,'filter','Filter inbox','inb-filter space-segmented')", self.src)
+        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src space-segmented')", self.src)
 
     def test_source_table_drives_pills_and_mapping(self) -> None:
         table = slice_between(self.src, "const SOURCES=[", "];")
@@ -895,24 +895,17 @@ class ShellTests(unittest.TestCase):
         app = read("js/app.js")
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
-        navigation_stamp = "20260914-navigation1"
-        for view in ("sharing", "inbox", "wiki", "quirq", "setup", "projects", "tree", "atlas", "sessions"):
-            self.assertIn("./views/" + view + ".js?v=" + navigation_stamp + "'", app)
-        for module in ("registry", "navigation", "section-nav", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + navigation_stamp + "'", app)
-        self.assertIn("./core/toolbar.js?v=20260914-context1'", app)
-        self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
-        results_stamp = "20260914-navigation1"
+        current = "20260914-unified1"
+        for view in ("sharing", "inbox", "setup", "projects", "tree", "atlas", "sessions", "connectors", "data-explorer", "wiki", "quirq"):
+            self.assertIn("./views/" + view + ".js?v=" + current + "'", app)
+        for module in ("navigation", "section-nav", "toolbar", "preview"):
+            self.assertIn("./core/" + module + ".js?v=" + current + "'", app)
+        for module in ("registry",):
+            self.assertIn("./core/" + module + ".js?v=20260914-navigation1'", app)
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=20260914-navigation1"', html)
-        self.assertIn('href="css/navigation.css?v=20260914-navigation1"', html)
-        # Later view changes legitimately advance the shell and Wiki stamps;
-        # test_space_wiki checks that the cache-bust chain stays intact.
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
-        # Inbox's Jobs/results styles advanced with its view; the connector
-        # stylesheet advances for the embedded Setup section.
-        for sheet, stamp in (("inbox", results_stamp), ("connectors", "20260914-setupapps1")):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + stamp + '">', html)
+        for sheet in ("projects", "navigation", "inbox", "connectors", "components", "explorer"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + current + '">', html)
+        self.assertIn('src="js/app.js?v=' + current + '"', html)
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:
         """core/api.js and core/ui.js gained exports and are imported bare
@@ -925,7 +918,7 @@ class ShellTests(unittest.TestCase):
         self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
         imports = json.loads(m.group(1))["imports"]
         for name in self.CORE_MAPPED:
-            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + STAMP, name)
+            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + ("20260914-unified1" if name == "api.js" else STAMP), name)
         # one instance means every importer uses the bare specifier
         for path in sorted((UI / "js").rglob("*.js")):
             src = path.read_text(encoding="utf-8")

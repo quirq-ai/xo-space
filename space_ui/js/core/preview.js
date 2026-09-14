@@ -1,4 +1,4 @@
-import {isProjectRoute} from './navigation.js?v=20260914-navigation1';
+import {isProjectRoute} from './navigation.js?v=20260914-unified1';
 /* File previewer — a floating window that renders one file from a project.
 
    Lives in core/, not in a view, because three surfaces open it (the Tree
@@ -125,7 +125,9 @@ function restoreAfterReload(){
 }
 
 function clampTop(top){
-  const inset=Math.ceil(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0);
+  const nav=document.getElementById('section-nav');
+  const inset=Math.ceil(Math.max(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0,
+    nav&&!nav.hidden?nav.getBoundingClientRect().bottom:0));
   return Math.min(Math.max(top,inset),Math.max(inset,innerHeight-48));
 }
 

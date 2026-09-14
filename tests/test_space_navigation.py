@@ -75,7 +75,7 @@ for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)
   }
 }
 const registry=await import(new URL('js/core/registry.js',base));
-const {PRIMARY_TABS,PROJECT_PAGES,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
+const {PRIMARY_TABS,PROJECT_PAGES,AGENT_PAGES,INBOX_PAGES,EXPLORER_PAGES}=await import(new URL('js/core/navigation.js',base));
 const registered=[];
 for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);|(\w+)\((\w*)\)\.forEach\(registerView\);/g)){
   const result=factory?views[factory](factoryArgument?views[factoryArgument]:undefined):[argument?views[name](views[argument]):views[name]];
@@ -89,7 +89,7 @@ registry.startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 assert.equal(history.length,1,'Initial deep links normalize in place');
 assert.equal(historyPushes,0,'Starting the registry never pushes browser history');
 const expectedTabs=['projects','agents','inbox','setup'];
-const defaults=['projects/overview','agents/overview','inbox/items','setup/workspace'];
+const defaults=['projects/list','agents/sessions','inbox/items','setup/workspace'];
 assert.deepEqual(PRIMARY_TABS.map(tab=>[tab.id,tab.defaultView]),expectedTabs.map((id,i)=>[id,defaults[i]]));
 assert.deepEqual(tabs.children.map(tab=>[tab.id,tab.tagName,tab.href]),expectedTabs.map((id,i)=>['tab-'+id,'A','#/'+defaults[i]]));
 assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Inbox','Setup']);
@@ -103,8 +103,8 @@ assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own 
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
 assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
 const setupRoutes=['workspace','intelligence','projects','connectors','secrets','commands','server'].map(id=>'setup/'+id);
-const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
-const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
+const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...EXPLORER_PAGES,...setupRoutes.map(route=>({id:route,route}))];
+const aliases={projects:'projects/list',agents:'agents/sessions',sessions:'agents/sessions','agents/list':'agents/sessions','inbox/list':'inbox/items',inbox:'inbox/items',
   setup:'setup/workspace',dashboard:'projects/overview',list:'projects/list',graph:'projects/graph',tree:'projects/tree',
   sharing:'projects/sharing',time:'projects/timeline',timeline:'projects/timeline',
   secrets:'setup/secrets',connectors:'setup/connectors',quirq:'setup/server/details'};
@@ -123,7 +123,7 @@ function assertPage(route){
 }
 const initial=process.argv[1].replace(/^#\//,'');
 const initialRoute=canonical(initial);
-assertPage(registered.some(view=>(view.route||view.id)===initialRoute)?initialRoute:'projects/overview');
+assertPage(registered.some(view=>(view.route||view.id)===initialRoute)?initialRoute:'projects/list');
 for(const page of pages){await registry.switchTo(page.route);assertPage(page.route);}
 for(const [alias,route] of Object.entries(aliases)){await registry.switchTo(alias);assertPage(route);}
 await registry.switchTo('wiki');assertPage('wiki');
@@ -140,7 +140,7 @@ const primary=elements.get('tab-projects'),click=overrides=>({button:0,preventDe
 for(const modifiers of [{metaKey:true},{ctrlKey:true},{shiftKey:true},{button:1}]){
   const event=click(modifiers);primary.listeners.click(event);assert.equal(event.prevented,undefined);assertPage('projects/list');
 }
-const ordinary=click({});primary.listeners.click(ordinary);assert.equal(ordinary.prevented,true);assertPage('projects/overview');
+const ordinary=click({});primary.listeners.click(ordinary);assert.equal(ordinary.prevented,true);assertPage('projects/list');
 
 // History is per page, including pages sharing one mounted DOM section.
 await registry.switchTo('agents/overview');const start=historyPosition;
@@ -172,7 +172,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/list", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/list", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/agents/list", "#/inbox/list", "#/agents/graph", "#/agents/tree", "#/inbox/graph", "#/inbox/tree", "#/setup/graph", "#/setup/tree", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

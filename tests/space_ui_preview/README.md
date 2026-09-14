@@ -29,7 +29,7 @@ expanded project screenshots, 320px and 375px screenshots, and `report.json`.
 the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
-The full check verifies the four primary sections, Projects Overview default,
+The full check verifies the four primary sections, Projects List default,
 all six Projects pages and canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
@@ -38,9 +38,14 @@ It fails on console errors, uncaught page errors and unsuccessful HTTP responses
 For the complete section and route contract, run:
 
 ```sh
+node tests/space_ui_preview/data-views.mjs /tmp/space-data-views
 node tests/space_ui_preview/section-navigation.mjs /tmp/space-section-navigation
 node tests/space_ui_preview/projects-experience.mjs /tmp/space-projects-experience
 ```
+
+The data-views check covers all four domains and List/Graph/Tree modes, real
+record inspection, ancestor-preserving search, retained Setup drafts, history,
+and responsive page headers without any service writes.
 
 The section check covers canonical URLs and legacy aliases, section defaults
 versus List, Back/Forward, native links, toolbar ownership, List and Setup state
@@ -64,7 +69,7 @@ check supplies synthetic Connector/account and Quirq responses and blocks extern
 requests and service writes. The Sessions/Inbox check supplies synthetic telemetry
 and Inbox responses, including
 an in-memory bulk action, to verify source filters, pagination, loaded counts,
-and hiding search on session charts/detail. No real Inbox data is modified.
+and showing the page finder on session charts/detail. No real Inbox data is modified.
 
 This is a browser regression check of the frontend and its API contracts.
 The fixture server is deliberately not a substitute for backend tests.

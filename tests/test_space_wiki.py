@@ -34,10 +34,15 @@ class SpaceWikiTests(unittest.TestCase):
           import fs from 'node:fs';
           import vm from 'node:vm';
           import assert from 'node:assert/strict';
+          import {pathToFileURL} from 'node:url';
+          const {pageHeader}=await import(new URL('../core/page-layout.js',pathToFileURL(process.argv[1])));
 
           const listeners=new Map(),clicks=new Map(),nodes=new Map(),opened=[];
           let focused=null,renders=0,markup='';
           const main={scrollTop:0,getBoundingClientRect:()=>({top:100})};
+          const welcomeClasses=new Set();
+          const welcome={set id(value){nodes.set(value,this);},tabIndex:0,
+            classList:{add:x=>welcomeClasses.add(x),remove:x=>welcomeClasses.delete(x),contains:x=>welcomeClasses.has(x)}};
           const root={
             set innerHTML(value){
               markup=value;renders++;
@@ -53,21 +58,23 @@ class SpaceWikiTests(unittest.TestCase):
             get innerHTML(){return markup;},
             addEventListener:(name,fn)=>clicks.set(name,fn),
             contains:node=>node.owner===root,
-            querySelector:selector=>selector==='.wiki-main'?main:nodes.get(selector.slice(1)),
+            querySelector:selector=>selector==='.wiki-main'?main:selector==='.wiki-welcome'?welcome:nodes.get(selector.slice(1)),
             querySelectorAll:selector=>selector==='.is-highlighted'
               ? [...nodes.values()].filter(node=>node.classList.contains('is-highlighted')):[]
           };
-          const context={addEventListener:(name,fn)=>listeners.set(name,fn)};
+          const context={pageHeader,addEventListener:(name,fn)=>listeners.set(name,fn)};
           // No network boundary is provided: mounting this local overview
           // must not depend on downloading the detailed manual.
           vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8')
-            .replace('export default','globalThis.view ='),context);
+            .replace(/^import .*?;\n/gm,'').replace('export default','globalThis.view ='),context);
           const view=context.view,emit=id=>listeners.get('space:wiki-page')({detail:id});
 
           emit('first-run');
           await view.mount(root,{switchTo:id=>opened.push(id)});
           assert.equal(focused,null,'wait until the Wiki pane is visible');
           const overview=root.innerHTML;
+          assert.ok(overview.includes('space-page-header'));
+          assert.equal((overview.match(/<h1[ >]/g)||[]).length,1);
           assert.equal((overview.match(/data-wiki-topic=/g)||[]).length,9);
           view.show();
           assert.equal(focused.id,'wiki-quickstart');

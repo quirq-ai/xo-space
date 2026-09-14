@@ -56,7 +56,7 @@ class InboxDocsTests(unittest.TestCase):
         readme = read("space_ui/README.md")
         self.assertIn("## Inbox tab", readme)
         # the count moves whenever a tab lands upstream; pin the Inbox entry itself
-        self.assertIn("**Agents**, **Inbox**, and **Setup**", readme)
+        self.assertIn("**Agents**, **Inbox**, and **Setup**", " ".join(readme.split()))
         self.assertIn("`js/views/inbox.js`", readme)
         self.assertIn("css/inbox.css", readme)
         for route in (
@@ -224,9 +224,9 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = {name: name for name in INBOX_VIEW_TARGETS}
-        expected.update(dashboard="projects/overview", projects="projects/overview", graph="projects/graph",
+        expected.update(dashboard="projects/overview", projects="projects/list", graph="projects/graph",
                         tree="projects/tree", sharing="projects/sharing", time="projects/timeline",
-                        agents="agents/overview", inbox="inbox/items", quirq="setup/server/details",
+                        agents="agents/sessions", inbox="inbox/items", quirq="setup/server/details",
                         setup="setup/workspace", secrets="setup/secrets", connectors="setup/connectors")
         self.assertEqual(json.loads(result.stdout), expected)
 

@@ -47,7 +47,7 @@ class InboxSourceFilterTests(unittest.TestCase):
             self.assertIn("{id:'" + key + "',label:'" + label + "',sources:[", table)
         self.assertIn("const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);", self.src)
         # the strip is core's pill builder; it paints the wrapper and data-src
-        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src')", self.src)
+        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src space-segmented')", self.src)
         ui = read("js/core/ui.js")
         self.assertIn("'<div class=\"'+esc(cls||'pills-'+attr)+'\" role=\"group\" aria-label=\"'+esc(ariaLabel)+'\">'", ui)
         self.assertIn("'<button type=\"button\" data-'+attr+'=\"'+esc(k)+'\"'", ui)
@@ -86,12 +86,13 @@ class InboxOpenLinkTests(unittest.TestCase):
         )
         self.assertIn("const url=safeUrl(it.url);", src)
         self.assertIn(
-            '<a class="inb-btn" href="\'+esc(url)+\'" target="_blank" rel="noopener noreferrer">Open link</a>',
+            '<a class="inb-btn space-button" href="\'+esc(url)+\'" target="_blank" rel="noopener noreferrer">Open link</a>',
             src,
         )
         # rendered only when the check passed
-        self.assertIn("+(url?'<a class=\"inb-btn\"", src)
-        self.assertIn("a.inb-btn{text-decoration:none", read("css/inbox.css"))
+        self.assertIn("+(url?'<a class=\"inb-btn space-button\"", src)
+        self.assertIn("text-decoration:none", read("css/components.css"))
+        self.assertIn(".space-button{", read("css/components.css"))
 
 
 class InboxConnectionsSectionTests(unittest.TestCase):
@@ -212,7 +213,7 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
         self.assertIn("const polling=openPolling===t.id;", card)
         self.assertIn(
-            "+(connected&&(enabled||polling)\n        ?'<button class=\"conn-secondary\" data-action=\"polling\">'",
+            "+(connected&&(enabled||polling)\n        ?'<button class=\"conn-secondary space-button is-compact\" data-action=\"polling\">'",
             card,
         )
         self.assertIn("(polling?'Hide polling':'Polling')", card)
@@ -352,21 +353,21 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-navigation1';", app
+            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-unified1';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-unified1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
         html = read("index.html")
         for name in ("api.js", "ui.js", "connections.js"):
-            self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + STAMP + '"', html)
+            self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + ("20260914-unified1" if name == "api.js" else STAMP) + '"', html)
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-unified1">', html)
         # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260914-unified1">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

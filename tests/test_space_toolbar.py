@@ -63,6 +63,8 @@ class Element{
   focus(){if(!this.disabled)document.activeElement=this;}
   blur(){if(document.activeElement===this)document.activeElement=null;}
   scrollIntoView(){}
+  querySelector(selector){return selector==='a'?this.children.find(child=>child.tagName==='A')||null:null;}
+  click(){this.fire('click');if(this.href?.startsWith('#/')){location.hash=this.href;dispatchEvent({type:'hashchange'});}}
 }
 const node=(id,tag='DIV',parent=null)=>{
   const el=new Element(id,tag);parent?.appendChild(el);return el;
@@ -76,7 +78,7 @@ const graphInput=node('q','INPUT',graphSearch);
 node('root-btn','BUTTON',graphRoot);
 node('rootdd','DIV',graphRoot);node('root-ac','DIV',graphRoot);node('qac','DIV',graphSearch);
 const meta=node('fmeta'),stage=node('stage'),tabs=node('tabs');
-globalThis.document={activeElement:null,
+globalThis.document={activeElement:null,addEventListener:globalThis.addEventListener,
   getElementById:id=>elements.get(id)||null,
   querySelector:selector=>selector==='.topbar'?topbar:selector==='.tabs'?tabs:null,
   createElement:tag=>new Element('',tag.toUpperCase()),
@@ -210,14 +212,21 @@ const editable=new Element();editable.isContentEditable=true;document.activeElem
 assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElement,editable);
 document.activeElement=null;key('/');assert.equal(document.activeElement,input);
 searchable=false;secondContext.refreshToolbar();
-assert.equal(controls.hidden,true);assert.equal(document.activeElement,null);
+assert.equal(controls.hidden,false);assert.equal(input.placeholder,'Find a page…');assert.equal(document.activeElement,input);
 await registry.switchTo('graph');
 assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,false);assert.equal(meta.hidden,false);
 key('/');assert.equal(document.activeElement,graphInput);
 for(const id of ['rootdd','qac','root-ac'])elements.get(id).classList.add('is-open');
 await registry.switchTo('wiki');
-assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
-assert.equal(key('/').defaultPrevented,false);
+assert.equal(controls.hidden,false);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
+assert.equal(input.placeholder,'Find a page…');assert.equal(key('/').defaultPrevented,true);assert.equal(document.activeElement,input);
 for(const id of ['rootdd','qac','root-ac'])assert.equal(elements.get(id).classList.contains('is-open'),false);
-secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'none');
+secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'search');assert.equal(input.placeholder,'Find a page…');
+register({id:'setup/commands',parent:'setup',mount(){}});
+input.value='Setup Commands';input.fire('input');
+const finder=elements.get('page-finder'),match=finder.querySelector('a');
+assert.equal(match.textContent,'Setup · Commands');assert.equal(match.href,'#/setup/commands');
+input.fire('keydown',{key:'ArrowDown'});assert.equal(document.activeElement,match);
+input.focus();input.fire('keydown',{key:'Enter'});await flush();
+assert.equal(location.hash,'#/setup/commands');assert.equal(finder.classList.contains('is-open'),false);
 """)

@@ -7,7 +7,8 @@
    are broken.) Window filtering happens here, client-side, over per-day
    rollups. */
 import {API_BASE,apiFetch} from '../core/api.js';
-import {AGENT_PAGES} from '../core/navigation.js?v=20260914-navigation1';
+import {AGENT_PAGES} from '../core/navigation.js?v=20260914-unified1';
+import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
 
 let _open=null;
 let _toolbar=()=>null;
@@ -37,6 +38,7 @@ const agentController={
   toolbar(){return _toolbar();},
   async mount(el,ctx){
 const wrap=document.getElementById('sesswrap');
+wrap.classList.add('space-page');
 const WINS=[['today','Today'],['7d','7 days'],['30d','30 days'],['all','All']];
 const WDAYS={today:1,'7d':7,'30d':30,all:null};
 const SUBS=[['overview','Overview'],['sessions','Sessions'],['tools','Tools'],['models','Models'],['trends','Trends']];
@@ -191,7 +193,8 @@ function drawBars(host,items){
 function render(){
   ctx.refreshToolbar();
   const title=SUBS.find(([key])=>key===sub)?.[1]||'Overview';
-  const pageHead='<header class="sess-page-head"><h1>'+title+'</h1></header>';
+  const pageHead=pageHeader({title,className:'sess-page-head',actions:SD&&!loading&&!failed
+    ?'<button class="sess-refresh space-button" id="sess-refresh" type="button" title="Re-fetch (server rebuilds behind its 30s cache)">Refresh</button>':''});
   if(loading){wrap.innerHTML=pageHead+'<div class="sess-note" role="status">Loading agent activity…</div>';return;}
   if(failed){
     const off=failed==='\x00offline';
@@ -200,7 +203,7 @@ function render(){
         +'(stopped or restarting; the footer pill tracks it). Not a telemetry-source problem. '
       :'<b>Could not load .xo/sessions.json</b> ('+esc(failed)+'). '
         +'The API reads local telemetry for each runtime (Claude Code: <b>ARGUS_DB</b>; Codex: <b>CODEX_HOME</b>; Cursor: <b>CURSOR_HOME</b>). ')
-      +'<button class="sess-refresh" id="sess-retry">Retry</button></div>';
+      +'<button class="sess-refresh space-button" id="sess-retry" type="button">Retry</button></div>';
     document.getElementById('sess-retry').addEventListener('click',load);return;
   }
   if(!SD){wrap.innerHTML=pageHead+'<div class="sess-note">Open this tab to load session telemetry.</div>';return;}
@@ -212,8 +215,7 @@ function render(){
       +'<input type="checkbox" data-agent="'+esc(source.id)+'" aria-controls="sess-body" '+(enabledAgents.has(source.id)?'checked ':'')+'>'
       +'<span>'+esc(source.label)+'</span>'+(source.available===false?'<i>offline</i>':'')+'</label>').join('')+'</fieldset>'
     +'<div class="sess-spacer"></div>'
-    +(showWin?'<div class="sess-win">'+WINS.map(([k,l])=>'<button data-win="'+k+'" class="'+(k===win?'is-on':'')+'">'+l+'</button>').join('')+'</div>':'')
-    +'<button class="sess-refresh" id="sess-refresh" title="Re-fetch (server rebuilds behind its 30s cache)">&#8635; Refresh</button>'
+    +(showWin?'<div class="sess-win space-segmented" role="group" aria-label="Time window">'+WINS.map(([k,l])=>'<button type="button" data-win="'+k+'" aria-pressed="'+(k===win)+'" class="'+(k===win?'is-on':'')+'">'+l+'</button>').join('')+'</div>':'')
     +'</div><div id="sess-body"></div>';
   wrap.querySelectorAll('[data-win]').forEach(b=>b.addEventListener('click',()=>{win=b.dataset.win;render();}));
   wrap.querySelectorAll('[data-agent]').forEach(input=>input.addEventListener('change',()=>{
@@ -333,9 +335,9 @@ function rList(el){
       +'<td class="num">'+(s.subagents.length||'')+'</td></tr>').join('')+'</table>'
     +(terms.length&&!rows.length?'<div class="sess-note">No loaded sessions match this search for the selected sources.</div>':'')
     +(pages>1?'<div class="sess-pager">'
-      +'<button id="sess-prev"'+(page?'':' disabled')+'>&larr; Prev</button>'
+      +'<button class="space-button is-compact" type="button" id="sess-prev"'+(page?'':' disabled')+'>&larr; Prev</button>'
       +'<span>Page '+(page+1)+' of '+pages+'</span>'
-      +'<button id="sess-next"'+(page<pages-1?'':' disabled')+'>Next &rarr;</button>'
+      +'<button class="space-button is-compact" type="button" id="sess-next"'+(page<pages-1?'':' disabled')+'>Next &rarr;</button>'
       +'</div>':'')+'</div>';
   el.querySelectorAll('[data-k]').forEach(th=>th.addEventListener('click',()=>{
     const k=th.dataset.k;if(sortK===k)sortD=-sortD;else{sortK=k;sortD=-1;}page=0;render();}));
@@ -371,7 +373,7 @@ function rDetail(el){
     +(!breakdownKnown||unclassified>0?kv('Unclassified',unclassified.toLocaleString()+' tokens'):'')
     +(!breakdownKnown?kv('Breakdown status',breakdownStatus):'');
   const costKnown=s.cost_known!==false;
-  el.innerHTML='<a class="sess-back" id="sess-back">&larr; All sessions</a>'
+  el.innerHTML='<button class="sess-back space-button is-quiet" type="button" id="sess-back">&larr; All sessions</button>'
     +'<div class="scards4">'
     +'<div class="scard"><div class="eyebrow2">Session tokens</div><div class="v acc">'+tok(t)+'</div><div class="s">'+tokenSummary+'</div></div>'
     +'<div class="scard"><div class="eyebrow2">Cost '+(costKnown?'(est.)':'')+'</div><div class="v">'+costfmt(s.cost,costKnown)+'</div><div class="s">'+(costKnown?'pricing '+esc(SD.meta.pricing_version||'—'):'not reported by '+esc(agentLabel(agentOf(s))))+'</div></div>'

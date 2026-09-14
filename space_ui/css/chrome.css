@@ -79,7 +79,7 @@
   /* Keep the root picker and search inside the viewport alongside the brand
      when all five Projects lenses are available on a phone. */
   @media (max-width:480px){
-    .tabs :is(button,a){padding:7px 10px;letter-spacing:.08em}
+    .tabs :is(button,a){padding:8px 10px}
     #root-btn .rlab{display:none}
     #root-btn b{max-width:56px}
     .searchwrap{min-width:0}

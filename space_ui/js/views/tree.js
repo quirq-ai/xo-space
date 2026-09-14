@@ -1,4 +1,5 @@
-import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
+import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
+import {projectPage} from '../core/navigation.js?v=20260914-unified1';
 /* Tree — the third Files lens, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped
@@ -125,7 +126,7 @@ export default {
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
-    root.innerHTML='<div class="tv"><div class="prj-note">loading the workspace…</div></div>';
+    root.innerHTML='<div class="tv space-page space-canvas-page"><div class="prj-note">loading the workspace…</div></div>';
     root.addEventListener('click',onClick);
     root.addEventListener('pointerdown',onPointerDown);
     root.addEventListener('pointermove',onPointerMove);
@@ -286,7 +287,7 @@ function render(){
     head()
     +(q&&!matches(model,q)?'<div class="prj-note" role="status">No names match “'
       +esc(filter.trim())+'”. Clear the search to show the tree.</div>':'')
-    +'<div class="tv-canvas"><div class="tv-surface'+(grew?' is-growing':'')
+    +'<div class="tv-canvas space-canvas-surface"><div class="tv-surface'+(grew?' is-growing':'')
       +'" style="width:'+Math.round(width)
       +'px;height:'+Math.round(height)+'px">'
       +'<svg class="tv-links" width="'+Math.round(width)+'" height="'+Math.round(height)+'">'
@@ -310,14 +311,10 @@ function render(){
   restoreAnchor();
 }
 function head(){
-  return'<div class="tv-head">'
-    +'<span class="prj-eyebrow">'+plural(model.dirs.size,'project')+' · '
-      +plural(model.nDirs,'folder')+' · '+plural(model.nFiles,'file')+'</span>'
-    +'<span class="prj-spacer"></span>'
-    +'<button class="sess-refresh" data-tv="projects">Projects only</button>'
-    +'<button class="sess-refresh" data-tv="reset">Reset view</button>'
-    +'<button class="sess-refresh" data-tv="reload">&#8635; Refresh</button>'
-  +'</div>';
+  return pageHeader({title:'Projects',description:plural(model.dirs.size,'project')+' · '+plural(model.nDirs,'folder')+' · '+plural(model.nFiles,'file'),className:'tv-head',actions:
+    '<button class="space-button" data-tv="projects">Projects only</button>'
+    +'<button class="space-button" data-tv="reset">Reset view</button>'
+    +'<button class="space-button" data-tv="reload">Refresh</button>'});
 }
 /* An S-curve, not an elbow: at 228px of column width a bezier reads the
    parent→child direction at a glance without a corner every level. */
