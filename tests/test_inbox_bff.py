@@ -34,10 +34,13 @@ class InboxRoutesTests(unittest.TestCase):
             r = client().get("/api/inbox")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json()["counts"]["new"], 1)
-            li.assert_called_with(status="open", limit=200)
+            li.assert_called_with(status="open", limit=200, cursor=None, source=None, query=None)
             for status in ("open", "done", "all"):
                 self.assertEqual(client().get(f"/api/inbox?status={status}&limit=500").status_code, 200)
-            li.assert_called_with(status="all", limit=500)
+            li.assert_called_with(status="all", limit=500, cursor=None, source=None, query=None)
+            # pagination + server-side filter params are forwarded
+            client().get("/api/inbox?status=open&cursor=abc&source=issues&q=login+bug")
+            li.assert_called_with(status="open", limit=200, cursor="abc", source="issues", query="login bug")
 
     def test_create_returns_201_and_maps_validation_codes(self) -> None:
         with patch.object(service, "create_item", return_value=ITEM) as ci:

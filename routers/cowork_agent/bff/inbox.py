@@ -59,12 +59,14 @@ def _item_id_or_404(item_id: str) -> str:
 
 
 @router.get("/api/inbox")
-def list_inbox(status: str = Query("open"), limit: int = Query(200, ge=1, le=500)) -> dict:
+def list_inbox(status: str = Query("open"), limit: int = Query(200, ge=1, le=500),
+               cursor: Optional[str] = Query(None), source: Optional[str] = Query(None),
+               q: Optional[str] = Query(None)) -> dict:
     if status not in LIST_STATUSES:
         raise HTTPException(status_code=400, detail={
             "code": "invalid_status", "message": "status must be open, done or all."})
     try:
-        return service.list_items(status=status, limit=limit)
+        return service.list_items(status=status, limit=limit, cursor=cursor, source=source, query=q)
     except service.InboxError as exc:
         raise http_error(exc)
 
