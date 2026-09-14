@@ -304,6 +304,28 @@ registers a new-events listener with `connections.service` so a poll that
 collected something ingests at once); `services/connections` never imports
 the inbox.
 
+### The canonical `.xo/`: one definition, every project
+
+Every xo-project carries the same `.xo/`, defined once in
+`services/xo_structure.py` (`CANONICAL_FILES`): `.gitignore` (`*`, so `.xo/`
+stays out of the project's own git history; backups still carry it),
+`project.json`, `todos.json`, `workitems.json` and `peers.json`. The three
+store documents start empty, exactly as their owning store first writes them
+(built from the store's own `$schema`/`schema` constants), and identity comes
+from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
+creates what is missing, never rewrites an existing file (an unparseable one
+included), touches nothing outside `.xo/`, and never raises. It runs on every
+way a project comes to exist: `project_layout.scaffold_project`,
+`services/project_management.clone_project`, project sharing's auto-clone, and
+the watcher tick, which covers a folder cloned by hand into the projects root
+(`ensure_xo_structure_if_changed` costs one `lstat` per project while `.xo/` is
+unchanged). A `.xo/` holding `space.json` or `projects.json` belongs to a
+former projects root and is left alone. The project template therefore ships
+no `.xo/` files. The golden sample is `tests/fixtures/xo-project/`, and
+`tests/test_xo_structure.py` holds the module, the sample, the schemas and all
+four creation paths to one another: changing the structure means changing the
+module and the sample together.
+
 ### One executor for external commands
 
 Every subprocess xo-space starts goes through the `utils/commands/` package

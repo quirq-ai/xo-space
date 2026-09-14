@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
+
+
+def _json_text(data: Any) -> str:
+    """The one on-disk JSON form: two-space indent, UTF-8, trailing newline."""
+    return json.dumps(data, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
@@ -20,11 +26,59 @@ def write_json_atomic(path: Path, data: Any) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
+    tmp.write_text(_json_text(data), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def create_file_exclusive(path: Path, content: bytes) -> bool:
+    """Create ``path`` holding ``content`` only if nothing is there yet.
+
+    Returns ``True`` iff this call created the file. Whatever already exists
+    at ``path`` (a store's document, a hand edit, an unreadable file, even a
+    dangling symlink) is left untouched, so the call is safe to repeat and
+    safe to race against any other writer.
+
+    The content goes to a private temporary sibling first and is hard-linked
+    into place: ``link`` refuses an existing target, so a reader never sees a
+    half-written file and a writer that got there first wins. A filesystem
+    without hard links falls back to an exclusive create, whose only exposure
+    is a reader catching the file between create and write. The parent
+    directory must already exist; ``OSError`` from it (read-only, missing)
+    propagates.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "xb") as fp:
+            fp.write(content)
+            fp.flush()
+            os.fsync(fp.fileno())
+        try:
+            os.link(tmp, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            pass  # no hard links here: fall back to an exclusive create
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return False
+        with os.fdopen(fd, "wb") as fp:
+            fp.write(content)
+            fp.flush()
+            os.fsync(fp.fileno())
+        return True
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def create_json_exclusive(path: Path, data: Any) -> bool:
+    """:func:`create_file_exclusive` for a JSON document, in the on-disk form
+    :func:`write_json_atomic` writes, so a later rewrite changes content only."""
+    return create_file_exclusive(path, _json_text(data).encode("utf-8"))
 
 
 def append_jsonl(path: Path, lines: list[dict]) -> None:

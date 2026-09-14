@@ -21,6 +21,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
+from services import xo_structure
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 from services.cowork_agent.project_layout import runtime_dir_for_project, xo_dir
@@ -220,6 +221,13 @@ class Watcher:
         project_ids = list_project_ids()
 
         for pid in project_ids:
+            # Every project carries the canonical .xo/, including a folder
+            # cloned by hand straight into the projects root. Additive only,
+            # never raises, and one lstat while the folder's .xo/ is unchanged.
+            try:
+                xo_structure.ensure_xo_structure_if_changed(pid)
+            except Exception:
+                logger.exception("xo structure check failed for %s", pid)
             # Identity fill is idempotent (no-ops once _template is cleared).
             # Running it here — alongside the per-project activity sink that
             # already iterates every known project — closes the gap where a

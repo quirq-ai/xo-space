@@ -477,7 +477,14 @@ def scaffold_project(
     display_name: str | None = None,
     description: str | None = None,
 ) -> dict:
-    """Create or fill in the canonical project tree from the template."""
+    """Create or fill in the canonical project tree from the template.
+
+    The template supplies the work tier (``AGENTS.md``, the planning docs,
+    ``memory/``). ``.xo/`` comes from :mod:`services.xo_structure`, the one
+    definition every project shares however it came to exist, so a scaffolded
+    project's ``.xo/`` is identical to a cloned one's. Returns the resulting
+    ``project.json``.
+    """
     pid = resolve_project_dirname(name)
     pdir = project_dir(pid)
     xdir = xo_dir(pid)
@@ -487,7 +494,14 @@ def scaffold_project(
 
     _copy_template(_template_dir(), pdir)
 
-    return _upsert_metadata(pid, display_name=display_name, description=description)
+    # Imported here because the structure module imports this one.
+    from services.xo_structure import ensure_xo_structure
+
+    # Structure (identity included) first, then what the person typed, so the
+    # document's key order matches every other project's.
+    ensure_xo_structure(pid)
+    result = _upsert_metadata(pid, display_name=display_name, description=description)
+    return load_project(pid) or result
 
 
 def _upsert_metadata(
@@ -495,10 +509,15 @@ def _upsert_metadata(
     *,
     display_name: str | None,
     description: str | None,
-) -> dict:
+    repair_corrupt: bool = True,
+) -> dict | None:
     """
     Read .xo/project.json, fill in any missing fields, optionally update
     display_name/description, write back, return the result.
+
+    ``repair_corrupt=False`` leaves a document that does not parse exactly as
+    it is and returns ``None``: for folders this process did not just create,
+    where the unreadable file may still hold an identity nobody can see.
     """
     meta_path = project_metadata_path(pid)
     corrupt = False
@@ -513,6 +532,8 @@ def _upsert_metadata(
                 meta = loaded
             else:
                 corrupt = True
+    if corrupt and not repair_corrupt:
+        return None
 
     # ``values`` carries every key this call writes; ``owns`` is exactly those
     # plus any key being deleted.
@@ -565,9 +586,24 @@ def _upsert_metadata(
             )
         except CorruptDocumentError:
             # Readable a moment ago, not now — a concurrent truncation.
+            if not repair_corrupt:
+                return None
             write_json_atomic(meta_path, result)
 
     return result
+
+
+def seed_project_metadata(name: str) -> dict | None:
+    """Fill in whatever descriptive fields ``project.json`` lacks, changing
+    nothing it already has.
+
+    The non-destructive use of :func:`_upsert_metadata`, for folders this
+    process did not just create (``services/xo_structure.py``): a document
+    that does not parse is left exactly as it is and ``None`` is returned.
+    """
+    return _upsert_metadata(
+        name, display_name=None, description=None, repair_corrupt=False
+    )
 
 
 # ── Read / list ───────────────────────────────────────────────────────────────

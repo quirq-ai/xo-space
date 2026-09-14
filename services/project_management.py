@@ -22,6 +22,7 @@ from services.cowork_agent.project_sharing.repo_identity import normalize_repo
 from services.cowork_agent.visualizer import peers_store
 from services.errors import ServiceError
 from services.swarm_api import auth, project_sharing as swarm
+from services.xo_structure import ensure_xo_structure
 from utils.commands import run
 
 CHECK_TIMEOUT = 15.0
@@ -370,6 +371,9 @@ async def clone_project(project_id: str, repository_url: str) -> dict:
             raise _error("clone_failed", message, 502)
         _unchanged(root, staging, root_fd, staging_fd)
         _publish_clone(staging_fd, root_fd, project_id)
+        # A cloned repository gets the same .xo/ as every other project. Only
+        # .xo/ is touched and nothing raises: the clone is already published.
+        ensure_xo_structure(project_id)
         repo = normalize_repo(url)
         response = {"project_id": project_id, "created": True}
         if repo:

@@ -70,7 +70,7 @@ POST /api/files/mkdir
 → 409 if folder already exists
 ```
 
-The backend scaffolds the canonical tree (top-level docs + `memory/` + `.xo/`) from a template. Top-level docs (`PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md`) start with `[TEMPLATE]` markers: the agent fills those in on first boot (ask the user when scope is unclear). `.xo/project.json` starts with `_template: true`; the watcher service clears that flag once identity is resolved; the agent never touches it. Hand-rolling the layout means missing files or drift from the structure the backend expects.
+The backend scaffolds the canonical tree (top-level docs + `memory/` + `.xo/`) from a template. Top-level docs (`PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md`) start with `[TEMPLATE]` markers: the agent fills those in on first boot (ask the user when scope is unclear). `.xo/` is created complete, the same for every project: `.xo/project.json` already carries identity, `todos.json`, `workitems.json` and `peers.json` start empty, and a `.gitignore` keeps `.xo/` out of git. A repository cloned straight into the projects root gets the same `.xo/` on the watcher's next tick. The agent never touches any of it. Hand-rolling the layout means missing files or drift from the structure the backend expects.
 
 ---
 
