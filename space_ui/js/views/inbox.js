@@ -21,6 +21,38 @@ const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
   return isFinite(t)?new Date(t).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 };
+/* Date buckets for the sticky group headers, oldest label last. Local-day
+   based, so "Today" matches the reader's clock; an undated/unparsable ts
+   falls into its own bucket rather than pretending to be recent. */
+function dayBucket(ts){
+  const t=ts?new Date(ts).getTime():NaN;
+  if(!isFinite(t))return{k:'undated',label:'Undated'};
+  const startOf=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();
+  const day=86400000,today=startOf(new Date()),at=startOf(new Date(t));
+  if(at>=today)return{k:'today',label:'Today'};
+  if(at>=today-day)return{k:'yesterday',label:'Yesterday'};
+  if(at>=today-6*day)return{k:'week',label:'Earlier this week'};
+  if(at>=today-29*day)return{k:'month',label:'Earlier this month'};
+  return{k:'older',label:'Older'};
+}
+/* Rows newest-first, with a sticky subheader whenever the day bucket changes;
+   the header count is per bucket so a long list stays scannable. */
+function groupRows(items){
+  let out='',last=null,run=[];
+  const flush=()=>{
+    if(!run.length)return;
+    out+='<div class="inb-group" role="separator">'+esc(last.label)
+      +'<b>'+run.length+'</b></div>'+run.join('');
+    run=[];
+  };
+  for(const it of items){
+    const b=dayBucket(it.ts);
+    if(!last||b.k!==last.k){flush();last=b;}
+    run.push(rowHTML(it));
+  }
+  flush();
+  return out;
+}
 /* The API validates links on write, but a hand-edited inbox.json reaches
    the page as-is until the next normalising write; never hand the previewer
    a path the file API would refuse anyway. */
@@ -144,7 +176,7 @@ export default {
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
-    el.innerHTML='<div class="inb">'+head()+sources()+connsHTML()+jobsHTML()+skeleton()+'</div>';
+    el.innerHTML='<div class="inb">'+toolbar()+skeleton()+aside()+'</div>';
     el.addEventListener('click',onClick);
     loadConns(); /* not awaited: independent of the rows, never blocks them */
     loadJobs();
@@ -172,6 +204,12 @@ export default {
   }
 };
 
+/* one toolbar block: the header strip and the source pills read as a single
+   control surface rather than two stacked strips */
+const toolbar=()=>'<div class="inb-toolbar">'+head()+sources()+'</div>';
+/* Connections and Jobs are context, not the inbox itself: they sit in a
+   secondary area below the rows so the items are the first thing seen */
+const aside=()=>'<div class="inb-aside">'+connsHTML()+jobsHTML()+'</div>';
 const skeleton=()=>'<div class="inb-rows">'+'<div class="inb-skel"></div>'.repeat(4)+'</div>';
 const counts=()=>Object.assign({new:0,seen:0,done:0},data&&data.counts);
 const itemById=id=>data&&(data.items||[]).find(it=>it.id===id);
@@ -214,7 +252,7 @@ function render(){
   const box=root.querySelector('.inb');
   if(!box)return;
   const sel=focusSelector();
-  box.innerHTML=head()+sources()+connsHTML()+jobsHTML()+body();
+  box.innerHTML=toolbar()+body()+aside();
   jobsPainted=jobsPaintKey();
   painted=paintKey();
   if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
@@ -276,7 +314,7 @@ function body(){
     +'<p>The source pills filter the loaded page only. Pick All to see every row.</p></div>';
   if(!items.length)return stale+scope+'<div class="inb-empty"><b>No loaded inbox items match this search.</b>'
     +'<p>Try another term or clear the search. Status and source filters still apply.</p></div>';
-  return stale+scope+'<div class="inb-rows">'+items.map(rowHTML).join('')+'</div>';
+  return stale+scope+'<div class="inb-rows">'+groupRows(items)+'</div>';
 }
 const hasLink=it=>!!it.link&&typeof it.link==='object'&&!!(it.link.view||it.link.project);
 function rowHTML(it){
@@ -285,7 +323,7 @@ function rowHTML(it){
   const done=it.status==='done';
   const off=busy.has(it.id)?' disabled':'';
   const url=safeUrl(it.url);
-  return'<div class="inb-row is-'+esc(it.status)+(open?' is-open':'')+'" id="inb-row-'+id+'">'
+  return'<div class="inb-row is-'+esc(it.status)+(open?' is-open':'')+'" data-source="'+esc(sourceOf(it))+'" id="inb-row-'+id+'">'
     /* a real button: keyboard-reachable, and it says what it does */
     +'<button class="inb-row-head" type="button" data-act="toggle" data-id="'+id+'" '
       +'aria-expanded="'+(open?'true':'false')+'" aria-controls="inb-body-'+id+'">'
