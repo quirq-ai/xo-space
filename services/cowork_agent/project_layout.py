@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.helpers import normalize_agent_id
+from services.storage.layout import cache_dir
 from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
@@ -106,13 +107,21 @@ def workspace_xo_dir() -> Path:
 
 
 def workspace_runtime_dir() -> Path:
-    """``~/.quirq/workspace/`` — the derived workspace views (syncplan T20)."""
-    return quirq_state_dir() / "workspace"
+    """``~/.quirq/cache/``: the derived workspace views, rebuilt every tick
+    (``~/.quirq/workspace/`` before the state root had folders)."""
+    return cache_dir()
 
 
 def workspace_sessions_dir() -> Path:
-    """``~/.quirq/workspace/sessions/`` — the workspace-tier session views."""
+    """``~/.quirq/cache/sessions/``: the workspace-tier session views."""
     return workspace_runtime_dir() / "sessions"
+
+
+def workspace_timeline_path() -> Path:
+    """``~/.quirq/projects/timeline.jsonl``: every project's timeline lines,
+    tagged with ``project_id``. History that nothing can rebuild, so it lives
+    beside the per-project timelines rather than in ``cache/``."""
+    return xo_runtime_root() / "timeline.jsonl"
 
 
 # ── Runtime home (machine-local; never synced) ─────────────────────────────────

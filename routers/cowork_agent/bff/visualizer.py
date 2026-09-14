@@ -327,10 +327,7 @@ def project_todos_create(project_id: str, body: CreateTodoRequest) -> Todo:
                 status_code=400,
                 detail={"code": code, "message": str(exc)},
             ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail={"code": "scope_unavailable", "message": "todos.json write failed."},
-        ) from exc
+        raise _todo_write_error(exc) from exc
     return _make_todo_model(new)
 
 
@@ -382,10 +379,7 @@ def project_todos_update(
                 status_code=400,
                 detail={"code": code, "message": str(exc)},
             ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail={"code": "scope_unavailable", "message": "todos.json write failed."},
-        ) from exc
+        raise _todo_write_error(exc) from exc
     return _make_todo_model(updated)
 
 
@@ -419,11 +413,21 @@ def project_todos_delete(
                 status_code=400,
                 detail={"code": "invalid_runtime", "message": str(exc)},
             ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail={"code": "scope_unavailable", "message": "todos.json write failed."},
-        ) from exc
+        raise _todo_write_error(exc) from exc
     return DeleteTodoResponse(project_id=project_id, todo_id=todo_id, deleted=deleted)
+
+
+def _todo_write_error(exc: Exception) -> HTTPException:
+    """A refused ``todos.json`` (unparseable, e.g. merge conflict markers, or
+    a newer schema) is a 409 with the shared document message; anything else
+    stays the 500 it always was."""
+    return _store_error(
+        exc,
+        failure="todos.json write failed.",
+        document="todos.json",
+        not_found=("todo_not_found", "Todo not found."),
+        caller_errors=frozenset(),
+    )
 
 
 # ── /api/xo-projects/{id}/workitems — CRUD for any runtime ──────────────────

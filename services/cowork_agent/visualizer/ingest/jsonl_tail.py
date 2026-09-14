@@ -1,7 +1,7 @@
 """Seek-tail reader with offset persistence.
 
 Tails one ``.jsonl`` file from a saved byte offset. Survives process
-restarts via a single ``~/.quirq/watcher/offsets.json`` file
+restarts via a single ``~/.quirq/projects/offsets.json`` file
 shared across all tailed files. Detects inode change (rotation /
 truncation) and re-reads from byte 0 in that case.
 
@@ -127,7 +127,8 @@ class OffsetStore:
         from services.cowork_agent.visualizer.atomic_write import write_json_atomic
         write_json_atomic(
             self.store_path,
-            {"version": 1, "offsets": self._data},
+            # ``schema`` replaced ``version``; the reader only needs ``offsets``.
+            {"schema": 1, "offsets": self._data},
         )
         self._dirty = False
 

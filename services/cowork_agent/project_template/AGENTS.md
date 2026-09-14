@@ -11,8 +11,8 @@
 A working folder shared between a human and any number of AI agents. It contains the actual project work, plus two persistence layers:
 
 - **`memory/`** — shared cognition. Committed to git. Distilled facts, past episodes, reusable procedures. Visible to every teammate and every agent.
-- **`.xo/`** — portable project metadata: identity, todos, work items, and the sharing roster. Small, durable, kept out of git by its own `.gitignore`, and the half of the state a backup of this folder carries.
-- **`~/.quirq/`** — machine-local service state: session indexes, statistics, the event timeline, sync progress, live presence and watcher cursors. All of it is re-derivable from this machine's runtime logs, so none of it travels with the project.
+- **`.xo/`** — portable project metadata: identity, todos, work items, and the sharing roster. Small, durable, committed with the project like any other file, and carried by backups.
+- **`~/.quirq/`** — machine-local service state: per-project history under `projects/<pid>/` (session index, statistics, the event timeline), the Inbox, connections, settings, credentials, logs and rebuildable caches. None of it travels with the project, and the history cannot be rebuilt from anything else.
 
 ### Who writes what
 
@@ -20,7 +20,7 @@ A working folder shared between a human and any number of AI agents. It contains
 |----------------------------------------------------------|:-:|---|
 | `PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md` | yes | Co-edited with the human. |
 | `memory/{semantic,episodic,procedural,working}/`        | yes | The agent's externalized cognition. |
-| `.xo/**` — **everything** under `.xo/`                  | **no** | Quirq services own this directory. XO Space creates it complete (the same files in every project); the watcher keeps identity filled; the todo API owns `todos.json`; the workitems API owns `workitems.json`; collaboration flows own the peer roster. Agents only **read** `.xo/`. Never write — your edits will be overwritten and may corrupt coordinated state. |
+| `.xo/**` — **everything** under `.xo/`                  | **no** | Quirq services own this directory. XO Space creates it complete (the same files in every project); the watcher keeps identity filled; the todo API owns `todos.json`; the workitems API owns `workitems.json`; collaboration flows own the peer roster. Agents only **read** `.xo/`. Never write — your edits will be overwritten and may corrupt coordinated state. The one exception: when a git merge leaves conflict markers in a `.xo/` file, resolve them as you would in any other file and commit; until then the API refuses to write that file. |
 | `.xo/todos.json`                                        | **no**, but you **drive** it | You never edit the file, and you never rely on a native todo tool to reach it. Record every todo through `POST/PATCH/DELETE /api/xo-projects/<project-id>/todos` (§5). The API is the file's only writer, for every runtime. |
 | `~/.quirq/**`                                          | **no** | Machine-local service state: this project's session index, stats, timeline and sync progress, plus watcher cursors and live-presence snapshots. Read it through the cowork API; never edit these files directly. |
 
@@ -47,8 +47,7 @@ Every agent that works here is expected to leave the folder in a **better state 
 │   ├── procedural/          how to do recurring things (validated twice)
 │   └── working/             session-scoped scratch (wiped at close)
 │
-├── .xo/                     ← portable project metadata, the same in every project.
-│   ├── .gitignore           "*": nothing in .xo/ is committed; backups carry it
+├── .xo/                     ← portable project metadata, the same in every project. Committed.
 │   ├── project.json         identity: pid, name, owner_user_id, created_at, display_name, description
 │   ├── todos.json           session todos, written only by the todo API (§5)
 │   ├── workitems.json       durable work items, written only by the workitems API
@@ -71,7 +70,7 @@ folder**, under the machine-local state root, keyed by the `pid` in
     ├── sessionslist.d/      the session index, one shard file per session
     └── sessions-augment.json   watcher counters and timing joined at read time
 
-~/.quirq/watcher/activity/projects/<pid>.json   live "who is here now"
+~/.quirq/cache/activity/projects/<project>.json   live "who is here now"
 ```
 
 **Do not go looking for those paths.** They are machine-local, they are keyed

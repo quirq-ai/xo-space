@@ -166,7 +166,7 @@ EOF
 # Hermes-specific layout: user-tunable values come from pod env; Hermes
 # app defaults are baked in with ${VAR:-default}. Hosted workspace edits
 # are preserved. Managed local Quirq refreshes the file on every boot so
-# values saved by the Setup tab in ~/.quirq/secrets.env take effect.
+# values saved by the Setup tab in ~/.quirq/secrets/secrets.env take effect.
 # ==============================================================
 write_env_file() {
     if [ -f "$ENV_FILE" ] && [ "${QUIRQ_MANAGED_CONTAINER:-false}" != "true" ]; then

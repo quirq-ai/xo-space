@@ -92,7 +92,7 @@ Open an issue with:
 - **What you did, what you expected, what happened.** Exact commands and the
   exact text of any error.
 - **Evidence:** `curl -s localhost:5002/health`, and the tail of the server
-  log — `<state root>/quirq.log` for the installer path, `/tmp/xo-space.log`
+  log — `<state root>/logs/quirq.log` for the installer path, `/tmp/xo-space.log`
   for `cowork-api.sh`. **Redact tokens and keys before pasting** (`/health`
   reports presence, not values, on purpose; logs may not).
 - For UI bugs: the browser, a screenshot, and the relevant

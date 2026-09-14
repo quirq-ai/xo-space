@@ -25,9 +25,9 @@ class CommitRelayStateTests(unittest.TestCase):
 
     def test_files_land_under_quirq_relay(self) -> None:
         state.save_cursor(REPO, 7)
-        files = list((self.root / "project_sharing").glob("*.json"))
+        files = list((self.root / "sharing").glob("*.json"))
         self.assertEqual(len(files), 1)
-        self.assertEqual(json.loads(files[0].read_text(encoding="utf-8")), {"cursor": 7})
+        self.assertEqual(json.loads(files[0].read_text(encoding="utf-8")), {"schema": 1, "cursor": 7})
 
     def test_fields_do_not_clobber_each_other(self) -> None:
         state.save_cursor(REPO, 5)

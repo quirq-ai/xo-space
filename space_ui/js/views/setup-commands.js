@@ -41,7 +41,7 @@ Keep every_seconds null for manual runs unless I ask for a schedule. For an inte
 
 Verify the saved command with GET ${endpoint}/{id} and report its name and ID. Do not execute it unless I ask. I can click Run in Setup → Commands and open its Inbox for results.
 
-If I request a run: POST ${endpoint}/{id}/run. Check GET ${endpoint}/{id} for completion and GET ${endpoint}/{id}/runs for results and the exact log_path. Default logs: ~/.quirq/scheduler/logs/{id}.log; history: ~/.quirq/scheduler/runs/{id}.jsonl. Use the API rather than editing scheduler files directly.`;
+If I request a run: POST ${endpoint}/{id}/run. Check GET ${endpoint}/{id} for completion and GET ${endpoint}/{id}/runs for results and the exact log_path. Default logs: ~/.quirq/logs/scheduler/{id}.log; history: ~/.quirq/scheduler/runs/{id}.jsonl. Use the API rather than editing scheduler files directly.`;
 }
 function relativeTime(value){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000));

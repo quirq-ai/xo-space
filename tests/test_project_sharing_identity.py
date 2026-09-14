@@ -39,6 +39,6 @@ class RepoIdentityTests(unittest.TestCase):
 
     def test_state_filename_never_escapes_the_relay_dir(self) -> None:
         p = state_path("evil.example/../../etc/passwd")
-        self.assertEqual(p.parent.name, "project_sharing")
+        self.assertEqual(p.parent.name, "sharing")
         self.assertNotIn("..", p.name)
         self.assertNotIn("/", p.name)

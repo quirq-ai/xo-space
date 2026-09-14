@@ -1,7 +1,7 @@
 """
 Quirq machine-local UI/installation state.
 
-Stored at ~/.quirq/state.json (separate from ~/.openclaw/, which is
+Stored at ~/.quirq/settings/onboarding.json (separate from ~/.openclaw/, which is
 OpenClaw's own data). This is for state that:
 
 - belongs to Quirq (the product), not to OpenClaw
@@ -25,11 +25,12 @@ import os
 import tempfile
 from typing import Any
 
-from services.cowork_agent.local_state import legacy_state_dir, quirq_state_dir
+from services.cowork_agent.local_state import legacy_state_dir
+from services.storage.layout import settings_dir
 
 
-STATE_DIR = quirq_state_dir()
-STATE_FILE = STATE_DIR / "state.json"
+STATE_DIR = settings_dir()
+STATE_FILE = STATE_DIR / "onboarding.json"
 LEGACY_STATE_FILE = legacy_state_dir() / "state.json"
 
 

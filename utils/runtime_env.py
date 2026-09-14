@@ -29,6 +29,13 @@ def quirq_state_dir() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".quirq"
 
 
+def logs_dir() -> Path:
+    """``<state root>/logs/``: the command log and every saved command's output.
+    Defined here, below the services layer, because ``utils/commands`` writes
+    there; ``services.storage.layout`` re-exports it."""
+    return quirq_state_dir() / "logs"
+
+
 def watcher_tick_interval_seconds() -> float:
     """Seconds between watcher ticks: ``$QUIRQ_WATCHER_INTERVAL_SECONDS``,
     default 1, clamped to 0.25–60 (below that the tick would spin; above it the

@@ -24,7 +24,7 @@
 # lands beside your projects, and machine state goes in ./.quirq
 #
 # The server runs in the foreground with a quiet terminal: its output
-# appends to <state root>/quirq.log, Ctrl-C stops it, and re-running
+# appends to <state root>/logs/quirq.log, Ctrl-C stops it, and re-running
 # updates and restarts. Agents wanting a session-scoped background server
 # run this same command as a background task of their harness — process
 # lifecycle belongs to whoever launched it, so there is no daemon mode,
@@ -32,7 +32,7 @@
 #
 # Root directory precedence:
 #     XO_PROJECTS_ROOT / QUIRQ_STATE_ROOT exported in the caller's shell
-#         → roots.env saved by the Setup tab
+#         → settings/roots.env saved by the Setup tab
 #         → the checkout's .env from the first install
 #         → the launch directory, and ./.quirq inside it
 #
@@ -291,8 +291,10 @@ saved_root_from_file() {
     local key="$2"
     local line
     local found=""
-    local config_file="${state_root}/roots.env"
+    local config_file="${state_root}/settings/roots.env"
 
+    # settings/roots.env since the state root has folders; roots.env before.
+    [ -f "$config_file" ] || config_file="${state_root}/roots.env"
     [ -f "$config_file" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
@@ -552,8 +554,8 @@ start_server() {
     export XO_PROJECTS_ROOT="$projects_root"
     export AI_WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-$projects_root}"
     export QUIRQ_STATE_ROOT="$state_root"
-    export QUIRQ_RUNTIME_FILE="${QUIRQ_RUNTIME_FILE:-${state_root}/runtime.env}"
-    export QUIRQ_SECRETS_FILE="${QUIRQ_SECRETS_FILE:-${state_root}/secrets.env}"
+    export QUIRQ_RUNTIME_FILE="${QUIRQ_RUNTIME_FILE:-${state_root}/settings/runtime.env}"
+    export QUIRQ_SECRETS_FILE="${QUIRQ_SECRETS_FILE:-${state_root}/secrets/secrets.env}"
     export QUIRQ_WATCHER_SOURCE_MODE="${QUIRQ_WATCHER_SOURCE_MODE:-all}"
     export QUIRQ_PUBLIC_URL="${QUIRQ_PUBLIC_URL:-http://localhost:${PORT}}"
 
@@ -567,7 +569,12 @@ start_server() {
     # server run this same command as a background task of their harness;
     # process lifecycle is the harness's job, not this script's, so there is
     # no daemonizing, no PID file, and nothing to leak.
-    local log_file="${state_root}/quirq.log"
+    local log_file="${state_root}/logs/quirq.log"
+    mkdir -p "${state_root}/logs"
+    # quirq.log sat at the top of the state root before it had folders.
+    if [ -f "${state_root}/quirq.log" ] && [ ! -e "$log_file" ]; then
+        mv "${state_root}/quirq.log" "$log_file"
+    fi
 
     printf '\n▶️  Starting Quirq: http://localhost:%s/space/\n\n' "$PORT"
     printf '    Logs:  %s\n' "$log_file"
@@ -661,7 +668,7 @@ main() {
     printf '\nQuirq source: %s (%s)\nXO projects: %s\nQuirq state: %s\n' \
         "$REPO_DIR" "$source_label" "$projects_root" "$state_root"
     check_optional_tools
-    print_reporting_notice "${state_root}/quirq.log"
+    print_reporting_notice "${state_root}/logs/quirq.log"
 
     ensure_port_available "$HOST" "$PORT"
     start_server "$projects_root" "$state_root"

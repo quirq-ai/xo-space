@@ -90,7 +90,7 @@ body:
       label: Evidence
       description: |
         `curl -s localhost:5002/health` and the tail of the server log —
-        `<state root>/quirq.log` (installer path) or `/tmp/xo-space.log` (`cowork-api.sh`).
+        `<state root>/logs/quirq.log` (installer path) or `/tmp/xo-space.log` (`cowork-api.sh`).
 
         **Redact tokens and keys before pasting** — `/health` reports presence, not values,
         on purpose; logs may not.

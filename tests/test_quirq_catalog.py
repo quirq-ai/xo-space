@@ -16,7 +16,7 @@ class QuirqCatalogTests(unittest.TestCase):
             root = Path(tmp) / ".quirq"
             projects_root = Path(tmp) / "projects"
             project_xo = projects_root / "demo" / ".xo"
-            activity = root / "watcher" / "activity" / "projects"
+            activity = root / "cache" / "activity" / "projects"
             activity.mkdir(parents=True)
             (project_xo / "sessions").mkdir(parents=True)
             (root / "secrets.env").write_text(
@@ -122,7 +122,7 @@ class QuirqCatalogTests(unittest.TestCase):
             )
             self.assertEqual(outputs["legacy_activity_files"], 1)
             self.assertIn(
-                ".quirq/watcher/activity",
+                ".quirq/cache/activity",
                 outputs["legacy_activity_note"],
             )
 

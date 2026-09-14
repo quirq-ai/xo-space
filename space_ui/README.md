@@ -112,7 +112,7 @@ shows its "no data source" panel: a truthful error panel beats a
 wrong-looking demo map.
 
 The URL is a name, not a path: `/xo/space.json` serves
-`~/.quirq/workspace/graph.json`. The graph is derived state, so it lives in
+`~/.quirq/cache/graph.json`. The graph is derived state, so it lives in
 the machine-local runtime tier with the other rollups, while
 `<XO root>/.xo/space.json` is the durable Space *record*. The older
 `/space/data/` routes for these three are gone; only
@@ -232,14 +232,13 @@ and a copyable full-log path. The drawer updates while a command runs and also
 offers Refresh. A concurrent run or a full shared execution limit returns 409.
 Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
-Definitions and every result stay under `<quirq state>/scheduler/`:
+Definitions and every result stay under `<quirq state>/scheduler/`, and the full output of every run under `<quirq state>/logs/scheduler/<id>.log`:
 
 ```text
 scheduler/
 ├── jobs.json          # saved commands, intervals and descriptions
 ├── state.json         # next run, running since, last result
-├── runs/<id>.jsonl    # append-only history, 2000-character output tails
-└── logs/<id>.log      # full output from every run
+└── runs/<id>.jsonl    # append-only history: one line per run, starting with ts and type ("job.run"), 2000-character output tails
 ```
 
 Deleting a command keeps its history and logs on disk and does not cancel an active process. Commands run locally with
@@ -336,7 +335,7 @@ retain their existing scope.
   previewer; `{view}` switches to that tab; `{project}` alone switches to
   Projects.
 
-### The file: `~/.quirq/inbox.json`
+### The file: `~/.quirq/inbox/inbox.json`
 
 Machine-local, under the Quirq state root (`QUIRQ_STATE_ROOT`), next to the
 polled connections: what a person has seen or done is this install's state,
@@ -368,6 +367,7 @@ fresh workspace creates nothing.
       "title": "Session started in xo-space (claude_code)",   // 1 to 300 chars
       "body": "",                                // up to 4000 chars
       "project_id": "xo-space",                  // optional project folder name
+      "pid": "7deb4a22-0789-497d-9399-a2272579fa06",  // the project's pid, set with project_id; null otherwise
       "link": {"view": "agents"},                // optional: view, project, path
       "url": null,                               // optional: http(s) address, up to 2000 chars, else null
       "status": "new",                           // new | seen | done
@@ -395,7 +395,7 @@ run while the others still run. A source with `enabled: false` is never read.
 
 | Feeder | Reads | Default | Cursor | Produces |
 |---|---|---|---|---|
-| `timeline` | `~/.quirq/workspace/timeline.jsonl` (the runtime-tier workspace timeline), the newest 500 events of the enabled types | `types: ["session.started", "todo.added"]`; `todo.completed`, `file.created`, `file.edited` can be added | `cursors.timeline`, the newest event timestamp seen; with no cursor only the last 24 hours are taken | `Session started in <project> (<runtime>)` linking to Agents; `Todo added in <project>: <content>` linking to Projects |
+| `timeline` | `~/.quirq/projects/timeline.jsonl` (the Space timeline), the newest 500 events of the enabled types | `types: ["session.started", "todo.added"]`; `todo.completed`, `file.created`, `file.edited` can be added | `cursors.timeline`, the newest event timestamp seen; with no cursor only the last 24 hours are taken | `Session started in <project> (<runtime>)` linking to Agents; `Todo added in <project>: <content>` linking to Projects |
 | `todos` | every `<project>/.xo/todos.json` | `statuses: ["blocked"]` | none | `Todo blocked in <project>: <content>` (kind `todo.blocked`, linking to Projects); the item is set to done by itself (flagged `auto_closed`) once the todo leaves the watched status or disappears, and comes back as new if the todo is blocked again |
 | `sharing` | the in-memory relay status (the `recent` list of `GET /api/project-sharing/status`) | on | `cursors.sharing` | `Repo shared with this workspace: <repo>`, `New commits fetched: <repo>`, `Sharing error: <repo>`, `Sharing access revoked: <repo>`, with the relay detail as body, linking to Projects |
 | `issues` | every project's GitHub issue mirror, `~/.quirq/projects/<pid>/github/issues.json` (written by the GitHub issue poller) | `states: ["open"]`; `closed` can be added | `cursors.issues`, the newest `updated_at` seen across every readable mirror; with no cursor only the last 7 days are taken | `Issue #<number> in <project>: <title>` (kind `issue.<state>`, key `issue:<project>:<number>`, labels and assignees as body, the issue URL as `url`, linking to Projects); the item is set to done by itself (flagged `auto_closed`) once the issue leaves a watched state, but only on a run where every mirror was readable, so a transient read failure never closes real issues; a reopened issue comes back as new once its `updated_at` passes the cursor |

@@ -72,10 +72,6 @@ class CanonicalSampleTests(unittest.TestCase):
         )
 
     def test_the_sample_documents_are_byte_for_byte_what_the_code_creates(self) -> None:
-        self.assertEqual(
-            (FIXTURE_XO / ".gitignore").read_text(encoding="utf-8"),
-            xo_structure.GITIGNORE_TEXT,
-        )
         for name, document in xo_structure.empty_documents().items():
             self.assertEqual(
                 (FIXTURE_XO / name).read_bytes(),
@@ -231,7 +227,6 @@ class SafetyTests(_Sandbox):
         xo = project / ".xo"
         xo.mkdir()
         existing = {
-            ".gitignore": b"# mine\n",
             "todos.json": b'{"schema": 2, "sessions": {"_project": {"runtime": "x", "todos": []}}}',
             "peers.json": b"not json",
         }
@@ -250,7 +245,7 @@ class SafetyTests(_Sandbox):
         report = xo_structure.ensure_xo_structure(PROJECT)
         self.assertEqual((xo / "project.json").read_bytes(), b"{broken")
         self.assertTrue(any("project.json" in problem for problem in report.problems), report)
-        self.assertEqual(report.created, (".gitignore", "todos.json", "workitems.json", "peers.json"))
+        self.assertEqual(report.created, ("todos.json", "workitems.json", "peers.json"))
 
     def test_an_existing_identity_is_kept_and_only_missing_fields_are_added(self) -> None:
         project = self.folder()
@@ -366,7 +361,9 @@ class WatcherCheckTests(_Sandbox):
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class GitTests(_Sandbox):
-    def test_xo_stays_out_of_the_projects_git_status(self) -> None:
+    def test_xo_shows_in_the_projects_git_status_so_it_can_be_committed(self) -> None:
+        # .xo/ travels through git. An ignored .xo/ would let a fast-forward
+        # merge overwrite local todos without a word.
         project = self.folder()
         subprocess.run(["git", "init", "-q", str(project)], check=True)
         xo_structure.ensure_xo_structure(PROJECT)
@@ -374,8 +371,9 @@ class GitTests(_Sandbox):
             ["git", "-C", str(project), "status", "--porcelain", "--untracked-files=all"],
             check=True, capture_output=True, text=True,
         ).stdout
-        self.assertIn("README.md", status)  # the project's own files are still seen
-        self.assertNotIn(".xo", status)
+        self.assertIn("README.md", status)
+        for name in xo_structure.CANONICAL_FILES:
+            self.assertIn(f".xo/{name}", status)
 
 
 if __name__ == "__main__":

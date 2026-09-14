@@ -239,7 +239,7 @@ def _apply_body() -> bool:
         current = None
 
     # What sits at this path on an existing install is the *old graph* (a
-    # derived document that now lives in ~/.quirq/workspace/graph.json), or a
+    # derived document that now lives in ~/.quirq/cache/graph.json), or a
     # scaffold placeholder, or an unparseable file.
     legacy = not isinstance(current, dict) or current.get("schema") != SCHEMA
 
@@ -258,7 +258,7 @@ def _apply_body() -> bool:
                 "%s held a pre-T14 document (the derived graph now lives at "
                 "%s); replacing it with the Space record",
                 target,
-                quirq_state_dir() / "workspace" / "graph.json",
+                quirq_state_dir() / "cache" / "graph.json",
             )
         write_json_atomic(target, values)
         return True

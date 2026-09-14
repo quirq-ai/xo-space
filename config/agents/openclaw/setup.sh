@@ -137,7 +137,7 @@ EOF
 # Step 3 — Materialise $REPO_ROOT/.env from environment vars.
 # openclaw.sh's install_env() and load_env() both rely on this file.
 # Hosted workspace edits are preserved. A managed local Quirq container
-# refreshes the file on every boot because ~/.quirq/secrets.env is the
+# refreshes the file on every boot because ~/.quirq/secrets/secrets.env is the
 # authoritative, write-only store controlled by the Setup tab.
 # ==============================================================
 write_env_file() {

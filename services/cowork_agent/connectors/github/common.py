@@ -14,7 +14,7 @@ here:
 Nothing in this module knows how the token was obtained; the only trace of
 that is the ``auth_method`` field carried alongside it for display purposes.
 
-Token file: ~/.config/token.json  (see connectors/token_store.py)
+Token file: ~/.quirq/secrets/token.json  (see connectors/token_store.py)
 """
 
 import logging

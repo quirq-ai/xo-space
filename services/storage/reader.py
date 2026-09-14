@@ -4,7 +4,7 @@ Space-level (``services/storage``): the one file-reading module the
 BFF routes' scope handles call. Returns plain dicts; never touches an
 agent runtime's native storage under ``~``. It reads portable
 visualizer files from project/workspace ``.xo/`` and ephemeral activity
-from ``~/.quirq/watcher/``. Path resolution and clamping live in
+from ``~/.quirq/cache/activity/``. Path resolution and clamping live in
 the caller (see ``services/cowork_agent/scopes.py``
 ``VisualizerScope`` / ``WorkspaceVisualizerScope``).
 

@@ -163,7 +163,7 @@ class RunSpecTests(unittest.TestCase):
             with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(state_root)}, clear=False):
                 result = run_sync([sys.executable, "-c", f"print({payload!r})"], cwd=str(ROOT), timeout=30)
             self.assertTrue(result.ok)
-            text = (state_root / "commands.log").read_text(encoding="utf-8")
+            text = (state_root / "logs" / "commands.log").read_text(encoding="utf-8")
         self.assertIn("$", text)
         self.assertIn(f"cwd: {ROOT}", text)
         self.assertRegex(text, r"\[0; \d+\.\d{3}s\]")
@@ -222,8 +222,8 @@ class RunSpecTests(unittest.TestCase):
                 second = run_sync([sys.executable, "-c", "print('second entry payload')"], timeout=30)
             self.assertTrue(first.ok)
             self.assertTrue(second.ok)
-            current = (state_root / "commands.log").read_text(encoding="utf-8")
-            rotated = (state_root / "commands.log.1").read_text(encoding="utf-8")
+            current = (state_root / "logs" / "commands.log").read_text(encoding="utf-8")
+            rotated = (state_root / "logs" / "commands.log.1").read_text(encoding="utf-8")
         self.assertIn("second entry payload", current)
         self.assertNotIn("first entry payload", current)
         self.assertIn("first entry payload", rotated)
@@ -246,7 +246,7 @@ class RunSpecTests(unittest.TestCase):
             ):
                 result = run_sync([sys.executable, "-c", "print('ok')"], log_path=extra_log, timeout=30)
             self.assertTrue(result.ok)
-            self.assertFalse((state_root / "commands.log").exists())
+            self.assertFalse((state_root / "logs" / "commands.log").exists())
             self.assertFalse(env_override_log.exists())
             self.assertIn("ok", extra_log.read_text(encoding="utf-8"))
 
@@ -304,7 +304,7 @@ class RunSpecTests(unittest.TestCase):
         # Built in the child, so the argv line (never capped) does not carry it.
         result = run_sync([sys.executable, "-c", "print('A' * 5000)"], log_path=job_log, timeout=30)
         self.assertTrue(result.ok)
-        shared = (self.state_root / "commands.log").read_text(encoding="utf-8")
+        shared = (self.state_root / "logs" / "commands.log").read_text(encoding="utf-8")
         own = job_log.read_text(encoding="utf-8")
         self.assertIn("...[truncated ", shared)
         self.assertNotIn(payload, shared)
@@ -323,7 +323,7 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn("[REDACTED]", own)
         self.assertNotIn("ghp_secretvalue", own)
         self.assertFalse(job_log.with_name("job.log.1").exists())
-        self.assertTrue((self.state_root / "commands.log.1").exists())
+        self.assertTrue((self.state_root / "logs" / "commands.log.1").exists())
 
     def test_concurrent_writers_rotate_without_racing(self) -> None:
         """Scheduler jobs finish on threads while requests shell out on others;
@@ -331,7 +331,7 @@ class RunSpecTests(unittest.TestCase):
         a second writer renames a file the first already moved."""
         import threading
 
-        target = self.state_root / "commands.log"
+        target = self.state_root / "logs" / "commands.log"
         entry = "x" * 64 + "\n"
         errors: list[BaseException] = []
 

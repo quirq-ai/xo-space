@@ -168,11 +168,12 @@ def _write(path: Path, claims: dict) -> None:
 # ── Lifecycle events ───────────────────────────────────────────────────────
 
 
-def _emit(path: Path, events: list[Event]) -> None:
-    """Append claim events to the project's timeline. **Never raises.**"""
+def _emit(path: Path, events: list[Event], *, project_id: Optional[str] = None) -> None:
+    """Append claim events to the project's timeline, and to the Space timeline
+    when the caller names the project's folder. **Never raises.**"""
     if not events:
         return
-    timeline.apply_quiet(Path(path).parent.parent, events)
+    timeline.apply_quiet(Path(path).parent.parent, events, project_id=project_id)
 
 
 # ── The claim, and its release ─────────────────────────────────────────────
@@ -185,6 +186,7 @@ def claim_workitem(
     session_id: str,
     runtime: str,
     started_at: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> dict:
     """Record that ``session_id`` is working ``workitem_id``. Returns the claim."""
     _validate_key(workitem_id, kind="workitem_id", code="invalid_value")
@@ -219,11 +221,11 @@ def claim_workitem(
             action="claimed",
             workitem_id=workitem_id,
         )
-    ])
+    ], project_id=project_id)
     return dict(record)
 
 
-def release_workitem(path: Path, workitem_id: str) -> bool:
+def release_workitem(path: Path, workitem_id: str, *, project_id: Optional[str] = None) -> bool:
     """Drop the claim. ``True`` if this call removed one."""
     _validate_key(workitem_id, kind="workitem_id", code="invalid_value")
     with locked(path):
@@ -249,14 +251,14 @@ def release_workitem(path: Path, workitem_id: str) -> bool:
             action="released",
             workitem_id=workitem_id,
         )
-    ])
+    ], project_id=project_id)
     return True
 
 
-def release_workitem_quiet(path: Path, workitem_id: str) -> bool:
+def release_workitem_quiet(path: Path, workitem_id: str, *, project_id: Optional[str] = None) -> bool:
     """:func:`release_workitem` for the *implicit* releases."""
     try:
-        return release_workitem(path, workitem_id)
+        return release_workitem(path, workitem_id, project_id=project_id)
     except WorkitemClaimsError as exc:
         logger.warning(
             "could not release the claim on workitem %s (%s); it will lapse "

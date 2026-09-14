@@ -76,6 +76,15 @@ r5="$( cd "$W/ws1" && source "$W/lib.sh" 2>/dev/null
 check "an exported shell root beats roots.env" "$r5" "$W/shellroot"
 rm -f "$W/ws1/.quirq/roots.env"
 
+mkdir -p "$W/ws1/.quirq/settings"
+echo "XO_PROJECTS_ROOT=$W/ws1/fromsettings" > "$W/ws1/.quirq/settings/roots.env"
+r5b="$( cd "$W/ws1" && source "$W/lib.sh" 2>/dev/null
+       unset XO_PROJECTS_ROOT QUIRQ_STATE_ROOT || true
+       resolve_repo_dir; resolve_workspace_dir; resolve_roots
+       printf '%s' "$PROJECTS_ROOT" )"
+check "settings/roots.env is read before the old roots.env" "$r5b" "$W/ws1/fromsettings"
+rm -rf "$W/ws1/.quirq/settings"
+
 # ---- 3. remove_path guards -------------------------------------------------
 g1="$( source "$W/lib.sh" 2>/dev/null; ( remove_path x "/" ) 2>&1 || true )"
 case "$g1" in *"refusing to remove /"*) ok "remove_path refuses /";;
@@ -154,6 +163,20 @@ again="$( cd "$W/ws5" && HOME="$W/home5" QUIRQ_DAEMON_TMPDIR="$W/tmp5" \
          XO_PROJECTS_ROOT="$W/ws5" QUIRQ_STATE_ROOT="$W/ws5/.quirq" \
          bash ./uninstall-copy.sh --yes >/dev/null 2>&1 && echo ok || echo err )"
 check "second run is graceful (idempotent)" "$again" "ok"
+
+# ---- credentials survive: secrets/ is the one part of the state root kept --
+make_install "$W/ws6"
+cp "$SRC" "$W/ws6/xo-space/uninstall.sh"
+mkdir -p "$W/ws6/.quirq/secrets" "$W/home6" "$W/tmp6"
+echo "K=V" > "$W/ws6/.quirq/secrets/secrets.env"
+echo "{}" > "$W/ws6/.quirq/secrets/token.json"
+kept6="$( cd "$W/ws6" && HOME="$W/home6" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp6" \
+          XO_PROJECTS_ROOT="$W/ws6" QUIRQ_STATE_ROOT="$W/ws6/.quirq" \
+          bash ./xo-space/uninstall.sh --yes 2>&1 )" || bad "uninstall with secrets exits 0" "$kept6"
+state6="$(ls -A "$W/ws6/.quirq" 2>/dev/null | tr '\n' ' ')|$(ls -A "$W/ws6/.quirq/secrets" 2>/dev/null | tr '\n' ' ')"
+check "secrets/ survives uninstall; the rest of the state root goes" "$state6" "secrets |secrets.env token.json "
+case "$kept6" in *"credentials in $W/ws6/.quirq/secrets"*) ok "the summary names the kept credentials";;
+  *) bad "the summary names the kept credentials" "$kept6";; esac
 
 # ---- summary ---------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

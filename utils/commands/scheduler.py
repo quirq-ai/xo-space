@@ -15,7 +15,8 @@ Files, all under ``<quirq state>/scheduler/`` (mode 0600 where supported):
     state.json       next_run / last_run / running_since / last_result —
                      written by registration, tick, run_now and read-time harvest
     runs/<id>.jsonl  append-only run history, newest last
-    logs/<id>.log    the executor's own log of every run (full output,
+and, under ``<quirq state>/logs/scheduler/`` with the other logs:
+    <id>.log         the executor's own log of every run (full output,
                      credentials redacted; never capped or rotated — that
                      only happens to the shared commands.log)
 
@@ -46,6 +47,7 @@ from typing import Any, Mapping, Optional
 from utils.commands import CommandResult, CommandSpec, run_spec_sync
 from utils.runtime_env import (
     ENV_WATCHER_INTERVAL,
+    logs_dir,
     quirq_state_dir,
     watcher_tick_interval_seconds as tick_interval_seconds,
 )
@@ -99,7 +101,8 @@ def runs_file(job_id: str) -> Path:
 
 
 def log_file(job_id: str) -> Path:
-    return scheduler_dir() / "logs" / f"{job_id}.log"
+    # Logs are safe to delete, so they sit with the other logs, not the history.
+    return logs_dir() / "scheduler" / f"{job_id}.log"
 
 
 # ── Configuration (read at call time, like the GitHub poller's switches) ─────
@@ -206,12 +209,23 @@ def _write_doc(path: Path, doc: dict) -> None:
         raise SchedulerError(f"{path} could not be written: {exc}") from exc
 
 
+#: The ``type`` of every line in ``runs/<id>.jsonl``; ``status`` is the outcome.
+RUN_EVENT_TYPE = "job.run"
+
+
+def _run_line(job_id: str, record: dict) -> dict:
+    """One history line: ``ts`` (when the run ended) and ``type`` first, like
+    every other event log, then the job id and the run record itself."""
+    head = {"ts": record.get("finished_at"), "type": RUN_EVENT_TYPE, "job_id": job_id}
+    return {**head, **{k: v for k, v in record.items() if k not in head}}
+
+
 def _append_run(job_id: str, record: dict) -> None:
     path = runs_file(job_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fp:
-            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+            fp.write(json.dumps(_run_line(job_id, record), ensure_ascii=False) + "\n")
         _chmod_private(path)
     except OSError as exc:
         raise SchedulerError(f"{path} could not be appended: {exc}") from exc

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 _TIMELINE_FILE = Path("timeline.jsonl")
 _ROTATE_BYTES = 8 * 1024 * 1024  # 8 MB
 _MAX_ROTATIONS_KEEP = 5
+
+# The runtime home is ``~/.quirq/projects/<pid>/``, so its folder name is the
+# pid. A project with no pid yet is keyed by its folder name and gets none.
+_PID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _envelope(line: dict, pid: Optional[str]) -> dict:
+    """``ts`` and ``type`` first, then ``pid``, then the event's own fields."""
+    head = {"ts": line.get("ts"), "type": line.get("type")}
+    if pid:
+        head["pid"] = pid
+    return {**head, **{k: v for k, v in line.items() if k not in head}}
 
 
 def _emit_event(ev: Event) -> Optional[dict]:
@@ -137,29 +150,51 @@ def _rotate_if_needed(root: Path) -> None:
             logger.warning("timeline rotation prune failed for %s: %s", old, exc)
 
 
-def apply(root: Path, events: Iterable[Event]) -> list[dict]:
-    """Append timeline events for this project's events."""
+def apply(root: Path, events: Iterable[Event], *, project_id: Optional[str] = None) -> list[dict]:
+    """Append timeline events for this project's events.
+
+    Given ``project_id`` (the project's folder name), the same lines are also
+    appended to the Space timeline, tagged with it, so the Space timeline
+    carries every event a project timeline does: the watcher's, and the todo,
+    workitem and claim events their stores write.
+    """
     _rotate_if_needed(root)
 
+    pid = root.name if _PID_RE.fullmatch(root.name) else None
     lines: list[dict] = []
     for ev in events:
         rendered = _emit_event(ev)
         if rendered is not None:
-            lines.append(rendered)
+            lines.append(_envelope(rendered, pid))
 
     if not lines:
         return []
 
     append_jsonl(root / _TIMELINE_FILE, lines)
+    if project_id:
+        _append_to_space_timeline(lines, project_id)
     return lines
 
 
-def apply_quiet(root: Optional[Path], events: Iterable[Event]) -> list[dict]:
+def _append_to_space_timeline(lines: list[dict], project_id: str) -> None:
+    """Best effort: the project's own line is already written."""
+    # Imported here so importing a sink never pulls in the workspace tier.
+    from services.cowork_agent.visualizer.workspace import timeline as space_timeline
+
+    try:
+        space_timeline.apply(lines, project_id=project_id)
+    except Exception:  # noqa: BLE001 - never fail the write the line describes
+        logger.warning("Space timeline append failed for %s", project_id, exc_info=True)
+
+
+def apply_quiet(
+    root: Optional[Path], events: Iterable[Event], *, project_id: Optional[str] = None,
+) -> list[dict]:
     """:func:`apply`, for a caller whose write has already succeeded."""
     if root is None:
         return []
     try:
-        return apply(root, events)
+        return apply(root, events, project_id=project_id)
     except Exception:  # noqa: BLE001 - see the docstring; never fail the write
         logger.warning("timeline append failed for %s", root, exc_info=True)
         return []

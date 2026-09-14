@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from services.cowork_agent.visualizer.state import watcher_state_dir
+from services.storage.layout import locks_dir
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,14 @@ _RETRY_INTERVAL_S = 0.02   # 20 ms: gives ~100 retries per deadline window
 
 
 def _locks_root() -> Path:
-    return watcher_state_dir() / "locks"
+    return locks_dir()
 
 
 def _lock_path_for(data_path: Path) -> Path:
     """Map a data file path to its per-machine lock sentinel path.
 
     ``~/xo-projects/blackhole/.xo/todos.json``
-        → ``~/.quirq/watcher/locks/todos.json.<8hex>.lock``
+        → ``~/.quirq/.locks/todos.json.<8hex>.lock``
 
     The 8-hex suffix is the first 8 chars of ``sha256(abs_path)``:
     short, stable, collision-free in practice. The data file's
@@ -45,7 +45,7 @@ def _lock_path_for(data_path: Path) -> Path:
 def locked(path: Path) -> Iterator[None]:
     """
     Acquire an exclusive advisory lock for the data file at ``path``. The lock
-    sentinel itself lives under ``~/.quirq/watcher/locks/`` (see module
+    sentinel itself lives under ``~/.quirq/.locks/`` (see module
     docstring).
     """
     lock_path = _lock_path_for(path)

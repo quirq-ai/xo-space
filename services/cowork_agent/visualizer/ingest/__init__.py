@@ -8,7 +8,7 @@ Three stateless modules:
   jsonl line into an :class:`events.Event`. Drops every field that
   isn't on the allowlist in docs/watcher-design.md §5.2.
 * :mod:`jsonl_tail` — seek-tail with offset persistence. Per-file
-  state; survives restarts via ``~/.quirq/watcher/offsets.json``.
+  state; survives restarts via ``~/.quirq/projects/offsets.json``.
 
 Stateful coordination (e.g. pairing a ``TaskCreate`` tool_use with
 its tool_result to recover the assigned task id) lives in the

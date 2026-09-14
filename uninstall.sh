@@ -5,7 +5,7 @@
 #
 # What goes: the running server (stopped first), the managed
 # checkout with its venv, the .env and connector credential files
-# (rclone.conf, mcp-tokens.json), the Quirq state root (roots.env
+# (rclone.conf, mcp-tokens.json), the Quirq state root except secrets/ (roots.env
 # is read first, so a root moved from Setup is still found), the
 # workspace-tier .xo/ the watcher wrote, the derived telemetry DB
 # in ~/.argus, a legacy ~/.xo-cowork migration source, the
@@ -142,8 +142,10 @@ saved_root_from_file() {
     local key="$2"
     local line
     local found=""
-    local config_file="${state_root}/roots.env"
+    local config_file="${state_root}/settings/roots.env"
 
+    # settings/roots.env since the state root has folders; roots.env before.
+    [ -f "$config_file" ] || config_file="${state_root}/roots.env"
     [ -f "$config_file" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
@@ -221,6 +223,24 @@ remove_path() {
     else
         KEPT+=("${label}: could not remove (${path})")
     fi
+}
+
+# The state root goes, except secrets/: credentials (secrets.env, token.json)
+# survive an uninstall, so a reinstall finds its connected accounts again.
+remove_state_root() {
+    local root="$1"
+    local entry
+    if [ ! -d "$root/secrets" ]; then
+        remove_path "Quirq state root" "$root"
+        return
+    fi
+    guard_path "$root"
+    for entry in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        [ "$entry" = "$root/secrets" ] && continue
+        remove_path "Quirq state (${entry##*/})" "$entry"
+    done
+    KEPT+=("credentials in ${root}/secrets (delete the folder yourself once you no longer need them)")
 }
 
 # ==============================================================
@@ -421,7 +441,7 @@ main() {
     # one, so nothing machine-local survives here. --purge-projects still takes
     # it, along with the projects it describes.
     remove_checkout
-    remove_path "Quirq state root" "$STATE_ROOT"
+    remove_state_root "$STATE_ROOT"
     remove_path "daemon pid file" "${DAEMON_TMP}/xo-space.pid"
     remove_path "daemon log" "${DAEMON_TMP}/xo-space.log"
     remove_path "derived telemetry DB (~/.argus)" "${HOME}/.argus"

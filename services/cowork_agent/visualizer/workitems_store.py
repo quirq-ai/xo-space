@@ -93,7 +93,7 @@ def emit_workitem_events(project_id: str, events: Iterable[Event]) -> None:
             exc_info=True,
         )
         return
-    timeline.apply_quiet(root, events)
+    timeline.apply_quiet(root, events, project_id=project_id)
 
 
 def _emit(workitems_path: Path, events: list[Event]) -> None:

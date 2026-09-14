@@ -50,7 +50,7 @@ class InboxStoreTests(unittest.TestCase):
 
     # helpers
     def path(self) -> Path:
-        return self.root / ".quirq" / "inbox.json"
+        return self.root / ".quirq" / "inbox" / "inbox.json"
 
     def write(self, doc) -> None:
         self.path().parent.mkdir(parents=True, exist_ok=True)
@@ -60,8 +60,8 @@ class InboxStoreTests(unittest.TestCase):
         return json.loads(self.path().read_text(encoding="utf-8"))
 
     def write_timeline(self, events: list[dict], *, append: bool = False) -> None:
-        # the workspace timeline is a runtime-tier file: ~/.quirq/workspace/, not <XO root>/.xo/
-        p = project_layout.workspace_runtime_dir() / "timeline.jsonl"
+        # the workspace timeline is history in the state root: ~/.quirq/projects/timeline.jsonl, not <XO root>/.xo/
+        p = project_layout.workspace_timeline_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "a" if append else "w", encoding="utf-8") as fp:
             fp.write("".join(json.dumps(e) + "\n" for e in events))
@@ -610,7 +610,7 @@ class InboxLocationTests(unittest.TestCase):
 
     def test_path_is_under_the_quirq_root_not_the_xo_root(self) -> None:
         # the XO root is resolved (macOS keeps /var as a symlink to /private/var), the Quirq root is not
-        self.assertEqual(store.inbox_path(), self.root / ".quirq" / "inbox.json")
+        self.assertEqual(store.inbox_path(), self.root / ".quirq" / "inbox" / "inbox.json")
         self.assertEqual(store._legacy_path().resolve(), (self.root / ".xo" / "inbox.json").resolve())
 
     def test_a_legacy_file_is_moved_once_on_first_use(self) -> None:

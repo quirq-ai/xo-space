@@ -7,8 +7,7 @@ path against it, and the code that creates it is `services/xo_structure.py`.
 
 ```
 sample-project/
-└── .xo/
-    ├── .gitignore       "*": .xo/ stays out of the project's own git history
+└── .xo/               committed with the project; travels through git and backups
     ├── project.json     identity and description
     ├── todos.json       session-scoped todos
     ├── workitems.json   durable work items, optionally adopted from GitHub issues
@@ -19,7 +18,6 @@ sample-project/
 
 | File | Created by | Written afterwards by | Schema |
 |---|---|---|---|
-| `.gitignore` | `services/xo_structure.py` | nobody | none |
 | `project.json` | the identity sink (`visualizer/sinks/project_json.fill_identity`), then `project_layout.seed_project_metadata` | the identity sink (`schema`, `pid`, `name`, `owner_user_id`, `created_at`); `project_layout._upsert_metadata` (`display_name`, `description`); the git refresher (`git`) | `project.schema.json` |
 | `todos.json` | `services/xo_structure.py`, empty | the todos API only (`visualizer/todos_store.py`) | `todos.schema.json` |
 | `workitems.json` | `services/xo_structure.py`, empty | the workitems API only (`visualizer/workitems_store.py`) | `workitems.schema.json` |
@@ -65,7 +63,7 @@ refresher has recorded the project's provenance.
 
 ## What is not here
 
-Machine-local, re-derivable state (stats, the timeline, the session index, the
+Machine-local state (stats, the timeline, the session index, the
 GitHub issue mirror, work-item claims) lives outside the project under
 `~/.quirq/projects/<pid>/`, keyed by the `pid` in `project.json`.
 
@@ -81,7 +79,8 @@ GitHub issue mirror, work-item claims) lives outside the project under
 
 ## Tracking this sample in git
 
-The repository's `.gitignore` ignores `.xo/` directories, and this sample's own
-`.xo/.gitignore` ignores its contents, which is the point of that file. Add the
-sample with `git add -f tests/fixtures/xo-project/.xo`. Once tracked, edits show
-up in `git status` as usual; only a newly added file needs `-f` again.
+In a project, `.xo/` is committed like any other file. This repository is the
+exception: its own `.gitignore` ignores `.xo/` directories so the checkout's
+`.xo/` stays local, which also hides this sample. Add a new sample file with
+`git add -f tests/fixtures/xo-project/.xo`. Once tracked, edits show up in
+`git status` as usual.

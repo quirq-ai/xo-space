@@ -197,6 +197,31 @@ class StorageRootBootTests(unittest.TestCase):
                 os.environ.pop("XO_PROJECTS_ROOT", None)
                 self.assertEqual(self._load(state_root, frozenset()), str(saved))
 
+    def test_saved_root_is_read_from_the_settings_folder_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_root = Path(tmp) / "state"
+            (state_root / "settings").mkdir(parents=True)
+            (state_root / "roots.env").write_text(f"XO_PROJECTS_ROOT={Path(tmp) / 'old'}\n", encoding="utf-8")
+            (state_root / "settings" / "roots.env").write_text(
+                f"XO_PROJECTS_ROOT={Path(tmp) / 'new'}\n", encoding="utf-8"
+            )
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("XO_PROJECTS_ROOT", None)
+                self.assertEqual(self._load(state_root, frozenset()), str(Path(tmp) / "new"))
+
+    def test_settings_files_fall_back_to_the_old_path_until_moved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            new, old = root / "settings" / "runtime.env", root / "runtime.env"
+            old.write_text("K=V\n", encoding="utf-8")
+            self.assertEqual(server._settings_file("", new, old), str(old))
+            self.assertEqual(server._settings_file(str(new), new, old), str(old))
+            elsewhere = root / "mine.env"
+            self.assertEqual(server._settings_file(str(elsewhere), new, old), str(elsewhere))
+            new.parent.mkdir()
+            new.write_text("K=W\n", encoding="utf-8")
+            self.assertEqual(server._settings_file("", new, old), str(new))
+
     def test_shell_environment_outranks_the_saved_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_root = Path(tmp) / "state"

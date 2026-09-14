@@ -1,4 +1,4 @@
-"""The inbox file: ``~/.quirq/inbox.json`` (under ``QUIRQ_STATE_ROOT``).
+"""The inbox file: ``~/.quirq/inbox/inbox.json`` (under ``QUIRQ_STATE_ROOT``).
 
 Machine-local, next to the polled connections and the derived workspace
 views: what a person has seen or done here is this install's state, not
@@ -40,11 +40,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from services.cowork_agent.project_layout import workspace_xo_dir
+from services.cowork_agent.project_layout import load_project, workspace_xo_dir
 from services.errors import ServiceError
 from services.storage.atomic_write import write_json_atomic
 from services.storage.flock import locked
-from services.storage.paths import quirq_state_dir
+from services.storage.layout import inbox_dir
 from services.storage.reader import read_json
 from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts  # noqa: F401  (re-exported)
 
@@ -67,6 +67,7 @@ ID_RE = re.compile(r"[0-9a-f]{8}")
 SOURCE_RE = re.compile(r"[a-z0-9_:-]{1,40}")
 KIND_RE = re.compile(r"[a-z0-9_.:-]{1,60}")
 PROJECT_ID_RE = re.compile(r"[A-Za-z0-9_:\-\.]{1,200}")
+PID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # a runtime-home key (project_layout._is_safe_runtime_key)
 VIEW_RE = re.compile(r"[a-z0-9_-]{1,40}")
 
 
@@ -79,6 +80,25 @@ class InboxError(ServiceError):
 
 def is_project_id(value) -> bool:
     return isinstance(value, str) and PROJECT_ID_RE.fullmatch(value) is not None
+
+
+def is_pid(value) -> bool:
+    return isinstance(value, str) and PID_RE.fullmatch(value) is not None
+
+
+def pid_for(project_id) -> Optional[str]:
+    """The pid in ``<projects root>/<project_id>/.xo/project.json``, or ``None``.
+
+    Items name a project by folder name for the UI, and by pid so the record
+    still joins the project's other data after the folder is renamed."""
+    if not is_project_id(project_id):
+        return None
+    try:
+        meta = load_project(project_id)
+    except Exception:  # noqa: BLE001 - a missing or odd folder just has no pid
+        return None
+    pid = meta.get("pid") if isinstance(meta, dict) else None
+    return pid if is_pid(pid) else None
 
 
 def is_url(value) -> bool:
@@ -118,7 +138,7 @@ def validate_link(link, *, strict: bool = False) -> Optional[dict]:
 
 
 def build_item(*, title, body="", kind="note", source="api", project_id=None, link=None,
-               ts=None, key=None, url=None) -> dict:
+               ts=None, key=None, url=None, pid=None) -> dict:
     """Validate and shape an item (no id yet; :func:`upsert_many` and
     :func:`add_item` allocate ids inside the lock). Raises ``InboxError``."""
     if not isinstance(title, str) or not title.strip() or len(title.strip()) > TITLE_MAX:
@@ -134,7 +154,9 @@ def build_item(*, title, body="", kind="note", source="api", project_id=None, li
     if url is not None and not is_url(url):
         raise InboxError("invalid_value", f"url must start with http:// or https:// and be at most {URL_MAX} chars.")
     return {"ts": ts or now_iso(), "source": source, "kind": kind, "title": title.strip(),
-            "body": body, "project_id": project_id, "link": validate_link(link, strict=True),
+            "body": body, "project_id": project_id,
+            "pid": (pid if is_pid(pid) else pid_for(project_id)) if project_id is not None else None,
+            "link": validate_link(link, strict=True),
             "url": url, "status": "new", "key": key if isinstance(key, str) else None}
 
 
@@ -164,6 +186,7 @@ def _normalize_item(raw, now_text: str) -> Optional[dict]:
     if not isinstance(it.get("kind"), str) or not KIND_RE.fullmatch(it["kind"]):
         it["kind"] = "note"
     it["project_id"] = it.get("project_id") if is_project_id(it.get("project_id")) else None
+    it["pid"] = it.get("pid") if is_pid(it.get("pid")) else None
     it["link"] = validate_link(it.get("link"))
     it["url"] = it.get("url") if is_url(it.get("url")) else None   # lenient: a bad hand edit is dropped, never fatal
     it["key"] = it.get("key") if isinstance(it.get("key"), str) else None
@@ -230,7 +253,9 @@ def apply_retention(items: list[dict], now: Optional[datetime] = None) -> tuple[
 
 
 def inbox_path() -> Path:
-    return quirq_state_dir() / "inbox.json"
+    # ~/.quirq/inbox.json before the state root had folders; the boot
+    # migration in services/storage/layout.py moves it.
+    return inbox_dir() / "inbox.json"
 
 
 def _legacy_path() -> Path:

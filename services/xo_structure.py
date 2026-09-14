@@ -14,8 +14,7 @@ here, so every project on every machine carries the same ``.xo/``:
 
 ::
 
-    .xo/
-    ├── .gitignore       "*": .xo/ stays out of the project's own git history
+    .xo/                 committed with the project; travels through git and backups
     ├── project.json     identity: pid, name, owner, created_at, display name
     ├── todos.json       session-scoped todos           (todo API writes it)
     ├── workitems.json   durable work items             (workitems API)
@@ -55,33 +54,25 @@ from pathlib import Path
 from services.cowork_agent import project_layout
 from services.cowork_agent.visualizer import peers_store, todos_store, workitems_store
 from services.cowork_agent.visualizer.sinks import project_json
-from services.storage.atomic_write import create_file_exclusive, create_json_exclusive
+from services.storage.atomic_write import create_json_exclusive
 from services.storage.reader import read_json
 
 logger = logging.getLogger(__name__)
 
 XO_DIRNAME = ".xo"
 
-GITIGNORE = ".gitignore"
 PROJECT = "project.json"
 TODOS = "todos.json"
 WORKITEMS = "workitems.json"
 PEERS = "peers.json"
 
-#: Every project's ``.xo/``, in creation order. ``.gitignore`` comes first so
-#: git never sees the rest, not even for a moment.
-CANONICAL_FILES: tuple[str, ...] = (GITIGNORE, PROJECT, TODOS, WORKITEMS, PEERS)
+#: Every project's ``.xo/``, in creation order. ``.xo/`` travels through git,
+#: so nothing here ignores it: an ignored file is one git may overwrite
+#: silently on a merge.
+CANONICAL_FILES: tuple[str, ...] = (PROJECT, TODOS, WORKITEMS, PEERS)
 
 #: May appear in a project's ``.xo/``; never created here.
 OPTIONAL_FILES: tuple[str, ...] = ("agent.json",)
-
-#: ``*`` ignores everything in ``.xo/``, this file included, without touching
-#: the project's own ``.gitignore`` (the same trick ``.pytest_cache`` uses).
-GITIGNORE_TEXT = (
-    "# Created by XO Space. Project metadata stays out of this repository's\n"
-    "# history; XO Space backups carry it instead.\n"
-    "*\n"
-)
 
 # Records that belong to a projects root's own .xo/, never to a project's. A
 # folder whose .xo/ holds one is a former projects root (the root was moved
@@ -218,10 +209,7 @@ def _ensure(project_id: str) -> EnsureReport:
             continue
         path = xo / filename
         try:
-            if filename == GITIGNORE:
-                made = create_file_exclusive(path, GITIGNORE_TEXT.encode("utf-8"))
-            else:
-                made = create_json_exclusive(path, documents[filename])
+            made = create_json_exclusive(path, documents[filename])
         except OSError as exc:
             problems.append(f"{filename}: not created ({_why(exc)})")
             continue

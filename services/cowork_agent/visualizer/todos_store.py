@@ -12,6 +12,8 @@ from typing import Iterable, Optional
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.visualizer.atomic_write import (
+    read_stamped_document,
+    unsupported_schema_message,
     write_json_atomic_if_changed,
 )
 from services.cowork_agent.visualizer.flock import locked
@@ -22,6 +24,7 @@ from services.cowork_agent.visualizer.ingest.events import (
 )
 from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.sinks import sessions_augment, timeline
+from services.cowork_agent.visualizer.store_common import corrupt_message
 from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES
 
 
@@ -127,19 +130,56 @@ def _emit(todos_path: Path, events: Iterable[Event]) -> None:
     except Exception:  # noqa: BLE001 - derived view, never fails the write
         logger.warning("todo events: augment counters failed for %s", runtime_dir, exc_info=True)
     try:
-        timeline.apply(runtime_dir, events)
+        timeline.apply(runtime_dir, events, project_id=todos_path.parent.parent.name)
     except Exception:  # noqa: BLE001
         logger.warning("todo events: timeline append failed for %s", runtime_dir, exc_info=True)
 
 
 def _read_sessions(todos_path: Path) -> tuple[Optional[dict], dict]:
-    """Return ``(document, deep-copied sessions map)``."""
+    """Return ``(document, deep-copied sessions map)``. Lenient: for reads."""
     current = read_json(todos_path)
     if not isinstance(current, dict):
         return None, {}
     raw = current.get("sessions")
     sessions = copy.deepcopy(raw) if isinstance(raw, dict) else {}
     return current, sessions
+
+
+def _read_sessions_for_write(todos_path: Path) -> tuple[Optional[dict], dict]:
+    """:func:`_read_sessions` for a write, which must refuse rather than guess.
+
+    ``.xo/`` travels through git, so a merge can leave conflict markers in
+    this file. Reading that as empty would make the write replace every todo,
+    both sides of the conflict included, before an agent could resolve it.
+    An older schema is still upgraded on write, as before; a newer one is
+    refused so no key it added is dropped.
+    """
+    state, value = read_stamped_document(todos_path, schema=TODOS_SCHEMA)
+    if state == "absent":
+        return None, {}
+    if state == "fault":
+        raise _corrupt(todos_path, value)
+    if state == "schema":
+        if isinstance(value, int) and not isinstance(value, bool) and value < TODOS_SCHEMA:
+            current = read_json(todos_path)
+        else:
+            raise TodosStoreError(
+                "unsupported_schema",
+                unsupported_schema_message(todos_path, value, TODOS_SCHEMA),
+            )
+    else:
+        current = value
+    raw = current.get("sessions")
+    if raw is not None and not isinstance(raw, dict):
+        raise _corrupt(todos_path, f"sessions is a {type(raw).__name__}, expected object")
+    return current, copy.deepcopy(raw) if raw is not None else {}
+
+
+def _corrupt(path: Path, reason: str) -> TodosStoreError:
+    return TodosStoreError(
+        "corrupt_document",
+        corrupt_message(path, reason, document="todos", loss="every todo it holds"),
+    )
 
 
 def _find(sessions: dict, todo_id: str) -> Optional[tuple[str, dict, dict]]:
@@ -182,7 +222,7 @@ def create_todo(
     stamp = _now_iso()
 
     with locked(todos_path):
-        current, sessions = _read_sessions(todos_path)
+        current, sessions = _read_sessions_for_write(todos_path)
         entry = sessions.get(sid)
         if entry is None or not isinstance(entry, dict):
             entry = _empty_session_entry(runtime)
@@ -280,7 +320,7 @@ def update_todo(
         _validate_content_length(active_form, field="active_form", limit=1000)
 
     with locked(todos_path):
-        current, sessions = _read_sessions(todos_path)
+        current, sessions = _read_sessions_for_write(todos_path)
         found = _find(sessions, todo_id)
         if found is None or is_deleted(found[2]):
             raise TodosStoreError("todo_not_found", "Todo not found.")
@@ -329,7 +369,7 @@ def delete_todo(
     if deleted_by is not None:
         _validate_safe_key(deleted_by, "runtime")
     with locked(todos_path):
-        current, sessions = _read_sessions(todos_path)
+        current, sessions = _read_sessions_for_write(todos_path)
         found = _find(sessions, todo_id)
         if found is None or is_deleted(found[2]):
             return False

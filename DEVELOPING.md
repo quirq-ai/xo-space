@@ -67,7 +67,7 @@ services/                         Placement rule: only what is specific to runni
   periodic.py                       ServiceError, the base of every typed service failure;
                                     run_forever, the loop under the GitHub and connections pollers
   inbox/                          the Space Inbox (a property of the Space, not of any agent): store
-                                    (~/.quirq/inbox.json read/write, retention) feeders (timeline,
+                                    (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
                                     todos, sharing, issues, connections) service (the router-facing
                                     surface); routes in routers/cowork_agent/bff/inbox.py
   connections/                    connections polling for the Inbox (a property of the Space): store
@@ -92,7 +92,7 @@ services/                         Placement rule: only what is specific to runni
                                     vercel/ composio/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
-                                    state in ~/.quirq/project_sharing/, routes in bff/project_sharing.py
+                                    state in ~/.quirq/sharing/, routes in bff/project_sharing.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/
@@ -307,9 +307,10 @@ the inbox.
 ### The canonical `.xo/`: one definition, every project
 
 Every xo-project carries the same `.xo/`, defined once in
-`services/xo_structure.py` (`CANONICAL_FILES`): `.gitignore` (`*`, so `.xo/`
-stays out of the project's own git history; backups still carry it),
-`project.json`, `todos.json`, `workitems.json` and `peers.json`. The three
+`services/xo_structure.py` (`CANONICAL_FILES`): `project.json`, `todos.json`,
+`workitems.json` and `peers.json`. `.xo/` is committed with the project and
+travels through git as well as backups; nothing ignores it, because git treats
+an ignored file as disposable and a merge would overwrite it silently. The three
 store documents start empty, exactly as their owning store first writes them
 (built from the store's own `$schema`/`schema` constants), and identity comes
 from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
@@ -325,6 +326,27 @@ no `.xo/` files. The golden sample is `tests/fixtures/xo-project/`, and
 `tests/test_xo_structure.py` holds the module, the sample, the schemas and all
 four creation paths to one another: changing the structure means changing the
 module and the sample together.
+
+### The state root: one folder per subject
+
+What XO Space keeps on one machine, outside every project, lives in the state
+root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
+`projects/` (per-project history keyed by pid, the Space timeline, and where the
+watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
+`usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
+`.locks/` (internal). `services/storage/layout.py` names each folder once, and
+its `MOVES` list is how files get there from where earlier releases kept them:
+`migrate_layout()` runs first in the server lifespan, moves a file only when its
+new home is empty, and never raises. A new store puts its files in its
+subject's folder (a new data source copies `connections/<toolkit>/`:
+`config.json`, `state.json`, `events.jsonl`) and, if files move, adds a `Move`.
+The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
+fails until the code and the sample agree. Records inside follow four rules:
+project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines
+start with `ts` and `type`, and data files carry a `schema` number.
+Uninstall removes the state root but keeps `secrets/`, so credentials
+(`secrets.env`, `token.json`) survive a reinstall; the Composio stores stay in
+`~/.config/composio/`.
 
 ### One executor for external commands
 
@@ -380,7 +402,8 @@ harvest completed runs without launching jobs, so manual results stay visible
 with the watcher disabled. A timeout is required for every saved command.
 
 Files live under `<quirq state>/scheduler/`: `jobs.json` definitions, `state.json`
-execution state, append-only `runs/<id>.jsonl` history and `logs/<id>.log` full
+execution state, append-only `runs/<id>.jsonl` history (one line per run, starting with `ts` and
+`type`) and `<quirq state>/logs/scheduler/<id>.log` full
 output. Deleting a definition keeps its history and logs. The UI shows the latest
 20 records, each with status, return code, duration and up to 2000 output characters.
 These saved commands and results are user data; deleting the state root loses them.
@@ -438,7 +461,7 @@ Who sets them:
   `venv/bin/python server.py`. There is **no cloud packaging inside this repo**.
 - **Local**: a native run on the developer's own machine (not a container).
   `install.sh` starts the server directly and writes the resolved profile to
-  `~/.quirq/runtime.env`. It exports `STAGE=local`, `QUIRQ_SKIP_BOOT_INSTALL=1`
+  `~/.quirq/settings/runtime.env`. It exports `STAGE=local`, `QUIRQ_SKIP_BOOT_INSTALL=1`
   (only `requirements.txt` in `venv/`; the boot hooks must not apt-install,
   nvm-fetch Node, or `npm -g` anything on a real machine), and the `QUIRQ_*` /
   path variables below.
@@ -465,7 +488,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/storage/paths.py` |
 | `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio`; compose sets `/root/.quirq/composio` | `connectors/composio/paths.py` |
-| `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/runtime.env`, `<state>/secrets.env` | `server.py` (dotenv load) |
+| `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/settings/runtime.env`, `<state>/secrets/secrets.env` | `server.py` (dotenv load) |
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
@@ -762,7 +785,7 @@ it to show "Composio is not configured" instead of a raw error, and
 
 Per-tenant state lives on **this pod**, and only here. It sits in the user's config
 directory (`~/.config/composio/`, per `connectors/composio/paths.py`) rather than the
-checkout, alongside `~/.config/token.json` and for the same reason: a fresh clone, a
+checkout, for the same reason `token.json` sits in `~/.quirq/secrets/`, which uninstall keeps: a fresh clone, a
 redeploy or an `uninstall` must not take live proxy tokens with it. A store left at the
 old `data/composio_*.json` location is moved into place on first access.
 `COMPOSIO_STORE_DIR` relocates the pair.
@@ -793,7 +816,7 @@ stamp at all is adopted, and it is stamped on its next write.
 so losing it loses every agent's proxy token: the next reconcile sweep mints a fresh one
 and rewrites every agent's MCP config, and an agent still holding the old URL gets a 401
 telling it to restart. Mounting a volume at `COMPOSIO_STORE_DIR` is what avoids that
-churn. Locks live under `~/.quirq/watcher/locks/` and are keyed on the store's absolute
+churn. Locks live under `~/.quirq/.locks/` and are keyed on the store's absolute
 path, which is why tests must point `QUIRQ_STATE_ROOT` at a temp dir; see
 `tests/test_composio.py`, whose header lists the three isolation traps.
 
@@ -938,7 +961,7 @@ the MCP client, identity and scope patched on the poller module.
 ## 11. The Space Inbox
 
 `services/inbox/` (routes in `routers/cowork_agent/bff/inbox.py`) keeps
-`~/.quirq/inbox.json`: one machine-local file of what arrived in the workspace,
+`~/.quirq/inbox/inbox.json`: one machine-local file of what arrived in the workspace,
 its seen/done state and the feeder cursors. Core code and a property of the
 Space (§7). The user-facing description (item shape, the feeder table,
 hand-editing) is `space_ui/README.md` "Inbox tab"; what follows is the

@@ -56,9 +56,6 @@ from services.cowork_agent.visualizer.workspace import (
     stats as ws_stats,
 )
 from services.cowork_agent.visualizer.workspace import (
-    timeline as ws_timeline,
-)
-from services.cowork_agent.visualizer.workspace import (
     projects_json,
     space_json,
     views as ws_views,
@@ -187,22 +184,16 @@ class Watcher:
                     continue
                 sessions_augment.apply(rt, sink_events, legacy_root=x)
                 stats.apply(rt, sink_events, legacy_root=x)
-                timeline_lines = timeline.apply(rt, sink_events)
+                # The Space timeline gets the same rendered lines, tagged.
+                timeline.apply(rt, sink_events, project_id=project_id)
             except Exception:
                 logger.exception("sink batch failed for project %s", project_id)
                 continue
 
-            # Workspace timeline gets the same rendered lines, tagged.
-            if timeline_lines:
-                try:
-                    ws_timeline.apply(timeline_lines, project_id=project_id)
-                except Exception:
-                    logger.exception("workspace timeline failed for %s", project_id)
-
         # 5. Activity sink — driven by presence snapshot, not events.
         # Runs for every project (even those with no events this tick)
         # so a session that exited gets evicted from the machine-local
-        # presence snapshot under ~/.quirq/watcher/activity/.
+        # presence snapshot under ~/.quirq/cache/activity/.
         presence: list[dict] = []
         for src in self.sources:
             try:
@@ -291,6 +282,7 @@ class Watcher:
             write_json_atomic(
                 watcher_heartbeat_path(),
                 {
+                    "schema": 1,
                     "last_tick_at": _now_iso(),
                     "tick_count": self.tick_count,
                     "duration_ms": int(

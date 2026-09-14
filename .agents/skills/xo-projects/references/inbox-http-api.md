@@ -6,7 +6,7 @@ Use it sparingly: one item per thing a person should act on. Progress belongs in
 
 ## Endpoints
 
-Same base URL as the rest of cowork-api (`http://${HOST:-localhost}:${PORT:-5002}`). The file behind these routes is `~/.quirq/inbox.json` (machine-local), written under a flock, so concurrent posts don't tear. Errors come back as `{"detail": {"code", "message"}}`. Bodies are strict: a missing `title`, an unknown key, or `ids` that is not a list of strings is a 422 from pydantic, and so is `limit` outside 1..500; only the codes listed below are 400s.
+Same base URL as the rest of cowork-api (`http://${HOST:-localhost}:${PORT:-5002}`). The file behind these routes is `~/.quirq/inbox/inbox.json` (machine-local), written under a flock, so concurrent posts don't tear. Errors come back as `{"detail": {"code", "message"}}`. Bodies are strict: a missing `title`, an unknown key, or `ids` that is not a list of strings is a 422 from pydantic, and so is `limit` outside 1..500; only the codes listed below are 400s.
 
 ```
 GET    /api/inbox?status=open|done|all&limit=N
@@ -28,7 +28,7 @@ POST /api/inbox
   "link": {"view": "projects", "project": "my-app", "path": "docs/auth.md"},  // optional
   "url": "https://github.com/org/my-app/issues/12"   // optional; http(s) only, up to 2000 chars
 }
-→ 201 { "id": "a1b2c3d4", "ts": "...Z", "status": "new", "title": "...", "body": "...", "kind": "question", "source": "openclaw", "project_id": "my-app", "link": {...}, "url": "https://..." }
+→ 201 { "id": "a1b2c3d4", "ts": "...Z", "status": "new", "title": "...", "body": "...", "kind": "question", "source": "openclaw", "project_id": "my-app", "pid": "<the project's pid>", "link": {...}, "url": "https://..." }
 → 400 invalid_value (empty or overlong title, body, kind, source, url) | invalid_project_id | invalid_link
 ```
 
@@ -41,7 +41,7 @@ GET /api/inbox?status=open&limit=200
 → { "schema": 1, "updated_at": "...Z",
     "counts": { "new": 3, "seen": 2, "done": 12 },
     "items": [ { "id": "a1b2c3d4", "ts": "...", "source": "timeline", "kind": "session.started",
-                 "title": "...", "body": "", "project_id": "...", "link": {"view": "agents"},
+                 "title": "...", "body": "", "project_id": "...", "pid": "...", "link": {"view": "agents"},
                  "url": null, "status": "new", "key": "timeline:session.started:<session_id>" }, ... ] }
 → 400 invalid_status
 ```

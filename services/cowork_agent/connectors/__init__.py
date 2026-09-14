@@ -21,8 +21,8 @@ Two shared pieces sit alongside them, deliberately not connectors:
     rclone/       the engine gdrive and onedrive both drive
     token_store   the single owner of ``token.json``
 
-Credential stores live in the user's config directory, never the checkout:
-``~/.config/token.json`` (token_store), ``~/.config/rclone/rclone.conf`` (rclone's
+Credential stores never live in the checkout: ``~/.quirq/secrets/token.json``
+(token_store, kept by uninstall), ``~/.config/rclone/rclone.conf`` (rclone's
 own default), and ``~/.config/composio/{sessions,action_prefs}.json`` (see
 ``composio/paths.py``). Files left at the old ``services/`` and ``data/``
 locations are moved into place on first access.

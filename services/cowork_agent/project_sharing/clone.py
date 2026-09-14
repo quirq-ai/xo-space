@@ -185,7 +185,7 @@ async def clone_shared_repo(repo: str, *, automatic: bool = True) -> CloneResult
     # raises: the clone is already in place.
     ensure_xo_structure(dirname)
     # Remember that XO Space, not the user, put this folder here (survives restarts).
-    state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat())
+    state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     if not automatic:
         state.clear_removed(repo, root)
     return CloneResult("cloned", dirname, "", had_token)
