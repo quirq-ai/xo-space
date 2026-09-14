@@ -1,4 +1,4 @@
-/* Connectors tab: Composio toolkits.
+/* Connectors section: Composio toolkits, hosted inside Setup.
 
    The eight toolkits are OAuth2-only. Identity is the XO account id resolved from
    an X-XO-Session header, so every call here goes through core/session.js. Nothing
@@ -100,11 +100,8 @@ function renderShell(){
     '<div class="conn-page">'
       +'<header class="conn-hero">'
         +'<div>'
-          +'<div class="conn-kicker">Composio &middot; per-user, per-workspace</div>'
-          +'<h1>Connectors</h1>'
-          +'<p>Connect the apps your agent can act in. Each connection belongs to '
-            +'you in this workspace, and its tools reach the agent over an MCP '
-            +'proxy that keeps the Composio key on the server.</p>'
+          +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
+          +'<p>Connect apps, choose their permissions, and collect updates in Inbox.</p>'
         +'</div>'
         +'<div class="conn-hero-actions">'
           +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
@@ -281,7 +278,7 @@ function renderCard(t){
     +'<div class="conn-card-head">'
       +'<div class="conn-card-id">'
         +'<span>'+esc(t.slug||'')+'</span>'
-        +'<h2>'+esc(t.display_name||t.id)+'</h2>'
+        +'<h3>'+esc(t.display_name||t.id)+'</h3>'
       +'</div>'
       +'<i class="'+status.cls+'">'+esc(status.text)+'</i>'
     +'</div>'

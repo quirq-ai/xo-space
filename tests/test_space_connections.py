@@ -133,7 +133,7 @@ class InboxConnectionsSectionTests(unittest.TestCase):
 
     def test_rows_and_empty_state(self) -> None:
         self.assertIn(
-            "No connections polled yet. Connect a toolkit on the Connectors tab and turn on polling.",
+            "No updates yet. Open Setup → Connectors to connect an app and turn on polling.",
             self.src,
         )
         self.assertIn("c.configured||c.connected_here", self.src)
@@ -346,9 +346,9 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setupflow1';", app
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setupconnectors1';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-context1';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupconnectors1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
@@ -359,8 +359,8 @@ class CacheBusterTests(unittest.TestCase):
     def test_index_html_links(self) -> None:
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + RESULTS_STAMP + '">', html)
-        # connectors.css still carries the account chip's original stamp.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=' + STAMP + '">', html)
+        # Connectors now shares the Setup shell and its updated styles.
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260914-setupconnectors1">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

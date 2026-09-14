@@ -59,7 +59,7 @@ const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
 async function expectMode(id){
   const mode=modes[id];
   await page.waitForFunction(({id,mode,placeholder})=>location.hash==='#/'+id
-    &&document.getElementById('view-'+(id==='dashboard'?'graph':id))?.classList.contains('is-active')
+    &&document.getElementById('view-'+(id==='dashboard'?'graph':id==='connectors'?'secrets':id))?.classList.contains('is-active')
     &&document.querySelector('.topbar')?.dataset.toolbar===mode
     &&(mode!=='search'||(!document.getElementById('view-search').disabled
       &&document.getElementById('view-search').placeholder===placeholder))
@@ -70,16 +70,26 @@ async function expectMode(id){
   assert.equal(await page.locator('#toolbar-controls').isHidden(),mode==='none',id+' controls');
 }
 async function go(id){
-  if(['projects','time','connectors','secrets'].includes(id))await page.locator('#tab-'+id).click();
+  if(id==='projects')await page.locator('#tab-projects').click();
+  else if(['connectors','secrets'].includes(id)){
+    await page.locator('#tab-secrets').click();
+    await page.locator('#setup-nav [data-setup-go="'+(id==='connectors'?'connectors':'workspace')+'"]').click();
+  }
   else if(id==='wiki')await page.locator('#wiki-link').click();
   else if(id==='quirq'){
     await page.locator('#tab-secrets').click();
+    await page.locator('#setup-nav [data-setup-go="server"]').click();
     await page.locator('#setup-quirq').click();
   }else{
     await page.locator('#tab-projects').click();
     await page.locator('[data-files-lens="'+id+'"]').click();
   }
   await expectMode(id);
+  if(id==='time'){
+    assert.equal(await page.locator('#tab-projects.is-on').count(),1,'Timeline belongs to Projects');
+    assert.equal(await page.locator('[data-files-lens="time"][aria-current="true"]').count(),1);
+    assert.equal(await page.locator('#tab-time').count(),0,'Timeline retains search without a primary tab');
+  }
 }
 async function query(value,id){
   await search.fill(value);

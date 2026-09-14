@@ -62,11 +62,11 @@ try {
   if(!screenshotsOnly) {
     assert.equal(new URL(page.url()).hash, '#/dashboard', 'Dashboard is the initial view');
     assert.deepEqual(await page.locator('.tabs button').evaluateAll(buttons => buttons.map(b => b.id)),
-      ['tab-projects', 'tab-time', 'tab-agents', 'tab-inbox', 'tab-secrets', 'tab-connectors']);
+      ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-secrets']);
     assert.deepEqual(await page.locator('[data-files-lens]').allTextContents(),
-      ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing']);
+      ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default Dashboard; exact six-tab order; five Projects lenses');
+    report.checks.push('Default Dashboard; exact four-tab order; six Projects lenses');
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
@@ -92,7 +92,7 @@ try {
     const beforeNavigations = requests.length;
     const beforeContent = await page.locator('#preview-body').textContent();
     const beforeLens = await page.locator('#fileslens').boundingBox();
-    for(const id of ['dashboard', 'graph', 'tree', 'sharing', 'projects', 'dashboard', 'graph']) {
+    for(const id of ['dashboard', 'graph', 'tree', 'sharing', 'time', 'projects', 'dashboard', 'graph']) {
       await lens(id);
       await page.waitForFunction(content => document.querySelector('#preview-body')?.textContent === content, beforeContent);
       assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), true, `${id} keeps the preview open`);
@@ -120,12 +120,19 @@ try {
     await page.waitForFunction(() => !document.querySelector('#wiki-link').hasAttribute('aria-current'));
     report.checks.push('Top-level Projects preserves the List route');
 
-    for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing']) {
+    for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
       await page.goto(origin + '/space/#/' + id, {waitUntil: 'networkidle'});
       await page.waitForFunction(id => document.querySelector(`[data-files-lens="${id}"]`)?.getAttribute('aria-current') === 'true', id);
       assert.equal(await page.locator('#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects Projects`);
     }
     report.checks.push('Every existing Projects lens deep link selects the correct tab and lens');
+
+    await page.goto(origin + '/space/#/agents', {waitUntil: 'networkidle'});
+    await page.locator('#view-agents').waitFor({state: 'visible'});
+    assert.equal(await page.locator('#tab-agents.is-on').count(), 1);
+    assert.equal(await page.locator('#tab-agents').textContent(), 'Agents');
+    assert.equal(await page.locator('#fileslens').isHidden(), true);
+    report.checks.push('Agents deep link opens agent telemetry under the renamed primary tab');
 
     await page.goto(origin + '/space/#/wiki', {waitUntil: 'networkidle'});
     await page.locator('#view-wiki').waitFor({state: 'visible'});
@@ -133,7 +140,7 @@ try {
     assert.equal(await page.locator('.tabs .is-on').count(), 0);
     report.checks.push('Wiki deep link remains routable without a primary tab');
 
-    const tabIds = ['projects', 'time', 'agents', 'inbox', 'secrets', 'connectors'];
+    const tabIds = ['projects', 'agents', 'inbox', 'secrets'];
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
@@ -141,9 +148,9 @@ try {
       await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
-    await page.keyboard.press('7');
-    assert.equal(new URL(page.url()).hash, '#/connectors', 'Only six primary tabs consume number keys');
-    report.checks.push('Number keys 1–6 select Projects, Timeline, Sessions, Inbox, Setup, Connectors');
+    await page.keyboard.press('5');
+    assert.equal(new URL(page.url()).hash, '#/secrets', 'Only four primary tabs consume number keys');
+    report.checks.push('Number keys 1–4 select Projects, Agents, Inbox and Setup');
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});
@@ -151,7 +158,7 @@ try {
       await page.locator('.prj-row').first().waitFor();
       const initialBounds = await page.locator('#fileslens').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
-      for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing']) {
+      for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
         const button = page.locator(`[data-files-lens="${id}"]`);
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);

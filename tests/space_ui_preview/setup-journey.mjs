@@ -128,7 +128,7 @@ try{
   await panel('workspace').waitFor();
   assert.equal(await page.locator('.setup-panel:visible').count(),1);
   assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
-    ['workspace','agent','activity','commands','server']);
+    ['workspace','agent','activity','connectors','commands','server']);
   await panel('workspace').locator('.setup-step-footer [data-setup-go="agent"]').click();
   await panel('agent').waitFor();
   assert.equal(await page.locator('#secret-form').isVisible(),false);
@@ -139,6 +139,10 @@ try{
   assert.doesNotMatch(await page.locator('#setup-alert').textContent(),/Unsaved changes/);
   assert.equal(await page.locator('#secret-add').evaluate(el=>el===document.activeElement),true);
   assert.equal(await page.locator('#setup-sources .source-row:visible').count(),1,'Other agents are collapsed');
+  const agentDetails=page.locator('.source-row.is-selected .source-details');
+  await agentDetails.locator('summary').click();
+  assert.match(await agentDetails.textContent(),/session files? found/,'Source diagnostics remain available in details');
+  await agentDetails.locator('summary').click();
   await panel('agent').locator('.setup-step-footer [data-setup-go="activity"]').click();
   await panel('activity').waitFor();
   assert.equal(await page.locator('#runtime-interval').isVisible(),false,'Detailed timing starts collapsed');
@@ -212,6 +216,7 @@ try{
   assert.match(await page.locator('#setup-alert').textContent(),/folder/i);
   assert.equal(await page.locator('#setup-alert [data-setup-go="workspace"]').count(),1);
   await choose('server');
+  assert.match(await page.locator('#setup-restart-hint').textContent(),/Pending changes: folders, agent or activity settings, credentials/);
   assert.equal(await page.locator('#runtime-restart').isVisible(),true);
   assert.equal(await page.locator('#setup-restart').isVisible(),false,'Show one relevant restart action');
   await page.locator('#runtime-restart').click();

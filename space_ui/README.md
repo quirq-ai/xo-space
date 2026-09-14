@@ -1,15 +1,15 @@
 # Space: the workspace knowledge graph UI
 
-An explorable map of `~/xo-projects`. Five top-level tabs: **Projects**
+An explorable map of `~/xo-projects`. Four top-level tabs: **Projects**
 (Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
-**Agents**, **Inbox**, **Setup**, and **Connectors**, plus the
+**Agents**, **Inbox**, and **Setup**, plus the
 **Quirq** state view, which has no tab of its own and opens from **Setup → Server → Technical details**.
 
 Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
 the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
 to `#/graph`, `#/tree`, `#/sharing`, and `#/time` (Timeline) keep their
 meanings. The numbered shortcuts follow the top bar: Projects `1`, Agents
-`2`, Inbox `3`, Setup `4`, Connectors `5`. Timeline is a lens of the Projects
+`2`, Inbox `3`, Setup `4`. Connectors opens inside Setup. Timeline is a lens of the Projects
 tab, reached from the Projects lens switch rather than a numbered shortcut.
 
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
@@ -20,9 +20,9 @@ tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
 The toolbar adapts to the active page. Dashboard and Graph keep the root
-picker and map autocomplete. List, Tree, Timeline, Connectors, Inbox, and
-the Sessions list have their own search; typing there keeps you on that page.
-Setup, Wiki, Sharing, Quirq, and the Sessions charts/detail have no search
+picker and map autocomplete. List, Tree, Timeline, Setup → Connectors, Inbox, and
+the Agents session list have their own search; typing there keeps you on that page.
+Other Setup sections, Wiki, Sharing, Quirq, and the Agents charts/detail have no search
 toolbar. On phones these pages also give back the empty toolbar row.
 
 | Page | Search scope |
@@ -61,7 +61,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
-| `js/core/connections.js` | Pure formatters over one `GET /api/connections` entry: `every` (cadence), `collectorLabels`, `pollLine` (last poll or the error). Shared by the Inbox's Connections section and the Connectors tab so both read the same. |
+| `js/core/connections.js` | Pure formatters over one `GET /api/connections` entry: `every` (cadence), `collectorLabels`, `pollLine` (last poll or the error). Shared by the Inbox's Connections section and Setup Connectors so both read the same. |
 | `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
 
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
@@ -73,11 +73,11 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
-| `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Commands and Server management. Forms keep drafts across sections and status refreshes. |
+| `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Connectors, Commands and Server management. Forms keep drafts across sections and status refreshes. |
 | `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
 | `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
 | `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
-| `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. The only view that authenticates (`js/core/session.js`). |
+| `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); the legacy `#/connectors` route opens its Setup section. |
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 

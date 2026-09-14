@@ -136,7 +136,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "secrets.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import secretsView from './views/secrets.js?v=", app)
+        self.assertIn("import secretsView,{createConnectorsView} from './views/secrets.js?v=", app)
         self.assertIn("registerView(secretsView);", app)
         self.assertIn('href="css/secrets.css?v=', index)
         self.assertIn("id:'secrets',label:'Setup'", secrets)
@@ -208,7 +208,7 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("import connectorsView from './views/connectors.js?v=", app)
-        self.assertIn("registerView(connectorsView);", app)
+        self.assertIn("registerView(createConnectorsView(connectorsView));", app)
         self.assertIn('href="css/connectors.css?v=', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 

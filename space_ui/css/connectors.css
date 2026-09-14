@@ -1,22 +1,18 @@
-/* Connectors tab. Mirrors the Setup tab's card/badge/button vocabulary under a
+/* Connectors section. Mirrors the Setup card/badge/button vocabulary under a
    .conn- prefix: those classes are per-view by convention, not shared, so the
    rules are restated here rather than imported. Tokens come from base.css. */
 
-/* The registry auto-creates this section; without an explicit overflow it
-   inherits the stage's clipping and the grid cannot scroll. */
-#view-connectors{overflow:auto;background:var(--bg)}
-
-.conn-page{max-width:1080px;margin:0 auto;padding:26px 24px 60px}
+.conn-page{min-width:0}
 
 .conn-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:20px}
-.conn-kicker{font:500 9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
-.conn-hero h1{font:400 30px var(--serif);margin:0 0 8px}
-.conn-hero p{color:var(--ink-2);font-size:12.5px;line-height:1.55;max-width:62ch;margin:0}
+.conn-hero h2{font:500 27px/1.2 var(--serif);margin:0 0 8px}
+.conn-hero h2:focus{outline:none}
+.conn-hero p{color:var(--ink-3);font-size:13px;line-height:1.5;max-width:62ch;margin:0}
 .conn-hero-actions{display:flex;gap:8px;flex:0 0 auto}
 
 .conn-refresh{
-  border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink-2);
-  padding:8px 15px;font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;cursor:pointer
+  border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);
+  padding:9px 13px;font:500 12px var(--sans);cursor:pointer
 }
 .conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
 
@@ -31,7 +27,7 @@
 .conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
 .conn-alert.is-error span{color:var(--err)}
 
-.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(288px,1fr));gap:12px;align-items:start}
+.conn-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(288px,100%),1fr));gap:12px;align-items:start}
 
 .conn-card{background:rgba(16,19,24,.88);border:1px solid var(--line);border-radius:16px;overflow:hidden;transition:border-color .16s var(--ease)}
 .conn-card:hover{border-color:var(--ink-4)}
@@ -39,7 +35,7 @@
 
 .conn-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:17px 18px 13px}
 .conn-card-id span{display:block;font:500 9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
-.conn-card-id h2{font:500 18px var(--serif);margin:0}
+.conn-card-id h3{font:500 18px var(--serif);margin:0}
 .conn-card-head i{font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;font-style:normal;color:var(--ink-3);white-space:nowrap;padding-top:3px}
 .conn-card-head i.is-good{color:var(--accent-deep)}
 /* Connected on the account but off in this workspace: a deliberate state, not a
@@ -61,8 +57,8 @@
 
 .conn-card-acts{display:flex;gap:8px;padding:14px 18px 17px;flex-wrap:wrap}
 .conn-primary,.conn-secondary{
-  border-radius:999px;padding:8px 16px;font:700 10px var(--mono);letter-spacing:.1em;
-  text-transform:uppercase;cursor:pointer;border:1px solid transparent
+  border-radius:8px;padding:8px 12px;font:500 11px var(--sans);
+  cursor:pointer;border:1px solid transparent
 }
 .conn-primary{background:var(--accent);color:#14100a}
 .conn-primary:hover{background:#b7e467}
@@ -89,7 +85,8 @@
 .conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
 
 @media (max-width:720px){
-  .conn-hero{flex-direction:column}
+  .conn-hero{flex-wrap:wrap;gap:12px}
+  .conn-hero h2{font-size:24px}
   .conn-grid{grid-template-columns:1fr}
 }
 

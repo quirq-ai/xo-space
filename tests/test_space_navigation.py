@@ -60,24 +60,28 @@ for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)
   const defaultName=names.match(/^([A-Za-z]+View)/)?.[1];
   if(defaultName)views[defaultName]=imported.default;
   for(const name of names.match(/\{([^}]+)\}/)?.[1].split(',')||[]){
-    if(imported[name]?.id)views[name]=imported[name];
+    if(imported[name])views[name]=imported[name];
   }
 }
 const registry=await import(new URL('js/core/registry.js',base));
 const {initLensSwitch}=await import(new URL('js/core/lens-switch.js',base));
 initLensSwitch();
-for(const [,name] of app.matchAll(/registerView\((\w+)\);/g)){
-  const view=views[name];assert.ok(view,'registered view '+name);
+for(const [,name,argument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);/g)){
+  const view=argument?views[name](views[argument]):views[name];
+  assert.ok(view,'registered view '+name);
   registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
 }
 registry.startRegistry({defaultView:'dashboard'});
-const expectedTabs=['projects','agents','inbox','secrets','connectors'];
+const expectedTabs=['projects','agents','inbox','secrets'];
 assert.deepEqual(tabs.children.map(tab=>tab.id),expectedTabs.map(id=>'tab-'+id));
 assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing','time']);
 assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing','Timeline']);
 assert.equal(tabs.children[0].innerHTML,'Projects');
+assert.equal(elements.get('tab-agents').innerHTML,'Agents');
+assert.equal(elements.has('tab-time'),false);
+assert.equal(elements.has('tab-sessions'),false);
 const initial=process.argv[1].replace(/^#\//,'');
-const initialId=['dashboard','projects','graph','tree','sharing','time','wiki'].includes(initial)?initial:'dashboard';
+const initialId=['dashboard','projects','graph','tree','sharing','time','agents','inbox','wiki','secrets','connectors'].includes(initial)?initial:'dashboard';
 function assertLens(id){
   assert.equal(location.hash,'#/'+id);
   assert.equal(pill.hidden,false);
@@ -91,7 +95,23 @@ function assertWiki(){
   assert.equal(tabs.children.some(tab=>tab.classList.contains('is-on')),false);
   assert.ok(elements.get('view-wiki').classList.contains('is-active'));
 }
-if(initialId==='wiki')assertWiki();else assertLens(initialId);
+function assertSetup(id){
+  assert.equal(location.hash,'#/'+id);
+  assert.equal(pill.hidden,true);
+  assert.ok(elements.get('tab-secrets').classList.contains('is-on'));
+  assert.ok(elements.get('view-secrets').classList.contains('is-active'));
+  assert.equal(elements.has('tab-connectors'),false);
+  assert.equal(elements.has('view-connectors'),false,'Connectors shares the persistent Setup section');
+}
+if(initialId==='wiki')assertWiki();
+else if(['secrets','connectors'].includes(initialId))assertSetup(initialId);
+else if(['agents','inbox'].includes(initialId)){
+  assert.equal(location.hash,'#/'+initialId);
+  assert.equal(pill.hidden,true);
+  assert.ok(elements.get('tab-'+initialId).classList.contains('is-on'));
+  assert.ok(elements.get('view-'+initialId).classList.contains('is-active'));
+}
+else assertLens(initialId);
 for(const button of buttons){
   pill.listeners.click({target:button});
   dispatchEvent(new CustomEvent('hashchange'));
@@ -106,9 +126,13 @@ for(const [index,id] of expectedTabs.entries()){
 for(const tagName of ['INPUT','TEXTAREA','SELECT']){
   document.activeElement={tagName};
   dispatchEvent({type:'keydown',key:'1'});
-  assert.equal(location.hash,'#/connectors');
+  assert.equal(location.hash,'#/secrets');
 }
 document.activeElement=null;
+await registry.switchTo('connectors');
+assertSetup('connectors');
+dispatchEvent({type:'keydown',key:'5'});
+assertSetup('connectors'); // the legacy alias has no numbered shortcut
 await registry.switchTo('wiki');
 assertWiki();
 dispatchEvent({type:'keydown',key:'7'});
@@ -124,7 +148,7 @@ assertLens('projects'); // keep the existing List route/tab action
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/time", "#/wiki", "#/unknown"):
+        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/time", "#/agents", "#/inbox", "#/wiki", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

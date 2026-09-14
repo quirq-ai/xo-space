@@ -35,17 +35,46 @@ const drafts={workspace:false,agent:false,activity:false};
 const touched=new Set();
 const writes=new Set();
 let runtimeRevision=0,refreshQueued=false;
+let setupMount=null,connectorMount=null,connectorController=null;
+const toolbarRefreshers=new Set();
+const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:null;
 
-export default {
-  id:'secrets',label:'Setup',order:9,
-  async mount(el,ctx){
+/* The old Connectors URL is a child of Setup. Both routes share one shell;
+   authorization starts only when its section is actually opened. */
+export function createConnectorsView(controller){
+  connectorController=controller;
+  return {
+    id:'connectors',label:'Connectors',nav:false,parent:'secrets',section:'secrets',
+    toolbar:setupToolbar,
+    mount:mountSetup,
+    show(){selectPanel('connectors');},
+  };
+}
+
+function mountSetup(el,ctx){
+  toolbarRefreshers.add(ctx.refreshToolbar);
+  if(!setupMount)setupMount=(async()=>{
     root=el;
     switchTo=ctx.switchTo;
     renderShell();
     bindEvents();
     commands=mountCommands(root.querySelector('#setup-commands'));
-    await loadAll();
-  },
+    /* Connector links must not wait for unrelated settings/status reads. */
+    loadAll().catch(err=>{
+      console.error('Setup status failed to load:',err);
+      loading=false;runtimeUnavailable=true;
+      root.querySelector('#setup-refresh').disabled=false;
+      renderRuntimeFailure({error:'Could not load settings. Try refreshing status.'});
+      setConfigBusy(false);
+    });
+  })();
+  return setupMount;
+}
+
+export default {
+  id:'secrets',label:'Setup',order:9,
+  toolbar:setupToolbar,
+  mount(el,ctx){return mountSetup(el,ctx);},
   show(){commands?.refresh(); /* Preserve in-progress forms while switching tabs. */}
 };
 
@@ -67,6 +96,7 @@ function renderShell(){
             <span class="setup-nav-icon">${n}</span><span><b>${label}</b><small id="setup-step-${id}">Checking…</small></span>
           </button>`).join('')}
         <p>Manage</p>
+        <button type="button" data-setup-go="connectors" aria-controls="setup-panel-connectors"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Connectors</b><small>Apps, access and polling</small></span></button>
         <button type="button" data-setup-go="commands" aria-controls="setup-panel-commands"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Commands</b><small>Run and view results</small></span></button>
         <button type="button" data-setup-go="server" aria-controls="setup-panel-server"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Server</b><small>Updates and restart</small></span></button>
       </nav>
@@ -135,6 +165,10 @@ function renderShell(){
           <footer class="setup-step-footer"><button class="setup-primary" id="setup-open-projects" type="button">Open Projects →</button></footer>
         </section>
 
+        <section class="setup-panel" id="setup-panel-connectors" aria-labelledby="setup-connectors-title" hidden>
+          <div id="setup-connectors"></div>
+        </section>
+
         <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
           <header class="setup-section-head"><h2 id="setup-commands-title" tabindex="-1">Commands</h2><p>Save commands, run them here, and open Inbox for results.</p></header>
           <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
@@ -186,8 +220,17 @@ function selectPanel(panel,{focus=false}={}){
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
     else button.removeAttribute('aria-current');
   });
+  if(panel==='connectors'&&!connectorMount&&connectorController){
+    const host=root.querySelector('#setup-connectors');
+    connectorMount=connectorController.mount(host).catch(err=>{
+      console.error('Connectors failed to load:',err);
+      host.innerHTML='<div class="setup-empty is-error" role="alert">Connectors could not load. <button type="button" data-connectors-retry>Try again</button></div>';
+      connectorMount=null;
+    });
+  }
+  for(const refresh of toolbarRefreshers)refresh?.();
   if(focus){
-    target.querySelector('h2').focus({preventScroll:true});
+    target.querySelector('h2')?.focus({preventScroll:true});
     root.scrollTop=0;
   }
 }
@@ -195,7 +238,13 @@ function selectPanel(panel,{focus=false}={}){
 function bindEvents(){
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-setup-go]');
-    if(button)selectPanel(button.dataset.setupGo,{focus:true});
+    if(button){
+      const panel=button.dataset.setupGo;
+      selectPanel(panel,{focus:true});
+      const route=panel==='connectors'?'connectors':'secrets';
+      if(location.hash!=='#/'+route)switchTo(route);
+    }
+    if(event.target.closest('[data-connectors-retry]'))selectPanel('connectors');
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
   addEventListener('space:setup-section',event=>selectPanel(event.detail?.panel,{focus:true}));
@@ -436,8 +485,12 @@ function renderOverview(){
       'Projects folder',
       paths.projects?.host_path||paths.projects?.container_path,
       pathState(paths.projects)+' · execution root '+(paths.ai_workspace?.container_path||'not set')
+        +'. Portable project data lives in each project’s .xo/.'
     )
-    +overviewCard('Space data folder',paths.state?.host_path||paths.state?.container_path,pathState(paths.state));
+    +overviewCard('Space data folder',paths.state?.host_path||paths.state?.container_path,
+      pathState(paths.state)+'. Machine-local settings, credentials and activity state live here. '
+        +'When changing this folder, the installer copies current state into an empty destination; '
+        +'otherwise it uses the existing contents without merging.');
 }
 
 function renderRoots(){
@@ -483,6 +536,12 @@ function renderSources(){
   const row=source=>{
     const selected=source.name===selectedName;
     const keys=source.secrets||[];
+    // The runtime scans manifest session globs, stopping at 10,000 files.
+    // A count describes discovered files, not sign-in or watcher health.
+    const sessionCount=Number.isInteger(source.session_files)&&source.session_files>=0?source.session_files:null;
+    const sessionNote=sessionCount===null?'Session files not reported.'
+      :sessionCount>=10000?'At least '+sessionCount.toLocaleString('en-US')+' session files found (scan limit).'
+        :sessionCount+' session file'+(sessionCount===1?'':'s')+' found.';
     const secretButtons=keys.length?'<div class="source-secrets">'+keys.map(item=>
       '<button type="button" data-secret-key="'+esc(item.key)+'" title="'+esc(item.description)+'" class="'+(configuredKeys.has(item.key)?'is-set':'')+'">'
         +'<span>'+(configuredKeys.has(item.key)?'✓':'+')+'</span>'+esc(item.label)+'</button>'
@@ -495,9 +554,12 @@ function renderSources(){
         +fact(source.home?.exists?'Agent folder found':'Agent folder missing',source.home?.exists?'good':'bad')
         +((!source.home?.exists||!source.binary_available)&&source.install_url?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">Install '+esc(prettyName(source.name))+' ↗</a>':'')+'</div>'
       +secretButtons
-      +'<details class="source-details" data-source="'+esc(source.name)+'"'+(detailsOpen.has(source.name)?' open':'')+'><summary>Agent folder details</summary>'
+      +'<details class="source-details" data-source="'+esc(source.name)+'"'+(detailsOpen.has(source.name)?' open':'')+'><summary>Agent details</summary>'
         +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'Not reported')+'</code></div>'
         +'<div class="source-path"><span>Server</span><code>'+esc(source.home?.container_path||'Not reported')+'</code></div>'
+        +'<p class="source-note">'+esc(sessionNote)+'</p>'
+        +(!source.binary_available&&source.bootstrap_available
+          ?'<p class="source-note">Setup can install the CLI when this agent is selected and the server restarts.</p>':'')
       +'</details></article>';
   };
   const chosen=sources.find(source=>source.name===selectedName);
@@ -624,7 +686,12 @@ function renderRestartButtons(){
   const supported=['managed','native'].includes(serverData?.restart_mode);
   const hint=!serverData?'Server status unavailable. Refresh status to retry.'
     :supported?'':'Ctrl-C and re-run Space in the terminal where it started.';
-  root.querySelector('#setup-restart-hint').textContent=restarting?'Restarting…':hint;
+  const reasons=runtimeData?.restart_reasons||[];
+  const changes=[runtimeData?.roots?.change_required?'folders':'',
+    reasons.includes('runtime')?'agent or activity settings':'',
+    reasons.includes('secrets')?'credentials':''].filter(Boolean);
+  const pendingHint=changes.length?'Pending changes: '+changes.join(', ')+'.':'';
+  root.querySelector('#setup-restart-hint').textContent=restarting?'Restarting…':[pendingHint,hint].filter(Boolean).join(' ');
   const installerNeeded=runtimeData?.managed_container&&runtimeData?.roots?.change_required;
   const pending=Boolean(runtimeData?.restart_required)&&!installerNeeded;
   const updatePending=!root.querySelector('#update-restart').hidden;

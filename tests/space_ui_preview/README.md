@@ -29,11 +29,11 @@ expanded project screenshots, 320px and 375px screenshots, and `report.json`.
 the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
-The full check verifies the six-tab order, Dashboard default, all five
+The full check verifies the four-tab order, Dashboard default, all six
 lenses and existing hash routes, stationary lens controls, retention of an
 open historical file in source mode across lens switches (including real
 Dashboard/Graph dataset reloads), closing the preview when leaving Projects,
-the local Wiki resource and its deep link, number keys 1–6, and lens-switch
+the local Wiki resource and its deep link, number keys 1–4, and lens-switch
 position relative to the content at 320px and 375px (the contextual toolbar
 can change the mobile header height). It fails
 on console errors, uncaught page errors and unsuccessful HTTP responses.
@@ -64,6 +64,7 @@ save/poll races, validation conflicts, and desktop/mobile layouts:
 ```sh
 node tests/space_ui_preview/setup-state.mjs
 node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
+node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
 node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
 node tests/space_ui_preview/command-results-races.mjs
@@ -75,6 +76,10 @@ loads and refresh/save races, unavailable status, and desktop/mobile layouts.
 All settings and credential writes use fictional browser fixtures. The pure
 state check covers pending-change priority and factual summaries without
 inferring authentication or live activity from installation checks.
+
+The Setup Connectors check covers lazy loading, legacy links, shared navigation,
+retained search and polling drafts, authorization during section changes, and
+desktop/mobile layouts. Connector requests use browser fixtures.
 
 The Commands/restart script intercepts mutations with browser fixtures; it never executes a
 command or restarts a process. It checks that all three restart buttons wait for
