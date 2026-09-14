@@ -73,7 +73,9 @@ def _is_this_coder_workspace_host(host: str) -> bool:
     workspace, owner = workspace_name(), owner_name()
     if not workspace or not owner:
         return False
-    app, marker, domain = host.partition(f"--{workspace}--{owner}.")
+    # DNS names are case-insensitive; Coder lowercases the hostname but the
+    # environment carries the names as entered.
+    app, marker, domain = host.lower().partition(f"--{workspace}--{owner}.".lower())
     return bool(marker) and bool(domain) and _CODER_APP_LABEL.fullmatch(app) is not None
 
 
@@ -111,7 +113,8 @@ def _is_local_mutation(request: Request) -> bool:
     except ValueError:
         loopback = False  # a public hostname
     if not loopback:
-        return _is_this_coder_workspace_host(host) and host == request.url.hostname
+        return (_is_this_coder_workspace_host(host)
+                and host.lower() == (request.url.hostname or "").lower())
     request_port = request.url.port
     if request_port is None:
         request_port = 443 if request.url.scheme == "https" else 80
