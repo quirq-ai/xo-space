@@ -1,6 +1,7 @@
 /* Project management uses fictional browser fixtures exclusively. Every clone,
    revoke, roster change and deletion is intercepted before reaching a server. */
 import assert from 'node:assert/strict';
+import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -137,13 +138,13 @@ try{
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Project search keeps the clone draft mounted');
   await page.locator('#setup-project-refresh').click();
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
-  await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
+  await openProjectList(page);await page.waitForURL('**/#/projects/list');
   await page.locator('#prj-row-solo-demo').waitFor();
   assert.doesNotMatch(await page.locator('body').textContent(),/a workspace knowledge graph/i);
   await page.locator('#view-search').fill('demo');
   // Boot the graph before the catalog changes so later checks exercise the
   // existing atlas rather than a fresh map loaded after the mutation.
-  await page.locator('[data-files-lens="graph"]').click();
+  await page.locator('[data-section-page="graph"]').click();
   await page.waitForFunction(()=>document.querySelector('#q')?.placeholder.match(/Search \d+/));
   assert.equal(await page.locator('.atlas-project-refresh').count(),0);
   await page.locator('#tab-setup').click();await chooseProjects();
@@ -160,7 +161,7 @@ try{
   assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'A confirmed clone clears its Projects draft');
   assert.equal(await page.locator('#setup-project-notice').textContent(),'Project added; automatic restore remains paused.');
   assert.equal(report.writes.filter(write=>write.method==='POST'&&write.path==='/api/xo-projects').length,2);
-  await page.locator('#tab-projects').click();await page.locator('#prj-row-my-demo').waitFor();
+  await openProjectList(page);await page.locator('#prj-row-my-demo').waitFor();
   assert.equal(await page.locator('#view-search').inputValue(),'demo','A changed catalog preserves the Projects filter');
   await page.locator('#tab-setup').click();await chooseProjects();
   checked('Clone URL suggests a folder name until edited; drafts survive refresh/navigation, errors preserve input, and a pending clone cannot duplicate.');
@@ -199,7 +200,7 @@ try{
   assert.equal(await open('solo-demo').isDisabled(),true);deleting.release.resolve();
   await page.waitForFunction(()=>!document.querySelector('[data-project-remove="shared-demo"]'));
   assert.equal(totalDeletes(),1);
-  await page.locator('#tab-projects').click();
+  await openProjectList(page);
   await page.waitForFunction(()=>!document.querySelector('#prj-row-shared-demo'));
   assert.equal(await page.locator('#view-search').inputValue(),'demo');
   await page.locator('#tab-setup').click();await chooseProjects();
@@ -261,22 +262,32 @@ try{
   await page.locator('#setup-project-id').fill('unsaved-project-folder');
   const draftNode=await page.locator('#setup-project-repository').elementHandle();
   const writesBefore=report.writes.length,loadsBefore=report.pageLoads.length;
-  await page.locator('#tab-projects').click();
+  await openProjectList(page);await page.waitForLoadState('networkidle');
+  const graphReads=report.requests.filter(request=>request.path==='/xo/space.json').length;
   for(const lens of ['graph','time']){
-    await page.locator('[data-files-lens="'+lens+'"]').click();
-    const notice=page.locator('#view-'+lens+' .atlas-project-refresh');await notice.waitFor();
-    assert.match(await notice.textContent(),/Projects changed/);
-    assert.equal(await notice.getByRole('button',{name:'Reload map',exact:true}).isVisible(),true);
-    assert.equal(await page.locator('#view-'+lens+' .atlas-project-refresh').count(),1);
+    await page.locator('[data-section-page="'+lens+'"]').click();
+    await page.waitForURL('**/#/projects/'+(lens==='time'?'timeline':lens));
+    await page.locator('#view-'+lens+'.is-active').waitFor();
+    await page.waitForLoadState('networkidle');
+    if(lens==='graph')await page.waitForFunction(()=>!document.querySelector('#q').disabled);
+    const notice=page.locator('#view-'+lens+' .atlas-project-refresh');
+    if(await notice.isVisible()){
+      await notice.getByRole('button',{name:'Refresh map',exact:true}).click();
+      await notice.waitFor({state:'detached'});
+      await page.waitForLoadState('networkidle');
+    }
+    assert.equal(await notice.count(),0,'The rebuilt projection has fresh data and no stale-data notice');
   }
-  assert.equal(report.pageLoads.length,loadsBefore,'Catalog changes offer a reload instead of discarding Setup drafts automatically');
+  assert.ok(report.requests.filter(request=>request.path==='/xo/space.json').length>graphReads,
+    'Catalog mutations invalidate the cached graph dataset before revisiting it');
+  assert.equal(report.pageLoads.length,loadsBefore,'Refreshing projections never reloads the document');
   await page.locator('#tab-setup').click();await chooseProjects();
   assert.equal(await draftNode.evaluate(node=>node.isConnected),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fixture/keep-this-draft.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'unsaved-project-folder');
-  checked('After catalog mutations, the existing Graph and Timeline offer Reload map without reloading the page or losing the Setup draft.');
+  checked('Catalog mutations refresh Graph and Timeline data without reloading the document or losing the Setup draft.');
 
-  await page.locator('#tab-projects').click();await page.locator('[data-files-lens="sharing"]').click();
+  await openProjectList(page);await page.locator('[data-section-page="sharing"]').click();
   const suppressed=page.locator('.shl-inbox-row').filter({hasText:'github.com/fixture/removed-project'});await suppressed.waitFor();
   assert.match(await suppressed.textContent(),/removed locally/);
   assert.match(await suppressed.textContent(),/automatic cloning is paused/);

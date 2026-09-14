@@ -154,13 +154,12 @@ class DashboardUiTests(unittest.TestCase):
             app.index("registerView(dashboardView);"),
             app.index("registerView(graphView);"),
         )
-        self.assertIn("startRegistry({defaultView:'dashboard'})", app)
+        self.assertIn("startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'})", app)
         self.assertIn(
             "atlasView('dashboard','Dashboard',0,'graph','dashboard')", atlas
         )
         dashboard = atlas.split("export const dashboardView={", 1)[1].split("};", 1)[0]
-        self.assertIn("nav:false", dashboard)
-        self.assertIn("parent:'projects'", dashboard)
+        self.assertIn("projectPage('dashboard')", dashboard)
         self.assertIn("section:'graph'", dashboard)
         self.assertIn("/xo/dashboard.json", atlas)
         self.assertIn("clusters:l.clusters||[]", atlas)

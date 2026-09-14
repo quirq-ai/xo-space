@@ -16,6 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-navigation1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -37,11 +38,11 @@ const safeUrl=u=>typeof u==='string'&&/^https?:\/\//i.test(u)?u:'';
    registry painted there (the label itself is never rewritten here).
    Started by app.js after the registry built the buttons; the view feeds it
    the counts it already has so a mutation never costs a second request, and
-   its own 60 s poll rests while the view is on screen, where the view's
+   its own 60 s poll rests while Items is on screen, where the page's
    30 s read already carries the counts. Never throws: a failed fetch leaves
    the tab exactly as it is. */
 let lastBadge=null;
-let shown=false;            /* the view is on screen: its own poll feeds the badge */
+let shown=false;            /* one of the Inbox pages is on screen */
 function paintBadge(n){
   const b=document.getElementById('tab-inbox');
   if(!b)return;
@@ -67,13 +68,14 @@ export async function refreshInboxBadge(counts){
 function startBadgePoll(){setSlottedInterval('inbox-badge',()=>refreshInboxBadge(),60000);}
 export function initInboxBadge(){
   refreshInboxBadge();
-  if(!shown)startBadgePoll(); /* a deep link may have shown the view already */
+  if(!shown||inboxPage!=='items')startBadgePoll(); /* Items polling supplies its own badge. */
 }
 
 /* ── view ─────────────────────────────────────────────────────────────── */
 const FILTERS=[['open','Open'],['done','Done'],['all','All']];
 let root=null;
 let switchTo=()=>{};        /* ctx.switchTo, captured on mount */
+let inboxPage='items',inboxMount=null;
 let filter='open';
 let data=null;              /* last good payload */
 let dataFilter='';          /* the filter that payload belongs to */
@@ -110,13 +112,13 @@ function sourceOf(it){
 const matchesSource=it=>srcFilter==='all'||sourceOf(it)===srcFilter;
 
 /* ── connections section ──────────────────────────────────────────────────
-   What the connections poller is watching (GET /api/connections), shown
-   above the rows. Its own fetch, token and failure line: a slow or failed
+   What the connections poller is watching (GET /api/connections), on its
+   own page. Its own fetch, token and failure line: a slow or failed
    read here never delays or hides the inbox rows. Same API_BASE as every
    other call on this page; they are not part of the /api/inbox family. */
 let conns=null;             /* last good GET /api/connections payload */
 let connsFailed=null;       /* last failed response, one muted line */
-let connsOpen=null;         /* null = auto: open while any entry has an error */
+let connsOpen=null;         /* open by default; retain an explicit collapse */
 let connsToken=0;
 const connBusy=new Set();   /* toolkits with a Poll now in flight */
 
@@ -130,7 +132,20 @@ let jobsInFlight=false;
 let jobsRefreshQueued=false;
 let jobsPainted='';
 
-export default {
+export function createInboxViews(){
+  return INBOX_PAGES.map(page=>({
+    ...page,
+    toolbar:()=>page.id==='inbox-items'?inboxController.toolbar:null,
+    mount(el,ctx){
+      if(!inboxMount)inboxMount=inboxController.mount(el,ctx);
+      return inboxMount;
+    },
+    show(){showInboxPage(page.route.split('/')[1]);},
+    hide:hideInbox,
+  }));
+}
+
+const inboxController={
   id:'inbox',label:'Inbox',order:5,
   toolbar:{search:{
     placeholder:'Search loaded inbox items…',
@@ -144,33 +159,50 @@ export default {
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
-    el.innerHTML='<div class="inb">'+head()+sources()+connsHTML()+jobsHTML()+skeleton()+'</div>';
+    el.innerHTML='<div class="inb"><header class="inb-page-head"><h1>Items</h1><div class="inb-page-actions"></div></header>'
+      +'<section class="inb-items-page">'+head()+sources()+body()+'</section>'
+      +'<section class="inb-connections-page" hidden>'+connsHTML()+'</section>'
+      +'<section class="inb-jobs-page" hidden>'+jobsHTML()+'</section></div>';
     el.addEventListener('click',onClick);
-    loadConns(); /* not awaited: independent of the rows, never blocks them */
-    loadJobs();
-    await load();
+    painted=paintKey();connsPainted=connsPaintKey();jobsPainted=jobsPaintKey();
   },
-  show(){
-    /* mount just fetched; a return to the tab re-reads, then the poll keeps
-       the list live while it is on screen. The badge poll rests meanwhile:
-       every read here paints the badge from its own counts. */
-    shown=true;
-    clearSlottedInterval('inbox-badge');
-    if(root&&Date.now()-lastLoad>4000)load();
-    if(root)loadConns();
-    if(root&&!jobsLoading)loadJobs();
-    scheduleJobsPoll();
-    setSlottedInterval('inbox-poll',load,30000);
-  },
-  hide(){
-    shown=false;
-    clearSlottedInterval('inbox-poll');
-    clearSlottedInterval('inbox-jobs-poll');
-    jobsToken++;jobsLoading=false;jobsRefreshQueued=false;
-    /* An outstanding read stays tracked so reentry can queue a fresh request. */
-    startBadgePoll();
-  }
+  show(){showInboxPage('items');},
+  hide:hideInbox,
 };
+
+function showInboxPage(page){
+  if(!root||!['items','connections','jobs'].includes(page))return;
+  inboxPage=page;shown=true;
+  root.querySelector('.inb-page-head h1').textContent=INBOX_PAGES.find(item=>item.route==='inbox/'+page)?.label||'Items';
+  root.querySelector('.inb-page-actions').innerHTML=page==='connections'
+    ?'<button class="inb-btn" type="button" data-act="conns-refresh">Refresh</button><button class="inb-btn" type="button" data-act="conn-config">Open Setup</button>':'';
+  for(const key of ['items','connections','jobs'])root.querySelector('.inb-'+key+'-page').hidden=key!==page;
+  clearSlottedInterval('inbox-poll');
+  clearSlottedInterval('inbox-conns-poll');
+  clearSlottedInterval('inbox-jobs-poll');
+  if(page==='items'){
+    clearSlottedInterval('inbox-badge');
+    if(!data||Date.now()-lastLoad>4000)load();
+    setSlottedInterval('inbox-poll',load,30000);
+  }else{
+    startBadgePoll();
+    if(page==='connections'){
+      loadConns();
+      setSlottedInterval('inbox-conns-poll',loadConns,30000);
+    }else{
+      loadJobs();scheduleJobsPoll();
+    }
+  }
+}
+function hideInbox(){
+  shown=false;
+  clearSlottedInterval('inbox-poll');
+  clearSlottedInterval('inbox-conns-poll');
+  clearSlottedInterval('inbox-jobs-poll');
+  jobsToken++;jobsLoading=false;jobsRefreshQueued=false;
+  /* An outstanding read stays tracked so reentry can queue a fresh request. */
+  startBadgePoll();
+}
 
 const skeleton=()=>'<div class="inb-rows">'+'<div class="inb-skel"></div>'.repeat(4)+'</div>';
 const counts=()=>Object.assign({new:0,seen:0,done:0},data&&data.counts);
@@ -199,8 +231,7 @@ async function load(){
    30 s tick; anything else repaints with focus put back on the control
    that had it. */
 let painted='';
-const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(failed),loadingRows,marking,
-  [...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
+const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(failed),loadingRows,marking,[...expanded]]);
 /* the focused control as a selector over the data-* it carries, so the same
    one can be found again once the rows are rebuilt */
 function focusSelector(){
@@ -211,11 +242,10 @@ function focusSelector(){
 }
 function render(){
   if(!root)return;
-  const box=root.querySelector('.inb');
+  const box=root.querySelector('.inb-items-page');
   if(!box)return;
   const sel=focusSelector();
-  box.innerHTML=head()+sources()+connsHTML()+jobsHTML()+body();
-  jobsPainted=jobsPaintKey();
+  box.innerHTML=head()+sources()+body();
   painted=paintKey();
   if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
 }
@@ -234,7 +264,6 @@ function head(){
   const c=counts();
   const narrowed=query.trim()||srcFilter!=='all';
   return'<div class="inb-head">'
-    +'<span class="inb-eyebrow">Inbox</span>'
     +'<span class="inb-sum">'+(data?esc(summary(c)):'loading…')+'</span>'
     +'<span class="inb-spacer"></span>'
     +pills(FILTERS,filter,'filter','Filter inbox','inb-filter')
@@ -311,7 +340,17 @@ function rowHTML(it){
 
 /* ── connections section rendering ─────────────────────────────────────── */
 const polled=()=>((conns&&conns.connections)||[]).filter(c=>c&&typeof c==='object'&&(c.configured||c.connected_here));
-const connsIsOpen=()=>connsOpen===null?polled().some(c=>c.last_error):connsOpen;
+const connsIsOpen=()=>connsOpen!==false;
+let connsPainted='';
+const connsPaintKey=()=>JSON.stringify([conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
+function renderConns(){
+  const box=root?.querySelector('.inb-connections-page');
+  if(!box)return;
+  const key=connsPaintKey();if(key===connsPainted)return;
+  const sel=box.contains(document.activeElement)?focusSelector():'';
+  box.innerHTML=connsHTML();connsPainted=key;
+  if(sel)box.querySelector(sel)?.focus({preventScroll:true});
+}
 function connsHTML(){
   if(!conns){
     if(connsFailed)return'<div class="inb-conns"><div class="inb-conn-meta">Connections: '+esc(failText(connsFailed))+'</div></div>';
@@ -325,7 +364,7 @@ function connsHTML(){
   return'<div class="inb-conns'+(open?' is-open':'')+'">'
     +'<button class="inb-conns-head" type="button" data-act="conns-toggle" aria-expanded="'+(open?'true':'false')+'">'
       +'<i aria-hidden="true">'+(open?'&#9662;':'&#9656;')+'</i>'
-      +'<span>Connections</span><b>'+rows.length+'</b>'
+      +'<span>Polled apps</span><b>'+rows.length+'</b>'
       +(errors?'<em>'+errors+' with errors</em>':'')
       +(conns.poller_enabled===false?'<em>poller off</em>':'')
       +(conns.signed_in===false?'<em>not signed in</em>':'')
@@ -391,7 +430,7 @@ function jobsHTML(){
   const content=jobs===null?(jobsFailed?'':'<p class="inb-jobs-state" role="status">Loading scheduled jobs…</p>')
     :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No scheduled jobs. Add an interval to a command in Setup.</p>';
   return'<section class="inb-jobs" aria-labelledby="inb-jobs-title" aria-busy="'+jobsLoading+'">'
-    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Jobs'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
+    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Scheduled commands'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
       +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read scheduled jobs">Refresh</button>'
         +'<button class="inb-btn" type="button" data-act="jobs-setup">Open Setup</button></div></div>'
     +failure+content+'</section>';
@@ -408,7 +447,7 @@ function renderJobs(){
 }
 function scheduleJobsPoll(){
   clearSlottedInterval('inbox-jobs-poll');
-  if(shown)setSlottedInterval('inbox-jobs-poll',()=>{if(!jobsInFlight)loadJobs();},
+  if(shown&&inboxPage==='jobs')setSlottedInterval('inbox-jobs-poll',()=>{if(!jobsInFlight)loadJobs();},
     jobs?.some(job=>job.running)?3000:30000);
 }
 async function loadJobs(){
@@ -440,14 +479,15 @@ function onClick(e){
   if(b.dataset.src){setSource(b.dataset.src);return;}
   const id=b.dataset.id;
   switch(b.dataset.act){
-    case'refresh':b.disabled=true;load();loadJobs();break;
+    case'refresh':b.disabled=true;load();break;
     case'mark-all':markAllSeen();break;
     case'toggle':toggle(id);break;
     case'open':{const it=itemById(id);if(it)openLink(it);break;}
     case'done':setStatus(id,'done');break;
     case'reopen':setStatus(id,'seen');break;
     case'delete':remove(id);break;
-    case'conns-toggle':connsOpen=!connsIsOpen();render();break;
+    case'conns-toggle':connsOpen=!connsIsOpen();renderConns();break;
+    case'conns-refresh':loadConns();break;
     case'conn-poll':pollConn(b.dataset.toolkit);break;
     case'conn-config':switchTo('setup/connectors');break;
     case'jobs-refresh':loadJobs();break;
@@ -548,12 +588,12 @@ function openLink(it){
   if(!l||typeof l!=='object')return;
   const project=typeof l.project==='string'&&PROJ_RE.test(l.project)?l.project:'';
   if(project&&safePath(l.path)){
-    switchTo('projects');
+    switchTo('projects/list');
     dispatchEvent(new CustomEvent('space:preview-file',{detail:{project,path:l.path}}));
     return;
   }
-  if(typeof l.view==='string'&&l.view){switchTo(l.view);return;}
-  if(project)switchTo('projects');
+  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/list':l.view);return;}
+  if(project)switchTo('projects/list');
 }
 
 /* ── connections section data ──────────────────────────────────────────── */
@@ -563,14 +603,13 @@ async function loadConns(){
   if(mine!==connsToken)return; /* a newer read owns the section */
   if(res.ok&&res.data){conns=res.data;connsFailed=null;}
   else connsFailed=res;
-  if(paintKey()===painted)return; /* the section reads the same: no repaint */
-  render();
+  renderConns();
 }
 /* Poll now: one POST, then both the section (new poll state) and the rows
    (what it collected) are re-read. The button stays disabled until then. */
 async function pollConn(toolkit){
   if(typeof toolkit!=='string'||!toolkit||connBusy.has(toolkit))return;
-  connBusy.add(toolkit);render();
+  connBusy.add(toolkit);renderConns();
   const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'});
   connBusy.delete(toolkit);
   if(!res.ok)toast('poll failed: '+failText(res));
@@ -582,3 +621,5 @@ async function pollConn(toolkit){
   }
   await Promise.all([loadConns(),load()]);
 }
+
+export default inboxController;

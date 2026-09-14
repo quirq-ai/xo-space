@@ -21,7 +21,7 @@ let go=()=>{};
    its own view rather than a card inside Setup so its 10s refresh and full
    state tree keep a page to themselves. */
 export default {
-  id:'quirq',
+  id:'quirq',route:'setup/server/details',aliases:['quirq'],
   label:'Quirq',
   order:8,nav:false,parent:'setup',
   async mount(el,ctx){
@@ -70,7 +70,7 @@ function renderShell(){
         +'<div class="quirq-storage-actions">'
           +'<p id="quirq-legacy-note"></p>'
           +'<div>'
-            +'<button type="button" data-go-view="projects">Open project data</button>'
+            +'<button type="button" data-go-view="projects/list">Open project data</button>'
             +'<button type="button" data-wiki-page="xo-data">Read the .xo catalog</button>'
             +'<button type="button" data-wiki-page="watcher">Read watcher internals</button>'
           +'</div>'

@@ -1,3 +1,4 @@
+import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
 /* Tree — the third Files lens, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped
@@ -111,7 +112,7 @@ function onWheel(e){
 export default {
   /* No tab of its own: the Files tab owns the nav slot and this is its third
      lens, reached from the List | Graph | Tree pill (or #/tree). */
-  id:'tree',label:'Tree',order:3,nav:false,parent:'projects',
+  ...projectPage('tree'),
   toolbar:{search:{
     placeholder:'Filter tree by name…',
     getValue:()=>filter,

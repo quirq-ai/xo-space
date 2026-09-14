@@ -23,20 +23,33 @@ node tests/space_ui_preview/capture.mjs /tmp/space-ui-issue-100
 For an existing Playwright installation, set `PLAYWRIGHT_MODULE` to its
 `index.mjs` file. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` optionally selects an existing
 Chromium executable. Set `SPACE_PREVIEW_URL` to use another local server port.
-The output directory receives 1440 × 1000 Dashboard, Projects List and
+The output directory receives 1440 × 1000 Projects Overview, List and
 expanded project screenshots, 320px and 375px screenshots, and `report.json`.
 `--screenshots-only` skips the issue #100 navigation assertions for comparing
 the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
-The full check verifies the four-tab order, Dashboard default, all six
-lenses and existing hash routes, stationary lens controls, retention of an
-open historical file in source mode across lens switches (including real
-Dashboard/Graph dataset reloads), closing the preview when leaving Projects,
-the local Wiki resource and its deep link, number keys 1–4, and lens-switch
-position relative to the content at 320px and 375px (the contextual toolbar
-can change the mobile header height). It fails
-on console errors, uncaught page errors and unsuccessful HTTP responses.
+The full check verifies the four primary sections, Projects Overview default,
+all six Projects pages and canonical routes, native secondary links, historical
+file previews across projection changes, closing the preview when leaving
+Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
+It fails on console errors, uncaught page errors and unsuccessful HTTP responses.
+
+For the complete section and route contract, run:
+
+```sh
+node tests/space_ui_preview/section-navigation.mjs /tmp/space-section-navigation
+node tests/space_ui_preview/projects-experience.mjs /tmp/space-projects-experience
+```
+
+The section check covers canonical URLs and legacy aliases, section defaults
+versus List, Back/Forward, native links, toolbar ownership, List and Setup state
+across map changes, and Inbox/Sharing handoffs. It captures all Projects pages
+and representative Agents, Inbox and Setup pages at 1440px, 390px and 320px,
+including content clearance below secondary navigation. The Projects check
+covers catalog availability, filtering, pins, lazy detail groups, retained
+drawers, and out-of-order responses. All service writes stay blocked or inside
+explicit browser-owned fixtures.
 
 For contextual toolbar coverage, use the same server and Playwright settings:
 

@@ -344,7 +344,10 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("`failText(res)`", rows["`js/core/api.js`"])
         self.assertIn("`every`", rows["`js/core/connections.js`"])
         self.assertIn("`pollLine`", rows["`js/core/connections.js`"])
-        self.assertIn("(ignored while an input, textarea or select has focus)", rows["`js/core/registry.js`"])
+        self.assertIn("(ignored while editing)", rows["`js/core/registry.js`"])
+        self.assertIn("Primary sections", rows["`js/core/registry.js`"])
+        self.assertIn("canonical routes", rows["`js/core/navigation.js`"])
+        self.assertIn("native links", rows["`js/core/section-nav.js`"])
         self.assertIn("import map", rows["`index.html`"])
         self.assertIn("keeps unsaved edits", rows["`js/views/connectors.js`"])
         # each claim against the source it describes

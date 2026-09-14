@@ -224,7 +224,10 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = {name: name for name in INBOX_VIEW_TARGETS}
-        expected.update(setup="setup/workspace", secrets="setup/secrets", connectors="setup/connectors")
+        expected.update(dashboard="projects/overview", projects="projects/overview", graph="projects/graph",
+                        tree="projects/tree", sharing="projects/sharing", time="projects/timeline",
+                        agents="agents/overview", inbox="inbox/items", quirq="setup/server/details",
+                        setup="setup/workspace", secrets="setup/secrets", connectors="setup/connectors")
         self.assertEqual(json.loads(result.stdout), expected)
 
     def test_the_status_code_split_the_docs_claim_holds(self) -> None:

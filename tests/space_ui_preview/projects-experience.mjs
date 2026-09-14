@@ -2,6 +2,7 @@
 /* The real Projects UI against fictional, browser-owned API fixtures. No
    request can mutate a service or leave the local preview origin. */
 import assert from 'node:assert/strict';
+import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -90,6 +91,7 @@ await context.route('**/*',async route=>{
   }
   if(path==='/api/xo-projects')return json(route,{items:catalog,total:catalog.length});
   if(path==='/xo/space.json')return json(route,graph);
+  if(path==='/xo/dashboard.json')return json(route,graph);
   if(path==='/api/xo-projects/activity')return json(route,projectActivity);
   if(path==='/api/xo-projects/timeline')return json(route,{events:catalog.map(project=>events(project.id).events[0])});
   const detail=path.match(/^\/api\/xo-projects\/([^/]+)\/(tree|todos|activity|timeline|github\/issues)$/);
@@ -151,10 +153,10 @@ async function layout(label){
   const dimensions=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,
     page:document.querySelector('#view-projects').clientWidth,pageScroll:document.querySelector('#view-projects').scrollWidth,
     pageTop:document.querySelector('#view-projects').getBoundingClientRect().top,
-    lensBottom:document.querySelector('#fileslens .atlas-lens-switch').getBoundingClientRect().bottom}));
+    navBottom:document.querySelector('#section-nav').getBoundingClientRect().bottom}));
   assert.ok(dimensions.document<=dimensions.width,label+' has no document overflow');
   assert.ok(dimensions.pageScroll<=dimensions.page+1,label+' has no Projects overflow');
-  assert.ok(dimensions.pageTop>=dimensions.lensBottom+8,label+' scroll viewport stays below the lens switch');
+  assert.ok(dimensions.pageTop>=dimensions.navBottom-1,label+' scroll viewport clears shared navigation');
   const outside=await page.locator('#view-projects button:visible,#view-projects input:visible,#view-projects select:visible').evaluateAll(nodes=>nodes.filter(node=>{
     const bounds=node.getBoundingClientRect();return bounds.width&&bounds.height&&(bounds.left< -1||bounds.right>innerWidth+1);
   }).map(node=>node.id||node.className));
@@ -163,7 +165,7 @@ async function layout(label){
 }
 
 try{
-  await page.goto(origin+'/space/#/projects',{waitUntil:'domcontentloaded'});
+  await page.goto(origin+'/space/#/projects/list',{waitUntil:'domcontentloaded'});
   await aurora.waitFor({timeout:5000});
   await within(Promise.all([graphHold.arrived.promise,activityHold.arrived.promise,timelineHold.arrived.promise]),'optional summary requests start');
   assert.equal(await page.locator('.prj-row:visible').count(),catalog.length);
@@ -261,7 +263,7 @@ try{
 
   await page.locator('#prj-add').click();await page.waitForURL('**/#/setup/projects');
   await page.locator('#setup-projects').waitFor();assert.deepEqual(report.writes,[]);
-  await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
+  await openProjectList(page);await page.waitForURL('**/#/projects/list');
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
   checked('Add project opens canonical Setup Projects and returning restores the current drawer and folder.');
 

@@ -1,6 +1,7 @@
 /* Projects catalog and on-demand Files, Activity and Issues details.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
+import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -360,7 +361,7 @@ addEventListener('space:projects-changed',event=>{
 });
 
 export default {
-  id:'projects',label:'Projects',order:1,
+  ...projectPage('project-list'),section:'projects',
   toolbar:{search:{
     placeholder:'Filter projects…',getValue:()=>filter,
     setValue(value){filter=String(value??'');clearTimeout(fdeb);fdeb=setTimeout(renderRows,140);},
@@ -466,7 +467,7 @@ function summary(shown){
     +(shown!==undefined&&shown!==items.length?' · '+shown+' shown':'');
 }
 function head(){
-  return '<header class="prj-hero"><div><h1>Projects</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></div>'
+  return '<header class="prj-hero"><div><h1>List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></div>'
     +'<div class="prj-actions"><button type="button" class="setup-primary" id="prj-add">Add project</button>'
     +'<button type="button" class="sess-refresh" id="prj-refresh" title="Refresh projects and activity">↻ Refresh</button></div></header>'
     +'<div class="prj-head"><div class="prj-filters" role="group" aria-label="Filter projects">'

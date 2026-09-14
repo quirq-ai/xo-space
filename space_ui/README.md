@@ -1,16 +1,26 @@
 # Space UI
 
-An explorable map of `~/xo-projects`. Four top-level tabs: **Projects**
-(Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
-**Agents**, **Inbox**, and **Setup**, plus the
-**Quirq** state view, which has no tab of its own and opens from **Setup → Server → Technical details**.
+An explorable map of `~/xo-projects`. Four primary sections share the same
+navigation structure: **Projects**, **Agents**, **Inbox**, and **Setup**.
+Primary links open a section's default page; the secondary links open its
+pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
-Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
-the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
-to `#/graph`, `#/tree`, `#/sharing`, and `#/time` (Timeline) keep their
-meanings. The numbered shortcuts follow the top bar: Projects `1`, Agents
-`2`, Inbox `3`, Setup `4` (`#/setup/workspace`). Connectors (`#/setup/connectors`) and Secrets (`#/setup/secrets`) open inside Setup. Timeline is a lens of the Projects
-tab, reached from the Projects lens switch rather than a numbered shortcut.
+| Section | Default route | Pages |
+|---------|---------------|-------|
+| Projects (`1`) | `#/projects/overview` | Overview, List, Graph, Tree, Sharing, Timeline |
+| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
+| Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs |
+| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Projects, Connectors, Secrets, Commands, Server |
+
+Space starts at Projects Overview. List has its own route, `#/projects/list`;
+clicking Projects or pressing `1` always opens Overview. The section roots
+`#/projects`, `#/agents`, `#/inbox`, and `#/setup` normalize to their defaults.
+Legacy `#/dashboard`, `#/graph`, `#/tree`, `#/sharing`, and `#/time` links open
+the corresponding Projects page. Connectors and Secrets keep their aliases
+`#/connectors` and `#/secrets`. Technical details is a child of Setup Server at
+`#/setup/server/details`; `#/quirq` remains an alias. Stored Inbox links using
+`view: "projects"` continue to open List; that API value is independent of the
+Projects section URL.
 
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered
@@ -19,10 +29,10 @@ shortcut. Its three-step quickstart and topic cards link to the
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
-The toolbar adapts to the active page. Dashboard and Graph keep the root
-picker and map autocomplete. List, Tree, Timeline, Setup, Inbox, and
+The toolbar adapts to the active page. Projects Overview and Graph keep the root
+picker and map autocomplete. List, Tree, Timeline, Setup, Inbox Items, and
 the Agents session list have their own search; typing there keeps you on that page.
-Wiki, Sharing, Quirq, and the Agents charts/detail have no search
+Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
 toolbar. On phones these pages also give back the empty toolbar row.
 
 | Page | Search scope |
@@ -57,7 +67,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `index.html` | Thin shell: markup + stylesheet links + an import map + the `js/app.js` entry. The import map is where `core/api.js`, `core/ui.js` and `core/connections.js` get their cache stamp: views import those three bare, the map rewrites every such import to one `?v=` URL (one module instance, fetched fresh after a bump); every other core module keeps the stamp on its import line. |
 | `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). |
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
-| `js/core/registry.js` | View registry: tab nav, `1..n` hotkeys (ignored while an input, textarea or select has focus), `#/<id>` hash routing, lazy mount, per-view failure isolation. |
+| `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, and per-view failure isolation. Primary sections are configured independently of their pages. |
+| `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
+| `js/core/section-nav.js` | One shared secondary navigation strip; native links follow the current section and mark the active page. |
 | `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
@@ -66,15 +78,15 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
 
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
-| `js/views/atlas.js` | Dashboard + Graph + Timeline: three lenses over one dataset, one shared closure, three exported views. |
-| `js/views/sessions.js` | The Agents view (tab id `agents`, route `#/agents`): session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
-| `js/views/inbox.js` | The Inbox view: what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the tab button (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
-| `js/views/projects.js` | The Projects List lens: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Owns the `Projects` tab; Dashboard, Graph, Tree, and Sharing are sibling lenses (`nav:false`, `parent:'projects'`). |
+| `js/views/atlas.js` | Projects Overview, Graph and Timeline. Changing projections rebuilds only the atlas engine, disposes its listeners and frames, and ignores superseded reads; the document and other mounted pages remain intact. |
+| `js/views/sessions.js` | Five Agents routes under `#/agents/`, sharing one mounted telemetry view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
+| `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
+| `js/views/projects.js` | The Projects List page: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Registers only the `project-list` page at `#/projects/list`; the Projects section belongs to the shared navigation definitions. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
-| `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
+| `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
-| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
+| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
 | `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace, Intelligence layer, Projects, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |
 | `js/core/setup-sections.js` | Setup section IDs, labels, canonical routes and compatibility mappings for old section handoffs. |
@@ -186,8 +198,9 @@ checks when Delete is pressed, regardless of the earlier preview. Deletion
 removes local files; it does not delete the remote repository or backups.
 Automatic sharing clones remember the local removal so they do not recreate
 the folder. Explicitly cloning it again restores it. Projects List, Tree and
-Sharing refresh on return; a previously opened map offers **Reload map** without
-automatically discarding Setup drafts.
+Sharing refresh on return. Project changes invalidate cached map data; a map
+still showing earlier data offers **Refresh map**. Changing projections or
+refreshing the map preserves the document and unfinished Setup forms.
 
 For never-shared Git repositories, XO Swarm must support `GET /commits/members`
 returning `200` with `members: []` when its sharing ledger has no rows. Older

@@ -3,21 +3,22 @@
 <title>XO Space</title>
 <style>html{color-scheme:dark}</style>
 </head><body>
-<link rel="stylesheet" href="css/base.css?v=20260914-setupapps1">
+<link rel="stylesheet" href="css/base.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260914-projectmanage1">
-<link rel="stylesheet" href="css/sessions.css?v=20260914-agentstab1">
-<link rel="stylesheet" href="css/timeline.css?v=20260825-timeline1">
-<link rel="stylesheet" href="css/chrome.css?v=20260914-setupidentity1">
-<link rel="stylesheet" href="css/projects.css?v=20260914-projectux1">
-<link rel="stylesheet" href="css/sharing.css?v=20260910-sharingpane1">
-<link rel="stylesheet" href="css/inbox.css?v=20260914-results1">
+<link rel="stylesheet" href="css/graph.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/sessions.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/timeline.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/chrome.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/projects.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/sharing.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/wiki.css?v=20260914-wikihub1">
 <link rel="stylesheet" href="css/quirq.css?v=20260816-navswap1">
 <link rel="stylesheet" href="css/setup.css?v=20260914-setuproutes1">
 <link rel="stylesheet" href="css/setup-projects.css?v=20260914-setuproutes1">
 <link rel="stylesheet" href="css/preview.css?v=20260914-wikihub1">
 <link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">
+<link rel="stylesheet" href="css/navigation.css?v=20260914-navigation1">
 
 
 <div class="topbar" data-toolbar="none">
@@ -29,7 +30,7 @@
       <polyline stroke="#83d63a" stroke-width="26" fill="none" stroke-miterlimit="10" points="380.51 165.06 461.99 246.53 374.68 333.84"/>
     </svg></span>
     <b>Space</b></div>
-  <div class="tabs"><!-- populated by core/registry.js from the registered views --></div>
+  <nav class="tabs" aria-label="Main navigation"><!-- primary sections from core/navigation.js --></nav>
   <div class="topbar-right">
   <div class="tright" id="toolbar-controls" hidden>
     <div class="rootpick" id="graph-root" hidden>
@@ -70,21 +71,7 @@
 </div>
 
 <main id="stage">
-  <!-- Projects lens switch: one element for all five lenses, owned by
-       core/lens-switch.js. It sits in the stage rather than inside a view so
-       that switching lens cannot move it. -->
-  <div id="fileslens" hidden>
-    <div class="fileslens-inner">
-      <div class="atlas-lens-switch" role="group" aria-label="Projects lens">
-        <button type="button" data-files-lens="dashboard">Dashboard</button>
-        <button type="button" data-files-lens="projects">List</button>
-        <button type="button" data-files-lens="graph">Graph</button>
-        <button type="button" data-files-lens="tree">Tree</button>
-        <button type="button" data-files-lens="sharing">Sharing</button>
-        <button type="button" data-files-lens="time">Timeline</button>
-      </div>
-    </div>
-  </div>
+  <nav id="section-nav" hidden></nav>
 
   <!-- GRAPH -->
   <section class="view is-active" id="view-graph">
@@ -104,8 +91,8 @@
   <section class="view" id="view-time">
     <div class="thead">
       <div class="tintro">
-        <h2>The workspace, over time.</h2>
-        <div class="sub" id="tsub">Scrub through the workspace as it grew. Open any cluster from the graph to watch its run unfold here.</div>
+        <h2>Timeline</h2>
+        <div class="sub" id="tsub">Explore dated files and project commits.</div>
       </div>
       <div class="grow"></div>
       <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…" hidden
@@ -194,7 +181,7 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260914-projectux1"></script>
+<script type="module" src="js/app.js?v=20260914-navigation1"></script>
 
 
 </body></html>

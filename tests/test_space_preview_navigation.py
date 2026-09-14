@@ -18,6 +18,8 @@ class PreviewNavigationTests(unittest.TestCase):
           import fs from 'node:fs';
           import vm from 'node:vm';
           import assert from 'node:assert/strict';
+          import {pathToFileURL} from 'node:url';
+          const {isProjectRoute,PROJECT_PAGES}=await import(new URL('navigation.js',pathToFileURL(process.argv[1])));
 
           // Run the real preview implementation in a fresh browser-like
           // context per page. Stub only its imports, DOM and HTTP boundary.
@@ -47,7 +49,7 @@ class PreviewNavigationTests(unittest.TestCase):
               insertAdjacentHTML(_where,html){this._html+=html;},setPointerCapture(){}
             };
           }
-          function page({hash='#/projects',store=storage(),respond,items=history,topbarHeight=58}={}){
+          function page({hash='#/projects/list',store=storage(),respond,items=history,topbarHeight=58}={}){
             const ids=['preview','preview-body','preview-version','preview-name','preview-path',
               'preview-meta','preview-source','preview-close','header'];
             const els=Object.fromEntries(ids.map(id=>[id,element(id)]));
@@ -62,7 +64,7 @@ class PreviewNavigationTests(unittest.TestCase):
               return payload(url.includes('commit=')?'historic body':'working body');
             };
             const env={location:{hash},sessionStorage:store,innerWidth:1280,innerHeight:900,
-              document:{getElementById:id=>els[id],querySelector:s=>s==='.topbar'?topbar:null},API_BASE:'',apiFetch,
+              document:{getElementById:id=>els[id],querySelector:s=>s==='.topbar'?topbar:null},API_BASE:'',apiFetch,isProjectRoute,
               ResizeObserver:class{constructor(callback){observers.push(callback);}observe(){}},
               mdToHtml:text=>'<rendered>'+text+'</rendered>',console,
               addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(fn);}};
@@ -72,7 +74,7 @@ class PreviewNavigationTests(unittest.TestCase):
               resizeTopbar(height){topbarHeight=height;observers.forEach(callback=>callback());},
               open:()=>emit('space:preview-file',{project:'demo',path:'readme.md',name:'Read me'}),
               click:id=>els.preview.fire('click',{target:{closest:s=>s==='#'+id?els[id]:null}}),
-              switchTo(id,tab){env.location.hash='#/'+id;emit('space:view',{id,tab});},
+              switchTo(id,tab){env.location.hash='#/'+(PROJECT_PAGES.find(page=>page.id===id)?.route||id);emit('space:view',{id,tab});},
               save(){emit('space:before-atlas-reload');},
               isOpen:()=>els.preview.classList.contains('is-open')};
           }
@@ -81,7 +83,7 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(p.isOpen(),true);
           assert.match(p.els['preview-body'].innerHTML,/<rendered>working body/);
           const firstBody=p.els['preview-body'].innerHTML;
-          for(const lens of ['dashboard','projects','graph','tree','sharing']){
+          for(const lens of ['dashboard','project-list','graph','tree','sharing','time']){
             p.switchTo(lens,'projects');
             assert.equal(p.isOpen(),true,lens);
             assert.equal(p.els['preview-body'].innerHTML,firstBody,lens);
@@ -102,7 +104,7 @@ class PreviewNavigationTests(unittest.TestCase):
           // History order changes across the reload: restore the commit,
           // not the old dropdown index, including its historical filename.
           const snapshot=p.store.getItem(key);
-          const restored=page({hash:'#/dashboard',store:p.store,items:[history[1],history[0]]});
+          const restored=page({hash:'#/projects/overview',store:p.store,items:[history[1],history[0]]});
           await settle();
           assert.equal(p.store.getItem(key),null,'consume before asynchronous reads');
           assert.equal(restored.isOpen(),true);
@@ -114,11 +116,11 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(restored.els.preview.style.top,'110px');
           assert.equal(restored.els.preview.style.width,'610px');
           assert.equal(restored.els.preview.style.height,'520px');
-          assert.equal(page({hash:'#/dashboard',store:p.store}).isOpen(),false,'one-shot restore');
+          assert.equal(page({hash:'#/projects/overview',store:p.store}).isOpen(),false,'one-shot restore');
 
           // The expanded navbar clears both restored and dragged headers,
           // without changing the saved dimensions or fetched file/version.
-          const expanded=page({hash:'#/dashboard',store:storage(new Map([[key,snapshot]])),topbarHeight:142});
+          const expanded=page({hash:'#/projects/overview',store:storage(new Map([[key,snapshot]])),topbarHeight:142});
           await settle();
           assert.equal(expanded.els.preview.style.top,'142px');
           assert.equal(expanded.els.preview.style.width,'610px');
@@ -135,24 +137,24 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(expanded.els['preview-body'].innerHTML,expandedBody);
           assert.equal(expanded.calls.length,3,'position changes never refetch content');
 
-          restored.switchTo('time','time');
+          restored.switchTo('agents-overview','agents');
           assert.equal(restored.isOpen(),false);
           assert.equal(restored.els['preview-body'].innerHTML,'');
           restored.save();assert.equal(restored.store.getItem(key),null);
-          for(const hash of ['#/time','#/agents','#/inbox','#/projects']){
+          for(const hash of ['#/projects/timeline','#/agents/overview','#/inbox/items','#/projects/list']){
             const store=storage(new Map([[key,snapshot]]));
             const other=page({hash,store});await settle();
             assert.equal(other.isOpen(),false,'snapshot is only valid for its destination');
             assert.equal(other.calls.length,0);
             assert.equal(store.getItem(key),null,'discard on another route');
-            assert.equal(page({hash:'#/dashboard',store}).isOpen(),false);
+            assert.equal(page({hash:'#/projects/overview',store}).isOpen(),false);
           }
 
           // A second reload while the first file/history request is in
           // flight must carry the intended historical version forward.
           let resolveFile;
           const delayedFile=new Promise(resolve=>resolveFile=resolve);
-          const slow=page({hash:'#/dashboard',store:storage(new Map([[key,snapshot]])),
+          const slow=page({hash:'#/projects/overview',store:storage(new Map([[key,snapshot]])),
             respond:url=>url.includes('/file?')?delayedFile:undefined});
           slow.switchTo('graph','projects');slow.save();
           assert.equal(JSON.parse(slow.store.getItem(key)).version,'oldhash');
@@ -164,7 +166,7 @@ class PreviewNavigationTests(unittest.TestCase):
           // An in-flight restored version cannot overwrite a newer file.
           let resolveVersion;
           const delayedVersion=new Promise(resolve=>resolveVersion=resolve);
-          const racing=page({hash:'#/dashboard',store:storage(new Map([[key,snapshot]])),
+          const racing=page({hash:'#/projects/overview',store:storage(new Map([[key,snapshot]])),
             respond:url=>url.includes('commit=')?delayedVersion:undefined});
           await settle();
           racing.emit('space:preview-file',{project:'other',path:'new.md'});await settle();
@@ -172,14 +174,14 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(racing.els['preview-path'].textContent,'other/new.md');
           assert.match(racing.els['preview-body'].innerHTML,/<rendered>working body/);
 
-          const missingVersion=page({hash:'#/dashboard',store:storage(new Map([[key,snapshot]])),items:[]});
+          const missingVersion=page({hash:'#/projects/overview',store:storage(new Map([[key,snapshot]])),items:[]});
           await settle();
           assert.equal(missingVersion.isOpen(),true);
           assert.equal(missingVersion.els['preview-version'].hidden,true);
           assert.match(missingVersion.els['preview-body'].innerHTML,/<pre[^>]*>working body/);
 
-          for(const bad of ['invalid json','null',JSON.stringify({route:'#/dashboard',file:{path:7}})]){
-            const broken=page({hash:'#/dashboard',store:storage(new Map([[key,bad]]))});
+          for(const bad of ['invalid json','null',JSON.stringify({route:'#/projects/overview',file:{path:7}})]){
+            const broken=page({hash:'#/projects/overview',store:storage(new Map([[key,bad]]))});
             await settle();assert.equal(broken.isOpen(),false);assert.equal(broken.calls.length,0);
           }
           const unavailable={getItem(){throw Error('blocked');},setItem(){throw Error('blocked');},removeItem(){throw Error('blocked');}};

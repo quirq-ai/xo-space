@@ -19,11 +19,13 @@ LOCAL_PROBE = r"""
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {projectPage}=await import(pathToFileURL(process.argv[1]+'/space_ui/js/core/navigation.js'));
 
 function module(name,extra={}){
   const events=new Map(),timers=new Map();let serial=0;
   const context={
-    API_BASE:'',location:{origin:'http://space.test'},addEventListener:(type,fn)=>events.set(type,fn),
+    API_BASE:'',projectPage,location:{origin:'http://space.test'},addEventListener:(type,fn)=>events.set(type,fn),
     document:{getElementById:()=>null},CSS:{escape:value=>value},
     setTimeout:fn=>{timers.set(++serial,fn);return serial;},
     clearTimeout:id=>timers.delete(id),...extra,

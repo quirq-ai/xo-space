@@ -95,8 +95,8 @@ class InboxOpenLinkTests(unittest.TestCase):
 
 
 class InboxConnectionsSectionTests(unittest.TestCase):
-    """The Connections section reads /api/connections on its own token and
-    never blocks the rows; Poll now reloads both."""
+    """The Connections page reads /api/connections on its own token and
+    never blocks Items; Poll now updates both snapshots."""
 
     def setUp(self) -> None:
         self.src = read("js/views/inbox.js")
@@ -124,12 +124,18 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         self.assertIn("connsFailed=res", body)
         # a failed read is one muted line, not a blocker
         self.assertIn("Connections: '+esc(failText(connsFailed))", self.src)
-        # loaded on mount (not awaited) and on every show
+        self.assertIn("renderConns();", body)
+        # Mount shares a controller; only entering Connections starts its read.
         mount = slice_between(self.src, "async mount(el,ctx){", "show(){")
-        self.assertIn("loadConns();", mount)
-        self.assertLess(mount.index("loadConns();"), mount.index("await load();"))
-        show = slice_between(self.src, "show(){", "hide(){")
-        self.assertIn("loadConns()", show)
+        self.assertNotIn("loadConns();", mount)
+        self.assertNotIn("await load();", mount)
+        show = slice_between(self.src, "function showInboxPage(page){", "function hideInbox(){")
+        self.assertRegex(show, r"if\(page==='connections'\)\{\s*loadConns\(\);")
+        self.assertIn("setSlottedInterval('inbox-conns-poll',loadConns,30000)", show)
+        self.assertIn("clearSlottedInterval('inbox-conns-poll')", self.src)
+        render = slice_between(self.src, "function renderConns(){", "function connsHTML(){")
+        self.assertIn("querySelector('.inb-connections-page')", render)
+        self.assertNotIn(".inb-items-page", render)
 
     def test_rows_and_empty_state(self) -> None:
         self.assertIn(
@@ -137,7 +143,7 @@ class InboxConnectionsSectionTests(unittest.TestCase):
             self.src,
         )
         self.assertIn("c.configured||c.connected_here", self.src)
-        self.assertIn("<span>Connections</span><b>'+rows.length+'</b>", self.src)
+        self.assertIn("<span>Polled apps</span><b>'+rows.length+'</b>", self.src)
         self.assertIn('data-act="conn-poll" data-toolkit="\'+tk+\'"', self.src)
         self.assertIn('data-act="conn-config" data-toolkit="\'+tk+\'"', self.src)
         self.assertIn(">Poll now</button>", self.src)
@@ -155,18 +161,18 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         for expr in ("c.toolkit", "c.display_name||c.toolkit", "line.error", "line.text", "collectorLabels(c)"):
             self.assertIn("esc(" + expr + ")", self.src)
 
-    def test_collapsed_by_default_unless_an_entry_errored(self) -> None:
+    def test_connections_page_opens_rows_and_retains_explicit_collapse(self) -> None:
         self.assertIn("let connsOpen=null;", self.src)
         self.assertIn(
-            "const connsIsOpen=()=>connsOpen===null?polled().some(c=>c.last_error):connsOpen;",
+            "const connsIsOpen=()=>connsOpen!==false;",
             self.src,
         )
-        self.assertIn("case'conns-toggle':connsOpen=!connsIsOpen();render();break;", self.src)
+        self.assertIn("case'conns-toggle':connsOpen=!connsIsOpen();renderConns();break;", self.src)
         self.assertIn('data-act="conns-toggle" aria-expanded=', self.src)
 
     def test_poll_now_reloads_section_and_rows_together(self) -> None:
         body = slice_between(self.src, "async function pollConn(toolkit){", "\n}\n")
-        self.assertIn("connBusy.add(toolkit);render();", body)
+        self.assertIn("connBusy.add(toolkit);renderConns();", body)
         self.assertIn("connBusy.delete(toolkit);", body)
         self.assertIn("await Promise.all([loadConns(),load()]);", body)
 
@@ -346,7 +352,7 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setuproutes1';", app
+            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-navigation1';", app
         )
         self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
         # both views import core/api.js bare: the stamp is the import map's
@@ -358,7 +364,7 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + RESULTS_STAMP + '">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">', html)
         # Connectors now shares the Setup shell and its updated styles.
         self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

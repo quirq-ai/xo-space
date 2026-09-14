@@ -19,8 +19,10 @@ def view_contract(view: str) -> str:
     source = (
         ROOT / "space_ui" / "js" / "views" / f"{view}.js"
     ).read_text(encoding="utf-8")
+    if "export default" not in source:
+        return source
     head = source.split("export default", 1)[1]
-    return head[: head.index("mount(")]
+    return head[: head.index("mount(")] if "mount(" in head else source
 
 
 class SpaceWikiTests(unittest.TestCase):
@@ -157,24 +159,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("scrollIntoView", registry)
 
     def test_sessions_tab_is_renamed_agents_end_to_end(self) -> None:
-        """The Sessions tab was renamed to Agents (more relevant to what it
-        shows) — label AND route. The registry derives the #/agents route
-        and the #view-agents section from the view id, so the id, the
-        section markup, its stylesheet selector, the Wiki topic that
-        documents it, and the feeder that links to it all move together.
-        Legacy help keys still resolve to the renamed topic.
-
-        Kept on purpose: the module file name (sessions.js), the session
-        telemetry data file (sessions.json), and the internal Sessions
-        sub-view are session telemetry, not the tab."""
+        """Agents has canonical pages backed by one telemetry controller.
+        The legacy help topic and sessions data/module names remain valid."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         contract = view_contract("sessions")
-        # id drives the route: #/agents, section #view-agents
-        self.assertIn("id:'agents',label:'Agents',order:4", contract)
+        # The route factory shares the physical #view-agents section.
+        self.assertIn("export function createAgentViews(", contract)
+        self.assertIn("AGENT_PAGES.map", contract)
         self.assertNotIn("id:'sessions'", contract)
         self.assertNotIn("label:'Sessions'", contract)
-        self.assertIn("registerView(sessionsView);", app)
+        self.assertIn("createAgentViews().forEach(registerView);", app)
         # the section the view mounts into follows the id (registry maps
         # #view-<id>); a stale #view-sessions would leave the tab blank
         self.assertIn('id="view-agents"', index)
@@ -258,7 +253,8 @@ class SpaceWikiTests(unittest.TestCase):
 
         self.assertIn("registerView(quirqView);", app)
         self.assertIn('href="css/quirq.css?v=', index)
-        self.assertIn("id:'quirq'", quirq)
+        self.assertIn("route:'setup/server/details'", quirq)
+        self.assertIn("aliases:['quirq']", quirq)
         self.assertIn("/api/quirq", quirq)
         # Quirq has no top-level tab: it opens from the Setup Server section,
         # and Setup's tab stays lit while it is open.
@@ -278,25 +274,24 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('id="setup-quirq"', secrets)
         self.assertIn("Technical details", secrets)
         self.assertIn("querySelector('#setup-quirq')", secrets)
-        self.assertIn("switchTo('quirq')", secrets)
+        self.assertIn("switchTo('setup/server/details')", secrets)
         self.assertNotIn("setup-wiki", secrets)
         # Six Degrees was removed: no child lens, no lens switch, no view.
         self.assertNotIn("data-atlas-lens", index)
         self.assertNotIn("view-six", index)
         self.assertNotIn("SIX DEGREES", atlas)
         self.assertNotIn("sixView", atlas)
-        # Projects opens List; Dashboard and Graph are nav-less siblings
-        # behind the same lens switch.
+        # Primary sections own navigation; List is a distinct page.
         # The dept-filter chips row is gone from the canvas.
         # the lens switch is one element in the shell, not a copy per lens
-        self.assertIn('id="fileslens"', index)
+        self.assertIn('id="section-nav"', index)
         self.assertNotIn('fileslens-graph', index)
         self.assertNotIn('id="chips"', index)
-        self.assertIn("nav:false,parent:'projects'", atlas)
+        self.assertIn("projectPage('dashboard')", atlas)
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        self.assertIn("id:'projects',label:'Projects',order:1", projects)
+        self.assertIn("projectPage('project-list')", projects)
         self.assertIn("space:focus-project", projects)
         self.assertIn("space:focus-project", atlas)
 
@@ -349,20 +344,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("import treeView from './views/tree.js?v=", app)
         self.assertIn("registerView(treeView);", app)
         contract = view_contract("tree")
-        self.assertIn("id:'tree',label:'Tree'", contract)
-        self.assertIn("nav:false", contract)
-        self.assertIn("parent:'projects'", contract)
+        self.assertIn("projectPage('tree')", contract)
         # One renderer, one position. Three copies in three containers is
         # what made the control jump when you used it, so the views must not
         # render it at all.
-        self.assertEqual(
-            re.findall(r'data-files-lens="([^"]+)"', index),
-            ["dashboard", "projects", "graph", "tree", "sharing", "time"],
-        )
+        navigation = (ROOT / "space_ui/js/core/navigation.js").read_text(encoding="utf-8")
+        self.assertIn("['tree','tree','Tree'", navigation)
+        self.assertNotIn("data-files-lens", index)
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
         switcher = (
-            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+            ROOT / "space_ui" / "js" / "core" / "section-nav.js"
         ).read_text(encoding="utf-8")
         self.assertIn("space:view", switcher)
         registry = (
@@ -403,7 +395,7 @@ class SpaceWikiTests(unittest.TestCase):
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         switcher = (
-            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+            ROOT / "space_ui" / "js" / "core" / "section-nav.js"
         ).read_text(encoding="utf-8")
         sharing = (
             ROOT / "space_ui" / "js" / "views" / "sharing.js"
@@ -418,13 +410,11 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("import sharingView from './views/sharing.js?v=", app)
         self.assertIn("registerView(sharingView);", app)
         contract = view_contract("sharing")
-        self.assertIn("id:'sharing',label:'Sharing'", contract)
-        self.assertIn("nav:false", contract)
-        self.assertIn("parent:'projects'", contract)
-        # the pill is shell chrome: index.html + lens-switch.js know the lens,
+        self.assertIn("projectPage('sharing')", contract)
+        # Secondary navigation belongs to the shell and shared definitions,
         # the view itself never renders a switch
-        self.assertIn('data-files-lens="sharing"', index)
-        self.assertIn("'sharing'", switcher)
+        self.assertIn('id="section-nav"', index)
+        self.assertIn("PROJECT_PAGES", switcher)
         self.assertNotIn('data-files-lens="', sharing)
         # one source of truth: the status snapshot, read by the data module
         self.assertIn("from './sharing_data.js?v=", sharing)
@@ -449,7 +439,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "atlas.js"
         ).read_text(encoding="utf-8")
         switcher = (
-            ROOT / "space_ui" / "js" / "core" / "lens-switch.js"
+            ROOT / "space_ui" / "js" / "core" / "section-nav.js"
         ).read_text(encoding="utf-8")
 
         # still registered by app.js, exactly like the other atlas lenses
@@ -457,13 +447,11 @@ class SpaceWikiTests(unittest.TestCase):
         # the timeView export is a nav-less child of Projects now
         time_export = atlas.split("export const timeView=", 1)[1].split(";", 1)[0]
         self.assertIn("'time','Timeline'", time_export)
-        self.assertIn("nav:false", time_export)
-        self.assertIn("parent:'projects'", time_export)
+        self.assertIn("projectPage('time')", time_export)
         # its pill is the last one on the shared switch, and the switch knows it
-        self.assertEqual(
-            re.findall(r'data-files-lens="([^"]+)"', index)[-1], "time"
-        )
-        self.assertIn("'time'", switcher)
+        navigation = (ROOT / "space_ui/js/core/navigation.js").read_text(encoding="utf-8")
+        self.assertIn("['time','timeline','Timeline'", navigation)
+        self.assertIn("PROJECT_PAGES", switcher)
 
     def test_file_explorer_reads_the_detailed_tree_endpoint(self) -> None:
         """The List drawer browses a project folder by folder, and the wire

@@ -3,6 +3,7 @@
    Quirq GET responses below are synthetic; all non-GET requests are blocked.
    Screenshots capture the actual app without replacing visual DOM or CSS. */
 import assert from 'node:assert/strict';
+import {routeFor,projectPageId,openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -59,7 +60,6 @@ const modes={graph:'graph',dashboard:'graph',projects:'search',tree:'search',tim
   setup:'search',secrets:'search',wiki:'none',sharing:'none',quirq:'none'};
 const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
   time:'Filter timeline projects…',connectors:'Filter connectors…',setup:'Search setup…',secrets:'Search setup…'};
-const routeFor=id=>['setup','connectors','secrets'].includes(id)?'#/setup/'+(id==='setup'?'workspace':id):'#/'+id;
 async function expectMode(id){
   const mode=modes[id];
   await page.waitForFunction(({id,mode,placeholder,route})=>location.hash===route
@@ -74,7 +74,7 @@ async function expectMode(id){
   assert.equal(await page.locator('#toolbar-controls').isHidden(),mode==='none',id+' controls');
 }
 async function go(id){
-  if(id==='projects')await page.locator('#tab-projects').click();
+  if(id==='projects')await openProjectList(page);
   else if(['connectors','secrets','setup'].includes(id)){
     await page.locator('#tab-setup').click();
     await page.locator('#setup-nav [data-setup-go="'+(id==='setup'?'workspace':id)+'"]').click();
@@ -85,13 +85,14 @@ async function go(id){
     await page.locator('#setup-nav [data-setup-go="server"]').click();
     await page.locator('#setup-quirq').click();
   }else{
-    await page.locator('#tab-projects').click();
-    await page.locator('[data-files-lens="'+id+'"]').click();
+    if(!await page.locator('#section-nav [data-section-page="'+projectPageId(id)+'"]').isVisible())
+      await page.locator('#tab-projects').click();
+    await page.locator('[data-section-page="'+projectPageId(id)+'"]').click();
   }
   await expectMode(id);
   if(id==='time'){
     assert.equal(await page.locator('#tab-projects.is-on').count(),1,'Timeline belongs to Projects');
-    assert.equal(await page.locator('[data-files-lens="time"][aria-current="true"]').count(),1);
+    assert.equal(await page.locator('[data-section-page="time"][aria-current="page"]').count(),1);
     assert.equal(await page.locator('#tab-time').count(),0,'Timeline retains search without a primary tab');
   }
 }
@@ -121,7 +122,7 @@ async function layout(id,width){
     const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();
       return{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
     const tabs=document.querySelector('.tabs');
-    const buttons=[...tabs.querySelectorAll('button')];
+    const buttons=[...tabs.querySelectorAll('a')];
     const first=buttons[0].getBoundingClientRect(),last=buttons.at(-1).getBoundingClientRect();
     const visibleControls=[...document.querySelectorAll('#toolbar-controls input,#root-btn,.resource-links a')]
       .filter(node=>node.getClientRects().length).map(node=>{
@@ -171,7 +172,6 @@ try{
   await expectMode('graph');
   await graphSearch.fill('Aurora');
   await page.locator('#qac.is-open').waitFor();
-  const rootLabel=await page.locator('#root-btn b').textContent();
   await go('projects');await rows(10);
   assert.equal(await page.locator('#qac.is-open').count(),0);
   await go('graph');
@@ -183,7 +183,7 @@ try{
   assert.equal(await page.locator('#rootdd.is-open, #root-ac.is-open, #qac.is-open').count(),0);
   checked('Graph autocomplete and root menus close when leaving Graph.');
 
-  await page.locator('#tab-projects').click();await page.keyboard.press('/');
+  await openProjectList(page);await page.keyboard.press('/');
   assert.equal(await search.evaluate(element=>element===document.activeElement),true);
   await query('AURORA','projects');await rows(1);
   assert.match(await page.locator('.prj-row:visible').textContent(),/Aurora Console/);
@@ -226,9 +226,13 @@ try{
   await screenshot('timeline-search-1440.png');
   await go('tree');assert.equal(await search.inputValue(),'client.test.ts');
   await go('time');assert.equal(await search.inputValue(),'Aurora');
+  await go('dashboard');await go('time');
+  assert.equal(await search.inputValue(),'Aurora','Timeline query survives changing atlas projections');
+  assert.equal(await page.locator('[data-tmode="file"].is-on').count(),1,'Timeline mode survives changing projections');
   checked('Timeline filters both file and commit lanes without graph navigation; its query persists.');
 
   await go('connectors');await visibleConnectors(['gmail','slack','telegram']);
+  const connectorsRootLabel=await page.locator('#root-btn b').textContent();
   assert.equal(await search.inputValue(),'');
   await query('conversation','connectors');await visibleConnectors(['slack']);
   await query('DEV@','connectors');await visibleConnectors(['gmail']);
@@ -243,9 +247,9 @@ try{
   assert.equal(await interval.inputValue(),'1800','Unsaved polling interval survives filtering');
   await query('telegram','connectors');await visibleConnectors(['telegram']);
   await screenshot('connectors-search-1440.png');
+  assert.equal(await page.locator('#root-btn b').textContent(),connectorsRootLabel,'Connector filtering never changes the graph root');
   await go('projects');assert.equal(await search.inputValue(),'aurora');
   await go('connectors');assert.equal(await search.inputValue(),'telegram');
-  assert.equal(await page.locator('#root-btn b').textContent(),rootLabel);
   checked('Connectors matches names/descriptions/accounts and preserves unsaved form identity and query.');
 
   for(const id of ['setup','secrets']){
@@ -263,7 +267,7 @@ try{
     await page.locator('.brand').click();await page.keyboard.press('/');
     assert.equal(await page.evaluate(()=>['q','view-search'].includes(document.activeElement?.id)),false,
       id+' slash must not focus a hidden search');
-    assert.equal(new URL(page.url()).hash,'#/'+id);
+    assert.equal(new URL(page.url()).hash,routeFor(id));
   }
   checked('Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
 

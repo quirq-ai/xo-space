@@ -3,6 +3,7 @@
    No DOM, CSS, asset or response substitutions: screenshots show the app.
    Install Playwright normally, or provide PLAYWRIGHT_MODULE=/path/to/index.mjs. */
 import assert from 'node:assert/strict';
+import {routeFor,projectPageId} from './routes.mjs';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -45,9 +46,9 @@ async function screenshot(name) {
   await page.screenshot({path: resolve(output, name), animations: 'disabled'});
 }
 async function lens(id) {
-  await page.locator(`[data-files-lens="${id}"]`).click();
-  await page.waitForFunction(id => location.hash === '#/' + id
-    && document.querySelector(`[data-files-lens="${id}"]`)?.getAttribute('aria-current') === 'true', id);
+  await page.locator(`[data-section-page="${projectPageId(id)}"]`).click();
+  await page.waitForFunction(({route,id}) => location.hash === route
+    && document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', {route:routeFor(id),id:projectPageId(id)});
   await page.waitForLoadState('networkidle');
   if(id === 'projects') await page.locator('.prj-row').first().waitFor();
   if(id === 'sharing') await page.locator('.shl-detail').waitFor();
@@ -60,19 +61,19 @@ try {
   await page.goto(origin + '/space/', {waitUntil: 'networkidle'});
   await settleGraph();
   if(!screenshotsOnly) {
-    assert.equal(new URL(page.url()).hash, '#/dashboard', 'Dashboard is the initial view');
-    assert.deepEqual(await page.locator('.tabs button').evaluateAll(buttons => buttons.map(b => b.id)),
+    assert.equal(new URL(page.url()).hash, '#/projects/overview', 'Projects Overview is the initial view');
+    assert.deepEqual(await page.locator('.tabs a').evaluateAll(buttons => buttons.map(b => b.id)),
       ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-setup']);
-    assert.deepEqual(await page.locator('[data-files-lens]').allTextContents(),
-      ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
+    assert.deepEqual(await page.locator('[data-section-page]').allTextContents(),
+      ['Overview', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default Dashboard; exact four-tab order; six Projects lenses');
+    report.checks.push('Default Overview; exact four-section order; six Projects pages');
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
 
   if(screenshotsOnly) {
-    await page.goto(origin + '/space/#/projects', {waitUntil: 'networkidle'});
+    await page.goto(origin + '/space/#/projects/list', {waitUntil: 'networkidle'});
     await page.locator('.prj-row').first().waitFor();
   } else await lens('projects');
   assert.equal(await page.locator('.prj-row').count(), 10);
@@ -89,9 +90,9 @@ try {
     await page.locator('#preview-version').selectOption('0');
     await page.waitForFunction(() => document.querySelector('#preview-body')?.textContent.includes('An earlier version'));
     await page.locator('#preview-source').click();
-    const beforeNavigations = requests.length;
+
     const beforeContent = await page.locator('#preview-body').textContent();
-    const beforeLens = await page.locator('#fileslens').boundingBox();
+    const beforeLens = await page.locator('#section-nav').boundingBox();
     for(const id of ['dashboard', 'graph', 'tree', 'sharing', 'time', 'projects', 'dashboard', 'graph']) {
       await lens(id);
       await page.waitForFunction(content => document.querySelector('#preview-body')?.textContent === content, beforeContent);
@@ -99,11 +100,10 @@ try {
       assert.equal(await page.locator('#preview-body').textContent(), beforeContent, `${id} keeps the same version/content`);
       assert.equal(await page.locator('#preview-version').inputValue(), '0', `${id} keeps version selection`);
       assert.equal(await page.locator('#preview-source').textContent(), 'Rendered', `${id} keeps source mode`);
-      const bounds = await page.locator('#fileslens').boundingBox();
-      for(const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(bounds[key] - beforeLens[key]) < 1, `${id} lens switch ${key} stays fixed`);
+      const bounds = await page.locator('#section-nav').boundingBox();
+      for(const key of ['x', 'y', 'width']) assert.ok(Math.abs(bounds[key] - beforeLens[key]) < 1, `${id} secondary navigation ${key} stays fixed`);
     }
-    assert.ok(requests.length > beforeNavigations, 'Dashboard/Graph switches exercise actual dataset reloads');
-    report.checks.push('Versioned source preview survives every Projects lens, including dataset reloads; stable switch position');
+    report.checks.push('Versioned source preview survives every Projects lens, with a stable navigation position');
     const beforeWikiNavigations = requests.length;
     await page.locator('#wiki-link').click();
     await page.waitForFunction(() => location.hash === '#/wiki');
@@ -112,26 +112,26 @@ try {
     assert.equal(requests.length, beforeWikiNavigations, 'Wiki uses local hash navigation');
     await page.locator('#wiki-link[aria-current="page"]').waitFor();
     assert.equal(await page.locator('.tabs .is-on').count(), 0, 'Wiki selects no primary tab');
-    assert.equal(await page.locator('#fileslens').isHidden(), true);
+    assert.equal(await page.locator('#section-nav').isHidden(), true);
     assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), false);
     report.checks.push('Wiki resource opens locally, marks itself active and closes the Projects preview');
     await page.locator('#tab-projects').click();
-    await page.waitForFunction(() => location.hash === '#/projects');
+    await page.waitForFunction(() => location.hash === '#/projects/overview');
     await page.waitForFunction(() => !document.querySelector('#wiki-link').hasAttribute('aria-current'));
-    report.checks.push('Top-level Projects preserves the List route');
+    report.checks.push('Primary Projects opens its Overview default');
 
     for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
-      await page.goto(origin + '/space/#/' + id, {waitUntil: 'networkidle'});
-      await page.waitForFunction(id => document.querySelector(`[data-files-lens="${id}"]`)?.getAttribute('aria-current') === 'true', id);
+      await page.goto(origin + '/space/' + routeFor(id), {waitUntil: 'networkidle'});
+      await page.waitForFunction(id => document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', projectPageId(id));
       assert.equal(await page.locator('#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects Projects`);
     }
-    report.checks.push('Every existing Projects lens deep link selects the correct tab and lens');
+    report.checks.push('Every existing Projects page deep link selects the correct tab and lens');
 
-    await page.goto(origin + '/space/#/agents', {waitUntil: 'networkidle'});
+    await page.goto(origin + '/space/#/agents/overview', {waitUntil: 'networkidle'});
     await page.locator('#view-agents').waitFor({state: 'visible'});
     assert.equal(await page.locator('#tab-agents.is-on').count(), 1);
     assert.equal(await page.locator('#tab-agents').textContent(), 'Agents');
-    assert.equal(await page.locator('#fileslens').isHidden(), true);
+    assert.equal(await page.locator('#section-nav [data-section-page="agents-overview"]').getAttribute('aria-current'),'page');
     report.checks.push('Agents deep link opens agent telemetry under the renamed primary tab');
 
     await page.goto(origin + '/space/#/wiki', {waitUntil: 'networkidle'});
@@ -144,7 +144,7 @@ try {
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
-      await page.waitForFunction(id => location.hash === (id === 'setup' ? '#/setup/workspace' : '#/' + id), id);
+      await page.waitForFunction(hash => location.hash === hash, id==='projects'?'#/projects/overview':routeFor(id));
       await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
@@ -154,17 +154,17 @@ try {
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});
-      await page.goto(origin + '/space/#/projects', {waitUntil: 'networkidle'});
+      await page.goto(origin + '/space/#/projects/list', {waitUntil: 'networkidle'});
       await page.locator('.prj-row').first().waitFor();
-      const initialBounds = await page.locator('#fileslens').boundingBox();
+      const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
       for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
-        const button = page.locator(`[data-files-lens="${id}"]`);
+        const button = page.locator(`[data-section-page="${projectPageId(id)}"]`);
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);
         await lens(id);
-        const bounds = await page.locator('#fileslens').boundingBox();
-        for(const key of ['x', 'width', 'height']) assert.ok(Math.abs(bounds[key] - initialBounds[key]) < 1, `${id} lens ${key} stays fixed at ${width}px`);
+        const bounds = await page.locator('#section-nav').boundingBox();
+        for(const key of ['x', 'width']) assert.ok(Math.abs(bounds[key] - initialBounds[key]) < 1, `${id} lens ${key} stays fixed at ${width}px`);
         const stageBounds = await page.locator('#stage').boundingBox();
         assert.ok(Math.abs((bounds.y - stageBounds.y) - (initialBounds.y - initialStage.y)) < 1,
           `${id} lens stays anchored to the content at ${width}px as the contextual header changes height`);
@@ -178,7 +178,7 @@ try {
       const overlaps=Math.min(files.x+files.width,active.x+active.width)>Math.max(files.x,active.x)+1
         &&Math.min(files.y+files.height,active.y+active.height)>Math.max(files.y,active.y)+1;
       assert.equal(overlaps,false, `File counts and activity do not overlap at ${width}px`);
-      const footer = await page.locator('footer').boundingBox();
+      const footer = await page.locator('body > footer').boundingBox();
       const status = await page.locator('footer .srv').boundingBox();
       assert.ok(status.y >= footer.y && status.y + status.height <= footer.y + footer.height,
         `Server status stays inside the footer at ${width}px`);

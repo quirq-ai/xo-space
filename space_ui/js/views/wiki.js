@@ -6,7 +6,7 @@ const GROUPS=[
     topics:[
       {
         id:'projects',title:'Projects',
-        summary:'Browse Dashboard, List, Graph, Tree, and Sharing. Inspect project files, todos, and committed versions.',
+        summary:'Explore Overview, List, Graph, Tree, Sharing and Timeline. Inspect project files, activity and committed versions.',
         docs:'/space-walk',view:'projects'
       },
       {
@@ -27,7 +27,7 @@ const GROUPS=[
     topics:[
       {
         id:'inbox',title:'Inbox',
-        summary:'Review blocked work, new activity, and service updates. Mark items seen or done.',
+        summary:'Review incoming items, connection activity and scheduled jobs. Mark items seen or done.',
         docs:'/space-walk/inbox',view:'inbox'
       },
       {

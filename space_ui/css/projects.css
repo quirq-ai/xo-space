@@ -312,9 +312,6 @@
 /* Projects List. These overrides stay inside the List view: Tree and Sharing
    also use the foundation classes above. */
 #view-projects [hidden]{display:none!important}
-/* Keep the scroll viewport below the fixed lens strip. Padding alone scrolls
-   away and lets the strip cover project actions and detail tabs. */
-#view-projects{top:64px}
 #view-projects .prj{padding-top:14px}
 #view-projects .prj-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:25px}
 #view-projects .prj-hero>div:first-child{min-width:0}

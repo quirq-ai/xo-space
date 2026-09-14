@@ -1,0 +1,79 @@
+/* One section bar for Projects, Agents and Inbox. Its measured height is
+   reserved by the active view, so navigation never covers page controls. */
+#section-nav{position:absolute;inset:0 0 auto;z-index:15;border-bottom:1px solid var(--line);background:var(--bg);font-family:var(--sans)}
+#section-nav[hidden]{display:none!important}
+.section-nav-inner{display:flex;align-items:center;gap:22px;max-width:1180px;min-width:0;margin:0 auto;padding:12px 26px}
+.section-nav-label{display:flex;align-items:center;flex:none;min-height:36px;color:var(--ink-3);font:500 12px var(--sans)}
+.section-nav-links{display:flex;align-items:center;gap:4px;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.section-nav-links a{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:38px;padding:8px 10px;border-bottom:2px solid transparent;text-decoration:none;font:500 12px var(--sans);color:var(--ink-3);white-space:nowrap}
+.section-nav-links a:hover{color:var(--ink);background:var(--bg-2)}
+.section-nav-links a[aria-current=page]{border-bottom-color:var(--accent);color:var(--ink)}
+.section-nav-action{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:36px;margin-left:auto;padding:7px 10px;border:1px solid var(--line);border-radius:8px;color:var(--ink-2);text-decoration:none;font:500 11px var(--sans);white-space:nowrap}
+.section-nav-action:hover{color:var(--ink);border-color:var(--ink-3)}
+#section-nav a:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:5px}
+.section-page-context{max-width:1180px;margin:0 auto;padding:12px 26px 22px}
+.section-page-context h1,.sess-page-head h1,.inb-page-head h1{font:500 30px/1.2 var(--serif);letter-spacing:-.02em;color:var(--ink)}
+.section-page-context p{margin-top:7px;color:var(--ink-3);font:400 12px/1.5 var(--sans)}
+#stage>.view.has-section-nav{top:var(--section-nav-height,0px)}
+
+/* Content headings and tools follow the same edge and spacing. */
+#view-projects .prj{padding-top:26px}
+#view-projects .prj-hero h1{font-size:30px}
+#view-tree .tv{padding-top:16px}
+#view-sharing .prj{padding-top:22px}
+#view-agents .sesswrap,#view-inbox .inb{padding-top:26px}
+.sess-page-head,.inb-page-head{margin-bottom:22px}
+.sess-page-head h1,.inb-page-head h1{margin:0}
+.inb-page-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.inb-page-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.inb-page-actions:empty{display:none}
+#view-time{padding:24px 26px 8px}
+#view-time .thead h2{font-size:28px;line-height:1.2}
+#view-time .thead .sub{font-size:12px;line-height:1.5;margin-top:7px;max-width:54ch}
+#view-tree .tv-head,#view-sharing .prj-head{gap:10px}
+#view-tree .tv-head .prj-eyebrow,#view-sharing .prj-eyebrow{font:400 12px/1.5 var(--sans);letter-spacing:0;text-transform:none;color:var(--ink-3)}
+#view-tree .sess-refresh,#view-sharing .sess-refresh,#view-agents .sess-refresh,#view-inbox .inb-btn{min-height:36px;padding:8px 11px;font:500 12px var(--sans);border-radius:8px}
+
+/* Graph instructions remain available without sitting over each other. */
+#view-graph #hint{top:14px;left:max(26px,calc((100% - 1180px)/2 + 26px));max-width:480px}
+#view-graph #crumb{top:14px;max-width:calc(100% - 52px)}
+#view-graph #legend{max-height:90px;overflow-y:auto}
+
+@media(max-width:900px){
+  .section-nav-inner{gap:14px;flex-wrap:wrap;padding-top:10px;padding-bottom:8px}
+  .section-nav-label{order:0}
+  .section-nav-action{order:1}
+  .section-nav-links{order:2;flex:1 1 100%;gap:5px}
+}
+@media(max-width:650px){
+  .section-nav-inner{padding-left:16px;padding-right:16px;gap:8px}
+  .section-nav-links a{min-height:42px;padding:9px 11px;font-size:12px}
+  .section-page-context{padding:12px 16px 18px}
+  .section-page-context h1,.sess-page-head h1,.inb-page-head h1{font-size:28px}
+  #view-projects .prj{padding-top:22px}
+  #view-agents .sesswrap,#view-inbox .inb{padding:22px 16px 50px}
+  #view-tree .tv-head{padding-left:16px;padding-right:16px}
+  #view-sharing .prj{padding:20px 16px 50px}
+  #view-time{padding:22px 16px 8px}
+  #view-time .thead h2{font-size:26px;white-space:normal}
+  #view-time .thead .sub{white-space:normal}
+  #view-graph #legend{left:12px;right:12px;bottom:40px;max-height:74px;gap:6px 12px;padding:8px 10px;background:rgba(11,12,15,.9);border:1px solid var(--line-soft);border-radius:8px;font-size:10px}
+  #view-graph #counts{left:12px;right:105px;bottom:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #view-graph #simstat{right:12px;bottom:15px}
+}
+@media(max-width:480px){
+  .section-nav-inner{padding-left:12px;padding-right:12px}
+  .section-page-context{padding-left:12px;padding-right:12px}
+  #view-agents .sesswrap,#view-inbox .inb,#view-sharing .prj{padding-left:12px;padding-right:12px}
+  #view-tree .tv-head{padding-left:12px;padding-right:12px}
+  #view-time{padding-left:12px;padding-right:12px}
+  #view-sharing .shr-right{flex-wrap:wrap}
+  #view-sharing .shr-id{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  #view-sharing .shl-row-top,#view-sharing .shl-row-sub{flex-wrap:wrap}
+  #view-sharing .shl-row-top b{flex:1 1 100%;white-space:normal;overflow-wrap:anywhere}
+  #view-sharing .shl-row-sub em{flex:1 1 100%}
+  #view-inbox .inb-conn-row{grid-template-columns:minmax(0,1fr)}
+  #view-inbox .inb-conn-row b{white-space:normal;overflow-wrap:anywhere}
+  #view-inbox .inb-conn-acct{display:block;max-width:100%;margin:4px 0 0}
+  #view-inbox .inb-conn-acts{grid-column:1;grid-row:4;justify-content:flex-start;margin-top:4px}
+}

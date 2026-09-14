@@ -80,12 +80,14 @@ async function setQuery(value){
 async function expectRows(count){
   await page.waitForFunction(count=>document.querySelectorAll('#sess-body tr[data-sid]').length===count,count);
 }
+const agentPage=sub=>page.locator('#section-nav [href="#/agents/'+sub+'"]');
+const inboxPage=sub=>page.locator('#section-nav [href="#/inbox/'+sub+'"]');
 
 try{
   await page.goto(origin+'/space/#/agents',{waitUntil:'networkidle'});
-  await page.locator('[data-sub="overview"]').waitFor();
+  await agentPage('overview').waitFor();
   await waitSearch(false);
-  await page.locator('[data-sub="sessions"]').click();
+  await agentPage('sessions').click();
   await waitSearch(true);
   assert.equal(await search.getAttribute('placeholder'),'Search loaded sessions…');
   await expectRows(10);
@@ -116,10 +118,10 @@ try{
   await waitSearch(true);
   assert.equal(await search.inputValue(),'session-04');
   for(const sub of ['overview','tools','models','trends']){
-    await page.locator('[data-sub="'+sub+'"]').click();
+    await agentPage(sub).click();
     await waitSearch(false);
   }
-  await page.locator('[data-sub="sessions"]').click();
+  await agentPage('sessions').click();
   await waitSearch(true);
   assert.equal(await search.inputValue(),'session-04');
   await setQuery('');
@@ -160,7 +162,14 @@ try{
   await page.locator('[data-src="all"]').click();
   assert.equal(await page.locator('.inb-row').count(),1);
   await setQuery('Previous');
+  await inboxPage('connections').click();
+  await waitSearch(false);
+  await inboxPage('items').click();
+  await waitSearch(true);
+  assert.equal(await search.inputValue(),'Previous','Inbox query survives its own page changes');
   await page.locator('#tab-agents').click();
+  await waitSearch(false);
+  await agentPage('sessions').click();
   await waitSearch(true);
   assert.equal(await search.inputValue(),'','Agents retains its own cleared query');
   await page.locator('#tab-inbox').click();
@@ -168,18 +177,18 @@ try{
   for(const width of [320,390]){
     await page.setViewportSize({width,height:1000});
     await page.goto(origin+'/space/#/agents',{waitUntil:'networkidle'});
-    await page.locator('.sess-subnav').waitFor();
+    await agentPage('overview').waitFor();
     for(const sub of ['overview','sessions','tools','models','trends']){
-      const bounds=await page.locator('.sess-subnav').evaluate(nav=>{
-        const head=nav.closest('.sess-head').getBoundingClientRect();
-        const boxes=[nav,...nav.querySelectorAll('button')].map(element=>element.getBoundingClientRect());
-        return boxes.every(box=>box.left>=head.left-1&&box.right<=head.right+1);
+      await agentPage(sub).click();
+      await page.waitForFunction(sub=>document.querySelector('#section-nav [href="#/agents/'+sub+'"]')?.getAttribute('aria-current')==='page',sub);
+      const bounds=await agentPage(sub).evaluate(link=>{
+        const nav=link.closest('.section-nav-links').getBoundingClientRect();
+        const box=link.getBoundingClientRect();
+        return nav.left>=0&&nav.right<=innerWidth+1&&box.left>=nav.left-1&&box.right<=nav.right+1;
       });
-      assert.equal(bounds,true,width+'px Sessions subnav and buttons stay within the header');
-      await page.locator('[data-sub="'+sub+'"]').click();
-      await page.locator('[data-sub="'+sub+'"].is-on').waitFor();
+      assert.equal(bounds,true,width+'px active Agents page remains visible within its navigation');
     }
-    await page.locator('[data-sub="sessions"]').click();
+    await agentPage('sessions').click();
     await waitSearch(true);
     await setQuery('Aurora');
     await page.waitForTimeout(750);

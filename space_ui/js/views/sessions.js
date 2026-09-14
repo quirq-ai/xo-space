@@ -7,11 +7,32 @@
    are broken.) Window filtering happens here, client-side, over per-day
    rollups. */
 import {API_BASE,apiFetch} from '../core/api.js';
+import {AGENT_PAGES} from '../core/navigation.js?v=20260914-navigation1';
 
 let _open=null;
 let _toolbar=()=>null;
+let agentMount=null;
+let activeToolbarRefresh=()=>{};
+const agentToolbarRefreshers=new Map();
 
-export default {
+export function createAgentViews(){
+  return AGENT_PAGES.map(page=>({
+    ...page,
+    toolbar:()=>_toolbar(),
+    mount(el,ctx){
+      agentToolbarRefreshers.set(page.id,ctx.refreshToolbar||(()=>{}));
+      activeToolbarRefresh=agentToolbarRefreshers.get(page.id);
+      if(!agentMount)agentMount=agentController.mount(el,{...ctx,refreshToolbar:()=>activeToolbarRefresh()});
+      return agentMount;
+    },
+    show(){
+      activeToolbarRefresh=agentToolbarRefreshers.get(page.id)||(()=>{});
+      _open?.(page.route.split('/')[1]);
+    },
+  }));
+}
+
+const agentController={
   id:'agents',label:'Agents',order:4,
   toolbar(){return _toolbar();},
   async mount(el,ctx){
@@ -169,10 +190,12 @@ function drawBars(host,items){
 /* ---- render dispatcher ---- */
 function render(){
   ctx.refreshToolbar();
-  if(loading){wrap.innerHTML='<div class="sess-note">loading .xo/sessions.json…</div>';return;}
+  const title=SUBS.find(([key])=>key===sub)?.[1]||'Overview';
+  const pageHead='<header class="sess-page-head"><h1>'+title+'</h1></header>';
+  if(loading){wrap.innerHTML=pageHead+'<div class="sess-note" role="status">Loading agent activity…</div>';return;}
   if(failed){
     const off=failed==='\x00offline';
-    wrap.innerHTML='<div class="sess-err">'+(off
+    wrap.innerHTML=pageHead+'<div class="sess-err">'+(off
       ?'<b>xo-space is unreachable</b> — the request never reached the server '
         +'(stopped or restarting; the footer pill tracks it). Not a telemetry-source problem. '
       :'<b>Could not load .xo/sessions.json</b> ('+esc(failed)+'). '
@@ -180,11 +203,10 @@ function render(){
       +'<button class="sess-refresh" id="sess-retry">Retry</button></div>';
     document.getElementById('sess-retry').addEventListener('click',load);return;
   }
-  if(!SD){wrap.innerHTML='<div class="sess-note">Open this tab to load session telemetry.</div>';return;}
+  if(!SD){wrap.innerHTML=pageHead+'<div class="sess-note">Open this tab to load session telemetry.</div>';return;}
   const showWin=(sub==='overview'||sub==='tools');
   const sources=sourceDefs();
-  wrap.innerHTML='<div class="sess-head">'
-    +'<div class="sess-subnav">'+SUBS.map(([k,l])=>'<button data-sub="'+k+'" class="'+(k===sub?'is-on':'')+'">'+l+'</button>').join('')+'</div>'
+  wrap.innerHTML=pageHead+'<div class="sess-head">'
     +'<fieldset class="sess-sources"><legend>Sources</legend>'
     +sources.map(source=>'<label class="'+(source.available===false?'is-unavailable':'')+'" title="'+esc(source.available===false?(source.message||source.label+' is unavailable'):source.label+' sessions')+'">'
       +'<input type="checkbox" data-agent="'+esc(source.id)+'" aria-controls="sess-body" '+(enabledAgents.has(source.id)?'checked ':'')+'>'
@@ -193,7 +215,6 @@ function render(){
     +(showWin?'<div class="sess-win">'+WINS.map(([k,l])=>'<button data-win="'+k+'" class="'+(k===win?'is-on':'')+'">'+l+'</button>').join('')+'</div>':'')
     +'<button class="sess-refresh" id="sess-refresh" title="Re-fetch (server rebuilds behind its 30s cache)">&#8635; Refresh</button>'
     +'</div><div id="sess-body"></div>';
-  wrap.querySelectorAll('[data-sub]').forEach(b=>b.addEventListener('click',()=>{sub=b.dataset.sub;sel=null;render();}));
   wrap.querySelectorAll('[data-win]').forEach(b=>b.addEventListener('click',()=>{win=b.dataset.win;render();}));
   wrap.querySelectorAll('[data-agent]').forEach(input=>input.addEventListener('change',()=>{
     const changedAgent=input.dataset.agent;
@@ -507,7 +528,13 @@ new ResizeObserver(es=>{
     if(SD&&hostSection.classList.contains('is-active'))render();}
 }).observe(hostSection);
 
-    _open=()=>{if(!SD&&!loading)load();render();};
+    _open=requested=>{
+      if(SUBS.some(([key])=>key===requested))sub=requested;
+      if(!SD&&!loading)load();
+      render();
+    };
   },
   show(){if(_open)_open();}
 };
+
+export default agentController;

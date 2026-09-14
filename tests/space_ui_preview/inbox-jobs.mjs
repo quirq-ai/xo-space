@@ -67,19 +67,31 @@ await context.route('**/*',async route=>{
 const rows=page.locator('.inb-job-row');
 const item=id=>page.locator(`[data-job-id="${id}"]`);
 const refresh=()=>page.locator('[data-act="jobs-refresh"]').click();
+const inboxPage=name=>page.locator('#section-nav [href="#/inbox/'+name+'"]');
 async function settled(){await page.locator('.inb-jobs[aria-busy="false"]').waitFor();}
 async function expectCount(count){await page.waitForFunction(count=>document.querySelectorAll('.inb-job-row').length===count,count);}
 try{
-  await page.goto(origin+'/space/#/inbox',{waitUntil:'domcontentloaded'});
+  await page.goto(origin+'/space/#/inbox/'+(captureOnly?'jobs':'items'),{waitUntil:'domcontentloaded'});
   if(!captureOnly){
-  await initial.arrived.promise;
   await page.locator('.inb-row').first().waitFor();
-  assert.match(await page.locator('.inb-jobs').textContent(),/Loading scheduled jobs/);
-  assert.equal(await page.locator('.inb-conns + .inb-jobs').count(),1,'Jobs is immediately below Connections');
-  await page.locator('[data-act="conns-toggle"]').click();
+  assert.equal(reads.filter(read=>read.path==='/api/schedules').length,0,'Items loads independently of Jobs');
+  const countSummary=await page.locator('.inb-sum').textContent();
+  await page.locator('#view-search').fill('handoff');
+  assert.equal(await page.locator('.inb-row').count(),1);
+  assert.equal(await page.locator('.inb-sum').textContent(),countSummary);
+  assert.equal(await page.locator('[data-act="mark-all"]').textContent(),'Mark all loaded seen');
   await page.locator('[data-act="toggle"][data-id="release"]').click();
   await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop=100);
+  const savedScroll=await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop);
   await page.locator('[data-act="toggle"][data-id="release"]').evaluate(el=>window.retainedInboxHead=el);
+  await inboxPage('connections').click();
+  await page.locator('.inb-conn-row').waitFor();
+  assert.equal(await page.locator('[data-act="conns-toggle"]').getAttribute('aria-expanded'),'true');
+  assert.equal(await page.locator('.inb-items-page').isVisible(),false);
+  await inboxPage('jobs').click();await initial.arrived.promise;
+  assert.match(await page.locator('.inb-jobs').textContent(),/Loading scheduled jobs/);
+  assert.equal(await page.locator('.inb-connections-page').isVisible(),false);
+  assert.equal(await page.locator('#view-search').isVisible(),false,'Item search is absent from Jobs');
   initial.release.resolve();await expectCount(4);await settled();
   assert.equal(await page.locator('[data-job-id="manual"]').count(),0);
   assert.match(await item('half-minute').textContent(),/Every 30 s/);
@@ -88,21 +100,19 @@ try{
   assert.match(await item('daily').textContent(),/Every 1 d/);
   assert.match(await item('half-minute').textContent(),/Next due/);
   assert.equal(await page.evaluate(()=>document.querySelector('[data-act="toggle"][data-id="release"]')===window.retainedInboxHead),true);
-  const savedScroll=await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop);
   jobs.find(job=>job.id==='hourly').running=false;
   const beforePoll=Date.now();
   await page.waitForFunction(()=>!document.querySelector('[data-job-id="hourly"] .is-running'),null,{timeout:7000});
   assert.ok(Date.now()-beforePoll>=2000,'Running scheduled jobs refresh on the 3s poll');
   assert.equal(await page.evaluate(()=>document.querySelector('[data-act="toggle"][data-id="release"]')===window.retainedInboxHead),true,'Jobs polling does not rebuild Inbox items');
-  assert.equal(await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop),savedScroll);
-  assert.equal(await page.locator('[data-act="conns-toggle"]').getAttribute('aria-expanded'),'true');
-
-  const countSummary=await page.locator('.inb-sum').textContent();
-  await page.locator('#view-search').fill('handoff');
+  await inboxPage('items').click();
+  await page.locator('.inb-items-page').waitFor();
+  assert.equal(await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop),savedScroll,'Item scroll survives time spent on Jobs');
+  assert.equal(await page.locator('#view-search').inputValue(),'handoff');
   assert.equal(await page.locator('.inb-row').count(),1);
-  assert.equal(await rows.count(),4,'Inbox search does not hide scheduled jobs');
   assert.equal(await page.locator('.inb-sum').textContent(),countSummary);
-  assert.equal(await page.locator('[data-act="mark-all"]').textContent(),'Mark all loaded seen');
+  await inboxPage('jobs').click();await settled();
+  assert.equal(await rows.count(),4,'Item query does not filter Jobs');
 
   jobs.find(job=>job.id==='half-minute').name='Stale schedule response';
   const slow=holdList=gate();await refresh();await slow.arrived.promise;
@@ -120,16 +130,18 @@ try{
   await refresh();await settled();await expectCount(0);
   assert.match(await page.locator('.inb-jobs').textContent(),/No scheduled jobs/);
   jobs=structuredClone(seeded);jobs.find(job=>job.id==='hourly').running=false;
-  await page.locator('[data-act="refresh"]').click();await expectCount(4);await settled();
+  await refresh();await expectCount(4);await settled();
 
   const away=holdList=gate();await refresh();await away.arrived.promise;
   await page.locator('#wiki-link').click();
   jobs.find(job=>job.id==='half-minute').name='Fresh after returning';
   await page.locator('#tab-inbox').click();
-  away.release.resolve();await settled();
-  await page.waitForFunction(()=>document.querySelector('[data-job-id="half-minute"] h3')?.textContent==='Fresh after returning');
+  await page.locator('.inb-items-page').waitFor();
   assert.equal(await page.locator('#view-search').inputValue(),'handoff');
   assert.equal(await page.locator('[data-act="toggle"][data-id="release"]').getAttribute('aria-expanded'),'true');
+  await inboxPage('jobs').click();
+  away.release.resolve();await settled();
+  await page.waitForFunction(()=>document.querySelector('[data-job-id="half-minute"] h3')?.textContent==='Fresh after returning');
 
   const listReads=reads.filter(read=>read.path==='/api/schedules').length;
   await page.waitForFunction(()=>document.querySelector('.inb-jobs[aria-busy="false"]'));
@@ -163,17 +175,21 @@ try{
       const box=el.getBoundingClientRect();return box.left>=0&&box.right<=innerWidth;
     })),`${width}px shared results drawer fits the viewport`);
     await page.screenshot({path:resolve(output,`inbox-job-results-${width}.png`)});
-    await page.keyboard.press('1');assert.equal(new URL(page.url()).hash,'#/inbox');
+    await page.keyboard.press('1');assert.equal(new URL(page.url()).hash,'#/inbox/jobs');
     await page.keyboard.press('Escape');await page.locator('#command-runs').waitFor({state:'hidden'});
+    await page.waitForFunction(()=>document.activeElement===document.querySelector('[data-job-id="half-minute"] [data-act="job-results"]'));
     assert.equal(await item('half-minute').locator('[data-act="job-results"]').evaluate(el=>el===document.activeElement),true);
   }
   failure='Scheduler temporarily unavailable';
   await page.reload({waitUntil:'networkidle'});
   await settled();
-  assert.equal(await page.locator('.inb-row').count(),2,'A failed jobs read never hides Inbox items');
+  assert.equal(await page.locator('.inb-row').count(),0,'A Jobs deep link does not fetch Items');
   assert.match(await page.locator('.inb-jobs-state.is-error').textContent(),/Could not load scheduled jobs/);
   assert.doesNotMatch(await page.locator('.inb-jobs').textContent(),/showing the last good read/);
   assert.equal(await rows.count(),0);
+  await inboxPage('items').click();await page.locator('.inb-row').first().waitFor();
+  assert.equal(await page.locator('.inb-row').count(),2,'Items remains available when Jobs fails');
+  await inboxPage('jobs').click();await settled();
   failure=null;await refresh();await settled();await expectCount(4);
   assert.ok(reads.some(read=>read.path==='/api/schedules/half-minute/runs'));
   }else{

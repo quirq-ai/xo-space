@@ -1,4 +1,4 @@
-/* View registry: builds the tab nav from registered views, assigns hotkeys
+/* View registry: maps primary sections to their default pages, assigns hotkeys
    1..n (ignored while an input, textarea or select has focus), syncs the URL
    hash (#/<route>, deep-linkable), lazy-mounts each view on first activation,
    and isolates a view's failure to its own section: the other tabs keep
@@ -13,7 +13,7 @@
        aliases: [],             // additional accepted URL paths
        label: 'Sessions',       // tab text (may contain entities)
        order: 4,                // nav position; hotkey is its 1-based index
-       nav: true,               // false keeps a child view out of the top nav
+       nav: true,               // legacy fallback when no primary tabs are supplied
        parent: null,            // parent tab highlighted for a child view
        section: null,           // optional shared section id (without view-)
        toolbar: null,           // descriptor/function: graph controls or local search
@@ -23,14 +23,18 @@
    The section is created inside #stage automatically when index.html does
    not already carry one: markup-heavy views keep theirs in index.html,
    render-everything views need no HTML edit at all.
+   startRegistry({tabs,defaultView}) receives explicit primary navigation;
+   each tab has {id,label,defaultView,aliases?}. Page labels and physical DOM
+   sections are independent of that top-level navigation.
    ctx = {switchTo, refreshToolbar}. Views never import each other; cross-view jumps go
-   through ctx.switchTo(id). */
+   through ctx.switchTo(id or route). */
 
 let views=[];
 const byId=new Map();
 const byRoute=new Map();
 let current=null;
 let activation=0;
+const byTab=new Map();
 
 export function registerView(v){
   if(byId.has(v.id))views=views.map(w=>w.id===v.id?v:w); /* idempotent re-register */
@@ -44,7 +48,10 @@ export function registerView(v){
   }
 }
 
-const resolveView=id=>byId.get(id)||byRoute.get(id);
+const resolveView=id=>{
+  const target=byTab.get(id)?.defaultView||id;
+  return byId.get(target)||byRoute.get(target);
+};
 const viewHash=v=>'#/'+(v.route||v.id);
 
 const ctx={switchTo};
@@ -61,6 +68,11 @@ export async function switchTo(target,{replace=false}={}){
   const request=++activation;
   const prev=current&&current!==id?byId.get(current):null;
   current=id;
+  /* Let the outgoing page record scroll and drafts while its DOM is still
+     visible. display:none can reset scroll offsets before hide() reads them. */
+  if(prev&&prev.hide){
+    try{prev.hide();}catch(err){console.error('view "'+prev.id+'" hide failed:',err);}
+  }
   const activeTab=v.parent||v.id;
   const activeSection=v.section||v.id;
   const sectionIds=new Set(views.map(w=>w.section||w.id));
@@ -70,8 +82,10 @@ export async function switchTo(target,{replace=false}={}){
       sectionId===activeSection,
     );
   }
-  for(const w of views){
-    document.getElementById('tab-'+w.id)?.classList.toggle('is-on',w.id===activeTab);
+  for(const tab of document.querySelectorAll('.tabs [id^="tab-"]')){
+    const on=tab.id==='tab-'+activeTab;
+    tab.classList.toggle('is-on',on);
+    if(on)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');
   }
   /* The stage clips its stacked sections, but hidden overflow can still be
      scrolled programmatically (e.g. by focus scrolls); pin it back. */
@@ -85,13 +99,10 @@ export async function switchTo(target,{replace=false}={}){
   });
   const hash=viewHash(v);
   if(location.hash!==hash)history[replace?'replaceState':'pushState'](null,'',hash);
-  /* Shell chrome (the Projects lens switch) needs to know which view is active
-     without importing views. activeTab is the parent for a child view, so a
-     lens and its parent tab report the same tab. */
-  dispatchEvent(new CustomEvent('space:view',{detail:{id,tab:activeTab,toolbar:v.toolbar||null}}));
-  if(prev&&prev.hide){
-    try{prev.hide();}catch(err){console.error('view "'+prev.id+'" hide failed:',err);}
-  }
+  /* Announce the section and page before awaiting work. Shared navigation,
+     toolbar and preview context must follow the URL even during a slow load. */
+  dispatchEvent(new CustomEvent('space:view',{detail:{id,tab:activeTab,section:activeSection,
+    route:v.route||v.id,label:v.label,toolbar:v.toolbar||null}}));
   if(!v.mounted){
     v.mounted=true; /* idempotent mount: activating N times mounts once */
     const el=document.getElementById('view-'+(v.section||v.id));
@@ -115,9 +126,15 @@ export async function switchTo(target,{replace=false}={}){
   refreshToolbar(v);
 }
 
-export function startRegistry({defaultView}){
+export function startRegistry({defaultView,tabs:tabDefinitions}){
   views.sort((a,b)=>(a.order||0)-(b.order||0));
   const navViews=views.filter(v=>v.nav!==false);
+  const navigation=tabDefinitions||navViews.map(v=>({id:v.id,label:v.label,defaultView:v.id}));
+  byTab.clear();
+  for(const tab of navigation){
+    byTab.set(tab.id,tab);
+    for(const alias of tab.aliases||[])byTab.set(alias,tab);
+  }
   const stage=document.getElementById('stage');
   for(const v of views){
     const sectionId=v.section||v.id;
@@ -128,11 +145,15 @@ export function startRegistry({defaultView}){
     }
   }
   const tabs=document.querySelector('.tabs');
-  if(tabs)tabs.replaceChildren(...navViews.map(v=>{
-    const b=document.createElement('button');
-    b.id='tab-'+v.id;
-    b.innerHTML=v.label;
-    b.addEventListener('click',()=>switchTo(v.id));
+  if(tabs)tabs.replaceChildren(...navigation.map(tab=>{
+    const b=document.createElement('a');
+    b.id='tab-'+tab.id;
+    b.href=viewHash(resolveView(tab.defaultView));
+    b.textContent=tab.label;
+    b.addEventListener('click',event=>{
+      if(event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+      event.preventDefault();switchTo(tab.defaultView);
+    });
     return b;
   }));
   addEventListener('keydown',e=>{
@@ -141,7 +162,7 @@ export function startRegistry({defaultView}){
     if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||''))return;
     if(e.key.length!==1||e.key<'1'||e.key>'9')return;
     const i=e.key.charCodeAt(0)-49;
-    if(i<navViews.length)switchTo(navViews[i].id);
+    if(i<navigation.length)switchTo(navigation[i].defaultView);
   });
   addEventListener('hashchange',()=>{
     const id=location.hash.replace(/^#\//,'');

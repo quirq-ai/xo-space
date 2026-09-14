@@ -1,3 +1,4 @@
+import {isProjectRoute} from './navigation.js?v=20260914-navigation1';
 /* File previewer — a floating window that renders one file from a project.
 
    Lives in core/, not in a view, because three surfaces open it (the Tree
@@ -59,7 +60,6 @@ let source=false;   /* Source toggle */
 let token=0;        /* race guard: only the newest request may paint */
 let pendingVersion=null; /* commit awaiting the restored file's history */
 const RELOAD_KEY='space.previewReload';
-const PROJECT_LENSES=new Set(['dashboard','projects','graph','tree','sharing']);
 
 export function initPreview(){
   el=document.getElementById('preview');
@@ -84,15 +84,15 @@ export function initPreview(){
   restoreAfterReload();
 }
 
-/* Dashboard and Graph use different atlas datasets and switch by reloading
-   the page. Hand off only the preview's UI state for that explicit reload;
-   file contents are fetched afresh, never put in browser storage. Consume
-   the record once, including on other routes, so it cannot revive later. */
+/* Compatibility for explicit reload handoffs from older atlas versions.
+   Normal projection changes now keep this preview mounted. Only UI state
+   is handed off; file contents are fetched afresh and never stored here.
+   Consume the record once, including on other routes, so it cannot revive later. */
 function saveForReload(){
   try{
     sessionStorage.removeItem(RELOAD_KEY);
     if(!current||!el.classList.contains('is-open')
-      ||!PROJECT_LENSES.has(location.hash.replace(/^#\//,'')))return;
+      ||!isProjectRoute(location.hash.replace(/^#\//,'')))return;
     const r=el.getBoundingClientRect();
     sessionStorage.setItem(RELOAD_KEY,JSON.stringify({
       route:location.hash,file:current,source,
@@ -109,7 +109,7 @@ function restoreAfterReload(){
     saved=JSON.parse(raw);
   }catch(_err){return;}
   if(!saved||saved.route!==location.hash
-    ||!PROJECT_LENSES.has(location.hash.replace(/^#\//,'')))return;
+    ||!isProjectRoute(location.hash.replace(/^#\//,'')))return;
   const file=saved.file;
   if(!file||typeof file.project!=='string'||!file.project
     ||typeof file.path!=='string'||!file.path)return;

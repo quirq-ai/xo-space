@@ -80,6 +80,7 @@ globalThis.document={activeElement:null,
   getElementById:id=>elements.get(id)||null,
   querySelector:selector=>selector==='.topbar'?topbar:selector==='.tabs'?tabs:null,
   createElement:tag=>new Element('',tag.toUpperCase()),
+  querySelectorAll:selector=>selector.startsWith('.tabs ')?tabs.children:[],
 };
 const base=pathToFileURL(process.cwd()+'/space_ui/js/core/');
 const registry=await import(new URL('registry.js',base));

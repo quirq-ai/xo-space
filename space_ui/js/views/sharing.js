@@ -1,3 +1,4 @@
+import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
 /* Sharing: the fourth Files lens, and the whole of project sharing in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -46,7 +47,7 @@ export default {
   /* No tab of its own: the Files tab owns the nav slot and this is its
      fourth lens, reached from the List | Graph | Tree | Sharing pill (or
      #/sharing). */
-  id:'sharing',label:'Sharing',order:4,nav:false,parent:'projects',
+  ...projectPage('sharing'),
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
@@ -503,7 +504,7 @@ async function onClick(e){
     case'list':
       /* views never import each other: switch to List and tell it which
          drawer to open; it parks the request until its catalog is loaded */
-      go('projects');
+      go('projects/list');
       dispatchEvent(new CustomEvent('space:open-project',{detail:id}));
       return;
     case'pick':

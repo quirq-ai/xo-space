@@ -29,7 +29,7 @@
   .inb-badge{display:inline-block;margin-left:7px;min-width:16px;padding:1px 5px;
     border-radius:999px;font:600 9px/1.4 var(--mono);letter-spacing:0;text-align:center;
     color:#14100a;background:var(--accent-deep)}
-  .tabs button.is-on .inb-badge{color:var(--accent);background:#14100a}
+  .tabs :is(button,a).is-on .inb-badge{color:var(--accent);background:#14100a}
 
   /* rows: dot · kind · title · project · when */
   .inb-rows{display:flex;flex-direction:column;gap:8px}

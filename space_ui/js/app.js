@@ -1,22 +1,23 @@
 /* Entry point. Adding a view = create js/views/<name>.js exporting the view
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
-import {registerView,startRegistry} from './core/registry.js?v=20260914-setuproutes1';
+import {registerView,startRegistry} from './core/registry.js?v=20260914-navigation1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260914-context1';
-import {initLensSwitch} from './core/lens-switch.js?v=20260914-timelinelens1';
-import {initPreview} from './core/preview.js?v=20260914-wikihub1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-projectmanage1';
-import sessionsView from './views/sessions.js?v=20260914-agentstab1';
-import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setuproutes1';
-import projectsView from './views/projects.js?v=20260914-projectux1';
-import treeView from './views/tree.js?v=20260914-projectmanage1';
-import sharingView from './views/sharing.js?v=20260914-setuproutes1';
+import {initSectionNav} from './core/section-nav.js?v=20260914-navigation1';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260914-navigation1';
+import {initPreview} from './core/preview.js?v=20260914-navigation1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-navigation1';
+import {createAgentViews} from './views/sessions.js?v=20260914-navigation1';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-navigation1';
+import projectsView from './views/projects.js?v=20260914-navigation1';
+import treeView from './views/tree.js?v=20260914-navigation1';
+import sharingView from './views/sharing.js?v=20260914-navigation1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-setuproutes1';
-import quirqView from './views/quirq.js?v=20260914-setuproutes1';
-import {createSetupViews} from './views/setup.js?v=20260914-setuproutes1';
+import wikiView from './views/wiki.js?v=20260914-navigation1';
+import quirqView from './views/quirq.js?v=20260914-navigation1';
+import {createSetupViews} from './views/setup.js?v=20260914-navigation1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 
@@ -58,21 +59,21 @@ addEventListener('space:view',event=>{
   else link.removeAttribute('aria-current');
 });
 try{initToolbar();}catch(err){console.error('Toolbar failed to start:',err);}
-try{initLensSwitch();}catch(err){console.error('Lens switch failed to start:',err);}
+try{initSectionNav();}catch(err){console.error('Section navigation failed to start:',err);}
 
 try{
   registerView(dashboardView);
   registerView(graphView);
   registerView(timeView);
-  registerView(sessionsView);
-  registerView(inboxView);
+  createAgentViews().forEach(registerView);
+  createInboxViews().forEach(registerView);
   registerView(projectsView);
   registerView(treeView);
   registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
   createSetupViews(connectorsView).forEach(registerView);
-  startRegistry({defaultView:'dashboard'});
+  startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 }catch(err){console.error('Space registry failed to start:',err);}
 
 try{initServerWidget();}catch(err){console.error('Server widget failed to start:',err);}

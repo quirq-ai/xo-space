@@ -24,12 +24,12 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         app = read("js/app.js")
         self.assertRegex(
             app,
-            r"import inboxView,\{initInboxBadge\} from './views/inbox\.js\?v=\d{8}-[a-z0-9]+';",
+            r"import \{createInboxViews,initInboxBadge\} from './views/inbox\.js\?v=\d{8}-[a-z0-9]+';",
         )
-        self.assertIn("registerView(inboxView);", app)
+        self.assertIn("createInboxViews().forEach(registerView);", app)
         # Inbox sits between Agents and the Setup route family in the primary nav.
-        self.assertLess(app.index("registerView(sessionsView);"), app.index("registerView(inboxView);"))
-        self.assertLess(app.index("registerView(inboxView);"), app.index("createSetupViews(connectorsView).forEach(registerView);"))
+        self.assertLess(app.index("createAgentViews().forEach(registerView);"), app.index("createInboxViews().forEach(registerView);"))
+        self.assertLess(app.index("createInboxViews().forEach(registerView);"), app.index("createSetupViews(connectorsView).forEach(registerView);"))
 
     def test_badge_starts_after_the_registry_in_its_own_bulkhead(self) -> None:
         app = read("js/app.js")
@@ -40,7 +40,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-results1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the registry creates #view-inbox itself; no section markup needed
@@ -48,11 +48,10 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_view_contract_head(self) -> None:
         src = read("js/views/inbox.js")
-        head = src[src.index("export default") : src.index("mount(")]
-        self.assertIn("id:'inbox',label:'Inbox',order:5", head)
-        self.assertNotIn("nav:false", head)
+        self.assertIn("export function createInboxViews(", src)
+        self.assertIn("INBOX_PAGES.map", src)
         self.assertIn("show()", src)
-        self.assertIn("hide()", src)
+        self.assertIn("hide:hideInbox", src)
 
     def test_module_uses_inbox_connections_and_schedules_routes(self) -> None:
         src = read("js/views/inbox.js")
@@ -117,10 +116,10 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         src = read("js/views/inbox.js")
         # the previewer closes on any non-Files view, so the switch comes first
         self.assertIn(
-            "switchTo('projects');\n    dispatchEvent(new CustomEvent('space:preview-file'",
+            "switchTo('projects/list');\n    dispatchEvent(new CustomEvent('space:preview-file'",
             src,
         )
-        self.assertIn("switchTo(l.view)", src)
+        self.assertIn("switchTo(l.view==='projects'?'projects/list':l.view)", src)
 
     def test_mark_all_seen_is_page_bounded_and_seen_is_patched_once(self) -> None:
         src = read("js/views/inbox.js")

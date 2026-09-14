@@ -54,10 +54,10 @@ const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:
 export function createSetupViews(controller){
   connectorController=controller;
   return SETUP_SECTIONS.map(section=>({
-    id:section.id==='workspace'?'setup':section.route,
+    id:section.route,
     route:section.route,aliases:section.aliases,
-    label:section.id==='workspace'?'Setup':section.label,
-    order:9,nav:section.id==='workspace',parent:'setup',section:'setup',
+    label:section.label,
+    nav:false,parent:'setup',section:'setup',
     toolbar:setupToolbar,mount:mountSetup,
     show(){
       selectPanel(section.id);
@@ -181,8 +181,8 @@ function bindEvents(){
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
   addEventListener('space:setup-section',event=>openPanel(event.detail?.panel,{focus:true}));
-  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects'));
-  root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('quirq'));
+  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects/list'));
+  root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('setup/server/details'));
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
     root.querySelector(selector).addEventListener('input',event=>{
       touched.add(event.target.id);

@@ -1,6 +1,7 @@
 /* Native connector flow checks. Every provider/session request and mutation is
    intercepted in isolated browser memory; no real credential or login is used. */
 import assert from 'node:assert/strict';
+import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -143,10 +144,10 @@ try{
   const pending=holdToken=gate();await submit(page,'github','token');await pending.arrived.promise;
   assert.equal(await token.isDisabled(),true);
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
-  await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
+  await openProjectList(page);await page.waitForURL('**/#/projects/list');
   pending.release.resolve();
   await page.waitForFunction(()=>document.querySelector('[data-native-connector="github"] .conn-state').textContent==='Connected');
-  assert.equal(new URL(page.url()).hash,'#/projects','Pending save does not take over navigation');
+  assert.equal(new URL(page.url()).hash,'#/projects/list','Pending save does not take over navigation');
   await page.locator('#tab-setup').click();await page.locator('#setup-nav [data-setup-go="connectors"]').click();
   await page.locator('#view-search').fill('');
   assert.equal(await token.inputValue(),'','Successful save clears token from DOM');
