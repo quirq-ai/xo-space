@@ -31,7 +31,7 @@ function element(id=''){
   };
 }
 const context={
-  API_BASE:'',projectPage:id=>({id}),pageHeader:()=>'',toast(){},
+  API_BASE:'',projectPage:id=>({id}),toast(){},
   addEventListener:(type,handler)=>events.set(type,handler),
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
     querySelectorAll:()=>[],createElement:()=>element()},

@@ -39,10 +39,9 @@ export function failText(res){
   return res.error||'request failed';
 }
 
-async function doFetch(path,method,body,headers,signal){
+async function doFetch(path,method,body,headers){
   try{
     const opts={method,cache:'no-store'};
-    if(signal)opts.signal=signal;
     const h={...(headers||{})};
     if(body!==undefined){
       h['Content-Type']='application/json';
@@ -72,9 +71,7 @@ async function doFetch(path,method,body,headers,signal){
 /* `headers` is opt-in and merged last, so it can also override Content-Type.
    Only the connector routes need it today (they carry X-XO-Session); every
    other caller omits it and sends exactly the headers it always did. */
-export function apiFetch(path,{method='GET',body,headers,signal}={}){
-  /* A caller-owned cancellation must never abort another view's shared read. */
-  if(signal)return doFetch(path,method,body,headers,signal);
+export function apiFetch(path,{method='GET',body,headers}={}){
   if(method==='GET'){
     /* The single-flight key must include the headers: two GETs for the same
        path under different identities are different requests, and sharing one

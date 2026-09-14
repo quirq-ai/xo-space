@@ -40,7 +40,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-unified1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the registry creates #view-inbox itself; no section markup needed
@@ -58,7 +58,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         paths = re.findall(r"API_BASE\+'([^']*)'", src)
         self.assertTrue(paths, "inbox.js makes no API calls")
         # every API_BASE+ is followed by a literal, and every literal is the
-        # inbox or the connections/jobs pages it owns
+        # inbox or the connections/jobs sections it shows above the rows
         self.assertEqual(len(paths), src.count("API_BASE+"))
         for path in paths:
             self.assertTrue(path.startswith(("/api/inbox", "/api/connections", "/api/schedules")), path)

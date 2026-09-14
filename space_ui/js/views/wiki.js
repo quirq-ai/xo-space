@@ -1,5 +1,4 @@
 /* A compact local starting page. Full guides live in xo-docs. */
-import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
 const DOCS_ROOT='https://docs.quirq.ai/docs/space';
 const GROUPS=[
   {
@@ -7,7 +6,7 @@ const GROUPS=[
     topics:[
       {
         id:'projects',title:'Projects',
-        summary:'Explore project data in List, Graph or Tree. Use Sharing and Timeline for access and history, or group Graph by environment.',
+        summary:'Explore Overview, List, Graph, Tree, Sharing and Timeline. Inspect project files, activity and committed versions.',
         docs:'/space-walk',view:'projects'
       },
       {
@@ -110,15 +109,15 @@ export default {
   hide(){visible=false;}
 };
 
-function docsLink(path,label,accessibleLabel=label,button=false){
-  return '<a class="wiki-doc-link'+(button?' space-button':'')+'" href="'+esc(DOCS_ROOT+path)+'"'
+function docsLink(path,label,accessibleLabel=label){
+  return '<a class="wiki-doc-link" href="'+esc(DOCS_ROOT+path)+'"'
     +' target="_blank" rel="noopener noreferrer"'
     +' aria-label="'+esc(accessibleLabel+' (opens in a new tab)')+'">'
     +esc(label)+' <span aria-hidden="true">↗</span></a>';
 }
 
 function openView(view,label,visibleLabel='Open view'){
-  return '<button type="button" class="wiki-open-view space-button is-compact" data-open-tab="'+esc(view)+'"'
+  return '<button type="button" class="wiki-open-view" data-open-tab="'+esc(view)+'"'
     +' aria-label="Open '+esc(label)+' view">'+esc(visibleLabel)
     +' <span aria-hidden="true">→</span></button>';
 }
@@ -140,10 +139,13 @@ function topicCard(topic){
 function render(){
   root.innerHTML='<div class="wiki-shell">'
     +'<main class="wiki-main" aria-labelledby="wiki-title">'
-      +'<div class="wiki-content space-page">'
-        +pageHeader({title:'Welcome to Space',titleId:'wiki-title',className:'wiki-welcome',
-          description:'Start with your workspace, follow the work, and find the full guide when you need it.',
-          actions:docsLink('','Open docs','Open the full Space documentation',true)})
+      +'<div class="wiki-content">'
+        +'<header class="wiki-welcome" id="wiki-overview" tabindex="-1">'
+          +'<div><div class="wiki-kicker">Space Wiki</div>'
+            +'<h1 id="wiki-title">Welcome to Space</h1>'
+            +'<p>Start with your workspace, follow the work, and find the full guide when you need it.</p></div>'
+          +docsLink('','Open docs','Open the full Space documentation')
+        +'</header>'
         +'<section class="wiki-quickstart" id="wiki-quickstart" tabindex="-1" aria-labelledby="wiki-quickstart-title">'
           +'<h2 id="wiki-quickstart-title">Your first three steps</h2>'
           +'<ol>'
@@ -154,7 +156,7 @@ function render(){
               +'<h3>Bring a project</h3><p>Create or add a project inside that root.</p>'
               +docsLink('/first-space','Open docs','Open the first project guide')+'</div></li>'
             +'<li><span class="wiki-step-number" aria-hidden="true">03</span><div>'
-              +'<h3>Explore your work</h3><p>Browse files and todos, then try another view.</p>'
+              +'<h3>Explore your work</h3><p>Browse files and todos, then try another lens.</p>'
               +openView('projects','Projects','Open Projects')+'</div></li>'
           +'</ol>'
         +'</section>'
@@ -167,8 +169,6 @@ function render(){
       +'</div>'
     +'</main>'
   +'</div>';
-  root.querySelector('.wiki-welcome').id='wiki-overview';
-  root.querySelector('.wiki-welcome').tabIndex=-1;
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-open-tab]');
     if(button&&root.contains(button))go(button.dataset.openTab);

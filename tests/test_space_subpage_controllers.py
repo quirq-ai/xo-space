@@ -14,9 +14,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {pathToFileURL} from 'node:url';
 const navigation=await import(pathToFileURL(process.cwd()+'/space_ui/js/core/navigation.js'));
-const {pageHeader}=await import(pathToFileURL(process.cwd()+'/space_ui/js/core/page-layout.js'));
 function module(name,extra={}){
-  const context={console,Date,Set,Map,pageHeader,AGENT_PAGES:navigation.AGENT_PAGES,INBOX_PAGES:navigation.INBOX_PAGES,...extra};
+  const context={console,Date,Set,Map,AGENT_PAGES:navigation.AGENT_PAGES,INBOX_PAGES:navigation.INBOX_PAGES,...extra};
   vm.createContext(context);
   const source=fs.readFileSync('space_ui/js/views/'+name+'.js','utf8')
     .replace(/^import .*?;\n/gm,'').replaceAll('export async function','async function')
@@ -100,8 +99,6 @@ assert.equal(views[1].toolbar().search.getValue(),'retained query');
     def test_inbox_pages_load_independently_and_keep_item_state(self) -> None:
         self.run_probe(r"""
 const app=inbox();await app.mount();
-assert.match(app.root.innerHTML,/<header class="space-page-header inb-page-head">/);
-assert.match(app.root.innerHTML,/<div class="space-page-actions"><div class="inb-page-actions">/);
 assert.equal(app.requests.length,0,'mounting a Jobs deep link must not wait for Items');
 assert.equal(app.page('connections').toolbar(),null,'toolbar belongs to the requested route before show runs');
 assert.equal(app.page('jobs').toolbar(),null);

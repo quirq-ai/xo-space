@@ -151,8 +151,3 @@
   @media (max-width:1000px){
     .shl-split,.shl-empty,.shl-picks{grid-template-columns:minmax(0,1fr)}
   }
-
-@media(max-width:480px){
-.shr-right{flex-wrap:wrap}.shr-id{max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.shl-row-top,.shl-row-sub{flex-wrap:wrap}.shl-row-top b{flex:1 1 100%;white-space:normal;overflow-wrap:anywhere}.shl-row-sub em{flex:1 1 100%}
-}

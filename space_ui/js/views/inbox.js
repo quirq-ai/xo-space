@@ -16,8 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-unified1';
-import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-navigation1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -160,7 +159,7 @@ const inboxController={
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
-    el.innerHTML='<div class="inb space-page">'+pageHeader({title:'Items',className:'inb-page-head',actions:'<div class="inb-page-actions">'+pageActions()+'</div>'})
+    el.innerHTML='<div class="inb"><header class="inb-page-head"><h1>Items</h1><div class="inb-page-actions"></div></header>'
       +'<section class="inb-items-page">'+head()+sources()+body()+'</section>'
       +'<section class="inb-connections-page" hidden>'+connsHTML()+'</section>'
       +'<section class="inb-jobs-page" hidden>'+jobsHTML()+'</section></div>';
@@ -175,7 +174,8 @@ function showInboxPage(page){
   if(!root||!['items','connections','jobs'].includes(page))return;
   inboxPage=page;shown=true;
   root.querySelector('.inb-page-head h1').textContent=INBOX_PAGES.find(item=>item.route==='inbox/'+page)?.label||'Items';
-  renderPageActions();
+  root.querySelector('.inb-page-actions').innerHTML=page==='connections'
+    ?'<button class="inb-btn" type="button" data-act="conns-refresh">Refresh</button><button class="inb-btn" type="button" data-act="conn-config">Open Setup</button>':'';
   for(const key of ['items','connections','jobs'])root.querySelector('.inb-'+key+'-page').hidden=key!==page;
   clearSlottedInterval('inbox-poll');
   clearSlottedInterval('inbox-conns-poll');
@@ -245,10 +245,9 @@ function render(){
   const box=root.querySelector('.inb-items-page');
   if(!box)return;
   const sel=focusSelector();
-  renderPageActions();
   box.innerHTML=head()+sources()+body();
   painted=paintKey();
-  if(sel){const el=root.querySelector(sel);if(el)el.focus({preventScroll:true});}
+  if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
 }
 /* the parts that move without a repaint: buttons a write disabled, the
    Refresh button, and the relative times, which an unchanged read still ages */
@@ -263,35 +262,22 @@ function summary(c){
 }
 function head(){
   const c=counts();
+  const narrowed=query.trim()||srcFilter!=='all';
   return'<div class="inb-head">'
     +'<span class="inb-sum">'+(data?esc(summary(c)):'loading…')+'</span>'
     +'<span class="inb-spacer"></span>'
-    +pills(FILTERS,filter,'filter','Filter inbox','inb-filter space-segmented')
-  +'</div>';
-}
-function pageActions(){
-  if(inboxPage==='connections')return'<button class="inb-btn space-button" type="button" data-act="conns-refresh">Refresh</button>'
-    +'<button class="inb-btn space-button" type="button" data-act="conn-config">Open Setup</button>';
-  if(inboxPage==='jobs')return'<button class="inb-btn space-button" type="button" data-act="jobs-refresh" title="Re-read scheduled jobs">Refresh</button>'
-    +'<button class="inb-btn space-button" type="button" data-act="jobs-setup">Open Setup</button>';
-  const c=counts();
-  const narrowed=query.trim()||srcFilter!=='all';
-  return''
-    +(c.new>0?'<button class="inb-btn space-button" type="button" data-act="mark-all"'
+    +pills(FILTERS,filter,'filter','Filter inbox','inb-filter')
+    +(c.new>0?'<button class="inb-btn" type="button" data-act="mark-all"'
       +(marking?' disabled':'')+' title="'+(narrowed
         ?'Mark every new item in the loaded status page as seen, including items hidden by search or source filters'
         :'Mark every new item on this page as seen')+'">'+(narrowed?'Mark all loaded seen':'Mark all seen')+'</button>':'')
-    +'<button class="inb-btn space-button" type="button" data-act="refresh" title="Re-read the inbox">'
-      +'Refresh</button>';
-}
-function renderPageActions(){
-  const actions=root.querySelector('.inb-page-actions');
-  const html=pageActions();
-  if(actions.innerHTML!==html)actions.innerHTML=html;
+    +'<button class="inb-btn" type="button" data-act="refresh" title="Re-read the inbox">'
+      +'&#8635; Refresh</button>'
+  +'</div>';
 }
 /* the source pills, a second strip under the header */
 function sources(){
-  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src space-segmented');
+  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src');
 }
 function body(){
   if(!data&&failed)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
@@ -341,12 +327,12 @@ function rowHTML(it){
     +(open?'<div class="inb-body" id="inb-body-'+id+'">'
       +(it.body?'<pre class="inb-text">'+esc(it.body)+'</pre>':'<div class="inb-note">no details</div>')
       +'<div class="inb-actions">'
-        +(hasLink(it)?'<button class="inb-btn space-button" type="button" data-act="open" data-id="'+id+'">Open</button>':'')
+        +(hasLink(it)?'<button class="inb-btn" type="button" data-act="open" data-id="'+id+'">Open</button>':'')
         /* a real link, and only for an http(s) url: safeUrl ran above */
-        +(url?'<a class="inb-btn space-button" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">Open link</a>':'')
-        +'<button class="inb-btn space-button" type="button" data-act="'+(done?'reopen':'done')+'" data-id="'+id+'"'+off+'>'
+        +(url?'<a class="inb-btn" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">Open link</a>':'')
+        +'<button class="inb-btn" type="button" data-act="'+(done?'reopen':'done')+'" data-id="'+id+'"'+off+'>'
           +(done?'Reopen':'Done')+'</button>'
-        +'<button class="inb-btn space-button is-danger" type="button" data-act="delete" data-id="'+id+'"'+off+'>Delete</button>'
+        +'<button class="inb-btn is-danger" type="button" data-act="delete" data-id="'+id+'"'+off+'>Delete</button>'
       +'</div>'
     +'</div>':'')
   +'</div>';
@@ -404,8 +390,8 @@ function connRowHTML(c){
       +(c.enabled?'':' · polling off')+'</span>'
     +when
     +'<span class="inb-conn-acts">'
-      +'<button class="inb-btn space-button" type="button" data-act="conn-poll" data-toolkit="'+tk+'"'+off+'>Poll now</button>'
-      +'<button class="inb-btn space-button" type="button" data-act="conn-config" data-toolkit="'+tk+'">Configure</button>'
+      +'<button class="inb-btn" type="button" data-act="conn-poll" data-toolkit="'+tk+'"'+off+'>Poll now</button>'
+      +'<button class="inb-btn" type="button" data-act="conn-config" data-toolkit="'+tk+'">Configure</button>'
     +'</span>'
   +'</div>';
 }
@@ -434,7 +420,7 @@ function jobRowHTML(job){
         +'<span class="inb-job-enabled'+(job.enabled===false?' is-disabled':'')+'">'+(job.enabled===false?'Disabled':'Enabled')+'</span>'
         +(dtfmt(job.next_run)?'<span>Next due '+esc(dtfmt(job.next_run))+'</span>':'')+'</div>'
       +'<div class="inb-job-result'+tone+'" role="status">'+esc(status)+'</div>'
-    +'</div><button class="inb-btn space-button" type="button" data-act="job-results" data-job="'+esc(job.id)+'"'
+    +'</div><button class="inb-btn" type="button" data-act="job-results" data-job="'+esc(job.id)+'"'
       +' aria-label="Results for '+esc(job.name||job.id)+'">Results</button>'
   +'</article>';
 }
@@ -444,7 +430,9 @@ function jobsHTML(){
   const content=jobs===null?(jobsFailed?'':'<p class="inb-jobs-state" role="status">Loading scheduled jobs…</p>')
     :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No scheduled jobs. Add an interval to a command in Setup.</p>';
   return'<section class="inb-jobs" aria-labelledby="inb-jobs-title" aria-busy="'+jobsLoading+'">'
-    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Scheduled commands'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2></div>'
+    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Scheduled commands'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
+      +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read scheduled jobs">Refresh</button>'
+        +'<button class="inb-btn" type="button" data-act="jobs-setup">Open Setup</button></div></div>'
     +failure+content+'</section>';
 }
 function renderJobs(){

@@ -5,7 +5,6 @@
    view. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
-import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
 
 const esc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -49,11 +48,20 @@ export default {
 
 function renderShell(){
   root.innerHTML=
-    '<div class="quirq-page space-page">'
-      +pageHeader({title:'Inside .quirq',className:'quirq-hero',
-        description:'A live, privacy-aware map of installation state, watcher cursors, runtime configuration, credentials, and ephemeral activity.',
-        actions:'<button id="quirq-back" class="space-button" type="button" data-go-view="setup/server">&#8592; Setup</button>'
-          +'<button id="quirq-refresh" class="space-button" type="button">Refresh data</button>'})
+    '<div class="quirq-page">'
+      +'<header class="quirq-hero">'
+        +'<div>'
+          +'<div class="quirq-kicker"><span></span>Machine-local control plane</div>'
+          +'<h1>Inside <em>.quirq</em></h1>'
+          +'<p>A live, privacy-aware map of installation state, watcher cursors, runtime configuration, credentials, and ephemeral activity.</p>'
+        +'</div>'
+        /* This view has no tab of its own — every other control on the page
+           leads further away, so the way home belongs in the hero. */
+        +'<div class="quirq-hero-actions">'
+          +'<button id="quirq-back" type="button" data-go-view="setup/server">&#8592; Setup</button>'
+          +'<button id="quirq-refresh" type="button">Refresh data</button>'
+        +'</div>'
+      +'</header>'
       +'<section class="quirq-path" id="quirq-path"><div class="quirq-skeleton"></div></section>'
       +'<section class="quirq-metrics" id="quirq-metrics" aria-label="Quirq state metrics"></section>'
       +'<section class="quirq-panel quirq-storage-map">'
@@ -62,9 +70,9 @@ function renderShell(){
         +'<div class="quirq-storage-actions">'
           +'<p id="quirq-legacy-note"></p>'
           +'<div>'
-            +'<button class="space-button is-compact" type="button" data-go-view="projects/list">Open project data</button>'
-            +'<button class="space-button is-compact" type="button" data-wiki-page="xo-data">Read the .xo catalog</button>'
-            +'<button class="space-button is-compact" type="button" data-wiki-page="watcher">Read watcher internals</button>'
+            +'<button type="button" data-go-view="projects/list">Open project data</button>'
+            +'<button type="button" data-wiki-page="xo-data">Read the .xo catalog</button>'
+            +'<button type="button" data-wiki-page="watcher">Read watcher internals</button>'
           +'</div>'
         +'</div>'
       +'</section>'

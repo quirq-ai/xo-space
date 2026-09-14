@@ -14,23 +14,23 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
   let busy=false,lastAction='',revokeConfirm=null,folderEdited=false;
   el.classList.add('setup-projects');
   el.innerHTML=`<div class="setup-card-head"><h3 id="setup-projects-title" tabindex="-1">Local projects <span id="setup-project-count"></span></h3>
-      <div class="setup-project-tools"><button class="setup-secondary space-button" type="button" id="setup-project-refresh">Refresh</button><button class="setup-primary space-button is-primary" type="button" id="setup-project-add">Add project</button></div></div>
+      <div class="setup-project-tools"><button class="setup-secondary" type="button" id="setup-project-refresh">Refresh</button><button class="setup-primary" type="button" id="setup-project-add">Add project</button></div></div>
     <p id="setup-project-notice" class="setup-project-notice" role="status" hidden></p>
     <form id="setup-project-form" class="setup-project-form" hidden novalidate>
       <h4>Add a project</h4><p>Clone a Git repository into your projects folder.</p>
       <label for="setup-project-repository">Repository URL</label><input id="setup-project-repository" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/project.git" required>
       <label for="setup-project-id">Folder name</label><input id="setup-project-id" autocomplete="off" spellcheck="false" placeholder="my-project" maxlength="120" required>
       <div class="setup-form-error" id="setup-project-add-error" role="alert" hidden></div>
-      <div class="setup-actions"><button class="setup-primary space-button is-primary" id="setup-project-create" type="submit">Clone project</button><button class="setup-secondary space-button" id="setup-project-cancel" type="button">Cancel</button></div>
+      <div class="setup-actions"><button class="setup-primary" id="setup-project-create" type="submit">Clone project</button><button class="setup-secondary" id="setup-project-cancel" type="button">Cancel</button></div>
     </form>
     <div id="setup-project-list" class="setup-project-list" aria-live="polite"><p class="setup-empty">Loading projects…</p></div>
     <section id="setup-project-removal" class="setup-project-removal" aria-labelledby="setup-project-removal-title" hidden>
-      <header><div><h4 id="setup-project-removal-title" tabindex="-1">Remove project</h4><code id="setup-project-removal-id"></code></div><button class="setup-secondary space-button" id="setup-project-close" type="button">Cancel</button></header>
+      <header><div><h4 id="setup-project-removal-title" tabindex="-1">Remove project</h4><code id="setup-project-removal-id"></code></div><button class="setup-secondary" id="setup-project-close" type="button">Cancel</button></header>
       <p>Delete this project folder and all its files from this Space. Remote repositories and backups remain.</p>
       <div id="setup-project-access" aria-live="polite"></div>
       <div class="setup-form-error" id="setup-project-remove-error" role="alert" hidden></div>
       <form id="setup-project-remove-form" novalidate><label for="setup-project-confirm">Type <code id="setup-project-confirm-label"></code> to confirm</label><input id="setup-project-confirm" autocomplete="off" spellcheck="false">
-        <div class="setup-actions"><button class="setup-project-delete" id="setup-project-delete" type="submit" disabled>Delete local project</button><button class="setup-secondary space-button" id="setup-project-recheck" type="button">Check access again</button></div></form>
+        <div class="setup-actions"><button class="setup-project-delete" id="setup-project-delete" type="submit" disabled>Delete local project</button><button class="setup-secondary" id="setup-project-recheck" type="button">Check access again</button></div></form>
     </section>`;
   const $=selector=>el.querySelector(selector);
   const form=$('#setup-project-form'),idInput=$('#setup-project-id'),repositoryInput=$('#setup-project-repository');
@@ -60,7 +60,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     $('#setup-project-list').innerHTML=message?'<p class="setup-empty is-error">'+esc(message)+'</p>'
       :!items.length?'<p class="setup-empty">No projects in this Space yet.</p>'
         :items.map(item=>'<div class="setup-project-row"><div><b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>'
-          +(text(item.description)?'<p>'+esc(item.description)+'</p>':'')+'</div><button class="setup-secondary space-button" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>').join('');
+          +(text(item.description)?'<p>'+esc(item.description)+'</p>':'')+'</div><button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>').join('');
     updateControls();
   }
   async function refreshCatalog(){
@@ -92,15 +92,15 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
         +(text(member.label)?'<code>'+esc(ws)+'</code>':'')+'<small>'+esc(text(member.role)||'Collaborator')
         +(member.is_self?' · You':'')+(member.status==='revoked'?' · Revoked':'')+'</small></div>'
         +(member.can_revoke===true&&ws?(confirm
-          ?'<div class="setup-project-revoke-confirm" role="group" aria-label="Confirm revoke access"><span>Revoke access for this user?</span><div><button type="button" class="setup-project-danger" data-project-revoke="'+esc(ws)+'"'+(busy?' disabled':'')+'>Confirm revoke</button><button type="button" class="setup-secondary space-button" data-project-revoke-cancel'+(busy?' disabled':'')+'>Cancel</button></div></div>'
-          :'<button type="button" class="setup-secondary space-button" data-project-revoke-start="'+esc(ws)+'"'+(busy?' disabled':'')+'>Revoke access</button>'):'')+'</div>';
+          ?'<div class="setup-project-revoke-confirm" role="group" aria-label="Confirm revoke access"><span>Revoke access for this user?</span><div><button type="button" class="setup-project-danger" data-project-revoke="'+esc(ws)+'"'+(busy?' disabled':'')+'>Confirm revoke</button><button type="button" class="setup-secondary" data-project-revoke-cancel'+(busy?' disabled':'')+'>Cancel</button></div></div>'
+          :'<button type="button" class="setup-secondary" data-project-revoke-start="'+esc(ws)+'"'+(busy?' disabled':'')+'>Revoke access</button>'):'')+'</div>';
     }).join('');
     const peers=detail.peers.map(peer=>{
       const id=text(peer.user_id),confirm=revokeConfirm?.kind==='peer'&&revokeConfirm.id===id;
       return '<div class="setup-project-member"><div><b>'+esc(text(peer.label)||id)+'</b>'
         +(text(peer.label)?'<code>'+esc(id)+'</code>':'')+'<small>Local roster · '+esc(text(peer.role)||'member')+'</small></div>'
-        +(confirm?'<div class="setup-project-revoke-confirm" role="group" aria-label="Confirm remove collaborator"><span>Remove this user from the local roster?</span><div><button type="button" class="setup-project-danger" data-project-peer="'+esc(id)+'"'+(busy?' disabled':'')+'>Confirm removal</button><button type="button" class="setup-secondary space-button" data-project-revoke-cancel'+(busy?' disabled':'')+'>Cancel</button></div></div>'
-          :'<button type="button" class="setup-secondary space-button" data-project-peer-start="'+esc(id)+'"'+(busy?' disabled':'')+'>Remove collaborator</button>')+'</div>';
+        +(confirm?'<div class="setup-project-revoke-confirm" role="group" aria-label="Confirm remove collaborator"><span>Remove this user from the local roster?</span><div><button type="button" class="setup-project-danger" data-project-peer="'+esc(id)+'"'+(busy?' disabled':'')+'>Confirm removal</button><button type="button" class="setup-secondary" data-project-revoke-cancel'+(busy?' disabled':'')+'>Cancel</button></div></div>'
+          :'<button type="button" class="setup-secondary" data-project-peer-start="'+esc(id)+'"'+(busy?' disabled':'')+'>Remove collaborator</button>')+'</div>';
     }).join('');
     target.innerHTML=(members.length||detail.peers.length?'<h5>Project access</h5>'+rows+peers:'')
       +(detail.blockers.length?'<div class="setup-project-blockers">'+detail.blockers.map(blocker=>'<p>'+esc(text(blocker.message)||'Project access must be checked before removal.')+'</p>').join('')+'</div>':'')

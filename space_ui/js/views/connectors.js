@@ -37,8 +37,7 @@ import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
 import {accountLabel,accountLine} from '../core/connections.js';
 import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260914-accounts1';
-import {mountNativeConnectors} from './native-connectors.js?v=20260914-unified1';
-import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
+import {mountNativeConnectors} from './native-connectors.js?v=20260914-connectors2';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
@@ -102,15 +101,22 @@ export default {
 function renderShell(){
   root.innerHTML=
     '<div class="conn-page">'
-      +pageHeader({title:'Connectors',titleId:'setup-connectors-title',description:'Tools and apps for this workspace.',className:'conn-hero',
-        actions:'<div class="conn-hero-actions"><button class="conn-refresh space-button" id="conn-refresh" type="button">Refresh</button></div>'})
+      +'<header class="conn-hero">'
+        +'<div>'
+          +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
+          +'<p>Tools and apps for this workspace.</p>'
+        +'</div>'
+        +'<div class="conn-hero-actions">'
+          +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
+        +'</div>'
+      +'</header>'
       +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
-        +'<div class="conn-group-head"><div><h2 id="conn-workspace-title">Workspace integrations</h2>'
+        +'<div class="conn-group-head"><div><h3 id="conn-workspace-title">Workspace integrations</h3>'
           +'<p>Code, design, deployments, and files.</p></div></div>'
         +'<div class="conn-grid" id="conn-native-grid"></div>'
       +'</section>'
       +'<section class="conn-group" id="conn-account-section" aria-labelledby="conn-account-title">'
-        +'<div class="conn-group-head"><div><h2 id="conn-account-title">Account apps</h2>'
+        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3>'
           +'<p>Connect once to your XO account, then enable per workspace.</p></div>'
           +'<span class="conn-group-badge">Composio</span></div>'
         +'<div class="conn-alert" id="conn-alert" hidden></div>'
@@ -332,24 +338,24 @@ function renderCard(t){
     +'</div>'
     +'<div class="conn-card-acts">'
       +(!connected
-        ?'<button class="conn-primary space-button is-primary is-compact" data-action="connect">Connect</button>'
+        ?'<button class="conn-primary" data-action="connect">Connect</button>'
         :(enabled
-          ?'<button class="conn-secondary space-button is-compact" data-action="unlink">Turn off here</button>'
-          :'<button class="conn-primary space-button is-primary is-compact" data-action="enable">Turn on here</button>'))
+          ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
+          :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
       /* Deleting is account-wide, so it is kept visually apart from the
          workspace-local toggle above and confirmed before it runs. */
       +(connected
-        ?'<button class="conn-secondary space-button is-danger is-compact" data-action="disconnect">'
+        ?'<button class="conn-secondary is-danger" data-action="disconnect">'
           +'Delete connection&hellip;</button>'
         :'')
       +(connected&&enabled&&t.supports_action_prefs
-        ?'<button class="conn-secondary space-button is-compact" data-action="actions">'
+        ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
         :'')
       /* Polling: connected and on here, or already open (the auto-opened drawer
          after a connect needs a way to close before the toolkit is on here). */
       +(connected&&(enabled||polling)
-        ?'<button class="conn-secondary space-button is-compact" data-action="polling">'
+        ?'<button class="conn-secondary" data-action="polling">'
           +(polling?'Hide polling':'Polling')+'</button>'
         :'')
     +'</div>'
@@ -402,8 +408,8 @@ function renderPolling(t,enabled){
         +(chosen.has(a.id)?' checked':'')+'> '+esc(a.label||a.id)+'</label>').join('')
     +pollStatus(t.id,c)
     +'<div class="conn-poll-acts">'
-      +'<button class="conn-primary space-button is-primary is-compact" data-action="poll-save">Save</button>'
-      +'<button class="conn-secondary space-button is-compact" data-action="poll-now"'
+      +'<button class="conn-primary" data-action="poll-save">Save</button>'
+      +'<button class="conn-secondary" data-action="poll-now"'
         +(c.configured?'':' disabled title="Save first"')+'>Poll now</button>'
     +'</div>');
 }

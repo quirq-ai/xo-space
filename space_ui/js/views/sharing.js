@@ -1,5 +1,4 @@
-import {pageHeader} from '../core/page-layout.js?v=20260914-unified1';
-import {projectPage} from '../core/navigation.js?v=20260914-unified1';
+import {projectPage} from '../core/navigation.js?v=20260914-navigation1';
 /* Sharing: the fourth Files lens, and the whole of project sharing in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -52,7 +51,7 @@ export default {
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
-    el.innerHTML='<div class="prj shl space-page">'+skeleton()+'</div>';
+    el.innerHTML='<div class="prj shl">'+skeleton()+'</div>';
     root.addEventListener('click',onClick);
     root.addEventListener('submit',onSubmit);
     root.addEventListener('input',onInput);
@@ -171,10 +170,14 @@ function summary(m){
 }
 function headHTML(m){
   const off=parked()||!sharingStatusRes()||!sharingStatusRes().ok;
-  return pageHeader({title:'Sharing',description:summary(m),descriptionId:'shl-count',className:'prj-head',actions:
-    (composer?'<button class="space-button" type="button" data-act="composer">Cancel</button>'
-      :'<button class="space-button is-primary" type="button" data-act="composer"'+(off?' disabled':'')+'>Share a project</button>')
-    +'<button class="space-button" type="button" data-act="check" title="Check sharing status now"'+(off?' disabled':'')+'>Check now</button>'});
+  return'<div class="prj-head">'
+    +'<span class="prj-eyebrow" id="shl-count">'+esc(summary(m))+'</span>'
+    +'<span class="prj-spacer"></span>'
+    +(composer
+      ?'<button class="sess-refresh" type="button" data-act="composer">Cancel</button>'
+      :'<button class="sess-refresh shl-primary" type="button" data-act="composer"'+(off?' disabled':'')+'>+ Share a project</button>')
+    +'<button class="sess-refresh" type="button" data-act="check" title="Ask the relay to check now instead of waiting for the next minute"'+(off?' disabled':'')+'>Check now</button>'
+  +'</div>';
 }
 function stripHTML(){
   const status=sharingStatus(),res=sharingStatusRes();
@@ -208,11 +211,11 @@ function inboxRow(r){
   if(r.need==='restore'){
     what='removed from this Space';
     why='automatic cloning is paused';
-    acts='<button class="space-button is-sm" type="button" data-act="restore">Clone in Setup</button>';
+    acts='<button class="sess-refresh is-sm" type="button" data-act="restore">Clone in Setup</button>';
   }else if(r.need==='auth'){
     what='private repo · needs GitHub';
     why='connect GitHub once; XO Space clones it on the next check';
-    acts='<button class="space-button is-sm" type="button" data-act="connect">Connect GitHub</button>'
+    acts='<button class="sess-refresh is-sm" type="button" data-act="connect">Connect GitHub</button>'
       +'<button class="shr-copy" type="button" data-act="copy" data-copy="'+esc(cloneCmd(r.repo))+'" title="Copy the clone command">clone by hand</button>';
   }else if(r.need==='manual'){
     const st=r.clone.state;
@@ -243,7 +246,7 @@ function railRow(r){
       +'<span class="shl-row-top"><b>'+esc(r.name)+'</b><span class="prj-spacer"></span>'+stateChip(r)+'</span>'
       +'<span class="shl-row-sub"><em>'+esc(r.repo)+'</em><span class="prj-spacer"></span><span class="shr-muted">'+railMeta(r)+'</span></span>'
     +'</button>'
-    +(r.need==='apply'?'<span class="shl-row-acts"><button class="space-button is-sm" type="button" data-act="apply" data-id="'+esc(r.project)+'"'
+    +(r.need==='apply'?'<span class="shl-row-acts"><button class="sess-refresh is-sm" type="button" data-act="apply" data-id="'+esc(r.project)+'"'
         +(busy.has(r.project)?' disabled':'')+' title="Fast-forward to origin/'+esc(r.c.branch||'main')+'">'+(busy.has(r.project)?'Applying…':'Apply')+'</button></span>':'')
     +'</div>';
 }
@@ -327,9 +330,9 @@ function detailHTML(r){
           +(r.autoClonedAt?'<span class="shr-muted">cloned by XO Space '+esc(rel(r.autoClonedAt))+'</span>':'')
         +'</span></div>'
       +'<span class="prj-spacer"></span>'
-      +(behind>0?'<button class="space-button shl-primary" type="button" data-act="apply" data-id="'+esc(id)+'"'
+      +(behind>0?'<button class="sess-refresh shl-primary" type="button" data-act="apply" data-id="'+esc(id)+'"'
         +(busy.has(id)?' disabled':'')+'>'+(busy.has(id)?'Applying…':'Apply '+plural(behind,'commit'))+'</button>':'')
-      +'<button class="space-button" type="button" data-act="list" data-id="'+esc(id)+'">Open in List</button>'
+      +'<button class="sess-refresh" type="button" data-act="list" data-id="'+esc(id)+'">Open in List</button>'
     +'</div>'
     +'<div class="shl-rule"></div>'
     +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Commits on origin/'+esc(c&&c.branch||'main')+'</span>'
@@ -341,7 +344,7 @@ function detailHTML(r){
       +'<form class="shr-form" data-form="share" data-id="'+esc(id)+'">'
         +'<input class="tv-filter shr-input" name="ws" placeholder="recipient workspace id" '
           +'autocomplete="off" spellcheck="false" aria-label="Recipient workspace id">'
-        +'<button class="space-button shl-primary is-sm" type="submit"'+(busy.has(id)?' disabled':'')+'>Share</button>'
+        +'<button class="sess-refresh shl-primary is-sm" type="submit"'+(busy.has(id)?' disabled':'')+'>Share</button>'
       +'</form>'
       +'<span class="shr-muted">They copy their id from the strip at the top of their own Sharing pane, or send yours with “copy invite”.</span>'
     +'</div>'
@@ -400,7 +403,7 @@ function emptyCardsHTML(){
     +'<div class="shl-empty-card"><b>Share one of your projects</b>'
       +'<p>Pick any project with a git origin and paste the other workspace’s id. Their XO Space clones the repo on its next check, '
       +'and from then on new commits show up here for both of you: one click to apply, no merging by hand.</p>'
-      +'<div><button class="space-button shl-primary" type="button" data-act="composer"'+(off?' disabled':'')+'>+ Share a project</button></div></div>'
+      +'<div><button class="sess-refresh shl-primary" type="button" data-act="composer"'+(off?' disabled':'')+'>+ Share a project</button></div></div>'
     +'<div class="shl-empty-card"><b>Receive a project</b>'
       +'<p>Send the owner your invite: one line with your workspace id and what to click. Once they share, the repo shows up here '
       +'as “shared with you” and XO Space clones it into your XO root by itself.</p>'
@@ -457,7 +460,7 @@ function composerHTML(){
       +'<div class="shr-form" style="margin-top:0">'
         +'<input class="tv-filter shr-input" name="ws" placeholder="recipient workspace id" autocomplete="off" spellcheck="false" '
           +'aria-label="Recipient workspace id" value="'+esc(composer.ws||'')+'">'
-        +'<button class="space-button shl-primary" type="submit" id="shl-composer-go"'+(composer.pick?'':' disabled')+'>'
+        +'<button class="sess-refresh shl-primary" type="submit" id="shl-composer-go"'+(composer.pick?'':' disabled')+'>'
           +(name?'Share '+esc(name):'Share')+'</button>'
       +'</div>'
       +'<span class="shr-muted">Ask them for the id from the strip on their own Sharing pane, or send them your invite and let them share with you. Sharing again with someone who already has it does nothing.</span>'

@@ -1,13 +1,25 @@
-/* Connector cards, forms and polling drawers. Page headers and buttons use
-   the shared components stylesheet. */
+/* Connectors section. Mirrors the Setup card/badge/button vocabulary under a
+   .conn- prefix: those classes are per-view by convention, not shared, so the
+   rules are restated here rather than imported. Tokens come from base.css. */
 
 .conn-page{min-width:0}
 
-.conn-hero-actions{display:flex;gap:8px;flex-wrap:wrap}
+.conn-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:20px}
+.conn-hero>div:first-child{flex:1;min-width:0}
+.conn-hero h2{font:500 27px/1.2 var(--serif);margin:0 0 8px}
+.conn-hero h2:focus{outline:none}
+.conn-hero p{color:var(--ink-3);font-size:13px;line-height:1.5;max-width:62ch;margin:0}
+.conn-hero-actions{display:flex;gap:8px;flex:0 0 auto}
+
+.conn-refresh{
+  border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);
+  padding:9px 13px;font:500 12px var(--sans);cursor:pointer
+}
+.conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
 
 .conn-group+.conn-group{margin-top:30px}
 .conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
-.conn-group-head h2{font:500 14px var(--sans);color:var(--ink);margin:0}
+.conn-group-head h3{font:500 14px var(--sans);color:var(--ink);margin:0}
 .conn-group-head p{margin:5px 0 0;font-size:11.5px;color:var(--ink-3);line-height:1.5}
 .conn-group-badge{flex:none;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font:400 10px var(--sans);color:var(--ink-3)}
 
@@ -61,6 +73,23 @@
 }
 
 .conn-card-acts{display:flex;gap:7px;padding:14px 16px 16px;flex-wrap:wrap}
+.conn-primary,.conn-secondary{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;min-height:32px;
+  border-radius:7px;padding:7px 10px;font:500 11px/1.4 var(--sans);text-decoration:none;
+  cursor:pointer;border:1px solid transparent;overflow-wrap:anywhere
+}
+.conn-primary{background:var(--accent);color:#14100a}
+.conn-primary:hover{background:#b7e467}
+.conn-secondary{border-color:var(--line);background:transparent;color:var(--ink-2)}
+.conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
+.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}
+.conn-secondary.is-danger:hover{background:rgba(200,103,76,.1)}
+/* :disabled alone means "cannot act"; only an in-flight request earns the wait
+   cursor, via .is-busy. Same distinction as the Setup tab. */
+.conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
+.conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
+.conn-page button:focus-visible,.conn-page a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+
 .conn-actions{border-top:1px solid var(--line-soft);padding:13px 18px 16px;max-height:340px;overflow:auto}
 .conn-actions-note{margin:0 0 10px;color:var(--ink-3);font-size:11px;line-height:1.5}
 .conn-action{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:11.5px;color:var(--ink-2);cursor:pointer}
@@ -75,6 +104,8 @@
 .conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
 
 @media (max-width:720px){
+  .conn-hero{flex-wrap:wrap;gap:12px}
+  .conn-hero h2{font-size:24px}
   .conn-grid{grid-template-columns:1fr}
 }
 
@@ -104,7 +135,7 @@
 
 /* Polling drawer: what the connections poller collects into the Inbox for this
    toolkit, and how often. Same drawer pattern as .conn-actions above; the
-   buttons use the shared action styles. */
+   buttons reuse .conn-primary / .conn-secondary. */
 .conn-poll{border-top:1px solid var(--line-soft);padding:13px 18px 16px;display:flex;flex-direction:column;gap:7px}
 .conn-poll-note{margin:0 0 3px;color:var(--ink-3);font-size:11px;line-height:1.5}
 /* "Polling as <email>", above the collectors; a long address wraps */

@@ -3,7 +3,7 @@
    No DOM, CSS, asset or response substitutions: screenshots show the app.
    Install Playwright normally, or provide PLAYWRIGHT_MODULE=/path/to/index.mjs. */
 import assert from 'node:assert/strict';
-import {routeFor,projectPageId,projectPageSelector,openProjectPage} from './routes.mjs';
+import {routeFor,projectPageId} from './routes.mjs';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -46,7 +46,9 @@ async function screenshot(name) {
   await page.screenshot({path: resolve(output, name), animations: 'disabled'});
 }
 async function lens(id) {
-  await openProjectPage(page,id);
+  await page.locator(`[data-section-page="${projectPageId(id)}"]`).click();
+  await page.waitForFunction(({route,id}) => location.hash === route
+    && document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', {route:routeFor(id),id:projectPageId(id)});
   await page.waitForLoadState('networkidle');
   if(id === 'projects') await page.locator('.prj-row').first().waitFor();
   if(id === 'sharing') await page.locator('.shl-detail').waitFor();
@@ -57,17 +59,16 @@ const report = {workspace: 'Fictional fixture data only', screenshots: [], check
 
 try {
   await page.goto(origin + '/space/', {waitUntil: 'networkidle'});
-  await page.locator('.prj-row').first().waitFor();
+  await settleGraph();
   if(!screenshotsOnly) {
-    assert.equal(new URL(page.url()).hash, '#/projects/list', 'Projects List is the initial view');
+    assert.equal(new URL(page.url()).hash, '#/projects/overview', 'Projects Overview is the initial view');
     assert.deepEqual(await page.locator('.tabs a').evaluateAll(buttons => buttons.map(b => b.id)),
       ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-setup']);
     assert.deepEqual(await page.locator('[data-section-page]').allTextContents(),
-      ['Workspace', 'Sharing', 'Timeline']);
+      ['Overview', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default List; four primary sections; Workspace/Sharing/Timeline scopes and separate representation modes');
+    report.checks.push('Default Overview; exact four-section order; six Projects pages');
   }
-  await lens('dashboard');
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
 
@@ -115,13 +116,13 @@ try {
     assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), false);
     report.checks.push('Wiki resource opens locally, marks itself active and closes the Projects preview');
     await page.locator('#tab-projects').click();
-    await page.waitForFunction(() => location.hash === '#/projects/list');
+    await page.waitForFunction(() => location.hash === '#/projects/overview');
     await page.waitForFunction(() => !document.querySelector('#wiki-link').hasAttribute('aria-current'));
-    report.checks.push('Primary Projects opens its List default');
+    report.checks.push('Primary Projects opens its Overview default');
 
     for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
       await page.goto(origin + '/space/' + routeFor(id), {waitUntil: 'networkidle'});
-      await page.locator(projectPageSelector(id)+'[aria-current="page"]').waitFor();
+      await page.waitForFunction(id => document.querySelector(`[data-section-page="${id}"]`)?.getAttribute('aria-current') === 'page', projectPageId(id));
       assert.equal(await page.locator('#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects Projects`);
     }
     report.checks.push('Every existing Projects page deep link selects the correct tab and lens');
@@ -143,7 +144,7 @@ try {
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
-      await page.waitForFunction(hash => location.hash === hash, routeFor(id));
+      await page.waitForFunction(hash => location.hash === hash, id==='projects'?'#/projects/overview':routeFor(id));
       await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
@@ -158,7 +159,7 @@ try {
       const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
       for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
-        const button = page.locator(projectPageSelector(id));
+        const button = page.locator(`[data-section-page="${projectPageId(id)}"]`);
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);
         await lens(id);

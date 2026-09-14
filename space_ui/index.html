@@ -3,24 +3,22 @@
 <title>XO Space</title>
 <style>html{color-scheme:dark}</style>
 </head><body>
-<link rel="stylesheet" href="css/base.css?v=20260914-unified1">
+<link rel="stylesheet" href="css/base.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/sessions.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/timeline.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/chrome.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/projects.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/sharing.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/inbox.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/wiki.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/quirq.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/setup.css?v=20260914-unified1">
+<link rel="stylesheet" href="css/graph.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/sessions.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/timeline.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/chrome.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/projects.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/sharing.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/wiki.css?v=20260914-wikihub1">
+<link rel="stylesheet" href="css/quirq.css?v=20260816-navswap1">
+<link rel="stylesheet" href="css/setup.css?v=20260914-setuproutes1">
 <link rel="stylesheet" href="css/setup-projects.css?v=20260914-setuproutes1">
-<link rel="stylesheet" href="css/preview.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/connectors.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/navigation.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/components.css?v=20260914-unified1">
-<link rel="stylesheet" href="css/explorer.css?v=20260914-unified1">
+<link rel="stylesheet" href="css/preview.css?v=20260914-wikihub1">
+<link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">
+<link rel="stylesheet" href="css/navigation.css?v=20260914-navigation1">
 
 
 <div class="topbar" data-toolbar="none">
@@ -77,7 +75,6 @@
 
   <!-- GRAPH -->
   <section class="view is-active" id="view-graph">
-    <div class="space-page space-canvas-page"><div id="atlas-page-header"></div><div class="space-canvas-surface" id="atlas-surface">
     <canvas id="gcanvas"></canvas>
     <p class="ov" id="hint"><b>Click</b> a node to focus its neighbourhood &middot; <b>Double-click</b> a cluster to open or close it &middot; <b>Drag</b> to reposition &middot; <b>Scroll</b> to zoom</p>
     <div class="ov" id="legend"></div>
@@ -88,30 +85,26 @@
       <button id="crumb-clear" title="Clear focus (Esc)">Clear</button>
     </div>
     <div class="ov" id="simstat"><span class="pip"></span>settling&hellip;</div>
-    </div></div>
   </section>
 
   <!-- TIMELINE -->
   <section class="view" id="view-time">
-    <div class="space-page space-canvas-page">
-    <header class="thead space-page-header">
-      <div class="tintro space-page-heading">
-        <h1 tabindex="-1">Timeline</h1>
-        <div class="sub space-page-description" id="tsub">Explore dated files and project commits.</div>
+    <div class="thead">
+      <div class="tintro">
+        <h2>Timeline</h2>
+        <div class="sub" id="tsub">Explore dated files and project commits.</div>
       </div>
-      <div class="space-page-actions">
+      <div class="grow"></div>
       <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…" hidden
         autocomplete="off" spellcheck="false" aria-label="Filter timeline lanes by project name">
-      <div class="space-segmented tmode" id="tmode" aria-label="Timeline mode" hidden>
+      <div class="atlas-lens-switch tmode" id="tmode" aria-label="Timeline mode" hidden>
         <button class="is-on" type="button" data-tmode="file">By file</button>
         <button type="button" data-tmode="project">By project</button>
       </div>
-      <button class="space-button" id="tclear" hidden>Clear trace</button>
-      <button class="space-button is-primary" id="tplay"><svg width="9" height="10" viewBox="0 0 9 10"><path d="M0 0L9 5L0 10Z" fill="#14100a"/></svg><span>Play</span></button>
+      <button class="ghost" id="tclear" hidden>Clear trace</button>
+      <button id="tplay"><svg width="9" height="10" viewBox="0 0 9 10"><path d="M0 0L9 5L0 10Z" fill="#14100a"/></svg><span>Play</span></button>
       <div id="treadout">Jul 2026</div>
-      </div>
-    </header>
-    <div class="timeline-surface space-canvas-surface">
+    </div>
     <div class="scrubrow">
       <input id="tscrub" type="range" min="0" max="1000" value="1000">
       <div class="ticks"><span>JUN 2025</span><span>SEP</span><span>DEC</span><span>MAR 2026</span><span>JUL 2026</span></div>
@@ -122,12 +115,11 @@
     </div>
     <div id="tmilestone"></div>
     <div id="tplot"></div>
-    </div></div>
   </section>
   <!-- AGENTS (Argus telemetry dashboard; content rendered by the
        agents-tab closure below, independent of boot()) -->
   <section class="view" id="view-agents">
-    <div class="sesswrap space-page" id="sesswrap"></div>
+    <div class="sesswrap" id="sesswrap"></div>
   </section>
 </main>
 
@@ -184,12 +176,12 @@
      views/connectors.js). -->
 <script type="importmap">
 {"imports":{
-  "./js/core/api.js":"./js/core/api.js?v=20260914-unified1",
+  "./js/core/api.js":"./js/core/api.js?v=20260914-accounts1",
   "./js/core/ui.js":"./js/core/ui.js?v=20260914-accounts1",
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260914-unified1"></script>
+<script type="module" src="js/app.js?v=20260914-navigation1"></script>
 
 
 </body></html>

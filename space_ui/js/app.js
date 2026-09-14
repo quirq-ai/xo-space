@@ -3,23 +3,22 @@
    bundler, so no file globbing; this import list is the one manual step. */
 import {registerView,startRegistry} from './core/registry.js?v=20260914-navigation1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
-import {initToolbar} from './core/toolbar.js?v=20260914-unified1';
-import {initSectionNav} from './core/section-nav.js?v=20260914-unified1';
-import {createExplorerViews} from './views/data-explorer.js?v=20260914-unified1';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260914-unified1';
-import {initPreview} from './core/preview.js?v=20260914-unified1';
-import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-unified1';
-import {createAgentViews} from './views/sessions.js?v=20260914-unified1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-unified1';
-import projectsView from './views/projects.js?v=20260914-unified1';
-import treeView from './views/tree.js?v=20260914-unified1';
-import sharingView from './views/sharing.js?v=20260914-unified1';
+import {initToolbar} from './core/toolbar.js?v=20260914-context1';
+import {initSectionNav} from './core/section-nav.js?v=20260914-navigation1';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260914-navigation1';
+import {initPreview} from './core/preview.js?v=20260914-navigation1';
+import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-navigation1';
+import {createAgentViews} from './views/sessions.js?v=20260914-navigation1';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-navigation1';
+import projectsView from './views/projects.js?v=20260914-navigation1';
+import treeView from './views/tree.js?v=20260914-navigation1';
+import sharingView from './views/sharing.js?v=20260914-navigation1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-unified1';
-import quirqView from './views/quirq.js?v=20260914-unified1';
-import {createSetupViews} from './views/setup.js?v=20260914-unified1';
-import connectorsView from './views/connectors.js?v=20260914-unified1';
+import wikiView from './views/wiki.js?v=20260914-navigation1';
+import quirqView from './views/quirq.js?v=20260914-navigation1';
+import {createSetupViews} from './views/setup.js?v=20260914-navigation1';
+import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
@@ -68,7 +67,6 @@ try{
   registerView(timeView);
   createAgentViews().forEach(registerView);
   createInboxViews().forEach(registerView);
-  createExplorerViews().forEach(registerView);
   registerView(projectsView);
   registerView(treeView);
   registerView(sharingView);

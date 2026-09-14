@@ -124,7 +124,7 @@ async function within(selector){
 
 try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
-  await page.locator('#section-nav [data-setup-go="commands"]').click();
+  await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await row('job-a').waitFor();
   assert.equal(await page.locator('#runtime-watcher').isChecked(),false);
   assert.equal(writes.length,0,'Mount does not seed or run anything');
@@ -174,7 +174,7 @@ try{
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-a"] .is-running'));
   await page.locator('#command-add').click();await commandFields('Draft during run');
   await page.locator('#tab-inbox').click();await page.locator('#tab-setup').click();
-  await page.locator('#section-nav [data-setup-go="commands"]').click();
+  await page.locator('#setup-nav [data-setup-go="commands"]').click();
   assert.equal(await page.locator('#command-name').inputValue(),'Draft during run','View refresh preserves a command draft');
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-a"] .is-good'),null,{timeout:11000});
   assert.equal(await page.locator('#command-name').inputValue(),'Draft during run');
@@ -218,7 +218,7 @@ try{
   await page.locator('#command-runs-close').click();
 
   await page.setViewportSize({width:1440,height:1000});
-  await page.locator('#section-nav [data-setup-go="server"]').click();
+  await page.locator('#setup-nav [data-setup-go="server"]').click();
   restartMode='native';restartReject=true;
   fixtureRuntime.restart_required=false;
   fixtureRuntime.roots.change_required=false;
@@ -244,7 +244,7 @@ try{
   fixtureRuntime.restart_required=false;
   instanceId='fixture-after';
   await page.waitForFunction(before=>performance.timeOrigin!==before,before,{timeout:10000});
-  await page.locator('#section-nav [data-setup-go="server"]').click();
+  await page.locator('#setup-nav [data-setup-go="server"]').click();
   await page.locator('#setup-restart').waitFor();
   assert.deepEqual(errors,[]);
   console.log('Commands CRUD, safe history, conflicts, draft/read races, watcher-independent 3s polling, desktop/mobile layouts, foreground hints and new-instance restart checks passed. Screenshots: '+output);

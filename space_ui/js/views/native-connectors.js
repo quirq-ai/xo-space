@@ -18,7 +18,7 @@ const APPS=[
   {id:'onedrive',name:'OneDrive',icon:'O',description:'Connect Microsoft file storage through rclone.',drive:true},
 ];
 const string=value=>typeof value==='string'?value.trim().slice(0,300):'';
-const button=(action,label,primary=false)=>'<button type="button" class="conn-btn space-button is-compact '+(primary?'conn-primary is-primary':'conn-secondary')+'" data-native-action="'+action+'">'+label+'</button>';
+const button=(action,label,primary=false)=>'<button type="button" class="conn-btn '+(primary?'conn-primary':'conn-secondary')+'" data-native-action="'+action+'">'+label+'</button>';
 const field=(id,name,label,type='password',extra='')=>'<label class="conn-native-field" for="native-'+id+'-'+name+'"><span>'+label+'</span><input id="native-'+id+'-'+name+'" name="'+name+'" type="'+type+'" autocomplete="off" spellcheck="false" '+extra+'></label>';
 
 function cardMarkup(app){
@@ -33,11 +33,11 @@ function cardMarkup(app){
       +(id==='magicpath'?button('setup','Install skill &amp; CLI'):'')
       +(!app.drive?button('disconnect','Disconnect'):'')+'</div>'
     +'<div class="conn-native-form" id="native-'+id+'-form" hidden>'
-      +(token?'<form data-native-form="token">'+field(id,'token',id==='github'?'Personal access token':'API token','password','required maxlength="4096"')+'<button class="conn-primary space-button is-primary is-compact" type="submit">Save token</button></form>'+button('browser','Sign in with '+app.name):'')
+      +(token?'<form data-native-form="token">'+field(id,'token',id==='github'?'Personal access token':'API token','password','required maxlength="4096"')+'<button class="conn-primary" type="submit">Save token</button></form>'+button('browser','Sign in with '+app.name):'')
       +(id==='magicpath'?'<p class="conn-native-note">Sign in, then paste the authorization code from MagicPath.</p>'+button('browser','Open MagicPath sign-in'):'')
-      +(app.drive?'<form data-native-form="remote">'+field(id,'name','Account name','text','required pattern="[a-z0-9_-]{1,32}" maxlength="32" placeholder="my-drive"')+'<p class="conn-native-note">Use lowercase letters, numbers, - or _.</p><button class="conn-primary space-button is-primary is-compact" type="submit">Start sign-in</button></form>':'')
-      +'<div class="conn-native-auth" hidden><p class="conn-native-note" data-native-note></p><a class="conn-secondary space-button is-compact" data-native-link target="_blank" rel="noopener noreferrer" hidden>Continue sign-in ↗</a><p data-native-code hidden></p></div>'
-      +'<form data-native-form="code" hidden>'+field(id,'code',id==='magicpath'?'Authorization code':'Redirect URL','password','required maxlength="16384"')+'<button class="conn-primary space-button is-primary is-compact" type="submit">Complete sign-in</button></form>'
+      +(app.drive?'<form data-native-form="remote">'+field(id,'name','Account name','text','required pattern="[a-z0-9_-]{1,32}" maxlength="32" placeholder="my-drive"')+'<p class="conn-native-note">Use lowercase letters, numbers, - or _.</p><button class="conn-primary" type="submit">Start sign-in</button></form>':'')
+      +'<div class="conn-native-auth" hidden><p class="conn-native-note" data-native-note></p><a class="conn-secondary" data-native-link target="_blank" rel="noopener noreferrer" hidden>Continue sign-in ↗</a><p data-native-code hidden></p></div>'
+      +'<form data-native-form="code" hidden>'+field(id,'code',id==='magicpath'?'Authorization code':'Redirect URL','password','required maxlength="16384"')+'<button class="conn-primary" type="submit">Complete sign-in</button></form>'
       +'<div class="conn-card-acts">'+button('check','Check connection')+button('cancel','Cancel sign-in')+button('close','Close')+'</div>'
     +'</div><p class="conn-card-error" role="alert" hidden></p></article>';
 }
@@ -89,7 +89,7 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       connected=ready.length>0;label=connected?'Configured':remotes.length?'Needs attention':'Not configured';
       detail=ready.length?ready.length+' configured account'+(ready.length===1?'':'s'):'';
       find(state,'.conn-native-remotes').innerHTML=remotes.filter(remote=>string(remote.name)).map(remote=>
-        '<li class="conn-native-remote"><span>'+esc(string(remote.name))+' <small>'+(remote.complete===true?'Configured':'Incomplete')+'</small></span><button type="button" class="conn-secondary space-button is-danger is-compact" data-native-action="remove" data-remote="'+esc(string(remote.name))+'">Remove</button></li>').join('');
+        '<li class="conn-native-remote"><span>'+esc(string(remote.name))+' <small>'+(remote.complete===true?'Configured':'Incomplete')+'</small></span><button type="button" class="conn-secondary" data-native-action="remove" data-remote="'+esc(string(remote.name))+'">Remove</button></li>').join('');
     }else if(app.id==='magicpath'){
       connected=data.logged_in===true;label=connected?'Connected':data.cli_installed?'Sign-in not verified':'Install required';
       detail=connected?string(data.user?.email)||string(data.user?.name)||'Signed in':

@@ -3,7 +3,7 @@
    Quirq GET responses below are synthetic; all non-GET requests are blocked.
    Screenshots capture the actual app without replacing visual DOM or CSS. */
 import assert from 'node:assert/strict';
-import {routeFor,openProjectPage,openProjectList} from './routes.mjs';
+import {routeFor,projectPageId,openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -57,10 +57,9 @@ await context.route('**/*',async route=>{
 const search=page.locator('#view-search');
 const graphSearch=page.locator('#q');
 const modes={graph:'graph',dashboard:'graph',projects:'search',tree:'search',time:'search',connectors:'search',
-  setup:'search',secrets:'search',wiki:'search',sharing:'search',quirq:'search'};
+  setup:'search',secrets:'search',wiki:'none',sharing:'none',quirq:'none'};
 const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
-  time:'Filter timeline projects…',connectors:'Filter connectors…',setup:'Search setup…',secrets:'Search setup…',
-  wiki:'Find a page…',sharing:'Find a page…',quirq:'Find a page…'};
+  time:'Filter timeline projects…',connectors:'Filter connectors…',setup:'Search setup…',secrets:'Search setup…'};
 async function expectMode(id){
   const mode=modes[id];
   await page.waitForFunction(({id,mode,placeholder,route})=>location.hash===route
@@ -78,16 +77,17 @@ async function go(id){
   if(id==='projects')await openProjectList(page);
   else if(['connectors','secrets','setup'].includes(id)){
     await page.locator('#tab-setup').click();
-    await page.locator('#section-nav [data-setup-go="'+(id==='setup'?'workspace':id)+'"]').click();
+    await page.locator('#setup-nav [data-setup-go="'+(id==='setup'?'workspace':id)+'"]').click();
   }
   else if(id==='wiki')await page.locator('#wiki-link').click();
   else if(id==='quirq'){
     await page.locator('#tab-setup').click();
-    await page.locator('#section-nav [data-setup-go="server"]').click();
+    await page.locator('#setup-nav [data-setup-go="server"]').click();
     await page.locator('#setup-quirq').click();
   }else{
-    if(!await page.locator('#tab-projects.is-on').count())await page.locator('#tab-projects').click();
-    await openProjectPage(page,id);
+    if(!await page.locator('#section-nav [data-section-page="'+projectPageId(id)+'"]').isVisible())
+      await page.locator('#tab-projects').click();
+    await page.locator('[data-section-page="'+projectPageId(id)+'"]').click();
   }
   await expectMode(id);
   if(id==='time'){
@@ -265,39 +265,11 @@ try{
   for(const id of ['wiki','sharing','quirq']){
     await go(id);
     await page.locator('.brand').click();await page.keyboard.press('/');
-    assert.equal(await search.evaluate(element=>element===document.activeElement),true,
-      id+' slash focuses Find a page');
-    await search.fill('setup projects');
-    await page.locator('#page-finder.is-open a[href="#/setup/projects"]').waitFor();
-    assert.equal(await page.locator('#qac.is-open,#rootdd.is-open').count(),0,id+' page search stays separate from Graph');
+    assert.equal(await page.evaluate(()=>['q','view-search'].includes(document.activeElement?.id)),false,
+      id+' slash must not focus a hidden search');
     assert.equal(new URL(page.url()).hash,routeFor(id));
-    await search.press('ArrowDown');
-    assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('href')),'#/setup/projects',
-      id+' ArrowDown focuses the matching page');
-    await page.keyboard.press('Enter');
-    await page.waitForURL('**/#/setup/projects');
-    await page.locator('#setup-panel-projects').waitFor({state:'visible'});
-    assert.equal(await search.inputValue(),'','Selecting a page clears the navigation query');
-    await page.locator('#page-finder.is-open').waitFor({state:'hidden'});
   }
-  await go('wiki');await search.fill('setup projects');
-  const resultLink=page.locator('#page-finder.is-open a[href="#/setup/projects"]');
-  assert.equal(await resultLink.getAttribute('href'),'#/setup/projects');
-  const [openedPage]=await Promise.all([
-    context.waitForEvent('page'),
-    resultLink.click({modifiers:[process.platform==='darwin'?'Meta':'Control']})
-  ]);
-  // The destination remains a native link and opens a new browsing context.
-  // Deep-link loading is checked separately; close this background renderer
-  // immediately because macOS headless-shell can crash while booting it.
-  assert.equal(new URL(page.url()).hash,routeFor('wiki'),'Modified page links preserve the current view');
-  await openedPage.close();
-  await go('wiki');await search.fill('no matching navigation page');
-  await page.locator('#page-finder .empty').waitFor();
-  await search.press('Escape');assert.equal(await search.inputValue(),'');
-  await page.locator('#page-finder.is-open').waitFor({state:'hidden'});
-  await go('projects');assert.equal(await search.inputValue(),'aurora');await rows(1);
-  checked('Wiki, Sharing and Quirq retain Find a page search; keyboard selection, new-tab links and empty results preserve local data queries.');
+  checked('Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
 
   for(const width of [320,390,640,1280,1440,1920]){
     await page.setViewportSize({width,height:1000});
@@ -308,11 +280,11 @@ try{
     for(const id of ['tree','time','connectors','setup','secrets']){await go(id);await layout(id,width);}
     for(const id of ['wiki','sharing','quirq']){
       await go(id);const height=await layout(id,width);
-      assert.ok(Math.abs(height-searchHeight)<1,id+' search footprint changes at '+width);
-      assert.ok(Math.abs(height-graphHeight)<1,id+' graph footprint changes at '+width);
+      assert.ok(height<=graphHeight+1&&height<=searchHeight+1,id+' header is not compact at '+width);
+      if(width<=640)assert.ok(height<=searchHeight-20,id+' reserves a hidden control row at '+width);
       if(id==='wiki')await screenshot('wiki-'+width+'.png');
     }
-    checked(width+'px: no overflow; Graph, local search and page search share one stable header footprint.');
+    checked(width+'px: no overflow; graph/search/none controls fit; none-mode header is compact.');
   }
   await page.setViewportSize({width:1440,height:1000});
   await go('setup');
