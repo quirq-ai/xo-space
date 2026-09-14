@@ -58,7 +58,9 @@ OUTPUT_TAIL_CHARS = 2000
 
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
-_DEFINITION_KEYS = frozenset({"name", "command", "every_seconds", "project_id", "enabled"})
+_DEFINITION_KEYS = frozenset(
+    {"name", "command", "every_seconds", "first_run_at", "project_id", "enabled"}
+)
 
 
 class SchedulerError(Exception):
@@ -242,6 +244,30 @@ def validate_definition(payload: Any) -> dict:
             f"({tick:g}s): that is polling, not scheduling. Raise every_seconds or "
             f"lower {ENV_WATCHER_INTERVAL}."
         )
+    first_run_at = payload.get("first_run_at")
+    if first_run_at is not None:
+        # Where the grid starts. Must carry a UTC offset: the server clock is
+        # UTC (Docker), so a naive "19:00" would silently mean the wrong hour.
+        # Stored normalised to UTC; a past anchor is fine (the first run is
+        # then the next slot on that grid after now — see _first_slot).
+        if not isinstance(first_run_at, str) or not first_run_at.strip():
+            raise ValueError(
+                "first_run_at must be an ISO-8601 timestamp string with a UTC offset, "
+                "e.g. 2026-09-14T19:00:00+05:30"
+            )
+        try:
+            anchor = datetime.fromisoformat(first_run_at.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"first_run_at is not an ISO-8601 timestamp ({first_run_at!r}): "
+                f"use e.g. 2026-09-14T19:00:00+05:30"
+            ) from exc
+        if anchor.tzinfo is None:
+            raise ValueError(
+                "first_run_at needs a UTC offset (+05:30, or Z): the server clock is "
+                "UTC and a naive time would mean the wrong hour"
+            )
+        first_run_at = stamp(anchor)
     project_id = payload.get("project_id")
     if project_id is not None and (not isinstance(project_id, str) or not project_id):
         raise ValueError("project_id must be a non-empty string when given")
@@ -258,6 +284,7 @@ def validate_definition(payload: Any) -> dict:
         "project_id": project_id,
         "command": command,
         "every_seconds": every,
+        "first_run_at": first_run_at,
         "enabled": enabled,
     }
 
@@ -270,9 +297,25 @@ def _new_id(name: str, taken: Mapping[str, Any]) -> str:
             return candidate
 
 
+def _first_slot(job: Mapping[str, Any], now: datetime) -> datetime:
+    """Where this job's grid starts.
+
+    With ``first_run_at``: that instant if it is still ahead (or exactly now),
+    else the first slot strictly after ``now`` on the grid it defines — so
+    "every Monday 19:00" can be anchored to *last* Monday and still land on
+    the coming one. Without it: one interval from now.
+    """
+    every = int(job["every_seconds"])
+    anchor = job.get("first_run_at")
+    if anchor:
+        first = parse_stamp(anchor)
+        return first if first >= now else advance(first, every, now)
+    return now + timedelta(seconds=every)
+
+
 def _initial_state(job: Mapping[str, Any], now: datetime) -> dict:
     return {
-        "next_run": stamp(now + timedelta(seconds=int(job["every_seconds"]))),
+        "next_run": stamp(_first_slot(job, now)),
         "last_run": None,
         "running_since": None,
         "last_result": None,
@@ -342,8 +385,8 @@ def list_jobs() -> list[dict]:
 
 
 def update_job(job_id: str, payload: Any, *, now: Optional[datetime] = None) -> dict:
-    """Replace the definition, keep the id. A changed interval restarts the
-    grid from now; anything else leaves ``next_run`` alone."""
+    """Replace the definition, keep the id. A changed interval or anchor
+    recomputes ``next_run`` from the new grid; anything else leaves it alone."""
     definition = validate_definition(payload)
     now = _resolve_now(now)
     with _lock:
@@ -355,8 +398,11 @@ def update_job(job_id: str, payload: Any, *, now: Optional[datetime] = None) -> 
         job = {**old, **definition, "updated_at": stamp(now)}
         jobs["jobs"][job_id] = job
         entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
-        if definition["every_seconds"] != old.get("every_seconds"):
-            entry["next_run"] = stamp(now + timedelta(seconds=definition["every_seconds"]))
+        if (
+            definition["every_seconds"] != old.get("every_seconds")
+            or definition["first_run_at"] != old.get("first_run_at")
+        ):
+            entry["next_run"] = stamp(_first_slot(job, now))
         _write_doc(jobs_file(), jobs)
         _write_doc(state_file(), state)
         return _view(job, entry)
