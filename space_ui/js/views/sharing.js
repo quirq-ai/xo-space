@@ -495,10 +495,10 @@ async function onClick(e){
       render();
       return;
     case'apply':return doApply(id);
-    case'connect':return go('connectors');
+    case'connect':return go('setup/connectors');
     case'restore':
-      await go('setup');
-      dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'agent'}}));
+      await go('setup/projects');
+      if(location.hash==='#/setup/projects')dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'projects'}}));
       return;
     case'list':
       /* views never import each other: switch to List and tell it which

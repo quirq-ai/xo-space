@@ -1,6 +1,6 @@
 /* View registry: builds the tab nav from registered views, assigns hotkeys
    1..n (ignored while an input, textarea or select has focus), syncs the URL
-   hash (#/<id>, deep-linkable), lazy-mounts each view on first activation,
+   hash (#/<route>, deep-linkable), lazy-mounts each view on first activation,
    and isolates a view's failure to its own section: the other tabs keep
    working. The registry knows the view contract, never the
    views themselves (the same seam philosophy as the backend's capability
@@ -9,6 +9,8 @@
    View contract (js/views/*.js default export or named export):
      {
        id: 'sessions',          // section is #view-<id>, tab is #tab-<id>
+       route: 'sessions',       // optional canonical URL path; defaults to id
+       aliases: [],             // additional accepted URL paths
        label: 'Sessions',       // tab text (may contain entities)
        order: 4,                // nav position; hotkey is its 1-based index
        nav: true,               // false keeps a child view out of the top nav
@@ -26,6 +28,7 @@
 
 let views=[];
 const byId=new Map();
+const byRoute=new Map();
 let current=null;
 let activation=0;
 
@@ -33,7 +36,16 @@ export function registerView(v){
   if(byId.has(v.id))views=views.map(w=>w.id===v.id?v:w); /* idempotent re-register */
   else views.push(v);
   byId.set(v.id,v);
+  /* Re-registration replaces its route contract, including removed aliases. */
+  byRoute.clear();
+  for(const view of views){
+    byRoute.set(view.route||view.id,view);
+    for(const alias of view.aliases||[])byRoute.set(alias,view);
+  }
 }
+
+const resolveView=id=>byId.get(id)||byRoute.get(id);
+const viewHash=v=>'#/'+(v.route||v.id);
 
 const ctx={switchTo};
 function refreshToolbar(v){
@@ -42,9 +54,10 @@ function refreshToolbar(v){
   }));
 }
 
-export async function switchTo(id){
-  const v=byId.get(id);
+export async function switchTo(target,{replace=false}={}){
+  const v=resolveView(target);
   if(!v)return;
+  const id=v.id;
   const request=++activation;
   const prev=current&&current!==id?byId.get(current):null;
   current=id;
@@ -70,7 +83,8 @@ export async function switchTo(id){
       inline:'nearest',
     });
   });
-  history.replaceState(null,'','#/'+id);
+  const hash=viewHash(v);
+  if(location.hash!==hash)history[replace?'replaceState':'pushState'](null,'',hash);
   /* Shell chrome (the Projects lens switch) needs to know which view is active
      without importing views. activeTab is the parent for a child view, so a
      lens and its parent tab report the same tab. */
@@ -131,10 +145,11 @@ export function startRegistry({defaultView}){
   });
   addEventListener('hashchange',()=>{
     const id=location.hash.replace(/^#\//,'');
-    if(byId.has(id)&&id!==current)switchTo(id);
+    const view=resolveView(id);
+    if(view&&(view.id!==current||location.hash!==viewHash(view)))switchTo(id,{replace:true});
   });
   const initial=location.hash.replace(/^#\//,'');
-  switchTo(byId.has(initial)?initial:defaultView);
+  switchTo(resolveView(initial)?initial:defaultView,{replace:true});
 }
 
 /* per-view bulkhead: a throwing mount gets an error card in its own section */

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,10 +23,10 @@ SKILL_DIR = ROOT / ".agents" / "skills" / "xo-projects"
 SKILL_REF = SKILL_DIR / "references" / "inbox-http-api.md"
 DASHES = re.compile("[\\u2013\\u2014]")  # en dash, em dash: banned in new docs
 AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
-#: Every view app.js registers (nav tabs and the nav:false lenses alike): the
-#: ids a link.view may name and the UI will follow.
-REGISTERED_VIEWS = ("dashboard", "projects", "graph", "tree", "time", "agents",
-                    "inbox", "sharing", "wiki", "quirq", "setup", "secrets", "connectors")
+#: Documented link.view targets accepted by the Inbox API and resolved by the
+#: UI, including stable aliases whose canonical browser routes contain '/'.
+INBOX_VIEW_TARGETS = ("dashboard", "projects", "graph", "tree", "time", "agents",
+                      "inbox", "sharing", "wiki", "quirq", "setup", "secrets", "connectors")
 
 
 def read(rel: str) -> str:
@@ -183,19 +186,46 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         self.assertIn('"auto_closed": true', text)
         self.assertIn("Either PATCH drops `auto_closed`", text)
         self.assertIn("stamped whether or not a feeder fails", text)
-        # the view list is exactly what app.js registers, and the rule is the store's
+        # The published names include stable aliases; slash-separated browser
+        # routes are intentionally outside the Inbox API's view-name grammar.
         self.assertNotIn("(`projects`, `sessions`, `time`, `dashboard`; unknown views are ignored)", text)
-        listed = re.search(r"the view ids registered today are (.+?), and the UI ignores", text).group(1)
-        self.assertEqual(sorted(re.findall(r"`([a-z_-]+)`", listed)), sorted(REGISTERED_VIEWS))
+        listed = re.search(r"supported Inbox view names are (.+?), and the UI ignores", text).group(1)
+        self.assertEqual(sorted(re.findall(r"`([a-z_-]+)`", listed)), sorted(INBOX_VIEW_TARGETS))
         self.assertIn(f"any `{store.VIEW_RE.pattern}` id", text)
-        views = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "space_ui" / "js" / "views").glob("*.js"))
-        for view in REGISTERED_VIEWS:
-            self.assertRegex(views, rf"(id:\s*'{view}'|atlasView\('{view}')", view)
-        app = read("space_ui/js/app.js")
-        self.assertEqual(len(re.findall(r"^\s*registerView\(", app, re.M)), len(REGISTERED_VIEWS))
+        self.assertIn("Browser paths containing `/` are not valid `link.view` values", text)
+        for view in INBOX_VIEW_TARGETS:
+            self.assertEqual(store.validate_link({"view": view}, strict=True), {"view": view})
+        for route in ("setup/workspace", "setup/secrets", "setup/connectors"):
+            self.assertIn(f"`#/{route}`", text)
+            with self.assertRaises(store.InboxError):
+                store.validate_link({"view": route}, strict=True)
         feeders = read("services/inbox/feeders.py")
         self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))), ["agents", "connectors", "projects"])
         self.assertIn("the feeders themselves use `agents`, `projects` and `connectors`", text)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_documented_view_names_resolve_in_the_registered_ui(self) -> None:
+        """Reuse the navigation probe's real registrations and route factory."""
+        from tests.test_space_navigation import PROBE
+
+        script = PROBE + r"""
+          const documentedTargets=JSON.parse(process.argv[2]),resolved={};
+          for(const target of documentedTargets){
+            await registry.switchTo('route-probe');
+            await registry.switchTo(target);
+            resolved[target]=location.hash.slice(2);
+          }
+          console.log(JSON.stringify(resolved));
+        """
+        result = subprocess.run(
+            [shutil.which("node"), "--input-type=module", "-e", script, "--",
+             "#/setup", json.dumps(INBOX_VIEW_TARGETS)],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = {name: name for name in INBOX_VIEW_TARGETS}
+        expected.update(setup="setup/workspace", secrets="setup/secrets", connectors="setup/connectors")
+        self.assertEqual(json.loads(result.stdout), expected)
 
     def test_the_status_code_split_the_docs_claim_holds(self) -> None:
         """422 is pydantic's (shape), 400 is the service's (value): none of these

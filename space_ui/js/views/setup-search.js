@@ -6,10 +6,10 @@ const SETTINGS=[
   ['workspace','Workspace identity','Space ID, owner and account connections','space user name xo github status','#setup-workspace-title'],
   ['workspace','Projects folder','Workspace · Folders','root directory path projects','#xo-root-input'],
   ['workspace','Space data folder','Workspace · Folders','quirq settings storage directory credentials','#quirq-root-input'],
-  ['agent','Agent & access','Choose the agent for new chats','runtime cli install authentication','#runtime-agent'],
-  ['agent','Projects','Clone a repository or remove a local project','git add delete remove shared sharing revoke access','#setup-projects-title'],
-  ['activity','Activity sources','Choose which agent activity appears in Space','watcher sessions history automatic telemetry','#runtime-source-mode'],
-  ['activity','Activity interval','Activity · Advanced','watcher polling seconds frequency','#runtime-interval'],
+  ['intelligence','Intelligence layer','Choose the agent for new chats','agent & access runtime cli install authentication','#runtime-agent'],
+  ['projects','Projects','Clone a repository or remove a local project','agent git add delete remove shared sharing revoke access','#setup-projects-title'],
+  ['intelligence','Activity sources','Choose which agent activity appears in Space','watcher sessions history automatic telemetry','#runtime-source-mode'],
+  ['intelligence','Activity interval','Intelligence layer · Advanced','activity watcher polling seconds frequency','#runtime-interval'],
   ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
   ['commands','Commands','Run commands and view their results','jobs scheduled interval automation inbox output logs','#setup-commands-title'],
@@ -45,15 +45,8 @@ export function mountSetupSearch(root,openPanel,refreshToolbar){
     const row=SETTINGS[Number(button.dataset.setupResult)];
     if(!row)return;
     clear();
-    openPanel(row[0],{focus:true});
+    openPanel(row[0],{focus:true,target:row[4]});
     refreshToolbar();
-    const target=root.querySelector(row[4]);
-    if(target){
-      const details=target.closest('details');
-      if(details)details.open=true;
-      if(!target.disabled)target.focus({preventScroll:true});
-      target.scrollIntoView({block:'nearest'});
-    }
   });
   return {
     toolbar:{search:{placeholder:'Search setup…',getValue:()=>query,

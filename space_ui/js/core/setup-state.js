@@ -5,9 +5,22 @@ const inaccessible=path=>path?.exists===false||path?.readable===false;
 const accessible=path=>path?.exists===true&&path?.readable===true;
 const WATCHER_FIELDS=['watcher_enabled','watcher_source_mode','watcher_interval_seconds'];
 
-export function setupSteps(runtimeData){
+function projectsSummary(projectStatus){
+  if(projectStatus?.status==='error')return summary('Unavailable','error');
+  if(projectStatus?.status==='ready'){
+    const count=projectStatus.count;
+    return Number.isInteger(count)&&count>=0
+      ?summary(count?count+' '+(count===1?'project':'projects'):'No projects',count?'good':'muted')
+      :summary('Not checked');
+  }
+  return projectStatus?.status==='idle'||projectStatus?.status==='loading'
+    ?summary('Checking'):summary('Not checked');
+}
+
+export function setupSteps(runtimeData,projectStatus={status:'idle',count:0}){
+  const projects=projectsSummary(projectStatus);
   if(!runtimeData)return{
-    workspace:summary('Checking'),agent:summary('Checking'),activity:summary('Checking'),next:null
+    workspace:summary('Checking'),intelligence:summary('Checking'),projects,next:null
   };
   const configured=runtimeData.configured||{},applied=runtimeData.applied||{};
   const roots=runtimeData.roots||{},paths=runtimeData.paths||{};
@@ -23,14 +36,16 @@ export function setupSteps(runtimeData){
   const source=Array.isArray(runtimeData.agents)?runtimeData.agents.find(item=>item?.name===agentName):null;
   const agentPending=Boolean(agentName&&applied.agent_name&&agentName!==applied.agent_name);
   const agentMissing=source?.binary_available===false||inaccessible(source?.home);
-  const agent=summary(agentName||'Not checked',agentPending?'pending'
-    :agentMissing?'muted':agentName&&agentName===applied.agent_name?'good':'muted');
+  const agentChecked=Boolean(agentName&&agentName===applied.agent_name
+    &&source?.binary_available===true&&accessible(source?.home));
 
   const activityPending=WATCHER_FIELDS.some(key=>configured[key]!==undefined&&applied[key]!==undefined
     &&configured[key]!==applied[key]);
   const activityKnown=typeof applied.watcher_enabled==='boolean';
-  const activity=summary(activityKnown?(applied.watcher_enabled?'On':'Off')+(activityPending?' · pending':''):'Not checked',
-    activityPending?'pending':applied.watcher_enabled===true?'good':'muted');
+  const intelligence=agentPending||activityPending?summary('Apply changes','pending')
+    :agentName&&agentMissing?summary('Check agent','error')
+      :agentChecked&&activityKnown?summary('Agent set · Activity '+(applied.watcher_enabled?'on':'off'),'good')
+        :summary('Not checked');
 
   let next=null;
   if(rootsPending)next={panel:'workspace',label:'Apply changes',message:runtimeData.managed_container===true
@@ -40,7 +55,9 @@ export function setupSteps(runtimeData){
     message:'Restart the server to use your saved settings.'};
   else if(foldersBlocked)next={panel:'workspace',label:'Check folders',
     message:'Check that xo-space can read your projects and write to its state folder.'};
-  else if(agentName&&agentMissing)next={panel:'agent',label:'Check agent',
+  else if(agentName&&agentMissing)next={panel:'intelligence',label:'Check agent',
     message:'Install the agent or check access to its folder.'};
-  return{workspace,agent,activity,next};
+  else if(foldersChecked&&intelligence.tone==='good'&&projectStatus?.status==='ready'&&projectStatus.count===0)
+    next={panel:'projects',label:'Add project',message:'Clone a Git repository into this Space.'};
+  return{workspace,intelligence,projects,next};
 }

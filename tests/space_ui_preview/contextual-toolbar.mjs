@@ -59,14 +59,15 @@ const modes={graph:'graph',dashboard:'graph',projects:'search',tree:'search',tim
   setup:'search',secrets:'search',wiki:'none',sharing:'none',quirq:'none'};
 const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
   time:'Filter timeline projects…',connectors:'Filter connectors…',setup:'Search setup…',secrets:'Search setup…'};
+const routeFor=id=>['setup','connectors','secrets'].includes(id)?'#/setup/'+(id==='setup'?'workspace':id):'#/'+id;
 async function expectMode(id){
   const mode=modes[id];
-  await page.waitForFunction(({id,mode,placeholder})=>location.hash==='#/'+id
+  await page.waitForFunction(({id,mode,placeholder,route})=>location.hash===route
     &&document.getElementById('view-'+(id==='dashboard'?'graph':['connectors','secrets','setup'].includes(id)?'setup':id))?.classList.contains('is-active')
     &&document.querySelector('.topbar')?.dataset.toolbar===mode
     &&(mode!=='search'||(!document.getElementById('view-search').disabled
       &&document.getElementById('view-search').placeholder===placeholder))
-    &&(mode!=='graph'||!document.getElementById('q').disabled),{id,mode,placeholder:placeholders[id]});
+    &&(mode!=='graph'||!document.getElementById('q').disabled),{id,mode,placeholder:placeholders[id],route:routeFor(id)});
   assert.equal(await page.locator('#root-btn').isVisible(),mode==='graph',id+' root picker');
   assert.equal(await graphSearch.isVisible(),mode==='graph',id+' graph search');
   assert.equal(await search.isVisible(),mode==='search',id+' local search');
@@ -97,7 +98,7 @@ async function go(id){
 async function query(value,id){
   await search.fill(value);
   await search.press('ArrowDown');await search.press('Enter');
-  assert.equal(new URL(page.url()).hash,'#/'+id,'Local search never selects a graph node');
+  assert.equal(new URL(page.url()).hash,routeFor(id),'Local search never selects a graph node');
 }
 async function screenshot(name){
   await page.mouse.move(1,999);

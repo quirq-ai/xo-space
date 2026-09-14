@@ -27,9 +27,9 @@ class SpaceInboxCompositionTests(unittest.TestCase):
             r"import inboxView,\{initInboxBadge\} from './views/inbox\.js\?v=\d{8}-[a-z0-9]+';",
         )
         self.assertIn("registerView(inboxView);", app)
-        # Inbox sits between Sessions and Setup in the primary nav.
+        # Inbox sits between Agents and the Setup route family in the primary nav.
         self.assertLess(app.index("registerView(sessionsView);"), app.index("registerView(inboxView);"))
-        self.assertLess(app.index("registerView(inboxView);"), app.index("registerView(secretsView);"))
+        self.assertLess(app.index("registerView(inboxView);"), app.index("createSetupViews(connectorsView).forEach(registerView);"))
 
     def test_badge_starts_after_the_registry_in_its_own_bulkhead(self) -> None:
         app = read("js/app.js")

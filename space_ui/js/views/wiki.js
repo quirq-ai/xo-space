@@ -52,14 +52,14 @@ const GROUPS=[
       {
         id:'setup',title:'Setup & installation',
         summary:'Check roots, runtime health, and credentials. Restart Space and run saved commands with recorded results.',
-        docs:'/space-walk/setup',view:'setup',viewLabel:'Setup',
+        docs:'/space-walk/setup',view:'setup/workspace',viewLabel:'Setup',
         more:[{label:'Commands docs',path:'/space-walk/setup#run-saved-commands'},
           {label:'Install docs',path:'/install-space'}]
       },
       {
         id:'connectors',title:'Connectors',
         summary:'Connect services, choose the account enabled here, and control actions and polling.',
-        docs:'/space-walk/connectors',view:'connectors'
+        docs:'/space-walk/connectors',view:'setup/connectors'
       },
       {
         id:'contribute',title:'Contribute',
@@ -151,7 +151,7 @@ function render(){
           +'<ol>'
             +'<li><span class="wiki-step-number" aria-hidden="true">01</span><div>'
               +'<h3>Check your setup</h3><p>Confirm the projects root and your runtime.</p>'
-              +openView('setup','Setup','Open Setup')+'</div></li>'
+              +openView('setup/workspace','Setup','Open Setup')+'</div></li>'
             +'<li><span class="wiki-step-number" aria-hidden="true">02</span><div>'
               +'<h3>Bring a project</h3><p>Create or add a project inside that root.</p>'
               +docsLink('/first-space','Open docs','Open the first project guide')+'</div></li>'

@@ -90,14 +90,17 @@ class SpaceWikiTests(unittest.TestCase):
           view.hide();view.show();
           assert.equal(main.scrollTop,41,'ordinary return preserves scroll');
 
-          // Follow a real rendered local-action target through ctx.switchTo.
-          assert.match(overview,/data-open-tab="sharing"/);
-          const button={owner:root,dataset:{openTab:'sharing'}};
-          clicks.get('click')({target:{closest:()=>button}});
-          assert.deepEqual(opened,['sharing']);
+          // Follow real rendered local-action targets through ctx.switchTo.
+          // Setup actions select their section directly, including after a reload.
+          for(const target of ['sharing','setup/workspace','setup/connectors']){
+            assert.ok(overview.includes('data-open-tab="'+target+'"'));
+            const button={owner:root,dataset:{openTab:target}};
+            clicks.get('click')({target:{closest:()=>button}});
+          }
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors']);
           clicks.get('click')({target:{closest:()=>null}});
           clicks.get('click')({target:{closest:()=>({dataset:{openTab:'secrets'}})}});
-          assert.deepEqual(opened,['sharing']);
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors']);
         """
         result = subprocess.run(
             [shutil.which("node"), "--input-type=module", "-e", script,
@@ -133,13 +136,15 @@ class SpaceWikiTests(unittest.TestCase):
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         secrets = (
-            ROOT / "space_ui" / "js" / "views" / "secrets.js"
+            ROOT / "space_ui" / "js" / "views" / "setup.js"
+        ).read_text(encoding="utf-8") + (
+            ROOT / "space_ui" / "js" / "views" / "setup-shell.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import setupView,{createConnectorsView,secretsView} from './views/secrets.js?v=", app)
-        self.assertIn("registerView(secretsView);", app)
-        self.assertIn('href="css/secrets.css?v=', index)
-        self.assertIn("id:'setup',label:'Setup'", secrets)
+        self.assertIn("import {createSetupViews} from './views/setup.js?v=", app)
+        self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
+        self.assertIn('href="css/setup.css?v=', index)
+        self.assertIn("export function createSetupViews(", secrets)
         self.assertIn("type=\"password\"", secrets)
         self.assertIn("method:'PATCH'", secrets)
         self.assertIn("method:'DELETE'", secrets)
@@ -208,7 +213,7 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("import connectorsView from './views/connectors.js?v=", app)
-        self.assertIn("registerView(createConnectorsView(connectorsView));", app)
+        self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
         self.assertIn('href="css/connectors.css?v=', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 
@@ -260,12 +265,15 @@ class SpaceWikiTests(unittest.TestCase):
         contract = view_contract("quirq")
         self.assertIn("nav:false", contract)
         self.assertIn("parent:'setup'", contract)
+        self.assertIn('data-go-view="setup/server"', quirq)
         # The button id and the handler that reads it must move together: an
         # unguarded querySelector on a renamed id throws inside mount(), and
         # the registry bulkheads the whole Setup view behind its error card —
         # taking the only in-app route to Quirq down with it.
         secrets = (
-            ROOT / "space_ui" / "js" / "views" / "secrets.js"
+            ROOT / "space_ui" / "js" / "views" / "setup.js"
+        ).read_text(encoding="utf-8") + (
+            ROOT / "space_ui" / "js" / "views" / "setup-shell.js"
         ).read_text(encoding="utf-8")
         self.assertIn('id="setup-quirq"', secrets)
         self.assertIn("Technical details", secrets)

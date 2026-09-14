@@ -144,12 +144,12 @@ try {
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
-      await page.waitForFunction(id => location.hash === '#/' + id, id);
+      await page.waitForFunction(id => location.hash === (id === 'setup' ? '#/setup/workspace' : '#/' + id), id);
       await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
     await page.keyboard.press('5');
-    assert.equal(new URL(page.url()).hash, '#/setup', 'Only four primary tabs consume number keys');
+    assert.equal(new URL(page.url()).hash, '#/setup/workspace', 'Only four primary tabs consume number keys');
     report.checks.push('Number keys 1–4 select Projects, Agents, Inbox and Setup');
 
     for(const width of [375, 320]) {

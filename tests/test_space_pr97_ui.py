@@ -893,16 +893,17 @@ class ShellTests(unittest.TestCase):
 
     def test_stamps_moved_together(self) -> None:
         app = read("js/app.js")
-        # Contextual controls refreshed their participating views. Inbox
-        # advanced again for Jobs/results; unchanged resources keep their URLs.
+        # Canonical Setup section URLs advance every participating handoff
+        # and the registry; unchanged resources keep their URLs.
         project_stamp = "20260914-projectmanage1"
-        self.assertIn("./views/sharing.js?v=" + project_stamp + "'", app)
+        setup_stamp = "20260914-setuproutes1"
+        for view in ("sharing", "inbox", "wiki", "projects", "quirq", "setup"):
+            self.assertIn("./views/" + view + ".js?v=" + setup_stamp + "'", app)
         context_stamp = "20260914-context1"
         for view in ("tree",):
             self.assertIn("./views/" + view + ".js?v=" + project_stamp + "'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-results1"
-        self.assertIn("./views/inbox.js?v=20260914-setupidentity1'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
         # lens switch advanced together to carry the new pill.
         timeline_stamp = "20260914-timelinelens1"
@@ -911,10 +912,8 @@ class ShellTests(unittest.TestCase):
         # that documents it advanced together to carry the new label.
         agents_stamp = "20260914-agentstab1"
         self.assertIn("./views/sessions.js?v=" + agents_stamp + "'", app)
-        self.assertIn("./views/wiki.js?v=20260914-setupidentity1'", app)
-        self.assertIn("./views/projects.js?v=" + project_stamp + "'", app)
-        for core in ("registry", "toolbar"):
-            self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
+        self.assertIn("./core/registry.js?v=" + setup_stamp + "'", app)
+        self.assertIn("./core/toolbar.js?v=" + context_stamp + "'", app)
         self.assertIn("./core/lens-switch.js?v=" + timeline_stamp + "'", app)
         self.assertRegex(app, r"\./core/preview\.js\?v=\d{8}-[a-z0-9]+'")
         html = read("index.html")

@@ -106,7 +106,7 @@ const projectRoot=page.locator('#setup-projects'),removeButton=page.locator('#se
 const open=id=>projectRoot.locator('[data-project-remove="'+id+'"]');
 const totalDeletes=()=>report.writes.filter(write=>write.method==='DELETE'&&!write.path.includes('/peers/')).length;
 const checked=text=>{report.checks.push(text);console.log(text);};
-async function chooseAgent(){await page.locator('#setup-nav [data-setup-go="agent"]').click();await projectRoot.waitFor();await open('solo-demo').waitFor();}
+async function chooseProjects(){await page.locator('#setup-nav [data-setup-go="projects"]').click();await projectRoot.waitFor();await open('solo-demo').waitFor();}
 async function openRemove(id){await open(id).click();await page.waitForFunction(id=>document.querySelector('#setup-project-removal-id')?.textContent===id&&!document.querySelector('#setup-project-recheck')?.disabled,id);}
 async function close(){await page.locator('#setup-project-close').click();}
 async function screenshot(name){await projectRoot.scrollIntoViewIfNeeded();await page.screenshot({path:resolve(output,name)});report.screenshots.push(name);}
@@ -114,18 +114,27 @@ async function screenshot(name){await projectRoot.scrollIntoViewIfNeeded();await
 try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   assert.equal(report.requests.some(request=>request.path.endsWith('/removal')),false);
-  await chooseAgent();assert.equal(await projectRoot.locator('.setup-project-row').count(),4);
+  await chooseProjects();assert.equal(await projectRoot.locator('.setup-project-row').count(),4);
   assert.match(await projectRoot.textContent(),/Shared <demo>/);assert.equal(await projectRoot.locator('img,script').count(),0);
   assert.deepEqual(report.writes,[]);
-  checked('Agent & access lists local projects; opening Setup never changes files, users or sharing.');
+  checked('Projects settings list local projects; opening Setup never changes files, users or sharing.');
 
   await page.locator('#setup-project-add').click();
   await page.locator('#setup-project-repository').fill('https://github.com/fixture/example-project.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'example-project');
   await page.locator('#setup-project-id').fill('my-demo');
+  assert.match(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'Clone drafts belong to Projects');
+  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Clone drafts do not mark Intelligence as unsaved');
   await page.locator('#setup-project-repository').fill('git@github.com:fixture/changed-name.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'my-demo');
   const repositoryNode=await page.locator('#setup-project-repository').elementHandle();
+  await page.locator('#setup-nav [data-setup-go="intelligence"]').click();
+  await page.locator('#view-search').fill('clone');
+  await page.locator('.setup-search-result').filter({hasText:/Projects/}).click();
+  await page.locator('#setup-panel-projects').waitFor();
+  assert.equal(await page.locator('#setup-projects-title').evaluate(node=>node===document.activeElement),true,'Project search focuses the standalone project manager');
+  assert.equal(await page.locator('#view-search').inputValue(),'');
+  assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Project search keeps the clone draft mounted');
   await page.locator('#setup-project-refresh').click();
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
   await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
@@ -137,7 +146,7 @@ try{
   await page.locator('[data-files-lens="graph"]').click();
   await page.waitForFunction(()=>document.querySelector('#q')?.placeholder.match(/Search \d+/));
   assert.equal(await page.locator('.atlas-project-refresh').count(),0);
-  await page.locator('#tab-setup').click();await chooseAgent();
+  await page.locator('#tab-setup').click();await chooseProjects();
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'git@github.com:fixture/changed-name.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'my-demo');
@@ -148,14 +157,17 @@ try{
   assert.equal(await page.locator('#setup-project-cancel').isDisabled(),true);
   cloning.release.resolve();await open('my-demo').waitFor();
   assert.equal(await page.locator('#setup-project-form').isVisible(),false);
+  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'A confirmed clone clears its Projects draft');
   assert.equal(await page.locator('#setup-project-notice').textContent(),'Project added; automatic restore remains paused.');
   assert.equal(report.writes.filter(write=>write.method==='POST'&&write.path==='/api/xo-projects').length,2);
   await page.locator('#tab-projects').click();await page.locator('#prj-row-my-demo').waitFor();
   assert.equal(await page.locator('#view-search').inputValue(),'demo','A changed catalog preserves the Projects filter');
-  await page.locator('#tab-setup').click();await chooseAgent();
+  await page.locator('#tab-setup').click();await chooseProjects();
   checked('Clone URL suggests a folder name until edited; drafts survive refresh/navigation, errors preserve input, and a pending clone cannot duplicate.');
 
   await openRemove('shared-demo');
+  assert.match(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'A pending removal review belongs to Projects');
+  assert.doesNotMatch(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/);
   assert.equal(await removeButton.isDisabled(),true);
   assert.equal(await projectRoot.locator('[data-project-revoke-start]').count(),2);
   assert.equal(await projectRoot.locator('[data-project-peer-start]').count(),1);
@@ -190,7 +202,7 @@ try{
   await page.locator('#tab-projects').click();
   await page.waitForFunction(()=>!document.querySelector('#prj-row-shared-demo'));
   assert.equal(await page.locator('#view-search').inputValue(),'demo');
-  await page.locator('#tab-setup').click();await chooseAgent();
+  await page.locator('#tab-setup').click();await chooseProjects();
   checked('Shared project removal requires each separate revoke and local-roster confirmation, fresh access verification, and the exact project id.');
   checked('The tagline is absent; an already mounted Projects list refreshes additions/removals while keeping its filter.');
 
@@ -258,7 +270,7 @@ try{
     assert.equal(await page.locator('#view-'+lens+' .atlas-project-refresh').count(),1);
   }
   assert.equal(report.pageLoads.length,loadsBefore,'Catalog changes offer a reload instead of discarding Setup drafts automatically');
-  await page.locator('#tab-setup').click();await chooseAgent();
+  await page.locator('#tab-setup').click();await chooseProjects();
   assert.equal(await draftNode.evaluate(node=>node.isConnected),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fixture/keep-this-draft.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'unsaved-project-folder');
@@ -270,15 +282,15 @@ try{
   assert.match(await suppressed.textContent(),/automatic cloning is paused/);
   assert.doesNotMatch(await suppressed.textContent(),/clone failed|XO Space clones it on the next check/);
   await suppressed.getByRole('button',{name:'Clone in Setup',exact:true}).click();
-  await page.locator('#setup-panel-agent').waitFor();
-  assert.equal(new URL(page.url()).hash,'#/setup');
-  assert.equal(await page.locator('#setup-nav [data-setup-go="agent"]').getAttribute('aria-current'),'step');
+  await page.locator('#setup-panel-projects').waitFor();
+  assert.equal(new URL(page.url()).hash,'#/setup/projects');
+  assert.equal(await page.locator('#setup-nav [data-setup-go="projects"]').getAttribute('aria-current'),'step');
   assert.equal(await draftNode.evaluate(node=>node.isConnected),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fixture/keep-this-draft.git');
   assert.equal(await page.locator('#setup-project-id').inputValue(),'unsaved-project-folder');
   assert.equal(report.writes.length,writesBefore,'Viewing a suppressed project and opening Setup never clones or changes access');
   assert.equal(report.pageLoads.length,loadsBefore);
-  checked('A suppressed Sharing entry says removed locally; Clone in Setup opens Agent & access and preserves its draft without initiating a clone.');
+  checked('A suppressed Sharing entry says removed locally; Clone in Setup opens Projects settings and preserves its draft without initiating a clone.');
   assert.deepEqual(report.errors,[]);
 }catch(error){report.failure=error.stack;await page.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});throw error;}
 finally{await writeFile(resolve(output,'checks.json'),JSON.stringify(report,null,2)+'\n');await browser.close();}

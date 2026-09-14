@@ -104,7 +104,7 @@ const panel=id=>page.locator('#setup-panel-'+id);
 async function choose(id){
   await page.locator('#setup-nav [data-setup-go="'+id+'"]').click();
   await panel(id).waitFor();
-  await page.waitForFunction(({id,mode})=>location.hash==='#/'+(['connectors','secrets'].includes(id)?id:'setup')
+  await page.waitForFunction(({id,mode})=>location.hash==='#/setup/'+id
     &&document.querySelector('.topbar')?.dataset.toolbar===mode,{id,mode:'search'});
   assert.equal(await page.locator('.setup-panel:visible').count(),1);
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
@@ -122,14 +122,14 @@ try{
   assert.deepEqual(await page.locator('.tabs button').evaluateAll(nodes=>nodes.map(node=>node.id)),
     ['tab-projects','tab-agents','tab-inbox','tab-setup']);
   assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
-    ['workspace','agent','activity','connectors','secrets','commands','server']);
-  for(const id of ['agent','activity','secrets','commands','server','workspace'])await choose(id);
+    ['workspace','intelligence','projects','connectors','secrets','commands','server']);
+  for(const id of ['intelligence','projects','secrets','commands','server','workspace'])await choose(id);
   assert.deepEqual(report.requests,[],'Ordinary Setup never mints a session, lists toolkits or resolves connector accounts');
   assert.deepEqual(report.writes,[]);
   checked('Four primary tabs; Connectors is under Manage; ordinary Setup navigation makes no connector/session requests or writes.');
 
   const setupSearch=page.locator('#view-search');
-  for(const id of ['workspace','agent','activity','secrets','commands','server']){
+  for(const id of ['workspace','intelligence','projects','secrets','commands','server']){
     await choose(id);
     assert.equal(await setupSearch.isVisible(),true,id+' keeps Setup search visible');
     assert.equal(await setupSearch.getAttribute('placeholder'),'Search setup…');
@@ -143,7 +143,7 @@ try{
   await setupSearch.fill('secret');
   await page.locator('.setup-search-result').filter({hasText:/^Secrets/}).click();
   await panel('secrets').waitFor();
-  assert.equal(new URL(page.url()).hash,'#/secrets');
+  assert.equal(new URL(page.url()).hash,'#/setup/secrets');
   assert.equal(await folderNode.evaluate(node=>node.isConnected),true);
   await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_UNSAVED_TOKEN');
@@ -156,8 +156,8 @@ try{
   await setupSearch.fill('folder');
   await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
   await page.locator('#tab-setup').click();
-  await page.locator('#setup-search-results').waitFor();
-  assert.equal(await setupSearch.inputValue(),'folder','Top-level navigation preserves Setup query');
+  await panel('workspace').waitFor();
+  assert.equal(await setupSearch.inputValue(),'','Returning through Setup opens Workspace with its search cleared');
   await choose('secrets');
   assert.equal(await setupSearch.inputValue(),'','Sidebar selection clears Setup query');
   assert.equal(await page.locator('#secret-value').inputValue(),'fictional-unsaved-value');
@@ -169,7 +169,7 @@ try{
   await choose('workspace');
   listing.release.resolve();
   await page.locator('#setup-connectors .conn-card').first().waitFor({state:'attached'});
-  assert.equal(new URL(page.url()).hash,'#/setup');
+  assert.equal(new URL(page.url()).hash,'#/setup/workspace');
   assert.equal(await panel('workspace').isVisible(),true,'A delayed connector mount cannot reclaim the current panel');
   assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'search');
   assert.equal(await folderNode.evaluate(node=>node===document.activeElement),false);
@@ -197,7 +197,7 @@ try{
   assert.equal(await page.locator('#xo-root-input').inputValue(),'/demo/unsaved-connectors-test');
   await choose('connectors');assert.equal(await search.inputValue(),'gmail');
   await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
-  await page.locator('#tab-setup').click();await panel('connectors').waitFor();
+  await page.locator('#tab-setup').click();await panel('workspace').waitFor();await choose('connectors');
   assert.equal(await search.inputValue(),'gmail');
   for(const handle of [host,folderNode,credentialNode,pollNode,actionNode])
     assert.equal(await handle.evaluate(node=>node.isConnected),true,'Setup and connector controls retain their DOM nodes');
@@ -221,7 +221,7 @@ try{
   authorization.release.resolve();
   await page.locator('#poll-telegram [data-poll="interval"]').waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/projects','Completing authorization cannot navigate away from the current tab');
-  await page.locator('#tab-setup').click();await panel('server').waitFor();
+  await page.locator('#tab-setup').click();await panel('workspace').waitFor();
   await choose('connectors');await page.locator('#poll-telegram').waitFor();
   assert.match(await page.locator('[data-toolkit="telegram"]').textContent(),/Off in this workspace/);
   checked('Authorization completes while Setup is hidden and retains its polling follow-up without stealing navigation.');
@@ -249,7 +249,7 @@ try{
   assert.equal(await direct.locator('#tab-connectors,#view-connectors').count(),0);
   assert.equal(count('/api/connectors/composio/toolkits'),before+1);
   await direct.locator('#setup-nav [data-setup-go="workspace"]').click();
-  await direct.waitForURL('**/#/setup');
+  await direct.waitForURL('**/#/setup/workspace');
   await direct.locator('#tab-projects').click();await direct.waitForURL('**/#/projects');
   const runtimeResponse=direct.waitForResponse(response=>new URL(response.url()).pathname==='/api/runtime-config');
   runtime.release.resolve();await runtimeResponse;
@@ -259,7 +259,7 @@ try{
   await direct.locator('#tab-setup').click();
   await direct.locator('#setup-panel-workspace').waitFor();
   await direct.locator('#setup-nav [data-setup-go="connectors"]').click();
-  await direct.waitForURL('**/#/connectors');
+  await direct.waitForURL('**/#/setup/connectors');
   assert.equal(count('/api/connectors/composio/toolkits'),before+1,'Direct alias and Setup share one mounted controller');
   await direct.close();
   checked('The legacy deep link loads Connectors while initial Setup status is pending; completing that read preserves subsequent navigation and one shared mount.');
@@ -269,11 +269,11 @@ try{
   await page.locator('#tab-inbox').click();
   await page.locator('[data-act="conns-toggle"]').click();
   await page.locator('[data-act="conn-config"]').first().click();
-  await page.waitForURL('**/#/connectors');await panel('connectors').waitFor();
+  await page.waitForURL('**/#/setup/connectors');await panel('connectors').waitFor();
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
   await page.locator('#wiki-link').click();
-  await page.locator('[data-open-tab="connectors"]').click();
-  await page.waitForURL('**/#/connectors');await panel('connectors').waitFor();
+  await page.locator('[data-open-tab="setup/connectors"]').click();
+  await page.waitForURL('**/#/setup/connectors');await panel('connectors').waitFor();
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
   assert.equal(count('/api/connectors/composio/toolkits'),beforeLinks,'Existing Inbox and Wiki links reuse the mounted connector panel');
   checked('Inbox Configure and the Wiki Connectors link still open the nested Setup panel.');

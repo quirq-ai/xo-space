@@ -266,7 +266,7 @@ class SpaceCommandsTests(unittest.TestCase):
 
     def test_setup_ui_pins(self):
         root = Path(__file__).resolve().parents[1] / 'space_ui'
-        setup = (root / 'js/views/secrets.js').read_text()
+        setup = (root / 'js/views/setup.js').read_text()
         card = (root / 'js/views/setup-commands.js').read_text()
         results = (root / 'js/core/command-results.js').read_text()
         self.assertIn("mountCommands(root.querySelector('#setup-commands'))", setup)

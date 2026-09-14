@@ -142,7 +142,7 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         self.assertIn('data-act="conn-config" data-toolkit="\'+tk+\'"', self.src)
         self.assertIn(">Poll now</button>", self.src)
         self.assertIn(">Configure</button>", self.src)
-        self.assertIn("case'conn-config':switchTo('connectors');break;", self.src)
+        self.assertIn("case'conn-config':switchTo('setup/connectors');break;", self.src)
         # the wording is core/connections.js's, shared with the Connectors
         # drawer so one payload never reads two ways
         self.assertIn("import {collectorLabels,every,pollLine} from '../core/connections.js';", self.src)
@@ -346,7 +346,7 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setupidentity1';", app
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setuproutes1';", app
         )
         self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
         # both views import core/api.js bare: the stamp is the import map's

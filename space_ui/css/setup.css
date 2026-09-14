@@ -18,9 +18,9 @@
 .setup-nav{position:sticky;top:22px;display:flex;flex-direction:column;gap:4px}
 .setup-nav>p{margin:18px 12px 7px;font:500 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
 .setup-nav>p:first-child{margin-top:0}
-.setup-nav>button{display:flex;gap:12px;align-items:center;padding:12px;text-align:left;border:1px solid transparent;border-radius:10px;color:var(--ink-2)}
-.setup-nav>button:hover{background:var(--bg-2);border-color:var(--line-soft)}
-.setup-nav>button[aria-current]{background:rgba(168,217,79,.07);border-color:rgba(168,217,79,.22);color:var(--ink)}
+.setup-nav>a{display:flex;text-decoration:none;gap:12px;align-items:center;padding:12px;text-align:left;border:1px solid transparent;border-radius:10px;color:var(--ink-2)}
+.setup-nav>a:hover{background:var(--bg-2);border-color:var(--line-soft)}
+.setup-nav>a[aria-current]{background:rgba(168,217,79,.07);border-color:rgba(168,217,79,.22);color:var(--ink)}
 .setup-nav-icon{display:grid;place-items:center;flex-shrink:0;width:23px;height:23px;border:1px solid var(--line);border-radius:50%;font:500 11px var(--mono);color:var(--ink-3)}
 .setup-nav [aria-current] .setup-nav-icon{border-color:var(--accent-deep);color:var(--accent)}
 .setup-nav b{display:block;font-size:12.5px;font-weight:500}
@@ -126,7 +126,7 @@
 @media(max-width:650px){
   .setup-page{width:calc(100% - 28px);padding-top:22px}.setup-hero h1{font-size:30px}.setup-layout{grid-template-columns:1fr;gap:24px}
   .setup-nav{position:static;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.setup-nav>p{grid-column:1/-1;margin:8px 2px 0}
-  .setup-nav>button{padding:9px 6px;gap:6px}.setup-nav-icon{width:20px;height:20px;font-size:10px}.setup-nav b{font-size:11px}.setup-nav small{display:none}
+  .setup-nav>a{padding:9px 6px;gap:6px}.setup-nav-icon{width:20px;height:20px;font-size:10px}.setup-nav b{font-size:11px}.setup-nav small{display:none}
   .setup-alert{align-items:flex-start;flex-wrap:wrap;margin-bottom:20px;gap:10px}.setup-alert button{font-size:11px;padding:7px 10px}
   .setup-card-head{padding:14px 15px;flex-wrap:wrap}.setup-roots form,.setup-runtime form,.setup-credentials form{padding:16px}
   .setup-sources{padding:0 15px 15px}.setup-secret-row{grid-template-columns:minmax(0,1fr) auto auto;gap:7px;padding:12px 15px}.setup-secret-row code{display:none}
@@ -134,6 +134,7 @@
 }
 
 .setup-command-body{padding:18px 21px}
+@media(max-width:430px){.setup-nav>a[data-setup-step]{flex-direction:column;justify-content:center;text-align:center;gap:7px}}
 .setup-command-endpoint{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin-bottom:16px;color:var(--ink-3);font-size:11px}
 .setup-command-endpoint code{color:var(--ink-2);font:400 11px/1.6 var(--mono);overflow-wrap:anywhere;min-width:0}
 .setup-commands-intro code{font:400 11px/1.7 var(--mono);overflow-wrap:anywhere}

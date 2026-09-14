@@ -25,7 +25,11 @@ globalThis.dispatchEvent=event=>{
 };
 globalThis.CustomEvent=class{constructor(type,options={}){this.type=type;this.detail=options.detail;}};
 globalThis.location={hash:''};
-globalThis.history={replaceState:(_state,_title,hash)=>{location.hash=hash;}};
+/* Both History API writes change the URL without emitting hashchange. */
+globalThis.history={
+  pushState:(_state,_title,hash)=>{location.hash=hash;},
+  replaceState:(_state,_title,hash)=>{location.hash=hash;},
+};
 globalThis.requestAnimationFrame=fn=>queueMicrotask(fn);
 
 class Element{

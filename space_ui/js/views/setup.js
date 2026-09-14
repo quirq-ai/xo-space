@@ -1,4 +1,4 @@
-/* Runtime Setup tab.
+/* Setup controller.
 
    Runtime controls are typed and restart-aware. Credentials remain write-only:
    this view receives configured status and fixed masks, never saved plaintext.
@@ -8,10 +8,12 @@ import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-commandhelp2';
-import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
+import {setupSteps} from '../core/setup-state.js?v=20260914-setuproutes1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
-import {mountSetupSearch} from './setup-search.js?v=20260914-projectmanage1';
-import {mountProjects} from './setup-projects.js?v=20260914-projectmanage1';
+import {mountSetupSearch} from './setup-search.js?v=20260914-setuproutes1';
+import {mountProjects} from './setup-projects.js?v=20260914-setuproutes1';
+import {renderSetupShell} from './setup-shell.js?v=20260914-setuproutes1';
+import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-setuproutes1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -32,11 +34,12 @@ let loading=false;
 let commands=null;
 let identity=null;
 let projectsManager=null;
+let projectStatus={status:'idle',count:0};
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
 let runtimeUnavailable=false;
-const drafts={workspace:false,agent:false,activity:false};
+const formDrafts={workspace:false,agent:false,activity:false};
 const touched=new Set();
 const writes=new Set();
 let runtimeRevision=0,refreshQueued=false;
@@ -46,16 +49,21 @@ const toolbarRefreshers=new Set();
 const refreshSetupToolbar=()=>{for(const refresh of toolbarRefreshers)refresh?.();};
 const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:setupSearch?.toolbar;
 
-/* The old Connectors URL is a child of Setup. Both routes share one shell;
-   authorization starts only when its section is actually opened. */
-export function createConnectorsView(controller){
+/* Each section is a registered route. They share a mounted shell so changing
+   the URL never rebuilds forms. Connectors mount only on their first visit. */
+export function createSetupViews(controller){
   connectorController=controller;
-  return {
-    id:'connectors',label:'Connectors',nav:false,parent:'setup',section:'setup',
-    toolbar:setupToolbar,
-    mount:mountSetup,
-    show(){selectPanel('connectors');},
-  };
+  return SETUP_SECTIONS.map(section=>({
+    id:section.id==='workspace'?'setup':section.route,
+    route:section.route,aliases:section.aliases,
+    label:section.id==='workspace'?'Setup':section.label,
+    order:9,nav:section.id==='workspace',parent:'setup',section:'setup',
+    toolbar:setupToolbar,mount:mountSetup,
+    show(){
+      selectPanel(section.id);
+      if(section.id==='commands')commands?.refresh();
+    },
+  }));
 }
 
 function mountSetup(el,ctx){
@@ -63,13 +71,16 @@ function mountSetup(el,ctx){
   if(!setupMount)setupMount=(async()=>{
     root=el;
     switchTo=ctx.switchTo;
-    renderShell();
+    renderSetupShell(root);
+    bindFormReferences();
     bindEvents();
     setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
     projectsManager=mountProjects(root.querySelector('#setup-projects'),{
       onChange:detail=>dispatchEvent(new CustomEvent(detail?.action==='access'?'space:project-access-changed':'space:projects-changed',{detail})),
       onDraftChange:()=>renderJourney(),
+      onStatusChange:status=>{projectStatus=status;renderJourney();},
     });
+    projectsManager.refresh();
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
     identity.refresh();
@@ -85,140 +96,9 @@ function mountSetup(el,ctx){
   return setupMount;
 }
 
-export default {
-  id:'setup',label:'Setup',order:9,
-  toolbar:setupToolbar,
-  mount(el,ctx){return mountSetup(el,ctx);},
-  show(){commands?.refresh();if(currentPanel==='agent')projectsManager?.refresh(); /* Preserve in-progress forms while switching tabs. */}
-};
-
-export const secretsView={
-  id:'secrets',label:'Secrets',nav:false,parent:'setup',section:'setup',
-  toolbar:setupToolbar,mount:mountSetup,show(){selectPanel('secrets');},
-};
-
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount (opens the Quirq view) */
 
-function renderShell(){
-  root.innerHTML=`<div class="setup-page">
-    <header class="setup-hero">
-      <h1>Setup</h1>
-      <button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>
-    </header>
-    <div class="setup-alert" id="setup-alert" role="status"><div><b>Checking settings…</b></div></div>
-    <div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>
-    <div class="setup-layout">
-      <nav class="setup-nav" id="setup-nav" aria-label="Setup sections">
-        <p>Set up</p>
-        ${[['workspace','1','Workspace'],['agent','2','Agent & access'],['activity','3','Activity']].map(([id,n,label])=>`
-          <button type="button" data-setup-go="${id}" aria-controls="setup-panel-${id}"${id==='workspace'?' aria-current="step"':''}>
-            <span class="setup-nav-icon">${n}</span><span><b>${label}</b><small id="setup-step-${id}">Checking…</small></span>
-          </button>`).join('')}
-        <p>Manage</p>
-        <button type="button" data-setup-go="connectors" aria-controls="setup-panel-connectors"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Connectors</b><small>Apps, access and polling</small></span></button>
-        <button type="button" data-setup-go="secrets" aria-controls="setup-panel-secrets"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Secrets</b><small id="setup-step-secrets">Environment values</small></span></button>
-        <button type="button" data-setup-go="commands" aria-controls="setup-panel-commands"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Commands</b><small>Run and view results</small></span></button>
-        <button type="button" data-setup-go="server" aria-controls="setup-panel-server"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Server</b><small>Updates and restart</small></span></button>
-      </nav>
-      <div class="setup-content">
-        <section id="setup-search-results" aria-label="Setup search results" hidden></section>
-        <section class="setup-panel" id="setup-panel-workspace" aria-labelledby="setup-workspace-title">
-          <header class="setup-section-head"><h2 id="setup-workspace-title" tabindex="-1">Workspace</h2><p>Choose your project folder and where Space keeps its settings.</p></header>
-          <section class="setup-card setup-identity" id="setup-identity" aria-label="Workspace identity"></section>
-          <section class="setup-card setup-roots">
-            <div class="setup-card-head"><h3>Folders</h3><i id="roots-badge">Checking</i></div>
-            <form id="roots-form" novalidate>
-              <div class="setup-root-fields">
-                <div><label for="xo-root-input">Projects folder</label><input id="xo-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/xo-projects">
-                  <small>Contains your project folders. Changing this does not move them.</small><code id="xo-root-applied"></code></div>
-                <div><label for="quirq-root-input">Space data folder</label><input id="quirq-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/.quirq">
-                  <small>Settings, credentials and activity data. Default: ~/.quirq/</small><code id="quirq-root-applied"></code></div>
-              </div>
-              <div class="setup-form-error" id="roots-error" role="alert" hidden></div>
-              <div class="setup-root-apply" id="roots-apply" hidden>
-                <div><b>Apply folder changes</b><p>Restart to use the saved folders. For an installer-managed container, run this command to update its mounts.</p></div>
-                <pre id="roots-command"></pre>
-              </div>
-              <div class="setup-actions"><button class="setup-primary" id="roots-save" type="submit">Save folders</button><button class="setup-secondary" id="roots-copy" type="button" hidden>Copy installer command</button></div>
-            </form>
-          </section>
-          <details class="setup-details"><summary>Folder and connection details</summary><section class="setup-overview" id="setup-overview" aria-label="Installation paths"></section></details>
-          <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="agent">Next: Agent &amp; access →</button></footer>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-agent" aria-labelledby="setup-agent-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-agent-title" tabindex="-1">Agent &amp; access</h2><p>Choose the agent for new chats and add credentials if needed.</p></header>
-          <section class="setup-card setup-runtime">
-            <form id="runtime-form" novalidate>
-              <div class="setup-agent-label"><label for="runtime-agent">Agent for new chats</label><i id="setup-applied-badge">Checking</i></div><select id="runtime-agent" name="agent_name" required><option>Loading…</option></select>
-              <div class="setup-form-error" id="runtime-error" role="alert" hidden></div>
-              <div class="setup-actions"><button class="setup-primary" id="runtime-save" type="submit">Save agent</button></div>
-            </form>
-            <div class="setup-sources" id="setup-sources"><div class="setup-empty">Checking agents…</div></div>
-          </section>
-          <button class="setup-secondary" type="button" data-setup-go="secrets">Manage secrets →</button>
-          <section class="setup-card setup-projects" id="setup-projects" aria-label="Projects"></section>
-          <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="activity">Next: Activity →</button></footer>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-activity" aria-labelledby="setup-activity-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-activity-title" tabindex="-1">Activity</h2><p>Choose which agent activity appears in Space.</p></header>
-          <section class="setup-card setup-runtime">
-            <form id="activity-form" novalidate>
-              <div class="setup-check-row"><label class="setup-switch" for="runtime-watcher"><input id="runtime-watcher" type="checkbox"><span></span></label><div><b>Update activity automatically</b><small>Keep sessions and project history up to date.</small></div></div>
-              <label for="runtime-source-mode">Activity sources</label><select id="runtime-source-mode"><option value="all">All agents</option><option value="active">Chat agent only</option></select>
-              <small>Scheduled commands also need automatic activity updates enabled.</small>
-              <details class="setup-inline-details"><summary>Advanced</summary><label for="runtime-interval">Check every</label><div class="setup-number"><input id="runtime-interval" type="number" min=".25" max="60" step=".25" inputmode="decimal"><span>seconds</span></div><small>0.25–60 seconds. Default: 1.</small></details>
-              <div class="setup-form-error" id="activity-error" role="alert" hidden></div>
-              <div class="setup-actions"><button class="setup-primary" id="activity-save" type="submit">Save activity settings</button></div>
-            </form>
-          </section>
-          <div class="setup-usage-reporting" id="usage-reporting" hidden></div>
-          <footer class="setup-step-footer"><button class="setup-primary" id="setup-open-projects" type="button">Open Projects →</button></footer>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-connectors" aria-labelledby="setup-connectors-title" hidden>
-          <div id="setup-connectors"></div>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-secrets" aria-labelledby="setup-secrets-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-secrets-title" tabindex="-1">Secrets</h2><p>Environment values used by Space and its agents.</p></header>
-          <section class="setup-card setup-credentials">
-            <div class="setup-card-head"><h3>Saved secrets <span id="secret-count">—</span></h3><button class="setup-secondary" id="secret-add" type="button">Add secret</button></div>
-            <div id="secret-list"><div class="setup-empty">Loading credentials…</div></div>
-            <div class="setup-form-error" id="secret-error" role="alert" hidden></div>
-            <form id="secret-form" novalidate hidden>
-              <h4 id="secret-form-title">Add secret</h4>
-              <label for="secret-key">Key</label><input id="secret-key" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ANTHROPIC_API_KEY" required>
-              <label for="secret-value">Value</label><div class="setup-value-wrap"><input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste a value" required><button id="secret-toggle" type="button" aria-label="Show value">Show</button></div>
-              <small>Saved values stay hidden. Restart to apply changes.</small>
-              <div class="setup-actions"><button class="setup-primary" id="secret-save" type="submit">Save secret</button><button class="setup-secondary" id="secret-cancel" type="button">Cancel</button></div>
-            </form>
-          </section>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
-          <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Commands</h2>
-            <p>Click <b>Run</b> to execute on this Space’s machine. Open the command’s <b>Inbox</b> for results and recent output. Intervals run automatically while the watcher and scheduler are enabled.</p>
-            <p>Logs: <code>~/.quirq/scheduler/logs/&lt;command-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;command-id&gt;.jsonl</code><br>These are the default paths. Inbox shows the exact log path for your Space.</p></header>
-          <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-server" aria-labelledby="setup-server-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-server-title" tabindex="-1">Server</h2><p>Apply saved changes and keep Space up to date.</p></header>
-          <section class="setup-card setup-maintenance">
-            <div class="setup-card-head"><h3>Restart</h3><button class="setup-restart" id="setup-restart" data-restart type="button" disabled>Restart server</button></div>
-            <div class="setup-server-body"><p class="setup-restart-hint" id="setup-restart-hint" role="status"></p><button class="setup-restart" id="runtime-restart" data-restart type="button" hidden>Apply &amp; restart</button></div>
-          </section>
-          <section class="setup-card setup-version">
-            <div class="setup-card-head"><h3>Updates</h3><i id="update-badge">Not checked</i></div>
-            <div class="setup-version-body"><div class="setup-version-state" id="update-state"><p>Check for a newer version of Space.</p></div><div class="setup-actions"><button class="setup-secondary" id="update-check" type="button">Check for updates</button><button class="setup-primary" id="update-apply" type="button" hidden>Update now</button><button class="setup-restart" id="update-restart" data-restart type="button" hidden>Restart server</button></div></div>
-          </section>
-          <button class="setup-secondary" id="setup-quirq" type="button">Technical details →</button>
-        </section>
-      </div>
-    </div>
-  </div>`;
+function bindFormReferences(){
   runtimeForm=root.querySelector('#runtime-form');
   secretForm=root.querySelector('#secret-form');
   keyInput=root.querySelector('#secret-key');
@@ -228,7 +108,7 @@ function renderShell(){
   secretError=root.querySelector('#secret-error');
 }
 
-function hasDraft(panel){
+function hasFormDraft(panel){
   const configured=runtimeData?.configured||{};
   if(panel==='workspace'){
     const folders=runtimeData?.roots?.configured||{};
@@ -241,12 +121,14 @@ function hasDraft(panel){
     ||Number(root.querySelector('#runtime-interval').value)!==configured.watcher_interval_seconds;
 }
 
-function selectPanel(panel,{focus=false}={}){
+function selectPanel(requested){
+  const panel=resolveSetupSection(requested);
+  if(!panel)return false;
   const target=root.querySelector('#setup-panel-'+panel);
-  if(!target)return;
+  if(!target)return false;
   setupSearch?.clear();
   currentPanel=panel;
-  if(panel==='agent')projectsManager?.refresh();
+  if(panel==='projects')projectsManager?.refresh();
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
@@ -261,23 +143,38 @@ function selectPanel(panel,{focus=false}={}){
     });
   }
   refreshSetupToolbar();
-  if(focus){
-    target.querySelector('h2')?.focus({preventScroll:true});
-    root.scrollTop=0;
-  }
+  return true;
 }
 
-function openPanel(panel,options){
-  selectPanel(panel,options);
-  const route=['connectors','secrets'].includes(panel)?panel:'setup';
-  if(location.hash!=='#/'+route)switchTo(route);
+async function openPanel(requested,{focus=false,target=null}={}){
+  const panel=resolveSetupSection(requested);
+  const route=setupSectionRoute(requested);
+  if(!route)return false;
+  if(currentPanel===panel&&location.hash==='#/'+route&&root.classList.contains('is-active')){
+    setupSearch?.clear();
+    refreshSetupToolbar();
+  }else await switchTo(route);
+  /* A later navigation wins even if it arrived while this route mounted. */
+  if(currentPanel!==panel||location.hash!=='#/'+route||!root.classList.contains('is-active'))return false;
+  if(focus){
+    root.scrollTop=0;
+    const selector=target||(requested==='agent'?'#runtime-agent':requested==='activity'?'#runtime-source-mode':null);
+    const control=selector?root.querySelector(selector):root.querySelector('#setup-panel-'+panel+' h2');
+    const details=control?.closest('details');
+    if(details)details.open=true;
+    if(control&&!control.disabled)control.focus({preventScroll:true});
+    control?.scrollIntoView({block:'nearest'});
+  }
+  return true;
 }
 
 function bindEvents(){
   root.addEventListener('click',event=>{
-    const button=event.target.closest('[data-setup-go]');
-    if(button){
-      const panel=button.dataset.setupGo;
+    const link=event.target.closest('[data-setup-go]');
+    if(link){
+      if(link.tagName==='A'&&(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey))return;
+      event.preventDefault();
+      const panel=link.dataset.setupGo;
       openPanel(panel,{focus:true});
     }
     if(event.target.closest('[data-connectors-retry]'))selectPanel('connectors');
@@ -289,7 +186,7 @@ function bindEvents(){
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
     root.querySelector(selector).addEventListener('input',event=>{
       touched.add(event.target.id);
-      drafts[panel]=hasDraft(panel);
+      formDrafts[panel]=hasFormDraft(panel);
       if(panel==='workspace')renderRoots();
       if(panel==='agent')renderSources();
       renderJourney();
@@ -300,7 +197,7 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();if(currentPanel==='agent')projectsManager?.refresh();});
+  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();if(currentPanel==='projects')projectsManager?.refresh();});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
@@ -427,14 +324,14 @@ function renderRuntime(){
   const configured=runtimeData.configured;
   const agents=runtimeData.agents||[];
   const select=root.querySelector('#runtime-agent');
-  const selected=drafts.agent?select.value:configured.agent_name;
+  const selected=formDrafts.agent?select.value:configured.agent_name;
   select.innerHTML=agents.map(agent=>'<option value="'+esc(agent.name)+'">'+esc(prettyName(agent.name))+'</option>').join('');
   if(selected&&!agents.some(agent=>agent.name===selected)){
     select.insertAdjacentHTML('beforeend','<option value="'+esc(selected)+'">'+esc(prettyName(selected))+' (unavailable)</option>');
   }
   select.value=selected;
   for(const [id,key,property] of [['runtime-watcher','watcher_enabled','checked'],['runtime-source-mode','watcher_source_mode','value'],['runtime-interval','watcher_interval_seconds','value']]){
-    if(!drafts.activity||!touched.has(id))root.querySelector('#'+id)[property]=configured[key];
+    if(!formDrafts.activity||!touched.has(id))root.querySelector('#'+id)[property]=configured[key];
   }
   const agentPending=configured.agent_name!==runtimeData.applied.agent_name;
   const badge=root.querySelector('#setup-applied-badge');
@@ -446,25 +343,26 @@ function renderRuntime(){
 }
 
 function renderJourney(){
-  const steps=setupSteps(runtimeUnavailable?null:runtimeData);
+  const steps=setupSteps(runtimeUnavailable?null:runtimeData,projectStatus);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty=panel=>panel==='secrets'?credentialDraft:!!drafts[panel]||(panel==='agent'&&projectsManager?.hasDraft());
+  const dirty={workspace:formDrafts.workspace,intelligence:formDrafts.agent||formDrafts.activity,
+    projects:projectsManager?.hasDraft()||false,secrets:credentialDraft};
   const secretsStep=root.querySelector('#setup-step-secrets');
   secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
   secretsStep.className=credentialDraft?'is-pending':'';
-  for(const panel of ['workspace','agent','activity']){
-    const state=steps[panel],el=root.querySelector('#setup-step-'+panel);
-    el.textContent=dirty(panel)?'Unsaved changes':runtimeUnavailable?'Unavailable'
-      :panel==='agent'&&state.label===runtimeData?.configured.agent_name?prettyName(state.label):state.label;
-    el.className='is-'+(dirty(panel)?'pending':state.tone);
+  for(const {id} of SETUP_STEPS){
+    const state=steps[id],el=root.querySelector('#setup-step-'+id);
+    const unavailable=runtimeUnavailable&&id!=='projects';
+    el.textContent=dirty[id]?'Unsaved changes':unavailable?'Unavailable':state.label;
+    el.className='is-'+(dirty[id]?'pending':unavailable?'error':state.tone);
   }
   if(restarting||runtimeUnavailable)return;
-  const unsaved=[...Object.keys(drafts),'secrets'].filter(dirty);
+  const unsaved=[...SETUP_STEPS.map(step=>step.id),'secrets'].filter(id=>dirty[id]);
   const alert=root.querySelector('#setup-alert');
   if(unsaved.length){
-    const labels={workspace:'Workspace',agent:'Agent & access',activity:'Activity',secrets:'Secrets'};
+    const labels=Object.fromEntries([...SETUP_STEPS.map(({id,label})=>[id,label]),['secrets','Secrets']]);
     alert.className='setup-alert is-pending';
-    alert.innerHTML='<div><b>Unsaved changes</b><p>'+esc(unsaved.map(panel=>labels[panel]).join(', '))+'</p></div>'
+    alert.innerHTML='<div><b>Unsaved changes</b><p>'+esc(unsaved.map(id=>labels[id]).join(', '))+'</p></div>'
       +'<button class="setup-secondary" type="button" data-setup-go="'+unsaved[0]+'">Review changes</button>';
   }else if(steps.next){
     const {panel,label,message}=steps.next;
@@ -537,8 +435,8 @@ function renderRoots(){
   const roots=runtimeData.roots||{};
   const configured=roots.configured||{};
   const applied=roots.applied||{};
-  if(!drafts.workspace||!touched.has('xo-root-input'))root.querySelector('#xo-root-input').value=configured.xo_projects_root||'';
-  if(!drafts.workspace||!touched.has('quirq-root-input'))root.querySelector('#quirq-root-input').value=configured.quirq_state_root||'';
+  if(!formDrafts.workspace||!touched.has('xo-root-input'))root.querySelector('#xo-root-input').value=configured.xo_projects_root||'';
+  if(!formDrafts.workspace||!touched.has('quirq-root-input'))root.querySelector('#quirq-root-input').value=configured.quirq_state_root||'';
   for(const [input,label,key] of [['xo-root-input','xo-root-applied','xo_projects_root'],['quirq-root-input','quirq-root-applied','quirq_state_root']]){
     const using=applied[key];
     root.querySelector('#'+label).textContent=using&&using!==root.querySelector('#'+input).value?'Currently using: '+using:'';
@@ -587,7 +485,7 @@ function renderSources(){
     ).join('')+'</div>':'<p class="source-note">Uses its own sign-in.</p>';
     return '<article class="source-row '+(source.active?'is-active ':'')+(selected?'is-selected':'')+'">'
       +'<div class="source-title"><b>'+esc(prettyName(source.name))+'</b>'
-        +(source.active?'<span>In use</span>':selected?'<span class="is-pending">'+(drafts.agent?'Selected':'Restart to apply')+'</span>':'')
+        +(source.active?'<span>In use</span>':selected?'<span class="is-pending">'+(formDrafts.agent?'Selected':'Restart to apply')+'</span>':'')
         +(runtimeData.applied.watcher_enabled&&source.watched?'<span class="is-watched">Included in activity</span>':'')+'</div>'
       +'<div class="source-facts">'+fact(source.binary_available?'Installed':'Not installed',source.binary_available?'good':'muted')
         +fact(source.home?.exists?'Agent folder found':'Agent folder missing',source.home?.exists?'good':'bad')
@@ -647,7 +545,7 @@ async function saveRuntime(event){
   [...form.elements].forEach(control=>control.disabled=false);setConfigBusy(false);
   if(!res.ok){error.textContent=res.error;error.hidden=false;}
   else{
-    drafts[panel]=false;runtimeData=res.data.status;renderRuntime();
+    formDrafts[panel]=false;runtimeData=res.data.status;renderRuntime();
     toast(runtimeData.restart_required?'Saved. Restart to apply.':'Settings saved');
   }
   if(refreshQueued)loadAll();
@@ -666,7 +564,7 @@ async function saveRoots(event){
   [...form.elements].forEach(control=>control.disabled=false);setConfigBusy(false);
   if(!res.ok){error.textContent=res.error||'Could not save folders.';error.hidden=false;}
   else{
-    drafts.workspace=false;runtimeData=res.data.status;renderRuntime();
+    formDrafts.workspace=false;runtimeData=res.data.status;renderRuntime();
     toast(runtimeData.roots?.change_required?'Folders saved. Restart to apply.':'Folders saved');
   }
   if(refreshQueued)loadAll();
@@ -774,9 +672,9 @@ function handleSecretListAction(event){
   if(button.dataset.action==='delete')removeSecret(key,button);
 }
 
-function beginSecret(key){
+async function beginSecret(key){
   if(writes.size)return;
-  openPanel('secrets');
+  if(!await openPanel('secrets'))return;
   secretForm.hidden=false;
   editingKey=key;
   keyInput.value=key;

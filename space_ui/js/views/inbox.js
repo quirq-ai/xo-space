@@ -449,10 +449,12 @@ function onClick(e){
     case'delete':remove(id);break;
     case'conns-toggle':connsOpen=!connsIsOpen();render();break;
     case'conn-poll':pollConn(b.dataset.toolkit);break;
-    case'conn-config':switchTo('connectors');break;
+    case'conn-config':switchTo('setup/connectors');break;
     case'jobs-refresh':loadJobs();break;
     case'jobs-setup':
-      Promise.resolve(switchTo('setup')).then(()=>dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}})));
+      Promise.resolve(switchTo('setup/commands')).then(()=>{
+        if(location.hash==='#/setup/commands')dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}}));
+      });
       break;
     case'job-results':{
       const job=jobs?.find(item=>item.id===b.dataset.job);

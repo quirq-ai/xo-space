@@ -8,12 +8,12 @@ const path=id=>base+'/'+encodeURIComponent(id);
 const text=value=>typeof value==='string'?value.trim():'';
 const PROJECT_ID=/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{}}={}){
+export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{}}={}){
   let items=[],catalogRevision=0,catalogLoading=false,catalogQueued=false,creating=false;
   let selected=null,detail=null,detailRevision=0,detailLoading=false,detailQueued=false;
   let busy=false,lastAction='',revokeConfirm=null,folderEdited=false;
   el.classList.add('setup-projects');
-  el.innerHTML=`<div class="setup-card-head"><h3 id="setup-projects-title" tabindex="-1">Projects <span id="setup-project-count"></span></h3>
+  el.innerHTML=`<div class="setup-card-head"><h3 id="setup-projects-title" tabindex="-1">Local projects <span id="setup-project-count"></span></h3>
       <div class="setup-project-tools"><button class="setup-secondary" type="button" id="setup-project-refresh">Refresh</button><button class="setup-primary" type="button" id="setup-project-add">Add project</button></div></div>
     <p id="setup-project-notice" class="setup-project-notice" role="status" hidden></p>
     <form id="setup-project-form" class="setup-project-form" hidden novalidate>
@@ -67,11 +67,16 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{}}={}){
     const mine=++catalogRevision;
     if(catalogLoading){catalogQueued=true;return;}
     catalogLoading=true;$('#setup-project-refresh').disabled=true;
+    onStatusChange({status:'loading',count:items.length});
     const res=await apiFetch(base);
     catalogLoading=false;
     if(mine===catalogRevision){
-      if(res.ok&&Array.isArray(res.data?.items)&&res.data.items.every(item=>text(item?.id))){items=res.data.items;paintList();}
-      else paintList(res.ok?'Could not read the project list.':failText(res));
+      if(res.ok&&Array.isArray(res.data?.items)&&res.data.items.every(item=>text(item?.id))){
+        items=res.data.items;paintList();onStatusChange({status:'ready',count:items.length});
+      }else{
+        paintList(res.ok?'Could not read the project list.':failText(res));
+        onStatusChange({status:'error',count:items.length});
+      }
     }
     $('#setup-project-refresh').disabled=false;
     if(catalogQueued){catalogQueued=false;await refreshCatalog();}
