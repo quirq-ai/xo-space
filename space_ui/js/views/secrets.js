@@ -7,7 +7,7 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260914-commands2';
+import {mountCommands} from './setup-commands.js?v=20260914-results1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));

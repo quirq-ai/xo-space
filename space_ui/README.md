@@ -74,6 +74,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from Setup's header button (`#/quirq`). |
 | `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, server restart and saved commands. |
 | `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
+| `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. The only view that authenticates (`js/core/session.js`). |
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
@@ -145,9 +146,11 @@ split without a shell; validation errors appear in the card. Interval jobs show 
 project and enabled settings.
 
 **Run** executes through the command utility and disables while running. The card
-polls the job every three seconds until the status and duration appear. **Runs**
-opens a drawer with the latest 20 results and escaped output tails, plus the full
-log path as text. A concurrent run or a full shared execution limit returns 409.
+polls the job every three seconds until the status and duration appear. The row
+shows its configured working directory and a preview of the latest result.
+**Inbox** opens the latest 20 results with escaped output, exit codes, timing,
+and a copyable full-log path. The drawer updates while a command runs and also
+offers Refresh. A concurrent run or a full shared execution limit returns 409.
 Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
 Definitions and every result stay under `<quirq state>/scheduler/`:
@@ -189,11 +192,21 @@ switchable regardless.
 ## Inbox tab
 
 The fourth topbar tab is where information arriving in the workspace is seen,
-tracked, and acted on. One human-readable JSON file is the source of truth, a
+tracked, and acted on. One human-readable JSON file is the source of truth for its items, a
 small service feeds and edits it, five HTTP routes serve it, and one view
 module (`js/views/inbox.js`, styled by `css/inbox.css`) renders it. The tab
 button carries an unread badge (`counts.new`: polled every 60 s while another
 tab is shown; while Inbox is open the view's own 30 s read feeds it).
+
+**Jobs** sits immediately below Connections and reads `/api/schedules`
+independently. It lists every command with an interval, including disabled jobs,
+with its cadence, enabled state, next due time and latest/running status.
+**Results** opens the same command Inbox used by Setup; **Open Setup** returns
+to command management. Manual-only commands remain in Setup. Jobs refresh on
+entry, through either Refresh button, and every 30 seconds while visible
+(every three seconds while a listed job is running). This section neither runs
+commands nor creates Inbox items, and item search, filters and unread counts
+retain their existing scope.
 
 - Data: `GET /api/inbox?status=open|done|all&limit=N` (defaults `open`, 200;
   `limit` 1 to 500). The reply is `{schema, updated_at, counts: {new, seen,

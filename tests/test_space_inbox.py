@@ -16,8 +16,8 @@ class SpaceInboxCompositionTests(unittest.TestCase):
     """The Inbox tab is composed into the shell through explicit seams: one
     import and one registerView in app.js, one badge starter after the
     registry, one stylesheet link, and a view module that talks to exactly
-    two route families (the inbox rows and the connections it shows above
-    them). These assertions pin those seams so a refactor cannot silently
+    three route families (the inbox rows, connections, and scheduled jobs).
+    These assertions pin those seams so a refactor cannot silently
     drop the tab, its badge, or its stylesheet."""
 
     def test_view_is_imported_and_registered_with_a_cache_buster(self) -> None:
@@ -40,7 +40,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-accounts1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-results1">', html)
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the registry creates #view-inbox itself; no section markup needed
@@ -54,15 +54,15 @@ class SpaceInboxCompositionTests(unittest.TestCase):
         self.assertIn("show()", src)
         self.assertIn("hide()", src)
 
-    def test_module_talks_only_to_the_inbox_and_connections_routes(self) -> None:
+    def test_module_uses_inbox_connections_and_schedules_routes(self) -> None:
         src = read("js/views/inbox.js")
         paths = re.findall(r"API_BASE\+'([^']*)'", src)
         self.assertTrue(paths, "inbox.js makes no API calls")
         # every API_BASE+ is followed by a literal, and every literal is the
-        # inbox or the connections section it shows above the rows
+        # inbox or the connections/jobs sections it shows above the rows
         self.assertEqual(len(paths), src.count("API_BASE+"))
         for path in paths:
-            self.assertTrue(path.startswith("/api/inbox") or path.startswith("/api/connections"), path)
+            self.assertTrue(path.startswith(("/api/inbox", "/api/connections", "/api/schedules")), path)
         self.assertIn("'/api/inbox?status=open&limit=1'", src)          # the badge
         self.assertIn("'/api/inbox?status='+encodeURIComponent(filter)+'&limit=200'", src)
         self.assertIn("'/api/inbox/'+encodeURIComponent(id)", src)      # PATCH and DELETE

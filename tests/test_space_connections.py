@@ -6,10 +6,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
-# the JS stamp (app.js and every view import it carries); the two stylesheets
-# this feature added moved with it when the account chip touched them
+# Shared core modules and connector styles retain the account-chip stamp.
+# Inbox imports and styles advanced for the Jobs and command-results UI.
 STAMP = "20260914-accounts1"
-INBOX_CSS_STAMP = STAMP
+RESULTS_STAMP = "20260914-results1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -110,11 +110,12 @@ class InboxConnectionsSectionTests(unittest.TestCase):
         for m in re.finditer(r"apiFetch\(API_BASE\+'/api/connections[^\n]*", self.src):
             self.assertNotIn("sessionHeaders", m.group(0))
             self.assertNotIn("headers", m.group(0))
-        # every call joins the API_BASE family (no bare same-origin path is
-        # left), and the family is exactly the inbox rows plus this section
+        # Every call joins API_BASE: inbox rows, connections, or the Jobs
+        # section's schedules listing. No other API families are used here.
         self.assertNotRegex(self.src, r"apiFetch\('/")
         for path in re.findall(r"API_BASE\+'([^']*)'", self.src):
-            self.assertTrue(path.startswith("/api/inbox") or path.startswith("/api/connections"), path)
+            self.assertTrue(path.startswith("/api/inbox") or path.startswith("/api/connections")
+                            or path == "/api/schedules", path)
 
     def test_section_has_its_own_token_and_failure_line(self) -> None:
         body = slice_between(self.src, "async function loadConns(){", "/* Poll now")
@@ -337,15 +338,15 @@ class ConnectedAccountTests(unittest.TestCase):
 
 
 class CacheBusterTests(unittest.TestCase):
-    """The JS stamps move together; index.html's app.js stamp is what makes
-    a browser re-import the per-view URLs at all. The core modules every
+    """Changed views and styles advance their stamps; index.html's app.js
+    stamp makes a browser re-import the per-view URLs. The core modules every
     view imports bare (api.js, ui.js, connections.js) are stamped once, in
     index.html's import map, so every importer shares one fresh instance."""
 
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-context1';", app
+            "import inboxView,{initInboxBadge} from './views/inbox.js?v=" + RESULTS_STAMP + "';", app
         )
         self.assertIn("import connectorsView from './views/connectors.js?v=20260914-context1';", app)
         # both views import core/api.js bare: the stamp is the import map's
@@ -357,8 +358,8 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + INBOX_CSS_STAMP + '">', html)
-        # connectors.css carries the account chip's rule, so it moved with the JS
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=' + RESULTS_STAMP + '">', html)
+        # connectors.css still carries the account chip's original stamp.
         self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=' + STAMP + '">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing

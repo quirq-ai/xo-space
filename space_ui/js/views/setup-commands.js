@@ -2,6 +2,7 @@
    No interval means manual only; nothing is seeded or executed on mount. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
+import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
@@ -16,8 +17,8 @@ function relativeTime(value){
 }
 
 export function mountCommands(root){
-  let jobs=[],editing=null,timer=null,refreshing=false,refreshQueued=false,historyId=null;
-  let saving=false,polling=false,revision=0,historyRevision=0;
+  let jobs=[],editing=null,timer=null,refreshing=false,refreshQueued=false;
+  let saving=false,polling=false,revision=0;
   const busy=new Set();
   root.innerHTML=`
     <div class="setup-card-head"><div><span>05 · Local execution</span><h2>Commands</h2></div>
@@ -47,14 +48,10 @@ export function mountCommands(root){
       </form>
       <div id="command-list"><div class="setup-empty">Loading commands…</div></div>
     </div>
-    <dialog class="setup-runs-drawer" id="command-runs" aria-labelledby="command-runs-title">
-      <div class="setup-card-head"><h2 id="command-runs-title">Runs</h2><button type="button" class="setup-secondary" id="command-runs-close">Close</button></div>
-      <div class="setup-command-body" id="command-runs-body"></div>
-    </dialog>`;
+`;
   const form=root.querySelector('#command-form');
   const error=root.querySelector('#command-error');
   const list=root.querySelector('#command-list');
-  const drawer=root.querySelector('#command-runs');
   const field=name=>form.elements.namedItem(name);
   function showError(message){error.textContent=message||'';error.hidden=!message;}
 
@@ -69,12 +66,16 @@ export function mountCommands(root){
         <div class="setup-command-info"><b>${esc(job.name)}</b>
           ${job.description?`<p>${esc(job.description)}</p>`:''}
           <code>${esc(JSON.stringify(job.command.argv))}</code>
+          <p class="setup-command-cwd">Working directory: <code>${esc(job.command.cwd||'Server working directory')}</code></p>
           <div class="setup-command-meta"><span class="setup-command-result ${running?'is-running':result?.status==='ok'?'is-good':result?'is-error':''}" role="status">${esc(status)}</span>
             <span>${job.every_seconds==null?'Manual only':'Runs every '+esc(job.every_seconds)+'s'+(job.enabled?'':' · disabled')}</span></div>
+          ${result?`<div class="setup-command-preview"><span>Latest result · exit ${esc(result.returncode??'—')}</span>
+            <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre>
+            <small>Open Inbox for results and the full log path.</small></div>`:''}
         </div>
         <div class="setup-actions">
           <button class="setup-primary" type="button" data-command-action="run"${running?' disabled':disabled}>${running?'Running…':'Run'}</button>
-          <button class="setup-secondary" type="button" data-command-action="runs"${disabled}>Runs</button>
+          <button class="setup-secondary" type="button" data-command-action="runs" title="Open results and logs for this command"${disabled}>Inbox</button>
           <button class="setup-secondary" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
           <button class="setup-secondary is-danger" type="button" data-command-action="delete"${disabled}>Delete</button>
         </div></article>`;
@@ -100,7 +101,6 @@ export function mountCommands(root){
       else showError(res.error);
     }
     render();
-    if(drawer.open&&results.some(({id})=>id===historyId))await loadRuns(historyId);
   }
   async function refresh(){
     if(refreshing){refreshQueued=true;return;}
@@ -171,20 +171,6 @@ export function mountCommands(root){
     await refresh();
   });
 
-  async function loadRuns(id){
-    const mine=++historyRevision;
-    const res=await apiFetch(path(id)+'/runs?limit=20');
-    if(mine!==historyRevision||historyId!==id||!drawer.open)return;
-    const body=root.querySelector('#command-runs-body');
-    if(!res.ok){body.textContent=res.error;return;}
-    body.innerHTML=`<p>Full output on this machine: <code class="setup-command-log">${esc(res.data.log_path)}</code></p>`
-      +(res.data.runs.length?res.data.runs.map(run=>`<article class="setup-run">
-        <b>${esc(run.status)} · ${esc(duration(run.duration_seconds))}</b>
-        <p>${esc(run.started_at)} → ${esc(run.finished_at)}</p>
-        <p>${esc(run.trigger||'interrupted')} · exit ${esc(run.returncode??'—')}</p>
-        ${run.reason?`<p>${esc(run.reason)}</p>`:''}
-        <pre>${esc(run.output_tail||'(no output)')}</pre></article>`).join(''):'<div class="setup-empty">No runs yet</div>');
-  }
   list.addEventListener('click',async event=>{
     const button=event.target.closest('[data-command-action]');
     if(!button||button.disabled)return;
@@ -194,11 +180,7 @@ export function mountCommands(root){
     const action=button.dataset.commandAction;
     if(action==='edit'){edit(job);return;}
     if(action==='runs'){
-      historyId=id;
-      root.querySelector('#command-runs-title').textContent=job.name+' · latest 20 runs';
-      root.querySelector('#command-runs-body').textContent='Loading runs…';
-      drawer.showModal();
-      await loadRuns(id);
+      await openCommandResults({id,name:job.name});
       return;
     }
     if(action==='delete'&&!confirm('Delete '+job.name+'? Saved run history and logs will be kept on disk.'))return;
@@ -225,9 +207,5 @@ export function mountCommands(root){
   });
   root.querySelector('#command-add').addEventListener('click',()=>edit());
   root.querySelector('#command-cancel').addEventListener('click',()=>{if(saving)return;form.hidden=true;editing=null;showError('');});
-  root.querySelector('#command-runs-close').addEventListener('click',()=>drawer.close());
-  drawer.addEventListener('close',()=>{historyId=null;historyRevision++;});
-  /* A modal's keys belong to the dialog, not the app's numbered tab shortcuts. */
-  drawer.addEventListener('keydown',event=>event.stopPropagation());
   return {refresh};
 }

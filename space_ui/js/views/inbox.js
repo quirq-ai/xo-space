@@ -15,6 +15,7 @@ import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
+import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -119,6 +120,16 @@ let connsOpen=null;         /* null = auto: open while any entry has an error */
 let connsToken=0;
 const connBusy=new Set();   /* toolkits with a Poll now in flight */
 
+/* Scheduled commands have their own read and DOM boundary. A jobs poll must
+   never rebuild an expanded Inbox body or change the item-search scope. */
+let jobs=null;
+let jobsFailed=null;
+let jobsToken=0;
+let jobsLoading=false;
+let jobsInFlight=false;
+let jobsRefreshQueued=false;
+let jobsPainted='';
+
 export default {
   id:'inbox',label:'Inbox',order:5,
   toolbar:{search:{
@@ -133,9 +144,10 @@ export default {
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
-    el.innerHTML='<div class="inb">'+head()+sources()+connsHTML()+skeleton()+'</div>';
+    el.innerHTML='<div class="inb">'+head()+sources()+connsHTML()+jobsHTML()+skeleton()+'</div>';
     el.addEventListener('click',onClick);
     loadConns(); /* not awaited: independent of the rows, never blocks them */
+    loadJobs();
     await load();
   },
   show(){
@@ -146,11 +158,16 @@ export default {
     clearSlottedInterval('inbox-badge');
     if(root&&Date.now()-lastLoad>4000)load();
     if(root)loadConns();
+    if(root&&!jobsLoading)loadJobs();
+    scheduleJobsPoll();
     setSlottedInterval('inbox-poll',load,30000);
   },
   hide(){
     shown=false;
     clearSlottedInterval('inbox-poll');
+    clearSlottedInterval('inbox-jobs-poll');
+    jobsToken++;jobsLoading=false;jobsRefreshQueued=false;
+    /* An outstanding read stays tracked so reentry can queue a fresh request. */
     startBadgePoll();
   }
 };
@@ -189,7 +206,7 @@ const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(
 function focusSelector(){
   const a=document.activeElement;
   if(!a||!root||!root.contains(a))return'';
-  const keys=['act','id','toolkit','filter','src'].filter(k=>a.dataset[k]!==undefined);
+  const keys=['act','id','toolkit','filter','src','job'].filter(k=>a.dataset[k]!==undefined);
   return keys.map(k=>'[data-'+k+'="'+CSS.escape(a.dataset[k])+'"]').join('');
 }
 function render(){
@@ -197,7 +214,8 @@ function render(){
   const box=root.querySelector('.inb');
   if(!box)return;
   const sel=focusSelector();
-  box.innerHTML=head()+sources()+connsHTML()+body();
+  box.innerHTML=head()+sources()+connsHTML()+jobsHTML()+body();
+  jobsPainted=jobsPaintKey();
   painted=paintKey();
   if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
 }
@@ -339,6 +357,81 @@ function connRowHTML(c){
   +'</div>';
 }
 
+/* ── scheduled jobs ────────────────────────────────────────────────────── */
+const jobsPaintKey=()=>JSON.stringify([jobs,jobsFailed&&failText(jobsFailed)]);
+function jobInterval(seconds){
+  const n=Number(seconds);
+  if(!Number.isFinite(n)||n<=0)return'Interval unavailable';
+  for(const [unit,size] of [['d',86400],['h',3600],['min',60]]){
+    if(n%size===0)return'Every '+(n/size)+' '+unit;
+  }
+  return'Every '+n+' s';
+}
+function jobRowHTML(job){
+  const result=job.last_result;
+  const duration=result?.duration_seconds;
+  const elapsed=duration!=null&&Number.isFinite(Number(duration))?' · '+Number(duration).toFixed(2)+'s':'';
+  const status=job.running?'Running'+(dtfmt(job.running_since)?' since '+dtfmt(job.running_since):'')
+    :result?String(result.status||'Unknown result')+(dtfmt(result.finished_at)?' · '+dtfmt(result.finished_at):'')+elapsed:'Not run yet';
+  const tone=job.running?' is-running':result?.status==='ok'?' is-good':result?' is-error':'';
+  return'<article class="inb-job-row" data-job-id="'+esc(job.id)+'">'
+    +'<div class="inb-job-info"><h3>'+esc(job.name||job.id)+'</h3>'
+      +(job.description?'<p>'+esc(job.description)+'</p>':'')
+      +'<div class="inb-job-meta"><span>'+esc(jobInterval(job.every_seconds))+'</span>'
+        +'<span class="inb-job-enabled'+(job.enabled===false?' is-disabled':'')+'">'+(job.enabled===false?'Disabled':'Enabled')+'</span>'
+        +(dtfmt(job.next_run)?'<span>Next due '+esc(dtfmt(job.next_run))+'</span>':'')+'</div>'
+      +'<div class="inb-job-result'+tone+'" role="status">'+esc(status)+'</div>'
+    +'</div><button class="inb-btn" type="button" data-act="job-results" data-job="'+esc(job.id)+'"'
+      +' aria-label="Results for '+esc(job.name||job.id)+'">Results</button>'
+  +'</article>';
+}
+function jobsHTML(){
+  const failure=jobsFailed?'<p class="inb-jobs-state is-error" role="status">Could not load scheduled jobs: '
+    +esc(failText(jobsFailed))+(jobs?' · showing the last good read':'')+'</p>':'';
+  const content=jobs===null?(jobsFailed?'':'<p class="inb-jobs-state" role="status">Loading scheduled jobs…</p>')
+    :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No scheduled jobs. Add an interval to a command in Setup.</p>';
+  return'<section class="inb-jobs" aria-labelledby="inb-jobs-title" aria-busy="'+jobsLoading+'">'
+    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Jobs'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
+      +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read scheduled jobs">Refresh</button>'
+        +'<button class="inb-btn" type="button" data-act="jobs-setup">Open Setup</button></div></div>'
+    +failure+content+'</section>';
+}
+function renderJobs(){
+  const section=root?.querySelector('.inb-jobs');
+  if(!section)return;
+  section.setAttribute('aria-busy',String(jobsLoading));
+  const key=jobsPaintKey();
+  if(key===jobsPainted)return;
+  const sel=section.contains(document.activeElement)?focusSelector():'';
+  section.outerHTML=jobsHTML();jobsPainted=key;
+  if(sel)root.querySelector(sel)?.focus({preventScroll:true});
+}
+function scheduleJobsPoll(){
+  clearSlottedInterval('inbox-jobs-poll');
+  if(shown)setSlottedInterval('inbox-jobs-poll',()=>{if(!jobsInFlight)loadJobs();},
+    jobs?.some(job=>job.running)?3000:30000);
+}
+async function loadJobs(){
+  /* apiFetch shares concurrent GETs. A requested refresh during a slow read
+     must run after it, rather than repainting its older snapshot as fresh. */
+  if(jobsInFlight){jobsRefreshQueued=true;jobsToken++;return;}
+  const mine=++jobsToken;
+  jobsInFlight=true;jobsLoading=true;
+  root?.querySelector('.inb-jobs')?.setAttribute('aria-busy','true');
+  const res=await apiFetch(API_BASE+'/api/schedules');
+  jobsInFlight=false;
+  if(mine===jobsToken){
+    if(res.ok&&Array.isArray(res.data?.jobs)){
+      jobs=res.data.jobs.filter(job=>job&&typeof job==='object'&&typeof job.id==='string'&&job.every_seconds!=null);
+      jobsFailed=null;
+    }else jobsFailed=res.ok?{error:'Unexpected jobs response'}:res;
+  }
+  if(jobsRefreshQueued){jobsRefreshQueued=false;await loadJobs();return;}
+  jobsLoading=false;
+  renderJobs();
+  scheduleJobsPoll();
+}
+
 /* one delegated listener: rows are rebuilt on every paint, the listener is not */
 function onClick(e){
   const b=e.target.closest('button[data-act],button[data-filter],button[data-src]');
@@ -347,7 +440,7 @@ function onClick(e){
   if(b.dataset.src){setSource(b.dataset.src);return;}
   const id=b.dataset.id;
   switch(b.dataset.act){
-    case'refresh':b.disabled=true;load();break;
+    case'refresh':b.disabled=true;load();loadJobs();break;
     case'mark-all':markAllSeen();break;
     case'toggle':toggle(id);break;
     case'open':{const it=itemById(id);if(it)openLink(it);break;}
@@ -357,6 +450,13 @@ function onClick(e){
     case'conns-toggle':connsOpen=!connsIsOpen();render();break;
     case'conn-poll':pollConn(b.dataset.toolkit);break;
     case'conn-config':switchTo('connectors');break;
+    case'jobs-refresh':loadJobs();break;
+    case'jobs-setup':switchTo('secrets');break;
+    case'job-results':{
+      const job=jobs?.find(item=>item.id===b.dataset.job);
+      if(job)openCommandResults({id:job.id,name:job.name||job.id});
+      break;
+    }
   }
 }
 function setFilter(k){

@@ -268,14 +268,16 @@ class SpaceCommandsTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1] / 'space_ui'
         setup = (root / 'js/views/secrets.js').read_text()
         card = (root / 'js/views/setup-commands.js').read_text()
+        results = (root / 'js/core/command-results.js').read_text()
         self.assertIn("mountCommands(root.querySelector('#setup-commands'))", setup)
         self.assertIn("'/space/server/restart'", setup)
         self.assertIn('location.reload()', setup)
         self.assertIn('probe.data.instance_id!==', setup)
         self.assertNotIn("apiFetch('/health", setup)
         self.assertIn('setTimeout(pollRunning,3000)', card)
-        self.assertIn('/runs?limit=20', card)
-        self.assertIn('esc(run.output_tail', card)
+        self.assertIn('/runs?limit=20', results)
+        self.assertIn('esc(run.output_tail', results)
+        self.assertIn('openCommandResults', card)
         self.assertIn('No commands yet', card)
         for action in ('run', 'runs', 'edit', 'delete'):
             self.assertIn(f'data-command-action="{action}"', card)

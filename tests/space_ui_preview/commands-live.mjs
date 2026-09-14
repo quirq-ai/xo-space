@@ -38,6 +38,7 @@ await context.route('**/*',async route=>{
   }
   await route.continue();
 });
+let createdId=null;
 try{
   await page.goto(origin+'/space/#/secrets',{waitUntil:'networkidle'});
   await page.locator('#command-add').click();
@@ -51,6 +52,7 @@ try{
   const response=await createdResponse;
   assert.equal(response.status(),201);
   const job=await response.json(),id=job.id;
+  createdId=id;
   assert.deepEqual(job.command.argv,argv);
   assert.equal(job.command.cwd,fixture.cwd);
   assert.equal(job.every_seconds,null);
@@ -66,6 +68,8 @@ try{
   const poll=reads.find(read=>read.path===`/api/schedules/${id}`&&read.time>=startedAt);
   assert.ok(poll&&poll.time-startedAt>=2800,'The UI harvests the result with its 3s running poll');
   assert.match(await row.textContent(),/ok · .* · [0-9.]+s/);
+  assert.match(await row.locator('.setup-command-preview').textContent(),/Isolated browser command completed/);
+  assert.equal((await action('runs').textContent()).trim(),'Inbox');
   await row.scrollIntoViewIfNeeded();
   await page.screenshot({path:resolve(output,'commands-live-result.png')});
   await action('runs').click();
@@ -80,7 +84,25 @@ try{
   assert.equal(history.runs[0].status,'ok');
   assert.ok(history.log_path.startsWith(fixture.cwd+'/'));
   assert.deepEqual(writes.map(write=>write.method),['POST','POST']);
+  await page.locator('#command-runs-close').click();
+  await action('edit').click();
+  await page.locator('#command-interval').fill('60');
+  const saved=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/schedules/${id}`&&response.request().method()==='PUT');
+  await page.locator('#command-save').click();
+  assert.equal((await saved).status(),200);
+  await page.locator('#tab-inbox').click();
+  const scheduled=page.locator(`[data-job="${id}"][data-act="job-results"]`);
+  await scheduled.waitFor();
+  await scheduled.click();
+  await page.locator('.setup-run').waitFor();
+  assert.match(await page.locator('.setup-run pre').textContent(),/Isolated browser command completed/);
+  await page.locator('#command-runs-close').click();
+  assert.equal((await context.request.delete(`${origin}/api/schedules/${id}`)).status(),200);
+  createdId=null;
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({passed:true,jobId:id,status:history.runs[0].status,
     pollDelayMs:poll.time-startedAt,automaticJobs:false,output},null,2));
-}finally{await browser.close();}
+}finally{
+  if(createdId)await context.request.delete(`${origin}/api/schedules/${createdId}`).catch(()=>{});
+  await browser.close();
+}

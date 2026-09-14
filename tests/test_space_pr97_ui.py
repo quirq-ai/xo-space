@@ -879,12 +879,14 @@ class ShellTests(unittest.TestCase):
 
     def test_stamps_moved_together(self) -> None:
         app = read("js/app.js")
-        # Contextual controls refresh the shell and each participating view.
-        # Unchanged resources keep their existing URLs.
+        # Contextual controls refreshed their participating views. Inbox
+        # advanced again for Jobs/results; unchanged resources keep their URLs.
         self.assertIn("./views/sharing.js?v=" + STAMP + "'", app)
         context_stamp = "20260914-context1"
-        for view in ("atlas", "projects", "tree", "sessions", "inbox", "connectors"):
+        for view in ("atlas", "projects", "tree", "sessions", "connectors"):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
+        results_stamp = "20260914-results1"
+        self.assertIn("./views/inbox.js?v=" + results_stamp + "'", app)
         for core in ("registry", "toolbar"):
             self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
         self.assertIn("./core/lens-switch.js?v=20260914-projectslens1'", app)
@@ -893,10 +895,10 @@ class ShellTests(unittest.TestCase):
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
-        # the account chip and span are styled by these two; a stale sheet
-        # next to a fresh module leaves the chip uppercased
-        for sheet in ("inbox", "connectors"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + STAMP + '">', html)
+        # Inbox's Jobs/results styles advanced with its view; the connector
+        # account-chip stylesheet remains at its existing stamp.
+        for sheet, stamp in (("inbox", results_stamp), ("connectors", STAMP)):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + stamp + '">', html)
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:
         """core/api.js and core/ui.js gained exports and are imported bare

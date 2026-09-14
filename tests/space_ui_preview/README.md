@@ -63,11 +63,21 @@ save/poll races, validation conflicts, and desktop/mobile layouts:
 
 ```sh
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
+node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
+node tests/space_ui_preview/command-results-races.mjs
 ```
 
-This script intercepts mutations with browser fixtures; it never executes a
+The Commands/restart script intercepts mutations with browser fixtures; it never executes a
 command or restarts a process. It checks that all three restart buttons wait for
 a changed server instance before reloading.
+
+The Inbox Jobs check uses synthetic schedule definitions and histories to verify
+the section order, interval/disabled status, empty/error recovery, refresh races,
+and results access at desktop and mobile widths. It never runs a command or
+creates service Inbox items.
+
+The results check covers completion ordering, automatic output updates,
+close/reopen races, escaped output, and restoring keyboard focus.
 
 For a real scheduler round trip, start a second server with the project's Python
 environment, leaving the read-only fixture on port 5100:
@@ -81,8 +91,10 @@ The second server uses temporary scheduler state, disables automatic jobs, and
 exposes no process-control writes. Explicitly submitted commands still execute
 with the local user's permissions. The browser check saves and runs only a
 Python print command in that temporary directory, then verifies the real API
-result, output, and retained history with automatic jobs disabled. Set
-`SPACE_COMMANDS_URL` to change its URL. Both scripts refuse port 5002.
+result, output, and retained history with automatic jobs disabled.
+The check then adds an interval to its own test definition, opens that job's
+results from Inbox, and removes the definition on completion. Set
+`SPACE_COMMANDS_URL` to change its URL. The live server and browser check refuse port 5002.
 
 Stop both servers with Ctrl-C after testing. The temporary command state is
 removed on exit. Live-test screenshots contain local test paths and are intended
