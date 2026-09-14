@@ -19,6 +19,7 @@
        toolbar: null,           // descriptor/function: graph controls or local search
        async mount(el, ctx) {}, // first activation; el is the section
        show() {}, hide() {},    // optional, on tab switches
+       async refresh() {},     // optional, reload this page's data in place
      }
    The section is created inside #stage automatically when index.html does
    not already carry one: markup-heavy views keep theirs in index.html,
@@ -35,6 +36,7 @@ const byRoute=new Map();
 let current=null;
 let activation=0;
 const byTab=new Map();
+const refreshing=new Map();
 
 export function registerView(v){
   if(byId.has(v.id))views=views.map(w=>w.id===v.id?v:w); /* idempotent re-register */
@@ -63,7 +65,7 @@ function refreshToolbar(v){
 
 export async function switchTo(target,{replace=false}={}){
   const v=resolveView(target);
-  if(!v)return;
+  if(!v)return false;
   const id=v.id;
   const request=++activation;
   const prev=current&&current!==id?byId.get(current):null;
@@ -102,7 +104,8 @@ export async function switchTo(target,{replace=false}={}){
   /* Announce the section and page before awaiting work. Shared navigation,
      toolbar and preview context must follow the URL even during a slow load. */
   dispatchEvent(new CustomEvent('space:view',{detail:{id,tab:activeTab,section:activeSection,
-    route:v.route||v.id,label:v.label,toolbar:v.toolbar||null}}));
+    route:v.route||v.id,label:v.label,toolbar:v.toolbar||null,
+    refreshable:typeof v.refresh==='function',refreshing:refreshing.has(id)}}));
   if(!v.mounted){
     v.mounted=true; /* idempotent mount: activating N times mounts once */
     const el=document.getElementById('view-'+(v.section||v.id));
@@ -119,11 +122,35 @@ export async function switchTo(target,{replace=false}={}){
   }
   /* Reentry shares the pending mount. Only the latest navigation may show
      it: a slow mount must not reactivate a page the user already left. */
-  if(await v.mountPromise===false||request!==activation)return;
+  if(await v.mountPromise===false||request!==activation)return false;
   if(v.show){
-    try{v.show();}catch(err){console.error('view "'+v.id+'" show failed:',err);}
+    try{await v.show();}
+    catch(err){console.error('view "'+v.id+'" show failed:',err);return false;}
   }
+  if(request!==activation)return false;
   refreshToolbar(v);
+  return true;
+}
+
+/* The shell owns the button and its busy state; each page owns what to read
+   and which local state to retain. Waiting for mount prevents an early click
+   from refreshing uninitialized DOM. A later navigation cancels that wait. */
+export function refreshCurrentView(){
+  const v=byId.get(current);
+  if(typeof v?.refresh!=='function')return Promise.resolve(false);
+  if(refreshing.has(v.id))return refreshing.get(v.id);
+  const request=activation;
+  const promise=Promise.resolve().then(async()=>{
+    if(await v.mountPromise===false||request!==activation)return false;
+    await v.refresh();
+    return true;
+  }).finally(()=>{
+    refreshing.delete(v.id);
+    dispatchEvent(new CustomEvent('space:refresh-state',{detail:{id:v.id,busy:false}}));
+  });
+  refreshing.set(v.id,promise);
+  dispatchEvent(new CustomEvent('space:refresh-state',{detail:{id:v.id,busy:true}}));
+  return promise;
 }
 
 export function startRegistry({defaultView,tabs:tabDefinitions}){

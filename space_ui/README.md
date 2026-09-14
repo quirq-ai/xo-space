@@ -36,9 +36,14 @@ tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
 The toolbar adapts to the active page. Projects Overview and Graph keep map
-autocomplete in the topbar; the root picker sits immediately left of **Manage projects**
-on every Projects page. Sharing places **Share a project** and **Check now**
+autocomplete in the topbar. Every Projects page keeps **Graph root**,
+**Manage projects**, **Add project** and **Refresh** together in the section bar.
+Manage opens project management; Add opens the clone form and preserves any draft.
+Refresh rereads the active page’s data without reloading the app, retaining its
+query, selected root and existing project drawers. Sharing places **Share a project** and **Check now**
 alongside those section controls; the share form stays in the page content.
+Each Files List and Setup project row also has **Share**, which opens the composer
+with that project selected. Access is granted only when the form is submitted.
 Choosing a node from Files List, Files Tree, Sharing or
 Timeline opens Files Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
@@ -79,8 +84,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `index.html` | Thin shell: markup + stylesheet links + an import map + the `js/app.js` entry. The import map is where `core/api.js`, `core/ui.js` and `core/connections.js` get their cache stamp: views import those three bare, the map rewrites every such import to one `?v=` URL (one module instance, fetched fresh after a bump); every other core module keeps the stamp on its import line. |
 | `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). |
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
-| `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, and per-view failure isolation. Primary sections are configured independently of their pages. |
+| `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, per-view refresh and failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
+| `js/core/project-actions.js` | Add and Share handoffs wait for navigation, then open the destination form only while that route is still active. |
 | `js/core/file-views.js` | Native List, Graph and Tree links shared by the local Files toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |

@@ -93,7 +93,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         self.assertIn("async function doApply(id)", pane)
         self.assertIn("'applied '+plural(n,'commit')", pane)
         self.assertIn("data-act=\"check\"", pane)
-        self.assertIn("async function doCheck(btn)", pane)
+        self.assertIn("async function doCheck()", pane)
         self.assertIn("copy invite", pane)
         self.assertIn("export function inviteText()", data)
         self.assertIn("export function applyCmd(path,branch)", data)
@@ -126,7 +126,8 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         self.assertIn("const subscribers=new Set()", data)
         self.assertIn("projects-sharing-fast", data)      # faster poll only while cloning
         # a poll tick never wipes a half-typed composer or a pending revoke
-        self.assertIn("const editing=()=>!!composer||!!confirmRevoke;", pane)
+        self.assertIn("function editing()", pane)
+        self.assertIn("!!composer||!!confirmRevoke||sharePending", pane)
         self.assertIn("if(editing()){", pane)
 
     def test_stylesheet_and_module_are_cache_busted(self) -> None:

@@ -313,16 +313,13 @@
    also use the foundation classes above. */
 #view-projects [hidden]{display:none!important}
 #view-projects .prj{padding-top:14px}
-#view-projects .prj-hero{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-height:36px;margin-bottom:14px}
+#view-projects .prj-hero{margin-bottom:12px}
 #view-projects .prj-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 #view-projects #prj-summary{flex:1 1 200px;min-width:0;margin:0;color:var(--ink-3);font:400 12px/1.6 var(--sans);overflow-wrap:anywhere}
-#view-projects .prj-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
-#view-projects .prj-actions button,#view-projects .prj-empty-actions button,
+#view-projects .prj-empty-actions button,
 #view-projects .prj-detail-refresh{min-height:36px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);color:var(--ink-2);font:500 12px var(--sans);letter-spacing:0;text-transform:none}
-#view-projects #prj-add{background:var(--accent);border-color:var(--accent);color:var(--bg)}
-#view-projects .prj-actions button:hover:not(:disabled),#view-projects .prj-empty-actions button:hover:not(:disabled),
+#view-projects .prj-empty-actions button:hover:not(:disabled),
 #view-projects .prj-detail-refresh:hover:not(:disabled){border-color:var(--ink-3);color:var(--ink)}
-#view-projects #prj-add:hover:not(:disabled){background:var(--accent);border-color:var(--accent);color:var(--bg);filter:brightness(1.05)}
 #view-projects button:disabled{cursor:not-allowed;opacity:.5}
 #view-projects button:focus-visible,#view-projects select:focus-visible,#view-projects input:focus-visible,
 #view-projects a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -337,7 +334,7 @@
 
 #view-projects .prj-cols-inner,#view-projects .prj-row-head{grid-template-columns:14px minmax(0,1fr) 72px 138px 118px;gap:12px}
 #view-projects .prj-cols{padding-right:12px;gap:8px;font-size:9px;letter-spacing:.1em}
-#view-projects .prj-cols-map{width:104px;min-width:104px}
+#view-projects .prj-cols-map{width:172px;min-width:172px}
 #view-projects .prj-rows{gap:8px}
 #view-projects .prj-row{border-radius:11px}
 #view-projects .prj-row.is-open{border-color:rgba(168,217,79,.24);background:var(--bg-2)}
@@ -353,11 +350,12 @@
 #view-projects .prj-when{font-size:10px;line-height:1.45}
 #view-projects .prj-live{font-size:9px;letter-spacing:.06em}
 #view-projects .prj-live.is-idle{color:var(--ink-3)}
-#view-projects .prj-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;width:104px;min-width:104px;flex-shrink:0}
+#view-projects .prj-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;width:172px;min-width:172px;flex-shrink:0}
 #view-projects .prj-pin{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border:1px solid transparent;border-radius:8px;color:var(--ink-3);font-size:18px;line-height:1}
 #view-projects .prj-pin:hover{background:var(--bg-3);color:var(--ink)}
 #view-projects .prj-pin[aria-pressed=true]{color:var(--accent);background:rgba(168,217,79,.06)}
-#view-projects .prj-map{position:static;min-width:62px;min-height:34px;padding:8px 10px;border-radius:8px;background:transparent;font:500 11px var(--sans);letter-spacing:0;text-transform:none}
+#view-projects .prj-map,#view-projects .prj-share{position:static;min-width:62px;min-height:34px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-3);font:500 11px var(--sans);letter-spacing:0;text-transform:none}
+#view-projects .prj-map:hover,#view-projects .prj-share:hover{border-color:var(--accent);color:var(--accent)}
 
 #view-projects .prj-drawer{padding:0 16px 16px;border-top-color:var(--line-soft)}
 #view-projects .prj-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0}
@@ -397,13 +395,18 @@
 }
 @media(max-width:650px){
   #view-projects .prj{padding-left:16px;padding-right:16px;padding-top:10px}
-  #view-projects .prj-actions button{min-height:40px}
   #view-projects .prj-head{gap:10px}
   #view-projects .prj-head>.file-views{flex:1 1 100%}
   #view-projects .prj-head>.file-views a{flex:1}
   #view-projects .prj-head>.prj-spacer{display:none}
   #view-projects .prj-filter-control,#view-projects .prj-sort-control{flex:1 1 130px;flex-direction:column;align-items:stretch;gap:6px}
   #view-projects #prj-filter,#view-projects #prj-sort{width:100%;min-width:0;min-height:40px}
+  #view-projects .prj-line{flex-direction:column;gap:0;padding-right:0}
+  #view-projects .prj-row-head{width:100%;padding:14px 14px 10px;grid-template-columns:12px minmax(0,1fr) auto;grid-template-areas:'c n n' '. live when' '. files files';gap:6px 10px;border-radius:11px 11px 0 0}
+  #view-projects .prj-when{justify-content:flex-end;padding-right:0}
+  #view-projects .prj-row-actions{align-self:flex-end;width:auto;min-width:0;gap:7px;padding:0 12px 12px}
+  #view-projects .prj-pin{width:40px;height:40px;border-color:var(--line-soft)}
+  #view-projects .prj-map,#view-projects .prj-share{min-height:40px;min-width:68px}
   #view-projects .prj-drawer{padding:0 12px 12px}
   #view-projects .prj-detail-head{flex-wrap:wrap;gap:8px;padding:12px 0}
   #view-projects .prj-detail-tabs{flex:1 1 100%;gap:3px}
@@ -426,11 +429,5 @@
 }
 @media(max-width:480px){
   #view-projects .prj{padding-left:12px;padding-right:12px}
-  #view-projects .prj-line{flex-direction:column;gap:0;padding-right:0}
-  #view-projects .prj-row-head{width:100%;padding:14px 14px 10px;grid-template-columns:12px minmax(0,1fr) auto;grid-template-areas:'c n n' '. live when' '. files files';gap:6px 10px;border-radius:11px 11px 0 0}
-  #view-projects .prj-when{justify-content:flex-end;padding-right:0}
-  #view-projects .prj-row-actions{align-self:flex-end;width:auto;min-width:0;gap:7px;padding:0 12px 12px}
-  #view-projects .prj-pin{width:40px;height:40px;border-color:var(--line-soft)}
-  #view-projects .prj-map{min-height:40px;min-width:68px}
   #view-projects .prj-name small{font-size:11px}
 }

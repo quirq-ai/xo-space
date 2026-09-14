@@ -191,7 +191,7 @@ try{
   assert.equal(await drawer.evaluate(node=>node===document.querySelector('#prj-drawer-aurora-console')),true);
   await page.locator('#tab-setup').click();await expectRoute('setup/workspace');
   assert.equal(await page.locator('#preview.is-open').count(),0);
-  await openProjectList(page);await page.locator('#prj-add').click();await expectRoute('setup/projects');
+  await openProjectList(page);await page.locator('#project-add').click();await expectRoute('setup/projects');
   await go('setup/workspace');await page.locator('#xo-root-input').fill('/fictional/retained-draft');
   await go('projects/files/list');await page.locator('#prjp-files .fx-row.is-dir').first().click();
   await page.locator('#prjp-files .fx-here').waitFor();
@@ -253,9 +253,9 @@ try{
   await shareAction.click();assert.equal(await page.locator('#shl-composer').count(),0);
   checked('Sharing actions align with section controls, retain their nodes across pages, toggle the composer and prevent duplicate checks while preserving its draft.');
 
-  await leaf('tree');await page.locator('[data-tv="reload"]').waitFor();
+  await leaf('tree');await page.locator('#project-refresh').waitFor();
   treeGate={arrived:gate(),release:gate()};const delayedTree=treeGate;
-  await page.locator('[data-tv="reload"]').click();
+  await page.locator('#project-refresh').click();
   await Promise.race([delayedTree.arrived.promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Tree Refresh did not reach its fixture')),5000))]);
   await page.locator('.view.is-active .file-views [data-file-mode="project-list"]').click();await expectRoute('projects/files/list');
   delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/files/list');

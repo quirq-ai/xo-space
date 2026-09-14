@@ -88,5 +88,7 @@
     footer .meta{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   }
   @media (prefers-reduced-motion:reduce){
-    *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+    /* Zero duration also prevents implicit inherited visibility transitions
+       from delaying focus when a page or form becomes visible. */
+    *,*::before,*::after{animation-duration:.01ms!important;transition-duration:0s!important;transition-delay:0s!important}
   }

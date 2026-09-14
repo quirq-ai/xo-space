@@ -3,6 +3,7 @@
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
 import {projectPage} from '../core/navigation.js?v=20260914-files2';
 import {fileViewControls} from '../core/file-views.js?v=20260914-controls1';
+import {openProjectAdd,openProjectShare} from '../core/project-actions.js?v=20260914-actions1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -367,6 +368,7 @@ export default {
     placeholder:'Filter projects…',getValue:()=>filter,
     setValue(value){filter=String(value??'');clearTimeout(fdeb);fdeb=setTimeout(renderRows,140);},
   }},
+  refresh:loadList,
   async mount(el,ctx){
     root=el;switchTo=ctx.switchTo;refreshToolbar=ctx.refreshToolbar||(()=>{});
     el.innerHTML='<div class="prj">'+head()+'<div id="prj-status" role="status"></div>'
@@ -468,9 +470,7 @@ function summary(shown){
     +(shown!==undefined&&shown!==items.length?' · '+shown+' shown':'');
 }
 function head(){
-  return '<header class="prj-hero"><h1 class="prj-sr-only">List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p>'
-    +'<div class="prj-actions"><button type="button" class="setup-primary" id="prj-add">Add project</button>'
-    +'<button type="button" class="sess-refresh" id="prj-refresh" title="Refresh projects and activity">↻ Refresh</button></div></header>'
+  return '<header class="prj-hero"><h1 class="prj-sr-only">List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></header>'
     +'<div class="prj-head">'+fileViewControls('project-list')+'<span class="prj-spacer"></span>'
     +'<div class="prj-filter-control"><label class="prj-filter-label" for="prj-filter">Filter</label>'
     +'<select id="prj-filter">'+FILTERS.map(([key,label])=>'<option value="'+key+'"'+(key===viewFilter?' selected':'')+'>'+label+' (—)</option>').join('')+'</select></div>'
@@ -480,7 +480,6 @@ function head(){
 function updateHead(){
   if(!root)return;
   const count=root.querySelector('#prj-count');if(count)count.textContent=summary(items?visible().length:undefined);
-  const refresh=root.querySelector('#prj-refresh');if(refresh){refresh.disabled=loading;refresh.classList.toggle('is-busy',loading);}
   const totals={all:items?.length,pinned:items?.filter(p=>pinned.has(p.id)).length,
     live:feeds.activity==='ready'?items?.filter(p=>live.has(p.id)).length:undefined};
   const select=root.querySelector('#prj-filter');
@@ -499,8 +498,6 @@ function updateHead(){
   const status=root.querySelector('#prj-status');status.textContent=notes.join(' ');status.hidden=!notes.length;
 }
 function bindHead(){
-  root.querySelector('#prj-refresh').addEventListener('click',loadList);
-  root.querySelector('#prj-add').addEventListener('click',()=>switchTo('setup/projects'));
   root.querySelector('#prj-sort').addEventListener('change',event=>{sortK=event.target.value;renderRows();});
   root.querySelector('#prj-filter').addEventListener('change',event=>{
     if(!FILTERS.some(([key])=>key===event.target.value))return;
@@ -508,7 +505,7 @@ function bindHead(){
   });
   root.querySelector('.prj-empty').addEventListener('click',async event=>{
     if(event.target.closest('[data-clear-projects]')){filter='';viewFilter='all';refreshToolbar();renderRows();}
-    if(event.target.closest('[data-add-project]'))switchTo('setup/projects');
+    if(event.target.closest('[data-add-project]'))openProjectAdd(switchTo);
     if(event.target.closest('[data-retry-projects]'))loadList();
     if(event.target.closest('[data-first-run]')){
       await switchTo('wiki');
@@ -584,7 +581,8 @@ function rowHTML(p){
   return'<div class="prj-row" id="prj-row-'+esc(p.id)+'"><div class="prj-line">'
     +'<button class="prj-row-head" type="button" data-id="'+esc(p.id)+'" aria-expanded="false" aria-controls="prj-drawer-'+esc(p.id)+'">'+rowContent(p)+'</button>'
     +'<div class="prj-row-actions"><button class="prj-pin" type="button" aria-pressed="false">☆</button>'
-    +'<button class="prj-map" type="button" data-map="'+esc(p.id)+'" title="Focus '+esc(p.display_name||p.id)+' on the graph">Graph</button></div></div></div>';
+    +'<button class="prj-map" type="button" data-map="'+esc(p.id)+'" title="Focus '+esc(p.display_name||p.id)+' on the graph">Graph</button>'
+    +'<button class="prj-share" type="button" data-share="'+esc(p.id)+'" aria-label="Share '+esc(p.display_name||p.id)+'">Share</button></div></div></div>';
 }
 function updateRow(node,p){
   const open=expanded===p.id,button=node.querySelector('.prj-row-head');
@@ -607,6 +605,7 @@ function bindRow(node,id){
   node.querySelector('.prj-map').addEventListener('click',()=>{
     switchTo('graph');dispatchEvent(new CustomEvent('space:focus-project',{detail:id}));
   });
+  node.querySelector('.prj-share').addEventListener('click',()=>openProjectShare(switchTo,id));
 }
 function toggle(id){
   expanded=expanded===id?null:id;renderRows();

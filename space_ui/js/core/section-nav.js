@@ -1,6 +1,8 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
 import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-files2';
+import {openProjectAdd} from './project-actions.js?v=20260914-actions1';
+import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
 const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
@@ -16,7 +18,7 @@ export function setSectionActions(pageId,node){
   refreshActions();
 }
 
-export function initSectionNav(){
+export function initSectionNav({switchTo,refreshCurrentView}){
   const nav=document.getElementById('section-nav');
   const stage=document.getElementById('stage');
   const graphRoot=document.getElementById('graph-root');
@@ -24,6 +26,15 @@ export function initSectionNav(){
   nav.dataset.initialized='true';
   let parent=null,active=null,height=-1,frame=0;
   let lastFile=FILE_VIEWS[0];
+
+  function refreshState({busy=false,available=true}={}){
+    const button=nav.querySelector('#project-refresh');
+    if(!button)return;
+    button.disabled=busy||!available;
+    button.setAttribute('aria-busy',String(busy));
+    button.textContent=busy?'Refreshing…':'Refresh';
+    measure();
+  }
 
   function measure(){
     const next=nav.hidden?0:Math.ceil(nav.getBoundingClientRect().height);
@@ -73,7 +84,21 @@ export function initSectionNav(){
       if(graphRoot)actions.appendChild(graphRoot);
       const manage=document.createElement('a');
       manage.className='section-nav-action';manage.href='#/setup/projects';
-      manage.textContent='Manage projects';actions.appendChild(manage);tools.appendChild(actions);inner.appendChild(tools);
+      manage.textContent='Manage projects';actions.appendChild(manage);tools.appendChild(actions);
+      const quick=document.createElement('div');quick.className='section-nav-actions';
+      const add=document.createElement('a');add.id='project-add';
+      add.className='section-nav-action';add.href='#/setup/projects';add.textContent='Add project';
+      add.addEventListener('click',event=>{
+        if(event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+        event.preventDefault();openProjectAdd(switchTo);
+      });
+      const refresh=document.createElement('button');refresh.id='project-refresh';refresh.type='button';
+      refresh.className='section-nav-action';refresh.textContent='Refresh';
+      refresh.addEventListener('click',async()=>{
+        try{await refreshCurrentView();}
+        catch(error){console.error('Project refresh failed:',error);toast('Could not refresh this page. Try again.');}
+      });
+      quick.append(add,refresh);tools.appendChild(quick);inner.appendChild(tools);
     }
     const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
     // Keep the same picker node mounted. Its controller owns state,
@@ -91,6 +116,7 @@ export function initSectionNav(){
     if(nav.hidden){parent=null;active=null;measure();return;}
     if(group!==parent){render(group);parent=group;}
     active=page.id;
+    refreshState({busy:detail.refreshing,available:detail.refreshable});
     const filesActive=group==='projects'&&FILE_IDS.has(page.id);
     if(filesActive)lastFile=page;
     const section=document.getElementById('view-'+(detail.section||page.section||page.id));
@@ -108,6 +134,9 @@ export function initSectionNav(){
   }
 
   addEventListener('space:view',event=>sync(event.detail));
+  addEventListener('space:refresh-state',event=>{
+    if(event.detail?.id===active)refreshState({busy:event.detail.busy});
+  });
   addEventListener('resize',()=>{measure();if(active)revealCurrent();});
   if(typeof ResizeObserver==='function')new ResizeObserver(measure).observe(nav);
   measure();

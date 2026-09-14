@@ -6,12 +6,13 @@
    project `.xo` data. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
+import {openProjectShare} from '../core/project-actions.js?v=20260914-actions1';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-commandhelp2';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setuproutes1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
 import {mountSetupSearch} from './setup-search.js?v=20260914-setuproutes1';
-import {mountProjects} from './setup-projects.js?v=20260914-setuproutes1';
+import {mountProjects} from './setup-projects.js?v=20260914-actions1';
 import {renderSetupShell} from './setup-shell.js?v=20260914-setuproutes1';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-setuproutes1';
 
@@ -79,6 +80,7 @@ function mountSetup(el,ctx){
       onChange:detail=>dispatchEvent(new CustomEvent(detail?.action==='access'?'space:project-access-changed':'space:projects-changed',{detail})),
       onDraftChange:()=>renderJourney(),
       onStatusChange:status=>{projectStatus=status;renderJourney();},
+      onShare:id=>openProjectShare(switchTo,id),
     });
     projectsManager.refresh();
     commands=mountCommands(root.querySelector('#setup-commands'));
@@ -181,6 +183,9 @@ function bindEvents(){
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
   addEventListener('space:setup-section',event=>openPanel(event.detail?.panel,{focus:true}));
+  addEventListener('space:add-project',()=>{
+    if(currentPanel==='projects'&&location.hash==='#/setup/projects'&&root.classList.contains('is-active'))projectsManager?.openAdd();
+  });
   root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects/files/list'));
   root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('setup/server/details'));
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){

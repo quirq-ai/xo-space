@@ -135,7 +135,8 @@ export default {
     root.addEventListener('wheel',onWheel,{passive:false});
     await load();
   },
-  show(){if((model===null||projectsDirty)&&!loading)load();}
+  show(){if((model===null||projectsDirty)&&!loading)load();},
+  refresh:load,
 };
 
 /* ── model ────────────────────────────────────────────────────────────────
@@ -317,7 +318,6 @@ function head(){
     +'<span class="prj-spacer"></span>'
     +'<button class="sess-refresh" data-tv="projects">Projects only</button>'
     +'<button class="sess-refresh" data-tv="reset">Reset view</button>'
-    +'<button class="sess-refresh" data-tv="reload">&#8635; Refresh</button>'
   +'</div>';
 }
 function emptyToolbar(){return '<div class="tv-head">'+fileViewControls('tree')+'</div>';}
@@ -379,7 +379,6 @@ function onClick(e){
   if(act){
     if(act.dataset.tv==='projects'){open=new Set(['']);expandedStacks.clear();render();}
     else if(act.dataset.tv==='reset'){initCam();applyCam();}
-    else{model=null;root.querySelector('.tv').innerHTML=emptyToolbar()+'<div class="prj-note">loading…</div>';load();}
     return;
   }
   const node=e.target.closest('[data-key]');

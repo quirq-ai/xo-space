@@ -1,23 +1,23 @@
 /* Entry point. Adding a view = create js/views/<name>.js exporting the view
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
-import {registerView,startRegistry,switchTo} from './core/registry.js?v=20260914-navigation1';
+import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260914-actions1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260914-files2';
-import {initSectionNav} from './core/section-nav.js?v=20260914-controls1';
+import {initSectionNav} from './core/section-nav.js?v=20260914-actions1';
 import {PRIMARY_TABS} from './core/navigation.js?v=20260914-files2';
 import {initPreview} from './core/preview.js?v=20260914-files2';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260914-controls1';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260914-actions1';
 import {createAgentViews} from './views/sessions.js?v=20260914-files2';
 import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-files2';
-import projectsView from './views/projects.js?v=20260914-controls1';
-import treeView from './views/tree.js?v=20260914-controls1';
-import sharingView from './views/sharing.js?v=20260914-controls1';
+import projectsView from './views/projects.js?v=20260914-actions1';
+import treeView from './views/tree.js?v=20260914-actions1';
+import sharingView from './views/sharing.js?v=20260914-actions1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260914-navigation1';
 import quirqView from './views/quirq.js?v=20260914-files2';
-import {createSetupViews} from './views/setup.js?v=20260914-files2';
+import {createSetupViews} from './views/setup.js?v=20260914-actions1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 
@@ -60,7 +60,7 @@ addEventListener('space:view',event=>{
 });
 try{initProjectRootPicker({switchTo});}catch(err){console.error('Project root picker failed to start:',err);}
 try{initToolbar();}catch(err){console.error('Toolbar failed to start:',err);}
-try{initSectionNav();}catch(err){console.error('Section navigation failed to start:',err);}
+try{initSectionNav({switchTo,refreshCurrentView});}catch(err){console.error('Section navigation failed to start:',err);}
 
 try{
   registerView(dashboardView);

@@ -897,14 +897,14 @@ class ShellTests(unittest.TestCase):
         # imports advance together; unchanged controllers retain their URLs.
         navigation_stamp = "20260914-navigation1"
         self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
-        self.assertIn("./core/registry.js?v=" + navigation_stamp + "'", app)
+        self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         files_stamp = "20260914-files2"
-        for view in ("inbox", "quirq", "setup", "sessions"):
+        for view in ("inbox", "quirq", "sessions"):
             self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
         for module in ("navigation", "toolbar", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
-        controls_stamp = "20260914-controls1"
-        for view in ("sharing", "tree", "atlas", "projects"):
+        controls_stamp = "20260914-actions1"
+        for view in ("sharing", "tree", "atlas", "projects", "setup"):
             self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
         self.assertIn("./core/section-nav.js?v=" + controls_stamp + "'", app)
         compact_stamp = "20260914-projectcompact1"

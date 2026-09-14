@@ -9,8 +9,10 @@
 .section-nav-links a{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:38px;padding:8px 10px;border-bottom:2px solid transparent;text-decoration:none;font:500 12px var(--sans);color:var(--ink-3);white-space:nowrap}
 .section-nav-links a:hover{color:var(--ink);background:var(--bg-2)}
 .section-nav-links a[aria-current=page]{border-bottom-color:var(--accent);color:var(--ink)}
-.section-nav-action{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:36px;margin-left:auto;padding:7px 10px;border:1px solid var(--line);border-radius:8px;color:var(--ink-2);text-decoration:none;font:500 11px var(--sans);white-space:nowrap}
+.section-nav-action{display:inline-flex;align-items:center;justify-content:center;flex:none;min-height:36px;margin-left:auto;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);text-decoration:none;font:500 11px var(--sans);white-space:nowrap;cursor:pointer}
 .section-nav-action:hover{color:var(--ink);border-color:var(--ink-3)}
+.section-nav-action:disabled{opacity:.55;cursor:wait}
+.section-nav-action:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .section-nav-tools{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;min-width:0;margin-left:auto}
 .section-nav-actions{display:flex;align-items:center;gap:8px;flex:none;min-width:0}
 .section-page-actions[hidden]{display:none!important}

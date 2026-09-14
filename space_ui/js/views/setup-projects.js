@@ -8,7 +8,7 @@ const path=id=>base+'/'+encodeURIComponent(id);
 const text=value=>typeof value==='string'?value.trim():'';
 const PROJECT_ID=/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{}}={}){
+export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{},onShare=()=>{}}={}){
   let items=[],catalogRevision=0,catalogLoading=false,catalogQueued=false,creating=false;
   let selected=null,detail=null,detailRevision=0,detailLoading=false,detailQueued=false;
   let busy=false,lastAction='',revokeConfirm=null,folderEdited=false;
@@ -54,13 +54,16 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     $('#setup-project-recheck').disabled=busy||detailLoading;
     confirmInput.disabled=busy;
     el.querySelectorAll('[data-project-remove]').forEach(button=>{button.disabled=busy;});
+    el.querySelectorAll('[data-project-share]').forEach(button=>{button.disabled=busy||creating;});
   }
   function paintList(message=''){
     $('#setup-project-count').textContent=catalogLoading?'':String(items.length);
     $('#setup-project-list').innerHTML=message?'<p class="setup-empty is-error">'+esc(message)+'</p>'
       :!items.length?'<p class="setup-empty">No projects in this Space yet.</p>'
         :items.map(item=>'<div class="setup-project-row"><div><b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>'
-          +(text(item.description)?'<p>'+esc(item.description)+'</p>':'')+'</div><button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>').join('');
+          +(text(item.description)?'<p>'+esc(item.description)+'</p>':'')+'</div><div class="setup-project-row-actions">'
+          +'<button class="setup-secondary" type="button" data-project-share="'+esc(item.id)+'">Share</button>'
+          +'<button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div></div>').join('');
     updateControls();
   }
   async function refreshCatalog(){
@@ -159,11 +162,11 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     if(!PROJECT_ID.test(id)||id==='.'||id==='..'){
       error('#setup-project-add-error','Use letters, numbers, hyphens, underscores or dots for the folder name.');idInput.focus();return;
     }
-    creating=true;error('#setup-project-add-error','');
+    creating=true;error('#setup-project-add-error','');updateControls();
     form.querySelectorAll('input,button').forEach(node=>{node.disabled=true;});
     $('#setup-project-create').textContent='Cloning…';
     const res=await apiFetch(base,{method:'POST',body:{project_id:id,repository_url:repository}});
-    creating=false;form.querySelectorAll('input,button').forEach(node=>{node.disabled=false;});
+    creating=false;form.querySelectorAll('input,button').forEach(node=>{node.disabled=false;});updateControls();
     $('#setup-project-create').textContent='Clone project';
     if(res.ok&&res.data?.created===true&&res.data?.project_id===id){form.reset();form.hidden=true;folderEdited=false;draftChanged();changed(id,'added');toast('Project cloned');error('#setup-project-notice',text(res.data.warning));await refreshCatalog();}
     else error('#setup-project-add-error',res.ok?'Cloning could not be confirmed. Refresh the project list before retrying.':failText(res));
@@ -178,7 +181,14 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     else{error('#setup-project-remove-error',res.ok?'Removal could not be confirmed. Refresh the project list before retrying.':failText(res));await refreshDetail();}
     updateControls();
   }
-  $('#setup-project-add').addEventListener('click',()=>{form.hidden=false;repositoryInput.focus();draftChanged();});
+  function openAdd(){
+    form.hidden=false;
+    draftChanged();
+    form.scrollIntoView({block:'nearest'});
+    if(creating)return;
+    repositoryInput.focus({preventScroll:true});
+  }
+  $('#setup-project-add').addEventListener('click',openAdd);
   $('#setup-project-cancel').addEventListener('click',()=>{if(creating)return;form.hidden=true;form.reset();folderEdited=false;error('#setup-project-add-error','');draftChanged();});
   $('#setup-project-refresh').addEventListener('click',()=>refresh());
   $('#setup-project-close').addEventListener('click',closeRemoval);
@@ -194,6 +204,8 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
   $('#setup-project-remove-form').addEventListener('submit',remove);
   confirmInput.addEventListener('input',updateControls);
   el.addEventListener('click',event=>{
+    const shareButton=event.target.closest('[data-project-share]');
+    if(shareButton){if(!busy&&!creating)onShare(shareButton.dataset.projectShare);return;}
     const removeButton=event.target.closest('[data-project-remove]');
     if(removeButton){openRemoval(removeButton.dataset.projectRemove);return;}
     const start=event.target.closest('[data-project-revoke-start]');
@@ -207,5 +219,5 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     if(peerConfirm)revokeAccess(peerConfirm.dataset.projectPeer,'peer');
   });
   async function refresh(){await Promise.all([refreshCatalog(),selected&&!busy?refreshDetail():Promise.resolve()]);}
-  return {refresh,hasDraft};
+  return {refresh,hasDraft,openAdd};
 }

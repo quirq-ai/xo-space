@@ -1,5 +1,5 @@
 import {projectPage} from '../core/navigation.js?v=20260914-files2';
-import {setSectionActions} from '../core/section-nav.js?v=20260914-controls1';
+import {setSectionActions} from '../core/section-nav.js?v=20260914-actions1';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -38,6 +38,7 @@ let commits=new Map();    /* project id -> {ok,behind,branch,path,commits,error}
 let members=new Map();    /* project id -> {ok,own,members,error} */
 let open=null;            /* the expanded card's project id */
 let composer=null;        /* null | {pick,filter,ws} */
+let sharePending=false;   /* keep the active share form until its request settles */
 let busy=new Set();       /* project ids with a write in flight */
 let confirmRevoke=null;   /* {id,ws} while a revoke waits for Confirm */
 let renderedAt=0;
@@ -63,6 +64,7 @@ export default {
     root.addEventListener('click',onClick);
     root.addEventListener('submit',onSubmit);
     root.addEventListener('input',onInput);
+    addEventListener('space:share-project',onShareProject);
     startSharingPoll(onStatus);
     await Promise.all([loadCatalog(),refreshSharingStatus()]);
     render();
@@ -70,7 +72,8 @@ export default {
   },
   /* Coming back to the lens re-reads; right after mount the paint is fresh
      and a second read would only repeat it. */
-  show(){if(root&&(catalogDirty||Date.now()-renderedAt>2000)){catalogDirty=false;refresh();}}
+  show(){if(root&&(catalogDirty||Date.now()-renderedAt>2000)){catalogDirty=false;return refresh();}},
+  refresh,
 };
 
 const skeleton=()=>'<div class="prj-head"></div><div class="prj-rows">'
@@ -107,25 +110,33 @@ async function loadMembers(id){
 }
 async function refresh(){
   await Promise.all([loadCatalog(),refreshSharingStatus()]);
-  render();
-  loadCommits();
+  paintSnapshot();
+  await loadCommits();
 }
 /* A poll tick repaints everything unless the person is mid-edit (composer
    open, a revoke waiting for Confirm): then only the strip and the eyebrow
    move, so a keystroke or a pending question is never wiped. */
 function onStatus(){
   if(!root)return;
-  renderActions();
   if(consumeNewClone())loadCatalog().then(()=>{if(!editing())render();});
+  paintSnapshot();
+  loadCommits();
+}
+function paintSnapshot(){
+  if(!root)return;
+  renderActions();
   if(editing()){
     const strip=root.querySelector('#prj-sharing-strip');
     if(strip)strip.outerHTML=stripHTML();
     const count=root.querySelector('#shl-count');
     if(count)count.textContent=summary(model());
   }else render();
-  loadCommits();
 }
-const editing=()=>!!composer||!!confirmRevoke;
+function editing(){
+  const recipient=root?.querySelector('form[data-form="share"] input[name="ws"]');
+  return !!composer||!!confirmRevoke||sharePending
+    ||!!recipient&&(!!recipient.value||document.activeElement===recipient);
+}
 /* the open card's detail: commits are already loading; members only when
    the relay says the repo is live */
 function ensureDetail(id){
@@ -187,7 +198,7 @@ function renderActions(){
   if(!pageActions)return;
   const status=sharingStatusRes(),off=parked()||!status||!status.ok;
   shareButton.textContent=composer?'Cancel':'+ Share a project';
-  shareButton.classList.toggle('shl-primary',!composer);shareButton.disabled=!composer&&off;
+  shareButton.classList.toggle('shl-primary',!composer);shareButton.disabled=sharePending||(!composer&&off);
   checkButton.disabled=off||checking;checkButton.textContent=checking?'Checking…':'Check now';
   if(checking)checkButton.setAttribute('aria-busy','true');else checkButton.removeAttribute('aria-busy');
 }
@@ -472,7 +483,7 @@ function composerHTML(){
       +'<div class="shr-form" style="margin-top:0">'
         +'<input class="tv-filter shr-input" name="ws" placeholder="recipient workspace id" autocomplete="off" spellcheck="false" '
           +'aria-label="Recipient workspace id" value="'+esc(composer.ws||'')+'">'
-        +'<button class="sess-refresh shl-primary" type="submit" id="shl-composer-go"'+(composer.pick?'':' disabled')+'>'
+        +'<button class="sess-refresh shl-primary" type="submit" id="shl-composer-go"'+(composer.pick&&!sharePending?'':' disabled')+'>'
           +(name?'Share '+esc(name):'Share')+'</button>'
       +'</div>'
       +'<span class="shr-muted">Ask them for the id from the strip on their own Sharing pane, or send them your invite and let them share with you. Sharing again with someone who already has it does nothing.</span>'
@@ -485,12 +496,35 @@ function paintComposer(){
 }
 
 /* ── events ───────────────────────────────────────────────────────────── */
+function onShareProject(event){
+  if(!root?.classList.contains('is-active')||location.hash!=='#/projects/sharing')return;
+  const id=typeof event.detail==='string'?event.detail.trim():'';
+  if(!id)return;
+  if(sharePending){toast('Wait for sharing to finish.');return;}
+  const status=sharingStatusRes();
+  if(!status?.ok||parked()){
+    toast(parked()?'Sharing is parked. Check the status above.':'Sharing status is unavailable. Try refreshing.');
+    return;
+  }
+  if(!catalog.some(project=>project.id===id)){
+    toast('This project is no longer in the project list. Refresh the list and try again.');
+    return;
+  }
+  keepComposerInput();
+  if(composer?.pick!==id)composer={pick:id,filter:'',ws:''};
+  confirmRevoke=null;
+  render();
+  const recipient=root.querySelector('#shl-composer input[name="ws"]');
+  recipient?.focus({preventScroll:true});
+  recipient?.scrollIntoView({block:'nearest'});
+}
 async function onClick(e){
   const b=e.target.closest('[data-act]');
   if(!b||b.disabled)return;
   const id=b.dataset.id;
   switch(b.dataset.act){
     case'composer':
+      if(sharePending)return;
       composer=composer?null:{pick:null,filter:'',ws:''};
       confirmRevoke=null;
       render();
@@ -502,6 +536,7 @@ async function onClick(e){
       catch(err){toast('copy failed: select and copy by hand');}
       return;
     case'select':
+      if(sharePending)return;
       open=id;
       confirmRevoke=null;
       composer=null; /* picking a project answers "what do you want to see" */
@@ -520,6 +555,7 @@ async function onClick(e){
       dispatchEvent(new CustomEvent('space:open-project',{detail:id}));
       return;
     case'pick':
+      if(sharePending)return;
       composer.pick=composer.pick===id?null:id;
       keepComposerInput();
       paintComposer();
@@ -553,6 +589,8 @@ function onSubmit(e){
   }
 }
 function onInput(e){
+  const recipient=e.target.closest('input[name="ws"]');
+  if(composer&&recipient)composer.ws=recipient.value;
   const f=e.target.closest('[data-filter]');
   if(f&&composer){
     composer.filter=f.value;
@@ -563,11 +601,24 @@ function onInput(e){
 
 /* ── writes ───────────────────────────────────────────────────────────── */
 async function doShare(id,ws,form,fromComposer){
+  if(sharePending)return;
+  if(fromComposer&&!catalog.some(project=>project.id===id)){
+    toast('This project is no longer in the project list. Choose another project.');
+    return;
+  }
   if(!ws){toast('enter the recipient’s workspace id');form.querySelector('input[name=ws]').focus();return;}
   const btn=form.querySelector('button[type=submit]');
-  btn.disabled=true;
-  const res=await share(id,ws);
-  btn.disabled=false;
+  sharePending=true;btn.disabled=true;renderActions();
+  let res;
+  try{res=await share(id,ws);}
+  finally{
+    sharePending=false;btn.disabled=false;
+    /* A concurrent action may have painted a new composer while this POST
+       was pending. Restore the live button as well as the original node. */
+    const current=root?.querySelector('#shl-composer-go');
+    if(current)current.disabled=!composer?.pick||!catalog.some(project=>project.id===composer.pick);
+    renderActions();
+  }
   if(!res.ok){toast('share failed: '+failText(res));return;}
   toast('shared '+(names.get(id)||id)+' with '+shortId(ws));
   members.delete(id);

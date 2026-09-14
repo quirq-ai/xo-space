@@ -137,7 +137,7 @@ async function ensureBoot(dataset,force=false){
   for(const node of document.querySelectorAll('.atlas-project-refresh,.nodata'))node.remove();
   bootDataset=dataset;rememberDataset(dataset);projectsDirty=false;
   document.getElementById('tclear').hidden=true;
-  document.getElementById('q').value='';
+  if(!force)document.getElementById('q').value='';
   rootPicker?.setData(dataset,data);
   try{boot(data,source.label,dataset);}
   catch(error){hooks.dispose?.();hooks={};bootDataset=null;throw error;}
@@ -146,6 +146,7 @@ async function ensureBoot(dataset,force=false){
 
 function renderNoData(el,dataset){
   if(!el)return;
+  el.querySelector('.nodata')?.remove();
   const source=DATASETS[dataset]||DATASETS[savedDataset()];
   const box=document.createElement('div');
   box.className='nodata';
@@ -191,6 +192,17 @@ function atlasView(id,label,order,lens,dataset=null){
       refreshToolbar=toolbarRefresh;
       try{if(await ensureBoot(dataset)&&activeAtlasId===id){hooks.setActiveView?.(lens);toolbarRefresh();}}
       catch{if(activeAtlasId===id)renderNoData(host,dataset);}
+    },
+    async refresh(){
+      datasetReads.delete(dataset);
+      try{
+        if(await ensureBoot(dataset,true)&&activeAtlasId===id){
+          hooks.setActiveView?.(lens);toolbarRefresh();
+        }
+      }catch(error){
+        if(activeAtlasId===id)renderNoData(host,dataset);
+        throw error;
+      }
     },
     hide(){if(hooks.setActiveView)hooks.setActiveView(null);}
   };

@@ -563,7 +563,8 @@ class SpaceWikiTests(unittest.TestCase):
         # action. The browser harness checks retained drawers and lazy groups.
         self.assertIn("placeholder:'Filter projects…'", projects)
         self.assertIn('id="prj-sort"', projects)
-        self.assertIn('id="prj-add"', projects)
+        self.assertNotIn('id="prj-add"', projects)
+        self.assertIn("openProjectAdd(switchTo)", projects)
         self.assertIn('id="prj-filter"', projects)
         self.assertIn("data-project-tab=", projects)
         self.assertIn("if(expanded&&!items.some", projects)
@@ -659,7 +660,8 @@ class SpaceWikiTests(unittest.TestCase):
 
         projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
         self.assertIn("data-add-project", projects)
-        self.assertIn("switchTo('setup/projects')", projects)
+        self.assertIn("openProjectAdd(switchTo)", projects)
+        self.assertIn("switchTo('setup/projects')", (ROOT / "space_ui/js/core/project-actions.js").read_text(encoding="utf-8"))
         self.assertIn("data-first-run", projects)
         self.assertIn("'first-run'", projects)
         self.assertIn("No projects yet", projects)

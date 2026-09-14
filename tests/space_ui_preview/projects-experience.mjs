@@ -276,7 +276,7 @@ try{
   assert.equal(await body('files').locator('[data-file="README.md"]').count(),0);
   checked('A late root-folder refresh cannot replace a newer same-project folder navigation.');
 
-  await page.locator('#prj-add').click();await page.waitForURL('**/#/setup/projects');
+  await page.locator('#project-add').click();await page.waitForURL('**/#/setup/projects');
   await page.locator('#setup-projects').waitFor();assert.deepEqual(report.writes,[]);
   await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
@@ -311,13 +311,13 @@ try{
   checked('List, Files, Activity and empty results fit 1440px, 390px and 320px with no overflowing controls.');
   const beforeFailure=await aurora.elementHandle();
   const refreshFailure=hold('/api/xo-projects',{detail:'Catalog temporarily unavailable'},503);
-  await page.locator('#prj-refresh').click();await within(refreshFailure.arrived.promise,'catalog refresh failure arrives');
+  await page.locator('#project-refresh').click();await within(refreshFailure.arrived.promise,'catalog refresh failure arrives');
   refreshFailure.release.resolve();await within(refreshFailure.done.promise,'catalog refresh failure completes');
   await page.locator('#prj-status').getByText(/Showing the last list/).waitFor();
   assert.equal((await visibleIDs()).length,catalog.length);
   assert.equal(await beforeFailure.evaluate(node=>node===document.querySelector('#prj-row-aurora-console')),true);
-  await page.locator('#prj-refresh').click();
-  await page.waitForFunction(()=>!document.querySelector('#prj-refresh').disabled&&document.querySelector('#prj-status').hidden);
+  await page.locator('#project-refresh').click();
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled&&document.querySelector('#prj-status').hidden);
   const initialFailure=hold('/api/xo-projects',{detail:'Catalog temporarily unavailable'},503);
   await page.reload({waitUntil:'domcontentloaded'});await within(initialFailure.arrived.promise,'initial catalog failure arrives');
   initialFailure.release.resolve();await within(initialFailure.done.promise,'initial catalog failure completes');
