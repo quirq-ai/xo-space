@@ -5,9 +5,3 @@ export async function openProjectAdd(switchTo){
     dispatchEvent(new CustomEvent('space:add-project'));
   }
 }
-
-export async function openProjectShare(switchTo,id){
-  if((await switchTo('projects/sharing'))===true&&location.hash==='#/projects/sharing'){
-    dispatchEvent(new CustomEvent('space:share-project',{detail:id}));
-  }
-}

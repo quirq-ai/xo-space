@@ -286,7 +286,7 @@ try{
   assert.equal(await page.locator('#setup-project-id').inputValue(),'unsaved-project-folder');
   checked('Catalog mutations refresh Graph and Timeline data without reloading the document or losing the Setup draft.');
 
-  await openProjectList(page);await page.locator('[data-section-page="sharing"]').click();
+  await openProjectPage(page,'sharing');
   const suppressed=page.locator('.shl-inbox-row').filter({hasText:'github.com/fixture/removed-project'});await suppressed.waitFor();
   assert.match(await suppressed.textContent(),/removed locally/);
   assert.match(await suppressed.textContent(),/automatic cloning is paused/);

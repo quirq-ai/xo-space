@@ -122,7 +122,7 @@ async function projectChrome() {
       await page.waitForFunction(label=>document.querySelector('#root-name').textContent===label,original);
       assert.equal(await page.locator('#rootdd.is-open').count(), 0, 'Reset closes the root picker');
     }
-    for(const id of ['tree','sharing','projects']) {
+    for(const id of ['tree','projects']) {
       await lens(id);await sameRoot();
       assert.equal(await page.locator('#root-btn').isVisible(),true,id+' retains the shared Projects root picker');
       if(id!=='projects')assert.equal(await page.locator('.section-page-context:visible').count(),0,id+' has no visible context hero');
@@ -178,7 +178,7 @@ try {
 
     const beforeContent = await page.locator('#preview-body').textContent();
     const beforeLens = await page.locator('#section-nav').boundingBox();
-    for(const id of ['dashboard', 'graph', 'tree', 'sharing', 'time', 'projects', 'dashboard', 'graph']) {
+    for(const id of ['dashboard', 'graph', 'tree', 'time', 'projects', 'dashboard', 'graph']) {
       await lens(id);
       await page.waitForFunction(content => document.querySelector('#preview-body')?.textContent === content, beforeContent);
       assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), true, `${id} keeps the preview open`);
@@ -221,7 +221,7 @@ try {
     for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
       await page.goto(origin + '/space/' + routeFor(id), {waitUntil: 'networkidle'});
       await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-current') === 'page', projectPageSelector(id));
-      assert.equal(await page.locator('#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects Projects`);
+      assert.equal(await page.locator(id==='sharing'?'#tab-inbox':'#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects its section`);
     }
     report.checks.push('Every existing Projects page deep link selects the correct tab and lens');
 

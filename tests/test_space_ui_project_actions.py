@@ -70,7 +70,7 @@ const gate=()=>{
 const settle=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
 const states=id=>emitted.filter(event=>event.type==='space:refresh-state'&&event.detail.id===id).map(event=>event.detail.busy);
 const viewEvent=()=>emitted.filter(event=>event.type==='space:view').at(-1)?.detail;
-const formEvents=()=>emitted.filter(event=>['space:add-project','space:share-project'].includes(event.type));
+const formEvents=()=>emitted.filter(event=>event.type==='space:add-project');
 """
 
 
@@ -195,7 +195,6 @@ assert.deepEqual(states('list'),[true,false]);
         self.probe(r"""
 for(const [run,route,type] of [
   [navigate=>actions.openProjectAdd(navigate),'setup/projects','space:add-project'],
-  [navigate=>actions.openProjectShare(navigate,'fictional-project'),'projects/sharing','space:share-project'],
 ]){
   for(const [completed,hash,allowed] of [
     [true,'#/'+route,true],[false,'#/'+route,false],[undefined,'#/'+route,false],[1,'#/'+route,false],
@@ -204,8 +203,7 @@ for(const [run,route,type] of [
     emitted.length=0;
     await run(async target=>{assert.equal(target,route);location.hash=hash;return completed;});
     assert.equal(formEvents().length,allowed?1:0);
-    if(allowed){assert.equal(formEvents()[0].type,type);
-      if(type==='space:share-project')assert.equal(formEvents()[0].detail,'fictional-project');}
+    if(allowed)assert.equal(formEvents()[0].type,type);
   }
 }
 """)
@@ -215,7 +213,6 @@ for(const [run,route,type] of [
 register({id:'other',route:'inbox/items'});
 for(const [id,route,run] of [
   ['setup-projects','setup/projects',()=>actions.openProjectAdd(registry.switchTo)],
-  ['sharing','projects/sharing',()=>actions.openProjectShare(registry.switchTo,'fictional-project')],
 ]){
   const mounted=gate();register({id,route,mount:()=>mounted.promise});
   emitted.length=0;

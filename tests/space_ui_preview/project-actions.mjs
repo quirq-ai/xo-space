@@ -53,14 +53,13 @@ async function newPage(route){
   await page.addInitScript(()=>{
     window.projectActionsSentinel='same-document';window.projectHandoffs=[];
     addEventListener('space:add-project',()=>window.projectHandoffs.push('add'));
-    addEventListener('space:share-project',event=>window.projectHandoffs.push('share:'+event.detail));
   });
   await page.goto(origin+'/space/'+route,{waitUntil:'networkidle'});return page;
 }
 const page=await newPage(routeFor('projects'));
 // These selectors are shared shell controls, separate from Setup's controls.
 const add=()=>page.locator('#project-add');
-const refresh=()=>page.locator('#project-refresh');
+const refresh=()=>page.locator(new URL(page.url()).hash==='#/inbox/sharing'?'#section-refresh':'#project-refresh');
 const manage=()=>page.locator('#section-nav').getByRole('link',{name:'Manage projects',exact:true});
 const checked=text=>{report.checks.push(text);console.log(text);};
 async function shot(name){await page.mouse.move(1,999);await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
@@ -72,7 +71,7 @@ async function reread(id,path,verify){
   assert.equal(await refresh().isDisabled(),true,id+' prevents duplicate refreshes');
   await refresh().evaluate(node=>node.click());
   assert.equal(report.requests.filter(value=>value===path).length,before+1,id+' starts exactly one forced read');
-  pending.release.resolve();await page.waitForFunction(()=>document.querySelector('#project-refresh')&&!document.querySelector('#project-refresh').disabled);
+  pending.release.resolve();await page.waitForFunction(()=>[...document.querySelectorAll('#project-refresh,#section-refresh')].some(node=>node.getClientRects().length&&!node.disabled));
   await verify();assert.equal(new URL(page.url()).hash,routeFor(id));
   assert.equal(await page.evaluate(()=>window.projectActionsSentinel),'same-document');
 }
@@ -144,7 +143,7 @@ try{
   await page.locator('#section-nav [data-act="composer"]').click();
   checked('Tree, Timeline and Sharing Refresh display new source data; Tree search and Timeline mode/query persist.');
 
-  await manage().click();await page.waitForURL('**/#/setup/projects');await page.locator('#setup-project-add').waitFor();
+  await openProjectList(page);await manage().click();await page.waitForURL('**/#/setup/projects');await page.locator('#setup-project-add').waitFor();
   assert.equal(await page.locator('#setup-project-form').isVisible(),false,'Manage opens the project manager');
   await openProjectPage(page,'dashboard');await add().click();await page.locator('#setup-project-repository').waitFor();
   await page.waitForFunction(()=>document.activeElement===document.querySelector('#setup-project-repository'),undefined,{timeout:3000}).catch(async error=>{
@@ -152,39 +151,18 @@ try{
   });
   await page.locator('#setup-project-repository').fill('https://github.com/fictional/keep-draft.git');
   const draft=await page.locator('#setup-project-repository').elementHandle();
-  await openProjectPage(page,'sharing');await add().click();
+  await openProjectPage(page,'tree');await add().click();
   assert.equal(await draft.evaluate(node=>node===document.querySelector('#setup-project-repository')),true);
   assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fictional/keep-draft.git');
   checked('Manage opens project management; Add opens and focuses the clone form while retaining an existing draft.');
-  await openProjectList(page);await page.locator('#prj-row-aurora-console .prj-share').click();
-  await page.waitForURL('**/#/projects/sharing');await page.locator('#shl-composer .shl-pick.is-sel[data-id="aurora-console"]').waitFor();
-  await manage().click();await page.locator('[data-project-share="orbit-api"]').click();
-  await page.waitForURL('**/#/projects/sharing');await page.locator('#shl-composer .shl-pick.is-sel[data-id="orbit-api"]').waitFor();
-  assert.deepEqual(report.writes,[]);await page.locator('#section-nav [data-act="composer"]').click();
-  checked('Files List and Setup row Share shortcuts open the selected project in the composer without granting access.');
-
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    for(const id of ['dashboard','projects','graph','tree','sharing','time']){
+    for(const id of ['dashboard','projects','graph','tree','time']){
       await openProjectPage(page,id);await page.waitForLoadState('networkidle');await layout(id,width);
       await shot(id+'-'+width+'.png');
     }
   }
-  checked('All six Projects pages keep Graph root, Manage, Add and Refresh together at1440,390 and320px.');
-  await page.close();
-  for(const [action,path,event] of [['share','/api/project-sharing/status','share']]){
-    const pending=hold(path),slow=await newPage(routeFor('projects'));
-    await slow.locator('#prj-row-aurora-console').waitFor();
-    if(action==='add')await slow.locator('#project-add').click();
-    else await slow.locator('#prj-row-aurora-console .prj-share').click();
-    await within(pending.arrived.promise,'slow '+action+' mount');await slow.locator('#wiki-link').click();
-    await slow.waitForURL('**/#/wiki');await slow.locator('#view-wiki').waitFor({state:'visible'});
-    pending.release.resolve();await slow.waitForLoadState('networkidle');
-    assert.equal(new URL(slow.url()).hash,'#/wiki');
-    assert.equal(await slow.evaluate(prefix=>window.projectHandoffs.some(value=>value.startsWith(prefix)),event),false);
-    await slow.close();
-  }
-  checked('A delayed Sharing destination cannot open its composer or reclaim focus after navigation to Wiki.');
+  checked('All five Projects pages keep Graph root, Manage, Add and Refresh together at1440,390 and320px.');
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
 }catch(error){report.failure=error.stack;await shot('failure.png').catch(()=>{});throw error;}
 finally{for(const pending of holds.values())pending.release.resolve();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await browser.close();}

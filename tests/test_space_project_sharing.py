@@ -13,13 +13,10 @@ def read(rel: str) -> str:
 
 
 class SpaceProjectSharingCompositionTests(unittest.TestCase):
-    """Project sharing in the Space UI is ONE surface: the Sharing lens of the
-    Files tab (views/sharing.js painting, views/sharing_data.js talking to the
-    BFF). The List lens carries none of it. These assertions pin the seams so
-    a refactor cannot quietly grow a second sharing surface, drop a control,
-    or route a call around the BFF."""
+    """Inbox Sharing owns relay management. List rows offer only the reusable
+    inline grant form; all sharing operations continue through the BFF."""
 
-    def test_list_lens_carries_no_sharing_surface(self) -> None:
+    def test_list_rows_do_not_duplicate_the_sharing_management_pane(self) -> None:
         projects = read("js/views/projects.js")
         for needle in ("sharing_data.js", "projects_sharing.js", "sharingPanel", "shr-",
                        "sharingStripHTML", "sharedWithYouHTML", "startSharingPoll", "data-shr-row"):

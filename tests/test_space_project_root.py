@@ -98,12 +98,14 @@ const init=evaluate('initProjectRootPicker');
 async function go(route){navigations.push(route);const id=route==='projects/overview'?'dashboard':'graph';
  emit('space:view',{id,tab:'projects'});const view=context.pages[id];await view.mount(node('view-graph'),{switchTo:go});await view.show();}
 init({switchTo:go});
-for(const id of ['project-list','tree','sharing']){
+for(const id of ['project-list','tree']){
  emit('space:view',{id,tab:'projects'});assert.equal(node('graph-root').hidden,false);
  node('root-btn').emit('click');await settle();assert.equal(boots.length,0,'Metadata reads never boot or replace an atlas on '+id);
  node('root-btn').emit('click');
 }
 assert.deepEqual(reads,['/xo/space.json'],'Pages share the lazy file metadata read');
+emit('space:view',{id:'sharing',tab:'inbox'});assert.equal(node('graph-root').hidden,true,'Inbox Sharing has no Projects root picker');
+emit('space:view',{id:'tree',tab:'projects'});
 emit('space:focus-project','older-preview-target');
 node('root-btn').emit('click');await settle();node('root-q').value='Fixture';node('root-q').emit('input');node('root-q').emit('keydown',{key:'Enter'});await settle();
 assert.deepEqual(navigations,['projects/files/graph']);assert.deepEqual(boots,[['graph','files-root']]);assert.equal(applied.at(-1),'files-root-project');

@@ -16,7 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-files2';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-inboxshare1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -133,7 +133,7 @@ let jobsRefreshQueued=false;
 let jobsPainted='';
 
 export function createInboxViews(){
-  return INBOX_PAGES.map(page=>({
+  return INBOX_PAGES.filter(page=>page.section==='inbox').map(page=>({
     ...page,
     toolbar:()=>page.id==='inbox-items'?inboxController.toolbar:null,
     mount(el,ctx){

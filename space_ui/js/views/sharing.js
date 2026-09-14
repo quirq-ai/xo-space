@@ -1,5 +1,5 @@
-import {projectPage} from '../core/navigation.js?v=20260914-files2';
-import {setSectionActions} from '../core/section-nav.js?v=20260914-actions1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-inboxshare1';
+import {setSectionActions} from '../core/section-nav.js?v=20260914-inboxshare1';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -25,7 +25,7 @@ import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
   cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260914-projectmanage1';
+  checkNow,failText} from './sharing_data.js?v=20260914-inboxshare1';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 
@@ -47,8 +47,9 @@ addEventListener('space:projects-changed',()=>{catalogDirty=true;});
 addEventListener('space:project-access-changed',()=>{catalogDirty=true;members.clear();});
 
 export default {
-  /* Sharing is a page within Projects; its actions live in the section bar. */
-  ...projectPage('sharing'),
+  /* Sharing keeps its own mounted section within the Inbox navigation. */
+  ...INBOX_PAGES.find(page=>page.id==='sharing'),
+  section:'sharing',
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
@@ -64,7 +65,6 @@ export default {
     root.addEventListener('click',onClick);
     root.addEventListener('submit',onSubmit);
     root.addEventListener('input',onInput);
-    addEventListener('space:share-project',onShareProject);
     startSharingPoll(onStatus);
     await Promise.all([loadCatalog(),refreshSharingStatus()]);
     render();
@@ -496,28 +496,6 @@ function paintComposer(){
 }
 
 /* ── events ───────────────────────────────────────────────────────────── */
-function onShareProject(event){
-  if(!root?.classList.contains('is-active')||location.hash!=='#/projects/sharing')return;
-  const id=typeof event.detail==='string'?event.detail.trim():'';
-  if(!id)return;
-  if(sharePending){toast('Wait for sharing to finish.');return;}
-  const status=sharingStatusRes();
-  if(!status?.ok||parked()){
-    toast(parked()?'Sharing is parked. Check the status above.':'Sharing status is unavailable. Try refreshing.');
-    return;
-  }
-  if(!catalog.some(project=>project.id===id)){
-    toast('This project is no longer in the project list. Refresh the list and try again.');
-    return;
-  }
-  keepComposerInput();
-  if(composer?.pick!==id)composer={pick:id,filter:'',ws:''};
-  confirmRevoke=null;
-  render();
-  const recipient=root.querySelector('#shl-composer input[name="ws"]');
-  recipient?.focus({preventScroll:true});
-  recipient?.scrollIntoView({block:'nearest'});
-}
 async function onClick(e){
   const b=e.target.closest('[data-act]');
   if(!b||b.disabled)return;

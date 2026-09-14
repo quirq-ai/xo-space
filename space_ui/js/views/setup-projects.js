@@ -2,16 +2,18 @@
    removal check; a missing or stale sharing response never enables deletion. */
 import {apiFetch,failText} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
+import {createProjectShare,isProjectSharing} from '../core/project-share.js?v=20260914-inboxshare1';
 
 const base='/api/xo-projects';
 const path=id=>base+'/'+encodeURIComponent(id);
 const text=value=>typeof value==='string'?value.trim():'';
 const PROJECT_ID=/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{},onShare=()=>{}}={}){
+export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusChange=()=>{}}={}){
   let items=[],catalogRevision=0,catalogLoading=false,catalogQueued=false,creating=false;
   let selected=null,detail=null,detailRevision=0,detailLoading=false,detailQueued=false;
   let busy=false,lastAction='',revokeConfirm=null,folderEdited=false;
+  const projectRows=new Map();
   el.classList.add('setup-projects');
   el.innerHTML=`<div class="setup-card-head"><h3 id="setup-projects-title" tabindex="-1">Local projects <span id="setup-project-count"></span></h3>
       <div class="setup-project-tools"><button class="setup-secondary" type="button" id="setup-project-refresh">Refresh</button><button class="setup-primary" type="button" id="setup-project-add">Add project</button></div></div>
@@ -23,7 +25,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
       <div class="setup-form-error" id="setup-project-add-error" role="alert" hidden></div>
       <div class="setup-actions"><button class="setup-primary" id="setup-project-create" type="submit">Clone project</button><button class="setup-secondary" id="setup-project-cancel" type="button">Cancel</button></div>
     </form>
-    <div id="setup-project-list" class="setup-project-list" aria-live="polite"><p class="setup-empty">Loading projects…</p></div>
+    <div id="setup-project-list" class="setup-project-list"><p id="setup-project-list-status" class="setup-empty" role="status">Loading projects…</p></div>
     <section id="setup-project-removal" class="setup-project-removal" aria-labelledby="setup-project-removal-title" hidden>
       <header><div><h4 id="setup-project-removal-title" tabindex="-1">Remove project</h4><code id="setup-project-removal-id"></code></div><button class="setup-secondary" id="setup-project-close" type="button">Cancel</button></header>
       <p>Delete this project folder and all its files from this Space. Remote repositories and backups remain.</p>
@@ -35,9 +37,10 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
   const $=selector=>el.querySelector(selector);
   const form=$('#setup-project-form'),idInput=$('#setup-project-id'),repositoryInput=$('#setup-project-repository');
   const removal=$('#setup-project-removal'),confirmInput=$('#setup-project-confirm');
+  const list=$('#setup-project-list'),listStatus=$('#setup-project-list-status');
   function error(selector,message){const node=$(selector);node.textContent=message||'';node.hidden=!message;}
   function draftChanged(){onDraftChange(hasDraft());}
-  function hasDraft(){return !form.hidden||Boolean(selected);}
+  function hasDraft(){return !form.hidden||Boolean(selected)||[...projectRows.values()].some(row=>row.share.hasDraft());}
   function changed(id,action){onChange({project_id:id,action});}
   function validDetail(data,id){
     return data&&data.project_id===id&&typeof data.can_remove==='boolean'
@@ -45,7 +48,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
       &&data.members.every(member=>text(member?.workspace_id)&&typeof member.can_revoke==='boolean')
       &&data.peers.every(peer=>text(peer?.user_id));
   }
-  function canRemove(){return !busy&&!detailLoading&&detail?.can_remove===true&&detail.blockers.length===0
+  function canRemove(){return !busy&&!isProjectSharing(selected)&&!detailLoading&&detail?.can_remove===true&&detail.blockers.length===0
     &&detail.peers.length===0&&!detail.members.some(member=>member.can_revoke);}
   function updateControls(){
     $('#setup-project-delete').disabled=!canRemove()||confirmInput.value!==selected;
@@ -53,17 +56,51 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     $('#setup-project-close').disabled=busy;
     $('#setup-project-recheck').disabled=busy||detailLoading;
     confirmInput.disabled=busy;
-    el.querySelectorAll('[data-project-remove]').forEach(button=>{button.disabled=busy;});
-    el.querySelectorAll('[data-project-share]').forEach(button=>{button.disabled=busy||creating;});
+    for(const [id,row] of projectRows){
+      row.removeButton.disabled=busy||isProjectSharing(id);
+      row.shareButton.disabled=busy||creating;
+      row.share.setDisabled(busy||creating);
+    }
   }
   function paintList(message=''){
     $('#setup-project-count').textContent=catalogLoading?'':String(items.length);
-    $('#setup-project-list').innerHTML=message?'<p class="setup-empty is-error">'+esc(message)+'</p>'
-      :!items.length?'<p class="setup-empty">No projects in this Space yet.</p>'
-        :items.map(item=>'<div class="setup-project-row"><div><b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>'
-          +(text(item.description)?'<p>'+esc(item.description)+'</p>':'')+'</div><div class="setup-project-row-actions">'
+    const focused=list.contains(document.activeElement)?document.activeElement:null,scrollTop=list.scrollTop;
+    listStatus.textContent=message||(!items.length?'No projects in this Space yet.':'');
+    listStatus.hidden=!listStatus.textContent;listStatus.classList.toggle('is-error',Boolean(message));
+    const ids=new Set(items.map(item=>item.id));
+    for(const [id,row] of projectRows)if(!ids.has(id)){row.share.destroy();row.element.remove();projectRows.delete(id);}
+    let position=listStatus.nextElementSibling;
+    for(const item of items){
+      let row=projectRows.get(item.id);
+      if(!row){
+        const element=document.createElement('div');element.className='setup-project-row';element.dataset.projectId=item.id;
+        element.innerHTML='<div class="setup-project-summary"></div><div class="setup-project-row-actions">'
           +'<button class="setup-secondary" type="button" data-project-share="'+esc(item.id)+'">Share</button>'
-          +'<button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div></div>').join('');
+          +'<button class="setup-secondary" type="button" data-project-remove="'+esc(item.id)+'">Remove</button></div>';
+        const share=createProjectShare({projectId:item.id,onDraftChange:draftChanged,
+          onBusyChange:()=>sharingChanged(item.id)});
+        row={element,share,summary:element.querySelector('.setup-project-summary'),
+          shareButton:element.querySelector('[data-project-share]'),removeButton:element.querySelector('[data-project-remove]')};
+        share.setTrigger(row.shareButton);element.appendChild(share.element);projectRows.set(item.id,row);
+      }
+      const html='<b>'+esc(item.display_name||item.id)+'</b><code>'+esc(item.id)+'</code>'
+        +(text(item.description)?'<p>'+esc(item.description)+'</p>':'');
+      if(row.summary.innerHTML!==html)row.summary.innerHTML=html;
+      row.share.setLabel(item.display_name||item.id);
+      row.shareButton.setAttribute('aria-label','Share '+(item.display_name||item.id));
+      if(row.element!==position)list.insertBefore(row.element,position);
+      position=row.element.nextElementSibling;
+    }
+    list.scrollTop=scrollTop;
+    if(focused?.isConnected&&focused.getClientRects().length)focused.focus({preventScroll:true});
+    updateControls();
+  }
+  function sharingChanged(id){
+    if(selected===id){
+      detail=null;detailRevision++;detailLoading=false;revokeConfirm=null;
+      if(isProjectSharing(id))paintAccess({message:'Sharing is in progress. Access will be checked again when it finishes.'});
+      else refreshDetail();
+    }
     updateControls();
   }
   async function refreshCatalog(){
@@ -128,7 +165,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     if(detailQueued){detailQueued=false;await refreshDetail();}
   }
   function openRemoval(id){
-    if(busy)return;
+    if(busy||isProjectSharing(id))return;
     selected=id;detail=null;revokeConfirm=null;confirmInput.value='';
     $('#setup-project-removal-id').textContent=id;
     $('#setup-project-confirm-label').textContent=id;
@@ -142,7 +179,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
     removal.hidden=true;confirmInput.value='';draftChanged();
   }
   async function revokeAccess(target,kind='workspace'){
-    if(busy||!selected||revokeConfirm?.kind!==kind||revokeConfirm?.id!==target)return;
+    if(busy||isProjectSharing(selected)||!selected||revokeConfirm?.kind!==kind||revokeConfirm?.id!==target)return;
     const allowed=kind==='workspace'?detail?.members.some(member=>member.workspace_id===target&&member.can_revoke===true)
       :detail?.peers.some(peer=>peer.user_id===target);
     if(!allowed)return;
@@ -205,7 +242,7 @@ export function mountProjects(el,{onChange=()=>{},onDraftChange=()=>{},onStatusC
   confirmInput.addEventListener('input',updateControls);
   el.addEventListener('click',event=>{
     const shareButton=event.target.closest('[data-project-share]');
-    if(shareButton){if(!busy&&!creating)onShare(shareButton.dataset.projectShare);return;}
+    if(shareButton){if(!busy&&!creating)projectRows.get(shareButton.dataset.projectShare)?.share.open();return;}
     const removeButton=event.target.closest('[data-project-remove]');
     if(removeButton){openRemoval(removeButton.dataset.projectRemove);return;}
     const start=event.target.closest('[data-project-revoke-start]');

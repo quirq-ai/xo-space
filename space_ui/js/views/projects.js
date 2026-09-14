@@ -1,9 +1,10 @@
 /* Projects catalog and on-demand Files, Activity and Issues details.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260914-files2';
-import {fileViewControls} from '../core/file-views.js?v=20260914-controls1';
-import {openProjectAdd,openProjectShare} from '../core/project-actions.js?v=20260914-actions1';
+import {projectPage} from '../core/navigation.js?v=20260914-inboxshare1';
+import {fileViewControls} from '../core/file-views.js?v=20260914-inboxshare1';
+import {openProjectAdd} from '../core/project-actions.js?v=20260914-inboxshare1';
+import {createProjectShare} from '../core/project-share.js?v=20260914-inboxshare1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -347,7 +348,7 @@ const FILTERS=[['all','All projects'],['live','Live'],['pinned','Pinned']];
 const GROUPS=[{key:'files',label:'Files',panels:['files']},
   {key:'activity',label:'Activity',panels:['todos','activity','timeline']},
   {key:'issues',label:'Issues',panels:['issues']}];
-const rowNodes=new Map(),drawers=new Map();
+const rowNodes=new Map(),drawers=new Map(),shareForms=new Map();
 const pinKey='space.projects.pins.v1:'+String(API_BASE||location.origin||'local');
 let pinned=new Set();
 try{
@@ -443,6 +444,7 @@ async function loadList(){
   items=list.data.items;catalogDirty=false;lastLoaded=Date.now();
   const ids=new Set(items.map(p=>p.id));
   for(const [id,node] of rowNodes)if(!ids.has(id)){node.remove();rowNodes.delete(id);drawers.delete(id);}
+  for(const [id,form] of shareForms)if(!ids.has(id)){form.destroy();shareForms.delete(id);}
   if(expanded&&!items.some(p=>p.id===expanded))expanded=null;
   render();openPending();
 }
@@ -592,6 +594,8 @@ function updateRow(node,p){
   pin.textContent=isPinned?'★':'☆';pin.setAttribute('aria-pressed',String(isPinned));
   const label=(isPinned?'Unpin ':'Pin ')+(p.display_name||p.id);
   pin.setAttribute('aria-label',label);pin.title=label;
+  shareForms.get(p.id)?.setLabel(p.display_name||p.id);
+  node.querySelector('.prj-share').setAttribute('aria-label','Share '+(p.display_name||p.id));
 }
 function bindRow(node,id){
   node.querySelector('.prj-row-head').addEventListener('click',()=>toggle(id));
@@ -605,7 +609,11 @@ function bindRow(node,id){
   node.querySelector('.prj-map').addEventListener('click',()=>{
     switchTo('graph');dispatchEvent(new CustomEvent('space:focus-project',{detail:id}));
   });
-  node.querySelector('.prj-share').addEventListener('click',()=>openProjectShare(switchTo,id));
+  let share=shareForms.get(id);
+  if(!share){share=createProjectShare({projectId:id});shareForms.set(id,share);}
+  node.appendChild(share.element);
+  const shareButton=node.querySelector('.prj-share');share.setTrigger(shareButton);
+  shareButton.addEventListener('click',()=>share.open());
 }
 function toggle(id){
   expanded=expanded===id?null:id;renderRows();

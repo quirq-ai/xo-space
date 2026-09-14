@@ -96,13 +96,13 @@ assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','I
 assert.deepEqual(PROJECT_PAGES.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['project-list','projects/files/list','List'],
   ['graph','projects/files/graph','Graph'],['tree','projects/files/tree','Tree'],
-  ['sharing','projects/sharing','Sharing'],['time','projects/timeline','Timeline']]);
+  ['time','projects/timeline','Timeline']]);
 assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['files','projects/files','Files'],
-  ['sharing','projects/sharing','Sharing'],['time','projects/timeline','Timeline']]);
+  ['time','projects/timeline','Timeline']]);
 assert.deepEqual(FILE_VIEWS.map(page=>page.id),['project-list','graph','tree']);
 assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','tools','models','trends'].map(page=>'agents/'+page));
-assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs'].map(page=>'inbox/'+page));
+assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
 assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
@@ -112,7 +112,7 @@ const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'a
   setup:'setup/workspace',dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',
   'projects/files':'projects/files/list','projects/list':'projects/files/list',
   'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
-  sharing:'projects/sharing',time:'projects/timeline',timeline:'projects/timeline',
+  sharing:'inbox/sharing','projects/sharing':'inbox/sharing',time:'projects/timeline',timeline:'projects/timeline',
   secrets:'setup/secrets',connectors:'setup/connectors',quirq:'setup/server/details'};
 function canonical(target){return aliases[target]||pages.find(page=>page.id===target)?.route||target;}
 function assertPage(route){
@@ -172,7 +172,11 @@ dispatchEvent(new CustomEvent('hashchange'));assertPage('projects/files/tree');
 assert.equal(history.length,legacyLength);assert.equal(historyPushes,legacyPushes,'Legacy Files routes normalize in place');
 assert.equal(elements.has('view-setup/projects'),false,'Setup routes share a persistent section');
 assert.equal(elements.has('view-agents-sessions'),false,'Agents pages share a persistent section');
-assert.equal(elements.has('view-inbox-jobs'),false,'Inbox pages share a persistent section');
+assert.equal(elements.has('view-inbox-jobs'),false,'Inbox rows, connections and jobs share a persistent section');
+assert.equal(registered.find(view=>view.id==='sharing').parent,'inbox');
+assert.equal(registered.find(view=>view.id==='inbox-activity').section,'inbox-activity');
+assert.equal(registered.filter(view=>view.id==='sharing').length,1);
+assert.equal(registered.filter(view=>view.id==='inbox-activity').length,1);
 
 // Re-registering an independent view removes obsolete aliases.
 registry.registerView({id:'route-probe',route:'probe/first',aliases:['probe-old'],nav:false,section:'setup',parent:'setup',mount:async()=>{}});
@@ -188,7 +192,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

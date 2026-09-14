@@ -49,7 +49,7 @@ class SpaceInboxCompositionTests(unittest.TestCase):
     def test_view_contract_head(self) -> None:
         src = read("js/views/inbox.js")
         self.assertIn("export function createInboxViews(", src)
-        self.assertIn("INBOX_PAGES.map", src)
+        self.assertIn("INBOX_PAGES.filter(page=>page.section==='inbox').map", src)
         self.assertIn("show()", src)
         self.assertIn("hide:hideInbox", src)
 

@@ -56,12 +56,13 @@ await context.route('**/*',async route=>{
   return route.continue();
 });
 const groups={projects:[['dashboard','overview','Overview'],['project-list','files/list','List'],['graph','files/graph','Graph'],
-  ['tree','files/tree','Tree'],['sharing','sharing','Sharing'],['time','timeline','Timeline']],
+  ['tree','files/tree','Tree'],['time','timeline','Timeline']],
   agents:['overview','sessions','tools','models','trends'].map(slug=>['agents-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
-  inbox:['items','connections','jobs'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)])};
+  inbox:[...['items','connections','jobs','activity'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
+    ['inbox-sharing-activity','sharing-activity','Sharing activity'],['sharing','sharing','Sharing']]};
 const defaults={projects:'projects/overview',agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace'};
 const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,
-  dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',sharing:'projects/sharing',
+  dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing','projects/sharing':'inbox/sharing',
   'projects/files':'projects/files/list','projects/list':'projects/files/list',
   'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
   time:'projects/timeline',timeline:'projects/timeline',sessions:'agents/overview',
@@ -78,7 +79,7 @@ async function expectRoute(route){
     await page.locator(selector+'[aria-current="page"]').waitFor();
     if(group==='projects'){
       assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.sectionPage,node.textContent])),
-        [['A','dashboard','Overview'],['A','files','Files'],['A','sharing','Sharing'],['A','time','Timeline']]);
+        [['A','dashboard','Overview'],['A','files','Files'],['A','time','Timeline']]);
       assert.equal(await page.locator('#section-nav [data-file-mode]').count(),0,'Files modes stay out of section navigation');
       assert.equal(await page.locator('.view.is-active .file-views:visible').count(),file?1:0);
       if(file){
@@ -97,10 +98,14 @@ async function expectRoute(route){
     assert.equal(await page.locator('.section-nav-label').count(),0,'Section labels are not repeated');
   }else assert.equal(await page.locator('#section-nav').isHidden(),true);
   if(group==='setup'&&route!=='setup/server/details')await page.locator('#setup-panel-'+route.split('/')[1]).waitFor({state:'visible'});
-  if(group==='inbox')await page.locator('.inb-'+route.split('/')[1]+'-page').waitFor({state:'visible'});
+  if(group==='inbox'){
+    const slug=route.split('/')[1];
+    await page.locator(['items','connections','jobs'].includes(slug)?'.inb-'+slug+'-page':'#view-'+(slug==='sharing'?'sharing':'inbox-'+slug)).waitFor({state:'visible'});
+  }
 }
 async function go(route){await page.evaluate(route=>{location.hash='#/'+route;},route);await expectRoute(route);}
 async function leaf(id){
+  if(id==='sharing'){await openProjectPage(page,id);await expectRoute('inbox/sharing');return;}
   if(groups.projects.some(([key])=>key===id)){
     await openProjectPage(page,id==='project-list'?'projects':id);
     await expectRoute('projects/'+groups.projects.find(([key])=>key===id)[1]);return;
@@ -128,14 +133,13 @@ async function layout(label){
   for(const scope of box.scopes)assert.ok(scope.left>=box.scopeArea.left-1&&scope.right<=box.scopeArea.right+1,
     label+' scope links remain fully visible');
   if(box.scopes.length&&box.width<=480){
-    assert.ok(box.scopes.every(scope=>Math.abs(scope.top-box.scopes[0].top)<1),label+' four scopes share the first phone row');
+    assert.ok(box.scopes.every(scope=>Math.abs(scope.top-box.scopes[0].top)<1),label+' Projects scopes share the first phone row');
     assert.ok(Math.max(...box.scopes.map(scope=>scope.bottom))<=box.actions.top+1,
       label+' root controls follow the scope links');
   }
   for(const action of box.sharing){
     assert.ok(action.left>=-1&&action.right<=box.width+1&&action.bottom<=box.navBottom+1,label+' Sharing actions fit the section bar');
-    assert.ok(Math.abs((action.bottom-action.top)-(box.manage.bottom-box.manage.top))<2,label+' Sharing and Manage have equal control heights');
-    if(box.width>=1440)assert.ok(Math.abs(action.top-box.manage.top)<2,label+' Sharing and Manage align on desktop');
+    if(box.width>=1440)assert.ok(Math.abs(action.top-box.sharing[0].top)<2,label+' Sharing actions align on desktop');
   }
   if(box.modes)assert.ok(box.modes.left>=-1&&box.modes.right<=box.width+1,label+' local Files modes fit the viewport');
   report.layouts.push({label,...box});
@@ -163,7 +167,7 @@ try{
   await page.goBack();await expectRoute('projects/overview');await page.goForward();await expectRoute('projects/files/list');
   await page.evaluate(()=>{location.hash='#/tree';});await expectRoute('projects/files/tree');
   await page.goBack();await expectRoute('projects/files/list');
-  await leaf('tree');await leaf('sharing');
+  await leaf('tree');await leaf('time');
   assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/projects/files/tree');
   await page.locator('#section-nav [data-section-page="files"]').click();await expectRoute('projects/files/tree');
   await leaf('project-list');
@@ -215,7 +219,7 @@ try{
   await go('inbox/items');await page.locator('[data-id="file-handoff"][data-act="toggle"]').click();
   await page.locator('[data-id="file-handoff"][data-act="open"]').click();await expectRoute('projects/files/list');
   await page.locator('#preview.is-open').waitFor();await page.locator('#preview-body .pv-md').waitFor();
-  await go('projects/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/files/list');
+  await go('inbox/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/files/list');
   await page.locator('.prj-row-head[aria-expanded="true"]').waitFor();
   checked('Agents page routes own their toolbar while preserving queries; Inbox legacy/file links and Sharing still open List.');
   for(const [index,[group,route]] of Object.entries(defaults).entries()){
@@ -226,7 +230,7 @@ try{
   assert.equal(await page.locator('#xo-root-input').evaluate(node=>node===document.activeElement),true);
   await page.keyboard.press('1');await expectRoute('setup/workspace');
   checked('Numbered shortcuts follow section defaults and never interrupt text entry.');
-  await go('projects/sharing');
+  await go('inbox/sharing');
   const shareAction=page.locator('#section-nav .sharing-page-actions [data-act="composer"]');
   const checkAction=page.locator('#section-nav .sharing-page-actions [data-act="check"]');
   await page.waitForFunction(()=>!document.querySelector('#section-nav [data-act="composer"]')?.disabled);
@@ -261,7 +265,7 @@ try{
   delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/files/list');
   checked('Files mode links remain usable during a delayed Tree refresh, and its late read cannot reclaim List.');
   const captures=[...groups.projects.map(([,slug])=>'projects/'+slug),'agents/overview','agents/sessions',
-    'inbox/items','inbox/connections','inbox/jobs','setup/workspace'];
+    'inbox/items','inbox/connections','inbox/jobs','inbox/activity','inbox/sharing-activity','inbox/sharing','setup/workspace'];
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
     for(const route of captures){

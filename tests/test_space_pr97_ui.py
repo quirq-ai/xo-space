@@ -881,7 +881,7 @@ class SharingViewTests(unittest.TestCase):
         self.assertIn("[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')", pane)
         self.assertNotIn("' · '+rel(k.date)", pane)
         self.assertNotIn("const dtfmt=", pane)  # was unused
-        self.assertIn("from './sharing_data.js?v=20260914-projectmanage1';", pane)
+        self.assertIn("from './sharing_data.js?v=20260914-inboxshare1';", pane)
 
 
 class ShellTests(unittest.TestCase):
@@ -899,20 +899,23 @@ class ShellTests(unittest.TestCase):
         self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
         self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         files_stamp = "20260914-files2"
-        for view in ("inbox", "quirq", "sessions"):
+        for view in ("quirq",):
             self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
-        for module in ("navigation", "toolbar", "preview"):
+        for module in ("toolbar",):
             self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
-        controls_stamp = "20260914-actions1"
-        for view in ("sharing", "tree", "atlas", "projects", "setup"):
+        controls_stamp = "20260914-inboxshare1"
+        for view in ("sharing", "tree", "atlas", "projects", "setup", "sessions", "inbox", "inbox-activity"):
             self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
-        self.assertIn("./core/section-nav.js?v=" + controls_stamp + "'", app)
+        for module in ("section-nav", "navigation", "preview"):
+            self.assertIn("./core/" + module + ".js?v=" + controls_stamp + "'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
         self.assertIn('href="css/projects.css?v=' + controls_stamp + '"', html)
-        self.assertIn('href="css/navigation.css?v=' + controls_stamp + '"', html)
+        self.assertIn('href="css/navigation.css?v=20260914-actions1"', html)
+        for sheet in ("project-share", "inbox-activity", "setup-projects"):
+            self.assertIn('href="css/' + sheet + '.css?v=' + controls_stamp + '"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;

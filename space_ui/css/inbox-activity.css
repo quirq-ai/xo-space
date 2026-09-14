@@ -1,0 +1,45 @@
+/* Workspace and sharing activity use the same compact, read-only feed. */
+#view-inbox-activity,#view-inbox-sharing-activity{overflow-y:auto}
+.iac{max-width:1180px;margin:0 auto;padding:26px 26px 50px;font-family:var(--sans)}
+.iac [hidden]{display:none!important}
+.iac-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.iac-head h1{font:500 30px/1.2 var(--serif);letter-spacing:-.02em;color:var(--ink);margin:0}
+.iac-head p{font-size:12px;color:var(--ink-3);margin:0}
+.iac-controls{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+.iac-controls label{font-size:12px;color:var(--ink-2)}
+.iac-controls select{min-width:180px;max-width:min(100%,430px);min-height:36px;padding:8px 30px 8px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);color:var(--ink);font:400 12px var(--sans)}
+.iac-retention{margin-left:auto;color:var(--ink-3);font-size:11px;line-height:1.5}
+.iac-warning{padding:11px 13px;margin-bottom:16px;border:1px solid rgba(226,174,91,.28);border-radius:9px;color:#e2ae5b;font-size:12px;line-height:1.6}
+.iac-live{border:1px solid var(--line-soft);border-radius:10px;margin-bottom:18px;background:var(--bg-2)}
+.iac-live summary{padding:12px 15px;font-size:12px;color:var(--ink-2);cursor:pointer}
+.iac-live:not(.is-unavailable) summary::marker{color:var(--accent)}
+.iac-session{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;padding:10px 15px;border-top:1px solid var(--line-soft);font-size:11px;overflow-wrap:anywhere}
+.iac-session b{font-weight:500;color:var(--ink-2)}
+.iac-session span,.iac-session time{color:var(--ink-3)}
+.iac-note{padding:0 15px 12px;font-size:12px;color:var(--ink-3)}
+.iac-events{list-style:none;padding:0;margin:0;border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);overflow:hidden}
+.iac-events:empty{display:none}
+.iac-event{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:14px;padding:16px 18px;align-items:start}
+.iac-event+.iac-event{border-top:1px solid var(--line-soft)}
+.iac-dot{width:6px;height:6px;border-radius:50%;margin-top:7px;background:var(--ink-4)}
+.iac-dot.is-error{background:#e1937d}
+.iac-event-title{display:flex;align-items:baseline;gap:9px 16px;flex-wrap:wrap;font-size:12px;line-height:1.5}
+.iac-event-title b{color:var(--ink);font-weight:500}
+.iac-event-title button,.iac-event-title a{font:400 11px var(--mono);color:var(--accent);text-align:left;text-decoration:none;overflow-wrap:anywhere;min-width:0;max-width:100%;padding:0}
+.iac-event-title button:hover,.iac-event-title a:hover{text-decoration:underline;text-underline-offset:3px}
+.iac-event-detail{font-size:12px;line-height:1.6;color:var(--ink-2);margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.iac-event-source{font:400 10px/1.5 var(--mono);color:var(--ink-3);margin:5px 0 0;overflow-wrap:anywhere}
+.iac-event-time{display:flex;flex-direction:column;gap:4px;text-align:right;font-size:10px;line-height:1.5;color:var(--ink-3);white-space:nowrap}
+.iac-event-time>span{color:var(--ink-4)}
+.iac-empty{padding:38px 18px;border:1px dashed var(--line);border-radius:12px;text-align:center;font-size:13px;line-height:1.6;color:var(--ink-3)}
+.iac-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px}
+.iac-footer>span{font-size:11px;color:var(--ink-3);margin-left:auto}
+.iac :is(button,a,select,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+@media(max-width:650px){
+  .iac{padding:22px 16px 40px}.iac-head h1{font-size:28px}
+  .iac-retention{flex:1 1 100%;margin-left:0}.iac-controls select{flex:1;min-width:0;min-height:40px}
+  .iac-event{grid-template-columns:6px minmax(0,1fr);gap:9px 11px;padding:14px}
+  .iac-event-time{grid-column:2;flex-direction:row;gap:8px;flex-wrap:wrap;text-align:left;white-space:normal}
+  .iac-session{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.iac-session time{grid-column:1/-1}
+}
+@media(max-width:480px){.iac{padding-left:12px;padding-right:12px}.iac-head{margin-bottom:16px}}

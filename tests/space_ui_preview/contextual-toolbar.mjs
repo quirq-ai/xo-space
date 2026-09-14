@@ -68,7 +68,7 @@ async function expectMode(id){
     &&(mode!=='search'||(!document.getElementById('view-search').disabled
       &&document.getElementById('view-search').placeholder===placeholder))
     &&(mode!=='graph'||!document.getElementById('q').disabled),{id,mode,placeholder:placeholders[id],route:routeFor(id)});
-  assert.equal(await page.locator('#root-btn').isVisible(),['dashboard','projects','graph','tree','sharing','time'].includes(id),id+' root picker');
+  assert.equal(await page.locator('#root-btn').isVisible(),['dashboard','projects','graph','tree','time'].includes(id),id+' root picker');
   assert.equal(await graphSearch.isVisible(),mode==='graph',id+' graph search');
   assert.equal(await search.isVisible(),mode==='search',id+' local search');
   assert.equal(await page.locator('#toolbar-controls').isHidden(),mode==='none',id+' controls');
@@ -271,7 +271,7 @@ try{
       id+' slash must not focus a hidden search');
     assert.equal(new URL(page.url()).hash,routeFor(id));
   }
-  checked('Wiki, Sharing and Quirq expose no search or hidden-search shortcut; Sharing retains the Projects root picker.');
+  checked('Wiki, Sharing and Quirq expose no search or hidden-search shortcut; Inbox Sharing has no Projects root picker.');
 
   for(const width of [320,390,640,1280,1440,1920]){
     await page.setViewportSize({width,height:1000});

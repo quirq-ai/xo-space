@@ -30,12 +30,12 @@ the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
 The full check verifies the four primary sections, Projects Overview default,
-Overview / Files / Sharing / Timeline, the Files List / Graph / Tree modes and
+Overview / Files / Timeline, the Files List / Graph / Tree modes and
 canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
 
-`projects-root.mjs` checks direct List, Tree and Sharing loads, root search
+`projects-root.mjs` checks direct List and Tree loads, root search
 without booting a hidden graph, selection into Files Graph, browser history,
 Timeline root selection, and leaving Projects during a pending metadata read. It blocks service writes
 and external requests; run it with the same environment variables as `capture.mjs`.
@@ -50,12 +50,30 @@ node tests/space_ui_preview/projects-experience.mjs /tmp/space-projects-experien
 
 The section check covers canonical URLs and legacy aliases, section defaults
 versus List, Back/Forward, native links, toolbar ownership, List and Setup state
-across map changes, and Inbox/Sharing handoffs. It captures all Projects pages
+across map changes, Inbox Activity and Sharing activity ordering, and Sharing
+legacy aliases resolving to Inbox. It captures all Projects pages
 and representative Agents, Inbox and Setup pages at 1440px, 390px and 320px,
 including content clearance below secondary navigation. The Projects check
 covers catalog availability, filtering, pins, lazy detail groups, retained
 drawers, and out-of-order responses. All service writes stay blocked or inside
 explicit browser-owned fixtures.
+
+For inline project sharing and the separate activity feeds:
+
+```sh
+node tests/space_ui_preview/inline-sharing.mjs /tmp/space-inline-sharing
+node tests/space_ui_preview/inbox-activity.mjs /tmp/space-inbox-activity
+node tests/space_ui_preview/project-actions.mjs /tmp/space-project-actions
+```
+
+The inline check exercises both Files List and Setup: Space ID validation,
+cancellation, retained drafts, unchanged routes, mocked error/success responses,
+and duplicate submission protection across both lists. The activity check covers
+workspace history, open sessions, pagination, repository events, independent
+search/selection, escaped payloads, partial errors and late reads. Both capture
+1440px, 390px and 320px layouts. The actions check verifies per-page data refresh,
+retained filters/root/drawers, and the Add-project clone form. Every write is
+blocked or handled by an explicit in-memory fixture.
 
 For contextual toolbar coverage, use the same server and Playwright settings:
 

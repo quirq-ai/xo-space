@@ -83,12 +83,15 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(p.isOpen(),true);
           assert.match(p.els['preview-body'].innerHTML,/<rendered>working body/);
           const firstBody=p.els['preview-body'].innerHTML;
-          for(const lens of ['dashboard','project-list','graph','tree','sharing','time']){
+          for(const lens of ['dashboard','project-list','graph','tree','time']){
             p.switchTo(lens,'projects');
             assert.equal(p.isOpen(),true,lens);
             assert.equal(p.els['preview-body'].innerHTML,firstBody,lens);
           }
           assert.equal(p.calls.length,2,'ordinary lens navigation never refetches the file');
+          const sharingPage=page();sharingPage.open();await settle();sharingPage.switchTo('inbox/sharing','inbox');
+          assert.equal(sharingPage.isOpen(),false,'Inbox Sharing closes the Projects preview');
+          assert.equal(isProjectRoute('projects/sharing'),false,'A legacy Sharing alias is outside Projects too');
           p.els['preview-version'].value='1';p.els['preview-version'].fire('change');await settle();
           p.click('preview-source');
           assert.match(p.els['preview-body'].innerHTML,/<pre[^>]*>historic body/);

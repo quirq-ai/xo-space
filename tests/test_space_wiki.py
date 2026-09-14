@@ -385,12 +385,9 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
 
-    def test_sharing_remains_a_projects_page(self) -> None:
-        """Sharing is a lens of the Projects tab (issue #83) and the whole of
-        project sharing in the UI: rail (inbox + shared projects) and detail
-        (commits + Apply, members + share/revoke). The List lens carries no
-        sharing surface; tests/test_space_project_sharing.py pins the pane's
-        own seams."""
+    def test_sharing_is_an_inbox_page_with_inline_project_entry_points(self) -> None:
+        """Inbox owns sharing management; project lists own compact entry forms.
+        Detailed relay status and management still use the existing data seam."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         switcher = (
@@ -405,11 +402,11 @@ class SpaceWikiTests(unittest.TestCase):
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        # registered as a nav-less child of Projects, like Tree
+        # Registered once as an independent Inbox page.
         self.assertIn("import sharingView from './views/sharing.js?v=", app)
         self.assertIn("registerView(sharingView);", app)
         contract = view_contract("sharing")
-        self.assertIn("projectPage('sharing')", contract)
+        self.assertIn("INBOX_PAGES.find(page=>page.id==='sharing')", contract)
         # Secondary navigation belongs to the shell and shared definitions,
         # the view itself never renders a switch
         self.assertIn('id="section-nav"', index)
@@ -423,7 +420,7 @@ class SpaceWikiTests(unittest.TestCase):
         # other: switchTo + an event the List listens for)
         self.assertIn("space:open-project", sharing)
         self.assertIn("space:open-project", projects)
-        # the List lens carries no sharing surface any more
+        # Lists reuse the compact form without duplicating the management pane.
         self.assertNotIn("sharing_data.js", projects)
         self.assertNotIn("sharingPanel", projects)
 

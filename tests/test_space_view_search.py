@@ -45,6 +45,8 @@ function module(name,extra={}){
 // nodes, focus, request failures, debounce rendering and project handoffs.
 const storage=new Map([['space.projects.pins.v1:http://space.test','["beta"]']]);
 const projects=module('projects',{
+  // Sharing form behavior has its own component and browser tests.
+  createProjectShare:()=>({element:{},setTrigger(){},open(){}}),
   localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
 });
 const ps=projects.view.toolbar.search;
@@ -97,7 +99,7 @@ assert.deepEqual(projectIds(),[],'pins do not bypass the current search');
 ps.setValue('');projects.flush();assert.deepEqual(projectIds(),['beta'],'stored browser pins restore');
 projects.evaluate(`
   globalThis.pinActions=new Map();
-  bindRow({hidden:false,querySelector:selector=>({addEventListener:(_type,fn)=>pinActions.set(selector,fn)})},'alpha');
+  bindRow({hidden:false,appendChild(){},querySelector:selector=>({addEventListener:(_type,fn)=>pinActions.set(selector,fn)})},'alpha');
   pinActions.get('.prj-pin')();
 `);
 assert.deepEqual(projectIds(),['alpha','beta'],'pin action immediately updates the filtered list');

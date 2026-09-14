@@ -1,4 +1,4 @@
-"""Sharing handoffs and failed requests retain the current form state.
+"""Sharing refresh and failed requests retain the current form state.
 
 The real controller runs in a small Node VM; all reads and writes are stubs.
 """
@@ -24,8 +24,8 @@ nodes.set('#shl-composer input[name="ws"]',recipient);
 nodes.set('#shl-composer input[name=ws]',recipient);
 const ctx=vm.createContext({
   console,Date,Map,Set,Promise,fixtureRoot,recipient,
-  location:{hash:'#/projects/sharing'},document:{activeElement:null},
-  addEventListener:()=>{},projectPage:()=>({}),setSectionActions:()=>{},
+  location:{hash:'#/inbox/sharing'},document:{activeElement:null},
+  addEventListener:()=>{},INBOX_PAGES:[{id:'sharing',route:'inbox/sharing',parent:'inbox'}],setSectionActions:()=>{},
   toast:text=>notices.push(text),esc:value=>String(value??''),entryFor:()=>null,
   sharingStatusRes:()=>({ok:true}),parked:()=>false,
   failText:()=> 'Fixture failure',shortId:value=>value,
@@ -56,7 +56,7 @@ class SharingDraftTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_show_waits_for_fresh_status_before_targeted_handoff(self):
+    def test_show_waits_for_fresh_status_before_composer_can_be_used(self):
         self.probe(r"""
 const catalogRead=gate(),statusRead=gate();let status={ok:false};
 ctx.fetchCatalog=()=>catalogRead.promise;
@@ -69,9 +69,9 @@ let finished=false;shown.then(()=>{finished=true;});
 catalogRead.resolve({ok:true,data:{items:[{id:'alpha'}]}});await settle();
 assert.equal(finished,false,'Catalog alone cannot complete a stale-status handoff');
 statusRead.resolve();await shown;
-evaluate("onShareProject({detail:'alpha'});");
+await evaluate("onClick({target:{closest:()=>({disabled:false,dataset:{act:'composer'}})}});");
+await evaluate("onClick({target:{closest:()=>({disabled:false,dataset:{act:'pick',id:'alpha'}})}});");
 assert.equal(evaluate('composer.pick'),'alpha');
-assert.equal(recipient.focused,true);
 assert.equal(posts,0,'Opening a share form must never send it');
 """)
 
@@ -101,26 +101,15 @@ await evaluate("doShare('alpha','recipient-draft',currentForm,true)");
 assert.equal(posts,2,'The retry reaches the existing sharing operation');
 """)
 
-    def test_unknown_or_removed_project_cannot_be_submitted_by_handoff(self):
+    def test_composer_cannot_submit_a_project_removed_from_the_catalog(self):
         self.probe(r"""
-evaluate("onShareProject({detail:'missing'});");
-assert.equal(evaluate('composer'),null);
-assert.equal(renders,0);
-assert.equal(posts,0);
-evaluate("onShareProject({detail:'alpha'});");
-assert.equal(evaluate('composer.pick'),'alpha');
-recipient.value='keep-this-recipient';
-evaluate("composer.filter='alp';onShareProject({detail:'alpha'});");
-assert.equal(evaluate('composer.ws'),'keep-this-recipient');
-assert.equal(evaluate('composer.filter'),'alp');
-evaluate('catalog=[];');
+evaluate("composer={pick:'alpha',filter:'alp',ws:'keep-this-recipient'};catalog=[];");
 ctx.currentForm=form({disabled:false});
 await evaluate("doShare('alpha','keep-this-recipient',currentForm,true)");
 assert.equal(posts,0,'Removal discovered after opening the composer blocks its submit');
 assert.match(notices.at(-1),/no longer in the project list/);
-active.value=false;
-evaluate("onShareProject({detail:'different'});");
-assert.equal(evaluate('composer.pick'),'alpha','Hidden pages ignore a delayed handoff');
+assert.equal(evaluate('composer.ws'),'keep-this-recipient','A rejected submit retains the recipient');
+assert.equal(evaluate('composer.filter'),'alp');
 """)
 
 

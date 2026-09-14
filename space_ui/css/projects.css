@@ -356,6 +356,7 @@
 #view-projects .prj-pin[aria-pressed=true]{color:var(--accent);background:rgba(168,217,79,.06)}
 #view-projects .prj-map,#view-projects .prj-share{position:static;min-width:62px;min-height:34px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-3);font:500 11px var(--sans);letter-spacing:0;text-transform:none}
 #view-projects .prj-map:hover,#view-projects .prj-share:hover{border-color:var(--accent);color:var(--accent)}
+#view-projects .prj-share[aria-expanded=true]{border-color:var(--accent);color:var(--accent)}
 
 #view-projects .prj-drawer{padding:0 16px 16px;border-top-color:var(--line-soft)}
 #view-projects .prj-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0}

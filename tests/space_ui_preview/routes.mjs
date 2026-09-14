@@ -1,7 +1,7 @@
 /* Intent names used by the older feature fixtures. "projects" here means
    the List page; primary-section navigation is tested separately. */
 export const PAGE_ROUTES={dashboard:'projects/overview',projects:'projects/files/list',
-  graph:'projects/files/graph',tree:'projects/files/tree',sharing:'projects/sharing',time:'projects/timeline',
+  graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing',time:'projects/timeline',
   agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace',
   connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
 export const routeFor=id=>'#/'+(PAGE_ROUTES[id]||id);
@@ -12,7 +12,7 @@ export const projectPageSelector=id=>['project-list','graph','tree'].includes(pr
 export async function openProjectPage(page,id){
   const mode=['project-list','graph','tree'].includes(projectPageId(id));
   const scope=page.locator(mode?'#section-nav [data-section-page="files"]':projectPageSelector(id));
-  if(!await scope.isVisible())await page.locator('#tab-projects').click();
+  if(!await scope.isVisible())await page.locator(id==='sharing'?'#tab-inbox':'#tab-projects').click();
   if(mode){
     if(!/^#\/projects\/files\/(list|graph|tree)$/.test(new URL(page.url()).hash))await scope.click();
     await page.waitForFunction(()=>[...document.querySelectorAll('.view.is-active .file-views [aria-current=page]')]

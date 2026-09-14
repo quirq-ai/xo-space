@@ -1,7 +1,7 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-files2';
-import {openProjectAdd} from './project-actions.js?v=20260914-actions1';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-inboxshare1';
+import {openProjectAdd} from './project-actions.js?v=20260914-inboxshare1';
 import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
@@ -24,12 +24,14 @@ export function initSectionNav({switchTo,refreshCurrentView}){
   const graphRoot=document.getElementById('graph-root');
   if(!nav||!stage||nav.dataset.initialized)return;
   nav.dataset.initialized='true';
-  let parent=null,active=null,height=-1,frame=0;
+  let parent=null,active=null,height=-1,frame=0,refreshable=false;
   let lastFile=FILE_VIEWS[0];
 
-  function refreshState({busy=false,available=true}={}){
-    const button=nav.querySelector('#project-refresh');
+  function refreshState({busy=false,available=false}={}){
+    const button=nav.querySelector('[data-page-refresh]');
     if(!button)return;
+    refreshable=available;
+    button.hidden=parent!=='projects'&&!available;
     button.disabled=busy||!available;
     button.setAttribute('aria-busy',String(busy));
     button.textContent=busy?'Refreshing…':'Refresh';
@@ -61,6 +63,8 @@ export function initSectionNav({switchTo,refreshCurrentView}){
     const node=pageActions.get(active);
     if(slot.firstElementChild!==node)slot.replaceChildren(...(node?[node]:[]));
     slot.hidden=!node;
+    const tools=nav.querySelector('.section-nav-tools');
+    if(tools)tools.hidden=parent!=='projects'&&!node&&!refreshable;
     measure();
   }
   refreshActions=placeActions;
@@ -76,30 +80,33 @@ export function initSectionNav({switchTo,refreshCurrentView}){
       links.appendChild(link);
     }
     inner.appendChild(links);
+    const tools=document.createElement('div');tools.className='section-nav-tools';
+    const slot=document.createElement('div');slot.className='section-page-actions';slot.hidden=true;
+    tools.appendChild(slot);
+    const quick=document.createElement('div');quick.className='section-nav-actions';
     if(group==='projects'){
-      const tools=document.createElement('div');tools.className='section-nav-tools';
-      const slot=document.createElement('div');slot.className='section-page-actions';slot.hidden=true;
-      tools.appendChild(slot);
       const actions=document.createElement('div');actions.className='section-nav-actions';
       if(graphRoot)actions.appendChild(graphRoot);
       const manage=document.createElement('a');
       manage.className='section-nav-action';manage.href='#/setup/projects';
       manage.textContent='Manage projects';actions.appendChild(manage);tools.appendChild(actions);
-      const quick=document.createElement('div');quick.className='section-nav-actions';
       const add=document.createElement('a');add.id='project-add';
       add.className='section-nav-action';add.href='#/setup/projects';add.textContent='Add project';
       add.addEventListener('click',event=>{
         if(event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
         event.preventDefault();openProjectAdd(switchTo);
       });
-      const refresh=document.createElement('button');refresh.id='project-refresh';refresh.type='button';
-      refresh.className='section-nav-action';refresh.textContent='Refresh';
-      refresh.addEventListener('click',async()=>{
-        try{await refreshCurrentView();}
-        catch(error){console.error('Project refresh failed:',error);toast('Could not refresh this page. Try again.');}
-      });
-      quick.append(add,refresh);tools.appendChild(quick);inner.appendChild(tools);
+      quick.appendChild(add);
     }
+    const refresh=document.createElement('button');
+    refresh.id=group==='projects'?'project-refresh':'section-refresh';refresh.dataset.pageRefresh='';refresh.type='button';
+    refresh.className='section-nav-action';refresh.textContent='Refresh';
+    refresh.addEventListener('click',async()=>{
+      const page=active;
+      try{await refreshCurrentView();}
+      catch(error){console.error('Page refresh failed:',error);if(active===page)toast('Could not refresh this page. Try again.');}
+    });
+    quick.appendChild(refresh);tools.appendChild(quick);inner.appendChild(tools);
     const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
     // Keep the same picker node mounted. Its controller owns state,
     // listeners and visibility; section navigation only places it.
@@ -135,7 +142,7 @@ export function initSectionNav({switchTo,refreshCurrentView}){
 
   addEventListener('space:view',event=>sync(event.detail));
   addEventListener('space:refresh-state',event=>{
-    if(event.detail?.id===active)refreshState({busy:event.detail.busy});
+    if(event.detail?.id===active)refreshState({busy:event.detail.busy,available:refreshable});
   });
   addEventListener('resize',()=>{measure();if(active)revealCurrent();});
   if(typeof ResizeObserver==='function')new ResizeObserver(measure).observe(nav);

@@ -158,8 +158,8 @@ export function applyCmd(path,branch){
 export function inviteText(){
   const ws=status&&status.own_workspace_id;
   if(!ws)return'';
-  return'Share your project with me on XO Space: open Files → Sharing → “+ Share a project”, '
-    +'pick the repo and paste my workspace id: '+ws;
+  return'Share your project with me on XO Space: open Inbox → Sharing → “+ Share a project”, '
+    +'pick the repo and paste my Space ID: '+ws;
 }
 
 /* ── BFF calls (the browser never talks to the swarm) ─────────────────── */
