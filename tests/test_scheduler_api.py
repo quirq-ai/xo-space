@@ -73,6 +73,18 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(deleted.json(), {"ok": True, "deleted": job["id"]})
         self.assertEqual(self.client.get(f"/api/schedules/{job['id']}").status_code, 404)
 
+    def test_first_run_at_is_accepted_and_normalised_to_utc(self) -> None:
+        res = self.client.post("/api/schedules", json={
+            **_payload("weekly", 604800), "first_run_at": "2030-01-07T19:00:00+05:30"})
+        self.assertEqual(res.status_code, 201, res.text)
+        self.assertEqual(res.json()["first_run_at"], "2030-01-07T13:30:00Z")
+        self.assertEqual(res.json()["next_run"], "2030-01-07T13:30:00Z")
+
+        naive = self.client.post("/api/schedules", json={
+            **_payload(), "first_run_at": "2030-01-07T19:00:00"})
+        self.assertEqual(naive.status_code, 400)
+        self.assertIn("offset", naive.json()["detail"])
+
     def test_validation_errors_are_400_with_the_reason(self) -> None:
         bad = self.client.post("/api/schedules", json={**_payload(), "every_seconds": 0})
         self.assertEqual(bad.status_code, 400)

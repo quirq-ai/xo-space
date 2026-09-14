@@ -120,6 +120,11 @@ class SchedulerTests(unittest.TestCase):
             ({**_job(), "project_id": ""}, "project_id"),
             ({**_job(), "enabled": "yes"}, "enabled"),
             ({**_job(), "surprise": 1}, "unknown"),
+            ({**_job(), "first_run_at": "2026-09-14T19:00:00"}, "offset"),   # naive
+            ({**_job(), "first_run_at": "next monday"}, "iso-8601"),
+            ({**_job(), "first_run_at": ""}, "iso-8601"),
+            ({**_job(), "first_run_at": 1234}, "iso-8601"),
+            ({**_job(), "every_seconds": None, "first_run_at": "2026-09-14T13:30:00Z"}, "manual-only"),
             ("not an object", "object"),
         ]
         for payload, needle in bad:
@@ -161,6 +166,52 @@ class SchedulerTests(unittest.TestCase):
         scheduler._running[job["id"]].thread.join(10)
         # The six missed 10 s slots collapsed onto the next future one.
         self.assertEqual(self._state(job["id"])["next_run"], "2026-09-11T10:01:10Z")
+
+    def test_first_run_at_anchors_the_grid(self) -> None:
+        # "Every Monday at 19:00 IST." 2026-09-14 is a Monday; T0 is the
+        # Friday before. The anchor is stored and reported in UTC.
+        job = scheduler.create_job(
+            _job("weekly", 604800, first_run_at="2026-09-14T19:00:00+05:30"), now=T0
+        )
+        self.assertEqual(job["first_run_at"], "2026-09-14T13:30:00Z")
+        self.assertEqual(job["next_run"], "2026-09-14T13:30:00Z")
+
+        just_before = datetime(2026, 9, 14, 13, 29, 59, tzinfo=timezone.utc)
+        self.assertTrue(scheduler.tick(now=just_before).quiet)
+        report = scheduler.tick(now=just_before + timedelta(seconds=2))
+        self.assertEqual(report.started, [job["id"]])
+        # Next Monday, same time: the grid is the anchor plus whole weeks.
+        self.assertEqual(self._state(job["id"])["next_run"], "2026-09-21T13:30:00Z")
+        scheduler._running[job["id"]].thread.join(10)
+
+    def test_a_past_first_run_at_means_the_next_slot_on_that_grid(self) -> None:
+        # Anchored to the *previous* Monday: the first run is the coming one.
+        job = scheduler.create_job(
+            _job("weekly", 604800, first_run_at="2026-09-07T19:00:00+05:30"), now=T0
+        )
+        self.assertEqual(job["next_run"], "2026-09-14T13:30:00Z")
+        # An anchor of exactly now is due now, not one interval later.
+        job2 = scheduler.create_job(_job("now", 60, first_run_at="2026-09-11T10:00:00Z"), now=T0)
+        self.assertEqual(job2["next_run"], "2026-09-11T10:00:00Z")
+        self.assertEqual(scheduler.tick(now=T0).started, [job2["id"]])
+        scheduler._running[job2["id"]].thread.join(10)
+
+    def test_without_first_run_at_the_first_run_is_one_interval_out(self) -> None:
+        job = scheduler.create_job(_job("plain", 600), now=T0)
+        self.assertIsNone(job["first_run_at"])
+        self.assertEqual(job["next_run"], "2026-09-11T10:10:00Z")
+
+    def test_updating_the_anchor_moves_the_grid_and_an_unchanged_one_does_not(self) -> None:
+        job = scheduler.create_job(_job("j", 3600), now=T0)
+        self.assertEqual(job["next_run"], "2026-09-11T11:00:00Z")
+        moved = scheduler.update_job(
+            job["id"], _job("j", 3600, first_run_at="2026-09-11T10:30:00Z"), now=_at(30)
+        )
+        self.assertEqual(moved["next_run"], "2026-09-11T10:30:00Z")
+        same = scheduler.update_job(
+            job["id"], _job("j renamed", 3600, first_run_at="2026-09-11T10:30:00Z"), now=_at(60)
+        )
+        self.assertEqual(same["next_run"], "2026-09-11T10:30:00Z")
 
     def test_command_string_form_is_stored_as_argv(self) -> None:
         job = scheduler.create_job(
