@@ -45,6 +45,8 @@
     background:linear-gradient(var(--bg) 62%,rgba(11,12,15,0))}
   .inb-group:first-child{margin-top:0}
   .inb-group b{font-weight:600;letter-spacing:0;color:var(--ink-4)}
+  /* pagination handle centred under the rows */
+  .inb-more{display:flex;justify-content:center;margin-top:14px}
   .inb-row{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;
     box-shadow:inset 3px 0 0 0 transparent;
     transition:border-color .16s var(--ease),background .16s var(--ease)}

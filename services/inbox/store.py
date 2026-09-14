@@ -32,6 +32,8 @@ tests reach it as ``store.parse_ts``).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 import shutil
@@ -394,3 +396,34 @@ def set_status(it: dict, status: str) -> bool:
 
 def find_item(doc: dict, item_id: str) -> Optional[dict]:
     return next((it for it in doc["items"] if it["id"] == item_id), None)
+
+
+# ── Pagination cursors ───────────────────────────────────────────────────────
+# An opaque cursor is the ``ts|id`` of the last item on a page, base64url
+# encoded. Pagination orders items by (ts desc, id asc); the "next page" is
+# everything strictly after the cursor in that order, computed by comparison
+# rather than by locating the exact item, so a page still advances correctly
+# when the cursor's item was deleted between reads.
+
+
+def encode_cursor(it: dict) -> str:
+    raw = f"{it['ts']}|{it['id']}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_cursor(cursor: str) -> tuple[str, str]:
+    """``(ts, id)`` from a cursor, or raise ``invalid_cursor`` (400)."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        raise InboxError("invalid_cursor", "cursor is not a valid pagination cursor.")
+    ts, sep, item_id = raw.partition("|")
+    if not sep or not ts or not item_id:
+        raise InboxError("invalid_cursor", "cursor is not a valid pagination cursor.")
+    return ts, item_id
+
+
+def sort_key(it: dict):
+    """Total order for pagination: newest first, ties broken by id so the
+    cursor comparison is unambiguous even when two items share a ``ts``."""
+    return (-( (parse_ts(it.get("ts")) or _EPOCH).timestamp()), it.get("id") or "")

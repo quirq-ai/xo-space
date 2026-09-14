@@ -10,7 +10,7 @@ UI = ROOT / "space_ui"
 # Inbox imports and styles advanced for the layout pass (rows first, source
 # accents, sticky day dividers).
 STAMP = "20260914-accounts1"
-RESULTS_STAMP = "20260914-inboxui1"
+RESULTS_STAMP = "20260914-inboxpage1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check

@@ -887,7 +887,7 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
         # The Inbox view and its stylesheet advanced together for the layout
         # pass (rows first, source accents, sticky day dividers).
-        inbox_stamp = "20260914-inboxui1"
+        inbox_stamp = "20260914-inboxpage1"
         self.assertIn("./views/inbox.js?v=" + inbox_stamp + "'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
         # lens switch advanced together to carry the new pill.

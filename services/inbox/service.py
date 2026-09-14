@@ -37,6 +37,33 @@ INGEST_MIN_INTERVAL_S = 5.0
 LIST_STATUSES = ("open", "done", "all")
 UPDATE_MANY_MAX = 500   # ids per batch PATCH; also the file's item cap
 
+# Source pills, server-side. The named feeder sources each map to their pill;
+# "workspace" folds timeline and todos together; "agents" is the catch-all for
+# anything not written by a named feeder (an API POST, a source added later),
+# matching the client's grouping so a filter reads the same on either side.
+LIST_SOURCES = ("all", "issues", "connections", "workspace", "sharing", "agents")
+_PILL_FEEDER_SOURCES = {
+    "issues": {"issues"},
+    "connections": {"connections"},
+    "workspace": {"timeline", "todos"},
+    "sharing": {"sharing"},
+}
+_NAMED_PILL_SOURCES = {s for sources in _PILL_FEEDER_SOURCES.values() for s in sources}
+
+
+def _source_matches(item_source, pill: str) -> bool:
+    if pill in (None, "all"):
+        return True
+    if pill == "agents":
+        return item_source not in _NAMED_PILL_SOURCES
+    return item_source in _PILL_FEEDER_SOURCES.get(pill, set())
+
+
+def _query_matches(it: dict, terms: list[str]) -> bool:
+    text = " ".join(str(it.get(k) or "") for k in
+                    ("title", "body", "kind", "source", "project_id")).lower()
+    return all(term in text for term in terms)
+
 _last_refresh_monotonic: Optional[float] = None
 
 
@@ -114,11 +141,18 @@ async def _ingest_after_poll(toolkit: str) -> None:
 connections_service.register_new_events_listener(_ingest_after_poll)
 
 
-def list_items(status: str = "open", limit: int = 200) -> dict:
-    """Counts cover the whole file; ``items`` is the newest-first slice for
-    ``status`` (``open`` = new plus seen). A failing ingest never fails the read."""
+def list_items(status: str = "open", limit: int = 200, cursor: Optional[str] = None,
+               source: Optional[str] = None, query: Optional[str] = None) -> dict:
+    """Counts cover the whole file; ``items`` is a newest-first page for
+    ``status`` (``open`` = new plus seen), optionally narrowed by ``source``
+    (a pill id, server-side) and ``query`` (space-separated terms matched
+    against title/body/kind/source/project). ``cursor`` continues a previous
+    page; the reply carries ``next_cursor`` (``None`` when the page is the
+    last). A failing ingest never fails the read."""
     if status not in LIST_STATUSES:
         raise InboxError("invalid_status", f"status must be one of {list(LIST_STATUSES)}.")
+    if source is not None and source not in LIST_SOURCES:
+        raise InboxError("invalid_value", f"source must be one of {list(LIST_SOURCES)}.")
     try:
         refresh()
     except Exception as exc:
@@ -129,8 +163,30 @@ def list_items(status: str = "open", limit: int = 200) -> dict:
         counts[it["status"]] += 1
     wanted = {"open": ("new", "seen"), "done": ("done",), "all": store.STATUSES}[status]
     items = [it for it in doc["items"] if it["status"] in wanted]
+    if source and source != "all":
+        items = [it for it in items if _source_matches(it.get("source"), source)]
+    terms = [t for t in (query or "").lower().split() if t]
+    if terms:
+        items = [it for it in items if _query_matches(it, terms)]
+    # A deterministic (ts desc, id asc) order so a cursor names an unambiguous
+    # position even when items share a timestamp.
+    items.sort(key=store.sort_key)
+    start = 0
+    if cursor:
+        c_ts, c_id = store.decode_cursor(cursor)
+        c_dt = store.parse_ts(c_ts) or store._EPOCH
+
+        def after(it: dict) -> bool:
+            dt = store.parse_ts(it.get("ts")) or store._EPOCH
+            return dt < c_dt or (dt == c_dt and (it.get("id") or "") > c_id)
+
+        start = next((i for i, it in enumerate(items) if after(it)), len(items))
+    page_size = max(1, int(limit))
+    page = items[start:start + page_size]
+    has_more = len(items) > start + page_size
+    next_cursor = store.encode_cursor(page[-1]) if has_more and page else None
     return {"schema": store.SCHEMA, "updated_at": doc.get("updated_at"), "counts": counts,
-            "items": items[:max(1, int(limit))]}
+            "items": page, "next_cursor": next_cursor}
 
 
 def create_item(title, body="", kind="note", source="api", project_id=None, link=None, url=None) -> dict:

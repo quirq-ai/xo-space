@@ -114,6 +114,9 @@ let loadingRows=false;      /* a filter change shows skeletons until it lands */
 let token=0;                /* race guard: only the newest load may paint */
 let lastLoad=0;
 let marking=false;          /* "Mark all seen" in flight */
+let nextCursor=null;        /* pagination: cursor for the next (older) page, or null at the end */
+let loadingMore=false;      /* a "Load older" fetch is in flight */
+let pagesLoaded=1;          /* pages accumulated into `data` beyond the first */
 const expanded=new Set();   /* ids with the body open */
 const busy=new Set();       /* ids with a write in flight */
 
@@ -192,7 +195,7 @@ export default {
     if(root)loadConns();
     if(root&&!jobsLoading)loadJobs();
     scheduleJobsPoll();
-    setSlottedInterval('inbox-poll',load,30000);
+    setSlottedInterval('inbox-poll',pollTick,30000);
   },
   hide(){
     shown=false;
@@ -222,6 +225,8 @@ async function load(){
   loadingRows=false;
   if(res.ok&&res.data){
     data=res.data;dataFilter=filter;failed=null;
+    nextCursor=res.data.next_cursor||null;   /* a reset load starts pagination over */
+    pagesLoaded=1;
     const ids=new Set((data.items||[]).map(it=>it.id));
     for(const id of [...expanded])if(!ids.has(id))expanded.delete(id);
     refreshInboxBadge(data.counts); /* counts cover the whole file, not the filter */
@@ -229,6 +234,34 @@ async function load(){
   if(paintKey()===painted){settle();return;} /* nothing new: leave focus and scroll alone */
   render();
 }
+
+/* Load the next (older) page and append it, deduped. Guarded so a reset load
+   (a filter change or manual refresh, which bumps `token`) that lands while
+   this is in flight wins: the appended page is dropped rather than grafted
+   onto a different list. */
+async function loadMore(){
+  if(loadingMore||!nextCursor||!data)return;
+  const mine=token;
+  loadingMore=true;render();
+  const res=await apiFetch(API_BASE+'/api/inbox?status='+encodeURIComponent(filter)
+    +'&limit=200&cursor='+encodeURIComponent(nextCursor));
+  loadingMore=false;
+  if(mine!==token){render();return;} /* a reset load took over while we waited */
+  if(res.ok&&res.data){
+    const have=new Set((data.items||[]).map(it=>it.id));
+    const older=(res.data.items||[]).filter(it=>it&&!have.has(it.id));
+    data={...data,items:[...(data.items||[]),...older],counts:res.data.counts||data.counts};
+    dataFilter=filter;
+    nextCursor=res.data.next_cursor||null;
+    pagesLoaded+=1;
+    refreshInboxBadge(data.counts);
+  }else toast('load older failed: '+failText(res));
+  render();
+}
+/* The 30 s live poll resets to the newest page; while older pages are loaded
+   it pauses so a tick cannot collapse the reader's place. Manual Refresh
+   still resets on demand. */
+function pollTick(){if(pagesLoaded<=1)load();}
 
 /* ── painting ─────────────────────────────────────────────────────────────
    What the last paint was made from: the payload and every local flag the
@@ -238,7 +271,7 @@ async function load(){
    that had it. */
 let painted='';
 const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(failed),loadingRows,marking,
-  [...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
+  nextCursor,loadingMore,[...expanded],conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
 /* the focused control as a selector over the data-* it carries, so the same
    one can be found again once the rows are rebuilt */
 function focusSelector(){
@@ -314,7 +347,16 @@ function body(){
     +'<p>The source pills filter the loaded page only. Pick All to see every row.</p></div>';
   if(!items.length)return stale+scope+'<div class="inb-empty"><b>No loaded inbox items match this search.</b>'
     +'<p>Try another term or clear the search. Status and source filters still apply.</p></div>';
-  return stale+scope+'<div class="inb-rows">'+groupRows(items)+'</div>';
+  return stale+scope+'<div class="inb-rows">'+groupRows(items)+'</div>'+moreControl();
+}
+/* Pagination handle: present only when the server reported an older page.
+   Client source/search narrow the loaded rows; loading older pulls more of
+   the file in so those filters have more to work over. */
+function moreControl(){
+  if(!nextCursor)return'';
+  return '<div class="inb-more">'
+    +'<button class="inb-btn" type="button" data-act="load-more"'+(loadingMore?' disabled':'')+'>'
+    +(loadingMore?'Loading…':'Load older')+'</button></div>';
 }
 const hasLink=it=>!!it.link&&typeof it.link==='object'&&!!(it.link.view||it.link.project);
 function rowHTML(it){
@@ -479,6 +521,7 @@ function onClick(e){
   const id=b.dataset.id;
   switch(b.dataset.act){
     case'refresh':b.disabled=true;load();loadJobs();break;
+    case'load-more':loadMore();break;
     case'mark-all':markAllSeen();break;
     case'toggle':toggle(id);break;
     case'open':{const it=itemById(id);if(it)openLink(it);break;}
