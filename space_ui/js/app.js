@@ -16,7 +16,7 @@ import sharingView from './views/sharing.js?v=20260914-projectmanage1';
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260914-setupidentity1';
 import quirqView from './views/quirq.js?v=20260914-setupidentity1';
-import setupView,{createConnectorsView,secretsView} from './views/secrets.js?v=20260914-commandhelp1';
+import setupView,{createConnectorsView,secretsView} from './views/secrets.js?v=20260914-commandhelp2';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 

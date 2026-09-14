@@ -1,33 +1,47 @@
 /* Setup's Commands panel uses the scheduler's definitions, executor and history.
    No interval means manual only; nothing is seeded or executed on mount. */
-import {apiFetch} from '../core/api.js';
+import {apiFetch,API_BASE} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
 const duration=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toFixed(2)+'s';
+const createEndpoint=()=>new URL(API_BASE+'/api/schedules',location.href).href;
 
 function agentPrompt(){
   // Deliberately omit the page query string: it can contain proxy credentials.
-  const space=location.protocol==='http:'||location.protocol==='https:'?location.origin:'the running Space server';
-  return `Add the commands I describe to Saved commands in XO Space (${space}).
+  const endpoint=createEndpoint();
+  return `Add the commands I describe to Saved commands in XO Space using this API.
 
-Use the Space HTTP API from the machine running Space; command writes require a local client. For a remote Space URL, use that server's configured loopback address and port. If the API is unavailable or read-only, report that rather than writing scheduler files directly.
+Create job: POST ${endpoint}
+Content-Type: application/json
 
-1. Get any missing command details from me: what to run and its working directory. Use an argv array and an absolute working directory. Commands run without a shell; shell operators are not interpreted.
-2. GET /api/schedules and check existing jobs to avoid duplicates.
-3. POST /api/schedules with Content-Type: application/json. Adapt this example to my command; do not save the placeholders:
+This is the same endpoint used by Add command → Save command. Run API calls on the machine hosting Space; writes require a local client. If this URL is remote, use the server's configured loopback address and port. If it is a read-only preview, report that and use the running Space API instead.
+
+First GET ${endpoint} and check for an existing job. Adapt this complete request to the command I want:
+
+${'```sh'}
+curl --fail-with-body --silent --show-error --request POST '${endpoint}' \\
+  --header 'Content-Type: application/json' \\
+  --data-binary @- <<'JSON'
 {
-  "name": "Short command name",
-  "description": "What it does",
-  "command": {"argv": ["executable", "argument"], "cwd": "/absolute/project/path", "timeout": 30},
+  "name": "Check repository",
+  "description": "Show local Git changes",
+  "command": {"argv": ["git", "status", "--short"], "timeout": 30},
   "every_seconds": null,
   "enabled": true
 }
-Use a positive timeout in seconds. Keep every_seconds null for manual runs unless I explicitly request a schedule; an interval must be a positive integer at least as long as the configured watcher tick. Intervals require the watcher and scheduler to be enabled. Keep credentials out of command arguments and descriptions.
-4. Verify the saved job with GET /api/schedules/{id}, then report its name and ID. Do not execute it unless I ask. I can click Run in Setup → Commands and open its Inbox for results.
-5. If I request execution, POST /api/schedules/{id}/run, then check GET /api/schedules/{id} and GET /api/schedules/{id}/runs for completion. The runs response includes log_path. By default, full logs are in ~/.quirq/scheduler/logs/{id}.log and run history in ~/.quirq/scheduler/runs/{id}.jsonl; a custom state root can change these paths.`;
+JSON
+${'```'}
+
+A successful create returns HTTP 201 and the saved job, including its id. Without command.cwd, execution uses the Space server's working directory. Set command.cwd to the intended absolute project directory when needed. Commands use argv without a shell; shell operators are not interpreted. Keep credentials out of arguments and descriptions.
+
+Keep every_seconds null for manual runs unless I ask for a schedule. For an interval, use an integer in seconds at least as long as the configured watcher tick. Automatic runs require the watcher and scheduler to be enabled.
+
+Verify the saved command with GET ${endpoint}/{id} and report its name and ID. Do not execute it unless I ask. I can click Run in Setup → Commands and open its Inbox for results.
+
+If I request a run: POST ${endpoint}/{id}/run. Check GET ${endpoint}/{id} for completion and GET ${endpoint}/{id}/runs for results and the exact log_path. Default logs: ~/.quirq/scheduler/logs/{id}.log; history: ~/.quirq/scheduler/runs/{id}.jsonl. Use the API rather than editing scheduler files directly.`;
 }
 function relativeTime(value){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000));
@@ -45,9 +59,10 @@ export function mountCommands(root){
   root.innerHTML=`
     <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3>Saved commands</h3>
       <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding commands with an agent" aria-describedby="command-help-tip">i</button>
-        <span id="command-help-tip" role="tooltip" hidden>Copy the prompt and paste it into your agent. It explains how to add commands to this list through Space’s API.</span></span></div>
+        <span id="command-help-tip" role="tooltip" hidden>Copy a complete curl request for POST /api/schedules and paste it into your agent to add commands here.</span></span></div>
       <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-secondary" id="command-add">Add command</button></div></div>
     <div class="setup-command-body">
+      <p class="setup-command-endpoint"><span>Create job</span><code>POST ${esc(createEndpoint())}</code></p>
       <span id="command-prompt-status" class="setup-command-copy-status" role="status"></span>
       <div id="command-prompt-fallback" class="setup-command-prompt" hidden>
         <label for="command-prompt-text">Agent prompt — select and copy</label>

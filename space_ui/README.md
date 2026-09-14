@@ -205,7 +205,8 @@ split without a shell; validation errors appear in the card. Interval jobs show 
 project and enabled settings.
 
 The information tooltip beside **Saved commands** explains **Copy agent prompt**.
-The copied prompt gives the local API recipe, checks for existing jobs, defaults
+The card shows the full `POST /api/schedules` creation URL. The copied prompt
+includes a complete curl request with JSON, checks for existing jobs, defaults
 to manual execution and asks the agent to verify the saved command. It excludes
 page query parameters. If clipboard access is unavailable, a selectable prompt
 appears without changing a command draft. The page also shows how to run commands,
