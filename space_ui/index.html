@@ -5,20 +5,20 @@
 </head><body>
 <link rel="stylesheet" href="css/base.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/graph.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/sessions.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/timeline.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/chrome.css?v=20260914-navigation1">
-<link rel="stylesheet" href="css/projects.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/projects.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/sharing.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/wiki.css?v=20260914-wikihub1">
 <link rel="stylesheet" href="css/quirq.css?v=20260816-navswap1">
 <link rel="stylesheet" href="css/setup.css?v=20260914-setuproutes1">
 <link rel="stylesheet" href="css/setup-projects.css?v=20260914-setuproutes1">
-<link rel="stylesheet" href="css/preview.css?v=20260914-wikihub1">
+<link rel="stylesheet" href="css/preview.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">
-<link rel="stylesheet" href="css/navigation.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/navigation.css?v=20260914-projectcompact1">
 
 
 <div class="topbar" data-toolbar="none">
@@ -33,17 +33,6 @@
   <nav class="tabs" aria-label="Main navigation"><!-- primary sections from core/navigation.js --></nav>
   <div class="topbar-right">
   <div class="tright" id="toolbar-controls" hidden>
-    <div class="rootpick" id="graph-root" hidden>
-      <button id="root-btn" title="Re-root the graph on any node">
-        <span class="rlab">Graph root</span><b id="root-name">XO</b><span class="caret">&#9662;</span>
-      </button>
-      <div class="rootdd" id="rootdd">
-        <div class="hint">Re-root the graph</div>
-        <input id="root-q" placeholder="Pick any node&hellip;" autocomplete="off" spellcheck="false">
-        <div class="ac" id="root-ac"></div>
-        <button id="root-reset">Reset to XO</button>
-      </div>
-    </div>
     <div class="searchwrap" id="graph-search" hidden>
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.6" stroke="#b3ada0" stroke-width="1.3"/><path d="M9.6 9.6L13 13" stroke="#b3ada0" stroke-width="1.3" stroke-linecap="round"/></svg>
       <input id="q" type="text" placeholder="Search the map&hellip;" aria-label="Search the map" aria-keyshortcuts="/" autocomplete="off" spellcheck="false">
@@ -71,7 +60,19 @@
 </div>
 
 <main id="stage">
-  <nav id="section-nav" hidden></nav>
+  <nav id="section-nav" hidden>
+    <div class="rootpick" id="graph-root" hidden>
+      <button id="root-btn" title="Re-root the graph on any node">
+        <span class="rlab">Graph root</span><b id="root-name">XO</b><span class="caret">&#9662;</span>
+      </button>
+      <div class="rootdd" id="rootdd">
+        <div class="hint">Re-root the graph</div>
+        <input id="root-q" placeholder="Pick any node&hellip;" autocomplete="off" spellcheck="false">
+        <div class="ac" id="root-ac"></div>
+        <button id="root-reset">Reset to XO</button>
+      </div>
+    </div>
+  </nav>
 
   <!-- GRAPH -->
   <section class="view is-active" id="view-graph">
@@ -181,7 +182,7 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260914-navigation1"></script>
+<script type="module" src="js/app.js?v=20260914-projectcompact1"></script>
 
 
 </body></html>

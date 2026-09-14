@@ -896,16 +896,20 @@ class ShellTests(unittest.TestCase):
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
         navigation_stamp = "20260914-navigation1"
-        for view in ("sharing", "inbox", "wiki", "quirq", "setup", "projects", "tree", "atlas", "sessions"):
+        for view in ("sharing", "inbox", "wiki", "quirq", "setup", "tree", "atlas", "sessions"):
             self.assertIn("./views/" + view + ".js?v=" + navigation_stamp + "'", app)
-        for module in ("registry", "navigation", "section-nav", "preview"):
+        for module in ("registry", "navigation"):
             self.assertIn("./core/" + module + ".js?v=" + navigation_stamp + "'", app)
-        self.assertIn("./core/toolbar.js?v=20260914-context1'", app)
+        compact_stamp = "20260914-projectcompact1"
+        for path in ("views/projects", "core/toolbar", "core/section-nav", "core/preview"):
+            self.assertIn("./" + path + ".js?v=" + compact_stamp + "'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=20260914-navigation1"', html)
-        self.assertIn('href="css/navigation.css?v=20260914-navigation1"', html)
+        self.assertIn('href="css/projects.css?v=' + compact_stamp + '"', html)
+        self.assertIn('href="css/navigation.css?v=' + compact_stamp + '"', html)
+        for sheet in ("graph", "preview"):
+            self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

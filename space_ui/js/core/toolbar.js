@@ -46,8 +46,9 @@ export function initToolbar(){
       if(hint)hint.hidden=!!value;
     }
     const focused=document.activeElement;
-    if(focused&&controls.contains(focused)&&(
-      controls.hidden||(!graph&&(graphRoot.contains(focused)||graphSearch.contains(focused)))||
+    if(focused&&(
+      (!graph&&(graphRoot.contains(focused)||graphSearch.contains(focused)))||
+      (controls.hidden&&controls.contains(focused))||
       (!search&&localSearch.contains(focused))
     ))focused.blur();
   }

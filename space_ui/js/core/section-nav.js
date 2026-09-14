@@ -4,16 +4,12 @@ import {PRIMARY_TABS,PROJECT_PAGES,AGENT_PAGES,INBOX_PAGES} from './navigation.j
 
 const GROUPS={projects:PROJECT_PAGES,agents:AGENT_PAGES,inbox:INBOX_PAGES};
 const PAGES=new Map(Object.values(GROUPS).flat().map(page=>[page.id,page]));
-const CONTEXT={
-  dashboard:'Projects grouped by environment.',
-  graph:'Explore projects, folders and files.',
-  tree:'Browse the workspace hierarchy.',
-  sharing:'Manage shared projects and workspace access.',
-};
+const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
 
 export function initSectionNav(){
   const nav=document.getElementById('section-nav');
   const stage=document.getElementById('stage');
+  const graphRoot=document.getElementById('graph-root');
   if(!nav||!stage||nav.dataset.initialized)return;
   nav.dataset.initialized='true';
   let parent=null,active=null,height=-1,frame=0;
@@ -23,6 +19,7 @@ export function initSectionNav(){
     if(next===height)return;
     height=next;
     stage.style.setProperty('--section-nav-height',next+'px');
+    document.documentElement.style.setProperty('--section-nav-inset',next+'px');
     cancelAnimationFrame(frame);
     frame=requestAnimationFrame(()=>dispatchEvent(new Event('resize')));
   }
@@ -49,15 +46,17 @@ export function initSectionNav(){
     }
     inner.append(heading,links);
     if(group==='projects'){
+      const actions=document.createElement('div');actions.className='section-nav-actions';
+      if(graphRoot)actions.appendChild(graphRoot);
       const manage=document.createElement('a');
       manage.className='section-nav-action';manage.href='#/setup/projects';
-      manage.textContent='Manage projects';inner.appendChild(manage);
+      manage.textContent='Manage projects';actions.appendChild(manage);inner.appendChild(actions);
     }
-    const context=document.createElement('div');context.className='section-page-context';
-    context.hidden=true;
-    const title=document.createElement('h1');
-    const description=document.createElement('p');context.append(title,description);
-    nav.replaceChildren(inner,context);
+    const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
+    // Keep the existing picker mounted even on other sections: the atlas
+    // owns its listeners and state, while the toolbar owns its visibility.
+    nav.replaceChildren(inner,title,...(group!=='projects'&&graphRoot?[graphRoot]:[]));
+    nav.dataset.section=group;
     nav.setAttribute('aria-label',heading.textContent+' pages');
   }
 
@@ -75,12 +74,8 @@ export function initSectionNav(){
       if(link.dataset.sectionPage===page.id)link.setAttribute('aria-current','page');
       else link.removeAttribute('aria-current');
     }
-    const context=nav.querySelector('.section-page-context');
-    context.hidden=!Object.hasOwn(CONTEXT,page.id);
-    if(!context.hidden){
-      context.querySelector('h1').textContent=page.label;
-      context.querySelector('p').textContent=CONTEXT[page.id];
-    }
+    const title=nav.querySelector('.section-page-title');
+    title.hidden=!UNTITLED_PAGES.has(page.id);title.textContent=page.label;
     measure();
     requestAnimationFrame(revealCurrent);
   }

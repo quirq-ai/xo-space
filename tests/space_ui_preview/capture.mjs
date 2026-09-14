@@ -55,7 +55,80 @@ async function lens(id) {
   if(id === 'tree') await page.locator('#view-tree').waitFor({state: 'visible'});
   if(id === 'dashboard' || id === 'graph') await settleGraph();
 }
-const report = {workspace: 'Fictional fixture data only', screenshots: [], checks: [], errors};
+const report = {workspace: 'Fictional fixture data only', screenshots: [], checks: [], layouts: [], errors};
+
+async function projectChrome() {
+  const root = await page.locator('#graph-root').elementHandle();
+  const rootButton = await page.locator('#root-btn').elementHandle();
+  const rootInput = await page.locator('#root-q').elementHandle();
+  const sameRoot = async () => {
+    for(const [handle, id] of [[root, 'graph-root'], [rootButton, 'root-btn'], [rootInput, 'root-q']])
+      assert.equal(await handle.evaluate((node, id) => node === document.getElementById(id), id), true,
+        id + ' remains the original connected control');
+    assert.equal(await page.locator('.topbar #graph-root').count(), 0, 'Graph root is outside the topbar');
+  };
+  for(const width of [1440, 390, 320]) {
+    await page.setViewportSize({width, height: 1000});
+    for(const id of ['dashboard', 'graph']) {
+      await lens(id);await sameRoot();
+      const bounds = await page.evaluate(() => {
+        const rect = node => {const r = node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height};};
+        const nav = document.querySelector('#section-nav');
+        return {root:rect(document.querySelector('#root-btn')), manage:rect(nav.querySelector('.section-nav-action')),
+          nav:rect(nav), row:rect(nav.querySelector('.section-nav-inner')), graph:rect(document.querySelector('#view-graph')),
+          canvas:rect(document.querySelector('#gcanvas')), scroll:document.documentElement.scrollWidth,
+          context:[...document.querySelectorAll('.section-page-context')].some(node=>node.getClientRects().length)};
+      });
+      report.layouts.push({page:id,width,...bounds});
+      assert.equal(await page.locator('#section-nav #graph-root').count(), 1, 'Projects navigation owns the root picker');
+      assert.ok(bounds.root.right <= bounds.manage.left + 1 && Math.abs(bounds.root.top - bounds.manage.top) < 4,
+        id + ' root sits immediately left of Manage projects at ' + width);
+      assert.ok(bounds.root.left >= 0 && bounds.manage.right <= width + 1 && bounds.scroll <= width,
+        id + ' actions fit the viewport at ' + width);
+      assert.equal(bounds.context, false, id + ' has no visible context hero');
+      assert.ok(bounds.nav.bottom - bounds.row.bottom < 3, id + ' navigation reserves no space for a removed hero');
+      assert.ok(Math.abs(bounds.graph.top - bounds.nav.bottom) < 2 && bounds.canvas.height >= bounds.graph.height - 2,
+        id + ' canvas uses the full area directly below navigation');
+      const original = await page.locator('#root-name').textContent();
+      await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
+      await page.locator('#root-q').fill('Aurora Console');
+      const result = page.locator('#root-ac button').filter({hasText:'Aurora Console'}).first();
+      await result.waitFor();
+      const dropdown = await page.locator('#rootdd').boundingBox();
+      assert.ok(dropdown.x >= -1 && dropdown.x + dropdown.width <= width + 1,
+        id + ' root dropdown fits at ' + width);
+      for(const selector of ['#root-q', '#root-ac button', '#root-reset']) {
+        assert.equal(await page.locator(selector).first().evaluate(node => {
+          const r = node.getBoundingClientRect(), top = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
+          return node === top || node.contains(top);
+        }), true, id + ' ' + selector + ' is not clipped by the navigation');
+      }
+      const name = id + '-root-' + width + '.png';
+      await screenshot(name);report.screenshots.push(name);
+      await page.locator('#root-q').press('Enter');
+      await page.waitForFunction(()=>document.querySelector('#root-name').textContent==='Aurora Console');
+      await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
+      await page.locator('#root-reset').click();
+      await page.waitForFunction(label=>document.querySelector('#root-name').textContent===label,original);
+      assert.equal(await page.locator('#rootdd.is-open').count(), 0, 'Reset closes the root picker');
+    }
+    for(const id of ['tree','sharing','projects']) {
+      await lens(id);await sameRoot();
+      assert.equal(await page.locator('#root-btn').isVisible(),false,id+' does not show map-only controls');
+      if(id!=='projects')assert.equal(await page.locator('.section-page-context:visible').count(),0,id+' has no visible context hero');
+    }
+  }
+  await page.setViewportSize({width:1440,height:1000});
+  for(const id of ['agents','inbox','setup']) {
+    await page.locator('#tab-'+id).click();await page.locator('#view-'+id+'.is-active').waitFor();
+    await sameRoot();
+    await page.locator('#tab-projects').click();await settleGraph();await sameRoot();
+    await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
+    await page.locator('#root-btn').click();
+    assert.equal(await page.locator('#rootdd.is-open').count(),0,'One click toggles once after '+id+' navigation');
+  }
+  report.checks.push('Projects root picker stays beside Manage projects, preserves its DOM and listeners across sections, reroots and resets both maps, and fits unclipped at 1440/390/320px without context heroes.');
+}
 
 try {
   await page.goto(origin + '/space/', {waitUntil: 'networkidle'});
@@ -68,6 +141,7 @@ try {
       ['Overview', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
     report.checks.push('Default Overview; exact four-section order; six Projects pages');
+    await projectChrome();
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
@@ -102,6 +176,19 @@ try {
       assert.equal(await page.locator('#preview-source').textContent(), 'Rendered', `${id} keeps source mode`);
       const bounds = await page.locator('#section-nav').boundingBox();
       for(const key of ['x', 'y', 'width']) assert.ok(Math.abs(bounds[key] - beforeLens[key]) < 1, `${id} secondary navigation ${key} stays fixed`);
+      if(id === 'dashboard' || id === 'graph') {
+        await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
+        await page.locator('#root-q').fill('Aurora');
+        await page.locator('#root-ac.is-open').waitFor();
+        assert.equal(await page.locator('#root-ac button').first().evaluate(node => {
+          const r=node.getBoundingClientRect(),top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          return node===top||node.contains(top);
+        }),true,`${id} root results remain above the open file preview`);
+        // Escape intentionally closes a file preview first. Toggle the picker
+        // so this check keeps the historical preview open across map changes.
+        await page.locator('#root-btn').click();
+        assert.equal(await page.locator('#rootdd.is-open').count(), 0, `${id} root picker stays usable with a file preview open`);
+      }
     }
     report.checks.push('Versioned source preview survives every Projects lens, with a stable navigation position');
     const beforeWikiNavigations = requests.length;

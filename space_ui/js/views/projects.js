@@ -467,7 +467,7 @@ function summary(shown){
     +(shown!==undefined&&shown!==items.length?' · '+shown+' shown':'');
 }
 function head(){
-  return '<header class="prj-hero"><div><h1>List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></div>'
+  return '<header class="prj-hero"><h1 class="prj-sr-only">List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p>'
     +'<div class="prj-actions"><button type="button" class="setup-primary" id="prj-add">Add project</button>'
     +'<button type="button" class="sess-refresh" id="prj-refresh" title="Refresh projects and activity">↻ Refresh</button></div></header>'
     +'<div class="prj-head"><div class="prj-filters" role="group" aria-label="Filter projects">'

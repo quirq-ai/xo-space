@@ -68,12 +68,14 @@ const node=(id,tag='DIV',parent=null)=>{
   const el=new Element(id,tag);parent?.appendChild(el);return el;
 };
 const topbar=node('topbar'),controls=node('toolbar-controls','DIV',topbar);
-const graphRoot=node('graph-root','DIV',controls),graphSearch=node('graph-search','DIV',controls);
+const sectionNav=node('section-nav');
+const graphRoot=node('graph-root','DIV',sectionNav),graphSearch=node('graph-search','DIV',controls);
 const localSearch=node('view-search-wrap','DIV',controls);
 const input=node('view-search','INPUT',localSearch),clear=node('view-search-clear','BUTTON',localSearch);
 node('view-search-hint','KBD',localSearch);
 const graphInput=node('q','INPUT',graphSearch);
 node('root-btn','BUTTON',graphRoot);
+const rootInput=node('root-q','INPUT',graphRoot);
 node('rootdd','DIV',graphRoot);node('root-ac','DIV',graphRoot);node('qac','DIV',graphSearch);
 const meta=node('fmeta'),stage=node('stage'),tabs=node('tabs');
 globalThis.document={activeElement:null,
@@ -215,6 +217,7 @@ await registry.switchTo('graph');
 assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,false);assert.equal(meta.hidden,false);
 key('/');assert.equal(document.activeElement,graphInput);
 for(const id of ['rootdd','qac','root-ac'])elements.get(id).classList.add('is-open');
+rootInput.focus();assert.equal(document.activeElement,rootInput);
 await registry.switchTo('wiki');
 assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
 assert.equal(key('/').defaultPrevented,false);

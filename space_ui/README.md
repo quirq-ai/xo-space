@@ -29,8 +29,10 @@ shortcut. Its three-step quickstart and topic cards link to the
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
-The toolbar adapts to the active page. Projects Overview and Graph keep the root
-picker and map autocomplete. List, Tree, Timeline, Setup, Inbox Items, and
+The toolbar adapts to the active page. Projects Overview and Graph keep map
+autocomplete in the topbar; the root picker sits immediately left of **Manage projects**
+in the Projects navigation. Projects page descriptions are removed to leave more room
+for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, and
 the Agents session list have their own search; typing there keeps you on that page.
 Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
 toolbar. On phones these pages also give back the empty toolbar row.
