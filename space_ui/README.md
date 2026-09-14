@@ -3,7 +3,7 @@
 An explorable map of `~/xo-projects`. Five top-level tabs: **Projects**
 (Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
 **Agents**, **Inbox**, **Setup**, and **Connectors**, plus the
-**Quirq** state view, which has no tab of its own and opens from Setup's header.
+**Quirq** state view, which has no tab of its own and opens from **Setup → Server → Technical details**.
 
 Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
 the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
@@ -72,8 +72,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
-| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from Setup's header button (`#/quirq`). |
-| `js/views/secrets.js` | The Setup view: storage roots, agent runtime, watcher coverage, write-only credentials, git self-update, server restart and saved commands. |
+| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
+| `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Commands and Server management. Forms keep drafts across sections and status refreshes. |
+| `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
 | `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
 | `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The Connectors view: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. The only view that authenticates (`js/core/session.js`). |
@@ -123,10 +124,27 @@ to 60 units: generated data can put 100+ leaves in one cluster, whose summed
 spring stiffness makes the original explicit-Euler sim diverge (positions hit
 1e20 and the canvas goes blank).
 
-## Setup tab: restart and commands
+## Setup tab
 
-**Restart server** lives in the hero beside **Refresh status**. **Apply & restart**
-and the self-update card use the same `/space/server/restart` route. Restart takes
+Three setup steps keep one section visible at a time:
+
+1. **Workspace** chooses the projects and Space data folders. Applied paths and connection diagnostics are expandable.
+2. **Agent & access** selects the chat agent, shows its installation/folder checks and recommended credential actions, and manages saved credentials. Other agents and detailed paths are collapsed.
+3. **Activity** controls automatic collection and source coverage. The check interval sits under Advanced; usage-reporting status stays visible here.
+
+**Next** moves between steps without saving. All forms stay mounted, so section
+and app navigation preserve drafts. Refresh and saving a credential also keep
+unfinished folder, agent and activity edits. Agent and Activity saves send all
+required runtime fields, but use the last saved values for the other section.
+The status strip points to pending changes or a reported folder/installation
+issue; it does not infer authenticated access from a saved key or installed CLI.
+
+The **Manage** group opens **Commands** or **Server** directly. Inbox Jobs'
+**Open Setup** button selects Commands. **Server → Technical details** opens
+Quirq's state browser.
+
+**Restart server**, **Apply & restart** and the update action appear in Server,
+with only the relevant restart button visible. They use `/space/server/restart`. Restart takes
 a few seconds; the footer pill may go offline before it returns. The page reloads
 when a new server instance responds, so every tab loads the updated code.
 

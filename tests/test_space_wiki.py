@@ -255,7 +255,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('href="css/quirq.css?v=', index)
         self.assertIn("id:'quirq'", quirq)
         self.assertIn("/api/quirq", quirq)
-        # Quirq has no top-level tab: it opens from the Setup header button,
+        # Quirq has no top-level tab: it opens from the Setup Server section,
         # and Setup's tab stays lit while it is open.
         contract = view_contract("quirq")
         self.assertIn("nav:false", contract)
@@ -268,7 +268,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "secrets.js"
         ).read_text(encoding="utf-8")
         self.assertIn('id="setup-quirq"', secrets)
-        self.assertIn("Open Quirq state", secrets)
+        self.assertIn("Technical details", secrets)
         self.assertIn("querySelector('#setup-quirq')", secrets)
         self.assertIn("switchTo('quirq')", secrets)
         self.assertNotIn("setup-wiki", secrets)

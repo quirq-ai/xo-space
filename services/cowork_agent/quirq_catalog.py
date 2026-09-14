@@ -1,6 +1,6 @@
 """Read-only, privacy-aware catalog of machine-local Quirq state.
 
-The catalog powers the local Quirq view, opened from the Setup tab's header
+The catalog powers the local Quirq view, opened from the Setup tab's Server section
 (deep link ``#/quirq``). It deliberately reports structure and
 operational summaries rather than serving arbitrary files: credential values,
 native session contents, cursor paths, and symlink targets never leave the

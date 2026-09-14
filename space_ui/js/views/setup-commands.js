@@ -1,4 +1,4 @@
-/* Setup's Commands card uses the scheduler's definitions, executor and history.
+/* Setup's Commands panel uses the scheduler's definitions, executor and history.
    No interval means manual only; nothing is seeded or executed on mount. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
@@ -21,7 +21,7 @@ export function mountCommands(root){
   let saving=false,polling=false,revision=0;
   const busy=new Set();
   root.innerHTML=`
-    <div class="setup-card-head"><div><span>05 · Local execution</span><h2>Commands</h2></div>
+    <div class="setup-card-head"><div><h3>Saved commands</h3></div>
       <button type="button" class="setup-secondary" id="command-add">Add command</button></div>
     <div class="setup-command-body">
       <div class="setup-form-error" id="command-error" role="alert" hidden></div>
@@ -29,18 +29,18 @@ export function mountCommands(root){
         <h3 id="command-form-title">Add command</h3>
         <label for="command-name">Name</label>
         <input id="command-name" name="name" autocomplete="off" placeholder="Check checkout status">
-        <label for="command-description">Description</label>
+        <label for="command-description">Description (optional)</label>
         <input id="command-description" name="description" autocomplete="off" placeholder="What this command does">
         <label for="command-line">Command line or argv JSON</label>
         <textarea id="command-line" name="line" rows="2" spellcheck="false" placeholder="git -C &lt;checkout&gt; status --short"></textarea>
-        <small>Arguments run without a shell. For explicit arguments use a JSON array, such as ["git", "status", "--short"].</small>
+        <small>Runs without a shell. JSON array example: ["git", "status", "--short"].</small>
         <label for="command-cwd">Working directory (optional)</label>
         <input id="command-cwd" name="cwd" spellcheck="false" placeholder="Server working directory">
         <div class="setup-command-numbers">
           <div><label for="command-timeout">Timeout (seconds)</label><input id="command-timeout" name="timeout" type="number" step="any" value="30"></div>
           <div><label for="command-interval">Interval (seconds, optional)</label><input id="command-interval" name="interval" type="number" placeholder="Manual only"></div>
         </div>
-        <small>Leave the interval empty to run only when you click Run. Intervals use the watcher and the same concurrency limit.</small>
+        <small>Leave blank for manual runs. Intervals run automatically through the watcher.</small>
         <div class="setup-actions">
           <button class="setup-primary" id="command-save" type="submit">Save command</button>
           <button class="setup-secondary" id="command-cancel" type="button">Cancel</button>
@@ -70,8 +70,7 @@ export function mountCommands(root){
           <div class="setup-command-meta"><span class="setup-command-result ${running?'is-running':result?.status==='ok'?'is-good':result?'is-error':''}" role="status">${esc(status)}</span>
             <span>${job.every_seconds==null?'Manual only':'Runs every '+esc(job.every_seconds)+'s'+(job.enabled?'':' · disabled')}</span></div>
           ${result?`<div class="setup-command-preview"><span>Latest result · exit ${esc(result.returncode??'—')}</span>
-            <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre>
-            <small>Open Inbox for results and the full log path.</small></div>`:''}
+            <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre></div>`:''}
         </div>
         <div class="setup-actions">
           <button class="setup-primary" type="button" data-command-action="run"${running?' disabled':disabled}>${running?'Running…':'Run'}</button>
@@ -79,7 +78,7 @@ export function mountCommands(root){
           <button class="setup-secondary" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
           <button class="setup-secondary is-danger" type="button" data-command-action="delete"${disabled}>Delete</button>
         </div></article>`;
-    }).join(''):'<div class="setup-empty"><b>No commands yet</b><span>Add a command to run it here and keep every result.</span></div>';
+    }).join(''):'<div class="setup-empty"><b>No commands yet</b><span>Save a command, then run it here.</span></div>';
     schedulePoll();
   }
 

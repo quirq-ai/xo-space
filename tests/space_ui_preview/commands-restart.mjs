@@ -124,6 +124,7 @@ async function within(selector){
 
 try{
   await page.goto(origin+'/space/#/secrets',{waitUntil:'networkidle'});
+  await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await row('job-a').waitFor();
   assert.equal(await page.locator('#runtime-watcher').isChecked(),false);
   assert.equal(writes.length,0,'Mount does not seed or run anything');
@@ -216,24 +217,33 @@ try{
   await page.locator('#command-runs-close').click();
 
   await page.setViewportSize({width:1440,height:1000});
+  await page.locator('#setup-nav [data-setup-go="server"]').click();
   restartMode='native';restartReject=true;
+  fixtureRuntime.restart_required=false;
+  fixtureRuntime.roots.change_required=false;
   await page.locator('#setup-refresh').click();await waitEnabled('#setup-restart');
+  await page.locator('#setup-restart').click();
+  await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
+  fixtureRuntime.restart_required=true;
+  await page.locator('#setup-refresh').click();await waitEnabled('#runtime-restart');
+  await page.locator('#runtime-restart').click();
+  await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
   await page.locator('#update-check').click();await page.locator('#update-apply').waitFor();
   await page.locator('#update-apply').click();await page.locator('#update-restart').waitFor();
-  for(const selector of ['#setup-restart','#runtime-restart','#update-restart']){
-    await page.locator(selector).click();
-    await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
-    await waitEnabled(selector);
-  }
+  await page.locator('#update-restart').click();
+  await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
+  await waitEnabled('#update-restart');
   assert.equal(writes.filter(write=>write.path==='/space/server/restart').length,3,'Every Restart entry uses the same route');
   assert.equal(writes.some(write=>write.path==='/api/runtime-config/restart'),false);
   restartReject=false;
   const before=await page.evaluate(()=>performance.timeOrigin);
-  await page.locator('#setup-restart').click();
+  await page.locator('#update-restart').click();
   await page.waitForTimeout(2300);
   assert.equal(await page.evaluate(()=>performance.timeOrigin),before,'A healthy response from the old instance must not reload');
+  fixtureRuntime.restart_required=false;
   instanceId='fixture-after';
   await page.waitForFunction(before=>performance.timeOrigin!==before,before,{timeout:10000});
+  await page.locator('#setup-nav [data-setup-go="server"]').click();
   await page.locator('#setup-restart').waitFor();
   assert.deepEqual(errors,[]);
   console.log('Commands CRUD, safe history, conflicts, draft/read races, watcher-independent 3s polling, desktop/mobile layouts, foreground hints and new-instance restart checks passed. Screenshots: '+output);

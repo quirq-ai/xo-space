@@ -886,7 +886,7 @@ class ShellTests(unittest.TestCase):
         for view in ("projects", "tree", "connectors"):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
         results_stamp = "20260914-results1"
-        self.assertIn("./views/inbox.js?v=" + results_stamp + "'", app)
+        self.assertIn("./views/inbox.js?v=20260914-setupflow1'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
         # lens switch advanced together to carry the new pill.
         timeline_stamp = "20260914-timelinelens1"

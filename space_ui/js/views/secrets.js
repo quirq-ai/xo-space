@@ -7,7 +7,8 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260914-results1';
+import {mountCommands} from './setup-commands.js?v=20260914-setupflow1';
+import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -28,6 +29,12 @@ let loading=false;
 let commands=null;
 let serverData=null;
 let restarting=false;
+let currentPanel='workspace';
+let runtimeUnavailable=false;
+const drafts={workspace:false,agent:false,activity:false};
+const touched=new Set();
+const writes=new Set();
+let runtimeRevision=0,refreshQueued=false;
 
 export default {
   id:'secrets',label:'Setup',order:9,
@@ -45,138 +52,109 @@ export default {
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount (opens the Quirq view) */
 
 function renderShell(){
-  root.innerHTML=
-    '<div class="setup-page">'
-      +'<header class="setup-hero">'
-        +'<div>'
-          +'<div class="setup-kicker">Self-contained local runtime</div>'
-          +'<h1>Runtime setup</h1>'
-          +'<p>Choose the active agent, connect its native session store, tune the watcher, and provide credentials from one place.</p>'
-        +'</div>'
-        +'<div class="setup-hero-actions">'
-          +'<button class="setup-refresh" id="setup-quirq" type="button">Open Quirq state</button>'
-          +'<button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>'
-          +'<button class="setup-restart" id="setup-restart" data-restart type="button" disabled>Restart server</button>'
-        +'</div>'
-      +'</header>'
-      +'<p class="setup-restart-hint" id="setup-restart-hint" role="status"></p>'
-      +'<div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>'
-      +'<div class="setup-alert" id="setup-alert">'
-        +'<span aria-hidden="true">◆</span>'
-        +'<div><b>Loading effective configuration…</b><p>Checking storage, runtime sources, and restart state.</p></div>'
-      +'</div>'
-      +'<section class="setup-overview" id="setup-overview" aria-label="Installation paths"></section>'
-      +'<section class="setup-card setup-roots">'
-        +'<div class="setup-card-head"><div><span>00 · Storage</span><h2>XO and Quirq roots</h2></div><i id="roots-badge">Checking</i></div>'
-        +'<form id="roots-form" novalidate>'
-          +'<div class="setup-root-fields">'
-            +'<div>'
-              +'<label for="xo-root-input">XO root</label>'
-              +'<input id="xo-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/xo-projects">'
-              +'<small>Host folder containing project directories — the one root the whole app reads. Selecting a new root does not move project files.</small>'
-              +'<code id="xo-root-applied">Mounted now: checking…</code>'
-            +'</div>'
-            +'<div>'
-              +'<label for="quirq-root-input">.quirq root</label>'
-              +'<input id="quirq-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/.quirq">'
-              +'<small>Machine-local state. If the new directory is empty, the installer copies the current state into it.</small>'
-              +'<code id="quirq-root-applied">Mounted now: checking…</code>'
-            +'</div>'
-          +'</div>'
-          +'<div class="setup-form-error" id="roots-error" role="alert" hidden></div>'
-          +'<div class="setup-root-apply" id="roots-apply" hidden>'
-            +'<div><b>Server restart required</b><p>Saved roots are read at startup: restart the server and every tab reads the new XO root. On installer-managed containers, run the one-command installer instead — it also remaps the bind mounts.</p></div>'
-            +'<pre id="roots-command"></pre>'
-          +'</div>'
-          +'<div class="setup-actions">'
-            +'<button class="setup-primary" id="roots-save" type="submit">Save roots</button>'
-            +'<button class="setup-secondary" id="roots-copy" type="button" hidden>Copy apply command</button>'
-          +'</div>'
-        +'</form>'
-      +'</section>'
-      +'<div class="setup-grid">'
-        +'<section class="setup-card setup-runtime">'
-          +'<div class="setup-card-head"><div><span>01 · Process</span><h2>Agent and watcher</h2></div><i id="setup-applied-badge">Checking</i></div>'
-          /* one fact, not a control: whether anything is reported to
-             xo-swarm-api — the same decision usage_sync logs, surfaced
-             first in the card so it cannot be missed. Outside the form so
-             the form's first label keeps its first-child spacing. */
-          +'<div class="setup-usage-reporting" id="usage-reporting" hidden></div>'
-          +'<form id="runtime-form" novalidate>'
-            +'<label for="runtime-agent">Active agent backend</label>'
-            +'<select id="runtime-agent" name="agent_name" required><option>Loading…</option></select>'
-            +'<small>The active backend handles new chats. Watcher source coverage is configured separately below.</small>'
-            +'<div class="setup-check-row">'
-              +'<label class="setup-switch" for="runtime-watcher"><input id="runtime-watcher" type="checkbox"><span></span></label>'
-              +'<div><b>Run the watcher</b><small>Continuously materialize session metadata, todos, stats, and timelines.</small></div>'
-            +'</div>'
-            +'<label for="runtime-source-mode">Session stores to watch</label>'
-            +'<select id="runtime-source-mode">'
-              +'<option value="all">All mounted runtimes</option>'
-              +'<option value="active">Active agent only</option>'
-            +'</select>'
-            +'<small>“All” combines Claude and other supported session sources while keeping one active chat backend.</small>'
-            +'<label for="runtime-interval">Watcher tick interval</label>'
-            +'<div class="setup-number"><input id="runtime-interval" type="number" min=".25" max="60" step=".25" inputmode="decimal"><span>seconds</span></div>'
-            +'<small>0.25–60 seconds. One second is the safe default for local use.</small>'
-            +'<div class="setup-form-error" id="runtime-error" role="alert" hidden></div>'
-            +'<div class="setup-actions">'
-              +'<button class="setup-primary" id="runtime-save" type="submit">Save runtime</button>'
-              +'<button class="setup-restart" id="runtime-restart" data-restart type="button" hidden>Apply &amp; restart</button>'
-            +'</div>'
-          +'</form>'
-        +'</section>'
-        +'<section class="setup-card setup-sources-card">'
-          +'<div class="setup-card-head"><div><span>02 · Inputs</span><h2>Native session sources</h2></div><i id="source-count">—</i></div>'
-          +'<div class="setup-sources" id="setup-sources"><div class="setup-empty">Inspecting mounted runtimes…</div></div>'
-        +'</section>'
-      +'</div>'
-      +'<section class="setup-card setup-credentials">'
-        +'<div class="setup-card-head"><div><span>03 · Authentication</span><h2>Credentials</h2></div><i>Write-only</i></div>'
-        +'<div class="setup-secret-layout">'
-          +'<form id="secret-form" novalidate>'
-            +'<div class="setup-secret-title"><b id="secret-form-title">Set a credential</b><span>Saved under .quirq, never inside a project.</span></div>'
-            +'<label for="secret-key">Environment key</label>'
-            +'<input id="secret-key" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ANTHROPIC_API_KEY" required>'
-            +'<small>Choose a recommended key above or enter an advanced uppercase variable.</small>'
-            +'<label for="secret-value">Secret value</label>'
-            +'<div class="setup-value-wrap">'
-              +'<input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste a value" required>'
-              +'<button id="secret-toggle" type="button" aria-label="Show value">Show</button>'
-            +'</div>'
-            +'<div class="setup-form-error" id="secret-error" role="alert" hidden></div>'
-            +'<div class="setup-actions">'
-              +'<button class="setup-primary" id="secret-save" type="submit">Save credential</button>'
-              +'<button class="setup-secondary" id="secret-cancel" type="button" hidden>Cancel</button>'
-            +'</div>'
-          +'</form>'
-          +'<div class="setup-secret-store">'
-            +'<div class="setup-secret-store-head"><b>Configured variables</b><span id="secret-count">—</span></div>'
-            +'<div id="secret-list"><div class="setup-empty">Loading credentials…</div></div>'
-          +'</div>'
-        +'</div>'
-      +'</section>'
-      +'<section class="setup-card setup-version">'
-        +'<div class="setup-card-head"><div><span>04 · Version</span><h2>xo-space updates</h2></div><i id="update-badge">Not checked</i></div>'
-        +'<div class="setup-version-body">'
-          +'<div class="setup-version-state" id="update-state">'
-            +'<div class="setup-empty">Check the git remote for a newer xo-space.</div>'
-          +'</div>'
-          +'<div class="setup-actions">'
-            +'<button class="setup-secondary" id="update-check" type="button">Check for updates</button>'
-            +'<button class="setup-primary" id="update-apply" type="button" hidden>Update now</button>'
-            +'<button class="setup-restart" id="update-restart" data-restart type="button" hidden>Restart server</button>'
-          +'</div>'
-        +'</div>'
-      +'</section>'
-      +'<section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>'
-      +'<section class="setup-boundary">'
-        +'<div><span>Portable project data</span><b>&lt;project&gt;/.xo/</b><p>Session indexes, todos, timelines, stats, memory, and project identity. The watcher owns writes.</p></div>'
-        +'<em>stays separate from</em>'
-        +'<div><span>Machine-local runtime data</span><b id="setup-state-boundary">~/.quirq/</b><p>Runtime settings, credentials, watcher cursors, locks, and live activity snapshots.</p></div>'
-      +'</section>'
-    +'</div>';
+  root.innerHTML=`<div class="setup-page">
+    <header class="setup-hero">
+      <h1>Setup</h1>
+      <button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>
+    </header>
+    <div class="setup-alert" id="setup-alert" role="status"><div><b>Checking settings…</b></div></div>
+    <div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>
+    <div class="setup-layout">
+      <nav class="setup-nav" id="setup-nav" aria-label="Setup sections">
+        <p>Set up</p>
+        ${[['workspace','1','Workspace'],['agent','2','Agent & access'],['activity','3','Activity']].map(([id,n,label])=>`
+          <button type="button" data-setup-go="${id}" aria-controls="setup-panel-${id}"${id==='workspace'?' aria-current="step"':''}>
+            <span class="setup-nav-icon">${n}</span><span><b>${label}</b><small id="setup-step-${id}">Checking…</small></span>
+          </button>`).join('')}
+        <p>Manage</p>
+        <button type="button" data-setup-go="commands" aria-controls="setup-panel-commands"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Commands</b><small>Run and view results</small></span></button>
+        <button type="button" data-setup-go="server" aria-controls="setup-panel-server"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Server</b><small>Updates and restart</small></span></button>
+      </nav>
+      <div class="setup-content">
+        <section class="setup-panel" id="setup-panel-workspace" aria-labelledby="setup-workspace-title">
+          <header class="setup-section-head"><h2 id="setup-workspace-title" tabindex="-1">Workspace</h2><p>Choose your project folder and where Space keeps its settings.</p></header>
+          <section class="setup-card setup-roots">
+            <div class="setup-card-head"><h3>Folders</h3><i id="roots-badge">Checking</i></div>
+            <form id="roots-form" novalidate>
+              <div class="setup-root-fields">
+                <div><label for="xo-root-input">Projects folder</label><input id="xo-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/xo-projects">
+                  <small>Contains your project folders. Changing this does not move them.</small><code id="xo-root-applied"></code></div>
+                <div><label for="quirq-root-input">Space data folder</label><input id="quirq-root-input" type="text" autocomplete="off" spellcheck="false" placeholder="/Users/you/.quirq">
+                  <small>Settings, credentials and activity data. Default: ~/.quirq/</small><code id="quirq-root-applied"></code></div>
+              </div>
+              <div class="setup-form-error" id="roots-error" role="alert" hidden></div>
+              <div class="setup-root-apply" id="roots-apply" hidden>
+                <div><b>Apply folder changes</b><p>Restart to use the saved folders. For an installer-managed container, run this command to update its mounts.</p></div>
+                <pre id="roots-command"></pre>
+              </div>
+              <div class="setup-actions"><button class="setup-primary" id="roots-save" type="submit">Save folders</button><button class="setup-secondary" id="roots-copy" type="button" hidden>Copy installer command</button></div>
+            </form>
+          </section>
+          <details class="setup-details"><summary>Folder and connection details</summary><section class="setup-overview" id="setup-overview" aria-label="Installation paths"></section></details>
+          <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="agent">Next: Agent &amp; access →</button></footer>
+        </section>
 
+        <section class="setup-panel" id="setup-panel-agent" aria-labelledby="setup-agent-title" hidden>
+          <header class="setup-section-head"><h2 id="setup-agent-title" tabindex="-1">Agent &amp; access</h2><p>Choose the agent for new chats and add credentials if needed.</p></header>
+          <section class="setup-card setup-runtime">
+            <form id="runtime-form" novalidate>
+              <div class="setup-agent-label"><label for="runtime-agent">Agent for new chats</label><i id="setup-applied-badge">Checking</i></div><select id="runtime-agent" name="agent_name" required><option>Loading…</option></select>
+              <div class="setup-form-error" id="runtime-error" role="alert" hidden></div>
+              <div class="setup-actions"><button class="setup-primary" id="runtime-save" type="submit">Save agent</button></div>
+            </form>
+            <div class="setup-sources" id="setup-sources"><div class="setup-empty">Checking agents…</div></div>
+          </section>
+          <section class="setup-card setup-credentials">
+            <div class="setup-card-head"><h3>Keys and credentials <span id="secret-count">—</span></h3><button class="setup-secondary" id="secret-add" type="button">Add credential</button></div>
+            <div id="secret-list"><div class="setup-empty">Loading credentials…</div></div>
+            <div class="setup-form-error" id="secret-error" role="alert" hidden></div>
+            <form id="secret-form" novalidate hidden>
+              <h4 id="secret-form-title">Add credential</h4>
+              <label for="secret-key">Key</label><input id="secret-key" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ANTHROPIC_API_KEY" required>
+              <label for="secret-value">Value</label><div class="setup-value-wrap"><input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste a value" required><button id="secret-toggle" type="button" aria-label="Show value">Show</button></div>
+              <small>Saved values stay hidden. Restart to apply changes.</small>
+              <div class="setup-actions"><button class="setup-primary" id="secret-save" type="submit">Save credential</button><button class="setup-secondary" id="secret-cancel" type="button">Cancel</button></div>
+            </form>
+          </section>
+          <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="activity">Next: Activity →</button></footer>
+        </section>
+
+        <section class="setup-panel" id="setup-panel-activity" aria-labelledby="setup-activity-title" hidden>
+          <header class="setup-section-head"><h2 id="setup-activity-title" tabindex="-1">Activity</h2><p>Choose which agent activity appears in Space.</p></header>
+          <section class="setup-card setup-runtime">
+            <form id="activity-form" novalidate>
+              <div class="setup-check-row"><label class="setup-switch" for="runtime-watcher"><input id="runtime-watcher" type="checkbox"><span></span></label><div><b>Update activity automatically</b><small>Keep sessions and project history up to date.</small></div></div>
+              <label for="runtime-source-mode">Activity sources</label><select id="runtime-source-mode"><option value="all">All agents</option><option value="active">Chat agent only</option></select>
+              <small>Scheduled commands also need automatic activity updates enabled.</small>
+              <details class="setup-inline-details"><summary>Advanced</summary><label for="runtime-interval">Check every</label><div class="setup-number"><input id="runtime-interval" type="number" min=".25" max="60" step=".25" inputmode="decimal"><span>seconds</span></div><small>0.25–60 seconds. Default: 1.</small></details>
+              <div class="setup-form-error" id="activity-error" role="alert" hidden></div>
+              <div class="setup-actions"><button class="setup-primary" id="activity-save" type="submit">Save activity settings</button></div>
+            </form>
+          </section>
+          <div class="setup-usage-reporting" id="usage-reporting" hidden></div>
+          <footer class="setup-step-footer"><button class="setup-primary" id="setup-open-projects" type="button">Open Projects →</button></footer>
+        </section>
+
+        <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
+          <header class="setup-section-head"><h2 id="setup-commands-title" tabindex="-1">Commands</h2><p>Save commands, run them here, and open Inbox for results.</p></header>
+          <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
+        </section>
+
+        <section class="setup-panel" id="setup-panel-server" aria-labelledby="setup-server-title" hidden>
+          <header class="setup-section-head"><h2 id="setup-server-title" tabindex="-1">Server</h2><p>Apply saved changes and keep Space up to date.</p></header>
+          <section class="setup-card setup-maintenance">
+            <div class="setup-card-head"><h3>Restart</h3><button class="setup-restart" id="setup-restart" data-restart type="button" disabled>Restart server</button></div>
+            <div class="setup-server-body"><p class="setup-restart-hint" id="setup-restart-hint" role="status"></p><button class="setup-restart" id="runtime-restart" data-restart type="button" hidden>Apply &amp; restart</button></div>
+          </section>
+          <section class="setup-card setup-version">
+            <div class="setup-card-head"><h3>Updates</h3><i id="update-badge">Not checked</i></div>
+            <div class="setup-version-body"><div class="setup-version-state" id="update-state"><p>Check for a newer version of Space.</p></div><div class="setup-actions"><button class="setup-secondary" id="update-check" type="button">Check for updates</button><button class="setup-primary" id="update-apply" type="button" hidden>Update now</button><button class="setup-restart" id="update-restart" data-restart type="button" hidden>Restart server</button></div></div>
+          </section>
+          <button class="setup-secondary" id="setup-quirq" type="button">Technical details →</button>
+        </section>
+      </div>
+    </div>
+  </div>`;
   runtimeForm=root.querySelector('#runtime-form');
   secretForm=root.querySelector('#secret-form');
   keyInput=root.querySelector('#secret-key');
@@ -186,14 +164,64 @@ function renderShell(){
   secretError=root.querySelector('#secret-error');
 }
 
+function hasDraft(panel){
+  const configured=runtimeData?.configured||{};
+  if(panel==='workspace'){
+    const folders=runtimeData?.roots?.configured||{};
+    return root.querySelector('#xo-root-input').value!==(folders.xo_projects_root||'')
+      ||root.querySelector('#quirq-root-input').value!==(folders.quirq_state_root||'');
+  }
+  if(panel==='agent')return root.querySelector('#runtime-agent').value!==(configured.agent_name||'');
+  return root.querySelector('#runtime-watcher').checked!==configured.watcher_enabled
+    ||root.querySelector('#runtime-source-mode').value!==configured.watcher_source_mode
+    ||Number(root.querySelector('#runtime-interval').value)!==configured.watcher_interval_seconds;
+}
+
+function selectPanel(panel,{focus=false}={}){
+  const target=root.querySelector('#setup-panel-'+panel);
+  if(!target)return;
+  currentPanel=panel;
+  root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
+  root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
+    if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
+    else button.removeAttribute('aria-current');
+  });
+  if(focus){
+    target.querySelector('h2').focus({preventScroll:true});
+    root.scrollTop=0;
+  }
+}
+
 function bindEvents(){
+  root.addEventListener('click',event=>{
+    const button=event.target.closest('[data-setup-go]');
+    if(button)selectPanel(button.dataset.setupGo,{focus:true});
+    if(event.target.closest('[data-setup-retry]'))loadAll();
+  });
+  addEventListener('space:setup-section',event=>selectPanel(event.detail?.panel,{focus:true}));
+  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects'));
   root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('quirq'));
+  for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
+    root.querySelector(selector).addEventListener('input',event=>{
+      touched.add(event.target.id);
+      drafts[panel]=hasDraft(panel);
+      if(panel==='workspace')renderRoots();
+      if(panel==='agent')renderSources();
+      renderJourney();
+    });
+  }
+  root.querySelector('#activity-form').addEventListener('submit',saveRuntime);
+  root.querySelector('#secret-add').addEventListener('click',()=>{
+    if(writes.size)return;
+    resetSecretForm();secretForm.hidden=false;keyInput.focus();
+  });
   root.querySelector('#setup-refresh').addEventListener('click',loadAll);
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
   root.querySelectorAll('[data-restart]').forEach(button=>button.addEventListener('click',restartRuntime));
   secretForm.addEventListener('submit',saveSecret);
+  secretForm.addEventListener('input',renderJourney);
   secretCancelButton.addEventListener('click',resetSecretForm);
   root.querySelector('#secret-toggle').addEventListener('click',toggleSecretValue);
   root.querySelector('#setup-sources').addEventListener('click',handleRecommendedSecret);
@@ -202,7 +230,7 @@ function bindEvents(){
   root.querySelector('#update-apply').addEventListener('click',applyUpdate);
 }
 
-/* ── Self-update (04 · Version) ────────────────────────────────────────────
+/* ── Server updates ──────────────────────────────────────────────────────
    Git-backed: GET /space/update/status fetches the checkout's remote and
    reports how far HEAD is behind; POST /space/update/apply fast-forwards.
    The server keeps running the old code until restarted. */
@@ -221,7 +249,7 @@ function commitLine(info){
 async function checkForUpdate(){
   const button=root.querySelector('#update-check');
   setBusy(button,true);
-  renderUpdateState('<div class="setup-empty">Asking the git remote…</div>','Checking');
+  renderUpdateState('<div class="setup-empty">Checking for updates…</div>','Checking');
   const res=await apiFetch('/space/update/status');
   setBusy(button,false);
   if(!res.ok){
@@ -243,13 +271,13 @@ async function checkForUpdate(){
     return;
   }
   if(s.up_to_date){
-    rows.push('<p>This is the latest version on the remote.</p>');
+    rows.push('<p>You have the latest version.</p>');
     renderUpdateState(rows.join(''),'Up to date');
   }else{
     rows.push(`<p><b>Latest</b> ${commitLine(s.latest)}</p>`);
     rows.push(`<p>${s.behind} commit${s.behind===1?'':'s'} behind${s.ahead?` · ${s.ahead} local commit${s.ahead===1?'':'s'} not on the remote`:''}${s.dirty?' · local changes present':''}.</p>`);
-    if(s.dirty)rows.push('<p>Updating needs a clean checkout: commit, stash, or discard the local changes first.</p>');
-    else if(s.ahead)rows.push('<p>The branches diverged; self-update only fast-forwards. Reconcile manually.</p>');
+    if(s.dirty)rows.push('<p>Save your local changes before updating.</p>');
+    else if(s.ahead)rows.push('<p>Local and remote changes need to be merged before updating.</p>');
     else applyButton.hidden=false;
     renderUpdateState(rows.join(''),`${s.behind} behind`);
   }
@@ -258,7 +286,7 @@ async function checkForUpdate(){
 async function applyUpdate(){
   const applyButton=root.querySelector('#update-apply');
   setBusy(applyButton,true);
-  renderUpdateState('<div class="setup-empty">Fast-forwarding the checkout…</div>','Updating');
+  renderUpdateState('<div class="setup-empty">Updating Space…</div>','Updating');
   const res=await apiFetch('/space/update/apply',{method:'POST'});
   setBusy(applyButton,false);
   applyButton.hidden=true;
@@ -283,96 +311,91 @@ async function applyUpdate(){
 }
 
 async function loadAll(){
-  if(loading)return;
-  loading=true;
+  if(loading||writes.size){refreshQueued=true;return;}
+  loading=true;refreshQueued=false;
+  const mine=runtimeRevision;
   root.querySelector('#setup-refresh').disabled=true;
   const [runtimeRes,secretsRes,serverRes]=await Promise.all([
-    apiFetch('/api/runtime-config'),
-    apiFetch('/api/secrets'),
-    pollServer(),
-    commands.refresh()
+    apiFetch('/api/runtime-config'),apiFetch('/api/secrets'),pollServer(),commands.refresh()
   ]);
   loading=false;
   root.querySelector('#setup-refresh').disabled=false;
-  serverData=serverRes.ok?serverRes.data:null;
-  renderRestartButtons();
-
-  if(runtimeRes.ok){
-    runtimeData=runtimeRes.data;
-    renderRuntime();
-  }else{
-    renderRuntimeFailure(runtimeRes);
+  if(mine!==runtimeRevision){refreshQueued=true;}
+  else{
+    serverData=serverRes.ok?serverRes.data:null;
+    if(runtimeRes.ok){runtimeData=runtimeRes.data;runtimeUnavailable=false;renderRuntime();}
+    else{runtimeUnavailable=true;renderRuntimeFailure(runtimeRes);}
+    if(secretsRes.ok){
+      secretItems=secretsRes.data.items||[];renderSecretList();
+      if(runtimeData&&!runtimeUnavailable)renderSources();
+    }else{
+      root.querySelector('#secret-count').textContent='—';
+      root.querySelector('#secret-list').innerHTML='<div class="setup-empty is-error">'+esc(secretsRes.error)+'</div>';
+    }
+    renderRestartButtons();
+    setConfigBusy(false);
   }
-  if(secretsRes.ok){
-    secretItems=secretsRes.data.items||[];
-    renderSecretList();
-    if(runtimeData)renderSources();
-  }else{
-    root.querySelector('#secret-count').textContent='—';
-    root.querySelector('#secret-list').innerHTML='<div class="setup-empty is-error">'+esc(secretsRes.error)+'</div>';
-  }
+  if(refreshQueued&&!writes.size)loadAll();
 }
 
 function renderRuntime(){
   const configured=runtimeData.configured;
-  const applied=runtimeData.applied;
   const agents=runtimeData.agents||[];
   const select=root.querySelector('#runtime-agent');
-  select.innerHTML=agents.map(agent=>
-    '<option value="'+esc(agent.name)+'">'+esc(prettyName(agent.name))+'</option>'
-  ).join('');
-  select.value=configured.agent_name;
-  root.querySelector('#runtime-watcher').checked=configured.watcher_enabled;
-  root.querySelector('#runtime-source-mode').value=configured.watcher_source_mode;
-  root.querySelector('#runtime-interval').value=String(configured.watcher_interval_seconds);
-  root.querySelector('#source-count').textContent=String(agents.length);
-
-  const appliedBadge=root.querySelector('#setup-applied-badge');
-  appliedBadge.textContent=runtimeData.restart_required?'Pending restart':'Applied';
-  appliedBadge.className=runtimeData.restart_required?'is-pending':'is-good';
-
-  const restartButton=root.querySelector('#runtime-restart');
-  restartButton.hidden=!runtimeData.restart_required;
-  renderRestartButtons();
-
-  renderUsageReporting();
-
-  const alert=root.querySelector('#setup-alert');
-  const rootPending=Boolean(runtimeData.roots?.change_required);
-  if(rootPending){
-    alert.className='setup-alert is-pending';
-    alert.innerHTML='<span aria-hidden="true">◆</span><div><b>New storage roots are saved but not in use yet.</b>'
-      +'<p>Restart the server to load them — every tab then reads the new XO root. On an installer-managed container, run the command below instead; it also remaps the bind mounts and applies any pending runtime or credential changes.</p></div>';
-  }else if(runtimeData.restart_required){
-    const reasons=runtimeData.restart_reasons||[];
-    const runtimePending=reasons.includes('runtime');
-    const secretsPending=reasons.includes('secrets');
-    let detail='';
-    if(runtimePending&&secretsPending){
-      detail='Restart to activate '+esc(prettyName(configured.agent_name))+' and load the changed credentials.';
-    }else if(secretsPending){
-      detail='Restart to load the changed credentials and rerun '+esc(prettyName(configured.agent_name))+' setup.';
-    }else{
-      detail='Currently running '+esc(prettyName(applied.agent_name))+'. Restart to activate '
-        +esc(prettyName(configured.agent_name))+' and rebuild the watcher from that source.';
-    }
-    alert.className='setup-alert is-pending';
-    alert.innerHTML='<span aria-hidden="true">◆</span><div><b>Saved configuration is waiting for a restart.</b>'
-      +'<p>'+detail+'</p></div>';
-  }else{
-    alert.className='setup-alert is-good';
-    alert.innerHTML='<span aria-hidden="true">◆</span><div><b>Runtime configuration is applied.</b>'
-      +'<p>'+esc(prettyName(applied.agent_name))+' is active; watcher '
-      +(applied.watcher_enabled
-        ?'ticks every '+esc(applied.watcher_interval_seconds)+' seconds across '
-          +(applied.watcher_source_mode==='all'?'all mounted runtimes.':'the active runtime.')
-        :'is disabled.')
-      +'</p></div>';
+  const selected=drafts.agent?select.value:configured.agent_name;
+  select.innerHTML=agents.map(agent=>'<option value="'+esc(agent.name)+'">'+esc(prettyName(agent.name))+'</option>').join('');
+  if(selected&&!agents.some(agent=>agent.name===selected)){
+    select.insertAdjacentHTML('beforeend','<option value="'+esc(selected)+'">'+esc(prettyName(selected))+' (unavailable)</option>');
   }
+  select.value=selected;
+  for(const [id,key,property] of [['runtime-watcher','watcher_enabled','checked'],['runtime-source-mode','watcher_source_mode','value'],['runtime-interval','watcher_interval_seconds','value']]){
+    if(!drafts.activity||!touched.has(id))root.querySelector('#'+id)[property]=configured[key];
+  }
+  const agentPending=configured.agent_name!==runtimeData.applied.agent_name;
+  const badge=root.querySelector('#setup-applied-badge');
+  badge.textContent=agentPending?'Restart to apply':'In use';
+  badge.className=agentPending?'is-pending':'is-good';
+  root.querySelector('#runtime-restart').hidden=!runtimeData.restart_required;
+  renderRestartButtons();
+  renderUsageReporting();renderOverview();renderRoots();renderSources();renderJourney();
+}
 
-  renderOverview();
-  renderRoots();
-  renderSources();
+function renderJourney(){
+  const steps=setupSteps(runtimeUnavailable?null:runtimeData);
+  const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
+  const dirty=panel=>drafts[panel]||(panel==='agent'&&credentialDraft);
+  for(const panel of ['workspace','agent','activity']){
+    const state=steps[panel],el=root.querySelector('#setup-step-'+panel);
+    el.textContent=dirty(panel)?'Unsaved changes':runtimeUnavailable?'Unavailable'
+      :panel==='agent'&&state.label===runtimeData?.configured.agent_name?prettyName(state.label):state.label;
+    el.className='is-'+(dirty(panel)?'pending':state.tone);
+  }
+  if(restarting||runtimeUnavailable)return;
+  const unsaved=Object.keys(drafts).filter(dirty);
+  const alert=root.querySelector('#setup-alert');
+  if(unsaved.length){
+    const labels={workspace:'Workspace',agent:'Agent & access',activity:'Activity'};
+    alert.className='setup-alert is-pending';
+    alert.innerHTML='<div><b>Unsaved changes</b><p>'+esc(unsaved.map(panel=>labels[panel]).join(', '))+'</p></div>'
+      +'<button class="setup-secondary" type="button" data-setup-go="'+unsaved[0]+'">Review changes</button>';
+  }else if(steps.next){
+    const {panel,label,message}=steps.next;
+    alert.className='setup-alert is-pending';
+    alert.innerHTML='<div><b>'+esc(label)+'</b><p>'+esc(message)+'</p></div>'
+      +'<button class="setup-secondary" type="button" data-setup-go="'+panel+'">'+esc(label)+' →</button>';
+  }else{
+    alert.className='setup-alert'+(runtimeData?' is-good':'');
+    alert.innerHTML='<div><b>'+(runtimeData?'Settings applied':'Checking settings…')+'</b></div>';
+  }
+}
+
+function setConfigBusy(busy){
+  busy=busy||writes.size>0;
+  setSecretBusy(busy);
+  for(const id of ['roots-save','runtime-save','activity-save']){
+    const button=root.querySelector('#'+id);
+    setBusy(button,busy);button.disabled=busy||runtimeUnavailable||!runtimeData;
+  }
 }
 
 /* Usage-reporting status (GET /api/runtime-config → usage_reporting).
@@ -388,12 +411,11 @@ function renderUsageReporting(){
   const link=' <a href="https://github.com/quirq-ai/xo-space#what-leaves-your-machine" '
     +'target="_blank" rel="noopener noreferrer">What leaves your machine &#8599;</a>';
   const states={
-    on:['on','Key accepted by xo-swarm-api'
-      +(ur.last_synced_date?'; last report '+esc(ur.last_synced_date):'')
-      +'. A daily summary of token counts, cost and session/tool counts goes out — never prompts, responses or files.'],
-    blocked:['blocked','xo-swarm-api rejected the key; nothing is sent. Fix or remove XO_API_KEY.'],
-    pending:['pending','A key is set but not verified yet; nothing is sent until a sync accepts it.'],
-    off:['off','No XO_API_KEY set. Nothing is sent.']
+    on:['on','Daily totals: tokens, cost, sessions and tools. Prompts, responses and files stay local.'
+      +(ur.last_synced_date?' Last sent '+esc(ur.last_synced_date)+'.':'')],
+    blocked:['blocked','XO_API_KEY was rejected. Replace or remove it; nothing is sent.'],
+    pending:['pending','Key saved; waiting for verification. Nothing is sent yet.'],
+    off:['off','No XO_API_KEY. Nothing is sent.']
   };
   const [state,detail]=states[ur.status]||states.off;
   el.className='setup-usage-reporting is-'+state;
@@ -409,24 +431,26 @@ function renderOverview(){
   const publicUrl=runtimeData.network?.public_url||location.origin;
   const listenPort=runtimeData.network?.listen_port||'—';
   root.querySelector('#setup-overview').innerHTML=
-    overviewCard('Browser address',publicUrl,'Container listens on port '+listenPort)
+    overviewCard('Browser address',publicUrl,'Server port '+listenPort)
     +overviewCard(
-      'Projects',
+      'Projects folder',
       paths.projects?.host_path||paths.projects?.container_path,
       pathState(paths.projects)+' · execution root '+(paths.ai_workspace?.container_path||'not set')
     )
-    +overviewCard('Quirq state',paths.state?.host_path||paths.state?.container_path,pathState(paths.state));
-  root.querySelector('#setup-state-boundary').textContent=paths.state?.host_path||paths.state?.container_path||'~/.quirq/';
+    +overviewCard('Space data folder',paths.state?.host_path||paths.state?.container_path,pathState(paths.state));
 }
 
 function renderRoots(){
+  if(!runtimeData)return;
   const roots=runtimeData.roots||{};
   const configured=roots.configured||{};
   const applied=roots.applied||{};
-  root.querySelector('#xo-root-input').value=configured.xo_projects_root||'';
-  root.querySelector('#quirq-root-input').value=configured.quirq_state_root||'';
-  root.querySelector('#xo-root-applied').textContent='Mounted now: '+(applied.xo_projects_root||'not reported');
-  root.querySelector('#quirq-root-applied').textContent='Mounted now: '+(applied.quirq_state_root||'not reported');
+  if(!drafts.workspace||!touched.has('xo-root-input'))root.querySelector('#xo-root-input').value=configured.xo_projects_root||'';
+  if(!drafts.workspace||!touched.has('quirq-root-input'))root.querySelector('#quirq-root-input').value=configured.quirq_state_root||'';
+  for(const [input,label,key] of [['xo-root-input','xo-root-applied','xo_projects_root'],['quirq-root-input','quirq-root-applied','quirq_state_root']]){
+    const using=applied[key];
+    root.querySelector('#'+label).textContent=using&&using!==root.querySelector('#'+input).value?'Currently using: '+using:'';
+  }
   const badge=root.querySelector('#roots-badge');
   badge.textContent=roots.change_required?'Pending restart':'In use';
   badge.className=roots.change_required?'is-pending':'is-good';
@@ -448,55 +472,37 @@ function pathState(path){
 }
 
 function renderSources(){
-  if(!runtimeData)return;
+  if(!runtimeData||runtimeUnavailable)return;
   const configuredKeys=new Set(secretItems.filter(item=>item.is_set).map(item=>item.key));
   const sources=runtimeData.agents||[];
   const target=root.querySelector('#setup-sources');
-  if(!sources.length){
-    target.innerHTML='<div class="setup-empty">No agent manifests were discovered.</div>';
-    return;
-  }
-  target.innerHTML=sources.map(source=>{
-    const selected=source.name===runtimeData.configured.agent_name;
-    const secrets=(source.secrets||[]).map(item=>({...item,configured:configuredKeys.has(item.key)}));
-    const secretButtons=secrets.length
-      ?'<div class="source-secrets">'+secrets.map(item=>
-        '<button type="button" data-secret-key="'+esc(item.key)+'" title="'+esc(item.description)+'" class="'+(item.configured?'is-set':'')+'">'
-          +'<span>'+(item.configured?'✓':'＋')+'</span>'+esc(item.label)
-        +'</button>'
-      ).join('')+'</div>'
-      :'<p class="source-note">This runtime uses its native login files rather than environment credentials.</p>';
+  if(!sources.length){target.innerHTML='<div class="setup-empty">No agents found.</div>';return;}
+  const selectedName=root.querySelector('#runtime-agent').value||runtimeData.configured.agent_name;
+  const otherOpen=target.querySelector('.setup-other-agents')?.open||false;
+  const detailsOpen=new Set([...target.querySelectorAll('.source-details[open]')].map(el=>el.dataset.source));
+  const row=source=>{
+    const selected=source.name===selectedName;
+    const keys=source.secrets||[];
+    const secretButtons=keys.length?'<div class="source-secrets">'+keys.map(item=>
+      '<button type="button" data-secret-key="'+esc(item.key)+'" title="'+esc(item.description)+'" class="'+(configuredKeys.has(item.key)?'is-set':'')+'">'
+        +'<span>'+(configuredKeys.has(item.key)?'✓':'+')+'</span>'+esc(item.label)+'</button>'
+    ).join('')+'</div>':'<p class="source-note">Uses its own sign-in.</p>';
     return '<article class="source-row '+(source.active?'is-active ':'')+(selected?'is-selected':'')+'">'
-      +'<div class="source-main">'
-        +'<div class="source-title"><b>'+esc(prettyName(source.name))+'</b>'
-          +(source.active?'<span>Chat backend</span>':selected?'<span class="is-pending">Chat after restart</span>':'')
-          +(source.watched?'<span class="is-watched">Watched</span>':'')
-        +'</div>'
-        +'<div class="source-facts">'
-          +fact(source.home?.exists?'Mounted':'Missing',source.home?.exists?'good':'bad')
-          +fact(
-            source.binary_available
-              ?'CLI ready'
-              :source.bootstrap_available
-                ?'CLI setup runs after credentials + restart'
-                :'CLI unavailable',
-            source.binary_available?'good':'muted'
-          )
-          +fact(source.session_files+' session file'+(source.session_files===1?'':'s'),source.session_files?'good':'muted')
-          /* a Missing / CLI unavailable badge is a dead end without a way
-             forward: link the runtime's own install docs when the manifest
-             names them, only while something is actually absent */
-          +((!source.home?.exists||!source.binary_available)&&source.install_url
-            ?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">'
-              +'Install '+esc(prettyName(source.name))+' &#8599;</a>'
-            :'')
-        +'</div>'
-        +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'not reported')+'</code></div>'
-        +'<div class="source-path"><span>Container</span><code>'+esc(source.home?.container_path||'not reported')+'</code></div>'
-        +secretButtons
-      +'</div>'
-    +'</article>';
-  }).join('');
+      +'<div class="source-title"><b>'+esc(prettyName(source.name))+'</b>'
+        +(source.active?'<span>In use</span>':selected?'<span class="is-pending">'+(drafts.agent?'Selected':'Restart to apply')+'</span>':'')
+        +(runtimeData.applied.watcher_enabled&&source.watched?'<span class="is-watched">Included in activity</span>':'')+'</div>'
+      +'<div class="source-facts">'+fact(source.binary_available?'Installed':'Not installed',source.binary_available?'good':'muted')
+        +fact(source.home?.exists?'Agent folder found':'Agent folder missing',source.home?.exists?'good':'bad')
+        +((!source.home?.exists||!source.binary_available)&&source.install_url?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">Install '+esc(prettyName(source.name))+' ↗</a>':'')+'</div>'
+      +secretButtons
+      +'<details class="source-details" data-source="'+esc(source.name)+'"'+(detailsOpen.has(source.name)?' open':'')+'><summary>Agent folder details</summary>'
+        +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'Not reported')+'</code></div>'
+        +'<div class="source-path"><span>Server</span><code>'+esc(source.home?.container_path||'Not reported')+'</code></div>'
+      +'</details></article>';
+  };
+  const chosen=sources.find(source=>source.name===selectedName);
+  const others=sources.filter(source=>source!==chosen);
+  target.innerHTML=(chosen?row(chosen):'')+(others.length?'<details class="setup-other-agents"'+(otherOpen?' open':'')+'><summary>Other agents ('+others.length+')</summary>'+others.map(row).join('')+'</details>':'');
 }
 
 function fact(text,tone){
@@ -506,67 +512,63 @@ function fact(text,tone){
 function renderRuntimeFailure(res){
   const alert=root.querySelector('#setup-alert');
   alert.className='setup-alert is-error';
-  alert.innerHTML='<span aria-hidden="true">!</span><div><b>Runtime status is unavailable.</b><p>'+esc(res.offline?'Quirq is restarting or unreachable.':res.error)+'</p></div>';
+  alert.innerHTML='<div><b>Settings unavailable</b><p>'+esc(res.offline?'Space is restarting or unreachable.':res.error)+'</p></div><button class="setup-secondary" type="button" data-setup-retry>Retry</button>';
+  renderJourney();
+  root.querySelector('#usage-reporting').hidden=true;
   root.querySelector('#setup-overview').innerHTML='';
-  root.querySelector('#setup-sources').innerHTML='<div class="setup-empty is-error">Could not inspect native session sources.</div>';
+  root.querySelector('#setup-sources').innerHTML='<div class="setup-empty is-error">Could not check agents.</div>';
 }
 
 async function saveRuntime(event){
   event.preventDefault();
-  clearRuntimeError();
-  const button=root.querySelector('#runtime-save');
-  const interval=Number(root.querySelector('#runtime-interval').value);
-  if(!Number.isFinite(interval)||interval<.25||interval>60){
-    showRuntimeError('Watcher interval must be between 0.25 and 60 seconds.');
-    return;
-  }
-  setBusy(button,true);
-  button.textContent='Saving…';
-  const res=await apiFetch('/api/runtime-config',{
-    method:'PUT',
-    body:{
-      agent_name:root.querySelector('#runtime-agent').value,
-      watcher_enabled:root.querySelector('#runtime-watcher').checked,
-      watcher_interval_seconds:interval,
-      watcher_source_mode:root.querySelector('#runtime-source-mode').value
+  if(writes.size||!runtimeData||runtimeUnavailable)return;
+  const panel=event.currentTarget.id==='activity-form'?'activity':'agent';
+  const error=root.querySelector(panel==='activity'?'#activity-error':'#runtime-error');
+  error.hidden=true;error.textContent='';
+  const configured=runtimeData.configured;
+  const body={agent_name:configured.agent_name,watcher_enabled:configured.watcher_enabled,
+    watcher_interval_seconds:configured.watcher_interval_seconds,watcher_source_mode:configured.watcher_source_mode};
+  if(panel==='agent')body.agent_name=root.querySelector('#runtime-agent').value;
+  else{
+    const interval=Number(root.querySelector('#runtime-interval').value);
+    if(!Number.isFinite(interval)||interval<.25||interval>60){
+      error.textContent='Use an interval between 0.25 and 60 seconds.';error.hidden=false;return;
     }
-  });
-  setBusy(button,false);
-  button.textContent='Save runtime';
-  if(!res.ok){
-    showRuntimeError(res.error);
-    return;
+    body.watcher_enabled=root.querySelector('#runtime-watcher').checked;
+    body.watcher_interval_seconds=interval;
+    body.watcher_source_mode=root.querySelector('#runtime-source-mode').value;
   }
-  runtimeData=res.data.status;
-  renderRuntime();
-  toast(runtimeData.restart_required?'Runtime saved — restart to apply':'Runtime configuration saved');
+  const form=event.currentTarget;
+  writes.add(panel);runtimeRevision++;setConfigBusy(true);
+  [...form.elements].forEach(control=>control.disabled=true);
+  const res=await apiFetch('/api/runtime-config',{method:'PUT',body});
+  writes.delete(panel);runtimeRevision++;
+  [...form.elements].forEach(control=>control.disabled=false);setConfigBusy(false);
+  if(!res.ok){error.textContent=res.error;error.hidden=false;}
+  else{
+    drafts[panel]=false;runtimeData=res.data.status;renderRuntime();
+    toast(runtimeData.restart_required?'Saved. Restart to apply.':'Settings saved');
+  }
+  if(refreshQueued)loadAll();
 }
 
 async function saveRoots(event){
   event.preventDefault();
-  const error=root.querySelector('#roots-error');
-  error.hidden=true;
-  error.textContent='';
-  const button=root.querySelector('#roots-save');
-  setBusy(button,true);
-  button.textContent='Saving…';
-  const res=await apiFetch('/api/runtime-config/roots',{
-    method:'PUT',
-    body:{
-      xo_projects_root:root.querySelector('#xo-root-input').value.trim(),
-      quirq_state_root:root.querySelector('#quirq-root-input').value.trim()
-    }
-  });
-  setBusy(button,false);
-  button.textContent='Save roots';
-  if(!res.ok){
-    error.textContent=res.error||'The roots could not be saved.';
-    error.hidden=false;
-    return;
+  if(writes.size||!runtimeData||runtimeUnavailable)return;
+  const error=root.querySelector('#roots-error');error.hidden=true;error.textContent='';
+  const body={xo_projects_root:root.querySelector('#xo-root-input').value.trim(),quirq_state_root:root.querySelector('#quirq-root-input').value.trim()};
+  const form=event.currentTarget;
+  writes.add('workspace');runtimeRevision++;setConfigBusy(true);
+  [...form.elements].forEach(control=>control.disabled=true);
+  const res=await apiFetch('/api/runtime-config/roots',{method:'PUT',body});
+  writes.delete('workspace');runtimeRevision++;
+  [...form.elements].forEach(control=>control.disabled=false);setConfigBusy(false);
+  if(!res.ok){error.textContent=res.error||'Could not save folders.';error.hidden=false;}
+  else{
+    drafts.workspace=false;runtimeData=res.data.status;renderRuntime();
+    toast(runtimeData.roots?.change_required?'Folders saved. Restart to apply.':'Folders saved');
   }
-  runtimeData=res.data.status;
-  renderRuntime();
-  toast(runtimeData.roots?.change_required?'Roots saved — restart to apply':'Roots already match the folders in use');
+  if(refreshQueued)loadAll();
 }
 
 async function copyRootCommand(){
@@ -587,7 +589,7 @@ async function copyRootCommand(){
 
 async function restartRuntime(){
   if(restarting||!['managed','native'].includes(serverData?.restart_mode))return;
-  if(!confirm('Restart Quirq now? The page will reconnect automatically.'))return;
+  if(!confirm('Restart Space? The page will reconnect automatically.'))return;
   restarting=true;
   renderRestartButtons();
   const error=root.querySelector('#setup-restart-error');
@@ -603,7 +605,7 @@ async function restartRuntime(){
   }
   const alert=root.querySelector('#setup-alert');
   alert.className='setup-alert is-pending';
-  alert.innerHTML='<span aria-hidden="true">◆</span><div><b>Quirq is restarting…</b><p>Waiting for the new server. The server pill may briefly go offline.</p></div>';
+  alert.innerHTML='<div><b>Restarting Space…</b><p>The page will reconnect automatically.</p></div>';
   for(let attempt=0;attempt<60;attempt+=1){
     await delay(1000);
     const probe=await pollServer();
@@ -621,12 +623,15 @@ async function restartRuntime(){
 function renderRestartButtons(){
   const supported=['managed','native'].includes(serverData?.restart_mode);
   const hint=!serverData?'Server status unavailable. Refresh status to retry.'
-    :supported?'':'Ctrl-C and re-run the server from the terminal where you launched it.';
+    :supported?'':'Ctrl-C and re-run Space in the terminal where it started.';
   root.querySelector('#setup-restart-hint').textContent=restarting?'Restarting…':hint;
+  const installerNeeded=runtimeData?.managed_container&&runtimeData?.roots?.change_required;
+  const pending=Boolean(runtimeData?.restart_required)&&!installerNeeded;
+  const updatePending=!root.querySelector('#update-restart').hidden;
+  root.querySelector('#runtime-restart').hidden=!pending||updatePending;
+  root.querySelector('#setup-restart').hidden=pending||updatePending;
   root.querySelectorAll('[data-restart]').forEach(button=>{
-    setBusy(button,restarting);
-    button.disabled=restarting||!supported;
-    button.title=hint;
+    setBusy(button,restarting);button.disabled=restarting||!supported;button.title=hint;
     button.textContent=restarting?'Restarting…':button.id==='runtime-restart'?'Apply & restart':'Restart server';
   });
 }
@@ -635,14 +640,13 @@ function handleRecommendedSecret(event){
   const button=event.target.closest('button[data-secret-key]');
   if(!button)return;
   beginSecret(button.dataset.secretKey);
-  root.querySelector('.setup-credentials').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 function renderSecretList(){
   root.querySelector('#secret-count').textContent=String(secretItems.length);
   const list=root.querySelector('#secret-list');
   if(!secretItems.length){
-    list.innerHTML='<div class="setup-empty"><b>No credentials configured.</b><span>Select a recommended key from a runtime source.</span></div>';
+    list.innerHTML='<div class="setup-empty"><b>No credentials added.</b><span>Use your agent’s sign-in or add a key above.</span></div>';
     return;
   }
   list.innerHTML=secretItems.map(item=>
@@ -665,30 +669,39 @@ function handleSecretListAction(event){
 }
 
 function beginSecret(key){
+  if(writes.size)return;
+  selectPanel('agent');
+  secretForm.hidden=false;
   editingKey=key;
   keyInput.value=key;
   keyInput.readOnly=true;
   valueInput.value='';
   valueInput.type='password';
   root.querySelector('#secret-toggle').textContent='Show';
+  root.querySelector('#secret-toggle').setAttribute('aria-label','Show value');
   root.querySelector('#secret-form-title').textContent=secretItems.some(item=>item.key===key)?'Replace credential':'Set credential';
   secretSaveButton.textContent=secretItems.some(item=>item.key===key)?'Replace value':'Save credential';
   secretCancelButton.hidden=false;
   clearSecretError();
   valueInput.focus();
+  secretForm.scrollIntoView({behavior:'smooth',block:'nearest'});
+  renderJourney();
 }
 
 function resetSecretForm(){
   editingKey=null;
+  secretForm.hidden=true;
   secretForm.reset();
   keyInput.readOnly=false;
   valueInput.type='password';
   root.querySelector('#secret-toggle').textContent='Show';
   root.querySelector('#secret-toggle').setAttribute('aria-label','Show value');
-  root.querySelector('#secret-form-title').textContent='Set a credential';
+  root.querySelector('#secret-form-title').textContent='Add credential';
   secretSaveButton.textContent='Save credential';
-  secretCancelButton.hidden=true;
+  secretCancelButton.hidden=false;
   clearSecretError();
+  if(currentPanel==='agent')root.querySelector('#secret-add').focus({preventScroll:true});
+  renderJourney();
 }
 
 function toggleSecretValue(event){
@@ -701,6 +714,7 @@ function toggleSecretValue(event){
 
 async function saveSecret(event){
   event.preventDefault();
+  if(writes.size)return;
   clearSecretError();
   const key=(editingKey||keyInput.value).trim();
   const value=valueInput.value;
@@ -714,12 +728,14 @@ async function saveSecret(event){
     valueInput.focus();
     return;
   }
-  setSecretBusy(true);
+  writes.add('secret');runtimeRevision++;
+  setConfigBusy(true);
   const res=await apiFetch('/api/secrets/'+encodeURIComponent(key),{method:'PATCH',body:{value}});
   valueInput.value='';
-  setSecretBusy(false);
+  writes.delete('secret');runtimeRevision++;setConfigBusy(false);
   if(!res.ok){
     showSecretError(res.error);
+    if(refreshQueued)loadAll();
     return;
   }
   resetSecretForm();
@@ -728,25 +744,21 @@ async function saveSecret(event){
 }
 
 async function removeSecret(key,button){
-  if(!confirm('Remove '+key+'? The saved value cannot be recovered.'))return;
-  setBusy(button,true);
+  if(writes.size||!confirm('Remove '+key+'? The saved value cannot be recovered.'))return;
+  writes.add('secret');runtimeRevision++;setConfigBusy(true);
   const res=await apiFetch('/api/secrets/'+encodeURIComponent(key),{method:'DELETE'});
-  if(!res.ok){
-    setBusy(button,false);
-    showSecretError(res.error);
-    return;
-  }
+  writes.delete('secret');runtimeRevision++;setConfigBusy(false);
+  if(!res.ok){showSecretError(res.error);if(refreshQueued)loadAll();return;}
   if(editingKey===key)resetSecretForm();
   toast(res.data.deleted?'Credential removed':'Credential was already absent');
   await loadAll();
 }
 
 function setSecretBusy(busy){
-  setBusy(secretSaveButton,busy);
-  setBusy(secretCancelButton,busy);
-  keyInput.disabled=busy;
-  valueInput.disabled=busy;
-  secretSaveButton.textContent=busy?'Saving…':(editingKey?'Replace value':'Save credential');
+  setBusy(secretSaveButton,busy);setBusy(secretCancelButton,busy);
+  keyInput.disabled=busy;valueInput.disabled=busy;
+  root.querySelectorAll('#secret-add,#secret-toggle,#setup-sources button[data-secret-key],#secret-list button').forEach(button=>button.disabled=busy);
+  secretSaveButton.textContent=writes.has('secret')?'Saving…':(editingKey?'Replace value':'Save credential');
 }
 
 /* Disabled is not busy. A button that cannot act here (the restart on a
@@ -757,18 +769,6 @@ function setSecretBusy(busy){
 function setBusy(button,busy){
   button.disabled=busy;
   button.classList.toggle('is-busy',busy);
-}
-
-function showRuntimeError(message){
-  const el=root.querySelector('#runtime-error');
-  el.textContent=message||'The runtime configuration could not be saved.';
-  el.hidden=false;
-}
-
-function clearRuntimeError(){
-  const el=root.querySelector('#runtime-error');
-  el.textContent='';
-  el.hidden=true;
 }
 
 function showSecretError(message){

@@ -30,7 +30,7 @@ class SessionTelemetryUnavailable(RuntimeError):
 # every few seconds, and a runtime that is simply not installed (no Codex
 # state DB, no Cursor home) would otherwise repeat the identical warning for
 # the life of the process. Log a reason once; a changed reason or a recovery
-# is news and logs again. Setup → Native session sources shows the live
+# is news and logs again. Setup → Agent & access shows the live
 # state of every source, so the log does not need to.
 _unavailable_reasons: dict[str, str] = {}
 
@@ -41,7 +41,7 @@ def _note_provider_unavailable(provider: str, reason: str) -> None:
     _unavailable_reasons[provider] = reason
     print(
         f"⚠️ session telemetry provider {provider} unavailable ({reason}) "
-        "— logged once until it changes; see Setup → Native session sources"
+        "— logged once until it changes; see Setup → Agent & access"
     )
 
 

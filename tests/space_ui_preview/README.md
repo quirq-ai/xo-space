@@ -56,16 +56,25 @@ and hiding search on session charts/detail. No real Inbox data is modified.
 This is a browser regression check of the frontend and its API contracts.
 The fixture server is deliberately not a substitute for backend tests.
 
-## Setup Commands and restart
+## Guided Setup, Commands and restart
 
 With the read-only fixture above running, exercise Commands, restart UI states,
 save/poll races, validation conflicts, and desktop/mobile layouts:
 
 ```sh
+node tests/space_ui_preview/setup-state.mjs
+node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
 node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
 node tests/space_ui_preview/command-results-races.mjs
 ```
+
+The Setup journey check covers section/Next navigation, selected-agent access,
+masked credentials, independent Agent/Activity saves, drafts during slow initial
+loads and refresh/save races, unavailable status, and desktop/mobile layouts.
+All settings and credential writes use fictional browser fixtures. The pure
+state check covers pending-change priority and factual summaries without
+inferring authentication or live activity from installation checks.
 
 The Commands/restart script intercepts mutations with browser fixtures; it never executes a
 command or restarts a process. It checks that all three restart buttons wait for

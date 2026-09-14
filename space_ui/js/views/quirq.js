@@ -16,7 +16,7 @@ let timer=null;
 let loading=false;
 let go=()=>{};
 
-/* No top-level tab: Quirq opens from the button in Setup's header (and stays
+/* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
    its own view rather than a card inside Setup so its 10s refresh and full
    state tree keep a page to themselves. */

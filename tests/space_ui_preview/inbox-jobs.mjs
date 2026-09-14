@@ -196,7 +196,9 @@ try{
   await page.locator('.setup-run pre').waitFor();
   await page.screenshot({path:resolve(output,'pr-inbox-results.png')});
   await page.locator('#command-runs-close').click();
-  await page.locator('#tab-secrets').click();
+  await page.locator('[data-act="jobs-setup"]').click();
+  await page.locator('#setup-panel-commands').waitFor();
+  assert.equal(await page.locator('#setup-nav [data-setup-go="commands"]').getAttribute('aria-current'),'step','Inbox opens command management directly');
   await page.locator('[data-command-id="release-ready"]').waitFor();
   await page.locator('#setup-commands').evaluate(el=>el.scrollIntoView({block:'start'}));
   assert.equal(await page.locator('#command-form').isVisible(),false);
