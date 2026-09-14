@@ -8,12 +8,11 @@ import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-commandhelp2';
-import {setupSteps} from '../core/setup-state.js?v=20260914-setuproutes1';
+import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
-import {mountSetupSearch} from './setup-search.js?v=20260914-setuproutes1';
-import {mountProjects} from './setup-projects.js?v=20260914-inboxshare1';
-import {renderSetupShell} from './setup-shell.js?v=20260914-setuproutes1';
-import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-setuproutes1';
+import {mountSetupSearch} from './setup-search.js?v=20260914-manage1';
+import {renderSetupShell} from './setup-shell.js?v=20260914-manage1';
+import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-manage1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -33,8 +32,6 @@ let editingKey=null;
 let loading=false;
 let commands=null;
 let identity=null;
-let projectsManager=null;
-let projectStatus={status:'idle',count:0};
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -75,12 +72,6 @@ function mountSetup(el,ctx){
     bindFormReferences();
     bindEvents();
     setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
-    projectsManager=mountProjects(root.querySelector('#setup-projects'),{
-      onChange:detail=>dispatchEvent(new CustomEvent(detail?.action==='access'?'space:project-access-changed':'space:projects-changed',{detail})),
-      onDraftChange:()=>renderJourney(),
-      onStatusChange:status=>{projectStatus=status;renderJourney();},
-    });
-    projectsManager.refresh();
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
     identity.refresh();
@@ -128,7 +119,6 @@ function selectPanel(requested){
   if(!target)return false;
   setupSearch?.clear();
   currentPanel=panel;
-  if(panel==='projects')projectsManager?.refresh();
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
@@ -147,6 +137,7 @@ function selectPanel(requested){
 }
 
 async function openPanel(requested,{focus=false,target=null}={}){
+  if(requested==='projects')return switchTo('projects/manage');
   const panel=resolveSetupSection(requested);
   const route=setupSectionRoute(requested);
   if(!route)return false;
@@ -180,11 +171,11 @@ function bindEvents(){
     if(event.target.closest('[data-connectors-retry]'))selectPanel('connectors');
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
-  addEventListener('space:setup-section',event=>openPanel(event.detail?.panel,{focus:true}));
-  addEventListener('space:add-project',()=>{
-    if(currentPanel==='projects'&&location.hash==='#/setup/projects'&&root.classList.contains('is-active'))projectsManager?.openAdd();
+  addEventListener('space:setup-section',event=>{
+    /* Legacy project-management events are handled before Setup mounts by
+       core/project-actions.js, which owns that cross-section handoff. */
+    if(event.detail?.panel!=='projects')openPanel(event.detail?.panel,{focus:true});
   });
-  root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects/files/list'));
   root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('setup/server/details'));
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
     root.querySelector(selector).addEventListener('input',event=>{
@@ -200,7 +191,7 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();if(currentPanel==='projects')projectsManager?.refresh();});
+  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
@@ -346,16 +337,15 @@ function renderRuntime(){
 }
 
 function renderJourney(){
-  const steps=setupSteps(runtimeUnavailable?null:runtimeData,projectStatus);
+  const steps=setupSteps(runtimeUnavailable?null:runtimeData);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty={workspace:formDrafts.workspace,intelligence:formDrafts.agent||formDrafts.activity,
-    projects:projectsManager?.hasDraft()||false,secrets:credentialDraft};
+  const dirty={workspace:formDrafts.workspace,intelligence:formDrafts.agent||formDrafts.activity,secrets:credentialDraft};
   const secretsStep=root.querySelector('#setup-step-secrets');
   secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
   secretsStep.className=credentialDraft?'is-pending':'';
   for(const {id} of SETUP_STEPS){
     const state=steps[id],el=root.querySelector('#setup-step-'+id);
-    const unavailable=runtimeUnavailable&&id!=='projects';
+    const unavailable=runtimeUnavailable;
     el.textContent=dirty[id]?'Unsaved changes':unavailable?'Unavailable':state.label;
     el.className='is-'+(dirty[id]?'pending':unavailable?'error':state.tone);
   }

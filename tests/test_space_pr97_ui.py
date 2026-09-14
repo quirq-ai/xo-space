@@ -895,7 +895,7 @@ class ShellTests(unittest.TestCase):
         app = read("js/app.js")
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
-        navigation_stamp = "20260914-navigation1"
+        navigation_stamp = "20260914-manage1"
         self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
         self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         files_stamp = "20260914-files2"
@@ -903,18 +903,20 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
         for module in ("toolbar",):
             self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
-        controls_stamp = "20260914-inboxshare1"
-        for view in ("sharing", "tree", "atlas", "projects", "setup", "sessions", "inbox", "inbox-activity"):
+        controls_stamp = "20260914-manage1"
+        for view in ("sharing", "tree", "atlas", "projects", "setup", "sessions", "inbox", "inbox-activity", "project-manage"):
             self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
-        for module in ("section-nav", "navigation", "preview"):
+        for module in ("section-nav", "navigation", "preview", "project-actions"):
             self.assertIn("./core/" + module + ".js?v=" + controls_stamp + "'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=' + controls_stamp + '"', html)
+        self.assertIn('href="css/projects.css?v=20260914-inboxshare1"', html)
         self.assertIn('href="css/navigation.css?v=20260914-actions1"', html)
-        for sheet in ("project-share", "inbox-activity", "setup-projects"):
+        for sheet in ("project-share", "inbox-activity"):
+            self.assertIn('href="css/' + sheet + '.css?v=20260914-inboxshare1"', html)
+        for sheet in ("project-management", "setup"):
             self.assertIn('href="css/' + sheet + '.css?v=' + controls_stamp + '"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)

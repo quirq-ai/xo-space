@@ -11,7 +11,7 @@ const endpoint=new URL(origin);
 assert.equal(endpoint.hostname,'127.0.0.1');
 assert.notEqual(endpoint.port,'5002');
 const output=resolve(process.argv[2]||'/tmp/space-setup-journey-review');
-const sections=['workspace','intelligence','projects','connectors','secrets','commands','server'];
+const sections=['workspace','intelligence','connectors','secrets','commands','server'];
 await mkdir(output,{recursive:true});
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE
   ?pathToFileURL(process.env.PLAYWRIGHT_MODULE).href:'playwright');
@@ -103,9 +103,18 @@ async function expectSection(id){
   assert.equal(await page.locator('#tab-setup.is-on').count(),1,'Section URLs share the Setup primary tab');
 }
 async function choose(id){
-  await page.locator(`#setup-nav [data-setup-go="${id}"]`).click();
+  const link=page.locator(`#setup-nav [data-setup-go="${id}"]`);
+  if(await link.isVisible())await link.click();
+  else await page.evaluate(id=>{location.hash='#/setup/'+id;},id);
   await expectSection(id);
 }
+async function expectManage(){
+  await page.waitForURL('**/#/projects/manage');await page.locator('#view-project-manage.is-active').waitFor();
+  await page.locator('#manage-project-add').waitFor();
+  assert.equal(await page.locator('#tab-projects.is-on').count(),1,'Project management belongs to the Projects tab');
+  assert.equal(await page.locator('#setup-panel-projects').count(),0,'Setup no longer owns a project-management panel');
+}
+async function manage(){await page.evaluate(()=>{location.hash='#/projects/manage';});await expectManage();}
 async function refresh(){
   const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/runtime-config'&&r.request().method()==='GET');
   await page.locator('#setup-refresh').click();await response;
@@ -148,7 +157,7 @@ try{
   await panel('workspace').locator('.setup-step-footer [data-setup-go="intelligence"]').click();
   await panel('intelligence').waitFor();
   assert.equal(await panel('intelligence').locator('#runtime-form,#activity-form').count(),2,'Intelligence contains both configuration forms');
-  assert.equal(await panel('intelligence').locator('#setup-projects').count(),0,'Project management is a separate section');
+  assert.equal(await page.locator('#view-setup #setup-projects,#view-setup #manage-projects').count(),0,'Project management is outside Setup');
   assert.equal(await page.locator('#setup-panel-agent,#setup-panel-activity').count(),0,'Old section containers are gone');
   assert.equal(await page.locator('#secret-form').isVisible(),false);
   assert.equal(await panel('intelligence').locator('#secret-form,#secret-list').count(),0,'Credential management has its own section');
@@ -169,12 +178,10 @@ try{
   assert.match(await agentDetails.textContent(),/session files? found/,'Source diagnostics remain available in details');
   await agentDetails.locator('summary').click();
   assert.equal(await page.locator('#runtime-interval').isVisible(),false,'Detailed timing starts collapsed');
-  await panel('intelligence').locator('.setup-step-footer [data-setup-go="projects"]').click();
-  await panel('projects').waitFor();
-  assert.equal(await panel('projects').locator('#setup-projects').count(),1);
-  assert.equal(await panel('projects').locator('#runtime-form,#activity-form').count(),0);
-  await page.locator('#setup-open-projects').click();
-  await page.waitForURL('**/#/projects/files/list');
+  await panel('intelligence').getByRole('link',{name:'Manage projects →',exact:true}).click();
+  await expectManage();
+  assert.equal(await page.locator('#view-project-manage #runtime-form,#view-project-manage #activity-form').count(),0);
+  await openProjectList(page);
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();
   assert.equal(new URL(page.url()).hash,'#/setup/workspace','The primary Setup button consistently opens Workspace');
   for(const legacy of ['agent','activity']){
@@ -186,7 +193,9 @@ try{
     const control=legacy==='agent'?'#runtime-agent':'#runtime-source-mode';
     assert.equal(await page.locator(control).evaluate(node=>node===document.activeElement),true,'Legacy '+legacy+' handoff focuses its corresponding Intelligence control');
   }
-  await choose('projects');await page.locator('#view-search').fill('activity interval');
+  await page.evaluate(()=>dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'projects'}})));
+  await expectManage();
+  await choose('workspace');await page.locator('#view-search').fill('activity interval');
   await page.locator('.setup-search-result').filter({hasText:'Activity interval'}).click();
   await panel('intelligence').waitFor();
   assert.equal(await page.locator('#runtime-interval').isVisible(),true,'Search reveals the advanced activity control in Intelligence');
@@ -199,7 +208,7 @@ try{
   await page.locator('#xo-root-input').fill('/demo/next-projects');
   await choose('intelligence');await page.locator('#runtime-agent').selectOption('codex');
   assert.match(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/);
-  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/,'Runtime drafts do not mark Projects as unsaved');
+  assert.equal(await page.locator('#setup-step-projects').count(),0,'Runtime drafts have no project-management step in Setup');
   assert.match(await page.locator('#setup-sources .source-row:visible').textContent(),/Codex/);
   await choose('intelligence');await page.locator('#runtime-watcher').uncheck();
   await page.locator('#runtime-source-mode').selectOption('active');
@@ -213,7 +222,7 @@ try{
   await page.locator('#secret-toggle').click();
   assert.equal(await page.locator('#secret-value').getAttribute('type'),'password');
   const credentialNode=await page.locator('#secret-value').elementHandle();
-  for(const id of ['intelligence','projects','workspace','secrets'])await choose(id);
+  await choose('intelligence');await manage();await choose('workspace');await choose('secrets');
   assert.equal(await credentialNode.evaluate(node=>node.isConnected),true,'Section navigation retains the credential form');
   assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Section navigation retains the credential draft');
   await refresh();await drafts();
@@ -263,7 +272,7 @@ try{
     'Activity Save retains the saved agent, not its neighboring form draft');
   await drafts({agent:'claude_code'});
   assert.match(await page.locator('#setup-step-intelligence').textContent(),/Unsaved changes/,'Saving activity keeps an unsaved agent choice');
-  assert.doesNotMatch(await page.locator('#setup-step-projects').textContent(),/Unsaved changes/);
+  assert.equal(await page.locator('#setup-step-projects').count(),0);
   await choose('workspace');await save('#roots-save','/api/runtime-config/roots');
   assert.deepEqual(writes.filter(write=>write.path.endsWith('/roots')).at(-1).body,
     {xo_projects_root:'/demo/next-projects',quirq_state_root:'/demo/.quirq'});
@@ -289,14 +298,14 @@ try{
   assert.equal(await page.locator('#roots-save').isDisabled(),true);
   assert.equal(await page.locator('#runtime-save').isDisabled(),true);
   assert.equal(await page.locator('#activity-save').isDisabled(),true);
-  await choose('projects');await page.locator('#setup-project-list .setup-project-row').first().waitFor();
-  assert.equal(await page.locator('#setup-project-add').isEnabled(),true,'Runtime status failure does not disable project management');
-  await page.locator('#setup-project-add').click();
-  await page.locator('#setup-project-repository').fill('https://github.com/fixture/available-without-runtime.git');
-  assert.equal(await page.locator('#setup-project-create').isEnabled(),true);
-  assert.equal(await page.locator('#setup-project-id').inputValue(),'available-without-runtime');
-  await page.locator('#setup-project-cancel').click();
-  failRuntime=false;await refresh();
+  await manage();await page.locator('#manage-project-list .manage-project-row').first().waitFor();
+  assert.equal(await page.locator('#manage-project-add').isEnabled(),true,'Runtime status failure does not disable project management');
+  await page.locator('#manage-project-add').click();
+  await page.locator('#manage-project-repository').fill('https://github.com/fixture/available-without-runtime.git');
+  assert.equal(await page.locator('#manage-project-create').isEnabled(),true);
+  assert.equal(await page.locator('#manage-project-id').inputValue(),'available-without-runtime');
+  await page.locator('#manage-project-cancel').click();
+  failRuntime=false;await choose('server');await refresh();
   assert.equal(await page.locator('#runtime-save').isEnabled(),true);
 
   /* Capture ordinary applied settings, with no unsaved input or error overlays. */
@@ -311,7 +320,7 @@ try{
   await page.reload({waitUntil:'networkidle'});await panel('workspace').waitFor();
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    for(const id of ['workspace','intelligence','projects','secrets','commands','server']){
+    for(const id of ['workspace','intelligence','secrets','commands','server']){
       await choose(id);
       await page.waitForTimeout(350);
       assert.ok(await page.locator('#setup-nav,.setup-panel:visible,.setup-panel:visible input,.setup-panel:visible select,.setup-panel:visible button').evaluateAll(nodes=>nodes.filter(el=>el.getClientRects().length).every(el=>{
@@ -326,33 +335,34 @@ try{
     await page.goto(origin+'/space/#/setup/'+id,{waitUntil:'networkidle'});await expectSection(id);
     await page.reload({waitUntil:'networkidle'});await expectSection(id);
   }
-  for(const [alias,id] of [['setup','workspace'],['connectors','connectors'],['secrets','secrets']]){
+  for(const [alias,id] of [['setup','workspace'],['connectors','connectors'],['secrets','secrets'],['setup/projects','manage']]){
     await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'networkidle'});
-    await page.goto(origin+'/space/#/'+alias,{waitUntil:'networkidle'});await expectSection(id);
+    await page.goto(origin+'/space/#/'+alias,{waitUntil:'networkidle'});await (id==='manage'?expectManage():expectSection(id));
     await page.goBack();await page.waitForURL('**/#/projects/files/list');
     assert.equal(await page.locator('#view-projects.is-active').count(),1,'Alias normalization does not add an extra history entry');
-    await page.goForward();await expectSection(id);
+    await page.goForward();await (id==='manage'?expectManage():expectSection(id));
   }
   await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});await expectSection('workspace');
   await page.locator('#xo-root-input').fill('/demo/history-folder-draft');
   const folderNode=await page.locator('#xo-root-input').elementHandle();
   await choose('intelligence');await page.locator('#runtime-agent').selectOption('codex');
   const agentNode=await page.locator('#runtime-agent').elementHandle();
-  await choose('projects');await page.locator('#setup-project-add').click();
-  await page.locator('#setup-project-repository').fill('https://github.com/fixture/history-draft.git');
-  const projectNode=await page.locator('#setup-project-repository').elementHandle();
+  await manage();await page.locator('#manage-project-add').click();
+  await page.locator('#manage-project-repository').fill('https://github.com/fixture/history-draft.git');
+  const projectNode=await page.locator('#manage-project-repository').elementHandle();
   await choose('connectors');await choose('secrets');await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_HISTORY_DRAFT');await page.locator('#secret-value').fill('fictional-history-secret');
   const secretNode=await page.locator('#secret-value').elementHandle();
   await choose('commands');await choose('server');
   const historyLength=await page.evaluate(()=>history.length);
   await choose('server');assert.equal(await page.evaluate(()=>history.length),historyLength,'Clicking the current section does not duplicate browser history');
-  for(const id of sections.slice(0,-1).reverse()){await page.goBack();await expectSection(id);}
-  for(const id of sections.slice(1)){await page.goForward();await expectSection(id);}
+  const historyPages=['workspace','intelligence','manage','connectors','secrets','commands','server'];
+  for(const id of historyPages.slice(0,-1).reverse()){await page.goBack();await (id==='manage'?expectManage():expectSection(id));}
+  for(const id of historyPages.slice(1)){await page.goForward();await (id==='manage'?expectManage():expectSection(id));}
   for(const handle of [folderNode,agentNode,projectNode,secretNode])assert.equal(await handle.evaluate(node=>node.isConnected),true,'Browser history retains the same mounted draft controls');
   assert.equal(await page.locator('#xo-root-input').inputValue(),'/demo/history-folder-draft');
   assert.equal(await page.locator('#runtime-agent').inputValue(),'codex');
-  assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fixture/history-draft.git');
+  assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fixture/history-draft.git');
   assert.equal(await page.locator('#secret-value').inputValue(),'fictional-history-secret');
   await page.locator('#tab-setup').click();await expectSection('workspace');
   await choose('secrets');assert.equal(await page.locator('#secret-value').inputValue(),'fictional-history-secret','Primary Setup navigation keeps drafts while returning to Workspace');
@@ -360,7 +370,7 @@ try{
   assert.deepEqual(errors,[]);
   assert.equal(writes.some(write=>write.path.startsWith('/api/schedules')),false);
   assert.equal(writes.filter(write=>write.path==='/space/server/restart').length,1);
-  console.log('Setup journey: every section deep link/reload, alias normalization, back/forward, retained drafts, Workspace → Intelligence → Projects, legacy focus, search, scoped saves, restart states and 1440/390/320px layouts passed.');
+  console.log('Setup journey: two setup steps, Projects → Manage handoff, every section deep link/reload, alias normalization, cross-section browser history and retained drafts, legacy focus, search, scoped saves, restart states and 1440/390/320px layouts passed.');
 }catch(error){
   await page.screenshot({path:resolve(output,'failure.png')});throw error;
 }finally{

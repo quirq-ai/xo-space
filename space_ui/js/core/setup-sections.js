@@ -4,7 +4,6 @@ const section=value=>Object.freeze({...value,route:'setup/'+value.id});
 export const SETUP_STEPS=Object.freeze([
   section({id:'workspace',label:'Workspace',number:1}),
   section({id:'intelligence',label:'Intelligence layer',number:2}),
-  section({id:'projects',label:'Projects',number:3}),
 ]);
 
 export const SETUP_MANAGE=Object.freeze([

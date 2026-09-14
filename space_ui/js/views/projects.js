@@ -1,10 +1,9 @@
 /* Projects catalog and on-demand Files, Activity and Issues details.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260914-inboxshare1';
-import {fileViewControls} from '../core/file-views.js?v=20260914-inboxshare1';
-import {openProjectAdd} from '../core/project-actions.js?v=20260914-inboxshare1';
-import {createProjectShare} from '../core/project-share.js?v=20260914-inboxshare1';
+import {projectPage} from '../core/navigation.js?v=20260914-manage1';
+import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
+import {createProjectShare} from '../core/project-share.js?v=20260914-manage1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -507,7 +506,7 @@ function bindHead(){
   });
   root.querySelector('.prj-empty').addEventListener('click',async event=>{
     if(event.target.closest('[data-clear-projects]')){filter='';viewFilter='all';refreshToolbar();renderRows();}
-    if(event.target.closest('[data-add-project]'))openProjectAdd(switchTo);
+    if(event.target.closest('[data-manage-projects]'))switchTo('projects/manage');
     if(event.target.closest('[data-retry-projects]'))loadList();
     if(event.target.closest('[data-first-run]')){
       await switchTo('wiki');
@@ -551,7 +550,7 @@ function renderRows(){
   updateHead();
 }
 function emptyHTML(){
-  if(!items.length)return'<b>No projects yet</b><p>Clone a Git repository into this Space to get started.</p><div class="prj-empty-actions"><button type="button" data-add-project>Add project</button><button type="button" data-first-run>Getting started</button></div>';
+  if(!items.length)return'<b>No projects yet</b><p>Clone a Git repository into this Space to get started.</p><div class="prj-empty-actions"><button type="button" data-manage-projects>Manage projects</button><button type="button" data-first-run>Getting started</button></div>';
   let title='No matching projects',message='Try a different search or clear the filters.';
   if(!filter.trim()&&viewFilter==='pinned'){title='Keep your frequent projects here';message='Use the pin beside a project to add it to this list. Pins are saved in this browser.';}
   if(!filter.trim()&&viewFilter==='live'){title=feeds.activity==='loading'?'Checking live projects…':feeds.activity==='error'?'Live status is unavailable':'No projects are live';message=feeds.activity==='ready'?'Projects with open agent sessions appear here.':'You can still browse all projects.';}

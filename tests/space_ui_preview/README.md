@@ -30,12 +30,12 @@ the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
 The full check verifies the four primary sections, Projects Overview default,
-Overview / Files / Timeline, the Files List / Graph / Tree modes and
+Overview / Files / Timeline / Manage, the Files List / Graph / Tree modes and
 canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
 
-`projects-root.mjs` checks direct List and Tree loads, root search
+`projects-root.mjs` checks direct List, Tree and Manage loads, root search
 without booting a hidden graph, selection into Files Graph, browser history,
 Timeline root selection, and leaving Projects during a pending metadata read. It blocks service writes
 and external requests; run it with the same environment variables as `capture.mjs`.
@@ -66,13 +66,13 @@ node tests/space_ui_preview/inbox-activity.mjs /tmp/space-inbox-activity
 node tests/space_ui_preview/project-actions.mjs /tmp/space-project-actions
 ```
 
-The inline check exercises both Files List and Setup: Space ID validation,
+The inline check exercises both Files List and Manage: Space ID validation,
 cancellation, retained drafts, unchanged routes, mocked error/success responses,
 and duplicate submission protection across both lists. The activity check covers
 workspace history, open sessions, pagination, repository events, independent
 search/selection, escaped payloads, partial errors and late reads. Both capture
 1440px, 390px and 320px layouts. The actions check verifies per-page data refresh,
-retained filters/root/drawers, and the Add-project clone form. Every write is
+retained filters/root/drawers, and the clone form inside Manage. Every write is
 blocked or handled by an explicit in-memory fixture.
 
 For contextual toolbar coverage, use the same server and Playwright settings:
@@ -103,6 +103,7 @@ node tests/space_ui_preview/setup-state.mjs
 node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
 node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
 node tests/space_ui_preview/setup-projects.mjs /tmp/space-setup-projects
+node tests/space_ui_preview/manage-refresh-races.mjs /tmp/space-manage-refresh-races
 node tests/space_ui_preview/native-connectors.mjs /tmp/space-native-connectors
 node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
@@ -117,11 +118,15 @@ All settings and credential writes use fictional browser fixtures. The pure
 state check covers pending-change priority and factual summaries without
 inferring authentication or live activity from installation checks.
 
-The project check covers Git cloning, individual access revocation, local-roster
+The project check (`setup-projects.mjs`, retained filename) covers the dedicated
+Projects Manage page: Git cloning, individual access revocation, local-roster
 removal, typed deletion confirmation, stale replies, changed memberships, retained
 drafts and refreshed project lists. The read-only preview shows a shared removal
 review for Aurora Console; browser tests intercept all project mutations. Backend
 tests separately exercise file deletion and clone publication in temporary folders.
+The Manage refresh check holds catalog and access reads across a section change,
+then verifies re-entry fetches current data and never enables deletion from an old
+access response. It only uses fictional GET responses.
 
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and

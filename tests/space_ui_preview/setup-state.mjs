@@ -1,7 +1,7 @@
 /* Pure Setup guidance checks: no DOM, network, credentials, or state writes. */
 import assert from 'node:assert/strict';
 import {setupSteps} from '../../space_ui/js/core/setup-state.js';
-import {SETUP_STEPS,SETUP_MANAGE,resolveSetupSection} from '../../space_ui/js/core/setup-sections.js';
+import {SETUP_STEPS,SETUP_MANAGE,resolveSetupSection,setupSectionRoute} from '../../space_ui/js/core/setup-sections.js';
 
 const folder={exists:true,readable:true,writable:true};
 const settings={agent_name:'fixture_agent',watcher_enabled:true,
@@ -19,7 +19,7 @@ for(const data of [null,undefined,{}, {configured:{},applied:{},paths:{},agents:
 }
 const base=fixture();
 assert.equal(setupSteps(base).next,null,'Zero counted files and unset optional credentials do not block setup');
-assert.deepEqual(Object.keys(setupSteps(base)),['workspace','intelligence','projects','next']);
+assert.deepEqual(Object.keys(setupSteps(base)),['workspace','intelligence','next']);
 assert.equal(setupSteps(base).intelligence.label,'Agent set · Activity on');
 assert.equal(setupSteps(base).intelligence.tone,'good');
 assert.equal(setupSteps(base).workspace.tone,'good');
@@ -87,33 +87,15 @@ assert.equal(setupSteps(priority).next.panel,'workspace','Folder access precedes
 priority.paths.projects.exists=true;
 assert.equal(setupSteps(priority).next.panel,'intelligence');
 
-// Project catalog status has its own request lifecycle, independent of runtime.
-for(const data of [null,undefined,{},fixture()]){
-  assert.deepEqual(setupSteps(data,{status:'ready',count:1}).projects,{label:'1 project',tone:'good'});
-  assert.deepEqual(setupSteps(data,{status:'ready',count:12}).projects,{label:'12 projects',tone:'good'});
-  assert.deepEqual(setupSteps(data,{status:'ready',count:0}).projects,{label:'No projects',tone:'muted'});
-  assert.deepEqual(setupSteps(data,{status:'error',count:8}).projects,{label:'Unavailable',tone:'error'});
-  for(const status of ['idle','loading']){
-    assert.deepEqual(setupSteps(data,{status,count:0}).projects,{label:'Checking',tone:'muted'});
-    assert.equal(setupSteps(data,{status,count:0}).next,null,'A pending catalog request is not an empty project list');
-  }
+// Project management no longer participates in Setup status or guidance.
+for(const catalog of [{status:'ready',count:0},{status:'ready',count:12},{status:'error'}, {status:'loading'}]){
+  assert.deepEqual(setupSteps(base,catalog),setupSteps(base),'Legacy catalog arguments cannot change Setup status');
 }
-for(const count of [undefined,null,'0',-1,1.5,NaN,Infinity]){
-  assert.deepEqual(setupSteps(base,{status:'ready',count}).projects,{label:'Not checked',tone:'muted'});
-  assert.equal(setupSteps(base,{status:'ready',count}).next,null,'Malformed counts must not trigger an Add project recommendation');
-}
-assert.equal(setupSteps(base,{status:'ready',count:0}).next.panel,'projects');
-assert.equal(setupSteps(base,{status:'ready',count:0}).next.label,'Add project');
-assert.equal(setupSteps(null,{status:'ready',count:0}).next,null,'Do not skip unknown runtime setup to recommend a project');
-assert.equal(setupSteps(missingAgent,{status:'ready',count:0}).next.panel,'intelligence','Agent repair precedes adding projects');
-assert.equal(setupSteps(readOnlyState,{status:'ready',count:0}).next.panel,'workspace','Folder repair precedes adding projects');
-assert.equal(setupSteps(unknownAgent,{status:'ready',count:0}).next,null,'Missing diagnostics are not completed setup');
-const pending=fixture();pending.restart_required=true;
-assert.equal(setupSteps(pending,{status:'ready',count:0}).next.panel,'server','Apply pending settings before adding projects');
+assert.equal(Object.hasOwn(setupSteps(null),'projects'),false);
 
 // Definitions and legacy aliases share one canonical navigation vocabulary.
 assert.deepEqual(SETUP_STEPS.map(({id,label,number})=>[id,label,number]),[
-  ['workspace','Workspace',1],['intelligence','Intelligence layer',2],['projects','Projects',3],
+  ['workspace','Workspace',1],['intelligence','Intelligence layer',2],
 ]);
 assert.deepEqual(SETUP_MANAGE.map(section=>section.id),['connectors','secrets','commands','server']);
 for(const section of [...SETUP_STEPS,...SETUP_MANAGE]){
@@ -122,11 +104,13 @@ for(const section of [...SETUP_STEPS,...SETUP_MANAGE]){
 }
 assert.equal(resolveSetupSection('agent'),'intelligence');
 assert.equal(resolveSetupSection('activity'),'intelligence');
+assert.equal(resolveSetupSection('projects'),null,'Project management belongs to its own Projects page');
+assert.equal(setupSectionRoute('projects'),null,'The old URL is a registry alias, not a registered Setup page');
 for(const unknown of [null,undefined,0,{},'','unknown','constructor','__proto__']){
   assert.equal(resolveSetupSection(unknown),null);
 }
 
 // The helper must neither mutate server snapshots nor need credential values.
-const untouched=fixture(),before=structuredClone(untouched),catalog={status:'ready',count:2};
-setupSteps(untouched,catalog);assert.deepEqual(untouched,before);assert.deepEqual(catalog,{status:'ready',count:2});
-console.log('Setup summaries: canonical sections, legacy aliases, combined intelligence checks, independent project status, pending priority and unknown diagnostics passed.');
+const untouched=fixture(),before=structuredClone(untouched);
+setupSteps(untouched);assert.deepEqual(untouched,before);
+console.log('Setup summaries: two setup steps, management sections, legacy agent aliases, combined intelligence checks, pending priority and unknown diagnostics passed.');

@@ -96,20 +96,20 @@ assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','I
 assert.deepEqual(PROJECT_PAGES.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['project-list','projects/files/list','List'],
   ['graph','projects/files/graph','Graph'],['tree','projects/files/tree','Tree'],
-  ['time','projects/timeline','Timeline']]);
+  ['time','projects/timeline','Timeline'],['project-manage','projects/manage','Manage']]);
 assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['files','projects/files','Files'],
-  ['time','projects/timeline','Timeline']]);
+  ['time','projects/timeline','Timeline'],['project-manage','projects/manage','Manage']]);
 assert.deepEqual(FILE_VIEWS.map(page=>page.id),['project-list','graph','tree']);
 assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','tools','models','trends'].map(page=>'agents/'+page));
 assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
 assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
-const setupRoutes=['workspace','intelligence','projects','connectors','secrets','commands','server'].map(id=>'setup/'+id);
+const setupRoutes=['workspace','intelligence','connectors','secrets','commands','server'].map(id=>'setup/'+id);
 const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
 const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
-  setup:'setup/workspace',dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',
+  setup:'setup/workspace','setup/projects':'projects/manage',dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',
   'projects/files':'projects/files/list','projects/list':'projects/files/list',
   'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
   sharing:'inbox/sharing','projects/sharing':'inbox/sharing',time:'projects/timeline',timeline:'projects/timeline',
@@ -170,7 +170,9 @@ history.forward();assertPage('projects/files/graph');
 location.hash='#/projects/tree';const legacyLength=history.length,legacyPushes=historyPushes;
 dispatchEvent(new CustomEvent('hashchange'));assertPage('projects/files/tree');
 assert.equal(history.length,legacyLength);assert.equal(historyPushes,legacyPushes,'Legacy Files routes normalize in place');
-assert.equal(elements.has('view-setup/projects'),false,'Setup routes share a persistent section');
+assert.equal(elements.has('view-setup/projects'),false,'The old Setup project route does not create a duplicate manager');
+assert.equal(registered.find(view=>view.id==='project-manage').parent,'projects');
+assert.equal(registered.find(view=>view.id==='project-manage').section,'project-manage');
 assert.equal(elements.has('view-agents-sessions'),false,'Agents pages share a persistent section');
 assert.equal(elements.has('view-inbox-jobs'),false,'Inbox rows, connections and jobs share a persistent section');
 assert.equal(registered.find(view=>view.id==='sharing').parent,'inbox');
@@ -192,7 +194,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

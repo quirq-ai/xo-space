@@ -191,14 +191,27 @@ finished.resolve();await Promise.all([pending,again]);
 assert.deepEqual(states('list'),[true,false]);
 """)
 
+    def test_legacy_setup_project_event_routes_without_mounting_setup_or_opening_add(self):
+        self.probe(r"""
+const targets=[];
+actions.initProjectActions(route=>targets.push(route));
+assert.equal(elements.has('view-setup'),false,'Setup has not mounted');
+dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'projects'}}));
+assert.deepEqual(targets,['projects/manage']);
+assert.deepEqual(formEvents(),[],'The old management event must not open Add');
+for(const detail of [{panel:'workspace'},{panel:'activity'},{panel:'project'},null])
+  dispatchEvent(new CustomEvent('space:setup-section',{detail}));
+assert.deepEqual(targets,['projects/manage'],'Other Setup events stay with Setup');
+""")
+
     def test_handoffs_require_successful_navigation_and_the_canonical_route(self):
         self.probe(r"""
 for(const [run,route,type] of [
-  [navigate=>actions.openProjectAdd(navigate),'setup/projects','space:add-project'],
+  [navigate=>actions.openProjectAdd(navigate),'projects/manage','space:add-project'],
 ]){
   for(const [completed,hash,allowed] of [
     [true,'#/'+route,true],[false,'#/'+route,false],[undefined,'#/'+route,false],[1,'#/'+route,false],
-    [true,'#/inbox/items',false],[true,route==='setup/projects'?'#/setup':'#/sharing',false],
+    [true,'#/inbox/items',false],[true,'#/setup/projects',false],
   ]){
     emitted.length=0;
     await run(async target=>{assert.equal(target,route);location.hash=hash;return completed;});
@@ -212,7 +225,7 @@ for(const [run,route,type] of [
         self.probe(r"""
 register({id:'other',route:'inbox/items'});
 for(const [id,route,run] of [
-  ['setup-projects','setup/projects',()=>actions.openProjectAdd(registry.switchTo)],
+  ['project-manage','projects/manage',()=>actions.openProjectAdd(registry.switchTo)],
 ]){
   const mounted=gate();register({id,route,mount:()=>mounted.promise});
   emitted.length=0;

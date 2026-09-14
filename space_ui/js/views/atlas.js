@@ -6,11 +6,11 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260914-inboxshare1';
+import {projectPage} from '../core/navigation.js?v=20260914-manage1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
-import {fileViewControls} from '../core/file-views.js?v=20260914-inboxshare1';
+import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};
@@ -26,7 +26,7 @@ addEventListener('space:view',event=>{
   const fileTools=document.getElementById('graph-file-toolbar');
   if(fileTools)fileTools.hidden=id!=='graph';
   activeAtlasId=['dashboard','graph','time'].includes(id)?id:null;
-  const projects=event.detail?.tab==='projects'||['dashboard','graph','time','project-list','tree'].includes(id);
+  const projects=event.detail?.tab==='projects'||['dashboard','graph','time','project-list','tree','project-manage'].includes(id);
   rootPicker?.setContext(projects?id==='dashboard'?'dashboard':'graph':null);
   if(pendingRoot&&id!==(pendingRoot.dataset==='dashboard'?'dashboard':'graph'))pendingRoot=null;
   bootRevision++; // a late dataset read cannot reclaim another page

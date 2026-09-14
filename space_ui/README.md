@@ -7,10 +7,10 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 | Section | Default route | Pages |
 |---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, Files (List, Graph, Tree), Timeline |
+| Projects (`1`) | `#/projects/overview` | Overview, Files (List, Graph, Tree), Timeline, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
-| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Projects, Connectors, Secrets, Commands, Server |
+| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Commands, Server |
 
 Space starts at Projects Overview. **Files** contains the existing List, Graph
 and Tree views at `#/projects/files/list`, `#/projects/files/graph` and
@@ -37,16 +37,16 @@ tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
 The toolbar adapts to the active page. Projects Overview and Graph keep map
-autocomplete in the topbar. Every Projects page keeps **Graph root**,
-**Manage projects**, **Add project** and **Refresh** together in the section bar.
-Manage opens project management; Add opens the clone form and preserves any draft.
-Refresh rereads the active page’s data without reloading the app, retaining its
+autocomplete in the topbar. Every Projects page keeps **Graph root** and
+**Refresh** together in the section bar. **Manage** is a Projects page at
+`#/projects/manage`; its **Add project** button opens the clone form. The old
+`#/setup/projects` link opens Manage. Refresh rereads the active page’s data without reloading the app, retaining its
 query, selected root and existing project drawers. Inbox Sharing keeps **Share a project**,
 **Check now**, and **Refresh** beside its own navigation.
-Each Files List and Setup project row has **Share**, which opens a Space ID form
+Each Files List and Manage project row has **Share**, which opens a Space ID form
 in that list. Cancel keeps you on the page; submitting grants access to that
 Space ID. Drafts stay with their project while you filter, refresh or navigate.
-Choosing a node from Files List, Files Tree or
+Choosing a node from Files List, Files Tree, Manage or
 Timeline opens Files Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, both activity pages, and
@@ -90,8 +90,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
 | `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, per-view refresh and failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
-| `js/core/project-actions.js` | The Add handoff waits for navigation, then opens the clone form only while its route is still active. |
-| `js/core/project-share.js` | Reusable inline Space ID form for Files List and Setup project rows, with draft retention, pending-state protection, and the existing share endpoint. |
+| `js/core/project-actions.js` | The Add handoff opens Manage’s clone form only after current navigation completes. The legacy Setup-project event opens Manage without opening Add. |
+| `js/core/project-share.js` | Reusable inline Space ID form for Files List and Manage project rows, with draft retention, pending-state protection, and the existing share endpoint. |
 | `js/core/file-views.js` | Native List, Graph and Tree links shared by the local Files toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
@@ -113,7 +113,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
-| `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace, Intelligence layer, Projects, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
+| `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
+| `js/views/project-management.js` | Clone, local project list, inline sharing and removal/access-review controls, styled by `css/project-management.css`. |
+| `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |
 | `js/core/setup-sections.js` | Setup section IDs, labels, canonical routes and compatibility mappings for old section handoffs. |
 | `js/views/setup-search.js` | Searchable setting names and topics; opens the existing controls without reading their values or rebuilding forms. |
@@ -171,16 +173,15 @@ spring stiffness makes the original explicit-Euler sim diverge (positions hit
 
 ## Setup tab
 
-Three setup steps keep one section visible at a time. `core/setup-sections.js` owns section IDs, labels and compatibility aliases; `setup-shell.js` renders the layout and `setup.js` owns behavior, styled by `setup.css`. Legacy agent/activity section events resolve to Intelligence, and sharing restore actions open Projects:
+Two setup steps keep one section visible at a time. `core/setup-sections.js` owns section IDs, labels and compatibility aliases; `setup-shell.js` renders the layout and `setup.js` owns behavior, styled by `setup.css`. Legacy agent/activity section events resolve to Intelligence, and project management lives under Projects → Manage:
 
 1. **Workspace** shows the Space ID, configured workspace name/owner, verified XO user ID and GitHub account, then the projects and Space data folders. Applied paths and connection diagnostics are expandable.
 2. **Intelligence layer** combines agent connection with activity collection. Choose the chat agent, review installation and credential checks, and select which agents contribute sessions and project history. Agent and activity settings retain independent forms, saves and drafts; other agents and detailed paths are collapsed.
-3. **Projects** lists local projects, clones Git repositories and reviews sharing before removal. Each access grant must be revoked individually before deleting the local folder. Open Projects takes you to the main Projects view.
 
 **Next** moves between steps without saving. All forms stay mounted, so section
 and app navigation preserve drafts. Refresh and saving a credential also keep
 unfinished folder, agent and activity edits. Agent and Activity saves send all
-required runtime fields, but use the last saved values for the other form. Intelligence also retains the advanced collection interval and usage-reporting status. Project drafts, count and load errors belong to the Projects step and remain independent of runtime settings.
+required runtime fields, but use the last saved values for the other form. Intelligence also retains the advanced collection interval and usage-reporting status. Its footer opens Manage, whose project drafts, count and load errors remain independent of runtime settings.
 The status strip points to pending changes or a reported folder/installation
 issue; it does not infer authenticated access from a saved key or installed CLI.
 
@@ -190,13 +191,12 @@ Every section has a URL that opens it directly:
 | --- | --- |
 | Workspace | `#/setup/workspace` |
 | Intelligence layer | `#/setup/intelligence` |
-| Projects | `#/setup/projects` |
 | Connectors | `#/setup/connectors` |
 | Secrets | `#/setup/secrets` |
 | Commands | `#/setup/commands` |
 | Server | `#/setup/server` |
 
-Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone in Setup** opens `#/setup/projects`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
+Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone project** opens the Add form in `#/projects/manage`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
 
 The topbar search stays visible throughout Setup. Search setting names such as
 “folders”, “secrets” or “restart”, then choose a result to open its control.

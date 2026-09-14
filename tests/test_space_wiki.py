@@ -94,15 +94,15 @@ class SpaceWikiTests(unittest.TestCase):
 
           // Follow real rendered local-action targets through ctx.switchTo.
           // Setup actions select their section directly, including after a reload.
-          for(const target of ['sharing','setup/workspace','setup/connectors']){
+          for(const target of ['sharing','setup/workspace','setup/connectors','project-manage']){
             assert.ok(overview.includes('data-open-tab="'+target+'"'));
             const button={owner:root,dataset:{openTab:target}};
             clicks.get('click')({target:{closest:()=>button}});
           }
-          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors']);
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors','project-manage']);
           clicks.get('click')({target:{closest:()=>null}});
           clicks.get('click')({target:{closest:()=>({dataset:{openTab:'secrets'}})}});
-          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors']);
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors','project-manage']);
         """
         result = subprocess.run(
             [shutil.which("node"), "--input-type=module", "-e", script,
@@ -561,7 +561,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("placeholder:'Filter projects…'", projects)
         self.assertIn('id="prj-sort"', projects)
         self.assertNotIn('id="prj-add"', projects)
-        self.assertIn("openProjectAdd(switchTo)", projects)
+        self.assertIn("switchTo('projects/manage')", projects)
         self.assertIn('id="prj-filter"', projects)
         self.assertIn("data-project-tab=", projects)
         self.assertIn("if(expanded&&!items.some", projects)
@@ -656,9 +656,9 @@ class SpaceWikiTests(unittest.TestCase):
         the local installation guide retains detailed workspace instructions."""
 
         projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
-        self.assertIn("data-add-project", projects)
-        self.assertIn("openProjectAdd(switchTo)", projects)
-        self.assertIn("switchTo('setup/projects')", (ROOT / "space_ui/js/core/project-actions.js").read_text(encoding="utf-8"))
+        self.assertIn("data-manage-projects", projects)
+        self.assertIn("switchTo('projects/manage')", projects)
+        self.assertIn("switchTo('projects/manage')", (ROOT / "space_ui/js/core/project-actions.js").read_text(encoding="utf-8"))
         self.assertIn("data-first-run", projects)
         self.assertIn("'first-run'", projects)
         self.assertIn("No projects yet", projects)

@@ -1,5 +1,5 @@
 /* Setup layout only. Section IDs and labels are shared with navigation. */
-import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260914-setuproutes1';
+import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260914-manage1';
 
 export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
@@ -68,13 +68,7 @@ export function renderSetupShell(root){
             </form>
           </section>
           <div class="setup-usage-reporting" id="usage-reporting" hidden></div>
-          <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="projects">Next: Projects →</button></footer>
-        </section>
-
-        <section class="setup-panel" id="setup-panel-projects" aria-labelledby="setup-projects-page-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-projects-page-title" tabindex="-1">Projects</h2><p>Clone repositories into this Space or remove local projects.</p></header>
-          <section class="setup-card setup-projects" id="setup-projects" aria-label="Projects"></section>
-          <footer class="setup-step-footer"><button class="setup-primary" id="setup-open-projects" type="button">Open Projects →</button></footer>
+          <footer class="setup-step-footer"><a class="setup-secondary" href="#/projects/manage">Manage projects →</a></footer>
         </section>
 
         <section class="setup-panel" id="setup-panel-connectors" aria-labelledby="setup-connectors-title" hidden>

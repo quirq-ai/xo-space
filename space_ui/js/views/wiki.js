@@ -6,7 +6,7 @@ const GROUPS=[
     topics:[
       {
         id:'projects',title:'Projects',
-        summary:'Explore Overview, List, Graph, Tree, Sharing and Timeline. Inspect project files, activity and committed versions.',
+        summary:'Browse Overview, Files and Timeline. Use Manage to add, share and remove projects.',
         docs:'/space-walk',view:'projects'
       },
       {
@@ -27,7 +27,7 @@ const GROUPS=[
     topics:[
       {
         id:'inbox',title:'Inbox',
-        summary:'Review incoming items, connection activity and scheduled jobs. Mark items seen or done.',
+        summary:'Review incoming items, connections, jobs, activity and sharing. Mark items seen or done.',
         docs:'/space-walk/inbox',view:'inbox'
       },
       {
@@ -153,8 +153,8 @@ function render(){
               +'<h3>Check your setup</h3><p>Confirm the projects root and your runtime.</p>'
               +openView('setup/workspace','Setup','Open Setup')+'</div></li>'
             +'<li><span class="wiki-step-number" aria-hidden="true">02</span><div>'
-              +'<h3>Bring a project</h3><p>Create or add a project inside that root.</p>'
-              +docsLink('/first-space','Open docs','Open the first project guide')+'</div></li>'
+              +'<h3>Bring a project</h3><p>Clone a Git repository from Projects → Manage.</p>'
+              +openView('project-manage','Manage projects','Open project management')+'</div></li>'
             +'<li><span class="wiki-step-number" aria-hidden="true">03</span><div>'
               +'<h3>Explore your work</h3><p>Browse files and todos, then try another lens.</p>'
               +openView('projects','Projects','Open Projects')+'</div></li>'

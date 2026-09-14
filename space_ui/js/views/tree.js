@@ -1,5 +1,5 @@
-import {projectPage} from '../core/navigation.js?v=20260914-inboxshare1';
-import {fileViewControls} from '../core/file-views.js?v=20260914-inboxshare1';
+import {projectPage} from '../core/navigation.js?v=20260914-manage1';
+import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
 /* Tree — the third Files lens, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped

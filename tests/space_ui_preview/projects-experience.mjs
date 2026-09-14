@@ -276,11 +276,11 @@ try{
   assert.equal(await body('files').locator('[data-file="README.md"]').count(),0);
   checked('A late root-folder refresh cannot replace a newer same-project folder navigation.');
 
-  await page.locator('#project-add').click();await page.waitForURL('**/#/setup/projects');
-  await page.locator('#setup-projects').waitFor();assert.deepEqual(report.writes,[]);
+  await openProjectPage(page,'manage');await page.waitForURL('**/#/projects/manage');
+  await page.locator('#manage-project-add').waitFor();assert.deepEqual(report.writes,[]);
   await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
-  checked('Add project opens canonical Setup Projects and returning restores the current drawer and folder.');
+  checked('The Manage page opens project management and returning restores the current drawer and folder.');
 
   await selectFilter('pinned');await search.fill('customer signals');
   await page.evaluate(()=>dispatchEvent(new CustomEvent('space:open-project',{detail:'field-notes'})));

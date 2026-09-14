@@ -83,7 +83,7 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(p.isOpen(),true);
           assert.match(p.els['preview-body'].innerHTML,/<rendered>working body/);
           const firstBody=p.els['preview-body'].innerHTML;
-          for(const lens of ['dashboard','project-list','graph','tree','time']){
+          for(const lens of ['dashboard','project-list','graph','tree','time','project-manage']){
             p.switchTo(lens,'projects');
             assert.equal(p.isOpen(),true,lens);
             assert.equal(p.els['preview-body'].innerHTML,firstBody,lens);

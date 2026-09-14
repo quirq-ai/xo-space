@@ -98,7 +98,7 @@ const init=evaluate('initProjectRootPicker');
 async function go(route){navigations.push(route);const id=route==='projects/overview'?'dashboard':'graph';
  emit('space:view',{id,tab:'projects'});const view=context.pages[id];await view.mount(node('view-graph'),{switchTo:go});await view.show();}
 init({switchTo:go});
-for(const id of ['project-list','tree']){
+for(const id of ['project-list','tree','project-manage']){
  emit('space:view',{id,tab:'projects'});assert.equal(node('graph-root').hidden,false);
  node('root-btn').emit('click');await settle();assert.equal(boots.length,0,'Metadata reads never boot or replace an atlas on '+id);
  node('root-btn').emit('click');

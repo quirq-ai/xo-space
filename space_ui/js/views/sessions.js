@@ -7,7 +7,7 @@
    are broken.) Window filtering happens here, client-side, over per-day
    rollups. */
 import {API_BASE,apiFetch} from '../core/api.js';
-import {AGENT_PAGES} from '../core/navigation.js?v=20260914-inboxshare1';
+import {AGENT_PAGES} from '../core/navigation.js?v=20260914-manage1';
 
 let _open=null;
 let _toolbar=()=>null;

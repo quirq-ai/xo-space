@@ -5,22 +5,9 @@ const inaccessible=path=>path?.exists===false||path?.readable===false;
 const accessible=path=>path?.exists===true&&path?.readable===true;
 const WATCHER_FIELDS=['watcher_enabled','watcher_source_mode','watcher_interval_seconds'];
 
-function projectsSummary(projectStatus){
-  if(projectStatus?.status==='error')return summary('Unavailable','error');
-  if(projectStatus?.status==='ready'){
-    const count=projectStatus.count;
-    return Number.isInteger(count)&&count>=0
-      ?summary(count?count+' '+(count===1?'project':'projects'):'No projects',count?'good':'muted')
-      :summary('Not checked');
-  }
-  return projectStatus?.status==='idle'||projectStatus?.status==='loading'
-    ?summary('Checking'):summary('Not checked');
-}
-
-export function setupSteps(runtimeData,projectStatus={status:'idle',count:0}){
-  const projects=projectsSummary(projectStatus);
+export function setupSteps(runtimeData){
   if(!runtimeData)return{
-    workspace:summary('Checking'),intelligence:summary('Checking'),projects,next:null
+    workspace:summary('Checking'),intelligence:summary('Checking'),next:null
   };
   const configured=runtimeData.configured||{},applied=runtimeData.applied||{};
   const roots=runtimeData.roots||{},paths=runtimeData.paths||{};
@@ -57,7 +44,5 @@ export function setupSteps(runtimeData,projectStatus={status:'idle',count:0}){
     message:'Check that xo-space can read your projects and write to its state folder.'};
   else if(agentName&&agentMissing)next={panel:'intelligence',label:'Check agent',
     message:'Install the agent or check access to its folder.'};
-  else if(foldersChecked&&intelligence.tone==='good'&&projectStatus?.status==='ready'&&projectStatus.count===0)
-    next={panel:'projects',label:'Add project',message:'Clone a Git repository into this Space.'};
-  return{workspace,intelligence,projects,next};
+  return{workspace,intelligence,next};
 }

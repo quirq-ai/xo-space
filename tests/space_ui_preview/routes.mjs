@@ -1,11 +1,11 @@
 /* Intent names used by the older feature fixtures. "projects" here means
    the List page; primary-section navigation is tested separately. */
 export const PAGE_ROUTES={dashboard:'projects/overview',projects:'projects/files/list',
-  graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing',time:'projects/timeline',
+  graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing',time:'projects/timeline',manage:'projects/manage',
   agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace',
   connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
 export const routeFor=id=>'#/'+(PAGE_ROUTES[id]||id);
-export const projectPageId=id=>id==='projects'?'project-list':id;
+export const projectPageId=id=>id==='projects'?'project-list':id==='manage'?'project-manage':id;
 export const projectPageSelector=id=>['project-list','graph','tree'].includes(projectPageId(id))
   ?'.view.is-active .file-views [data-file-mode="'+projectPageId(id)+'"]'
   :'#section-nav [data-section-page="'+projectPageId(id)+'"]';

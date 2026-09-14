@@ -2,23 +2,25 @@
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
 import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260914-actions1';
+import {initProjectActions} from './core/project-actions.js?v=20260914-manage1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260914-files2';
-import {initSectionNav} from './core/section-nav.js?v=20260914-inboxshare1';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260914-inboxshare1';
-import {initPreview} from './core/preview.js?v=20260914-inboxshare1';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260914-inboxshare1';
-import {createAgentViews} from './views/sessions.js?v=20260914-inboxshare1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-inboxshare1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260914-inboxshare1';
-import projectsView from './views/projects.js?v=20260914-inboxshare1';
-import treeView from './views/tree.js?v=20260914-inboxshare1';
-import sharingView from './views/sharing.js?v=20260914-inboxshare1';
+import {initSectionNav} from './core/section-nav.js?v=20260914-manage1';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260914-manage1';
+import {initPreview} from './core/preview.js?v=20260914-manage1';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260914-manage1';
+import {createAgentViews} from './views/sessions.js?v=20260914-manage1';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-manage1';
+import {createActivityViews} from './views/inbox-activity.js?v=20260914-manage1';
+import projectsView from './views/projects.js?v=20260914-manage1';
+import projectManageView from './views/project-manage.js?v=20260914-manage1';
+import treeView from './views/tree.js?v=20260914-manage1';
+import sharingView from './views/sharing.js?v=20260914-manage1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-navigation1';
+import wikiView from './views/wiki.js?v=20260914-manage1';
 import quirqView from './views/quirq.js?v=20260914-files2';
-import {createSetupViews} from './views/setup.js?v=20260914-inboxshare1';
+import {createSetupViews} from './views/setup.js?v=20260914-manage1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 
@@ -59,9 +61,10 @@ addEventListener('space:view',event=>{
   if(event.detail?.id==='wiki')link.setAttribute('aria-current','page');
   else link.removeAttribute('aria-current');
 });
+try{initProjectActions(switchTo);}catch(err){console.error('Project actions failed to start:',err);}
 try{initProjectRootPicker({switchTo});}catch(err){console.error('Project root picker failed to start:',err);}
 try{initToolbar();}catch(err){console.error('Toolbar failed to start:',err);}
-try{initSectionNav({switchTo,refreshCurrentView});}catch(err){console.error('Section navigation failed to start:',err);}
+try{initSectionNav({refreshCurrentView});}catch(err){console.error('Section navigation failed to start:',err);}
 
 try{
   registerView(dashboardView);
@@ -71,6 +74,7 @@ try{
   createInboxViews().forEach(registerView);
   createActivityViews().forEach(registerView);
   registerView(projectsView);
+  registerView(projectManageView);
   registerView(treeView);
   registerView(sharingView);
   registerView(wikiView);

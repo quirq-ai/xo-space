@@ -10,12 +10,14 @@ export const PROJECT_PAGES=pages('projects',[
   ['graph','files/graph','Graph',['graph','projects/graph']],
   ['tree','files/tree','Tree',['tree','projects/tree']],
   ['time','timeline','Timeline',['time','timeline']],
+  ['project-manage','manage','Manage',['setup/projects']],
 ]);
 export const FILE_VIEWS=Object.freeze(PROJECT_PAGES.filter(page=>['project-list','graph','tree'].includes(page.id)));
 export const PROJECT_SECTIONS=Object.freeze([
   PROJECT_PAGES.find(page=>page.id==='dashboard'),
   Object.freeze({id:'files',route:'projects/files',label:'Files',parent:'projects'}),
   PROJECT_PAGES.find(page=>page.id==='time'),
+  PROJECT_PAGES.find(page=>page.id==='project-manage'),
 ]);
 export const AGENT_PAGES=Object.freeze(pages('agents',[
   ['agents-overview','overview','Overview'],

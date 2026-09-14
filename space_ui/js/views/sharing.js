@@ -1,5 +1,5 @@
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-inboxshare1';
-import {setSectionActions} from '../core/section-nav.js?v=20260914-inboxshare1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260914-manage1';
+import {setSectionActions} from '../core/section-nav.js?v=20260914-manage1';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -21,6 +21,7 @@ import {setSectionActions} from '../core/section-nav.js?v=20260914-inboxshare1';
    calls); this file only paints and handles events. One delegated click /
    submit / input listener on the section: the pane re-renders from state,
    so nothing is bound per element. */
+import {openProjectAdd} from '../core/project-actions.js?v=20260914-manage1';
 import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
@@ -234,7 +235,7 @@ function inboxRow(r){
   if(r.need==='restore'){
     what='removed from this Space';
     why='automatic cloning is paused';
-    acts='<button class="sess-refresh is-sm" type="button" data-act="restore">Clone in Setup</button>';
+    acts='<button class="sess-refresh is-sm" type="button" data-act="restore">Clone project</button>';
   }else if(r.need==='auth'){
     what='private repo · needs GitHub';
     why='connect GitHub once; XO Space clones it on the next check';
@@ -523,9 +524,7 @@ async function onClick(e){
     case'apply':return doApply(id);
     case'connect':return go('setup/connectors');
     case'restore':
-      await go('setup/projects');
-      if(location.hash==='#/setup/projects')dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'projects'}}));
-      return;
+      return openProjectAdd(go);
     case'list':
       /* views never import each other: switch to List and tell it which
          drawer to open; it parks the request until its catalog is loaded */

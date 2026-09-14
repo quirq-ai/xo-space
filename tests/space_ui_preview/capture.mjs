@@ -74,16 +74,16 @@ async function projectChrome() {
       const bounds = await page.evaluate(() => {
         const rect = node => {const r = node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height};};
         const nav = document.querySelector('#section-nav');
-        return {root:rect(document.querySelector('#root-btn')), manage:rect(nav.querySelector('.section-nav-action')),
+        return {root:rect(document.querySelector('#root-btn')), refresh:rect(document.querySelector('#project-refresh')),
           nav:rect(nav), row:rect(nav.querySelector('.section-nav-inner')), graph:rect(document.querySelector('#view-graph')),
           canvas:rect(document.querySelector('#gcanvas')), scroll:document.documentElement.scrollWidth,
           context:[...document.querySelectorAll('.section-page-context')].some(node=>node.getClientRects().length)};
       });
       report.layouts.push({page:id,width,...bounds});
       assert.equal(await page.locator('#section-nav #graph-root').count(), 1, 'Projects navigation owns the root picker');
-      assert.ok(bounds.root.right <= bounds.manage.left + 1 && Math.abs(bounds.root.top - bounds.manage.top) < 4,
-        id + ' root sits immediately left of Manage projects at ' + width);
-      assert.ok(bounds.root.left >= 0 && bounds.manage.right <= width + 1 && bounds.scroll <= width,
+      assert.ok(bounds.root.right <= bounds.refresh.left + 1 && Math.abs(bounds.root.top - bounds.refresh.top) < 4,
+        id + ' root sits immediately left of Refresh at ' + width);
+      assert.ok(bounds.root.left >= 0 && bounds.refresh.right <= width + 1 && bounds.scroll <= width,
         id + ' actions fit the viewport at ' + width);
       assert.equal(bounds.context, false, id + ' has no visible context hero');
       assert.ok(bounds.nav.bottom - bounds.row.bottom < 3, id + ' navigation reserves no space for a removed hero');
@@ -122,7 +122,7 @@ async function projectChrome() {
       await page.waitForFunction(label=>document.querySelector('#root-name').textContent===label,original);
       assert.equal(await page.locator('#rootdd.is-open').count(), 0, 'Reset closes the root picker');
     }
-    for(const id of ['tree','projects']) {
+    for(const id of ['tree','projects','manage']) {
       await lens(id);await sameRoot();
       assert.equal(await page.locator('#root-btn').isVisible(),true,id+' retains the shared Projects root picker');
       if(id!=='projects')assert.equal(await page.locator('.section-page-context:visible').count(),0,id+' has no visible context hero');
@@ -137,7 +137,7 @@ async function projectChrome() {
     await page.locator('#root-btn').click();
     assert.equal(await page.locator('#rootdd.is-open').count(),0,'One click toggles once after '+id+' navigation');
   }
-  report.checks.push('Projects root picker stays beside Manage projects, preserves its DOM and listeners across sections, reroots and resets both maps, and fits unclipped at 1440/390/320px without context heroes.');
+  report.checks.push('Projects root picker stays beside Refresh, preserves its DOM and listeners across sections, reroots and resets both maps, and fits unclipped at 1440/390/320px without context heroes.');
 }
 
 try {
@@ -178,7 +178,7 @@ try {
 
     const beforeContent = await page.locator('#preview-body').textContent();
     const beforeLens = await page.locator('#section-nav').boundingBox();
-    for(const id of ['dashboard', 'graph', 'tree', 'time', 'projects', 'dashboard', 'graph']) {
+    for(const id of ['dashboard', 'graph', 'tree', 'time', 'manage', 'projects', 'dashboard', 'graph']) {
       await lens(id);
       await page.waitForFunction(content => document.querySelector('#preview-body')?.textContent === content, beforeContent);
       assert.equal(await page.locator('#preview').evaluate(el => el.classList.contains('is-open')), true, `${id} keeps the preview open`);
@@ -218,7 +218,7 @@ try {
     await page.waitForFunction(() => !document.querySelector('#wiki-link').hasAttribute('aria-current'));
     report.checks.push('Primary Projects opens its Overview default');
 
-    for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
+    for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time', 'manage']) {
       await page.goto(origin + '/space/' + routeFor(id), {waitUntil: 'networkidle'});
       await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-current') === 'page', projectPageSelector(id));
       assert.equal(await page.locator(id==='sharing'?'#tab-inbox':'#tab-projects').evaluate(el => el.classList.contains('is-on')), true, `${id} deep link selects its section`);
@@ -256,7 +256,7 @@ try {
       await page.locator('.prj-row').first().waitFor();
       const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
-      for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
+      for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time', 'manage']) {
         await lens(id);
         const button = page.locator(projectPageSelector(id));
         await button.scrollIntoViewIfNeeded();

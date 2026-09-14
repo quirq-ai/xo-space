@@ -57,10 +57,10 @@ async function newPage(route){
   await page.goto(origin+'/space/'+route,{waitUntil:'networkidle'});return page;
 }
 const page=await newPage(routeFor('projects'));
-// These selectors are shared shell controls, separate from Setup's controls.
-const add=()=>page.locator('#project-add');
+// Add belongs to Manage; Refresh is shared section chrome.
+const add=()=>page.locator('#manage-project-add');
 const refresh=()=>page.locator(new URL(page.url()).hash==='#/inbox/sharing'?'#section-refresh':'#project-refresh');
-const manage=()=>page.locator('#section-nav').getByRole('link',{name:'Manage projects',exact:true});
+const manage=()=>page.locator('#section-nav').getByRole('link',{name:'Manage',exact:true});
 const checked=text=>{report.checks.push(text);console.log(text);};
 async function shot(name){await page.mouse.move(1,999);await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
 async function reread(id,path,verify){
@@ -78,10 +78,11 @@ async function reread(id,path,verify){
 async function layout(id,width){
   const geometry=await page.locator('#section-nav').evaluate(nav=>{
     const rect=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
-    const nodes=[document.querySelector('#root-btn'),nav.querySelector('a[href="#/setup/projects"]'),document.querySelector('#project-add'),document.querySelector('#project-refresh')];
+    const nodes=[document.querySelector('#root-btn'),document.querySelector('#project-refresh')];
     return{nav:rect(nav),nodes:nodes.map(rect),scroll:document.documentElement.scrollWidth,width:innerWidth};
   });
-  assert.equal(geometry.nodes.length,4);assert.ok(geometry.scroll<=width);
+  assert.equal(await page.locator('#section-nav #project-add,#section-nav .section-nav-action[href="#/projects/manage"]').count(),0,'Manage is a page, with no global Add or Manage action');
+  assert.equal(geometry.nodes.length,2);assert.ok(geometry.scroll<=width);
   for(const node of geometry.nodes)assert.ok(node.left>=-1&&node.right<=width+1&&node.bottom<=geometry.nav.bottom+1,id+' actions fit at '+width);
   for(let a=0;a<geometry.nodes.length;a++)for(let b=a+1;b<geometry.nodes.length;b++){
     const x=geometry.nodes[a],y=geometry.nodes[b];assert.ok(Math.min(x.right,y.right)-Math.max(x.left,y.left)<=1||Math.min(x.bottom,y.bottom)-Math.max(x.top,y.top)<=1,id+' actions do not overlap');
@@ -143,26 +144,31 @@ try{
   await page.locator('#section-nav [data-act="composer"]').click();
   checked('Tree, Timeline and Sharing Refresh display new source data; Tree search and Timeline mode/query persist.');
 
-  await openProjectList(page);await manage().click();await page.waitForURL('**/#/setup/projects');await page.locator('#setup-project-add').waitFor();
-  assert.equal(await page.locator('#setup-project-form').isVisible(),false,'Manage opens the project manager');
-  await openProjectPage(page,'dashboard');await add().click();await page.locator('#setup-project-repository').waitFor();
-  await page.waitForFunction(()=>document.activeElement===document.querySelector('#setup-project-repository'),undefined,{timeout:3000}).catch(async error=>{
-    report.addFocus=await page.locator('#setup-project-repository').evaluate(node=>({active:{tag:document.activeElement.tagName,id:document.activeElement.id},visible:!!node.getClientRects().length,disabled:node.disabled,events:window.projectHandoffs,route:location.hash}));throw error;
+  await openProjectList(page);await manage().click();await page.waitForURL('**/#/projects/manage');await page.locator('#manage-project-add').waitFor();
+  assert.equal(await page.locator('#manage-project-form').isVisible(),false,'Manage opens the project manager');
+  await add().click();await page.locator('#manage-project-repository').waitFor();
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#manage-project-repository'),undefined,{timeout:3000}).catch(async error=>{
+    report.addFocus=await page.locator('#manage-project-repository').evaluate(node=>({active:{tag:document.activeElement.tagName,id:document.activeElement.id},visible:!!node.getClientRects().length,disabled:node.disabled,events:window.projectHandoffs,route:location.hash}));throw error;
   });
-  await page.locator('#setup-project-repository').fill('https://github.com/fictional/keep-draft.git');
-  const draft=await page.locator('#setup-project-repository').elementHandle();
-  await openProjectPage(page,'tree');await add().click();
-  assert.equal(await draft.evaluate(node=>node===document.querySelector('#setup-project-repository')),true);
-  assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fictional/keep-draft.git');
-  checked('Manage opens project management; Add opens and focuses the clone form while retaining an existing draft.');
+  await page.locator('#manage-project-repository').fill('https://github.com/fictional/keep-draft.git');
+  const draft=await page.locator('#manage-project-repository').elementHandle();
+  await openProjectPage(page,'tree');await manage().click();await add().click();
+  assert.equal(await draft.evaluate(node=>node===document.querySelector('#manage-project-repository')),true);
+  assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fictional/keep-draft.git');
+  await reread('manage','/api/xo-projects',async()=>{
+    await page.getByText('Aurora Console refreshed 2',{exact:true}).waitFor();
+    assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fictional/keep-draft.git');
+    assert.equal(await draft.evaluate(node=>node===document.querySelector('#manage-project-repository')),true);
+  });
+  checked('Manage owns Add; opening it leaves the form closed, while Add focuses the clone form and refresh retains its draft.');
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    for(const id of ['dashboard','projects','graph','tree','time']){
+    for(const id of ['dashboard','projects','graph','tree','time','manage']){
       await openProjectPage(page,id);await page.waitForLoadState('networkidle');await layout(id,width);
       await shot(id+'-'+width+'.png');
     }
   }
-  checked('All five Projects pages keep Graph root, Manage, Add and Refresh together at1440,390 and320px.');
+  checked('All six Projects pages keep Graph root and Refresh together, with Manage as a page at1440,390 and320px.');
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
 }catch(error){report.failure=error.stack;await shot('failure.png').catch(()=>{});throw error;}
 finally{for(const pending of holds.values())pending.release.resolve();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await browser.close();}

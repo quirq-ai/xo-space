@@ -1,7 +1,6 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-inboxshare1';
-import {openProjectAdd} from './project-actions.js?v=20260914-inboxshare1';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-manage1';
 import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
@@ -18,7 +17,7 @@ export function setSectionActions(pageId,node){
   refreshActions();
 }
 
-export function initSectionNav({switchTo,refreshCurrentView}){
+export function initSectionNav({refreshCurrentView}){
   const nav=document.getElementById('section-nav');
   const stage=document.getElementById('stage');
   const graphRoot=document.getElementById('graph-root');
@@ -87,16 +86,7 @@ export function initSectionNav({switchTo,refreshCurrentView}){
     if(group==='projects'){
       const actions=document.createElement('div');actions.className='section-nav-actions';
       if(graphRoot)actions.appendChild(graphRoot);
-      const manage=document.createElement('a');
-      manage.className='section-nav-action';manage.href='#/setup/projects';
-      manage.textContent='Manage projects';actions.appendChild(manage);tools.appendChild(actions);
-      const add=document.createElement('a');add.id='project-add';
-      add.className='section-nav-action';add.href='#/setup/projects';add.textContent='Add project';
-      add.addEventListener('click',event=>{
-        if(event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
-        event.preventDefault();openProjectAdd(switchTo);
-      });
-      quick.appendChild(add);
+      tools.appendChild(actions);
     }
     const refresh=document.createElement('button');
     refresh.id=group==='projects'?'project-refresh':'section-refresh';refresh.dataset.pageRefresh='';refresh.type='button';

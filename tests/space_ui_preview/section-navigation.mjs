@@ -56,12 +56,12 @@ await context.route('**/*',async route=>{
   return route.continue();
 });
 const groups={projects:[['dashboard','overview','Overview'],['project-list','files/list','List'],['graph','files/graph','Graph'],
-  ['tree','files/tree','Tree'],['time','timeline','Timeline']],
+  ['tree','files/tree','Tree'],['time','timeline','Timeline'],['project-manage','manage','Manage']],
   agents:['overview','sessions','tools','models','trends'].map(slug=>['agents-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
   inbox:[...['items','connections','jobs','activity'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
     ['inbox-sharing-activity','sharing-activity','Sharing activity'],['sharing','sharing','Sharing']]};
 const defaults={projects:'projects/overview',agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace'};
-const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,
+const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,'setup/projects':'projects/manage',
   dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing','projects/sharing':'inbox/sharing',
   'projects/files':'projects/files/list','projects/list':'projects/files/list',
   'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
@@ -79,7 +79,7 @@ async function expectRoute(route){
     await page.locator(selector+'[aria-current="page"]').waitFor();
     if(group==='projects'){
       assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.sectionPage,node.textContent])),
-        [['A','dashboard','Overview'],['A','files','Files'],['A','time','Timeline']]);
+        [['A','dashboard','Overview'],['A','files','Files'],['A','time','Timeline'],['A','project-manage','Manage']]);
       assert.equal(await page.locator('#section-nav [data-file-mode]').count(),0,'Files modes stay out of section navigation');
       assert.equal(await page.locator('.view.is-active .file-views:visible').count(),file?1:0);
       if(file){
@@ -107,7 +107,7 @@ async function go(route){await page.evaluate(route=>{location.hash='#/'+route;},
 async function leaf(id){
   if(id==='sharing'){await openProjectPage(page,id);await expectRoute('inbox/sharing');return;}
   if(groups.projects.some(([key])=>key===id)){
-    await openProjectPage(page,id==='project-list'?'projects':id);
+    await openProjectPage(page,id==='project-list'?'projects':id==='project-manage'?'manage':id);
     await expectRoute('projects/'+groups.projects.find(([key])=>key===id)[1]);return;
   }
   const link=page.locator('#section-nav [data-section-page="'+id+'"]');
@@ -195,7 +195,7 @@ try{
   assert.equal(await drawer.evaluate(node=>node===document.querySelector('#prj-drawer-aurora-console')),true);
   await page.locator('#tab-setup').click();await expectRoute('setup/workspace');
   assert.equal(await page.locator('#preview.is-open').count(),0);
-  await openProjectList(page);await page.locator('#project-add').click();await expectRoute('setup/projects');
+  await openProjectPage(page,'manage');await page.locator('#manage-project-add').click();await expectRoute('projects/manage');
   await go('setup/workspace');await page.locator('#xo-root-input').fill('/fictional/retained-draft');
   await go('projects/files/list');await page.locator('#prjp-files .fx-row.is-dir').first().click();
   await page.locator('#prjp-files .fx-here').waitFor();

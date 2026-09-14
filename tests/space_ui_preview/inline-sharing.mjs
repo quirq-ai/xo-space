@@ -30,16 +30,22 @@ await context.route('**/*',async route=>{
   return route.continue();
 });
 page.on('pageerror',error=>report.errors.push(error.message));
+page.on('requestfailed',request=>{if(/\.(?:js|css)(?:\?|$)/.test(request.url()))report.errors.push(request.url()+': '+request.failure()?.errorText);});
+page.on('console',message=>{
+  if(message.type()!=='error')return;
+  if(/\/api\/xo-projects\/[^/]+\/share/.test(message.location().url)&&/503/.test(message.text()))return;
+  report.errors.push(message.text());
+});
 await page.addInitScript(()=>{window.inlineSharingDocument='same-document';window.sharedAccessEvents=[];
   addEventListener('space:project-access-changed',event=>window.sharedAccessEvents.push(event.detail));});
 const checked=text=>{report.checks.push(text);console.log(text);};
-const formFor=(scope,id='aurora-console')=>page.locator((scope==='list'?'#view-projects':'#view-setup')+' form.project-share[data-project-id="'+id+'"]');
+const formFor=(scope,id='aurora-console')=>page.locator((scope==='list'?'#view-projects':'#view-project-manage')+' form.project-share[data-project-id="'+id+'"]');
 const triggerFor=(scope,id='aurora-console')=>page.locator(scope==='list'?'.prj-share[data-share="'+id+'"]':'[data-project-share="'+id+'"]');
 async function go(scope){
   if(scope==='list')await openProjectList(page);
-  else{await page.evaluate(()=>{location.hash='#/setup/projects';});await page.locator('#setup-panel-projects').waitFor({state:'visible'});await triggerFor(scope).waitFor();}
+  else{await page.evaluate(()=>{location.hash='#/projects/manage';});await page.locator('#view-project-manage').waitFor({state:'visible'});await triggerFor(scope).waitFor();}
 }
-function routeFor(scope){return scope==='list'?'#/projects/files/list':'#/setup/projects';}
+function routeFor(scope){return scope==='list'?'#/projects/files/list':'#/projects/manage';}
 async function assertInline(scope){
   assert.equal(new URL(page.url()).hash,routeFor(scope));
   assert.equal(await page.evaluate(()=>window.inlineSharingDocument),'same-document');
@@ -49,12 +55,12 @@ async function open(scope,id='aurora-console'){
   await assertInline(scope);return formFor(scope,id);
 }
 async function refresh(scope){
-  await page.locator(scope==='list'?'#project-refresh':'#setup-project-refresh').click();
-  await page.waitForFunction(selector=>!document.querySelector(selector).disabled,scope==='list'?'#project-refresh':'#setup-project-refresh');
+  await page.locator('#project-refresh').click();
+  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
 }
 try{
   await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'networkidle'});
-  for(const scope of ['list','setup']){
+  for(const scope of ['list','manage']){
     await go(scope);const form=await open(scope),input=form.locator('input'),submit=form.locator('[data-share-submit]'),cancel=form.locator('[data-share-cancel]');
     const before=report.mockedShares.length;
     assert.equal(await input.evaluate(node=>node===document.activeElement),true,scope+' opens with Space ID focused');
@@ -69,9 +75,9 @@ try{
       await page.locator('#prj-sort').selectOption('name');
       await openProjectPage(page,'tree');await go(scope);
     }else{
-      await page.locator('#setup-project-add').click();await page.locator('#setup-project-repository').fill('https://github.com/fictional/keep-clone-draft.git');
+      await page.locator('#manage-project-add').click();await page.locator('#manage-project-repository').fill('https://github.com/fictional/keep-clone-draft.git');
       await page.evaluate(()=>{location.hash='#/setup/workspace';});await page.locator('#setup-panel-workspace').waitFor({state:'visible'});await go(scope);
-      assert.equal(await page.locator('#setup-project-repository').inputValue(),'https://github.com/fictional/keep-clone-draft.git');
+      assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fictional/keep-clone-draft.git');
     }
     assert.equal(await node.evaluate(element=>element===document.querySelector(element.tagName.toLowerCase()+'#'+element.id)),true);
     assert.equal(await input.inputValue(),'recipient-'+scope+'-draft');await assertInline(scope);
@@ -86,7 +92,7 @@ try{
     await input.press('Enter');await hold.arrived.promise;
     assert.equal(await input.isDisabled(),true);assert.equal(await submit.isDisabled(),true);assert.equal(await cancel.isDisabled(),true);
     await form.evaluate(element=>element.requestSubmit());assert.equal(report.mockedShares.length,before+1);
-    await go(scope==='list'?'setup':'list');const other=await open(scope==='list'?'setup':'list');
+    await go(scope==='list'?'manage':'list');const other=await open(scope==='list'?'manage':'list');
     assert.equal(await other.locator('[data-share-submit]').isDisabled(),true,'One pending project grant locks both lists');
     await other.evaluate(element=>element.requestSubmit());assert.equal(report.mockedShares.length,before+1);
     await go(scope);hold.release.resolve();await form.locator('[data-share-result][data-state="error"]').waitFor();
@@ -101,7 +107,7 @@ try{
     checked(scope+': mocked submission trims the Space ID, locks duplicate requests across both lists, preserves input after errors, and confirms success inline.');
     await cancel.click();
   }
-  for(const scope of ['list','setup']){
+  for(const scope of ['list','manage']){
     await go(scope);const form=await open(scope);await form.locator('input').fill('recipient-space-id-for-preview');
     for(const width of [1440,390,320]){
       await page.setViewportSize({width,height:1000});await form.scrollIntoViewIfNeeded();
