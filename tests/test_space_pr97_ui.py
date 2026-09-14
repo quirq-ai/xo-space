@@ -899,16 +899,20 @@ class ShellTests(unittest.TestCase):
         self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
         self.assertIn("./core/registry.js?v=" + navigation_stamp + "'", app)
         files_stamp = "20260914-files2"
-        for view in ("sharing", "inbox", "quirq", "setup", "tree", "atlas", "sessions", "projects"):
+        for view in ("inbox", "quirq", "setup", "sessions"):
             self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
-        for module in ("navigation", "toolbar", "section-nav", "preview"):
+        for module in ("navigation", "toolbar", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
+        controls_stamp = "20260914-controls1"
+        for view in ("sharing", "tree", "atlas", "projects"):
+            self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
+        self.assertIn("./core/section-nav.js?v=" + controls_stamp + "'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=' + compact_stamp + '"', html)
-        self.assertIn('href="css/navigation.css?v=' + files_stamp + '"', html)
+        self.assertIn('href="css/projects.css?v=' + controls_stamp + '"', html)
+        self.assertIn('href="css/navigation.css?v=' + controls_stamp + '"', html)
         for sheet in ("graph", "preview"):
             self.assertIn('href="css/' + sheet + '.css?v=' + compact_stamp + '"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;

@@ -14,7 +14,8 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 Space starts at Projects Overview. **Files** contains the existing List, Graph
 and Tree views at `#/projects/files/list`, `#/projects/files/graph` and
-`#/projects/files/tree`. Its link remembers the last view used; a direct
+`#/projects/files/tree`. The List / Graph / Tree links sit in each view’s local
+toolbar. The Files section link remembers the last view used; a direct
 `#/projects/files` link opens List. Clicking Projects or pressing `1` always
 opens Overview. The section roots
 `#/projects`, `#/agents`, `#/inbox`, and `#/setup` normalize to their defaults.
@@ -36,7 +37,9 @@ section. The overview itself works offline.
 
 The toolbar adapts to the active page. Projects Overview and Graph keep map
 autocomplete in the topbar; the root picker sits immediately left of **Manage projects**
-on every Projects page. Choosing a node from Files List, Files Tree, Sharing or
+on every Projects page. Sharing places **Share a project** and **Check now**
+alongside those section controls; the share form stays in the page content.
+Choosing a node from Files List, Files Tree, Sharing or
 Timeline opens Files Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, and
@@ -46,7 +49,7 @@ toolbar. On phones these pages also give back the empty toolbar row.
 
 | Page | Search scope |
 |------|--------------|
-| Projects List | All search words match across project name, folder ID and description. Combines with All projects, Live or Pinned. |
+| Projects List | All search words match across project name, folder ID and description. Combines with the Filter menu’s All projects, Live or Pinned options beside Sort by. |
 | Tree | Folder and file names, keeping the ancestors of matches visible. |
 | Timeline | Project names; the selected timeline mode and date range still apply. |
 | Setup | Setting names and topics. Choose a result to open its section; searches never read field values or credentials, and all unfinished forms stay mounted. |
@@ -78,7 +81,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
 | `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, and per-view failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
-| `js/core/section-nav.js` | One shared secondary navigation strip; native links follow the current section and mark the active page. |
+| `js/core/file-views.js` | Native List, Graph and Tree links shared by the local Files toolbars. |
+| `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
 | `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |

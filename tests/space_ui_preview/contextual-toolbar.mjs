@@ -130,10 +130,14 @@ async function layout(id,width){
       brand:rect('.brand'),tabsOverflow:tabs.scrollWidth>tabs.clientWidth+1,
       activeTab:tabs.querySelector('.is-on')?rect('.tabs .is-on'):null,
       buttonsCenter:(first.left+last.right)/2,visibleControls,
+      tabRadius:parseFloat(getComputedStyle(tabs).borderTopLeftRadius),
+      buttonRadii:buttons.map(button=>parseFloat(getComputedStyle(button).borderTopLeftRadius)),
       header:rect('.topbar'),tabs:rect('.tabs'),resources:rect('.resource-links'),
       controls:rect('#toolbar-controls'),stage:rect('#stage')};
   });
   report.layouts.push({id,width,...value});
+  assert.ok(value.tabRadius<=12&&value.buttonRadii.every(radius=>radius<=8),
+    id+' primary navigation keeps compact rectangular corners at '+width);
   assert.ok(value.scroll<=value.viewport,id+' document overflows at '+width+': '+value.scroll);
   assert.ok(Math.abs(value.tabs.x+value.tabs.width/2-width/2)<1,id+' primary tabs are not centered at '+width);
   if(!value.tabsOverflow)assert.ok(Math.abs(value.buttonsCenter-width/2)<1,id+' tab buttons are not centered at '+width);
@@ -267,7 +271,7 @@ try{
       id+' slash must not focus a hidden search');
     assert.equal(new URL(page.url()).hash,routeFor(id));
   }
-  checked('Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
+  checked('Wiki, Sharing and Quirq expose no search or hidden-search shortcut; Sharing retains the Projects root picker.');
 
   for(const width of [320,390,640,1280,1440,1920]){
     await page.setViewportSize({width,height:1000});

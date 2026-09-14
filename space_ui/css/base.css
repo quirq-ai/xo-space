@@ -34,10 +34,10 @@
   .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
   .brand b{font:600 19px var(--serif);letter-spacing:.06em;color:var(--ink)}
   .brand span{font:400 10px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
-  .tabs{display:flex;gap:2px;justify-self:center;width:max-content;max-width:100%;background:var(--bg-2);border:1px solid var(--line);border-radius:999px;padding:3px}
+  .tabs{display:flex;gap:2px;justify-self:center;width:max-content;max-width:100%;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;padding:3px}
   .tabs :is(button,a){
     font:400 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);
-    padding:7px 15px;border-radius:999px;text-decoration:none;white-space:nowrap;transition:color .16s var(--ease),background .16s var(--ease);
+    padding:7px 15px;border-radius:7px;text-decoration:none;white-space:nowrap;transition:color .16s var(--ease),background .16s var(--ease);
   }
   .tabs :is(button,a):hover{color:var(--ink)}
   .tabs :is(button,a).is-on{background:var(--accent);color:#14100a;font-weight:600}
@@ -49,7 +49,7 @@
   .resource-links{display:flex;flex:none;align-items:center;gap:6px;white-space:nowrap}
   .resource-links a{
     display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;
-    padding:7px 11px;border:1px solid var(--line);background:var(--bg-2);border-radius:999px;text-decoration:none;font:500 13px var(--sans);
+    padding:7px 11px;border:1px solid var(--line);background:var(--bg-2);border-radius:8px;text-decoration:none;font:500 13px var(--sans);
     color:var(--ink-2);transition:color .16s var(--ease),background .16s var(--ease);
   }
   .resource-links a:hover{background:var(--bg-3);color:var(--ink)}
@@ -61,7 +61,7 @@
   #root-btn{
     display:flex;align-items:center;gap:7px;white-space:nowrap;
     font:400 10.5px var(--mono);letter-spacing:.08em;color:var(--ink-2);
-    background:var(--bg-2);border:1px solid var(--line);border-radius:999px;
+    background:var(--bg-2);border:1px solid var(--line);border-radius:8px;
     padding:9px 13px;transition:all .16s var(--ease);
   }
   #root-btn:hover{color:var(--ink);border-color:#39404d}

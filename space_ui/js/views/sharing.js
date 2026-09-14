@@ -1,5 +1,6 @@
 import {projectPage} from '../core/navigation.js?v=20260914-files2';
-/* Sharing: the fourth Files lens, and the whole of project sharing in the
+import {setSectionActions} from '../core/section-nav.js?v=20260914-controls1';
+/* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
 
@@ -29,6 +30,7 @@ import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingS
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 
 let root=null;
+let pageActions=null,shareButton=null,checkButton=null,checking=false;
 let go=()=>{};            /* ctx.switchTo, captured on mount */
 let names=new Map();      /* project id -> display name, from the catalog */
 let catalog=[];           /* every project, for the composer's picker */
@@ -44,13 +46,19 @@ addEventListener('space:projects-changed',()=>{catalogDirty=true;});
 addEventListener('space:project-access-changed',()=>{catalogDirty=true;members.clear();});
 
 export default {
-  /* No tab of its own: the Files tab owns the nav slot and this is its
-     fourth lens, reached from the List | Graph | Tree | Sharing pill (or
-     #/sharing). */
+  /* Sharing is a page within Projects; its actions live in the section bar. */
   ...projectPage('sharing'),
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
+    if(!pageActions){
+      pageActions=document.createElement('div');pageActions.className='sharing-page-actions';
+      pageActions.innerHTML='<button class="sess-refresh shl-primary" type="button" data-act="composer">+ Share a project</button>'
+        +'<button class="sess-refresh" type="button" data-act="check" title="Ask the relay to check now instead of waiting for the next minute">Check now</button>';
+      shareButton=pageActions.querySelector('[data-act="composer"]');checkButton=pageActions.querySelector('[data-act="check"]');
+      pageActions.addEventListener('click',onClick);
+    }
+    renderActions();setSectionActions('sharing',pageActions);
     el.innerHTML='<div class="prj shl">'+skeleton()+'</div>';
     root.addEventListener('click',onClick);
     root.addEventListener('submit',onSubmit);
@@ -107,6 +115,7 @@ async function refresh(){
    move, so a keystroke or a pending question is never wiped. */
 function onStatus(){
   if(!root)return;
+  renderActions();
   if(consumeNewClone())loadCatalog().then(()=>{if(!editing())render();});
   if(editing()){
     const strip=root.querySelector('#prj-sharing-strip');
@@ -154,6 +163,7 @@ const actionable=m=>m.filter(r=>r.need&&r.need!=='cloning');
 /* ── paint ────────────────────────────────────────────────────────────── */
 function render(){
   if(!root)return;
+  renderActions();
   const m=model();
   root.querySelector('.prj').innerHTML=headHTML(m)+stripHTML()+bodyHTML(m);
   renderedAt=Date.now();
@@ -169,15 +179,17 @@ function summary(m){
   return mine+' shared'+(inc?' · '+inc+' incoming':'')+(need?' · '+need+' need you':' · all in sync');
 }
 function headHTML(m){
-  const off=parked()||!sharingStatusRes()||!sharingStatusRes().ok;
   return'<div class="prj-head">'
     +'<span class="prj-eyebrow" id="shl-count">'+esc(summary(m))+'</span>'
-    +'<span class="prj-spacer"></span>'
-    +(composer
-      ?'<button class="sess-refresh" type="button" data-act="composer">Cancel</button>'
-      :'<button class="sess-refresh shl-primary" type="button" data-act="composer"'+(off?' disabled':'')+'>+ Share a project</button>')
-    +'<button class="sess-refresh" type="button" data-act="check" title="Ask the relay to check now instead of waiting for the next minute"'+(off?' disabled':'')+'>Check now</button>'
   +'</div>';
+}
+function renderActions(){
+  if(!pageActions)return;
+  const status=sharingStatusRes(),off=parked()||!status||!status.ok;
+  shareButton.textContent=composer?'Cancel':'+ Share a project';
+  shareButton.classList.toggle('shl-primary',!composer);shareButton.disabled=!composer&&off;
+  checkButton.disabled=off||checking;checkButton.textContent=checking?'Checking…':'Check now';
+  if(checking)checkButton.setAttribute('aria-busy','true');else checkButton.removeAttribute('aria-busy');
 }
 function stripHTML(){
   const status=sharingStatus(),res=sharingStatusRes();
@@ -484,7 +496,7 @@ async function onClick(e){
       render();
       if(composer){const f=root.querySelector('[data-filter]');if(f)f.focus();}
       return;
-    case'check':return doCheck(b);
+    case'check':return doCheck();
     case'copy':
       try{await navigator.clipboard.writeText(b.dataset.copy);toast(b.textContent.trim()==='copy invite'?'invite copied':'copied');}
       catch(err){toast('copy failed: select and copy by hand');}
@@ -591,12 +603,19 @@ async function doApply(id){
   render();
   refreshSoon().then(()=>{if(!editing())render();});
 }
-async function doCheck(btn){
-  btn.disabled=true;
-  const res=await checkNow();
-  if(!res.ok){btn.disabled=false;toast('check failed: '+failText(res));return;}
-  toast('checking…');
-  await refreshSoon(1800);
-  if(!editing())render();
-  loadCommits();
+async function doCheck(){
+  if(checking)return;
+  const restoreFocus=document.activeElement===checkButton;
+  checking=true;renderActions();
+  try{
+    const res=await checkNow();
+    if(!res.ok){toast('check failed: '+failText(res));return;}
+    toast('checking…');
+    await refreshSoon(1800);
+    if(!editing())render();
+    loadCommits();
+  }finally{
+    checking=false;renderActions();
+    if(restoreFocus&&!checkButton.disabled&&root.classList.contains('is-active')&&document.activeElement===document.body)checkButton.focus({preventScroll:true});
+  }
 }

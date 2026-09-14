@@ -10,6 +10,7 @@ import {projectPage} from '../core/navigation.js?v=20260914-files2';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
+import {fileViewControls} from '../core/file-views.js?v=20260914-controls1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};
@@ -20,6 +21,10 @@ let timelineFilter=''; // page query survives rebuilding another projection
 const datasetReads=new Map();
 addEventListener('space:view',event=>{
   const id=event.detail?.id;
+  const graphHost=document.getElementById('view-graph');
+  graphHost?.classList.toggle('has-file-tools',id==='graph');
+  const fileTools=document.getElementById('graph-file-toolbar');
+  if(fileTools)fileTools.hidden=id!=='graph';
   activeAtlasId=['dashboard','graph','time'].includes(id)?id:null;
   const projects=event.detail?.tab==='projects'||['dashboard','graph','time','project-list','tree','sharing'].includes(id);
   rootPicker?.setContext(projects?id==='dashboard'?'dashboard':'graph':null);
@@ -172,6 +177,11 @@ function atlasView(id,label,order,lens,dataset=null){
       },disabled:!hooks.setTimelineFilter},
     async mount(el,ctx){
       host=el;go=ctx.switchTo;
+      if(id==='graph'&&!el.querySelector('#graph-file-toolbar')){
+        const tools=document.createElement('div');tools.id='graph-file-toolbar';
+        tools.innerHTML=fileViewControls('graph');tools.hidden=activeAtlasId!=='graph';
+        el.prepend(tools);
+      }
       toolbarRefresh=ctx.refreshToolbar||(()=>{});refreshToolbar=toolbarRefresh;
       el.querySelectorAll('[data-atlas-lens]').forEach(button=>{
         button.addEventListener('click',()=>go(button.dataset.atlasLens));

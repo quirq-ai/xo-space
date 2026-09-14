@@ -564,7 +564,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("placeholder:'Filter projects…'", projects)
         self.assertIn('id="prj-sort"', projects)
         self.assertIn('id="prj-add"', projects)
-        self.assertIn("data-project-filter=", projects)
+        self.assertIn('id="prj-filter"', projects)
         self.assertIn("data-project-tab=", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # accessible: a real button that reports its state, with Map outside

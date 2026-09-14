@@ -9,9 +9,10 @@ PRELUDE = r'''
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {fileViewControls} from './space_ui/js/core/file-views.js';
 const events=new Map(),elements=new Map();
 class Element{
- constructor(id){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.textContent='';this.innerHTML='';this.listeners=new Map();this.attributes={};
+ constructor(id){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.textContent='';this.innerHTML='';this.listeners=new Map();this.attributes={};this.children=[];
   const classes=new Set();this.classList={add:(...names)=>names.forEach(n=>classes.add(n)),remove:(...names)=>names.forEach(n=>classes.delete(n)),
    contains:name=>classes.has(name),toggle:(name,on)=>on?classes.add(name):classes.delete(name)};}
  addEventListener(type,handler){if(!this.listeners.has(type))this.listeners.set(type,[]);this.listeners.get(type).push(handler);}
@@ -21,11 +22,13 @@ class Element{
  focus(){document.activeElement=this;}
  blur(){if(document.activeElement===this)document.activeElement=null;}
  contains(target){return target===this;}
+ querySelector(selector){return selector.startsWith('#')?this.children.find(child=>child.id===selector.slice(1))||null:null;}
  querySelectorAll(){return[];}
+ prepend(child){this.children.unshift(child);if(child.id)elements.set(child.id,child);}
 }
 const document={activeElement:null,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id);},
- querySelectorAll:()=>[]};
-const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,
+ querySelectorAll:()=>[],createElement:()=>new Element('')};
+const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,fileViewControls,
  addEventListener:(name,handler)=>{if(!events.has(name))events.set(name,[]);events.get(name).push(handler);},
  esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
 };
@@ -93,7 +96,7 @@ globalThis.pages={graph:graphView,dashboard:dashboardView};`;
 vm.runInContext(atlas,context);
 const init=evaluate('initProjectRootPicker');
 async function go(route){navigations.push(route);const id=route==='projects/overview'?'dashboard':'graph';
- emit('space:view',{id,tab:'projects'});const view=context.pages[id];await view.mount(new Element('view'),{switchTo:go});await view.show();}
+ emit('space:view',{id,tab:'projects'});const view=context.pages[id];await view.mount(node('view-graph'),{switchTo:go});await view.show();}
 init({switchTo:go});
 for(const id of ['project-list','tree','sharing']){
  emit('space:view',{id,tab:'projects'});assert.equal(node('graph-root').hidden,false);
@@ -104,8 +107,11 @@ assert.deepEqual(reads,['/xo/space.json'],'Pages share the lazy file metadata re
 emit('space:focus-project','older-preview-target');
 node('root-btn').emit('click');await settle();node('root-q').value='Fixture';node('root-q').emit('input');node('root-q').emit('keydown',{key:'Enter'});await settle();
 assert.deepEqual(navigations,['projects/files/graph']);assert.deepEqual(boots,[['graph','files-root']]);assert.equal(applied.at(-1),'files-root-project');
+assert.equal(node('view-graph').classList.contains('has-file-tools'),true);
+assert.match(node('graph-file-toolbar').innerHTML,/data-file-mode="graph" aria-current="page"/);
 assert.deepEqual(focused,[],'A newer root choice supersedes an older parked preview focus');
 await go('projects/overview');assert.deepEqual(boots.at(-1),['dashboard','overview-root']);
+assert.equal(node('graph-file-toolbar').hidden,true,'Overview hides the Files controls while preserving their DOM');
 node('root-btn').emit('click');await settle();node('root-q').value='Fixture';node('root-q').emit('input');node('root-q').emit('keydown',{key:'Enter'});await settle();
 assert.equal(applied.at(-1),'overview-root-project');assert.equal(navigations.length,2,'Overview selection retains its existing engine and route');
 emit('space:view',{id:'tree',tab:'projects'});node('root-btn').emit('click');await settle();
@@ -113,6 +119,7 @@ node('root-q').value='Fixture';node('root-q').emit('input');node('root-q').emit(
 emit('space:focus-project','newer-preview-target');await settle();
 assert.deepEqual(focused,['newer-preview-target'],'A newer preview focus supersedes a root choice whose engine is still loading');
 assert.equal(applied.at(-1),'files-root','The superseded pending root must not be applied ahead of the newer focus');
+assert.equal(node('view-graph').children.filter(child=>child.id==='graph-file-toolbar').length,1,'Returning to Graph reuses one toolbar container');
 ''')
 
     def test_timed_out_dataset_read_can_retry_without_navigating(self):

@@ -144,7 +144,7 @@ const detailCounts=()=>Object.fromEntries(['tree','todos','activity','timeline',
 const visibleIDs=()=>page.locator('.prj-row:visible').evaluateAll(rows=>rows.map(row=>row.id.replace('prj-row-','')));
 const checked=message=>{report.checks.push(message);console.log(message);};
 async function selectGroup(group){await drawer().locator('[data-project-tab="'+group+'"]').click();}
-async function selectFilter(filter){await page.locator('[data-project-filter="'+filter+'"]').click();}
+async function selectFilter(filter){await page.locator('#prj-filter').selectOption(filter);}
 async function screenshot(name){
   await page.mouse.move(2,990);await page.screenshot({path:resolve(output,name),animations:'disabled'});
   report.screenshots.push(name);
@@ -153,8 +153,12 @@ async function layout(label){
   const dimensions=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,
     page:document.querySelector('#view-projects').clientWidth,pageScroll:document.querySelector('#view-projects').scrollWidth,
     pageTop:document.querySelector('#view-projects').getBoundingClientRect().top,
+    localModes:!!document.querySelector('#view-projects .prj-head .file-views'),
+    filterBeforeSort:document.querySelector('#prj-filter').getBoundingClientRect().left<document.querySelector('#prj-sort').getBoundingClientRect().left,
     navBottom:document.querySelector('#section-nav').getBoundingClientRect().bottom}));
   assert.ok(dimensions.document<=dimensions.width,label+' has no document overflow');
+  assert.ok(dimensions.localModes,label+' Files modes belong to the local toolbar');
+  assert.ok(dimensions.filterBeforeSort,label+' Filter precedes Sort by');
   assert.ok(dimensions.pageScroll<=dimensions.page+1,label+' has no Projects overflow');
   assert.ok(dimensions.pageTop>=dimensions.navBottom-1,label+' scroll viewport clears shared navigation');
   const outside=await page.locator('#view-projects button:visible,#view-projects input:visible,#view-projects select:visible').evaluateAll(nodes=>nodes.filter(node=>{
@@ -183,6 +187,7 @@ try{
   await search.fill('not-a-project-fixture');await page.getByText('No matching projects',{exact:true}).waitFor();
   await page.locator('#view-projects').getByRole('button',{name:'Show all projects',exact:true}).click();
   assert.equal(await search.inputValue(),'');assert.equal((await visibleIDs()).length,catalog.length);
+  assert.equal(await page.locator('#prj-filter').inputValue(),'all');
   checked('All and Live filters, description search, and the empty-results clear action work without detail requests.');
 
   await aurora.locator('.prj-pin').click();
@@ -192,6 +197,16 @@ try{
   await selectFilter('pinned');await aurora.waitFor();
   assert.deepEqual(await visibleIDs(),['aurora-console']);
   assert.equal(await aurora.locator('.prj-pin').getAttribute('aria-pressed'),'true');
+  await aurora.locator('.prj-pin').click();
+  await page.getByText('Keep your frequent projects here',{exact:true}).waitFor();
+  assert.equal(await page.locator('#prj-filter').evaluate(node=>node===document.activeElement),true,
+    'Removing the final pinned row keeps keyboard focus in the Filter control');
+  await page.locator('#view-projects').getByRole('button',{name:'Show all projects',exact:true}).click();
+  assert.equal(await page.locator('#prj-filter').inputValue(),'all','Clearing an empty pinned view resets the native Filter');
+  await aurora.locator('.prj-pin').click();
+  const filter=page.locator('#prj-filter');await filter.focus();await filter.press('p');await filter.press('Enter');
+  assert.equal(await filter.inputValue(),'pinned','The native filter supports keyboard selection');
+  assert.deepEqual(await visibleIDs(),['aurora-console']);
   await selectFilter('all');
   await page.locator('#prj-sort').selectOption('name');
   assert.equal((await visibleIDs())[0],'atlas-handbook');
@@ -271,7 +286,7 @@ try{
   await page.evaluate(()=>dispatchEvent(new CustomEvent('space:open-project',{detail:'field-notes'})));
   await row('field-notes').locator('.prj-row-head[aria-expanded="true"]').waitFor();
   assert.equal(await search.inputValue(),'');
-  assert.equal(await page.locator('[data-project-filter="all"]').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.locator('#prj-filter').inputValue(),'all');
   assert.equal(await row('field-notes').locator('.prj-row-head').evaluate(node=>node===document.activeElement),true);
   await header.click();await selectGroup('files');
   checked('The Sharing project handoff clears both query and view filter, opens its project, and focuses its row.');

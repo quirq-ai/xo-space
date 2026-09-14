@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* Canonical section navigation over actual Space assets and fictional data.
-   External requests and every service mutation are blocked. */
+   External requests and service mutations are blocked; one Check now POST is intercepted in memory. */
 import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -20,7 +20,9 @@ const context=await browser.newContext({viewport:{width:1440,height:1000},device
   locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 await context.addInitScript(()=>{Date.now=()=>Date.parse('2026-09-14T10:00:00Z');});
 const page=await context.newPage();page.setDefaultTimeout(15000);
-const report={fixture:'Actual assets with fictional read-only responses',checks:[],screenshots:[],layouts:[],errors:[],writes:[]};
+const report={fixture:'Actual assets with fictional read-only responses',checks:[],screenshots:[],layouts:[],errors:[],writes:[],mockedChecks:0};
+function gate(){let resolve;const promise=new Promise(done=>{resolve=done;});return{promise,resolve};}
+let checkGate=null,treeGate=null;
 page.on('pageerror',error=>report.errors.push(error.message));
 page.on('console',message=>{if(message.type()==='error')report.errors.push(message.text());});
 page.on('response',response=>{if(response.status()>=400)report.errors.push(response.status()+' '+response.url());});
@@ -34,8 +36,14 @@ const inbox=[{id:'legacy-project',title:'Open the project catalog',link:{view:'p
 const json=(route,data)=>route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url());
+  if(url.origin===endpoint.origin&&request.method()==='POST'&&url.pathname==='/api/project-sharing/check'&&checkGate){
+    report.mockedChecks++;checkGate.arrived.resolve();await checkGate.release.promise;return json(route,{ok:true});
+  }
   if(url.origin!==endpoint.origin||request.method()!=='GET'){
     report.writes.push(request.method()+' '+request.url());return route.abort();
+  }
+  if(url.pathname==='/xo/space.json'&&treeGate){
+    const current=treeGate;treeGate=null;current.arrived.resolve();await current.release.promise;return route.continue();
   }
   if(url.pathname==='/api/schedules')return json(route,{jobs:[]});
   if(url.pathname==='/api/connectors/composio/toolkits')return json(route,{toolkits:[]});
@@ -71,20 +79,21 @@ async function expectRoute(route){
     if(group==='projects'){
       assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.sectionPage,node.textContent])),
         [['A','dashboard','Overview'],['A','files','Files'],['A','sharing','Sharing'],['A','time','Timeline']]);
-      assert.equal(await page.locator('.section-nav-file-views').isVisible(),file);
+      assert.equal(await page.locator('#section-nav [data-file-mode]').count(),0,'Files modes stay out of section navigation');
+      assert.equal(await page.locator('.view.is-active .file-views:visible').count(),file?1:0);
       if(file){
-        assert.equal(await page.locator('.section-nav-file-views').evaluate(node=>
-          !node.closest('.section-nav-links')&&node.nextElementSibling?.classList.contains('section-nav-actions')),true,
-          'Files modes are a separate control group before root and Manage');
+        assert.equal(await page.locator('.view.is-active .file-views').evaluate(node=>
+          !!node.closest('#view-projects .prj-head,#graph-file-toolbar,#view-tree .tv-head')),true,
+          'Files modes belong to each representation toolbar');
         assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('aria-current'),'page');
         assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/'+route);
-        assert.deepEqual(await page.locator('#section-nav [data-file-mode]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.fileMode,node.getAttribute('href'),node.textContent])),
+        assert.deepEqual(await page.locator('.view.is-active .file-views [data-file-mode]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.fileMode,node.getAttribute('href'),node.textContent])),
           [['A','project-list','#/projects/files/list','List'],['A','graph','#/projects/files/graph','Graph'],['A','tree','#/projects/files/tree','Tree']]);
       }
     }else assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[
       node.tagName,node.dataset.sectionPage,node.getAttribute('href'),node.textContent])),
       groups[group].map(([id,slug,label])=>['A',id,'#/'+group+'/'+slug,label]));
-    assert.equal(await page.locator('#section-nav [aria-current="page"]').count(),file?2:1);
+    assert.equal(await page.locator('#section-nav [aria-current="page"]').count(),1);
     assert.equal(await page.locator('.section-nav-label').count(),0,'Section labels are not repeated');
   }else assert.equal(await page.locator('#section-nav').isHidden(),true);
   if(group==='setup'&&route!=='setup/server/details')await page.locator('#setup-panel-'+route.split('/')[1]).waitFor({state:'visible'});
@@ -109,8 +118,10 @@ async function layout(label){
       navBottom:nav.hidden?null:nav.getBoundingClientRect().bottom,withNav:view.classList.contains('has-section-nav'),
       scopes:projects?[...nav.querySelectorAll('.section-nav-links > a')].map(rect):[],
       scopeArea:projects?rect(nav.querySelector('.section-nav-links')):null,
-      modes:projects&&!nav.querySelector('.section-nav-file-views').hidden?rect(nav.querySelector('.section-nav-file-views')):null,
-      actions:projects?rect(nav.querySelector('.section-nav-actions')):null};
+      modes:view.querySelector('.file-views')?.getClientRects().length?rect(view.querySelector('.file-views')):null,
+      actions:projects?rect(nav.querySelector('.section-nav-actions')):null,
+      sharing:[...nav.querySelectorAll('.sharing-page-actions button')].filter(node=>node.getClientRects().length).map(rect),
+      manage:projects?rect(nav.querySelector('.section-nav-action')):null};
   });
   assert.ok(box.scroll<=box.width,label+' has no document overflow');
   if(box.withNav)assert.ok(box.viewTop>=box.navBottom-1,label+' content viewport clears secondary navigation');
@@ -118,9 +129,15 @@ async function layout(label){
     label+' scope links remain fully visible');
   if(box.scopes.length&&box.width<=480){
     assert.ok(box.scopes.every(scope=>Math.abs(scope.top-box.scopes[0].top)<1),label+' four scopes share the first phone row');
-    assert.ok(Math.max(...box.scopes.map(scope=>scope.bottom))<=Math.min(box.actions.top,box.modes?.top??Infinity)+1,
-      label+' mode and root controls follow the scope links');
+    assert.ok(Math.max(...box.scopes.map(scope=>scope.bottom))<=box.actions.top+1,
+      label+' root controls follow the scope links');
   }
+  for(const action of box.sharing){
+    assert.ok(action.left>=-1&&action.right<=box.width+1&&action.bottom<=box.navBottom+1,label+' Sharing actions fit the section bar');
+    assert.ok(Math.abs((action.bottom-action.top)-(box.manage.bottom-box.manage.top))<2,label+' Sharing and Manage have equal control heights');
+    if(box.width>=1440)assert.ok(Math.abs(action.top-box.manage.top)<2,label+' Sharing and Manage align on desktop');
+  }
+  if(box.modes)assert.ok(box.modes.left>=-1&&box.modes.right<=box.width+1,label+' local Files modes fit the viewport');
   report.layouts.push({label,...box});
 }
 async function screenshot(name){await page.mouse.move(2,998);await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
@@ -209,6 +226,40 @@ try{
   assert.equal(await page.locator('#xo-root-input').evaluate(node=>node===document.activeElement),true);
   await page.keyboard.press('1');await expectRoute('setup/workspace');
   checked('Numbered shortcuts follow section defaults and never interrupt text entry.');
+  await go('projects/sharing');
+  const shareAction=page.locator('#section-nav .sharing-page-actions [data-act="composer"]');
+  const checkAction=page.locator('#section-nav .sharing-page-actions [data-act="check"]');
+  await page.waitForFunction(()=>!document.querySelector('#section-nav [data-act="composer"]')?.disabled);
+  assert.equal(await page.locator('#view-sharing > .prj > .prj-head [data-act]').count(),0);
+  const actionsNode=await page.locator('.sharing-page-actions').elementHandle();
+  await shareAction.focus();await shareAction.press('Enter');
+  await page.locator('#shl-composer').waitFor();assert.equal(await shareAction.textContent(),'Cancel');
+  assert.equal(await page.locator('#shl-composer [data-filter]').evaluate(node=>node===document.activeElement),true);
+  await page.locator('#shl-composer [data-filter]').fill('Aurora');
+  await page.locator('#shl-composer input[name="ws"]').fill('fictional-workspace-draft');
+  const composerNode=await page.locator('#shl-composer').elementHandle();
+  checkGate={arrived:gate(),release:gate()};await checkAction.click();
+  await Promise.race([checkGate.arrived.promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Check now did not reach its in-memory fixture')),5000))]);
+  assert.equal(await checkAction.isDisabled(),true);assert.equal(await checkAction.getAttribute('aria-busy'),'true');
+  assert.equal(await checkAction.textContent(),'Checking…');
+  await checkAction.evaluate(node=>node.click());assert.equal(report.mockedChecks,1,'Busy checks cannot submit twice');
+  await leaf('project-list');assert.equal(await page.locator('#section-nav .sharing-page-actions').count(),0);
+  await leaf('sharing');assert.equal(await checkAction.isDisabled(),true);
+  assert.equal(await actionsNode.evaluate(node=>node===document.querySelector('.sharing-page-actions')),true);
+  checkGate.release.resolve();await page.waitForFunction(()=>!document.querySelector('#section-nav [data-act="check"]').disabled);
+  assert.equal(await checkAction.getAttribute('aria-busy'),null);
+  assert.equal(await composerNode.evaluate(node=>node===document.querySelector('#shl-composer')),true,'Check now leaves the editor mounted');
+  assert.equal(await page.locator('#shl-composer input[name="ws"]').inputValue(),'fictional-workspace-draft');
+  await shareAction.click();assert.equal(await page.locator('#shl-composer').count(),0);
+  checked('Sharing actions align with section controls, retain their nodes across pages, toggle the composer and prevent duplicate checks while preserving its draft.');
+
+  await leaf('tree');await page.locator('[data-tv="reload"]').waitFor();
+  treeGate={arrived:gate(),release:gate()};const delayedTree=treeGate;
+  await page.locator('[data-tv="reload"]').click();
+  await Promise.race([delayedTree.arrived.promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Tree Refresh did not reach its fixture')),5000))]);
+  await page.locator('.view.is-active .file-views [data-file-mode="project-list"]').click();await expectRoute('projects/files/list');
+  delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/files/list');
+  checked('Files mode links remain usable during a delayed Tree refresh, and its late read cannot reclaim List.');
   const captures=[...groups.projects.map(([,slug])=>'projects/'+slug),'agents/overview','agents/sessions',
     'inbox/items','inbox/connections','inbox/jobs','setup/workspace'];
   for(const width of [1440,390,320]){

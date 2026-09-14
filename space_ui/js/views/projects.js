@@ -2,6 +2,7 @@
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
 import {projectPage} from '../core/navigation.js?v=20260914-files2';
+import {fileViewControls} from '../core/file-views.js?v=20260914-controls1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -470,10 +471,11 @@ function head(){
   return '<header class="prj-hero"><h1 class="prj-sr-only">List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p>'
     +'<div class="prj-actions"><button type="button" class="setup-primary" id="prj-add">Add project</button>'
     +'<button type="button" class="sess-refresh" id="prj-refresh" title="Refresh projects and activity">↻ Refresh</button></div></header>'
-    +'<div class="prj-head"><div class="prj-filters" role="group" aria-label="Filter projects">'
-    +FILTERS.map(([key,label])=>'<button type="button" data-project-filter="'+key+'" aria-pressed="'+(key===viewFilter)+'">'+label+' <span>—</span></button>').join('')
-    +'</div><span class="prj-spacer"></span><label class="prj-sort-label" for="prj-sort">Sort by</label>'
-    +'<select id="prj-sort">'+SORTS.map(([key,label])=>'<option value="'+key+'"'+(key===sortK?' selected':'')+'>'+label+'</option>').join('')+'</select></div>';
+    +'<div class="prj-head">'+fileViewControls('project-list')+'<span class="prj-spacer"></span>'
+    +'<div class="prj-filter-control"><label class="prj-filter-label" for="prj-filter">Filter</label>'
+    +'<select id="prj-filter">'+FILTERS.map(([key,label])=>'<option value="'+key+'"'+(key===viewFilter?' selected':'')+'>'+label+' (—)</option>').join('')+'</select></div>'
+    +'<div class="prj-sort-control"><label class="prj-sort-label" for="prj-sort">Sort by</label>'
+    +'<select id="prj-sort">'+SORTS.map(([key,label])=>'<option value="'+key+'"'+(key===sortK?' selected':'')+'>'+label+'</option>').join('')+'</select></div></div>';
 }
 function updateHead(){
   if(!root)return;
@@ -481,10 +483,13 @@ function updateHead(){
   const refresh=root.querySelector('#prj-refresh');if(refresh){refresh.disabled=loading;refresh.classList.toggle('is-busy',loading);}
   const totals={all:items?.length,pinned:items?.filter(p=>pinned.has(p.id)).length,
     live:feeds.activity==='ready'?items?.filter(p=>live.has(p.id)).length:undefined};
-  root.querySelectorAll('[data-project-filter]').forEach(button=>{
-    button.setAttribute('aria-pressed',String(button.dataset.projectFilter===viewFilter));
-    button.querySelector('span').textContent=totals[button.dataset.projectFilter]??'—';
-  });
+  const select=root.querySelector('#prj-filter');
+  if(select.value!==viewFilter)select.value=viewFilter;
+  for(const [key,label] of FILTERS){
+    const option=select.querySelector('option[value="'+key+'"]');
+    const text=label+' ('+(totals[key]??'—')+')';
+    if(option.textContent!==text)option.textContent=text;
+  }
   const notes=[];
   if(listError)notes.push((items?'Could not refresh projects. Showing the last list. ':'')+listError);
   if(feeds.counts==='error')notes.push('File index unavailable.');
@@ -497,9 +502,10 @@ function bindHead(){
   root.querySelector('#prj-refresh').addEventListener('click',loadList);
   root.querySelector('#prj-add').addEventListener('click',()=>switchTo('setup/projects'));
   root.querySelector('#prj-sort').addEventListener('change',event=>{sortK=event.target.value;renderRows();});
-  root.querySelectorAll('[data-project-filter]').forEach(button=>button.addEventListener('click',()=>{
-    viewFilter=button.dataset.projectFilter;renderRows();
-  }));
+  root.querySelector('#prj-filter').addEventListener('change',event=>{
+    if(!FILTERS.some(([key])=>key===event.target.value))return;
+    viewFilter=event.target.value;renderRows();
+  });
   root.querySelector('.prj-empty').addEventListener('click',async event=>{
     if(event.target.closest('[data-clear-projects]')){filter='';viewFilter='all';refreshToolbar();renderRows();}
     if(event.target.closest('[data-add-project]'))switchTo('setup/projects');
@@ -596,7 +602,7 @@ function bindRow(node,id){
     try{localStorage.setItem(pinKey,JSON.stringify([...pinned]));pinNotice='';}
     catch{pinNotice='Pins are kept for this visit because browser storage is unavailable.';}
     renderRows();
-    if(node.hidden)root.querySelector('[data-project-filter="pinned"]').focus({preventScroll:true});
+    if(node.hidden)root.querySelector('#prj-filter').focus({preventScroll:true});
   });
   node.querySelector('.prj-map').addEventListener('click',()=>{
     switchTo('graph');dispatchEvent(new CustomEvent('space:focus-project',{detail:id}));

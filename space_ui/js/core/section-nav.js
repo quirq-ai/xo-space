@@ -6,6 +6,15 @@ const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
 const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
 const FILE_IDS=new Set(FILE_VIEWS.map(page=>page.id));
 const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
+const pageActions=new Map();
+let refreshActions=()=>{};
+
+/* Views retain their own nodes, listeners and state; the shell places only
+   the active page's actions beside the section-wide controls. */
+export function setSectionActions(pageId,node){
+  if(node)pageActions.set(pageId,node);else pageActions.delete(pageId);
+  refreshActions();
+}
 
 export function initSectionNav(){
   const nav=document.getElementById('section-nav');
@@ -35,6 +44,16 @@ export function initSectionNav(){
     else if(selected.left<bounds.left)links.scrollLeft-=bounds.left-selected.left;
   }
 
+  function placeActions(){
+    const slot=nav.querySelector('.section-page-actions');
+    if(!slot)return;
+    const node=pageActions.get(active);
+    if(slot.firstElementChild!==node)slot.replaceChildren(...(node?[node]:[]));
+    slot.hidden=!node;
+    measure();
+  }
+  refreshActions=placeActions;
+
   function render(group){
     const inner=document.createElement('div');inner.className='section-nav-inner';
     const label=PRIMARY_TABS.find(tab=>tab.id===group)?.label||group;
@@ -47,18 +66,14 @@ export function initSectionNav(){
     }
     inner.appendChild(links);
     if(group==='projects'){
-      const modes=document.createElement('div');modes.className='section-nav-file-views';
-      modes.setAttribute('role','group');modes.setAttribute('aria-label','File view');modes.hidden=true;
-      for(const view of FILE_VIEWS){
-        const option=document.createElement('a');option.href='#/'+view.route;
-        option.textContent=view.label;option.dataset.fileMode=view.id;modes.appendChild(option);
-      }
-      inner.appendChild(modes);
+      const tools=document.createElement('div');tools.className='section-nav-tools';
+      const slot=document.createElement('div');slot.className='section-page-actions';slot.hidden=true;
+      tools.appendChild(slot);
       const actions=document.createElement('div');actions.className='section-nav-actions';
       if(graphRoot)actions.appendChild(graphRoot);
       const manage=document.createElement('a');
       manage.className='section-nav-action';manage.href='#/setup/projects';
-      manage.textContent='Manage projects';actions.appendChild(manage);inner.appendChild(actions);
+      manage.textContent='Manage projects';actions.appendChild(manage);tools.appendChild(actions);inner.appendChild(tools);
     }
     const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
     // Keep the same picker node mounted. Its controller owns state,
@@ -85,12 +100,7 @@ export function initSectionNav(){
       else link.removeAttribute('aria-current');
       if(link.dataset.sectionPage==='files')link.href='#/'+lastFile.route;
     }
-    const modes=nav.querySelector('.section-nav-file-views');
-    if(modes)modes.hidden=!filesActive;
-    for(const link of nav.querySelectorAll('[data-file-mode]')){
-      if(filesActive&&link.dataset.fileMode===page.id)link.setAttribute('aria-current','page');
-      else link.removeAttribute('aria-current');
-    }
+    placeActions();
     const title=nav.querySelector('.section-page-title');
     title.hidden=!UNTITLED_PAGES.has(page.id);title.textContent=page.label;
     measure();

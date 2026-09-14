@@ -98,10 +98,20 @@ async function projectChrome() {
       assert.ok(dropdown.x >= -1 && dropdown.x + dropdown.width <= width + 1,
         id + ' root dropdown fits at ' + width);
       for(const selector of ['#root-q', '#root-ac button', '#root-reset']) {
-        assert.equal(await page.locator(selector).first().evaluate(node => {
-          const r = node.getBoundingClientRect(), top = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
-          return node === top || node.contains(top);
-        }), true, id + ' ' + selector + ' is not clipped by the navigation');
+        const hit = await page.locator(selector).first().evaluate(async node => {
+          const read = () => {
+            const r=node.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
+            const describe=el=>{const css=getComputedStyle(el);return{tag:el.tagName,id:el.id,className:el.className,
+              pointerEvents:css.pointerEvents,zIndex:css.zIndex,visibility:css.visibility};};
+            const stack=document.elementsFromPoint(x,y),top=stack[0];
+            return{ok:node===top||node.contains(top),x,y,stack:stack.map(describe),
+              controls:[node,document.querySelector('#section-nav'),document.querySelector('#graph-file-toolbar')].filter(Boolean).map(describe)};
+          };
+          const first=read();if(first.ok)return first;
+          await new Promise(resolve=>requestAnimationFrame(resolve));return{...first,nextFrame:read()};
+        });
+        if(!hit.ok)report.layouts.push({page:id,width,selector,hit});
+        assert.equal(hit.ok,true,id+' '+selector+' is not clipped by the navigation: '+JSON.stringify(hit));
       }
       const name = id + '-root-' + width + '.png';
       await screenshot(name);report.screenshots.push(name);
@@ -247,12 +257,10 @@ try {
       const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();
       for(const id of ['dashboard', 'projects', 'graph', 'tree', 'sharing', 'time']) {
-        if(['projects','graph','tree'].includes(id)&&!await page.locator(projectPageSelector(id)).isVisible())
-          await page.locator('#section-nav [data-section-page="files"]').click();
+        await lens(id);
         const button = page.locator(projectPageSelector(id));
         await button.scrollIntoViewIfNeeded();
         assert.equal(await button.isVisible(), true, `${id} lens is reachable at ${width}px`);
-        await lens(id);
         const bounds = await page.locator('#section-nav').boundingBox();
         for(const key of ['x', 'width']) assert.ok(Math.abs(bounds[key] - initialBounds[key]) < 1, `${id} lens ${key} stays fixed at ${width}px`);
         const stageBounds = await page.locator('#stage').boundingBox();

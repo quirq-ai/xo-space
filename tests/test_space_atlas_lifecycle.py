@@ -16,22 +16,27 @@ class AtlasLifecycleTests(unittest.TestCase):
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import {fileViewControls} from './space_ui/js/core/file-views.js';
 const events=new Map(),elements=new Map(),reads=[],boots=[],activations=[];
 let disposed=0,reloads=0,reply={ok:true,data:{version:1}},pending=null;
 function element(id=''){
+  const classes=new Set();
   return {id,hidden:false,value:'',children:[],listeners:new Map(),
-    classList:{remove(){}},setAttribute(){},remove(){},
+    classList:{remove:(...names)=>names.forEach(name=>classes.delete(name)),contains:name=>classes.has(name),
+      toggle:(name,on)=>on?classes.add(name):classes.delete(name)},setAttribute(){},remove(){},
     querySelector(selector){
       if(selector==='.atlas-project-refresh')return this.children.find(child=>child.className==='atlas-project-refresh');
+      if(selector==='#graph-file-toolbar')return this.children.find(child=>child.id==='graph-file-toolbar')||null;
       this.button??=element('button');return this.button;
     },
     querySelectorAll(){return[];},
     addEventListener(type,handler){this.listeners.set(type,handler);},
     appendChild(child){this.children.push(child);},
+    prepend(child){this.children.unshift(child);if(child.id)elements.set(child.id,child);},
   };
 }
 const context={
-  AbortController,setTimeout,clearTimeout,
+  AbortController,setTimeout,clearTimeout,fileViewControls,
   API_BASE:'',projectPage:id=>({id}),toast(){},
   addEventListener:(type,handler)=>events.set(type,handler),
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
@@ -61,13 +66,19 @@ const announce=id=>events.get('space:view')({detail:{id}});
 async function open(id){
   announce(id);
   const page=context.pages[id];
-  await page.mount(element(),{switchTo(){},refreshToolbar(){}});
+  await page.mount(context.document.getElementById(id==='time'?'view-time':'view-graph'),{switchTo(){},refreshToolbar(){}});
   await page.show();
 }
 function gate(){let resolve;const promise=new Promise(done=>resolve=done);return{promise,resolve};}
 await open('dashboard');
 assert.deepEqual(boots,[[1,'Overview']]);
-await open('graph');await open('time');await open('dashboard');
+await open('graph');
+assert.equal(elements.get('view-graph').classList.contains('has-file-tools'),true);
+assert.equal(elements.get('graph-file-toolbar').hidden,false);
+assert.match(elements.get('graph-file-toolbar').innerHTML,/data-file-mode="graph" aria-current="page"/);
+await open('time');await open('dashboard');
+assert.equal(elements.get('view-graph').classList.contains('has-file-tools'),false);
+assert.equal(elements.get('graph-file-toolbar').hidden,true,'Overview does not inherit the Files controls');
 assert.equal(reloads,0,'ordinary projection navigation never reloads the application');
 assert.deepEqual(reads,['/xo/dashboard.json','/xo/space.json'],'visited projections reuse their data snapshot');
 assert.deepEqual(boots,[[1,'Overview'],[1,'Graph'],[1,'Overview']]);
@@ -75,6 +86,7 @@ assert.equal(disposed,2,'replaced engines dispose their listeners and animation 
 // Both cached datasets must be invalidated when a project changes.
 events.get('space:projects-changed')({});reply={ok:true,data:{version:2}};
 await open('graph');
+assert.equal(elements.get('view-graph').children.filter(child=>child.id==='graph-file-toolbar').length,1,'Graph remount keeps one local toolbar');
 assert.deepEqual(boots.at(-1),[2,'Graph']);
 assert.equal(reads.filter(url=>url==='/xo/space.json').length,2);
 // A refresh completed after leaving the map must not activate hidden hooks.
