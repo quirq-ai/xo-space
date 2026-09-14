@@ -99,6 +99,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
 | `js/core/project-actions.js` | The Add handoff opens Manage’s clone form only after current navigation completes. The legacy Setup-project event opens Manage without opening Add. |
 | `js/core/project-share.js` | Reusable inline Space ID form for Manage project cards, with draft retention, pending-state protection, and the existing share endpoint. |
+| `js/core/timeline-summary.js` | Counts mapped files or loaded commits in the selected project lanes and date window; playback and trace dimming do not alter those totals. |
 | `js/core/project-pins.js` | Browser-local project pins shared by Manage actions and Data filtering, with storage-event synchronization and an in-memory fallback. |
 | `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
@@ -594,6 +595,15 @@ dropped with a warning, an invalid status becomes `new`.
 one dot per commit day (`n` commits, up to 3 sampled subjects in `s`). The
 mode toggle only renders when at least one project carries history; the
 Dashboard projection and non-git projects have none.
+
+Timeline uses Data’s centered content width and rectangular controls. Its compact
+summary replaces the visible page title with dated-file or commit counts,
+mapped project coverage and the current date window. Project filtering, year
+selection and vertical zoom/pan update those totals; scrub and playback dim the
+same window’s data without changing the totals. Trace details appear separately
+from the summary. Empty lanes distinguish missing dated files from missing commit
+data in the loaded map; they do not claim the repository has no history. These
+are snapshot counts, not repository lifetime totals.
 
 Shapes are semantic: `disc` = code, `ring` = document, `diamond` = everything
 else. Leaf `date` is the git first-added date, or `null` when git does not

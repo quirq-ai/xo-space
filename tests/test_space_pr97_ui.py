@@ -896,10 +896,11 @@ class ShellTests(unittest.TestCase):
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
         data_stamp = "20260915-data1"
-        for view in ("wiki", "quirq", "tree", "atlas", "sessions", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
+        for view in ("wiki", "quirq", "tree", "sessions", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
             self.assertIn("./views/" + view + ".js?v=" + data_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + data_stamp + "'", app)
+        self.assertIn("./views/atlas.js?v=20260915-timeline1'", app)
         self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         self.assertIn("./core/toolbar.js?v=20260914-files2'", app)
         controls_stamp = "20260914-manage1"
@@ -910,7 +911,7 @@ class ShellTests(unittest.TestCase):
         results_stamp = "20260914-navigation1"
         html = read("index.html")
         self.assertIn('href="css/projects.css?v=20260915-data1"', html)
-        self.assertIn('href="css/navigation.css?v=20260915-data1"', html)
+        self.assertIn('href="css/navigation.css?v=20260915-timeline1"', html)
         for sheet in ("project-share",):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-inboxshare1"', html)
         for sheet in ("setup",):

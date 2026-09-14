@@ -11,6 +11,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
 import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
+import {timelineSummary} from '../core/timeline-summary.js?v=20260915-timeline1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};
@@ -288,10 +289,6 @@ const collectionLabel=DATA.meta.collectionLabel||'clusters';
 document.getElementById('q').placeholder=`Search ${LEAVES.length} ${noun}…`;
 document.getElementById('fmeta').textContent=
   `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
-document.querySelector('#view-time .thead h2').textContent='Timeline';
-if(DATA.meta.timelineSub){
-  document.getElementById('tsub').textContent=DATA.meta.timelineSub;
-}
 
 const colorOf=n=>n.type==='root'?'#e9e4d9':CAT[n.cat].color;
 function radiusOf(n){
@@ -1500,8 +1497,8 @@ function renderYears(){
   const inYear=y=>tZoomed&&T0>=+new Date(y,0,1)-DAY&&T1<=+new Date(y+1,0,1)+DAY;
   const many=years.length>1;
   el.innerHTML=(many||tZoomed
-      ?`<button type="button" data-year="all"${tZoomed?'':' class="is-on"'}>All</button>`:'')
-    +(many?years.map(y=>`<button type="button" data-year="${y}"${inYear(y)?' class="is-on"':''}>${y}</button>`).join(''):'');
+      ?`<button type="button" data-year="all" aria-pressed="${!tZoomed}"${tZoomed?'':' class="is-on"'}>All dates</button>`:'')
+    +(many?years.map(y=>`<button type="button" data-year="${y}" aria-pressed="${inYear(y)}"${inYear(y)?' class="is-on"':''}>${y}</button>`).join(''):'');
   el.hidden=!many&&!tZoomed;
 }
 listen(document.getElementById('tyears'),'click',e=>{
@@ -1528,20 +1525,6 @@ const MILES=DATA.milestones;
 const GITHIST=DATA.gitHistory||{};
 const histLanes=Object.keys(CAT).filter(cat=>(GITHIST[cat]||[]).length);
 const hasHist=histLanes.length>0;
-/* Both modes plot git dates only, so a project with no repository has no
-   lane at all. Projects counts every project; without this note the Timeline
-   silently shows fewer and reads as broken data rather than as the absence
-   of git history it actually is. */
-const fileLanes=()=>Object.keys(CAT).filter(cat=>LEAVES.some(n=>n.cat===cat&&n.date));
-function coverageNote(){
-  const total=Object.keys(CAT).length;
-  const shown=(tMode==='project'?histLanes:fileLanes()).length;
-  const blank=total-shown;
-  if(!total||blank<=0)return'';
-  /* Every project has a lane now, so this counts the empty ones rather than
-     claiming a subset is "shown" — the dark columns are visible evidence. */
-  return ` ${blank} of ${total} project${total===1?'':'s'} ${blank===1?'has':'have'} no git history.`;
-}
 const TMODE_KEY='space.timelineMode';
 let tMode='file';
 try{if(localStorage.getItem(TMODE_KEY)==='project'&&hasHist)tMode='project';}catch(_err){}
@@ -1553,20 +1536,32 @@ let histDots=[];
 document.querySelectorAll('#tmode [data-tmode]').forEach(button=>{
   listen(button,'click',()=>setTMode(button.dataset.tmode));
 });
-function defaultSub(){
-  if(tMode==='project'){
-    return'Commits by project, newest first. Larger dots mean more commits.'
-      +coverageNote();
+function timelineLanes(){
+  const q=laneFilter.trim().toLowerCase();
+  return Object.keys(CAT).filter(cat=>!q||CAT[cat].name.toLowerCase().includes(q));
+}
+function refreshTimelineSummary(lanes=timelineLanes()){
+  const result=timelineSummary({mode:tMode,lanes,totalProjects:Object.keys(CAT).length,
+    files:LEAVES,history:GITHIST,start:T0,end:T1,filtered:Boolean(laneFilter.trim())});
+  const summary=document.getElementById('tsummary'),context=document.getElementById('tsub');
+  if(summary.textContent!==result.summary)summary.textContent=result.summary;
+  let detail=result.context;
+  if(tTrace){
+    const list=tTrace.list;
+    if(!list.length)detail=tTrace.label+' has no dated files to trace.';
+    else{
+      const m0=fmtMY(+new Date(list[0].date+'T00:00:00'));
+      const m1=fmtMY(+new Date(list[list.length-1].date+'T00:00:00'));
+      detail=tTrace.label+': '+list.length+' dated '+(list.length===1?'file':'files')+' in trace · '+(m0===m1?m0:m0+' – '+m1)+'.';
+    }
   }
-  return'Files by first Git commit date, newest first.'
-    +(hasHist?' By project shows commit history.':'')
-    +coverageNote();
+  if(context.textContent!==detail)context.textContent=detail;
 }
 function syncTModeUI(){
   document.querySelectorAll('#tmode [data-tmode]').forEach(button=>{
-    button.classList.toggle('is-on',button.dataset.tmode===tMode);
+    const selected=button.dataset.tmode===tMode;
+    button.classList.toggle('is-on',selected);button.setAttribute('aria-pressed',String(selected));
   });
-  if(!tTrace)document.getElementById('tsub').textContent=defaultSub();
 }
 function setTMode(mode){
   if(mode===tMode||(mode==='project'&&!hasHist))return;
@@ -1611,15 +1606,16 @@ function computeRange(){
   }
 }
 function buildTimeline(){
+  computeRange();
+  const lanes=timelineLanes();
+  refreshTimelineSummary(lanes);
   const W=tplot.clientWidth,H=tplot.clientHeight;
   if(W<50||H<50)return;
-  computeRange();
   histDots=[];
   /* Every project gets a lane, including the ones with nothing to plot.
      Dropping them made the Timeline disagree with Projects about how many
      projects exist, and a reader cannot tell "no history" from "missing".
      An empty lane is drawn dark and labelled instead. */
-  const allLanes=Object.keys(CAT);
   const hasData=cat=>tMode==='project'
     ?(GITHIST[cat]||[]).length>0
     :LEAVES.some(n=>n.cat===cat&&n.date);
@@ -1627,8 +1623,6 @@ function buildTimeline(){
      is a smear, not a chart. Below MIN_COL the plot stops squeezing and
      grows wider than the pane instead, panning sideways (drag, shift+wheel)
      so the column headers stay legible whatever the project count. */
-  const q=laneFilter.trim().toLowerCase();
-  const lanes=q?allLanes.filter(cat=>CAT[cat].name.toLowerCase().includes(q)):allLanes;
   const laneSet=new Set(lanes);
   const MIN_COL=100;
   const colW=Math.max(MIN_COL,(W-64-16)/Math.max(1,lanes.length));
@@ -1641,7 +1635,7 @@ function buildTimeline(){
     none.setAttribute('x',SW/2);none.setAttribute('y',H/2);
     none.setAttribute('text-anchor','middle');
     none.setAttribute('style',`font:italic 400 13px ${SERIF};fill:#56534b`);
-    none.textContent='No project matches the filter.';
+    none.textContent=Object.keys(CAT).length?'No project matches the filter.':'No projects mapped yet.';
     tsvg.appendChild(none);
   }
   /* Time runs vertically: newest at the top, oldest at the bottom. Narrow
@@ -1711,7 +1705,7 @@ function buildTimeline(){
       why.setAttribute('x',x+colW/2);why.setAttribute('y',(M.t+H-M.b)/2);
       why.setAttribute('text-anchor','middle');
       why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
-      why.textContent=colW>=104?'NO GIT HISTORY':colW>=64?'NO HISTORY':'—';
+      why.textContent=tMode==='project'?'NO COMMIT DATA':'NO DATED FILES';
       labelsG.appendChild(why);
     }
     if(tMode==='project'&&live){
@@ -1878,9 +1872,13 @@ function renderTimelineState(){
   const m=[...MILES].reverse().find(x=>+new Date(x.d+'T00:00:00')<=tNow);
   const mEl=document.getElementById('tmilestone');
   /* labelled as what it is: a bare project name here read as a stray file */
-  mEl.textContent=m?'◆ milestone · '+m.t:'';
-  mEl.style.opacity=m?1:0;
-  document.getElementById('tscrub').value=Math.round((tNow-T0)/(T1-T0)*1000);
+  const caption=m?'◆ milestone · '+m.t:'',milestoneHidden=!m;
+  if(mEl.textContent!==caption||mEl.hidden!==milestoneHidden){
+    mEl.textContent=caption;mEl.hidden=milestoneHidden;scheduleBuild();
+  }
+  const scrub=document.getElementById('tscrub');
+  scrub.value=Math.round((tNow-T0)/(T1-T0)*1000);
+  scrub.setAttribute('aria-valuetext',new Date(tNow).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}));
 }
 function traceOnTimeline(n){
   if(tMode!=='file')setTMode('file'); /* traces live on the By-file plot */
@@ -1894,15 +1892,13 @@ function traceOnTimeline(n){
   go('time');
   requestAnimationFrame(()=>{
     if(!list.length){
-      document.getElementById('tsub').textContent=`${n.label} has no git-dated ${noun} to trace.`;
+      refreshTimelineSummary();scheduleBuild();
       document.getElementById('tclear').hidden=false;
       return;
     }
     drawTrace();
     document.getElementById('tclear').hidden=false;
-    const m0=fmtMY(+new Date(list[0].date)),m1=fmtMY(+new Date(list[list.length-1].date));
-    document.getElementById('tsub').textContent=
-      `${n.label}: ${list.length} ${noun}, ${m0===m1?m0:m0+' to '+m1}.`;
+    refreshTimelineSummary();scheduleBuild();
     if(!REDUCED){
       tNow=+new Date(list[0].date+'T00:00:00')-86400000*7;
       startPlay();
@@ -1947,7 +1943,7 @@ function drawTrace(){
 function clearTrace(){
   tTrace=null;
   document.getElementById('tclear').hidden=true;
-  document.getElementById('tsub').textContent=defaultSub();
+  refreshTimelineSummary();scheduleBuild();
   const g=tsvg.querySelector('#ttrace');if(g)g.innerHTML='';
   renderTimelineState();
 }
@@ -1961,6 +1957,8 @@ let playRAF=null;
 function startPlay(){
   tPlaying=true;
   document.querySelector('#tplay span').textContent='Pause';
+  document.getElementById('tplay').setAttribute('aria-pressed','true');
+  document.querySelector('#tplay path').setAttribute('d','M2 1H5V11H2Z M7 1H10V11H7Z');
   const step=()=>{
     tNow+=(T1-T0)/(60*16);
     if(tNow>=T1){tNow=T1;stopPlay();}
@@ -1972,6 +1970,8 @@ function startPlay(){
 function stopPlay(){
   tPlaying=false;cancelAnimationFrame(playRAF);
   document.querySelector('#tplay span').textContent='Play';
+  document.getElementById('tplay').setAttribute('aria-pressed','false');
+  document.querySelector('#tplay path').setAttribute('d','M3 1L11 6L3 11Z');
 }
 listen(document.getElementById('tplay'),'click',()=>{
   if(tPlaying){stopPlay();return;}

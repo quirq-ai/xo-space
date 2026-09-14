@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
 <link rel="stylesheet" href="css/graph.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/sessions.css?v=20260914-navigation1">
-<link rel="stylesheet" href="css/timeline.css?v=20260914-navigation1">
+<link rel="stylesheet" href="css/timeline.css?v=20260915-timeline1">
 <link rel="stylesheet" href="css/chrome.css?v=20260914-actions1">
 <link rel="stylesheet" href="css/projects.css?v=20260915-data1">
 <link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">
@@ -20,7 +20,7 @@
 <link rel="stylesheet" href="css/project-management.css?v=20260915-data1">
 <link rel="stylesheet" href="css/preview.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">
-<link rel="stylesheet" href="css/navigation.css?v=20260915-data1">
+<link rel="stylesheet" href="css/navigation.css?v=20260915-timeline1">
 
 
 <div class="topbar" data-toolbar="none">
@@ -91,33 +91,36 @@
   </section>
 
   <!-- TIMELINE -->
-  <section class="view" id="view-time">
-    <div class="thead">
+  <section class="view" id="view-time" aria-labelledby="timeline-heading">
+    <div class="timeline-content">
       <div class="tintro">
-        <h2>Timeline</h2>
-        <div class="sub" id="tsub">Explore dated files and project commits.</div>
+        <h1 class="timeline-sr-only" id="timeline-heading">Timeline</h1>
+        <p id="tsummary">Loading dated project data…</p>
+        <p id="tsub"></p>
       </div>
-      <div class="grow"></div>
-      <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…" hidden
-        autocomplete="off" spellcheck="false" aria-label="Filter timeline lanes by project name">
-      <div class="atlas-lens-switch tmode" id="tmode" aria-label="Timeline mode" hidden>
-        <button class="is-on" type="button" data-tmode="file">By file</button>
-        <button type="button" data-tmode="project">By project</button>
+      <div class="thead">
+        <input class="tfilter" id="tlanes" type="search" placeholder="Filter projects…" hidden
+          autocomplete="off" spellcheck="false" aria-label="Filter timeline lanes by project name">
+        <div class="atlas-lens-switch tmode" id="tmode" role="group" aria-label="Timeline mode" hidden>
+          <button class="is-on" type="button" data-tmode="file" aria-pressed="true">By file</button>
+          <button type="button" data-tmode="project" aria-pressed="false">By project</button>
+        </div>
+        <div class="grow"></div>
+        <button class="ghost" id="tclear" type="button" hidden>Clear trace</button>
+        <button id="tplay" type="button" aria-pressed="false"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1L11 6L3 11Z" fill="currentColor"/></svg><span>Play</span></button>
+        <div id="treadout" aria-label="Playback date"></div>
       </div>
-      <button class="ghost" id="tclear" hidden>Clear trace</button>
-      <button id="tplay"><svg width="9" height="10" viewBox="0 0 9 10"><path d="M0 0L9 5L0 10Z" fill="#14100a"/></svg><span>Play</span></button>
-      <div id="treadout">Jul 2026</div>
+      <div class="scrubrow">
+        <input id="tscrub" type="range" min="0" max="1000" value="1000" aria-label="Playback date">
+        <div class="ticks"></div>
+      </div>
+      <div class="trange">
+        <div class="tyears" id="tyears" role="group" aria-label="Jump to a year"></div>
+        <div class="thint">Scroll to zoom · drag to pan · Shift + scroll to move between projects</div>
+      </div>
+      <div id="tmilestone" hidden></div>
+      <div id="tplot" role="img" aria-label="Project timeline" aria-describedby="tsummary tsub"></div>
     </div>
-    <div class="scrubrow">
-      <input id="tscrub" type="range" min="0" max="1000" value="1000">
-      <div class="ticks"><span>JUN 2025</span><span>SEP</span><span>DEC</span><span>MAR 2026</span><span>JUL 2026</span></div>
-    </div>
-    <div class="trange">
-      <div class="tyears" id="tyears" aria-label="Jump to a year"></div>
-      <div class="thint">wheel to zoom the axis · drag to pan · shift+wheel for lanes</div>
-    </div>
-    <div id="tmilestone"></div>
-    <div id="tplot"></div>
   </section>
   <!-- AGENTS (Argus telemetry dashboard; content rendered by the
        agents-tab closure below, independent of boot()) -->
@@ -184,7 +187,7 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260915-data1"></script>
+<script type="module" src="js/app.js?v=20260915-timeline1"></script>
 
 
 </body></html>

@@ -8,4 +8,7 @@ Unmodified browser captures of the actual Space UI with fictional review data. N
 - `data-list.png`: Data List with filters and List, Graph and Tree views.
 - `project-activity.png`: Inbox Activity scoped to a project.
 
+- `timeline.png`: scoped file counts, date window and Data-aligned controls.
+- `timeline-mobile.png`: commit mode at320px with the plot retaining its pan area.
+
 Capture instructions and fixture safety are documented in `tests/space_ui_preview/README.md`.

@@ -60,6 +60,16 @@ filter, the absence of management actions in Data rows, file browsing, retained
 file drawers, and out-of-order folder responses. All service writes stay blocked or inside
 explicit browser-owned fixtures.
 
+For Timeline summary and controls, run:
+
+```sh
+node tests/space_ui_preview/timeline-experience.mjs /tmp/space-timeline-experience
+```
+
+This fixture checks exact file/commit totals across project and date filters,
+year selection, zoom/reset, playback, traces, mode retention, missing history,
+and desktop/mobile layout. All data is fictional and service writes are blocked.
+
 For inline project sharing and the separate activity feeds:
 
 ```sh
