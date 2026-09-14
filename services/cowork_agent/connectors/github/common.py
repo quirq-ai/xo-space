@@ -39,12 +39,15 @@ AuthMethod = Literal["pat", "cli"]
 # Token storage (provider key "github" in token.json)
 # ---------------------------------------------------------------------------
 
-def get_github_token() -> str | None:
+def get_github_token(*, read_only: bool = False) -> str | None:
     """Return the stored GitHub access token, or None."""
-    entry = get_entry("github")
+    entry = get_entry("github", read_only=True) if read_only else get_entry("github")
     if not entry:
         return None
-    return entry.get("access_token") or None
+    token = entry.get("access_token")
+    if read_only and token is not None and not isinstance(token, str):
+        raise ValueError("GitHub credential must be a string")
+    return token or None
 
 
 def get_github_auth_method() -> str | None:

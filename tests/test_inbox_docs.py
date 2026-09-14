@@ -23,7 +23,7 @@ AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
 #: Every view app.js registers (nav tabs and the nav:false lenses alike): the
 #: ids a link.view may name and the UI will follow.
 REGISTERED_VIEWS = ("dashboard", "projects", "graph", "tree", "time", "agents",
-                    "inbox", "sharing", "wiki", "quirq", "secrets", "connectors")
+                    "inbox", "sharing", "wiki", "quirq", "setup", "secrets", "connectors")
 
 
 def read(rel: str) -> str:
@@ -53,7 +53,7 @@ class InboxDocsTests(unittest.TestCase):
         readme = read("space_ui/README.md")
         self.assertIn("## Inbox tab", readme)
         # the count moves whenever a tab lands upstream; pin the Inbox entry itself
-        self.assertIn("**Agents**, **Inbox**, **Setup**", readme)
+        self.assertIn("**Agents**, **Inbox**, and **Setup**", readme)
         self.assertIn("`js/views/inbox.js`", readme)
         self.assertIn("css/inbox.css", readme)
         for route in (

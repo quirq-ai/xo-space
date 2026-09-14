@@ -34,6 +34,13 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/xo-projects/activity": fixtures.activity,
             "/api/xo-projects/timeline": fixtures.timeline,
             "/api/project-sharing/status": fixtures.sharing,
+            "/space/setup/status": lambda: {
+                "checked_at": fixtures.stamp(),
+                "space": {"status": "configured", "id": fixtures.WORKSPACE_ID,
+                          "label": "Review workspace", "owner": "demo-owner"},
+                "xo": {"status": "connected", "user_id": "demo-user"},
+                "github": {"status": "connected", "username": "demo-developer", "source": "connector"},
+            },
             "/space/server/status": lambda: {"running": True},
             "/api/inbox": lambda: {"items": [], "counts": {"new": 3, "seen": 1, "done": 2, "open": 4}, "total": 0},
             "/api/connections": lambda: {"signed_in": False, "poller_enabled": True, "connections": []},

@@ -90,6 +90,7 @@ const panel=id=>page.locator('#setup-panel-'+id);
 async function choose(id){
   await page.locator(`#setup-nav [data-setup-go="${id}"]`).click();
   await panel(id).waitFor();
+  await page.waitForURL('**/#/'+(['connectors','secrets'].includes(id)?id:'setup'));
   assert.equal(await page.locator('.setup-panel:visible').count(),1,'Only the chosen panel is visible');
 }
 async function refresh(){
@@ -115,7 +116,7 @@ async function drafts({agent='codex',projects='/demo/next-projects',watcher=fals
 }
 try{
   const initialRead=holdRead=gate();
-  await page.goto(origin+'/space/#/secrets',{waitUntil:'domcontentloaded'});
+  await page.goto(origin+'/space/#/setup',{waitUntil:'domcontentloaded'});
   await initialRead.arrived.promise;
   await page.locator('#xo-root-input').fill('/demo/early-draft');
   initialRead.release.resolve();
@@ -128,16 +129,22 @@ try{
   await panel('workspace').waitFor();
   assert.equal(await page.locator('.setup-panel:visible').count(),1);
   assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
-    ['workspace','agent','activity','connectors','commands','server']);
+    ['workspace','agent','activity','connectors','secrets','commands','server']);
   await panel('workspace').locator('.setup-step-footer [data-setup-go="agent"]').click();
   await panel('agent').waitFor();
   assert.equal(await page.locator('#secret-form').isVisible(),false);
+  assert.equal(await panel('agent').locator('#secret-form,#secret-list').count(),0,'Credential management has its own section');
+  await panel('agent').getByRole('button',{name:/manage secrets/i}).click();
+  await panel('secrets').waitFor();await page.waitForURL('**/#/secrets');
   await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_DRAFT');
   assert.match(await page.locator('#setup-alert').textContent(),/Unsaved changes/,'Credential drafts are included in setup status');
+  assert.match(await page.locator('#setup-nav [data-setup-go="secrets"]').textContent(),/Unsaved changes/,'Credential draft status belongs to Secrets');
+  assert.doesNotMatch(await page.locator('#setup-step-agent').textContent(),/Unsaved changes/,'A credential draft does not mark Agent settings as unsaved');
   await page.locator('#secret-cancel').click();
   assert.doesNotMatch(await page.locator('#setup-alert').textContent(),/Unsaved changes/);
   assert.equal(await page.locator('#secret-add').evaluate(el=>el===document.activeElement),true);
+  await choose('agent');
   assert.equal(await page.locator('#setup-sources .source-row:visible').count(),1,'Other agents are collapsed');
   const agentDetails=page.locator('.source-row.is-selected .source-details');
   await agentDetails.locator('summary').click();
@@ -148,7 +155,7 @@ try{
   assert.equal(await page.locator('#runtime-interval').isVisible(),false,'Detailed timing starts collapsed');
   await page.locator('#setup-open-projects').click();
   await page.waitForURL('**/#/projects');
-  await page.locator('#tab-secrets').click();await panel('activity').waitFor();
+  await page.locator('#tab-setup').click();await panel('activity').waitFor();
   await choose('commands');assert.match(await page.locator('#command-list').textContent(),/No commands yet/);
   await choose('server');await choose('workspace');
   assert.deepEqual(writes,[],'Navigation and Next never save, run commands or restart');
@@ -159,7 +166,7 @@ try{
   await choose('activity');await page.locator('#runtime-watcher').uncheck();
   await page.locator('#runtime-source-mode').selectOption('active');
   await advanced();await page.locator('#runtime-interval').fill('5');
-  await choose('agent');await page.locator('#secret-add').click();
+  await choose('secrets');await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_CREATED_TOKEN');
   await page.locator('#secret-value').fill('fixture-value-not-a-real-secret');
   assert.equal(await page.locator('#secret-value').getAttribute('type'),'password');
@@ -167,6 +174,10 @@ try{
   assert.equal(await page.locator('#secret-value').getAttribute('type'),'text');
   await page.locator('#secret-toggle').click();
   assert.equal(await page.locator('#secret-value').getAttribute('type'),'password');
+  const credentialNode=await page.locator('#secret-value').elementHandle();
+  for(const id of ['agent','activity','workspace','secrets'])await choose(id);
+  assert.equal(await credentialNode.evaluate(node=>node.isConnected),true,'Section navigation retains the credential form');
+  assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Section navigation retains the credential draft');
   await refresh();await drafts();
   assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Refresh keeps the typed credential draft');
   const pendingSecret=holdSecret=gate();
@@ -188,9 +199,14 @@ try{
   assert.equal(await page.locator('#secret-key').evaluate(el=>el.readOnly),true);
   assert.equal(await page.locator('#secret-value').inputValue(),'','Replace never fetches the saved plaintext');
   await page.locator('#secret-cancel').click();
+  await choose('agent');
   await page.locator('#setup-sources .source-row:visible [data-secret-key="DEMO_API_KEY"]').click();
+  await panel('secrets').waitFor();await page.waitForURL('**/#/secrets');
   assert.equal(await page.locator('#secret-key').inputValue(),'DEMO_API_KEY');
+  assert.equal(await page.locator('#secret-key').evaluate(el=>el.readOnly),true,'Recommended Agent keys open the Secrets form with the key selected');
+  assert.equal(await page.locator('#secret-value').evaluate(el=>el===document.activeElement),true,'Recommended keys focus the new value');
   await page.locator('#secret-cancel').click();
+  await choose('agent');
 
   const staleRead=holdRead=gate();
   await page.locator('#setup-refresh').click();await staleRead.arrived.promise;
@@ -238,10 +254,15 @@ try{
   restartMode='native';secretRevision=0;
   fixture.applied=structuredClone(fixture.configured);
   fixture.roots.applied=structuredClone(fixture.roots.configured);
+  await page.goto(origin+'/space/#/secrets',{waitUntil:'networkidle'});await panel('secrets').waitFor();
+  assert.equal(await page.locator('#tab-setup.is-on').count(),1,'The Secrets deep link highlights Setup');
+  assert.equal(await page.locator('#tab-secrets,#view-secrets').count(),0,'Secrets uses the persistent Setup shell');
+  assert.equal(await page.locator('#secret-form').isVisible(),false,'A Secrets deep link opens the list without a credential draft');
+  await choose('workspace');
   await page.reload({waitUntil:'networkidle'});await panel('workspace').waitFor();
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    for(const id of ['workspace','agent','activity','commands','server']){
+    for(const id of ['workspace','agent','activity','secrets','commands','server']){
       await choose(id);
       await page.waitForTimeout(350);
       assert.ok(await page.locator('#setup-nav,.setup-panel:visible,.setup-panel:visible input,.setup-panel:visible select,.setup-panel:visible button').evaluateAll(nodes=>nodes.filter(el=>el.getClientRects().length).every(el=>{

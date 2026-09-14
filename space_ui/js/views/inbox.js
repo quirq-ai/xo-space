@@ -452,7 +452,7 @@ function onClick(e){
     case'conn-config':switchTo('connectors');break;
     case'jobs-refresh':loadJobs();break;
     case'jobs-setup':
-      Promise.resolve(switchTo('secrets')).then(()=>dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}})));
+      Promise.resolve(switchTo('setup')).then(()=>dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}})));
       break;
     case'job-results':{
       const job=jobs?.find(item=>item.id===b.dataset.job);

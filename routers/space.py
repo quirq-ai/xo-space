@@ -84,6 +84,14 @@ async def space_server_status():
     }
 
 
+@router.get("/setup/status")
+async def space_setup_status():
+    """Workspace metadata and verified account status, without credential values."""
+    from services.setup_status import snapshot
+
+    return await snapshot()
+
+
 @router.post("/server/stop")
 async def space_server_stop(request: Request):
     """Gracefully stop the server. Localhost only; restart via ./cowork-api.sh start."""

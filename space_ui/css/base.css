@@ -23,27 +23,29 @@
   [hidden]{display:none!important}
 
   /* ---------------- topbar ---------------- */
+  /* Equal side tracks keep navigation centered independently of the controls. */
   .topbar{
-    display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:center;gap:18px;
+    display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:18px;
     padding:0 18px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,#0d0f13,#0b0c0f);position:relative;z-index:60;
   }
-  .topbar[data-toolbar="none"]{grid-template-columns:auto minmax(0,1fr) auto}
-  .topbar[data-toolbar="none"] .tabs{justify-self:start}
-  .topbar[data-toolbar="none"] .resource-links{justify-self:end}
+  .topbar-right{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
   .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
   .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
   .brand b{font:600 19px var(--serif);letter-spacing:.06em;color:var(--ink)}
   .brand span{font:400 10px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
-  .tabs{display:flex;gap:2px;background:var(--bg-2);border:1px solid var(--line);border-radius:999px;padding:3px}
+  .tabs{display:flex;gap:2px;justify-self:center;width:max-content;max-width:100%;background:var(--bg-2);border:1px solid var(--line);border-radius:999px;padding:3px}
   .tabs button{
     font:400 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);
     padding:7px 15px;border-radius:999px;transition:color .16s var(--ease),background .16s var(--ease);
   }
   .tabs button:hover{color:var(--ink)}
   .tabs button.is-on{background:var(--accent);color:#14100a;font-weight:600}
+  /* Auto margins collapse to zero when the buttons need horizontal scrolling. */
+  .tabs button:first-child{margin-left:auto}
+  .tabs button:last-child{margin-right:auto}
   .tright{justify-self:end;display:flex;align-items:center;gap:8px;width:100%;max-width:450px;min-width:0}
-  .resource-links{display:flex;align-items:center;gap:4px;white-space:nowrap}
+  .resource-links{display:flex;flex:none;align-items:center;gap:4px;white-space:nowrap}
   .resource-links a{
     display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;
     padding:6px 8px;border-radius:7px;text-decoration:none;font:500 11px var(--sans);

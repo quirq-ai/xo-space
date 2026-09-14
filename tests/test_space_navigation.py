@@ -72,7 +72,7 @@ for(const [,name,argument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);
   registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
 }
 registry.startRegistry({defaultView:'dashboard'});
-const expectedTabs=['projects','agents','inbox','secrets'];
+const expectedTabs=['projects','agents','inbox','setup'];
 assert.deepEqual(tabs.children.map(tab=>tab.id),expectedTabs.map(id=>'tab-'+id));
 assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing','time']);
 assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing','Timeline']);
@@ -81,7 +81,7 @@ assert.equal(elements.get('tab-agents').innerHTML,'Agents');
 assert.equal(elements.has('tab-time'),false);
 assert.equal(elements.has('tab-sessions'),false);
 const initial=process.argv[1].replace(/^#\//,'');
-const initialId=['dashboard','projects','graph','tree','sharing','time','agents','inbox','wiki','secrets','connectors'].includes(initial)?initial:'dashboard';
+const initialId=['dashboard','projects','graph','tree','sharing','time','agents','inbox','wiki','setup','secrets','connectors'].includes(initial)?initial:'dashboard';
 function assertLens(id){
   assert.equal(location.hash,'#/'+id);
   assert.equal(pill.hidden,false);
@@ -98,13 +98,13 @@ function assertWiki(){
 function assertSetup(id){
   assert.equal(location.hash,'#/'+id);
   assert.equal(pill.hidden,true);
-  assert.ok(elements.get('tab-secrets').classList.contains('is-on'));
-  assert.ok(elements.get('view-secrets').classList.contains('is-active'));
+  assert.ok(elements.get('tab-setup').classList.contains('is-on'));
+  assert.ok(elements.get('view-setup').classList.contains('is-active'));
   assert.equal(elements.has('tab-connectors'),false);
   assert.equal(elements.has('view-connectors'),false,'Connectors shares the persistent Setup section');
 }
 if(initialId==='wiki')assertWiki();
-else if(['secrets','connectors'].includes(initialId))assertSetup(initialId);
+else if(['setup','secrets','connectors'].includes(initialId))assertSetup(initialId);
 else if(['agents','inbox'].includes(initialId)){
   assert.equal(location.hash,'#/'+initialId);
   assert.equal(pill.hidden,true);
@@ -126,7 +126,7 @@ for(const [index,id] of expectedTabs.entries()){
 for(const tagName of ['INPUT','TEXTAREA','SELECT']){
   document.activeElement={tagName};
   dispatchEvent({type:'keydown',key:'1'});
-  assert.equal(location.hash,'#/secrets');
+  assert.equal(location.hash,'#/setup');
 }
 document.activeElement=null;
 await registry.switchTo('connectors');
@@ -138,7 +138,7 @@ assertWiki();
 dispatchEvent({type:'keydown',key:'7'});
 assertWiki(); // Wiki is routable but does not consume a numbered shortcut
 dispatchEvent({type:'keydown',key:'4'});
-assert.equal(location.hash,'#/secrets'); // Setup is the 4th tab now Timeline left the top bar
+assert.equal(location.hash,'#/setup'); // Setup is the 4th tab now Timeline left the top bar
 await registry.switchTo('dashboard');
 elements.get('tab-projects').listeners.click();
 assertLens('projects'); // keep the existing List route/tab action
@@ -148,7 +148,7 @@ assertLens('projects'); // keep the existing List route/tab action
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/time", "#/agents", "#/inbox", "#/wiki", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/dashboard", "#/projects", "#/graph", "#/tree", "#/sharing", "#/time", "#/agents", "#/inbox", "#/wiki", "#/setup", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

@@ -202,7 +202,7 @@ try{
   await page.locator('[data-command-id="release-ready"]').waitFor();
   await page.locator('#setup-commands').evaluate(el=>el.scrollIntoView({block:'start'}));
   assert.equal(await page.locator('#command-form').isVisible(),false);
-  await page.locator('#tab-secrets.is-on').waitFor();
+  await page.locator('#tab-setup.is-on').waitFor();
   await page.waitForTimeout(600); /* allow the view's opacity transition to settle */
   await page.screenshot({path:resolve(output,'pr-setup-commands.png')});
   assert.deepEqual(errors,[]);

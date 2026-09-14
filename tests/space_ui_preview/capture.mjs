@@ -62,7 +62,7 @@ try {
   if(!screenshotsOnly) {
     assert.equal(new URL(page.url()).hash, '#/dashboard', 'Dashboard is the initial view');
     assert.deepEqual(await page.locator('.tabs button').evaluateAll(buttons => buttons.map(b => b.id)),
-      ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-secrets']);
+      ['tab-projects', 'tab-agents', 'tab-inbox', 'tab-setup']);
     assert.deepEqual(await page.locator('[data-files-lens]').allTextContents(),
       ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
@@ -140,7 +140,7 @@ try {
     assert.equal(await page.locator('.tabs .is-on').count(), 0);
     report.checks.push('Wiki deep link remains routable without a primary tab');
 
-    const tabIds = ['projects', 'agents', 'inbox', 'secrets'];
+    const tabIds = ['projects', 'agents', 'inbox', 'setup'];
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
@@ -149,7 +149,7 @@ try {
       assert.equal(await page.locator('#tab-' + id).evaluate(el => el.classList.contains('is-on')), true);
     }
     await page.keyboard.press('5');
-    assert.equal(new URL(page.url()).hash, '#/secrets', 'Only four primary tabs consume number keys');
+    assert.equal(new URL(page.url()).hash, '#/setup', 'Only four primary tabs consume number keys');
     report.checks.push('Number keys 1–4 select Projects, Agents, Inbox and Setup');
 
     for(const width of [375, 320]) {

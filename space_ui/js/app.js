@@ -8,16 +8,16 @@ import {initLensSwitch} from './core/lens-switch.js?v=20260914-timelinelens1';
 import {initPreview} from './core/preview.js?v=20260914-wikihub1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-timelinelens1';
 import sessionsView from './views/sessions.js?v=20260914-agentstab1';
-import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setupconnectors1';
-import projectsView from './views/projects.js?v=20260914-context1';
+import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setupidentity1';
+import projectsView from './views/projects.js?v=20260914-setupidentity1';
 import treeView from './views/tree.js?v=20260914-context1';
 import sharingView from './views/sharing.js?v=20260914-accounts1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-agentstab1';
-import quirqView from './views/quirq.js?v=20260817-plural1';
-import secretsView,{createConnectorsView} from './views/secrets.js?v=20260914-setupconnectors1';
-import connectorsView from './views/connectors.js?v=20260914-setupconnectors1';
+import wikiView from './views/wiki.js?v=20260914-setupidentity1';
+import quirqView from './views/quirq.js?v=20260914-setupidentity1';
+import setupView,{createConnectorsView,secretsView} from './views/secrets.js?v=20260914-setupidentity1';
+import connectorsView from './views/connectors.js?v=20260914-setupidentity1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
@@ -29,12 +29,19 @@ addEventListener('unhandledrejection',e=>console.error('Space unhandled rejectio
 function initTopbarInset(){
   const topbar=document.querySelector('.topbar');
   if(!topbar)return;
-  let previous=null;
+  let previous=null,previousWidth=null;
   const update=()=>{
-    const inset=Math.ceil(topbar.getBoundingClientRect().bottom);
-    if(inset<=0||inset===previous)return;
-    document.documentElement.style.setProperty('--topbar-inset',inset+'px');
-    previous=inset;
+    const rect=topbar.getBoundingClientRect();
+    const inset=Math.ceil(rect.bottom);
+    if(inset<=0)return;
+    if(inset!==previous){
+      document.documentElement.style.setProperty('--topbar-inset',inset+'px');
+      previous=inset;
+    }
+    if(rect.width!==previousWidth){
+      previousWidth=rect.width;
+      topbar.querySelector('.tabs .is-on')?.scrollIntoView({block:'nearest',inline:'nearest'});
+    }
   };
   update();
   if(typeof ResizeObserver==='function')new ResizeObserver(update).observe(topbar);
@@ -64,6 +71,7 @@ try{
   registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
+  registerView(setupView);
   registerView(secretsView);
   registerView(createConnectorsView(connectorsView));
   startRegistry({defaultView:'dashboard'});

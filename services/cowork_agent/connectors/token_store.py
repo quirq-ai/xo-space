@@ -65,8 +65,21 @@ def _migrate_legacy_file() -> None:
         return
 
 
-def read_all() -> dict[str, Any]:
-    """Read the full token.json. Tolerant of a missing or corrupt file."""
+def read_all(*, read_only: bool = False) -> dict[str, Any]:
+    """Read token.json, normally migrating old names and tolerating bad files.
+
+    Read-only status checks inspect the same current/legacy precedence in
+    place. They raise on unreadable or corrupt data so a failed read cannot
+    masquerade as an installation with no credentials.
+    """
+    if read_only:
+        source = next((path for path in (TOKEN_FILE, *_LEGACY_TOKEN_FILES) if path.exists()), None)
+        if source is None:
+            return {}
+        data = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Credential store must contain an object")
+        return data
     _migrate_legacy_file()
     if not TOKEN_FILE.exists():
         return {}
@@ -94,9 +107,12 @@ def write_all(data: dict[str, Any]) -> None:
         log.warning("Could not restrict permissions on %s: %s", TOKEN_FILE, exc)
 
 
-def get_entry(provider: str) -> dict[str, Any] | None:
+def get_entry(provider: str, *, read_only: bool = False) -> dict[str, Any] | None:
     """Return the stored entry for a provider key, or None if absent."""
-    return read_all().get(provider)
+    entry = (read_all(read_only=True) if read_only else read_all()).get(provider)
+    if read_only and entry is not None and not isinstance(entry, dict):
+        raise ValueError("Credential entry must contain an object")
+    return entry
 
 
 def set_entry(provider: str, entry: dict[str, Any]) -> None:

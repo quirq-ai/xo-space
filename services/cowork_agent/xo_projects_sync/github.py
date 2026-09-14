@@ -66,9 +66,10 @@ class GitHubAPIError(RuntimeError):
 # ── Token + identity ─────────────────────────────────────────────────────────
 
 
-async def resolve_auth() -> GitHubAuth:
+async def resolve_auth(*, read_only: bool = False) -> GitHubAuth:
     """Pick a GitHub token from the configured sources, in priority order."""
-    connector_token = github_connector.get_github_token()
+    connector_token = (github_connector.get_github_token(read_only=True) if read_only
+                       else github_connector.get_github_token())
     if connector_token:
         return GitHubAuth(token=connector_token, source="connector")
     import os

@@ -136,10 +136,10 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "secrets.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import secretsView,{createConnectorsView} from './views/secrets.js?v=", app)
+        self.assertIn("import setupView,{createConnectorsView,secretsView} from './views/secrets.js?v=", app)
         self.assertIn("registerView(secretsView);", app)
         self.assertIn('href="css/secrets.css?v=', index)
-        self.assertIn("id:'secrets',label:'Setup'", secrets)
+        self.assertIn("id:'setup',label:'Setup'", secrets)
         self.assertIn("type=\"password\"", secrets)
         self.assertIn("method:'PATCH'", secrets)
         self.assertIn("method:'DELETE'", secrets)
@@ -259,7 +259,7 @@ class SpaceWikiTests(unittest.TestCase):
         # and Setup's tab stays lit while it is open.
         contract = view_contract("quirq")
         self.assertIn("nav:false", contract)
-        self.assertIn("parent:'secrets'", contract)
+        self.assertIn("parent:'setup'", contract)
         # The button id and the handler that reads it must move together: an
         # unguarded querySelector on a renamed id throws inside mount(), and
         # the registry bulkheads the whole Setup view behind its error card —

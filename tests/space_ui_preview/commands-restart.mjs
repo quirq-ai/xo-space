@@ -123,7 +123,7 @@ async function within(selector){
 }
 
 try{
-  await page.goto(origin+'/space/#/secrets',{waitUntil:'networkidle'});
+  await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await row('job-a').waitFor();
   assert.equal(await page.locator('#runtime-watcher').isChecked(),false);
@@ -173,7 +173,7 @@ try{
   await action('job-a','run').click();
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-a"] .is-running'));
   await page.locator('#command-add').click();await commandFields('Draft during run');
-  await page.locator('#tab-inbox').click();await page.locator('#tab-secrets').click();
+  await page.locator('#tab-inbox').click();await page.locator('#tab-setup').click();
   assert.equal(await page.locator('#command-name').inputValue(),'Draft during run','View refresh preserves a command draft');
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-a"] .is-good'),null,{timeout:11000});
   assert.equal(await page.locator('#command-name').inputValue(),'Draft during run');
@@ -187,7 +187,7 @@ try{
   assert.match(await page.locator('.setup-run pre').first().textContent(),/<img src=x/);
   assert.equal(await page.locator('#command-runs img').count(),0);
   assert.equal(await page.evaluate(()=>window.fixtureXss),undefined);
-  await page.keyboard.press('1');assert.equal(new URL(page.url()).hash,'#/secrets','Modal keys do not switch the app');
+  await page.keyboard.press('1');assert.equal(new URL(page.url()).hash,'#/setup','Modal keys do not switch the app');
   await page.keyboard.press('Escape');await page.locator('#command-runs').waitFor({state:'hidden'});
   await action('job-a','delete').click();await row('job-a').waitFor({state:'detached'});
   assert.equal(history.get('job-a').length,6,'Deleting the definition retains fixture history');

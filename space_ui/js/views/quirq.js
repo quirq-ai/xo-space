@@ -23,7 +23,7 @@ let go=()=>{};
 export default {
   id:'quirq',
   label:'Quirq',
-  order:8,nav:false,parent:'secrets',
+  order:8,nav:false,parent:'setup',
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
@@ -58,7 +58,7 @@ function renderShell(){
         /* This view has no tab of its own — every other control on the page
            leads further away, so the way home belongs in the hero. */
         +'<div class="quirq-hero-actions">'
-          +'<button id="quirq-back" type="button" data-go-view="secrets">&#8592; Setup</button>'
+          +'<button id="quirq-back" type="button" data-go-view="setup">&#8592; Setup</button>'
           +'<button id="quirq-refresh" type="button">Refresh data</button>'
         +'</div>'
       +'</header>'

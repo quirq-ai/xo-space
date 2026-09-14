@@ -9,7 +9,7 @@ Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
 the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
 to `#/graph`, `#/tree`, `#/sharing`, and `#/time` (Timeline) keep their
 meanings. The numbered shortcuts follow the top bar: Projects `1`, Agents
-`2`, Inbox `3`, Setup `4`. Connectors opens inside Setup. Timeline is a lens of the Projects
+`2`, Inbox `3`, Setup `4` (`#/setup`). Connectors (`#/connectors`) and Secrets (`#/secrets`) open inside Setup. Timeline is a lens of the Projects
 tab, reached from the Projects lens switch rather than a numbered shortcut.
 
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
@@ -72,8 +72,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
-| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'secrets'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
-| `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Connectors, Commands and Server management. Forms keep drafts across sections and status refreshes. |
+| `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
+| `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Connectors, Secrets, Commands and Server management. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. Forms keep drafts across sections and status refreshes. |
+| `js/views/setup-identity.js` | Read-only Workspace metadata, verified XO user ID and GitHub account from `/space/setup/status`; no tokens or browser session minting. |
 | `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
 | `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
 | `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
@@ -128,8 +129,8 @@ spring stiffness makes the original explicit-Euler sim diverge (positions hit
 
 Three setup steps keep one section visible at a time:
 
-1. **Workspace** chooses the projects and Space data folders. Applied paths and connection diagnostics are expandable.
-2. **Agent & access** selects the chat agent, shows its installation/folder checks and recommended credential actions, and manages saved credentials. Other agents and detailed paths are collapsed.
+1. **Workspace** shows the Space ID, configured workspace name/owner, verified XO user ID and GitHub account, then the projects and Space data folders. Applied paths and connection diagnostics are expandable.
+2. **Agent & access** selects the chat agent, shows its installation/folder checks and recommended credential actions, and links to Secrets for saved environment values. Other agents and detailed paths are collapsed.
 3. **Activity** controls automatic collection and source coverage. The check interval sits under Advanced; usage-reporting status stays visible here.
 
 **Next** moves between steps without saving. All forms stay mounted, so section
@@ -139,7 +140,7 @@ required runtime fields, but use the last saved values for the other section.
 The status strip points to pending changes or a reported folder/installation
 issue; it does not infer authenticated access from a saved key or installed CLI.
 
-The **Manage** group opens **Commands** or **Server** directly. Inbox Jobs'
+The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server** directly. Setup uses `#/setup`; `#/secrets` opens Secrets inside Setup. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs'
 **Open Setup** button selects Commands. **Server → Technical details** opens
 Quirq's state browser.
 

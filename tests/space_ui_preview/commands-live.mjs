@@ -40,7 +40,7 @@ await context.route('**/*',async route=>{
 });
 let createdId=null;
 try{
-  await page.goto(origin+'/space/#/secrets',{waitUntil:'networkidle'});
+  await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await page.locator('#command-add').click();
   await page.locator('#command-name').fill('Verify isolated command execution');

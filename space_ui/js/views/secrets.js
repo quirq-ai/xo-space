@@ -9,6 +9,7 @@ import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-setupflow1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
+import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -27,6 +28,7 @@ let secretError=null;
 let editingKey=null;
 let loading=false;
 let commands=null;
+let identity=null;
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -44,7 +46,7 @@ const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:
 export function createConnectorsView(controller){
   connectorController=controller;
   return {
-    id:'connectors',label:'Connectors',nav:false,parent:'secrets',section:'secrets',
+    id:'connectors',label:'Connectors',nav:false,parent:'setup',section:'setup',
     toolbar:setupToolbar,
     mount:mountSetup,
     show(){selectPanel('connectors');},
@@ -59,6 +61,8 @@ function mountSetup(el,ctx){
     renderShell();
     bindEvents();
     commands=mountCommands(root.querySelector('#setup-commands'));
+    identity=mountIdentity(root.querySelector('#setup-identity'));
+    identity.refresh();
     /* Connector links must not wait for unrelated settings/status reads. */
     loadAll().catch(err=>{
       console.error('Setup status failed to load:',err);
@@ -72,10 +76,15 @@ function mountSetup(el,ctx){
 }
 
 export default {
-  id:'secrets',label:'Setup',order:9,
+  id:'setup',label:'Setup',order:9,
   toolbar:setupToolbar,
   mount(el,ctx){return mountSetup(el,ctx);},
   show(){commands?.refresh(); /* Preserve in-progress forms while switching tabs. */}
+};
+
+export const secretsView={
+  id:'secrets',label:'Secrets',nav:false,parent:'setup',section:'setup',
+  toolbar:setupToolbar,mount:mountSetup,show(){selectPanel('secrets');},
 };
 
 let switchTo=()=>{}; /* ctx.switchTo, captured on mount (opens the Quirq view) */
@@ -97,12 +106,14 @@ function renderShell(){
           </button>`).join('')}
         <p>Manage</p>
         <button type="button" data-setup-go="connectors" aria-controls="setup-panel-connectors"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Connectors</b><small>Apps, access and polling</small></span></button>
+        <button type="button" data-setup-go="secrets" aria-controls="setup-panel-secrets"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Secrets</b><small id="setup-step-secrets">Environment values</small></span></button>
         <button type="button" data-setup-go="commands" aria-controls="setup-panel-commands"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Commands</b><small>Run and view results</small></span></button>
         <button type="button" data-setup-go="server" aria-controls="setup-panel-server"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Server</b><small>Updates and restart</small></span></button>
       </nav>
       <div class="setup-content">
         <section class="setup-panel" id="setup-panel-workspace" aria-labelledby="setup-workspace-title">
           <header class="setup-section-head"><h2 id="setup-workspace-title" tabindex="-1">Workspace</h2><p>Choose your project folder and where Space keeps its settings.</p></header>
+          <section class="setup-card setup-identity" id="setup-identity" aria-label="Workspace identity"></section>
           <section class="setup-card setup-roots">
             <div class="setup-card-head"><h3>Folders</h3><i id="roots-badge">Checking</i></div>
             <form id="roots-form" novalidate>
@@ -134,18 +145,7 @@ function renderShell(){
             </form>
             <div class="setup-sources" id="setup-sources"><div class="setup-empty">Checking agents…</div></div>
           </section>
-          <section class="setup-card setup-credentials">
-            <div class="setup-card-head"><h3>Keys and credentials <span id="secret-count">—</span></h3><button class="setup-secondary" id="secret-add" type="button">Add credential</button></div>
-            <div id="secret-list"><div class="setup-empty">Loading credentials…</div></div>
-            <div class="setup-form-error" id="secret-error" role="alert" hidden></div>
-            <form id="secret-form" novalidate hidden>
-              <h4 id="secret-form-title">Add credential</h4>
-              <label for="secret-key">Key</label><input id="secret-key" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ANTHROPIC_API_KEY" required>
-              <label for="secret-value">Value</label><div class="setup-value-wrap"><input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste a value" required><button id="secret-toggle" type="button" aria-label="Show value">Show</button></div>
-              <small>Saved values stay hidden. Restart to apply changes.</small>
-              <div class="setup-actions"><button class="setup-primary" id="secret-save" type="submit">Save credential</button><button class="setup-secondary" id="secret-cancel" type="button">Cancel</button></div>
-            </form>
-          </section>
+          <button class="setup-secondary" type="button" data-setup-go="secrets">Manage secrets →</button>
           <footer class="setup-step-footer"><button class="setup-secondary" type="button" data-setup-go="activity">Next: Activity →</button></footer>
         </section>
 
@@ -167,6 +167,22 @@ function renderShell(){
 
         <section class="setup-panel" id="setup-panel-connectors" aria-labelledby="setup-connectors-title" hidden>
           <div id="setup-connectors"></div>
+        </section>
+
+        <section class="setup-panel" id="setup-panel-secrets" aria-labelledby="setup-secrets-title" hidden>
+          <header class="setup-section-head"><h2 id="setup-secrets-title" tabindex="-1">Secrets</h2><p>Environment values used by Space and its agents.</p></header>
+          <section class="setup-card setup-credentials">
+            <div class="setup-card-head"><h3>Saved secrets <span id="secret-count">—</span></h3><button class="setup-secondary" id="secret-add" type="button">Add secret</button></div>
+            <div id="secret-list"><div class="setup-empty">Loading credentials…</div></div>
+            <div class="setup-form-error" id="secret-error" role="alert" hidden></div>
+            <form id="secret-form" novalidate hidden>
+              <h4 id="secret-form-title">Add secret</h4>
+              <label for="secret-key">Key</label><input id="secret-key" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ANTHROPIC_API_KEY" required>
+              <label for="secret-value">Value</label><div class="setup-value-wrap"><input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste a value" required><button id="secret-toggle" type="button" aria-label="Show value">Show</button></div>
+              <small>Saved values stay hidden. Restart to apply changes.</small>
+              <div class="setup-actions"><button class="setup-primary" id="secret-save" type="submit">Save secret</button><button class="setup-secondary" id="secret-cancel" type="button">Cancel</button></div>
+            </form>
+          </section>
         </section>
 
         <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
@@ -235,19 +251,23 @@ function selectPanel(panel,{focus=false}={}){
   }
 }
 
+function openPanel(panel,options){
+  selectPanel(panel,options);
+  const route=['connectors','secrets'].includes(panel)?panel:'setup';
+  if(location.hash!=='#/'+route)switchTo(route);
+}
+
 function bindEvents(){
   root.addEventListener('click',event=>{
     const button=event.target.closest('[data-setup-go]');
     if(button){
       const panel=button.dataset.setupGo;
-      selectPanel(panel,{focus:true});
-      const route=panel==='connectors'?'connectors':'secrets';
-      if(location.hash!=='#/'+route)switchTo(route);
+      openPanel(panel,{focus:true});
     }
     if(event.target.closest('[data-connectors-retry]'))selectPanel('connectors');
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
-  addEventListener('space:setup-section',event=>selectPanel(event.detail?.panel,{focus:true}));
+  addEventListener('space:setup-section',event=>openPanel(event.detail?.panel,{focus:true}));
   root.querySelector('#setup-open-projects').addEventListener('click',()=>switchTo('projects'));
   root.querySelector('#setup-quirq').addEventListener('click',()=>switchTo('quirq'));
   for(const [panel,selector] of [['workspace','#roots-form'],['agent','#runtime-form'],['activity','#activity-form']]){
@@ -264,7 +284,7 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',loadAll);
+  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
@@ -412,7 +432,10 @@ function renderRuntime(){
 function renderJourney(){
   const steps=setupSteps(runtimeUnavailable?null:runtimeData);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty=panel=>drafts[panel]||(panel==='agent'&&credentialDraft);
+  const dirty=panel=>panel==='secrets'?credentialDraft:drafts[panel];
+  const secretsStep=root.querySelector('#setup-step-secrets');
+  secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
+  secretsStep.className=credentialDraft?'is-pending':'';
   for(const panel of ['workspace','agent','activity']){
     const state=steps[panel],el=root.querySelector('#setup-step-'+panel);
     el.textContent=dirty(panel)?'Unsaved changes':runtimeUnavailable?'Unavailable'
@@ -420,10 +443,10 @@ function renderJourney(){
     el.className='is-'+(dirty(panel)?'pending':state.tone);
   }
   if(restarting||runtimeUnavailable)return;
-  const unsaved=Object.keys(drafts).filter(dirty);
+  const unsaved=[...Object.keys(drafts),'secrets'].filter(dirty);
   const alert=root.querySelector('#setup-alert');
   if(unsaved.length){
-    const labels={workspace:'Workspace',agent:'Agent & access',activity:'Activity'};
+    const labels={workspace:'Workspace',agent:'Agent & access',activity:'Activity',secrets:'Secrets'};
     alert.className='setup-alert is-pending';
     alert.innerHTML='<div><b>Unsaved changes</b><p>'+esc(unsaved.map(panel=>labels[panel]).join(', '))+'</p></div>'
       +'<button class="setup-secondary" type="button" data-setup-go="'+unsaved[0]+'">Review changes</button>';
@@ -713,7 +736,7 @@ function renderSecretList(){
   root.querySelector('#secret-count').textContent=String(secretItems.length);
   const list=root.querySelector('#secret-list');
   if(!secretItems.length){
-    list.innerHTML='<div class="setup-empty"><b>No credentials added.</b><span>Use your agent’s sign-in or add a key above.</span></div>';
+    list.innerHTML='<div class="setup-empty"><b>No secrets added.</b><span>Add an environment key and its value.</span></div>';
     return;
   }
   list.innerHTML=secretItems.map(item=>
@@ -737,7 +760,7 @@ function handleSecretListAction(event){
 
 function beginSecret(key){
   if(writes.size)return;
-  selectPanel('agent');
+  openPanel('secrets');
   secretForm.hidden=false;
   editingKey=key;
   keyInput.value=key;
@@ -746,8 +769,8 @@ function beginSecret(key){
   valueInput.type='password';
   root.querySelector('#secret-toggle').textContent='Show';
   root.querySelector('#secret-toggle').setAttribute('aria-label','Show value');
-  root.querySelector('#secret-form-title').textContent=secretItems.some(item=>item.key===key)?'Replace credential':'Set credential';
-  secretSaveButton.textContent=secretItems.some(item=>item.key===key)?'Replace value':'Save credential';
+  root.querySelector('#secret-form-title').textContent=secretItems.some(item=>item.key===key)?'Replace secret':'Set secret';
+  secretSaveButton.textContent=secretItems.some(item=>item.key===key)?'Replace value':'Save secret';
   secretCancelButton.hidden=false;
   clearSecretError();
   valueInput.focus();
@@ -763,11 +786,11 @@ function resetSecretForm(){
   valueInput.type='password';
   root.querySelector('#secret-toggle').textContent='Show';
   root.querySelector('#secret-toggle').setAttribute('aria-label','Show value');
-  root.querySelector('#secret-form-title').textContent='Add credential';
-  secretSaveButton.textContent='Save credential';
+  root.querySelector('#secret-form-title').textContent='Add secret';
+  secretSaveButton.textContent='Save secret';
   secretCancelButton.hidden=false;
   clearSecretError();
-  if(currentPanel==='agent')root.querySelector('#secret-add').focus({preventScroll:true});
+  if(currentPanel==='secrets')root.querySelector('#secret-add').focus({preventScroll:true});
   renderJourney();
 }
 
@@ -806,7 +829,8 @@ async function saveSecret(event){
     return;
   }
   resetSecretForm();
-  toast('Credential saved');
+  toast('Secret saved');
+  identity?.refresh();
   await loadAll();
 }
 
@@ -817,7 +841,8 @@ async function removeSecret(key,button){
   writes.delete('secret');runtimeRevision++;setConfigBusy(false);
   if(!res.ok){showSecretError(res.error);if(refreshQueued)loadAll();return;}
   if(editingKey===key)resetSecretForm();
-  toast(res.data.deleted?'Credential removed':'Credential was already absent');
+  toast(res.data.deleted?'Secret removed':'Secret was already absent');
+  identity?.refresh();
   await loadAll();
 }
 
@@ -825,7 +850,7 @@ function setSecretBusy(busy){
   setBusy(secretSaveButton,busy);setBusy(secretCancelButton,busy);
   keyInput.disabled=busy;valueInput.disabled=busy;
   root.querySelectorAll('#secret-add,#secret-toggle,#setup-sources button[data-secret-key],#secret-list button').forEach(button=>button.disabled=busy);
-  secretSaveButton.textContent=writes.has('secret')?'Saving…':(editingKey?'Replace value':'Save credential');
+  secretSaveButton.textContent=writes.has('secret')?'Saving…':(editingKey?'Replace value':'Save secret');
 }
 
 /* Disabled is not busy. A button that cannot act here (the restart on a

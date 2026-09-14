@@ -519,7 +519,7 @@ function bindRows(){
     dispatchEvent(new CustomEvent('space:wiki-page',{detail:'first-run'}));
   });
   const st=root.querySelector('[data-open-setup]');
-  if(st)st.addEventListener('click',()=>switchTo('secrets'));
+  if(st)st.addEventListener('click',()=>switchTo('setup'));
 }
 function syncSortUI(){
   root.querySelectorAll('[data-sort]').forEach(b=>{

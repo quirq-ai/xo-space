@@ -119,7 +119,7 @@ Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes g
 
 **First run.** Space opens on Dashboard, the first lens under **Projects**. The lens switch is **Dashboard | List | Graph | Tree | Sharing | Timeline**. Clicking the Projects tab opens List (`#/projects`), which lists every folder in the directory you installed in. An empty List shows *No projects in this workspace yet* — `mkdir` or clone a project there, or ask your agent to "create an xo-project". Before the first chat, check Setup → Agent & access: the agent CLI is on PATH (`npm install -g @anthropic-ai/claude-code`) and a credential is saved. Full walkthrough: [INSTALLATION.md](INSTALLATION.md).
 
-**Setup and management.** Setup groups Workspace, Agent & access, and Activity into three steps. Under Manage, open Connectors for app connections, permissions and polling; Commands for saved commands and run results; or Server for updates, restart and technical details. Existing `#/connectors` links open Connectors inside Setup.
+**Setup and management.** Setup groups Workspace, Agent & access, and Activity into three steps. Workspace also shows the Space ID, workspace owner, XO account and verified GitHub identity. Under Manage, open Connectors for app connections, permissions and polling; Secrets for environment keys; Commands for saved commands and run results; or Server for updates, restart and technical details. Existing `#/connectors` links open Connectors inside Setup.
 
 ### XO Managed Cloud
 
@@ -198,7 +198,7 @@ Nothing, by default. A self-hosted install binds to loopback, needs no account, 
 
 If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. Normal metric fields exclude prompts, responses and file contents; diagnostic error notes can include source filenames and raw error details. Leave the key unset to stay signed out.
 
-To see what your install decided: open **Setup → Activity → Usage reporting** (`/space/#/secrets`), the server's own decisions are in `<state root>/quirq.log` (`grep usage_sync ~/.quirq/quirq.log` on the default install), and every external command Quirq runs is recorded beside it in `<state root>/commands.log`. The installer prints the log pointers on every run.
+To see what your install decided: open **Setup → Activity → Usage reporting** (`/space/#/setup`), the server's own decisions are in `<state root>/quirq.log` (`grep usage_sync ~/.quirq/quirq.log` on the default install), and every external command Quirq runs is recorded beside it in `<state root>/commands.log`. The installer prints the log pointers on every run.
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 

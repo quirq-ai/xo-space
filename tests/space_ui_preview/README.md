@@ -65,13 +65,14 @@ save/poll races, validation conflicts, and desktop/mobile layouts:
 node tests/space_ui_preview/setup-state.mjs
 node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
 node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
+node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
 node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
 node tests/space_ui_preview/command-results-races.mjs
 ```
 
 The Setup journey check covers section/Next navigation, selected-agent access,
-masked credentials, independent Agent/Activity saves, drafts during slow initial
+separate Secrets management, masked values, independent Agent/Activity saves, drafts during slow initial
 loads and refresh/save races, unavailable status, and desktop/mobile layouts.
 All settings and credential writes use fictional browser fixtures. The pure
 state check covers pending-change priority and factual summaries without
@@ -79,7 +80,7 @@ inferring authentication or live activity from installation checks.
 
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and
-desktop/mobile layouts. Connector requests use browser fixtures.
+desktop/mobile layouts. Connector requests use browser fixtures. The identity check covers verified, unavailable and unconfigured accounts, independent error states and refresh races.
 
 The Commands/restart script intercepts mutations with browser fixtures; it never executes a
 command or restarts a process. It checks that all three restart buttons wait for

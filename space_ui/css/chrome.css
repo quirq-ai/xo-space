@@ -46,9 +46,10 @@
   /* Reflow the primary tabs below the brand, graph controls and resource links. */
   @media (max-width:1400px){
     .topbar{grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
+    .topbar-right{display:contents}
     .tabs{
-      grid-column:1/-1;grid-row:2;width:100%;max-width:calc(100vw - 28px);
-      justify-self:stretch;justify-content:flex-start;overflow-x:auto;scrollbar-width:none
+      grid-column:1/-1;grid-row:2;max-width:calc(100vw - 28px);
+      overflow-x:auto;scrollbar-width:none
     }
     .tabs::-webkit-scrollbar{display:none}
     .tabs button{flex:0 0 auto}
@@ -77,6 +78,7 @@
   /* Keep the root picker and search inside the viewport alongside the brand
      when all five Projects lenses are available on a phone. */
   @media (max-width:480px){
+    .tabs button{padding:7px 10px;letter-spacing:.08em}
     #root-btn .rlab{display:none}
     #root-btn b{max-width:56px}
     .searchwrap{min-width:0}

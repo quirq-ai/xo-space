@@ -53,13 +53,13 @@ await context.route('**/*',async route=>{
 const search=page.locator('#view-search');
 const graphSearch=page.locator('#q');
 const modes={graph:'graph',dashboard:'graph',projects:'search',tree:'search',time:'search',connectors:'search',
-  secrets:'none',wiki:'none',sharing:'none',quirq:'none'};
+  setup:'none',secrets:'none',wiki:'none',sharing:'none',quirq:'none'};
 const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
   time:'Filter timeline projects…',connectors:'Filter connectors…'};
 async function expectMode(id){
   const mode=modes[id];
   await page.waitForFunction(({id,mode,placeholder})=>location.hash==='#/'+id
-    &&document.getElementById('view-'+(id==='dashboard'?'graph':id==='connectors'?'secrets':id))?.classList.contains('is-active')
+    &&document.getElementById('view-'+(id==='dashboard'?'graph':['connectors','secrets','setup'].includes(id)?'setup':id))?.classList.contains('is-active')
     &&document.querySelector('.topbar')?.dataset.toolbar===mode
     &&(mode!=='search'||(!document.getElementById('view-search').disabled
       &&document.getElementById('view-search').placeholder===placeholder))
@@ -71,13 +71,13 @@ async function expectMode(id){
 }
 async function go(id){
   if(id==='projects')await page.locator('#tab-projects').click();
-  else if(['connectors','secrets'].includes(id)){
-    await page.locator('#tab-secrets').click();
-    await page.locator('#setup-nav [data-setup-go="'+(id==='connectors'?'connectors':'workspace')+'"]').click();
+  else if(['connectors','secrets','setup'].includes(id)){
+    await page.locator('#tab-setup').click();
+    await page.locator('#setup-nav [data-setup-go="'+(id==='setup'?'workspace':id)+'"]').click();
   }
   else if(id==='wiki')await page.locator('#wiki-link').click();
   else if(id==='quirq'){
-    await page.locator('#tab-secrets').click();
+    await page.locator('#tab-setup').click();
     await page.locator('#setup-nav [data-setup-go="server"]').click();
     await page.locator('#setup-quirq').click();
   }else{
@@ -112,15 +112,44 @@ async function visibleConnectors(ids){
 async function layout(id,width){
   await page.waitForFunction(()=>Math.abs(document.getElementById('stage').getBoundingClientRect().y
     -document.querySelector('.topbar').getBoundingClientRect().bottom)<2);
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   const value=await page.evaluate(()=>{
     const rect=selector=>{const r=document.querySelector(selector).getBoundingClientRect();
       return{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
+    const tabs=document.querySelector('.tabs');
+    const buttons=[...tabs.querySelectorAll('button')];
+    const first=buttons[0].getBoundingClientRect(),last=buttons.at(-1).getBoundingClientRect();
+    const visibleControls=[...document.querySelectorAll('#toolbar-controls input,#root-btn,.resource-links a')]
+      .filter(node=>node.getClientRects().length).map(node=>{
+        const r=node.getBoundingClientRect();return{id:node.id||node.textContent.trim(),x:r.x,y:r.y,right:r.right,bottom:r.bottom};
+      });
     return{viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,
+      brand:rect('.brand'),tabsOverflow:tabs.scrollWidth>tabs.clientWidth+1,
+      activeTab:tabs.querySelector('.is-on')?rect('.tabs .is-on'):null,
+      buttonsCenter:(first.left+last.right)/2,visibleControls,
       header:rect('.topbar'),tabs:rect('.tabs'),resources:rect('.resource-links'),
       controls:rect('#toolbar-controls'),stage:rect('#stage')};
   });
   report.layouts.push({id,width,...value});
   assert.ok(value.scroll<=value.viewport,id+' document overflows at '+width+': '+value.scroll);
+  assert.ok(Math.abs(value.tabs.x+value.tabs.width/2-width/2)<1,id+' primary tabs are not centered at '+width);
+  if(!value.tabsOverflow)assert.ok(Math.abs(value.buttonsCenter-width/2)<1,id+' tab buttons are not centered at '+width);
+  if(value.activeTab)assert.ok(value.activeTab.x>=value.tabs.x-1&&value.activeTab.right<=value.tabs.right+1,
+    id+' active tab is clipped at '+width);
+  if(width>1400)assert.ok(value.header.height<=58.5,id+' desktop header gained an extra row at '+width);
+  const groups=[['brand',value.brand],['tabs',value.tabs],['resources',value.resources],
+    ...(modes[id]==='none'?[]:[['controls',value.controls]])];
+  for(const [index,[name,a]] of groups.entries())for(const [other,b] of groups.slice(index+1)){
+    const overlap=Math.min(a.right,b.right)-Math.max(a.x,b.x)>1
+      &&Math.min(a.bottom,b.bottom)-Math.max(a.y,b.y)>1;
+    assert.equal(overlap,false,id+' '+name+' overlaps '+other+' at '+width);
+  }
+  for(const control of value.visibleControls)assert.ok(control.x>=-1&&control.right<=width+1,
+    id+' '+control.id+' exceeds viewport at '+width);
+  for(const [index,a] of value.visibleControls.entries())for(const b of value.visibleControls.slice(index+1))
+    assert.equal(Math.min(a.right,b.right)-Math.max(a.x,b.x)>1
+      &&Math.min(a.bottom,b.bottom)-Math.max(a.y,b.y)>1,false,
+    id+' '+a.id+' overlaps '+b.id+' at '+width);
   for(const [name,bounds] of [['resources',value.resources],['tabs',value.tabs],
     ...(modes[id]==='none'?[]:[['controls',value.controls]])]){
     assert.ok(bounds.x>=-1&&bounds.right<=width+1,id+' '+name+' exceeds viewport at '+width);
@@ -215,7 +244,7 @@ try{
   assert.equal(await page.locator('#root-btn b').textContent(),rootLabel);
   checked('Connectors matches names/descriptions/accounts and preserves unsaved form identity and query.');
 
-  for(const id of ['secrets','wiki','sharing','quirq']){
+  for(const id of ['setup','secrets','wiki','sharing','quirq']){
     await go(id);
     await page.locator('.brand').click();await page.keyboard.press('/');
     assert.equal(await page.evaluate(()=>['q','view-search'].includes(document.activeElement?.id)),false,
@@ -224,14 +253,14 @@ try{
   }
   checked('Setup, Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
 
-  for(const width of [320,390,640,1280,1440]){
+  for(const width of [320,390,640,1280,1440,1920]){
     await page.setViewportSize({width,height:1000});
     await go('graph');const graphHeight=await layout('graph',width);
     await screenshot('graph-'+width+'.png');
     await go('projects');const searchHeight=await layout('projects',width);
     await screenshot('list-'+width+'.png');
     for(const id of ['tree','time','connectors']){await go(id);await layout(id,width);}
-    for(const id of ['secrets','wiki','sharing','quirq']){
+    for(const id of ['setup','secrets','wiki','sharing','quirq']){
       await go(id);const height=await layout(id,width);
       assert.ok(height<=graphHeight+1&&height<=searchHeight+1,id+' header is not compact at '+width);
       if(width<=640)assert.ok(height<=searchHeight-20,id+' reserves a hidden control row at '+width);
