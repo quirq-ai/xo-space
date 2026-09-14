@@ -387,12 +387,17 @@ function cardEl(toolkit){
 }
 const alertEl={hidden:true,innerHTML:'',className:''};
 const noMatch={hidden:true,textContent:''};
+const nativeGrid={innerHTML:''};
+const workspaceSection={hidden:false},accountSection={hidden:false};
 const refreshBtn={listeners:[],addEventListener(type,fn){this.listeners.push(fn);}};
 const refresh=()=>refreshBtn.listeners.forEach(fn=>fn());
 const root={
   innerHTML:'',
   querySelector(sel){
     if(sel==='#conn-grid')return grid;
+    if(sel==='#conn-native-grid')return nativeGrid;
+    if(sel==='#conn-workspace-section')return workspaceSection;
+    if(sel==='#conn-account-section')return accountSection;
     if(sel==='#conn-refresh')return refreshBtn;
     if(sel==='#conn-alert')return alertEl;
     if(sel==='#conn-no-match')return noMatch;
@@ -421,7 +426,16 @@ const gmail=()=>grid.drawers.gmail;
 const snap=d=>d?{enabled:d.enabled,interval:d.interval,cal:!!d.collectors.cal,mail:!!d.collectors.mail}:null;
 const out={};
 
-const view=(await import(UI+'/js/views/connectors.js')).default;
+/* These probes exercise the account-app controller, including its real API,
+   session and polling code. Native integrations have independent browser
+   coverage; a no-op child keeps this intentionally small DOM stub focused. */
+const fs=await import('node:fs/promises');
+const connectorURL=new URL(UI+'/js/views/connectors.js');
+const connectorSource=(await fs.readFile(connectorURL,'utf8'))
+  .replace(/^import \{mountNativeConnectors\} from .*?;$/m,
+    'const mountNativeConnectors=()=>({refresh:async()=>{},setFilter:()=>({total:0,shown:0})});')
+  .replace(/from '([^']+)'/g,(_match,specifier)=>"from '"+new URL(specifier,connectorURL).href+"'");
+const view=(await import('data:text/javascript;base64,'+Buffer.from(connectorSource).toString('base64'))).default;
 """
 
 DRAWER_PROBE = PROBE_PRELUDE + r"""
@@ -885,7 +899,7 @@ class ShellTests(unittest.TestCase):
         context_stamp = "20260914-context1"
         for view in ("tree",):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
-        self.assertIn("./views/connectors.js?v=20260914-setupidentity1'", app)
+        self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-results1"
         self.assertIn("./views/inbox.js?v=20260914-setupidentity1'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
@@ -908,7 +922,7 @@ class ShellTests(unittest.TestCase):
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # Inbox's Jobs/results styles advanced with its view; the connector
         # stylesheet advances for the embedded Setup section.
-        for sheet, stamp in (("inbox", results_stamp), ("connectors", "20260914-setupconnectors1")):
+        for sheet, stamp in (("inbox", results_stamp), ("connectors", "20260914-setupapps1")):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + stamp + '">', html)
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:

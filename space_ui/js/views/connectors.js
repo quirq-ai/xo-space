@@ -1,6 +1,6 @@
-/* Connectors section: Composio toolkits, hosted inside Setup.
+/* Connectors section: workspace integrations and account apps inside Setup.
 
-   The eight toolkits are OAuth2-only. Identity is the XO account id resolved from
+   Account app identity is the XO account id resolved from
    an X-XO-Session header, so every call here goes through core/session.js. Nothing
    on this page (or on this server) holds a provider credential; xo-swarm-api
    keeps the Composio API key and runs every Composio call itself, so the browser
@@ -37,6 +37,7 @@ import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
 import {accountLabel,accountLine} from '../core/connections.js';
 import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260914-accounts1';
+import {mountNativeConnectors} from './native-connectors.js?v=20260914-connectors2';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
@@ -52,6 +53,7 @@ let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
 let filter='';
+let nativeConnectors=null;
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -89,8 +91,9 @@ export default {
   async mount(el){
     root=el;
     renderShell();
+    nativeConnectors=mountNativeConnectors(root.querySelector('#conn-native-grid'),{onChange:applyFilter});
     bindEvents();
-    await loadAll();
+    await refreshAll();
   },
   show(){/* keep an in-flight authorization alive across tab switches */}
 };
@@ -101,22 +104,32 @@ function renderShell(){
       +'<header class="conn-hero">'
         +'<div>'
           +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
-          +'<p>Connect apps, choose their permissions, and collect updates in Inbox.</p>'
+          +'<p>Tools and apps for this workspace.</p>'
         +'</div>'
         +'<div class="conn-hero-actions">'
           +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
         +'</div>'
       +'</header>'
-      +'<div class="conn-alert" id="conn-alert" hidden></div>'
-      +'<section class="conn-grid" id="conn-grid" aria-label="Composio toolkits">'
-        +'<div class="conn-empty">Loading connectors&hellip;</div>'
+      +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
+        +'<div class="conn-group-head"><div><h3 id="conn-workspace-title">Workspace integrations</h3>'
+          +'<p>Code, design, deployments, and files.</p></div></div>'
+        +'<div class="conn-grid" id="conn-native-grid"></div>'
+      +'</section>'
+      +'<section class="conn-group" id="conn-account-section" aria-labelledby="conn-account-title">'
+        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3>'
+          +'<p>Connect once to your XO account, then enable per workspace.</p></div>'
+          +'<span class="conn-group-badge">Composio</span></div>'
+        +'<div class="conn-alert" id="conn-alert" hidden></div>'
+        +'<div class="conn-grid" id="conn-grid" aria-label="Composio toolkits">'
+          +'<div class="conn-empty">Loading apps&hellip;</div>'
+        +'</div>'
       +'</section>'
       +'<div class="conn-empty" id="conn-no-match" role="status" hidden></div>'
     +'</div>';
 }
 
 function bindEvents(){
-  root.querySelector('#conn-refresh').addEventListener('click',()=>loadAll());
+  root.querySelector('#conn-refresh').addEventListener('click',refreshAll);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
   if(!listener){
     listener=onAuthMessage;
@@ -125,6 +138,11 @@ function bindEvents(){
 }
 
 /* ---------- loading ---------- */
+
+async function refreshAll(){
+  /* Workspace integrations do not depend on an XO or Composio session. */
+  await Promise.all([nativeConnectors.refresh(),loadAll()]);
+}
 
 async function loadAll(){
   if(loading)return;
@@ -156,11 +174,10 @@ async function loadAll(){
 
 function renderSignedOut(){
   setAlert('pending',
-    'Sign in to XO to use connectors',
-    (sessionError()||'')+' Connections belong to your XO account, so this page needs an '
-      +'identity. Set XO_API_KEY and XO_SPACE_ID in .env, or sign in from the app, then '
-      +'refresh.');
-  paintGrid(()=>'<div class="conn-empty">No identity &mdash; nothing to show yet.</div>');
+    'Sign in to XO to connect account apps',
+    'Sign in from the app, or add XO_API_KEY and XO_SPACE_ID in Secrets, then refresh.'
+      +(sessionError()?' '+esc(sessionError()):''));
+  paintGrid(()=>'');
 }
 
 /* The /toolkits route is the only source of the toolkit list, so when it fails
@@ -182,23 +199,17 @@ function renderListFailure(res){
     setAlert('error','xo-space is unreachable','The server is down or restarting.');
     note='Cannot reach the server.';
   }else if(res.status===401){
-    setAlert('pending','Session expired','Refresh to mint a new session.');
+    setAlert('pending','Session expired','Refresh to sign in again.');
     note='Your session is no longer valid.';
   }else if(notConfigured){
-    setAlert('pending','Composio is not configured on this server',
-      'Composio credentials live only on xo-swarm-api, never on this workspace. '
-      +'Check that this server is signed in (XO_API_KEY) and that COMPOSIO_API_KEY '
-      +'plus one COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; id per app are set on '
-      +'xo-swarm-api &mdash; both are created in the Composio dashboard.');
-    note='No connectors to show until xo-swarm-api has a Composio API key.';
+    setAlert('pending','Account apps need server configuration',
+      'Check this workspace’s XO_API_KEY. Set COMPOSIO_API_KEY and each app’s '
+      +'COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; on xo-swarm-api, then refresh.');
+    note='Account apps are not configured.';
   }else if(serverFault){
-    setAlert('error','Listing connectors failed on this server',
-      'The server errored while listing toolkits and returned no detail, so the '
-      +'reason is only in the xo-space server log &mdash; read the traceback there '
-      +'first. The usual causes are xo-swarm-api being unreachable (check '
-      +'CHAT_API_BASE_URL), this server&#39;s XO_API_KEY being rejected, or a '
-      +'Composio-side outage on xo-swarm-api itself.');
-    note='Connectors are unavailable until the server-side error is cleared.';
+    setAlert('error','Could not load account apps',
+      'Check the xo-space server log for the cause, then refresh.');
+    note='Account apps are temporarily unavailable.';
   }else{
     setAlert('error','Could not list connectors',esc(res.error||''));
     note=res.error||'Unavailable.';
@@ -217,6 +228,27 @@ function schemeOf(toolkitId){
 const SCHEME_LABEL={OAUTH2:'OAuth sign-in',API_KEY:'API key or bot token',BEARER_TOKEN:'access token',BASIC:'username and password'};
 const schemeLabel=s=>SCHEME_LABEL[String(s||'').toUpperCase()]||String(s||'');
 function isEnabledHere(t){return !!t.workspace_enabled;}
+
+/* Local artwork keeps the directory recognizable without third-party image
+   requests. Unknown server-provided apps still receive a useful letter mark. */
+const APP_ART={
+  gmail:['#ed8b84','<path d="M4 7h16v12H4z"/><path d="m4 7 8 6 8-6"/>','Email and inbox'],
+  googlecalendar:['#85acf2','<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4m8-4v4M4 10h16M8 14h2m4 0h2m-8 4h2"/>','Events and calendars'],
+  notion:['#d7d4ce','<path d="M6 19V5l12 14V5"/>','Notes, pages, and databases'],
+  googlesheets:['#7dc69b','<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M5 9h14M5 15h14M12 9v12"/>','Spreadsheets and data'],
+  googledocs:['#85acf2','<path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h7m-7 4h7"/>','Documents and text'],
+  googleslides:['#e9c871','<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 9h8v7H8z"/>','Presentations and slides'],
+  googlemeet:['#7dc69b','<rect x="3" y="6" width="12" height="12" rx="2"/><path d="m15 10 6-4v12l-6-4"/>','Meetings and recordings'],
+  figma:['#bf9cea','<path d="M12 4H8a4 4 0 0 0 0 8h4zm0 0h4a4 4 0 0 1 0 8h-4zm0 8H8a4 4 0 0 0 0 8 4 4 0 0 0 4-4z"/><circle cx="16" cy="16" r="4"/>','Design files and comments'],
+  slack:['#cd9fc6','<path d="M9 3v14M15 7v14M3 15h14M7 9h14"/>','Channels and team messages'],
+  telegram:['#81b9dd','<path d="m3 11 18-7-5 17-5-7-8-3zm8 3L21 4"/>','Bot messages and chats'],
+};
+function appIcon(t){
+  const art=APP_ART[t.id];
+  return'<span class="conn-icon" aria-hidden="true"'+(art?' style="color:'+art[0]+'"':'')+'>'
+    +(art?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'+art[1]+'</svg>'
+      :esc((t.display_name||t.id||'?').slice(0,1).toUpperCase()))+'</span>';
+}
 
 /* Connections are account-wide; reach is not. A toolkit connected on the account but
    not enabled here is the normal state for a workspace that did not run the OAuth
@@ -257,13 +289,16 @@ function applyFilter(){
   let shown=0;
   for(const card of cards){
     const t=toolkits.find(t=>t.id===card.dataset.toolkit);
-    const fields=t?[t.id,t.slug,t.display_name,t.description,
+    const fields=t?[t.id,t.slug,t.display_name,t.description,APP_ART[t.id]?.[2],
       isConnected(t)?accountLabel(accountCache[t.id]):'']:[];
     card.hidden=!!q&&!fields.some(value=>String(value??'').toLowerCase().includes(q));
     if(!card.hidden)shown++;
   }
+  const native=nativeConnectors?.setFilter(filter)||{total:0,shown:0};
+  root.querySelector('#conn-workspace-section').hidden=!!q&&native.shown===0;
+  root.querySelector('#conn-account-section').hidden=!!q&&shown===0;
   const note=root.querySelector('#conn-no-match');
-  note.hidden=!cards.length||shown>0;
+  note.hidden=!(cards.length+native.total)||shown+native.shown>0;
   note.textContent=note.hidden?'':'No connectors match “'+filter.trim()+'”. Clear the search to show all connectors.';
 }
 
@@ -276,16 +311,16 @@ function renderCard(t){
   const acct=accountLabel(accountCache[t.id]);
   return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
-      +'<div class="conn-card-id">'
-        +'<span>'+esc(t.slug||'')+'</span>'
-        +'<h3>'+esc(t.display_name||t.id)+'</h3>'
+      +'<div class="conn-card-heading">'+appIcon(t)
+        +'<div class="conn-card-id"><h3>'+esc(t.display_name||t.id)+'</h3>'
+          +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
+        +'</div>'
       +'</div>'
-      +'<i class="'+status.cls+'">'+esc(status.text)+'</i>'
+      +'<i class="conn-state '+status.cls+'">'+esc(status.text)+'</i>'
     +'</div>'
     +'<div class="conn-card-body">'
+      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
       +'<div class="conn-facts">'
-        +'<span class="conn-fact">'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
-        +(t.supports_action_prefs?'<span class="conn-fact">per-action control</span>':'')
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
         /* which account the session is bound to; only a connection has one */
         +(connected&&acct
@@ -293,8 +328,7 @@ function renderCard(t){
           :'')
       +'</div>'
       +(connected&&!enabled
-        ?'<p class="conn-card-note">Connected on your account. Turn it on to let this '
-          +'workspace&rsquo;s agent use it.</p>'
+        ?'<p class="conn-card-note">Enable it to use this account in this workspace.</p>'
         :'')
       +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
         ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))

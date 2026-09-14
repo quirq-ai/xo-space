@@ -48,6 +48,9 @@ await context.route('**/*',async route=>{
   const related=path==='/xo-auth/session/self'||path.startsWith('/api/connectors/')||path.startsWith('/api/connections');
   if(related)report.requests.push({path,method});
   if(method!=='GET')report.writes.push({path,method,body:request.postDataJSON()});
+  if(/^\/api\/connectors\/(github|vercel)\/status$/.test(path)&&method==='GET')return json(route,{status:'needs_auth'});
+  if(path==='/api/connectors/magicpath/status'&&method==='GET')return json(route,{cli_installed:false,skill_installed:false,logged_in:false,user:null});
+  if(/^\/api\/connectors\/(gdrive|onedrive)\/remotes$/.test(path)&&method==='GET')return json(route,{remotes:[]});
   if(path==='/api/runtime-config'&&method==='GET'){
     const pending=holdRuntime;holdRuntime=null;await pause(pending);return route.continue();
   }
@@ -102,7 +105,7 @@ async function choose(id){
   await page.locator('#setup-nav [data-setup-go="'+id+'"]').click();
   await panel(id).waitFor();
   await page.waitForFunction(({id,mode})=>location.hash==='#/'+(['connectors','secrets'].includes(id)?id:'setup')
-    &&document.querySelector('.topbar')?.dataset.toolbar===mode,{id,mode:id==='connectors'?'search':'none'});
+    &&document.querySelector('.topbar')?.dataset.toolbar===mode,{id,mode:'search'});
   assert.equal(await page.locator('.setup-panel:visible').count(),1);
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
 }
@@ -125,12 +128,41 @@ try{
   assert.deepEqual(report.writes,[]);
   checked('Four primary tabs; Connectors is under Manage; ordinary Setup navigation makes no connector/session requests or writes.');
 
+  const setupSearch=page.locator('#view-search');
+  for(const id of ['workspace','agent','activity','secrets','commands','server']){
+    await choose(id);
+    assert.equal(await setupSearch.isVisible(),true,id+' keeps Setup search visible');
+    assert.equal(await setupSearch.getAttribute('placeholder'),'Search setup…');
+  }
+  await setupSearch.fill('folder');
+  await page.locator('.setup-search-result').filter({hasText:'Projects folder'}).click();
+  assert.equal(await page.locator('#xo-root-input').evaluate(node=>node===document.activeElement),true);
+  assert.equal(await setupSearch.inputValue(),'');
   await page.locator('#xo-root-input').fill('/demo/unsaved-connectors-test');
   const folderNode=await page.locator('#xo-root-input').elementHandle();
-  await choose('secrets');await page.locator('#secret-add').click();
+  await setupSearch.fill('secret');
+  await page.locator('.setup-search-result').filter({hasText:/^Secrets/}).click();
+  await panel('secrets').waitFor();
+  assert.equal(new URL(page.url()).hash,'#/secrets');
+  assert.equal(await folderNode.evaluate(node=>node.isConnected),true);
+  await page.locator('#secret-add').click();
   await page.locator('#secret-key').fill('DEMO_UNSAVED_TOKEN');
   await page.locator('#secret-value').fill('fictional-unsaved-value');
   const credentialNode=await page.locator('#secret-value').elementHandle();
+  await setupSearch.fill('fictional-unsaved-value');
+  assert.equal(await page.locator('.setup-search-result').count(),0,'Secret values never enter the search index');
+  await setupSearch.fill('DEMO_UNSAVED_TOKEN');
+  assert.equal(await page.locator('.setup-search-result').count(),0,'Secret key drafts never enter the search index');
+  await setupSearch.fill('folder');
+  await page.locator('#tab-projects').click();await page.waitForURL('**/#/projects');
+  await page.locator('#tab-setup').click();
+  await page.locator('#setup-search-results').waitFor();
+  assert.equal(await setupSearch.inputValue(),'folder','Top-level navigation preserves Setup query');
+  await choose('secrets');
+  assert.equal(await setupSearch.inputValue(),'','Sidebar selection clears Setup query');
+  assert.equal(await page.locator('#secret-value').inputValue(),'fictional-unsaved-value');
+  assert.equal(await credentialNode.evaluate(node=>node.isConnected),true);
+  checked('All Setup sections keep search; results navigate and focus without losing folder/secret drafts or indexing private form values.');
   const listing=holdList=gate();
   await choose('connectors');await listing.arrived.promise;
   const host=await page.locator('#setup-connectors').elementHandle();
@@ -139,14 +171,14 @@ try{
   await page.locator('#setup-connectors .conn-card').first().waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/setup');
   assert.equal(await panel('workspace').isVisible(),true,'A delayed connector mount cannot reclaim the current panel');
-  assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'none');
+  assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'search');
   assert.equal(await folderNode.evaluate(node=>node===document.activeElement),false);
   assert.equal(await page.locator('#setup-workspace-title').evaluate(node=>node===document.activeElement),true,
     'A delayed mount cannot steal panel heading focus');
   await choose('connectors');
   assert.equal(count('/xo-auth/session/self'),1);assert.equal(count('/api/connectors/composio/toolkits'),1);
   assert.equal(await page.locator('#view-connectors').count(),0);
-  assert.equal(await page.locator('#setup-connectors .conn-card').count(),3);
+  assert.equal(await page.locator('#setup-connectors .conn-card[data-toolkit]').count(),3);
   checked('First connector load is lazy and shared; slow completion preserves the later panel, toolbar and focus.');
 
   await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();

@@ -121,6 +121,8 @@ Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes g
 
 **Setup and management.** Setup groups Workspace, Agent & access, and Activity into three steps. Workspace also shows the Space ID, workspace owner, XO account and verified GitHub identity. Under Manage, open Connectors for app connections, permissions and polling; Secrets for environment keys; Commands for saved commands and run results; or Server for updates, restart and technical details. Existing `#/connectors` links open Connectors inside Setup.
 
+Search Setup to find a setting and jump to its control. Connectors includes GitHub, MagicPath, Vercel, Google Drive and OneDrive alongside account apps, with connection status and the existing sign-in and management actions.
+
 ### XO Managed Cloud
 
 Don't want to run a server? [app.xo.builders](https://app.xo.builders/) gives you the same XO Space, already running, in an XO-provisioned workspace — one click, nothing to install, your agents and projects ready when you open the tab.

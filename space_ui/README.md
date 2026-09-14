@@ -20,9 +20,9 @@ tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
 The toolbar adapts to the active page. Dashboard and Graph keep the root
-picker and map autocomplete. List, Tree, Timeline, Setup → Connectors, Inbox, and
+picker and map autocomplete. List, Tree, Timeline, Setup, Inbox, and
 the Agents session list have their own search; typing there keeps you on that page.
-Other Setup sections, Wiki, Sharing, Quirq, and the Agents charts/detail have no search
+Wiki, Sharing, Quirq, and the Agents charts/detail have no search
 toolbar. On phones these pages also give back the empty toolbar row.
 
 | Page | Search scope |
@@ -30,7 +30,8 @@ toolbar. On phones these pages also give back the empty toolbar row.
 | Projects List | Project names in the loaded catalog. |
 | Tree | Folder and file names, keeping the ancestors of matches visible. |
 | Timeline | Project names; the selected timeline mode and date range still apply. |
-| Connectors | Toolkit name, identifier, description, and resolved connected account label. Filtering preserves open controls and unsaved polling edits. |
+| Setup | Setting names and topics. Choose a result to open its section; searches never read field values or credentials, and all unfinished forms stay mounted. |
+| Setup → Connectors | Workspace integrations and account apps by name, identifier, description, and connected account label. Filtering preserves open controls and unsaved edits. |
 | Inbox | Title, body, kind, source, and project in the loaded status page, intersected with the source filter. The matching count shows this scope. |
 | Sessions list | Project, path, source, model, and session ID in the loaded sessions, intersected with the selected sources. Matching counts distinguish loaded rows from the total. |
 
@@ -74,11 +75,13 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/quirq`). |
 | `js/views/secrets.js` | The guided Setup view: Workspace, Agent & access, Activity, then Connectors, Secrets, Commands and Server management. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. Forms keep drafts across sections and status refreshes. |
+| `js/views/setup-search.js` | Searchable setting names and topics; opens the existing controls without reading their values or rebuilding forms. |
 | `js/views/setup-identity.js` | Read-only Workspace metadata, verified XO user ID and GitHub account from `/space/setup/status`; no tokens or browser session minting. |
 | `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
 | `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
 | `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); the legacy `#/connectors` route opens its Setup section. |
+| `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
@@ -144,6 +147,22 @@ The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server
 **Open Setup** button selects Commands. **Server → Technical details** opens
 Quirq's state browser.
 
+The topbar search stays visible throughout Setup. Search setting names such as
+“folders”, “secrets” or “restart”, then choose a result to open its control.
+Inside Connectors, the same input filters the app cards instead.
+
+Connectors groups **Workspace integrations** (GitHub, MagicPath, Vercel,
+Google Drive and OneDrive) above **Account apps** from Composio. GitHub supports
+a personal access token or device sign-in; Vercel supports an API token or
+browser sign-in with a pasted redirect URL when needed. Disconnect an existing
+Vercel connection before starting another browser sign-in. MagicPath has an
+explicit skill/CLI installation action and authorization-code sign-in. Drive
+accounts use the existing rclone add, authorization, cancel and remove routes;
+“Configured” means a complete stored remote, not a live account check.
+Removing a remote does not delete cloud files. Account apps retain their
+workspace toggles, account labels, action permissions and Inbox polling.
+No installation or sign-in starts from a native status refresh.
+
 **Restart server**, **Apply & restart** and the update action appear in Server,
 with only the relevant restart button visible. They use `/space/server/restart`. Restart takes
 a few seconds; the footer pill may go offline before it returns. The page reloads
@@ -188,8 +207,8 @@ the server's environment, including when the watcher is disabled for manual runs
 
 ## Agents tab
 
-The second topbar tab (`Projects | Agents | Inbox | Setup |
-Connectors`) is a session-telemetry dashboard: per-session stats rendered as cards,
+The second topbar tab (`Projects | Agents | Inbox | Setup`)
+is a session-telemetry dashboard: per-session stats rendered as cards,
 tables, and hand-drawn canvas charts (no dependencies), re-skinned to the
 Space theme. The payload is assembled from every backend that implements the
 `session_telemetry` capability, so a runtime that reports nothing shows as

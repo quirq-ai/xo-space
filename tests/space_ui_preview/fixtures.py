@@ -36,6 +36,22 @@ def stamp(minutes=0):
     return (NOW - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
 
 
+def native_connectors():
+    """Read-only connection examples; never use real credentials or sessions."""
+    return {
+        "/api/connectors/github/status": {"status": "connected", "username": "demo-developer", "auth_method": "pat"},
+        "/api/connectors/magicpath/status": {
+            "skill_installed": True, "cli_installed": True, "cli_version": "1.0.0",
+            "logged_in": False, "user": None,
+        },
+        "/api/connectors/vercel/status": {"status": "needs_auth"},
+        "/api/connectors/gdrive/remotes": {"remotes": [
+            {"name": "design-files", "type": "drive", "scope": "drive.file", "complete": True},
+        ]},
+        "/api/connectors/onedrive/remotes": {"remotes": []},
+    }
+
+
 def catalog():
     return {"items": [
         {"id": pid, "display_name": name, "description": description,

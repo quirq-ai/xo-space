@@ -10,6 +10,7 @@ import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260914-setupflow1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-setupflow1';
 import {mountIdentity} from './setup-identity.js?v=20260914-setupidentity1';
+import {mountSetupSearch} from './setup-search.js?v=20260914-setupapps1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -38,8 +39,10 @@ const touched=new Set();
 const writes=new Set();
 let runtimeRevision=0,refreshQueued=false;
 let setupMount=null,connectorMount=null,connectorController=null;
+let setupSearch=null;
 const toolbarRefreshers=new Set();
-const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:null;
+const refreshSetupToolbar=()=>{for(const refresh of toolbarRefreshers)refresh?.();};
+const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:setupSearch?.toolbar;
 
 /* The old Connectors URL is a child of Setup. Both routes share one shell;
    authorization starts only when its section is actually opened. */
@@ -60,6 +63,7 @@ function mountSetup(el,ctx){
     switchTo=ctx.switchTo;
     renderShell();
     bindEvents();
+    setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
     identity.refresh();
@@ -111,6 +115,7 @@ function renderShell(){
         <button type="button" data-setup-go="server" aria-controls="setup-panel-server"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Server</b><small>Updates and restart</small></span></button>
       </nav>
       <div class="setup-content">
+        <section id="setup-search-results" aria-label="Setup search results" hidden></section>
         <section class="setup-panel" id="setup-panel-workspace" aria-labelledby="setup-workspace-title">
           <header class="setup-section-head"><h2 id="setup-workspace-title" tabindex="-1">Workspace</h2><p>Choose your project folder and where Space keeps its settings.</p></header>
           <section class="setup-card setup-identity" id="setup-identity" aria-label="Workspace identity"></section>
@@ -230,6 +235,7 @@ function hasDraft(panel){
 function selectPanel(panel,{focus=false}={}){
   const target=root.querySelector('#setup-panel-'+panel);
   if(!target)return;
+  setupSearch?.clear();
   currentPanel=panel;
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
@@ -244,7 +250,7 @@ function selectPanel(panel,{focus=false}={}){
       connectorMount=null;
     });
   }
-  for(const refresh of toolbarRefreshers)refresh?.();
+  refreshSetupToolbar();
   if(focus){
     target.querySelector('h2')?.focus({preventScroll:true});
     root.scrollTop=0;

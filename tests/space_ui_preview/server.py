@@ -27,6 +27,10 @@ class Handler(SimpleHTTPRequestHandler):
         url = urlsplit(self.path)
         path = unquote(url.path)
         query = parse_qs(url.query)
+        native = fixtures.native_connectors().get(path)
+        if native is not None:
+            self.json_response(native)
+            return
         route = {
             "/xo/space.json": fixtures.graph,
             "/xo/dashboard.json": fixtures.dashboard,

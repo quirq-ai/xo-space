@@ -5,6 +5,7 @@
 .conn-page{min-width:0}
 
 .conn-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:20px}
+.conn-hero>div:first-child{flex:1;min-width:0}
 .conn-hero h2{font:500 27px/1.2 var(--serif);margin:0 0 8px}
 .conn-hero h2:focus{outline:none}
 .conn-hero p{color:var(--ink-3);font-size:13px;line-height:1.5;max-width:62ch;margin:0}
@@ -16,7 +17,14 @@
 }
 .conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
 
+.conn-group+.conn-group{margin-top:30px}
+.conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
+.conn-group-head h3{font:500 14px var(--sans);color:var(--ink);margin:0}
+.conn-group-head p{margin:5px 0 0;font-size:11.5px;color:var(--ink-3);line-height:1.5}
+.conn-group-badge{flex:none;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font:400 10px var(--sans);color:var(--ink-3)}
+
 .conn-alert{display:flex;gap:11px;align-items:flex-start;padding:13px 15px;border-radius:11px;margin-bottom:18px;border:1px solid var(--line);background:var(--bg-2)}
+.conn-alert>div{min-width:0;overflow-wrap:anywhere}
 .conn-alert b{display:block;font-size:12.5px;margin-bottom:3px}
 .conn-alert p{margin:0;color:var(--ink-2);font-size:11.5px;line-height:1.5}
 .conn-alert span{color:var(--ink-3);line-height:1.3}
@@ -27,24 +35,33 @@
 .conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
 .conn-alert.is-error span{color:var(--err)}
 
-.conn-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(288px,100%),1fr));gap:12px;align-items:start}
+.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:start}
 
-.conn-card{background:rgba(16,19,24,.88);border:1px solid var(--line);border-radius:16px;overflow:hidden;transition:border-color .16s var(--ease)}
-.conn-card:hover{border-color:var(--ink-4)}
-.conn-card.is-on{box-shadow:inset 2px 0 var(--accent-deep)}
+.conn-card{display:flex;flex-direction:column;min-width:0;min-height:220px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
+.conn-card:hover{border-color:#41464f}
+.conn-card.is-on,.conn-card.is-connected{border-color:rgba(168,217,79,.24)}
 
-.conn-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:17px 18px 13px}
-.conn-card-id span{display:block;font:500 9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
-.conn-card-id h3{font:500 18px var(--serif);margin:0}
-.conn-card-head i{font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;font-style:normal;color:var(--ink-3);white-space:nowrap;padding-top:3px}
-.conn-card-head i.is-good{color:var(--accent-deep)}
+.conn-card-head{display:flex;align-items:flex-start;flex-direction:column;gap:12px;padding:16px 16px 10px}
+.conn-card-heading{display:flex;align-items:center;gap:11px;min-width:0}
+.conn-icon{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;border:1px solid rgba(255,255,255,.07);border-radius:10px;background:var(--bg-3);color:var(--ink-2);font:600 20px var(--sans)}
+.conn-icon svg{display:block;width:22px;height:22px}
+.conn-card-id{min-width:0}
+.conn-card-id span{display:block;font:400 10.5px/1.4 var(--sans);color:var(--ink-3);margin-top:4px}
+.conn-card-id h3{font:600 14px/1.35 var(--sans);margin:0;overflow-wrap:anywhere}
+.conn-state{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:500 10px/1.4 var(--sans);font-style:normal;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px;overflow-wrap:anywhere}
+.conn-state::before{content:"";width:5px;height:5px;flex:none;border-radius:50%;background:currentColor;opacity:.75}
+.conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(168,217,79,.22);background:rgba(168,217,79,.04)}
+.conn-state.is-pending{color:#e2ae5b;border-color:rgba(226,174,91,.22)}
+.conn-state.is-error{color:#e1937d;border-color:rgba(200,103,76,.22)}
 /* Connected on the account but off in this workspace: a deliberate state, not a
    fault, so it reads as muted rather than as an error. */
-.conn-card-head i.is-idle{color:var(--ink-2)}
+.conn-state.is-idle{color:var(--ink-2)}
 
-.conn-card-body{padding:0 18px}
-.conn-card-note{margin:9px 0 0;font-size:11.5px;line-height:1.45;color:var(--ink-3)}
-.conn-facts{display:flex;flex-wrap:wrap;gap:6px}
+.conn-card-body{padding:0 16px;flex:1;min-width:0}
+.conn-card-description{margin:0;color:var(--ink-2);font-size:12px;line-height:1.55;overflow-wrap:anywhere}
+.conn-card-note{margin:9px 0 0;font-size:11.5px;line-height:1.45;color:var(--ink-3);overflow-wrap:anywhere}
+.conn-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.conn-facts:empty{display:none}
 .conn-fact{font:500 9px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px}
 /* the account the session is bound to: an email, so never uppercased, and
    clipped rather than allowed to widen the card */
@@ -52,13 +69,14 @@
 
 .conn-card-error{
   margin-top:11px;padding:9px 11px;border:1px solid rgba(200,103,76,.35);border-radius:8px;
-  background:rgba(200,103,76,.08);color:#e1937d;font-size:11.5px;line-height:1.45
+  background:rgba(200,103,76,.08);color:#e1937d;font-size:11.5px;line-height:1.45;overflow-wrap:anywhere
 }
 
-.conn-card-acts{display:flex;gap:8px;padding:14px 18px 17px;flex-wrap:wrap}
+.conn-card-acts{display:flex;gap:7px;padding:14px 16px 16px;flex-wrap:wrap}
 .conn-primary,.conn-secondary{
-  border-radius:8px;padding:8px 12px;font:500 11px var(--sans);
-  cursor:pointer;border:1px solid transparent
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;min-height:32px;
+  border-radius:7px;padding:7px 10px;font:500 11px/1.4 var(--sans);text-decoration:none;
+  cursor:pointer;border:1px solid transparent;overflow-wrap:anywhere
 }
 .conn-primary{background:var(--accent);color:#14100a}
 .conn-primary:hover{background:#b7e467}
@@ -70,6 +88,7 @@
    cursor, via .is-busy. Same distinction as the Setup tab. */
 .conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
 .conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
+.conn-page button:focus-visible,.conn-page a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 
 .conn-actions{border-top:1px solid var(--line-soft);padding:13px 18px 16px;max-height:340px;overflow:auto}
 .conn-actions-note{margin:0 0 10px;color:var(--ink-3);font-size:11px;line-height:1.5}
@@ -89,6 +108,30 @@
   .conn-hero h2{font-size:24px}
   .conn-grid{grid-template-columns:1fr}
 }
+
+/* Native cards keep their form elements mounted while status refreshes, so
+   in-progress credentials and browser authorization survive navigation. */
+.native-conn-card[data-native-connector="github"] .conn-icon{color:#d7d4ce;font-size:14px}
+.native-conn-card[data-native-connector="magicpath"] .conn-icon{color:#bc9dec}
+.native-conn-card[data-native-connector="vercel"] .conn-icon{color:#e9e4d9}
+.native-conn-card[data-native-connector="gdrive"] .conn-icon{color:#8ac89e}
+.native-conn-card[data-native-connector="onedrive"] .conn-icon{color:#80b3e4}
+.conn-native-status{margin:8px 0 0;color:var(--ink-3);font:400 11px/1.5 var(--sans);overflow-wrap:anywhere}
+.conn-native-form{padding:14px 16px 16px;border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);min-width:0}
+.conn-native-field{display:block;margin:0 0 12px;color:var(--ink-2);font:500 11.5px/1.5 var(--sans)}
+.conn-native-field input,.conn-native-field select,.conn-native-form input:not([type="checkbox"]){display:block;width:100%;min-width:0;margin-top:6px;padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font:400 11px/1.4 var(--mono)}
+.conn-native-field input:focus-visible,.conn-native-field select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.conn-native-form .conn-card-acts{padding:0;margin-top:12px}
+.conn-native-form>[data-native-action="browser"]{margin-top:10px}
+.conn-native-status:empty,.conn-native-remotes:empty{display:none}
+.conn-native-note{margin:9px 0;color:var(--ink-3);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.conn-native-note a,.conn-native-auth a{color:var(--ink);text-underline-offset:3px;overflow-wrap:anywhere}
+.conn-native-auth{display:flex;flex-direction:column;align-items:flex-start;gap:9px;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:8px;font-size:11.5px;line-height:1.5;overflow-wrap:anywhere}
+.conn-native-auth code,.conn-native-auth [data-native-code]{max-width:100%;color:var(--accent);font:500 14px/1.5 var(--mono);user-select:all;overflow-wrap:anywhere}
+.conn-native-remotes{list-style:none;display:flex;flex-direction:column;gap:6px;margin:12px 0 0}
+.conn-native-remote{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line-soft);font-size:11px;overflow-wrap:anywhere}
+.conn-native-remote>span{min-width:0}
+.conn-native-remote button{flex:none}
 
 /* Polling drawer: what the connections poller collects into the Inbox for this
    toolkit, and how often. Same drawer pattern as .conn-actions above; the

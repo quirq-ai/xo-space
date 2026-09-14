@@ -40,6 +40,9 @@ await context.route('**/*',async route=>{
     await json(route,{error:'External requests and writes are disabled in this fixture'});
     return;
   }
+  if(/^\/api\/connectors\/(github|vercel)\/status$/.test(url.pathname))return json(route,{status:'needs_auth'});
+  if(url.pathname==='/api/connectors/magicpath/status')return json(route,{cli_installed:false,skill_installed:false,logged_in:false,user:null});
+  if(/^\/api\/connectors\/(gdrive|onedrive)\/remotes$/.test(url.pathname))return json(route,{remotes:[]});
   if(url.pathname==='/api/connectors/composio/toolkits')return json(route,{toolkits});
   if(url.pathname==='/api/connections')return json(route,{signed_in:true,poller_enabled:true,
     connections:toolkits.map(toolkit=>connection(toolkit.id))});
@@ -53,9 +56,9 @@ await context.route('**/*',async route=>{
 const search=page.locator('#view-search');
 const graphSearch=page.locator('#q');
 const modes={graph:'graph',dashboard:'graph',projects:'search',tree:'search',time:'search',connectors:'search',
-  setup:'none',secrets:'none',wiki:'none',sharing:'none',quirq:'none'};
+  setup:'search',secrets:'search',wiki:'none',sharing:'none',quirq:'none'};
 const placeholders={projects:'Filter projects…',tree:'Filter tree by name…',
-  time:'Filter timeline projects…',connectors:'Filter connectors…'};
+  time:'Filter timeline projects…',connectors:'Filter connectors…',setup:'Search setup…',secrets:'Search setup…'};
 async function expectMode(id){
   const mode=modes[id];
   await page.waitForFunction(({id,mode,placeholder})=>location.hash==='#/'+id
@@ -106,7 +109,7 @@ async function rows(count){
   await page.waitForFunction(count=>document.querySelectorAll('.prj-row').length===count,count);
 }
 async function visibleConnectors(ids){
-  await page.waitForFunction(ids=>JSON.stringify([...document.querySelectorAll('.conn-card')]
+  await page.waitForFunction(ids=>JSON.stringify([...document.querySelectorAll('.conn-card[data-toolkit]')]
     .filter(card=>!card.hidden).map(card=>card.dataset.toolkit))===JSON.stringify(ids),ids);
 }
 async function layout(id,width){
@@ -244,14 +247,24 @@ try{
   assert.equal(await page.locator('#root-btn b').textContent(),rootLabel);
   checked('Connectors matches names/descriptions/accounts and preserves unsaved form identity and query.');
 
-  for(const id of ['setup','secrets','wiki','sharing','quirq']){
+  for(const id of ['setup','secrets']){
+    await go(id);await page.locator('.brand').click();await page.keyboard.press('/');
+    assert.equal(await search.evaluate(element=>element===document.activeElement),true,id+' slash focuses Setup search');
+    await search.fill('folder');
+    await page.locator('.setup-search-result').filter({hasText:'Projects folder'}).click();
+    assert.equal(await search.inputValue(),'');
+    assert.equal(await page.locator('#xo-root-input').evaluate(element=>element===document.activeElement),true);
+  }
+  checked('Setup and Secrets retain working search controls and the slash shortcut.');
+
+  for(const id of ['wiki','sharing','quirq']){
     await go(id);
     await page.locator('.brand').click();await page.keyboard.press('/');
     assert.equal(await page.evaluate(()=>['q','view-search'].includes(document.activeElement?.id)),false,
       id+' slash must not focus a hidden search');
     assert.equal(new URL(page.url()).hash,'#/'+id);
   }
-  checked('Setup, Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
+  checked('Wiki, Sharing and Quirq expose no root/search controls or hidden-search shortcut.');
 
   for(const width of [320,390,640,1280,1440,1920]){
     await page.setViewportSize({width,height:1000});
@@ -259,8 +272,8 @@ try{
     await screenshot('graph-'+width+'.png');
     await go('projects');const searchHeight=await layout('projects',width);
     await screenshot('list-'+width+'.png');
-    for(const id of ['tree','time','connectors']){await go(id);await layout(id,width);}
-    for(const id of ['setup','secrets','wiki','sharing','quirq']){
+    for(const id of ['tree','time','connectors','setup','secrets']){await go(id);await layout(id,width);}
+    for(const id of ['wiki','sharing','quirq']){
       await go(id);const height=await layout(id,width);
       assert.ok(height<=graphHeight+1&&height<=searchHeight+1,id+' header is not compact at '+width);
       if(width<=640)assert.ok(height<=searchHeight-20,id+' reserves a hidden control row at '+width);
@@ -268,6 +281,15 @@ try{
     }
     checked(width+'px: no overflow; graph/search/none controls fit; none-mode header is compact.');
   }
+  await page.setViewportSize({width:1440,height:1000});
+  await go('setup');
+  const resourceSizes=await page.locator('.resource-links a').evaluateAll(nodes=>nodes.map(node=>({
+    height:node.getBoundingClientRect().height,font:Number.parseFloat(getComputedStyle(node).fontSize),
+    icon:node.querySelector('svg')?.getBoundingClientRect().width||0})));
+  assert.ok(resourceSizes.every(size=>size.height>=38&&size.font>=13&&size.icon>=17),'Resource buttons have proportional hit areas, type and icons');
+  assert.ok((await search.boundingBox()).width>=130,'Setup search remains usable beside larger resource buttons');
+  checked('Wiki and GitHub buttons have proportional 38px hit areas; centered desktop tabs leave a usable Setup search.');
+
   await page.goto(origin+'/space/#/dashboard',{waitUntil:'networkidle'});
   await expectMode('dashboard');
   await screenshot('dashboard-1440.png');
