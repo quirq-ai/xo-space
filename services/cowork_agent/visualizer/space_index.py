@@ -92,14 +92,14 @@ def _shape_for(filename: str) -> str:
     return "diamond"
 
 
-def _iter_files_pruned(base: Path):
+def _iter_files_pruned(base: Path, *, onerror=None):
     """Yield files under ``base``, pruning hidden/junk dirs DURING traversal.
 
     ``os.walk`` with in-place ``dirnames`` filtering never *enters* a pruned
     directory — a project with a 100k-file node_modules costs nothing here.
     (``rglob`` + post-filter would enumerate all of it first: filtering after
     enumeration is O(everything on disk); pruning is O(what we keep).)"""
-    for dirpath, dirnames, filenames in os.walk(base):
+    for dirpath, dirnames, filenames in os.walk(base, onerror=onerror):
         dirnames[:] = sorted(n for n in dirnames if not _is_hidden(n))
         for name in sorted(filenames):
             if not _is_hidden(name):
@@ -198,7 +198,9 @@ def _aggregate_history(history: list[tuple[str, str]]) -> list[dict]:
     return out
 
 
-def _walk_project(pid: str, cat: str, created_dates: dict) -> tuple[list[dict], list[dict]]:
+def _walk_project(
+    pid: str, cat: str, created_dates: dict, *, index_counts: dict | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Groups + leaves for one project. Level-1 dirs become groups; files at
     any depth roll up into their level-1 group; root files get a root group.
     Traversal is pruned and stops at MAX_FILES_SCANNED_PER_PROJECT.
@@ -207,6 +209,11 @@ def _walk_project(pid: str, cat: str, created_dates: dict) -> tuple[list[dict], 
     groups: list[dict] = []
     leaves: list[dict] = []
     scanned = 0
+    scan_incomplete = False
+
+    def unreadable_subtree(_error: OSError) -> None:
+        nonlocal scan_incomplete
+        scan_incomplete = True
 
     def add_leaf(group_id: str, rel: str, f: Path) -> None:
         # Dates come from git only: a file's first-appearance commit day.
@@ -235,16 +242,19 @@ def _walk_project(pid: str, cat: str, created_dates: dict) -> tuple[list[dict], 
         })
         for f in root_files:
             if scanned >= MAX_FILES_SCANNED_PER_PROJECT:
+                scan_incomplete = True
                 break
             add_leaf(f"g_{pid}_root", f.name, f)
             scanned += 1
 
     for d in subdirs:
         if scanned >= MAX_FILES_SCANNED_PER_PROJECT:
+            scan_incomplete = True
             break
         collected: list[Path] = []
-        for f in _iter_files_pruned(d):
+        for f in _iter_files_pruned(d, onerror=unreadable_subtree):
             if scanned >= MAX_FILES_SCANNED_PER_PROJECT:
+                scan_incomplete = True
                 print(f"space_index: {pid}: scan budget hit "
                       f"({MAX_FILES_SCANNED_PER_PROJECT}); rest of project skipped")
                 break
@@ -284,6 +294,20 @@ def _walk_project(pid: str, cat: str, created_dates: dict) -> tuple[list[dict], 
             })
 
         emit_group(collected, 1, f"g_{pid}_{d.name}", d.name)
+
+    if index_counts is not None:
+        # Keep scan counts independent of the graph's display budgets. A
+        # project may lose every leaf in the workspace trim without being
+        # empty. Folder counts describe ancestors of indexed files, not empty
+        # directories or excluded dependencies.
+        directories: set[str] = set()
+        for leaf in leaves:
+            parts = leaf["path"].split("/")[1:]
+            for depth in range(1, len(parts)):
+                directories.add("/".join(parts[:depth]))
+        index_counts.update(
+            files=len(leaves), folders=len(directories), capped=scan_incomplete,
+        )
 
     if len(leaves) > MAX_LEAVES_PER_PROJECT:
         dropped = len(leaves) - MAX_LEAVES_PER_PROJECT
@@ -387,11 +411,13 @@ def build_space_data() -> dict:
     milestones: list[dict] = []
     commits_by_pid: dict[str, list[list[str]]] = {}
     git_history: dict[str, list[dict]] = {}
+    index_counts_complete = True
 
     n = max(len(projects), 1)
     deadline = time.monotonic() + BUILD_DEADLINE_S
     for i, meta in enumerate(projects):
         if time.monotonic() > deadline:
+            index_counts_complete = False
             print(f"space_index: build deadline ({BUILD_DEADLINE_S}s) hit; "
                   f"skipped {len(projects) - i} of {len(projects)} projects")
             break
@@ -402,10 +428,16 @@ def build_space_data() -> dict:
             project_dir(pid))
 
         try:
-            p_groups, p_leaves = _walk_project(pid, cat, created_dates)
+            index_counts: dict = {}
+            p_groups, p_leaves = _walk_project(
+                pid, cat, created_dates, index_counts=index_counts,
+            )
         except OSError:
+            index_counts_complete = False
             print(f"space_index: skipping unreadable project {pid}")
             continue
+        if index_counts["capped"]:
+            index_counts_complete = False
 
         categories[cat] = {
             "name": display,
@@ -415,6 +447,7 @@ def build_space_data() -> dict:
         hubs.append({
             "id": cat, "cat": cat, "label": display,
             "blurb": str(meta.get("description") or f"Project {display}."),
+            "index_counts": index_counts,
         })
         groups.extend(p_groups)
         leaves.extend(p_leaves)
@@ -458,6 +491,7 @@ def build_space_data() -> dict:
             # Machine-readable freshness; ``mappedOn`` above is the human one
             # and is only accurate to the day (syncplan T25).
             "generated_at": _now_iso(),
+            "index_counts_complete": index_counts_complete,
             "workspace": str(root),
         },
         "categories": categories,

@@ -27,7 +27,7 @@ toolbar. On phones these pages also give back the empty toolbar row.
 
 | Page | Search scope |
 |------|--------------|
-| Projects List | Project names in the loaded catalog. |
+| Projects List | All search words match across project name, folder ID and description. Combines with All projects, Live or Pinned. |
 | Tree | Folder and file names, keeping the ancestors of matches visible. |
 | Timeline | Project names; the selected timeline mode and date range still apply. |
 | Setup | Setting names and topics. Choose a result to open its section; searches never read field values or credentials, and all unfinished forms stay mounted. |
@@ -69,7 +69,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/atlas.js` | Dashboard + Graph + Timeline: three lenses over one dataset, one shared closure, three exported views. |
 | `js/views/sessions.js` | The Agents view (tab id `agents`, route `#/agents`): session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
 | `js/views/inbox.js` | The Inbox view: what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the tab button (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
-| `js/views/projects.js` | The Projects List lens: project list with per-project drawers (folder browser via `/tree`, todos, open sessions, recent events, and the project's GitHub issues via `/github/issues`). Todos are read *and written* through `/api/xo-projects/{id}/todos`, the only write path for any runtime. Owns the `Projects` tab; Dashboard, Graph, Tree, and Sharing are sibling lenses (`nav:false`, `parent:'projects'`). |
+| `js/views/projects.js` | The Projects List lens: searchable catalog, browser-local pins, Live filter and per-project Files, Activity and Issues tabs. Files reads `/tree`; Activity reads todos, open sessions and recent events; Issues reads `/github/issues`. Catalog and optional telemetry load independently with bounded waits. Stable rows and cached drawers retain focus, folders, scroll and issue filters across sorting and navigation; request generations reject stale detail replies. Only the selected tab loads, and Refresh details explicitly reloads it. Owns the `Projects` tab; Dashboard, Graph, Tree, and Sharing are sibling lenses (`nav:false`, `parent:'projects'`). |
+| `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
 | `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |

@@ -116,7 +116,7 @@ class IssuesPanelTests(unittest.TestCase):
 
     def test_panel_width_is_a_property_not_a_key_check(self) -> None:
         """Two wide panels now, so the drawer asks the panel, not its name."""
-        self.assertIn("pn.wide?' prj-panel-wide':''", self.projects)
+        self.assertIn("panel.wide?' prj-panel-wide':''", self.projects)
         self.assertNotIn("pn.key==='files'?' prj-panel-wide'", self.projects)
         self.assertIn("pn.skel||1", self.projects)
 

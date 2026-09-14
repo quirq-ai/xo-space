@@ -572,9 +572,13 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("/api/xo-projects/activity", projects)
         self.assertIn("/api/xo-projects/timeline?limit=", projects)
         self.assertNotIn("/todos'", projects.split("const PANELS")[0])
-        # operable: filter, sort, and a refresh that keeps the open drawer
+        # Operable: search, named filters, a select for sorting, and an Add
+        # action. The browser harness checks retained drawers and lazy groups.
         self.assertIn("placeholder:'Filter projects…'", projects)
-        self.assertIn("data-sort=", projects)
+        self.assertIn('id="prj-sort"', projects)
+        self.assertIn('id="prj-add"', projects)
+        self.assertIn("data-project-filter=", projects)
+        self.assertIn("data-project-tab=", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # accessible: a real button that reports its state, with Map outside
         # it (a button inside a button is invalid markup)
@@ -583,6 +587,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('aria-controls="prj-drawer-', projects)
         head = projects.split('class="prj-row-head"')[1].split("</button>")[0]
         self.assertNotIn("prj-map", head)
+        self.assertNotIn("prj-pin", head)
 
     def test_project_description_falls_back_to_project_docs(self) -> None:
         """Every row showing only "created 11d ago" was the complaint. The
@@ -662,13 +667,15 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("QUIRQ_SKIP_BOOT_INSTALL", code)
 
     def test_first_run_is_explained_in_installation_docs_and_the_empty_state(self) -> None:
-        """The empty state and local installation guide agree on project
-        creation; the compact Wiki receives the existing help event."""
+        """The empty state links project setup and the Wiki quickstart, while
+        the local installation guide retains detailed workspace instructions."""
 
         projects = (ROOT / "space_ui" / "js" / "views" / "projects.js").read_text(encoding="utf-8")
+        self.assertIn("data-add-project", projects)
+        self.assertIn("switchTo('setup/projects')", projects)
         self.assertIn("data-first-run", projects)
         self.assertIn("'first-run'", projects)
-        self.assertIn("scaffold:true", projects)
+        self.assertIn("No projects yet", projects)
         self.assertNotIn("Create one through the xo-space", projects)
 
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
@@ -683,7 +690,7 @@ class SpaceWikiTests(unittest.TestCase):
         # and hands off to the guide: pin the empty state, the "First run"
         # paragraph, and the hand-off link instead of the full walkthrough.
         self.assertIn("First run", readme)
-        self.assertIn("No projects in this workspace yet", readme)
+        self.assertIn("No projects yet", readme)
         self.assertIn("INSTALLATION.md", readme)
         self.assertIn("## Your first run", guide)
         self.assertIn("uv pip install --python", guide)

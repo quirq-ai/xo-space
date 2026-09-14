@@ -897,8 +897,9 @@ class ShellTests(unittest.TestCase):
         # and the registry; unchanged resources keep their URLs.
         project_stamp = "20260914-projectmanage1"
         setup_stamp = "20260914-setuproutes1"
-        for view in ("sharing", "inbox", "wiki", "projects", "quirq", "setup"):
+        for view in ("sharing", "inbox", "wiki", "quirq", "setup"):
             self.assertIn("./views/" + view + ".js?v=" + setup_stamp + "'", app)
+        self.assertIn("./views/projects.js?v=20260914-projectux1'", app)
         context_stamp = "20260914-context1"
         for view in ("tree",):
             self.assertIn("./views/" + view + ".js?v=" + project_stamp + "'", app)
@@ -917,6 +918,7 @@ class ShellTests(unittest.TestCase):
         self.assertIn("./core/lens-switch.js?v=" + timeline_stamp + "'", app)
         self.assertRegex(app, r"\./core/preview\.js\?v=\d{8}-[a-z0-9]+'")
         html = read("index.html")
+        self.assertIn('href="css/projects.css?v=20260914-projectux1"', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

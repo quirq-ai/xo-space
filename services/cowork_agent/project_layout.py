@@ -673,7 +673,8 @@ def list_project_tree(name: str, relative_path: str = "") -> dict | None:
 
     The returned entries are raw — the BFF layer applies UI filtering
     (hidden entries, agent files at root). This helper only enforces
-    path safety.
+    path safety. Child directories are not enumerated: raw item counts
+    would include entries the UI hides and add work to every parent listing.
     """
     project_id = resolve_project_dirname(name)
     root = project_dir(project_id)
@@ -715,13 +716,6 @@ def list_project_tree(name: str, relative_path: str = "") -> dict | None:
         except OSError:
             st = None
         if entry.is_dir():
-            if st is not None:
-                try:
-                    # Cheap one-level count so the UI can say "12 items"
-                    # without a second request per folder.
-                    info["entries"] = sum(1 for _ in os.scandir(entry))
-                except OSError:
-                    pass
             dirs.append(info)
         else:
             if st is not None:

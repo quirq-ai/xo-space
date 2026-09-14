@@ -9,7 +9,7 @@ import {initPreview} from './core/preview.js?v=20260914-wikihub1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-projectmanage1';
 import sessionsView from './views/sessions.js?v=20260914-agentstab1';
 import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-setuproutes1';
-import projectsView from './views/projects.js?v=20260914-setuproutes1';
+import projectsView from './views/projects.js?v=20260914-projectux1';
 import treeView from './views/tree.js?v=20260914-projectmanage1';
 import sharingView from './views/sharing.js?v=20260914-setuproutes1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js

@@ -107,7 +107,7 @@ async function screenshot(name){
 }
 function checked(text){report.checks.push(text);console.log(text);}
 async function rows(count){
-  await page.waitForFunction(count=>document.querySelectorAll('.prj-row').length===count,count);
+  await page.waitForFunction(count=>[...document.querySelectorAll('.prj-row')].filter(row=>row.getClientRects().length).length===count,count);
 }
 async function visibleConnectors(ids){
   await page.waitForFunction(ids=>JSON.stringify([...document.querySelectorAll('.conn-card[data-toolkit]')]
@@ -186,7 +186,7 @@ try{
   await page.locator('#tab-projects').click();await page.keyboard.press('/');
   assert.equal(await search.evaluate(element=>element===document.activeElement),true);
   await query('AURORA','projects');await rows(1);
-  assert.match(await page.locator('.prj-row').textContent(),/Aurora Console/);
+  assert.match(await page.locator('.prj-row:visible').textContent(),/Aurora Console/);
   await search.press('/');assert.equal(await search.inputValue(),'AURORA/','Slash is text while typing');
   await search.press('Escape');await rows(10);
   assert.equal(await search.inputValue(),'');

@@ -175,7 +175,9 @@ try {
       const row = page.locator('.prj-row').first();
       const files = await row.locator('.prj-num').boundingBox();
       const active = await row.locator('.prj-when').boundingBox();
-      assert.ok(files.y + files.height <= active.y, `File counts and activity do not overlap at ${width}px`);
+      const overlaps=Math.min(files.x+files.width,active.x+active.width)>Math.max(files.x,active.x)+1
+        &&Math.min(files.y+files.height,active.y+active.height)>Math.max(files.y,active.y)+1;
+      assert.equal(overlaps,false, `File counts and activity do not overlap at ${width}px`);
       const footer = await page.locator('footer').boundingBox();
       const status = await page.locator('footer .srv').boundingBox();
       assert.ok(status.y >= footer.y && status.y + status.height <= footer.y + footer.height,

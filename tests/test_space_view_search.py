@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 function module(name,extra={}){
   const events=new Map(),timers=new Map();let serial=0;
   const context={
-    API_BASE:'',addEventListener:(type,fn)=>events.set(type,fn),
+    API_BASE:'',location:{origin:'http://space.test'},addEventListener:(type,fn)=>events.set(type,fn),
     document:{getElementById:()=>null},CSS:{escape:value=>value},
     setTimeout:fn=>{timers.set(++serial,fn);return serial;},
     clearTimeout:id=>timers.delete(id),...extra,
@@ -32,55 +32,78 @@ function module(name,extra={}){
   const source=fs.readFileSync(process.argv[1]+'/space_ui/js/views/'+name+'.js','utf8')
     .replace(/^import .*?;\n/gm,'').replace('export default','globalThis.view =');
   vm.runInContext(source,context);
-  return{view:context.view,events,flush:()=>{
+  return{view:context.view,events,evaluate:source=>vm.runInContext(source,context),flush:()=>{
     const pending=[...timers.values()];timers.clear();pending.forEach(fn=>fn());
   }};
 }
 
-// Projects: debounced matching, retained query, and programmatic handoff
-// to an already-expanded project that the current filter has hidden.
-const body={innerHTML:''},count={textContent:''};
-let html='',failList=false,refresh,toolbarRefreshes=0;
-const box={get innerHTML(){return html;},set innerHTML(value){html=value;body.innerHTML=value;}};
-const button={disabled:false,classList:{add(){}},addEventListener:(_type,fn)=>{refresh=fn;}};
-const projectsRoot={innerHTML:'',
-  querySelector(selector){
-    if(selector==='.prj')return box;
-    if(selector==='.prj-body')return html.includes('class="prj-body"')?body:null;
-    if(selector==='#prj-count')return count;
-    if(selector==='#prj-refresh')return html.includes('id="prj-refresh"')?button:null;
-    return null;
-  },querySelectorAll:()=>[],
-};
+// Projects: exercise the real selectors and pin actions without pretending
+// innerHTML is a DOM. The browser projects-experience harness covers keyed
+// nodes, focus, request failures, debounce rendering and project handoffs.
+const storage=new Map([['space.projects.pins.v1:http://space.test','["beta"]']]);
 const projects=module('projects',{
-  workspaceCounts:async()=>({byProject:new Map()}),
-  apiFetch:async path=>path==='/api/xo-projects'
-    ? failList?{ok:false,error:'Catalog unavailable'}:{ok:true,data:{items:[
-      {id:'alpha',display_name:'Aurora'}, {id:'beta',display_name:'Beacon'},
-    ]}}
-    :{ok:false},
+  localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
 });
 const ps=projects.view.toolbar.search;
 ps.setValue('AUR');projects.flush(); // safe before mount/data
-await projects.view.mount(projectsRoot,{switchTo(){},refreshToolbar(){toolbarRefreshes++;}});
-assert.match(html,/prj-row-alpha/);assert.doesNotMatch(html,/prj-row-beta/);
-assert.doesNotMatch(html,/id="prj-filter"/);
-ps.setValue('alpha');ps.setValue(' beta ');
-assert.match(body.innerHTML,/prj-row-alpha/,'results wait for debounce');
-projects.flush();
-assert.match(body.innerHTML,/prj-row-beta/);assert.doesNotMatch(body.innerHTML,/prj-row-alpha/);
-projects.view.show();assert.equal(ps.getValue(),' beta ');
-const jump=id=>projects.events.get('space:open-project')({detail:id});
-jump('beta');
-ps.setValue('alpha');projects.flush();
-assert.doesNotMatch(body.innerHTML,/prj-row-beta/);
-jump('beta');
-assert.equal(ps.getValue(),'');assert.equal(toolbarRefreshes,1);
-assert.match(html,/prj-drawer-beta/,'handoff reveals the existing expanded drawer');
-ps.setValue('missing');projects.flush();assert.match(body.innerHTML,/No project matches/);
-failList=true;await refresh();
-ps.setValue('alpha');projects.flush();
-assert.match(html,/Catalog unavailable/,'search preserves request failure feedback');
+assert.deepEqual(Array.from(projects.evaluate('visible()')),[]);
+projects.evaluate(`
+  items=[
+    {id:'alpha',display_name:'Aurora',description:'Finance reporting workspace',created_at:'2026-01-01T00:00:00Z'},
+    {id:'beta',display_name:'Beacon',description:'Team conversation and inbox',created_at:'2026-03-01T00:00:00Z'},
+    {id:'gamma',display_name:'Aurora',description:'Finance forecast tools',created_at:'2026-02-01T00:00:00Z'},
+    {id:'delta',display_name:'Delta',description:null,created_at:null},
+  ];
+  counts=new Map([
+    ['alpha',{files:0,known:true}],['beta',{files:30,known:true}],
+    ['gamma',{files:9999,known:false}],
+  ]);
+  live=new Map([
+    ['beta',{since:'2026-05-01T00:00:00Z'}],
+    ['gamma',{since:'2026-06-01T00:00:00Z'}],
+  ]);
+  lastEvent=new Map([['alpha','2026-07-01T00:00:00Z']]);
+  feeds.activity='ready';sortK='name';
+`);
+const projectIds=()=>Array.from(projects.evaluate('visible().map(p=>p.id)'));
+assert.deepEqual(projectIds(),['alpha','gamma'],'query entered before data remains active');
+ps.setValue('  FINANCE   aur  ');projects.flush();
+assert.deepEqual(projectIds(),['alpha','gamma'],'all words may match across name and description');
+ps.setValue('alpha reporting');projects.flush();
+assert.deepEqual(projectIds(),['alpha'],'project ID and description are searchable together');
+ps.setValue('finance missing');projects.flush();assert.deepEqual(projectIds(),[]);
+ps.setValue('inbox');projects.flush();assert.deepEqual(projectIds(),['beta'],'description-only match');
+assert.equal(ps.getValue(),'inbox');
+ps.setValue('');projects.flush();
+assert.deepEqual(projectIds(),['alpha','gamma','beta','delta'],'name ties use stable project IDs');
+projects.evaluate("sortK='files'");
+assert.deepEqual(projectIds(),['beta','alpha','gamma','delta'],'unknown count sorts after genuine zero');
+projects.evaluate("sortK='created'");
+assert.deepEqual(projectIds(),['beta','gamma','alpha','delta'],'newest first, missing date last');
+projects.evaluate("sortK='activity'");
+assert.deepEqual(projectIds(),['gamma','beta','alpha','delta'],'live projects precede recent idle activity');
+projects.evaluate("items[3].created_at='2099-01-01T00:00:00Z';items[3].unscaffolded=true");
+assert.deepEqual(projectIds(),['gamma','beta','alpha','delta'],'folder mtime is not recorded activity');
+projects.evaluate("sortK='created'");
+assert.deepEqual(projectIds(),['beta','gamma','alpha','delta'],'unscaffolded folder mtime is not project creation');
+projects.evaluate("viewFilter='live';sortK='name'");
+assert.deepEqual(projectIds(),['gamma','beta']);
+ps.setValue('finance');projects.flush();assert.deepEqual(projectIds(),['gamma'],'text and live filters intersect');
+projects.evaluate("viewFilter='pinned'");
+assert.deepEqual(projectIds(),[],'pins do not bypass the current search');
+ps.setValue('');projects.flush();assert.deepEqual(projectIds(),['beta'],'stored browser pins restore');
+projects.evaluate(`
+  globalThis.pinActions=new Map();
+  bindRow({hidden:false,querySelector:selector=>({addEventListener:(_type,fn)=>pinActions.set(selector,fn)})},'alpha');
+  pinActions.get('.prj-pin')();
+`);
+assert.deepEqual(projectIds(),['alpha','beta'],'pin action immediately updates the filtered list');
+assert.deepEqual(JSON.parse(storage.get('space.projects.pins.v1:http://space.test')),['beta','alpha']);
+projects.evaluate("pinActions.get('.prj-pin')()");
+assert.deepEqual(projectIds(),['beta'],'unpin removes a project from the pinned filter');
+assert.deepEqual(JSON.parse(storage.get('space.projects.pins.v1:http://space.test')),['beta']);
+projects.evaluate("viewFilter='all'");
+assert.deepEqual(projectIds(),['alpha','gamma','beta','delta'],'clearing the filter restores the full catalog');
 
 // Tree: search while loading, ancestor/name matching, clear restoring the
 // expansion and camera, and no focus-stealing replacement input.
@@ -182,7 +205,7 @@ console.log(JSON.stringify({passed:true}));process.exit(0);
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceViewSearchTests(unittest.TestCase):
-    def test_projects_and_tree_preserve_state_and_loading_feedback(self) -> None:
+    def test_projects_search_filters_sort_pins_and_tree_state(self) -> None:
         result = subprocess.run(
             ["node", "--input-type=module", "-e", LOCAL_PROBE, str(ROOT)],
             capture_output=True, text=True, timeout=15,
