@@ -2,10 +2,14 @@
      The same centred column and header strip as the Files list, with its
      own .inb-* vocabulary so the two surfaces can move independently. */
   #view-inbox{overflow-y:auto}
-  .inb{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
+  .inb{max-width:1180px;margin:0 auto;padding:34px 26px 60px;font-family:var(--sans)}
+
+  /* one control surface: the header strip and the source pills read as a
+     single toolbar rather than two separate stacked strips */
+  .inb-toolbar{margin-bottom:14px}
 
   /* header strip: eyebrow · summary · filter · mark all seen · refresh */
-  .inb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .inb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:0}
   .inb-eyebrow{font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--ink-3);
     text-transform:uppercase}
   .inb-sum{font-size:12.5px;color:var(--ink-2)}
@@ -33,10 +37,28 @@
 
   /* rows: dot · kind · title · project · when */
   .inb-rows{display:flex;flex-direction:column;gap:8px}
+  /* sticky day divider inside the scrolling list, so a long inbox keeps a
+     sense of when things arrived while scanning */
+  .inb-group{position:sticky;top:-1px;z-index:1;display:flex;align-items:center;gap:8px;
+    margin:8px 2px 0;padding:8px 2px 6px;font:600 10px/1 var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);
+    background:linear-gradient(var(--bg) 62%,rgba(11,12,15,0))}
+  .inb-group:first-child{margin-top:0}
+  .inb-group b{font-weight:600;letter-spacing:0;color:var(--ink-4)}
   .inb-row{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;
+    box-shadow:inset 3px 0 0 0 transparent;
     transition:border-color .16s var(--ease),background .16s var(--ease)}
   .inb-row:hover{border-color:var(--line)}
+  /* unread rows carry a faint wash so the eye lands on them first */
+  .inb-row.is-new{background:rgba(168,217,79,.035)}
   .inb-row.is-open{border-color:#2c3240;background:var(--bg-3)}
+  /* a quiet per-source accent down the left edge, inset so it keeps the row's
+     rounded corners; the source pills share this vocabulary */
+  .inb-row[data-source="issues"]{box-shadow:inset 3px 0 0 0 #e2ae5b}
+  .inb-row[data-source="connections"]{box-shadow:inset 3px 0 0 0 #6f93ad}
+  .inb-row[data-source="sharing"]{box-shadow:inset 3px 0 0 0 #c58fd6}
+  .inb-row[data-source="workspace"]{box-shadow:inset 3px 0 0 0 var(--accent-deep)}
+  .inb-row[data-source="agents"]{box-shadow:inset 3px 0 0 0 #8a8f98}
   .inb-row-head{display:grid;grid-template-columns:10px auto minmax(0,1fr) auto 84px;
     align-items:center;gap:12px;width:100%;text-align:left;padding:11px 16px;
     border-radius:12px;color:var(--ink)}
@@ -114,8 +136,13 @@
     .inb-job-info{flex-basis:100%}
   }
 
-  /* source pills: a second strip under the header, client-side only */
-  .inb-src{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 14px}
+  /* source pills: the second line of the toolbar, client-side only */
+  .inb-src{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+
+  /* secondary context under the rows: what the pollers watch and the jobs */
+  .inb-aside{margin-top:26px;padding-top:20px;border-top:1px solid var(--line-soft);
+    display:flex;flex-direction:column;gap:14px}
+  .inb-aside .inb-conns,.inb-aside .inb-jobs{margin-bottom:0}
   .inb-src button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
     color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:4px 10px;
     background:var(--bg-2);transition:all .16s var(--ease)}

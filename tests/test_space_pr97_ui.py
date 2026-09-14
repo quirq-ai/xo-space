@@ -885,8 +885,10 @@ class ShellTests(unittest.TestCase):
         context_stamp = "20260914-context1"
         for view in ("projects", "tree", "connectors"):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
-        results_stamp = "20260914-results1"
-        self.assertIn("./views/inbox.js?v=" + results_stamp + "'", app)
+        # The Inbox view and its stylesheet advanced together for the layout
+        # pass (rows first, source accents, sticky day dividers).
+        inbox_stamp = "20260914-inboxui1"
+        self.assertIn("./views/inbox.js?v=" + inbox_stamp + "'", app)
         # Timeline became the last Projects lens: atlas (its lenses) and the
         # lens switch advanced together to carry the new pill.
         timeline_stamp = "20260914-timelinelens1"
@@ -904,9 +906,9 @@ class ShellTests(unittest.TestCase):
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
-        # Inbox's Jobs/results styles advanced with its view; the connector
-        # account-chip stylesheet remains at its existing stamp.
-        for sheet, stamp in (("inbox", results_stamp), ("connectors", STAMP)):
+        # Inbox's stylesheet advanced with its view for the layout pass; the
+        # connector account-chip stylesheet remains at its existing stamp.
+        for sheet, stamp in (("inbox", inbox_stamp), ("connectors", STAMP)):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + stamp + '">', html)
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:

@@ -7,9 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
 # Shared core modules and connector styles retain the account-chip stamp.
-# Inbox imports and styles advanced for the Jobs and command-results UI.
+# Inbox imports and styles advanced for the layout pass (rows first, source
+# accents, sticky day dividers).
 STAMP = "20260914-accounts1"
-RESULTS_STAMP = "20260914-results1"
+RESULTS_STAMP = "20260914-inboxui1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
