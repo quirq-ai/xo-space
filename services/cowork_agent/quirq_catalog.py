@@ -23,6 +23,12 @@ from services.cowork_agent.project_layout import (
     xo_projects_root,
 )
 from services.cowork_agent.registry.agent_env import load_env_entries
+from services.cowork_agent.visualizer.state import (
+    watcher_activity_dir,
+    watcher_heartbeat_path,
+    watcher_state_dir,
+)
+from services.storage.layout import settings_dir
 from services.cowork_agent.runtime_config import (
     configured_settings,
     effective_settings,
@@ -392,8 +398,8 @@ def _tree(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     }
 
 
-def _activity(root: Path) -> dict[str, Any]:
-    activity_root = root / "cache" / "activity"
+def _activity() -> dict[str, Any]:
+    activity_root = watcher_activity_dir()
     workspace = _read_json(activity_root / "workspace.json")
     workspace_sessions = (
         workspace.get("open_sessions", [])
@@ -463,8 +469,9 @@ def _stale_after_seconds(interval_seconds: Any) -> float:
     return max(_HEARTBEAT_STALE_FLOOR_S, interval * _MISSED_TICKS_BEFORE_DEAD)
 
 
-def _watcher(root: Path) -> dict[str, Any]:
-    offsets = _read_json(root / "projects" / "offsets.json")
+def _watcher() -> dict[str, Any]:
+    offsets_path = watcher_state_dir() / "offsets.json"
+    offsets = _read_json(offsets_path)
     if isinstance(offsets, dict):
         tracked_files = len(offsets)
     elif isinstance(offsets, list):
@@ -476,7 +483,7 @@ def _watcher(root: Path) -> dict[str, Any]:
 
     # Observed liveness. Everything above this line is *configuration*: it
     # says what the watcher was asked to do, never whether the loop is running.
-    heartbeat_path = root / "cache" / "heartbeat.json"
+    heartbeat_path = watcher_heartbeat_path()
     heartbeat = _read_json(heartbeat_path)
     if not isinstance(heartbeat, dict):
         heartbeat = {}
@@ -500,7 +507,7 @@ def _watcher(root: Path) -> dict[str, Any]:
         "source_mode": applied["watcher_source_mode"],
         "configured_enabled": configured["watcher_enabled"],
         "tracked_files": tracked_files,
-        "offsets_present": (root / "projects" / "offsets.json").is_file(),
+        "offsets_present": offsets_path.is_file(),
         "heartbeat_present": heartbeat_path.is_file(),
         "last_tick_at": last_tick_at if isinstance(last_tick_at, str) else None,
         "tick_count": (
@@ -521,7 +528,7 @@ def _watcher(root: Path) -> dict[str, Any]:
 
 
 def _install_state(root: Path) -> dict[str, Any]:
-    path = root / "settings" / "onboarding.json"
+    path = settings_dir() / "onboarding.json"
     raw = _read_json(path if path.is_file() else root / "state.json")
     if not isinstance(raw, dict):
         return {"present": False}
@@ -736,8 +743,8 @@ def quirq_catalog() -> dict[str, Any]:
         },
         "totals": totals,
         "tree": tree,
-        "activity": _activity(root),
-        "watcher": _watcher(root),
+        "activity": _activity(),
+        "watcher": _watcher(),
         "runtime": configured_settings(),
         "credentials": [
             {"key": key, "configured": True, "value": "••••••"}

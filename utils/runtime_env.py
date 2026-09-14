@@ -36,6 +36,13 @@ def logs_dir() -> Path:
     return quirq_state_dir() / "logs"
 
 
+def scheduler_dir() -> Path:
+    """``<state root>/scheduler/``: saved commands, their state and run history.
+    Defined here because ``utils/commands/scheduler.py`` may not import
+    services; ``services.storage.layout`` re-exports it."""
+    return quirq_state_dir() / "scheduler"
+
+
 def watcher_tick_interval_seconds() -> float:
     """Seconds between watcher ticks: ``$QUIRQ_WATCHER_INTERVAL_SECONDS``,
     default 1, clamped to 0.25–60 (below that the tick would spin; above it the

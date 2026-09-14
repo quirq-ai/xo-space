@@ -18,6 +18,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+# Reads no environment at import, so it is safe before the dotenv load below.
+from services.storage.layout import secrets_dir, settings_dir
 from pydantic import BaseModel
 from dotenv import dotenv_values, load_dotenv
 import httpx
@@ -79,7 +82,7 @@ def _load_storage_roots() -> None:
         (os.getenv("QUIRQ_STATE_ROOT", "") or "").strip() or Path.home() / ".quirq"
     ).expanduser()
     # settings/roots.env since the state root has folders; roots.env before.
-    roots_file = anchor / "settings" / "roots.env"
+    roots_file = anchor / settings_dir().name / "roots.env"
     if not roots_file.is_file():
         roots_file = anchor / "roots.env"
     try:
@@ -109,7 +112,7 @@ def _settings_file(configured: str, new: Path, old: Path) -> str:
 
 _quirq_runtime_file = _settings_file(
     (os.getenv("QUIRQ_RUNTIME_FILE", "") or "").strip(),
-    _quirq_state_root / "settings" / "runtime.env",
+    settings_dir() / "runtime.env",
     _quirq_state_root / "runtime.env",
 )
 load_dotenv(_quirq_runtime_file, override=True)
@@ -118,7 +121,7 @@ if _quirq_secrets_file:
     load_dotenv(
         _settings_file(
             _quirq_secrets_file,
-            _quirq_state_root / "secrets" / "secrets.env",
+            secrets_dir() / "secrets.env",
             _quirq_state_root / "secrets.env",
         ),
         override=True,

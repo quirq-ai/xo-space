@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from services.storage.paths import quirq_state_dir
-from utils.runtime_env import logs_dir  # noqa: F401  (defined below the services layer)
+from utils.runtime_env import logs_dir, scheduler_dir  # noqa: F401  (defined below the services layer)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,10 @@ def projects_dir() -> Path:
 
 def inbox_dir() -> Path:
     return quirq_state_dir() / "inbox"
+
+
+def connections_dir() -> Path:
+    return quirq_state_dir() / "connections"
 
 
 def sharing_dir() -> Path:

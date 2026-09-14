@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.local_state import quirq_state_dir
-from services.storage.layout import settings_dir
+from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
@@ -81,7 +81,7 @@ def _secret_entries() -> list[dict]:
     into ``secrets/``, the configured new home may not exist yet; the old file
     is read then, so the startup fingerprint matches the moved file's and the
     move alone never reports a restart."""
-    new_home = quirq_state_dir() / "secrets" / "secrets.env"
+    new_home = secrets_dir() / "secrets.env"
     old = quirq_state_dir() / "secrets.env"
     configured = Path(agent_env.ENV_FILE)
     if configured == new_home and not configured.exists() and old.is_file():
@@ -660,7 +660,7 @@ def runtime_status() -> dict[str, Any]:
             "secrets_file": _path_status(
                 Path(
                     (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
-                    or state_root / "secrets" / "secrets.env"
+                    or secrets_dir() / "secrets.env"
                 )
             ),
         },

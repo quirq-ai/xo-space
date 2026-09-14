@@ -48,7 +48,7 @@ from utils.commands import CommandResult, CommandSpec, run_spec_sync
 from utils.runtime_env import (
     ENV_WATCHER_INTERVAL,
     logs_dir,
-    quirq_state_dir,
+    scheduler_dir,
     watcher_tick_interval_seconds as tick_interval_seconds,
 )
 
@@ -82,10 +82,6 @@ class ConcurrencyLimitError(SchedulerError):
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-
-
-def scheduler_dir() -> Path:
-    return quirq_state_dir() / "scheduler"
 
 
 def jobs_file() -> Path:

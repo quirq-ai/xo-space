@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.helpers import normalize_agent_id
-from services.storage.layout import cache_dir
+from services.storage.layout import cache_dir, projects_dir
 from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
@@ -131,7 +131,7 @@ def workspace_timeline_path() -> Path:
 
 def xo_runtime_root() -> Path:
     """Per-project runtime home, ``~/.quirq/projects/`` by default."""
-    return _resolved_root(str(quirq_state_dir())) / "projects"
+    return _resolved_root(str(quirq_state_dir())) / projects_dir().name
 
 
 # The runtime key is a single path segment joined straight into the runtime

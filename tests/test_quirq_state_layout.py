@@ -74,7 +74,7 @@ class SampleTests(_Sandbox):
             layout.projects_dir(), layout.inbox_dir(), layout.sharing_dir(),
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
-            self.root / "connections", self.root / "scheduler",
+            layout.connections_dir(), layout.scheduler_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 

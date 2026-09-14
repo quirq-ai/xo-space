@@ -18,8 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from services.cowork_agent.helpers import normalize_agent_id
-from services.cowork_agent.local_state import legacy_state_dir, quirq_state_dir
-from services.storage.layout import cache_dir
+from services.cowork_agent.local_state import legacy_state_dir
+from services.storage.layout import cache_dir, projects_dir
 
 
 def watcher_state_dir() -> Path:
@@ -30,7 +30,7 @@ def watcher_state_dir() -> Path:
 
     ``~/.quirq/projects/``, beside the history the positions count
     (``~/.quirq/watcher/`` before the state root had folders)."""
-    return quirq_state_dir() / "projects"
+    return projects_dir()
 
 
 def watcher_heartbeat_path() -> Path:

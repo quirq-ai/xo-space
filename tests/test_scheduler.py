@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent.local_state import quirq_state_dir
+from utils import runtime_env
 from utils.commands import scheduler
 
 PY = sys.executable
@@ -81,8 +82,9 @@ class SchedulerTests(unittest.TestCase):
     # ── Task 1: validation and the store ──
 
     def test_state_root_is_the_one_local_state_exposes(self) -> None:
-        # One definition (utils/runtime_env.py), re-exported by local_state.
-        self.assertIs(scheduler.quirq_state_dir, quirq_state_dir)
+        # One definition each (utils/runtime_env.py): the state root, re-exported
+        # by local_state, and the scheduler's folder beneath it.
+        self.assertIs(scheduler.scheduler_dir, runtime_env.scheduler_dir)
         self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
 
     def test_create_validates_writes_both_files_and_schedules_one_interval_out(self) -> None:
