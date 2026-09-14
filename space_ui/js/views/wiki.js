@@ -15,8 +15,8 @@ const GROUPS=[
         docs:'/space-walk/timeline',view:'time'
       },
       {
-        id:'sessions',title:'Sessions',
-        summary:'Compare recorded tokens, tools, models, and session details. Check source coverage and cost limits.',
+        id:'sessions',title:'Agents',
+        summary:'Compare agent runs: recorded tokens, tools, models, and session details. Check source coverage and cost limits.',
         docs:'/space-walk/sessions',view:'sessions',
         more:[{label:'Replay docs',path:'/space-walk/replay'}]
       }

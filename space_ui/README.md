@@ -2,13 +2,13 @@
 
 An explorable map of `~/xo-projects`. Five top-level tabs: **Projects**
 (Dashboard | List | Graph | Tree | Sharing | Timeline lenses under one tab),
-**Sessions**, **Inbox**, **Setup**, and **Connectors**, plus the
+**Agents**, **Inbox**, **Setup**, and **Connectors**, plus the
 **Quirq** state view, which has no tab of its own and opens from Setup's header.
 
 Space opens on Dashboard (`#/dashboard`) with Projects highlighted. Clicking
 the Projects tab or pressing `1` opens List (`#/projects`); existing deep links
 to `#/graph`, `#/tree`, `#/sharing`, and `#/time` (Timeline) keep their
-meanings. The numbered shortcuts follow the top bar: Projects `1`, Sessions
+meanings. The numbered shortcuts follow the top bar: Projects `1`, Agents
 `2`, Inbox `3`, Setup `4`, Connectors `5`. Timeline is a lens of the Projects
 tab, reached from the Projects lens switch rather than a numbered shortcut.
 
@@ -66,7 +66,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Dashboard + Graph + Timeline: three lenses over one dataset, one shared closure, three exported views. |
-| `js/views/sessions.js` | The Sessions view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. |
+| `js/views/sessions.js` | The Agents view (tab id `sessions`, route `#/sessions`): session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. |
 | `js/views/inbox.js` | The Inbox view: what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the tab button (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/projects.js` | The Projects List lens: project list with per-project drawers (folder browser via `/tree`, todos, open sessions, recent events, and the project's GitHub issues via `/github/issues`). Todos are read *and written* through `/api/xo-projects/{id}/todos`, the only write path for any runtime. Owns the `Projects` tab; Dashboard, Graph, Tree, and Sharing are sibling lenses (`nav:false`, `parent:'projects'`). |
 | `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
@@ -167,9 +167,9 @@ scheduler/
 Deleting a command keeps its history and logs on disk and does not cancel an active process. Commands run locally with
 the server's environment, including when the watcher is disabled for manual runs.
 
-## Sessions tab
+## Agents tab
 
-The third topbar tab (`Projects | Timeline | Sessions | Inbox | Setup |
+The second topbar tab (`Projects | Agents | Inbox | Setup |
 Connectors`) is a session-telemetry dashboard: per-session stats rendered as cards,
 tables, and hand-drawn canvas charts (no dependencies), re-skinned to the
 Space theme. The payload is assembled from every backend that implements the
@@ -317,7 +317,7 @@ run while the others still run. A source with `enabled: false` is never read.
 
 | Feeder | Reads | Default | Cursor | Produces |
 |---|---|---|---|---|
-| `timeline` | `~/.quirq/workspace/timeline.jsonl` (the runtime-tier workspace timeline), the newest 500 events of the enabled types | `types: ["session.started", "todo.added"]`; `todo.completed`, `file.created`, `file.edited` can be added | `cursors.timeline`, the newest event timestamp seen; with no cursor only the last 24 hours are taken | `Session started in <project> (<runtime>)` linking to Sessions; `Todo added in <project>: <content>` linking to Projects |
+| `timeline` | `~/.quirq/workspace/timeline.jsonl` (the runtime-tier workspace timeline), the newest 500 events of the enabled types | `types: ["session.started", "todo.added"]`; `todo.completed`, `file.created`, `file.edited` can be added | `cursors.timeline`, the newest event timestamp seen; with no cursor only the last 24 hours are taken | `Session started in <project> (<runtime>)` linking to Agents; `Todo added in <project>: <content>` linking to Projects |
 | `todos` | every `<project>/.xo/todos.json` | `statuses: ["blocked"]` | none | `Todo blocked in <project>: <content>` (kind `todo.blocked`, linking to Projects); the item is set to done by itself (flagged `auto_closed`) once the todo leaves the watched status or disappears, and comes back as new if the todo is blocked again |
 | `sharing` | the in-memory relay status (the `recent` list of `GET /api/project-sharing/status`) | on | `cursors.sharing` | `Repo shared with this workspace: <repo>`, `New commits fetched: <repo>`, `Sharing error: <repo>`, `Sharing access revoked: <repo>`, with the relay detail as body, linking to Projects |
 | `issues` | every project's GitHub issue mirror, `~/.quirq/projects/<pid>/github/issues.json` (written by the GitHub issue poller) | `states: ["open"]`; `closed` can be added | `cursors.issues`, the newest `updated_at` seen across every readable mirror; with no cursor only the last 7 days are taken | `Issue #<number> in <project>: <title>` (kind `issue.<state>`, key `issue:<project>:<number>`, labels and assignees as body, the issue URL as `url`, linking to Projects); the item is set to done by itself (flagged `auto_closed`) once the issue leaves a watched state, but only on a run where every mirror was readable, so a transient read failure never closes real issues; a reopened issue comes back as new once its `updated_at` passes the cursor |

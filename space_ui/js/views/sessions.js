@@ -1,4 +1,4 @@
-/* Sessions tab — multi-runtime telemetry dashboard (data: GET
+/* Agents tab — multi-runtime telemetry dashboard (data: GET
    /xo/sessions.json, pre-aggregated by the API). Independent of the atlas:
    own lazy fetch on
    first activation, own error handling — a graph-data failure cannot take
@@ -12,7 +12,7 @@ let _open=null;
 let _toolbar=()=>null;
 
 export default {
-  id:'sessions',label:'Sessions',order:4,
+  id:'sessions',label:'Agents',order:4,
   toolbar(){return _toolbar();},
   async mount(el,ctx){
 const wrap=document.getElementById('sesswrap');

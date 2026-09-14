@@ -7,14 +7,14 @@ import {initToolbar} from './core/toolbar.js?v=20260914-context1';
 import {initLensSwitch} from './core/lens-switch.js?v=20260914-timelinelens1';
 import {initPreview} from './core/preview.js?v=20260914-wikihub1';
 import {dashboardView,graphView,timeView} from './views/atlas.js?v=20260914-timelinelens1';
-import sessionsView from './views/sessions.js?v=20260914-context1';
+import sessionsView from './views/sessions.js?v=20260914-agentstab1';
 import inboxView,{initInboxBadge} from './views/inbox.js?v=20260914-results1';
 import projectsView from './views/projects.js?v=20260914-context1';
 import treeView from './views/tree.js?v=20260914-context1';
 import sharingView from './views/sharing.js?v=20260914-accounts1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260914-commands2';
+import wikiView from './views/wiki.js?v=20260914-agentstab1';
 import quirqView from './views/quirq.js?v=20260817-plural1';
 import secretsView from './views/secrets.js?v=20260914-results1';
 import connectorsView from './views/connectors.js?v=20260914-context1';

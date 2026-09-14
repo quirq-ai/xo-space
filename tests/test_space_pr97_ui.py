@@ -883,7 +883,7 @@ class ShellTests(unittest.TestCase):
         # advanced again for Jobs/results; unchanged resources keep their URLs.
         self.assertIn("./views/sharing.js?v=" + STAMP + "'", app)
         context_stamp = "20260914-context1"
-        for view in ("projects", "tree", "sessions", "connectors"):
+        for view in ("projects", "tree", "connectors"):
             self.assertIn("./views/" + view + ".js?v=" + context_stamp + "'", app)
         results_stamp = "20260914-results1"
         self.assertIn("./views/inbox.js?v=" + results_stamp + "'", app)
@@ -891,6 +891,11 @@ class ShellTests(unittest.TestCase):
         # lens switch advanced together to carry the new pill.
         timeline_stamp = "20260914-timelinelens1"
         self.assertIn("./views/atlas.js?v=" + timeline_stamp + "'", app)
+        # The Sessions tab was renamed to Agents: its view and the Wiki topic
+        # that documents it advanced together to carry the new label.
+        agents_stamp = "20260914-agentstab1"
+        self.assertIn("./views/sessions.js?v=" + agents_stamp + "'", app)
+        self.assertIn("./views/wiki.js?v=" + agents_stamp + "'", app)
         for core in ("registry", "toolbar"):
             self.assertIn("./core/" + core + ".js?v=" + context_stamp + "'", app)
         self.assertIn("./core/lens-switch.js?v=" + timeline_stamp + "'", app)

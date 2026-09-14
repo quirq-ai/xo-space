@@ -151,6 +151,26 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("scrollIntoView", registry)
 
+    def test_sessions_tab_is_labelled_agents_but_keeps_its_route(self) -> None:
+        """The Sessions tab was renamed to Agents (more relevant to what it
+        shows). Only the visible label changes: the view id and #/sessions
+        route are contracts other clients and deep links rely on, so they
+        stay put, and the in-app Wiki topic that documents the tab follows
+        the new name."""
+        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        contract = view_contract("sessions")
+        # renamed label, unchanged id/order → unchanged route and hotkey slot
+        self.assertIn("id:'sessions',label:'Agents',order:4", contract)
+        self.assertNotIn("label:'Sessions'", contract)
+        self.assertIn("registerView(sessionsView);", app)
+        # the Wiki manual names the tab the same way the top bar does
+        wiki = (ROOT / "space_ui" / "js" / "views" / "wiki.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("id:'sessions',title:'Agents'", wiki)
+        # the legacy help aliases keep routing to the same topic
+        self.assertIn("'tab-sessions':'sessions'", wiki)
+
     def test_connectors_view_is_registered_and_identity_aware(self) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
