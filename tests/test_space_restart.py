@@ -135,6 +135,30 @@ class RestartRouteTests(unittest.TestCase):
             'Origin': 'http://attacker.example',
         }).status_code, 403)
 
+    def test_declared_public_origin_counts_as_own_undeclared_does_not(self):
+        def request(host, origin, scheme='https'):
+            return Request({'type': 'http', 'scheme': scheme, 'path': '/',
+                            'headers': [(b'host', host.encode()), (b'origin', origin.encode())],
+                            'client': ('127.0.0.1', 1), 'server': ('127.0.0.1', 5002)})
+        host = 'xo-space--shared--x.dev.workspace.helloxo.nl'
+        public = 'https://' + host
+        with patch.dict('os.environ', {'QUIRQ_PUBLIC_URL': public, 'ALLOWED_ORIGINS': ''}):
+            self.assertTrue(space._is_local_mutation(request(host, public)))
+            self.assertFalse(space._is_local_mutation(request(host, 'http://' + host)), 'scheme must match')
+            self.assertFalse(space._is_local_mutation(request(host, public + ':8443')), 'port must match')
+        with patch.dict('os.environ', {'QUIRQ_PUBLIC_URL': '', 'ALLOWED_ORIGINS': ''}):
+            # Same Origin and Host, but nobody declared it: DNS rebinding looks exactly like this.
+            self.assertFalse(space._is_local_mutation(request(host, public)))
+        with patch.dict('os.environ', {'QUIRQ_PUBLIC_URL': 'not a url', 'ALLOWED_ORIGINS': public + '/space/'}):
+            # A base URL with a path still declares its origin; garbage is ignored, not fatal.
+            self.assertTrue(space._is_local_mutation(request(host, public)))
+        # A remote peer is refused regardless of declarations.
+        with patch.dict('os.environ', {'QUIRQ_PUBLIC_URL': public}):
+            remote = Request({'type': 'http', 'scheme': 'https', 'path': '/',
+                              'headers': [(b'host', host.encode()), (b'origin', public.encode())],
+                              'client': ('192.0.2.10', 1), 'server': ('127.0.0.1', 5002)})
+            self.assertFalse(space._is_local_mutation(remote))
+
     def test_local_origin_uses_effective_port_and_ipv6(self):
         def request(host, origin, scheme='http'):
             return Request({'type': 'http', 'scheme': scheme, 'path': '/',

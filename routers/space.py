@@ -35,38 +35,87 @@ def _is_local(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost")
 
 
-def _is_local_mutation(request: Request) -> bool:
-    """Allow local CLI calls and same-origin loopback browser mutations.
+def _origin_triple(value: str, *, strict: bool = True) -> tuple[str, str, int] | None:
+    """``scheme://host[:port]`` → ``(scheme, host, port)``, or ``None``.
 
-    A page on another site can submit a simple POST to localhost without a
-    CORS preflight. Origin checks close that path without requiring CLI
-    clients to manufacture a browser header.
+    ``strict`` is for a browser's ``Origin`` header, which is exactly an
+    origin: no userinfo, path, query or fragment, no whitespace. The lenient
+    form is for a configured *base URL*, where a path or trailing slash is
+    tolerated and only the origin part is kept.
+    """
+    if not value or any(char.isspace() for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if (parsed.scheme not in {"http", "https"} or not host
+                or parsed.username is not None or parsed.password is not None):
+            return None
+        if strict and (parsed.path or parsed.query or parsed.fragment):
+            return None
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return (parsed.scheme, host, port)
+
+
+def _declared_origins() -> set[tuple[str, str, int]]:
+    """Origins the operator declared as this Space's own.
+
+    ``QUIRQ_PUBLIC_URL`` is the externally reachable base URL (a Coder
+    workspace URL, a reverse proxy); ``ALLOWED_ORIGINS`` is the CORS list
+    ``server.py`` already trusts with credentials. Read per request so a
+    configuration change needs no code change. Unset means "none".
+    """
+    raw_values = [os.getenv("QUIRQ_PUBLIC_URL", "")]
+    raw_values += os.getenv("ALLOWED_ORIGINS", "").split(",")
+    declared: set[tuple[str, str, int]] = set()
+    for raw in raw_values:
+        triple = _origin_triple(raw.strip(), strict=False)
+        if triple is not None:
+            declared.add(triple)
+    return declared
+
+
+def _is_local_mutation(request: Request) -> bool:
+    """Allow local CLI calls and same-origin browser mutations.
+
+    A page on another site can submit a simple POST without a CORS preflight,
+    so a browser request (one that carries ``Origin``) must come from this
+    Space's own origin. Two origins count as its own:
+
+    - the loopback origin the request was addressed to — a local install,
+      where the browser and the server share the machine;
+    - an origin the operator declared (``QUIRQ_PUBLIC_URL`` /
+      ``ALLOWED_ORIGINS``) — how a Space served through a proxy, such as a
+      Coder workspace URL, is reached; the proxy connects from loopback, the
+      browser's Origin is the public host.
+
+    An *undeclared* public host is refused even when it matches the request's
+    own Host: that is what stops a DNS-rebinding page, whose Origin equals
+    the host it hijacked, from driving a local server. CLI clients send no
+    Origin; for them the loopback peer is the credential.
     """
     if not _is_local(request):
         return False
     origin = request.headers.get("origin")
     if origin is None:
         return True
-    if any(char.isspace() for char in origin):
+    triple = _origin_triple(origin)
+    if triple is None:
         return False
+    if triple in _declared_origins():
+        return True
+    scheme, host, port = triple
     try:
-        parsed = urlsplit(origin)
-        host = parsed.hostname
-        if (parsed.scheme not in {"http", "https"} or not host
-                or parsed.username is not None or parsed.password is not None
-                or parsed.path or parsed.query or parsed.fragment):
-            return False
         if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
             return False
-        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
-        request_port = request.url.port
-        if request_port is None:
-            request_port = 443 if request.url.scheme == "https" else 80
-        return (parsed.scheme, host, port) == (
-            request.url.scheme, request.url.hostname, request_port,
-        )
     except ValueError:
-        return False
+        return False  # a public hostname that nobody declared
+    request_port = request.url.port
+    if request_port is None:
+        request_port = 443 if request.url.scheme == "https" else 80
+    return (scheme, host, port) == (request.url.scheme, request.url.hostname, request_port)
 
 
 @router.get("/server/status")
