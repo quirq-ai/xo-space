@@ -66,7 +66,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Dashboard + Graph + Timeline: three lenses over one dataset, one shared closure, three exported views. |
-| `js/views/sessions.js` | The Agents view (tab id `sessions`, route `#/sessions`): session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. |
+| `js/views/sessions.js` | The Agents view (tab id `agents`, route `#/agents`): session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
 | `js/views/inbox.js` | The Inbox view: what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the tab button (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/projects.js` | The Projects List lens: project list with per-project drawers (folder browser via `/tree`, todos, open sessions, recent events, and the project's GitHub issues via `/github/issues`). Todos are read *and written* through `/api/xo-projects/{id}/todos`, the only write path for any runtime. Owns the `Projects` tab; Dashboard, Graph, Tree, and Sharing are sibling lenses (`nav:false`, `parent:'projects'`). |
 | `js/views/tree.js` | The Projects Tree lens: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/tree`. |
@@ -290,7 +290,7 @@ fresh workspace creates nothing.
       "title": "Session started in xo-space (claude_code)",   // 1 to 300 chars
       "body": "",                                // up to 4000 chars
       "project_id": "xo-space",                  // optional project folder name
-      "link": {"view": "sessions"},              // optional: view, project, path
+      "link": {"view": "agents"},                // optional: view, project, path
       "url": null,                               // optional: http(s) address, up to 2000 chars, else null
       "status": "new",                           // new | seen | done
       "auto_closed": true,                       // optional, only ever true, only with status done: a feeder closed it (see Hand-editing)

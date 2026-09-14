@@ -22,7 +22,7 @@ DASHES = re.compile("[\\u2013\\u2014]")  # en dash, em dash: banned in new docs
 AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
 #: Every view app.js registers (nav tabs and the nav:false lenses alike): the
 #: ids a link.view may name and the UI will follow.
-REGISTERED_VIEWS = ("dashboard", "projects", "graph", "tree", "time", "sessions",
+REGISTERED_VIEWS = ("dashboard", "projects", "graph", "tree", "time", "agents",
                     "inbox", "sharing", "wiki", "quirq", "secrets", "connectors")
 
 
@@ -194,8 +194,8 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         app = read("space_ui/js/app.js")
         self.assertEqual(len(re.findall(r"^\s*registerView\(", app, re.M)), len(REGISTERED_VIEWS))
         feeders = read("services/inbox/feeders.py")
-        self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))), ["connectors", "projects", "sessions"])
-        self.assertIn("the feeders themselves use `sessions`, `projects` and `connectors`", text)
+        self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))), ["agents", "connectors", "projects"])
+        self.assertIn("the feeders themselves use `agents`, `projects` and `connectors`", text)
 
     def test_the_status_code_split_the_docs_claim_holds(self) -> None:
         """422 is pydantic's (shape), 400 is the service's (value): none of these

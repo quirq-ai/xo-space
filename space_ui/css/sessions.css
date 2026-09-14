@@ -1,5 +1,5 @@
-  /* ---------------- sessions tab ---------------- */
-  #view-sessions{overflow-y:auto}
+  /* ---------------- agents tab ---------------- */
+  #view-agents{overflow-y:auto}
   /* the global `canvas` rule makes every canvas a full-bleed overlay (graph,
      timeline). Chart canvases in this tab are ordinary in-flow elements —
      undo the overlay positioning inside the panel. */

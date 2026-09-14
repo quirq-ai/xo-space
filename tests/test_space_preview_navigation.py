@@ -139,7 +139,7 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(restored.isOpen(),false);
           assert.equal(restored.els['preview-body'].innerHTML,'');
           restored.save();assert.equal(restored.store.getItem(key),null);
-          for(const hash of ['#/time','#/sessions','#/inbox','#/projects']){
+          for(const hash of ['#/time','#/agents','#/inbox','#/projects']){
             const store=storage(new Map([[key,snapshot]]));
             const other=page({hash,store});await settle();
             assert.equal(other.isOpen(),false,'snapshot is only valid for its destination');
@@ -156,7 +156,7 @@ class PreviewNavigationTests(unittest.TestCase):
             respond:url=>url.includes('/file?')?delayedFile:undefined});
           slow.switchTo('graph','projects');slow.save();
           assert.equal(JSON.parse(slow.store.getItem(key)).version,'oldhash');
-          slow.switchTo('sessions','sessions');resolveFile(payload('late old file'));await settle();
+          slow.switchTo('agents','agents');resolveFile(payload('late old file'));await settle();
           assert.equal(slow.isOpen(),false);
           assert.equal(slow.els['preview-body'].innerHTML,'');
           assert.equal(slow.store.getItem(key),null,'closing cancels any reload handoff');

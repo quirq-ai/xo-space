@@ -15,9 +15,9 @@ const GROUPS=[
         docs:'/space-walk/timeline',view:'time'
       },
       {
-        id:'sessions',title:'Agents',
+        id:'agents',title:'Agents',
         summary:'Compare agent runs: recorded tokens, tools, models, and session details. Check source coverage and cost limits.',
-        docs:'/space-walk/sessions',view:'sessions',
+        docs:'/space-walk/sessions',view:'agents',
         more:[{label:'Replay docs',path:'/space-walk/replay'}]
       }
     ]
@@ -74,14 +74,14 @@ const GROUPS=[
    the old articles. Requests received before mount/show are applied on show. */
 const TOPIC_ALIASES={
   overview:'overview',quickstart:'quickstart',
-  projects:'projects',timeline:'timeline',sessions:'sessions',inbox:'inbox',
+  projects:'projects',timeline:'timeline',agents:'agents',sessions:'agents',inbox:'inbox',
   observability:'observability',sharing:'sharing',setup:'setup',
   connectors:'connectors',contribute:'contribute',
   storage:'observability',installation:'setup','first-run':'quickstart',
   watcher:'observability','xo-data':'observability','quirq-data':'observability',
-  flows:'observability',collaboration:'projects',spacewalk:'sessions',
+  flows:'observability',collaboration:'projects',spacewalk:'agents',
   'tab-files':'projects','tab-dashboard':'projects','tab-timeline':'timeline',
-  'tab-sessions':'sessions','tab-inbox':'inbox','tab-wiki':'overview',
+  'tab-agents':'agents','tab-sessions':'agents','tab-inbox':'inbox','tab-wiki':'overview',
   'tab-quirq':'observability','tab-setup':'setup','tab-connectors':'connectors'
 };
 const esc=value=>String(value??'').replace(

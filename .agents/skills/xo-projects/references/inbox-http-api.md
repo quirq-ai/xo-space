@@ -32,7 +32,7 @@ POST /api/inbox
 → 400 invalid_value (empty or overlong title, body, kind, source, url) | invalid_project_id | invalid_link
 ```
 
-`kind` and `source` are labels the UI shows as chips: use your runtime name for `source` and a short stable word for `kind` (`question`, `finding`, `request`, `result`). `link` is what the Open button does: `view` names a Space view (the server accepts any `[a-z0-9_-]{1,40}` id; the view ids registered today are `dashboard`, `projects`, `graph`, `tree`, `time`, `sessions`, `inbox`, `sharing`, `wiki`, `quirq`, `secrets`, `connectors`, and the UI ignores a view it does not know; the feeders themselves use `sessions`, `projects` and `connectors`), and `project` plus `path` (project-relative, no leading slash, no `..`, at most 500 chars) opens that file in the previewer. Unknown link keys are dropped; an empty link is stored as `null`. `url` is what the Open link button does: an `http://` or `https://` address opened in a new tab; anything else is `invalid_value`. Items created here carry no `key`, so the feeders never touch them.
+`kind` and `source` are labels the UI shows as chips: use your runtime name for `source` and a short stable word for `kind` (`question`, `finding`, `request`, `result`). `link` is what the Open button does: `view` names a Space view (the server accepts any `[a-z0-9_-]{1,40}` id; the view ids registered today are `dashboard`, `projects`, `graph`, `tree`, `time`, `agents`, `inbox`, `sharing`, `wiki`, `quirq`, `secrets`, `connectors`, and the UI ignores a view it does not know; the feeders themselves use `agents`, `projects` and `connectors`), and `project` plus `path` (project-relative, no leading slash, no `..`, at most 500 chars) opens that file in the previewer. Unknown link keys are dropped; an empty link is stored as `null`. `url` is what the Open link button does: an `http://` or `https://` address opened in a new tab; anything else is `invalid_value`. Items created here carry no `key`, so the feeders never touch them.
 
 ## Read
 
@@ -41,7 +41,7 @@ GET /api/inbox?status=open&limit=200
 → { "schema": 1, "updated_at": "...Z",
     "counts": { "new": 3, "seen": 2, "done": 12 },
     "items": [ { "id": "a1b2c3d4", "ts": "...", "source": "timeline", "kind": "session.started",
-                 "title": "...", "body": "", "project_id": "...", "link": {"view": "sessions"},
+                 "title": "...", "body": "", "project_id": "...", "link": {"view": "agents"},
                  "url": null, "status": "new", "key": "timeline:session.started:<session_id>" }, ... ] }
 → 400 invalid_status
 ```

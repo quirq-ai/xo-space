@@ -99,7 +99,7 @@ def _timeline_item(ev: dict) -> Optional[dict]:
             return None
         runtime = ev.get("runtime") if isinstance(ev.get("runtime"), str) and ev.get("runtime") else "unknown"
         return _safe_item(title=f"Session started in {pid} ({runtime})",
-                          link={"view": "sessions"}, key=f"timeline:session.started:{sid}", **base)
+                          link={"view": "agents"}, key=f"timeline:session.started:{sid}", **base)
     if kind == "todo.added":
         todo = ev.get("todo") if isinstance(ev.get("todo"), dict) else {}
         if not isinstance(todo.get("id"), str) or not todo["id"]:

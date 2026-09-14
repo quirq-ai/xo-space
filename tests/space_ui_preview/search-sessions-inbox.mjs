@@ -82,7 +82,7 @@ async function expectRows(count){
 }
 
 try{
-  await page.goto(origin+'/space/#/sessions',{waitUntil:'networkidle'});
+  await page.goto(origin+'/space/#/agents',{waitUntil:'networkidle'});
   await page.locator('[data-sub="overview"]').waitFor();
   await waitSearch(false);
   await page.locator('[data-sub="sessions"]').click();
@@ -160,14 +160,14 @@ try{
   await page.locator('[data-src="all"]').click();
   assert.equal(await page.locator('.inb-row').count(),1);
   await setQuery('Previous');
-  await page.locator('#tab-sessions').click();
+  await page.locator('#tab-agents').click();
   await waitSearch(true);
-  assert.equal(await search.inputValue(),'','Sessions retains its own cleared query');
+  assert.equal(await search.inputValue(),'','Agents retains its own cleared query');
   await page.locator('#tab-inbox').click();
   assert.equal(await search.inputValue(),'Previous','Inbox retains its query across views');
   for(const width of [320,390]){
     await page.setViewportSize({width,height:1000});
-    await page.goto(origin+'/space/#/sessions',{waitUntil:'networkidle'});
+    await page.goto(origin+'/space/#/agents',{waitUntil:'networkidle'});
     await page.locator('.sess-subnav').waitFor();
     for(const sub of ['overview','sessions','tools','models','trends']){
       const bounds=await page.locator('.sess-subnav').evaluate(nav=>{

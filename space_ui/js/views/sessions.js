@@ -12,7 +12,7 @@ let _open=null;
 let _toolbar=()=>null;
 
 export default {
-  id:'sessions',label:'Agents',order:4,
+  id:'agents',label:'Agents',order:4,
   toolbar(){return _toolbar();},
   async mount(el,ctx){
 const wrap=document.getElementById('sesswrap');

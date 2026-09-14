@@ -268,7 +268,7 @@ class InboxStoreTests(unittest.TestCase):
         self.assertEqual(doc["cursors"]["timeline"], untagged["ts"])
         started = self.by_key("timeline:session.started:s-new")
         self.assertEqual((started["title"], started["link"], started["project_id"]),
-                         ("Session started in alpha (r)", {"view": "sessions"}, "alpha"))
+                         ("Session started in alpha (r)", {"view": "agents"}, "alpha"))
         self.assertEqual(self.by_key("timeline:todo.added:s-new:t1")["title"], "Todo added in alpha: line one line two")
         # cursor rule: an event older than the cursor is ignored, a newer one lands
         self.write_timeline([

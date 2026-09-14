@@ -71,7 +71,7 @@ for(const [,name] of app.matchAll(/registerView\((\w+)\);/g)){
   registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
 }
 registry.startRegistry({defaultView:'dashboard'});
-const expectedTabs=['projects','sessions','inbox','secrets','connectors'];
+const expectedTabs=['projects','agents','inbox','secrets','connectors'];
 assert.deepEqual(tabs.children.map(tab=>tab.id),expectedTabs.map(id=>'tab-'+id));
 assert.deepEqual(buttons.map(button=>button.dataset.filesLens),['dashboard','projects','graph','tree','sharing','time']);
 assert.deepEqual(buttons.map(button=>button.label),['Dashboard','List','Graph','Tree','Sharing','Timeline']);

@@ -62,7 +62,7 @@ try {
   if(!screenshotsOnly) {
     assert.equal(new URL(page.url()).hash, '#/dashboard', 'Dashboard is the initial view');
     assert.deepEqual(await page.locator('.tabs button').evaluateAll(buttons => buttons.map(b => b.id)),
-      ['tab-projects', 'tab-time', 'tab-sessions', 'tab-inbox', 'tab-secrets', 'tab-connectors']);
+      ['tab-projects', 'tab-time', 'tab-agents', 'tab-inbox', 'tab-secrets', 'tab-connectors']);
     assert.deepEqual(await page.locator('[data-files-lens]').allTextContents(),
       ['Dashboard', 'List', 'Graph', 'Tree', 'Sharing']);
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
@@ -133,7 +133,7 @@ try {
     assert.equal(await page.locator('.tabs .is-on').count(), 0);
     report.checks.push('Wiki deep link remains routable without a primary tab');
 
-    const tabIds = ['projects', 'time', 'sessions', 'inbox', 'secrets', 'connectors'];
+    const tabIds = ['projects', 'time', 'agents', 'inbox', 'secrets', 'connectors'];
     for(const [index, id] of tabIds.entries()) {
       await page.locator('body').click({position: {x: 3, y: 3}});
       await page.keyboard.press(String(index + 1));
