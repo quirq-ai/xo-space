@@ -9,14 +9,17 @@ repo. The UI's DATA comes from the workspace .xo directory via /xo/*.json
 """
 
 import asyncio
+import ipaddress
 import os
 import signal
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 # Bundled UI (space_ui/ at the repo root); SPACE_DIR env var overrides, e.g.
 # to point at a live xo-atlas checkout during UI development.
@@ -30,6 +33,40 @@ _SERVER_INSTANCE = str(time.time_ns())
 def _is_local(request: Request) -> bool:
     host = request.client.host if request.client else ""
     return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _is_local_mutation(request: Request) -> bool:
+    """Allow local CLI calls and same-origin loopback browser mutations.
+
+    A page on another site can submit a simple POST to localhost without a
+    CORS preflight. Origin checks close that path without requiring CLI
+    clients to manufacture a browser header.
+    """
+    if not _is_local(request):
+        return False
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    if any(char.isspace() for char in origin):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        host = parsed.hostname
+        if (parsed.scheme not in {"http", "https"} or not host
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment):
+            return False
+        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
+            return False
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        request_port = request.url.port
+        if request_port is None:
+            request_port = 443 if request.url.scheme == "https" else 80
+        return (parsed.scheme, host, port) == (
+            request.url.scheme, request.url.hostname, request_port,
+        )
+    except ValueError:
+        return False
 
 
 @router.get("/server/status")
@@ -64,16 +101,21 @@ async def space_server_stop(request: Request):
 @router.post("/server/restart")
 async def space_server_restart(request: Request):
     """Restart through the install's supervisor; never start a second server."""
-    if not _is_local(request):
-        raise HTTPException(status_code=403, detail="restart is allowed from localhost only")
-    from services.cowork_agent.runtime_config import REPO_ROOT, restart_mode
+    if not _is_local_mutation(request):
+        raise HTTPException(status_code=403, detail="restart requires a local, same-origin request")
+    from services.cowork_agent.runtime_config import REPO_ROOT, native_restart_pid, restart_mode
     from utils.commands import spawn_detached
 
     mode = restart_mode()
     if mode == "foreground":
         raise HTTPException(status_code=409, detail="Ctrl-C and re-run the server from the terminal where you launched it.")
     if mode == "native":
-        result = spawn_detached(["./cowork-api.sh", "restart"], cwd=REPO_ROOT)
+        pid = native_restart_pid()
+        if pid is None:
+            raise HTTPException(status_code=409, detail="The native runner changed; refresh before restarting.")
+        result = spawn_detached(
+            ["./cowork-api.sh", "restart-owned", str(pid), str(os.getpid())], cwd=REPO_ROOT,
+        )
         if not result.ok:
             raise HTTPException(status_code=503, detail=f"Could not start the restart script: {result.output}")
     else:
@@ -81,7 +123,11 @@ async def space_server_restart(request: Request):
             await asyncio.sleep(0.4)
             os.kill(os.getpid(), signal.SIGTERM)
 
-        asyncio.get_running_loop().create_task(_terminate_soon())
+        # Starlette starts background work only after sending the response body.
+        return JSONResponse(
+            {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE},
+            background=BackgroundTask(_terminate_soon),
+        )
     return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
 
 

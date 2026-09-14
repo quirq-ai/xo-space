@@ -196,19 +196,25 @@ def _write_doc(path: Path, doc: dict) -> None:
     """Atomic replace. Deliberately not the visualizer's ``write_json_atomic``:
     the scheduler must not depend on the watcher's package — the dependency
     points the other way (the watcher calls us)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    _chmod_private(tmp)
-    os.replace(tmp, path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _chmod_private(tmp)
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise SchedulerError(f"{path} could not be written: {exc}") from exc
 
 
 def _append_run(job_id: str, record: dict) -> None:
     path = runs_file(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fp:
-        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
-    _chmod_private(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _chmod_private(path)
+    except OSError as exc:
+        raise SchedulerError(f"{path} could not be appended: {exc}") from exc
 
 
 # ── Definitions ──────────────────────────────────────────────────────────────
@@ -301,6 +307,7 @@ class _Run:
     thread: Optional[threading.Thread] = None
     result: Optional[CommandResult] = None
     finished_at: Optional[datetime] = None
+    history_written: bool = False
 
 
 _lock = threading.Lock()
@@ -381,7 +388,7 @@ def delete_job(job_id: str) -> None:
         if job_id not in jobs["jobs"]:
             raise UnknownJobError(job_id)
         del jobs["jobs"][job_id]
-        state = _read_doc(state_file())
+        state = _harvest_for_read()
         state["jobs"].pop(job_id, None)
         _write_doc(jobs_file(), jobs)
         _write_doc(state_file(), state)
@@ -439,7 +446,11 @@ def _launch(job: Mapping[str, Any], trigger: str, now: datetime) -> None:
 
     run.thread = threading.Thread(target=target, name=f"scheduler:{job_id}", daemon=True)
     _running[job_id] = run
-    run.thread.start()
+    try:
+        run.thread.start()
+    except Exception as exc:
+        del _running[job_id]
+        raise SchedulerError(f"{job_id} could not start its command thread: {exc}") from exc
 
 
 def _status_of(result: CommandResult) -> str:
@@ -474,14 +485,20 @@ def _harvest(state: dict) -> list[str]:
     for job_id, run in list(_running.items()):
         if run.thread is None or run.thread.is_alive():
             continue
-        del _running[job_id]
         record = _record(run)
-        _append_run(job_id, record)
+        if not run.history_written:
+            _append_run(job_id, record)
+            run.history_written = True
         entry = state["jobs"].get(job_id)
         if entry is not None:  # deleted mid-run: history is kept, state is gone
             entry["last_run"] = record["started_at"]
             entry["last_result"] = record
             entry["running_since"] = None
+            # Release the result only after both durable copies exist. If
+            # state replacement fails, retry it on the next read/tick without
+            # appending the same history row again.
+            _write_doc(state_file(), state)
+        del _running[job_id]
         finished.append(job_id)
     return finished
 
@@ -500,6 +517,7 @@ def _sweep(state: dict, now: datetime) -> list[str]:
                 "reason": "the server stopped while this run was in progress",
             }
             _append_run(job_id, record)
+            entry["last_run"] = record["started_at"]
             entry["running_since"] = None
             entry["last_result"] = record
             lost.append(job_id)
@@ -623,8 +641,12 @@ def tick(now: Optional[datetime] = None) -> TickReport:
         except SchedulerError as exc:
             report.errors.append(str(exc))
             return report
-        report.finished.extend(_harvest(state))
-        report.lost.extend(_sweep(state, now))
+        try:
+            report.finished.extend(_harvest(state))
+            report.lost.extend(_sweep(state, now))
+        except SchedulerError as exc:
+            report.errors.append(str(exc))
+            return report
         changed = bool(report.finished or report.lost)
         try:
             jobs = _read_doc(jobs_file())["jobs"]

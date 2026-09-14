@@ -308,7 +308,7 @@ the inbox.
 
 Every subprocess xo-space starts goes through the `utils/commands/` package
 (`__init__.py` is the executor; `scheduler.py`, beside it, runs registered
-commands manually or on a fixed interval; see `docs/command-scheduler.md`):
+commands manually or on a fixed interval; see [Setup process controls and commands](#setup-process-controls-and-commands)):
 
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
 argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
@@ -342,7 +342,7 @@ The old `/api/runtime-config/restart` URL remains a localhost-only alias.
 | Mode | Detection | Restart behavior |
 |---|---|---|
 | `managed` | `QUIRQ_MANAGED_CONTAINER` is true | Deferred SIGTERM; the supervisor brings the process back. |
-| `native` | `cowork-api.sh` is executable and `/tmp/xo-space.pid` identifies this server or its wrapper | `spawn_detached(["./cowork-api.sh", "restart"], cwd=<checkout>)`; the runner preserves its own restart helper while stopping the old process. |
+| `native` | `cowork-api.sh` is executable and `/tmp/xo-space.pid` identifies this server or its wrapper | A detached `cowork-api.sh restart-owned` validates the managed/server PIDs under the runner lock and stops only that installation before starting its replacement. |
 | `foreground` | No matching native pid or managed supervisor; includes reload mode | HTTP 409, disabled UI control with “Ctrl-C and re-run”. |
 
 The footer and Setup share a status probe; Setup reloads only after a new
@@ -352,7 +352,7 @@ The Commands card uses `/api/schedules` and the existing `CommandSpec` executor.
 `every_seconds` may be omitted or null for manual-only jobs; the tick never
 launches those jobs. `description` is optional. An interval change resets the
 schedule grid; switching to manual clears `next_run` and keeps the history.
-All create/update/delete/run routes are localhost-only. Manual execution keeps
+All create/update/delete/run routes are localhost-only; browser requests must also come from the same loopback origin. Local CLI clients may omit Origin. Manual execution keeps
 single-flight and `XO_SCHEDULER_MAX_CONCURRENT` (409 when busy). GETs and run_now
 harvest completed runs without launching jobs, so manual results stay visible
 with the watcher disabled. A timeout is required for every saved command.

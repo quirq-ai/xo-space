@@ -53,19 +53,24 @@ def restart_mode() -> str:
     pid file (or another checkout's server) must not enable process control.
     Reload workers are foreground development processes, not managed servers.
     """
-    if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
-        return "managed"
     if _as_bool(os.getenv("UVICORN_RELOAD"), default=False):
         return "foreground"
+    if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
+        return "managed"
+    return "native" if native_restart_pid() is not None else "foreground"
+
+
+def native_restart_pid() -> int | None:
+    """The PID owned by this native server's runner, checked again on restart."""
     script = REPO_ROOT / "cowork-api.sh"
     if script.is_file() and os.access(script, os.X_OK):
         try:
             pid = int(NATIVE_PID_FILE.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
-            return "foreground"
+            return None
         if pid > 1 and pid in {os.getpid(), os.getppid()}:
-            return "native"
-    return "foreground"
+            return pid
+    return None
 
 
 def _secrets_fingerprint() -> str:
@@ -588,6 +593,7 @@ def runtime_status() -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
     reasons = restart_reasons()
+    mode = restart_mode()
     # Additive and best-effort: the Setup card renders it when present, and
     # a failure here must not take down the whole runtime-config endpoint.
     try:
@@ -602,8 +608,8 @@ def runtime_status() -> dict[str, Any]:
         "applied": applied,
         "restart_required": bool(reasons),
         "restart_reasons": reasons,
-        "restart_supported": restart_mode() != "foreground",
-        "restart_mode": restart_mode(),
+        "restart_supported": mode != "foreground",
+        "restart_mode": mode,
         "managed_container": _as_bool(
             os.getenv("QUIRQ_MANAGED_CONTAINER"),
             default=False,

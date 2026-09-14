@@ -194,13 +194,13 @@ The router never knows which agent it is talking to. Each agent lives in `servic
 
 Nothing, by default. A self-hosted install binds to loopback, needs no account, and sends no usage data. Session traces and telemetry stay in `.quirq/` and the agents' own stores.
 
-If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. It never includes prompts, responses, file contents or paths. Leave the key unset to stay signed out.
+If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. Normal metric fields exclude prompts, responses and file contents; diagnostic error notes can include source filenames and raw error details. Leave the key unset to stay signed out.
 
 To see what your install decided: the status is the first thing on the Setup tab's **Agent and watcher** card (`/space/#/secrets`), the server's own decisions are in `<state root>/quirq.log` (`grep usage_sync ~/.quirq/quirq.log` on the default install), and every external command Quirq runs is recorded beside it in `<state root>/commands.log`. The installer prints the log pointers on every run.
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
-Saved commands in Setup run locally with the server’s environment. Their definitions, results and output logs stay under `<quirq state>/scheduler/`; the Commands card adds no reporting. A command you choose can make its own network requests.
+Saved commands in Setup run locally with the server’s environment. Their definitions, results and per-command output logs stay under `<quirq state>/scheduler/`. The executor also writes its bounded, redacted shared `commands.log` unless disabled; the Commands card adds no reporting. A command you choose can make its own network requests.
 
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 

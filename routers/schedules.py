@@ -31,10 +31,10 @@ router = APIRouter()
 
 
 def _require_local(request: Request) -> None:
-    from routers.space import _is_local
+    from routers.space import _is_local_mutation
 
-    if not _is_local(request):
-        raise HTTPException(status_code=403, detail="commands can be changed or run from localhost only")
+    if not _is_local_mutation(request):
+        raise HTTPException(status_code=403, detail="commands require a local client and same-origin browser request")
 
 
 def _call(fn, *args, **kwargs):

@@ -118,6 +118,37 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 500)
         self.assertIn("jobs.json", res.json()["detail"])
 
+    def test_browser_mutations_require_the_same_loopback_origin(self) -> None:
+        client = TestClient(self.client.app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
+        job = client.post('/api/schedules', json=_payload('origin guarded')).json()
+        paths = [('POST', '/api/schedules'), ('PUT', '/api/schedules/'+job['id']),
+                 ('DELETE', '/api/schedules/'+job['id']), ('POST', '/api/schedules/'+job['id']+'/run')]
+        for origin in ('https://untrusted.example', 'null', 'not an origin',
+                       'http://localhost:5002', 'http://127.0.0.1:5003', 'https://127.0.0.1:5002'):
+            for method, path in paths:
+                with self.subTest(origin=origin, method=method):
+                    response = client.request(method, path, headers={'Origin': origin}, json=_payload())
+                    self.assertEqual(response.status_code, 403)
+        # A simple cross-origin form POST needs no CORS preflight. It must
+        # also be denied on the bodyless run route before the executor starts.
+        form = client.post('/api/schedules/'+job['id']+'/run',
+                           headers={'Origin': 'https://untrusted.example'}, data={'run': '1'})
+        self.assertEqual(form.status_code, 403)
+        self.assertEqual(scheduler._running, {})
+        same = client.put('/api/schedules/'+job['id'], headers={'Origin': 'http://127.0.0.1:5002'},
+                          json=_payload('same origin'))
+        self.assertEqual(same.status_code, 200, same.text)
+        self.assertEqual(client.delete('/api/schedules/'+job['id']).status_code, 200, 'CLI needs no Origin')
+
+    def test_same_origin_manual_run_and_default_http_port(self) -> None:
+        client = TestClient(self.client.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+        job = client.post('/api/schedules', headers={'Origin': 'http://127.0.0.1:80'},
+                          json=_payload('default port')).json()
+        response = client.post('/api/schedules/'+job['id']+'/run', headers={'Origin': 'http://127.0.0.1'})
+        self.assertEqual(response.status_code, 202, response.text)
+        scheduler._running[job['id']].thread.join(5)
+        self.assertEqual(client.get('/api/schedules/'+job['id']).json()['last_result']['status'], 'ok')
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -248,6 +248,12 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
                 "Per-connection polling: config, state, and collected events, "
                 "one folder per toolkit"
             )
+        if relative_path == "scheduler":
+            return "Saved manual commands and schedules, execution state, results, and logs"
+        if relative_path == "scheduler/runs":
+            return "Append-only command run history, one JSONL file per command"
+        if relative_path == "scheduler/logs":
+            return "Full command output logs, retained when a definition is deleted"
         if (
             relative_path.startswith("connections/")
             and len(Path(relative_path).parts) == 2
@@ -257,6 +263,14 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
     name = Path(relative_path).name
     if relative_path == "inbox.json":
         return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
+    if relative_path == "scheduler/jobs.json":
+        return "Saved commands: arguments, environment overrides, descriptions, timeouts, and optional intervals"
+    if relative_path == "scheduler/state.json":
+        return "Command execution state: next run, running since, and last result"
+    if relative_path.startswith("scheduler/runs/"):
+        return "Run timestamps, trigger, status, return code, duration, and output tail"
+    if relative_path.startswith("scheduler/logs/"):
+        return "Appended command output through the command logger"
     # Files under connections/ come first: the generic state.json rule below
     # would otherwise claim a connection's state.json, and the events rule is
     # scoped here so an unrelated events* file elsewhere keeps its own label.

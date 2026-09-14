@@ -55,3 +55,35 @@ and hiding search on session charts/detail. No real Inbox data is modified.
 
 This is a browser regression check of the frontend and its API contracts.
 The fixture server is deliberately not a substitute for backend tests.
+
+## Setup Commands and restart
+
+With the read-only fixture above running, exercise Commands, restart UI states,
+save/poll races, validation conflicts, and desktop/mobile layouts:
+
+```sh
+node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
+```
+
+This script intercepts mutations with browser fixtures; it never executes a
+command or restarts a process. It checks that all three restart buttons wait for
+a changed server instance before reloading.
+
+For a real scheduler round trip, start a second server with the project's Python
+environment, leaving the read-only fixture on port 5100:
+
+```sh
+./venv/bin/python tests/space_ui_preview/commands_server.py --port 5112 --fixture-port 5100
+node tests/space_ui_preview/commands-live.mjs /tmp/space-commands-review
+```
+
+The second server uses temporary scheduler state, disables automatic jobs, and
+exposes no process-control writes. Explicitly submitted commands still execute
+with the local user's permissions. The browser check saves and runs only a
+Python print command in that temporary directory, then verifies the real API
+result, output, and retained history with automatic jobs disabled. Set
+`SPACE_COMMANDS_URL` to change its URL. Both scripts refuse port 5002.
+
+Stop both servers with Ctrl-C after testing. The temporary command state is
+removed on exit. Live-test screenshots contain local test paths and are intended
+for private review; use fictional data for published screenshots.

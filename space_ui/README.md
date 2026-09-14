@@ -131,7 +131,7 @@ when a new server instance responds, so every tab loads the updated code.
 | `restart_mode` | How it works |
 |---|---|
 | `managed` | SIGTERM lets the container supervisor restart the server. |
-| `native` | The pid file belongs to `./cowork-api.sh start`; a detached `./cowork-api.sh restart` stops and starts it. |
+| `native` | The pid file belongs to `./cowork-api.sh start`; a detached `cowork-api.sh restart-owned` helper checks ownership and restarts only that installation. |
 | `foreground` | No supervisor or matching pid file: the button is disabled with “Ctrl-C and re-run”. The route returns 409. |
 
 The footer still has no process start control: its Start hint copies a terminal
@@ -148,7 +148,7 @@ project and enabled settings.
 polls the job every three seconds until the status and duration appear. **Runs**
 opens a drawer with the latest 20 results and escaped output tails, plus the full
 log path as text. A concurrent run or a full shared execution limit returns 409.
-Restart, command writes and runs are localhost-only; remote requests receive 403.
+Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
 Definitions and every result stay under `<quirq state>/scheduler/`:
 
@@ -160,7 +160,7 @@ scheduler/
 └── logs/<id>.log      # full output from every run
 ```
 
-Deleting a command keeps its history and logs on disk. Commands run locally with
+Deleting a command keeps its history and logs on disk and does not cancel an active process. Commands run locally with
 the server's environment, including when the watcher is disabled for manual runs.
 
 ## Sessions tab

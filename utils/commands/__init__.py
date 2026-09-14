@@ -319,7 +319,7 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
 def _kill_tree(proc) -> None:
     """Kill the child and, on POSIX, everything it spawned.
 
-    `run` starts each child in its own session, so its pid is also its process
+    Both runners start each child in its own session, so its pid is also its process
     group id and one signal reaches the grandchildren too. Without that, a
     killed `npx` or `git` can leave a helper process holding the stdout pipe,
     and `communicate()` then waits for that helper instead of honouring the
@@ -466,17 +466,30 @@ def run_sync(
     import time
     started = time.monotonic()
 
+    timed_out = False
     try:
-        completed = subprocess.run(
+        with subprocess.Popen(
             argv_list,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
-            input=input,
-            stdin=None if input is not None else subprocess.DEVNULL,
-            capture_output=not inherit_output,
-            timeout=timeout,
-            check=False,
-        )
+            stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+            stdout=None if inherit_output else subprocess.PIPE,
+            stderr=None if inherit_output else subprocess.PIPE,
+            start_new_session=(os.name == "posix"),
+        ) as proc:
+            try:
+                stdout, stderr = proc.communicate(input=input, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # Match the async runner: killing just the direct child can
+                # leave a scheduled command's helpers running and holding pipes.
+                _kill_tree(proc)
+                stdout, stderr = proc.communicate()
+                timed_out = True
+            except BaseException:
+                _kill_tree(proc)
+                proc.wait()
+                raise
+            completed = subprocess.CompletedProcess(argv_list, proc.returncode, stdout, stderr)
     except FileNotFoundError:
         result = CommandResult(
             argv=argv_list,
@@ -484,16 +497,6 @@ def run_sync(
             output=f"{argv_list[0]} not found in PATH",
             duration_seconds=0.0,
             binary_missing=True,
-        )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
-        return result
-    except subprocess.TimeoutExpired as e:
-        result = CommandResult(
-            argv=argv_list,
-            returncode=-1,
-            output=_text(e.stdout) + _text(e.stderr) + f"[timed out after {timeout}s]",
-            duration_seconds=time.monotonic() - started,
-            timed_out=True,
         )
         _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
         return result
@@ -513,8 +516,9 @@ def run_sync(
     result = CommandResult(
         argv=argv_list,
         returncode=completed.returncode,
-        output=out if separate_stderr else out + err,
+        output=(out if separate_stderr else out + err) + (f"[timed out after {timeout}s]" if timed_out else ""),
         duration_seconds=time.monotonic() - started,
+        timed_out=timed_out,
         stderr=err if separate_stderr else "",
     )
     _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)

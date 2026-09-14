@@ -27,6 +27,10 @@ class QuirqCatalogTests(unittest.TestCase):
                 json.dumps({"onboarding_completed": True}),
                 encoding="utf-8",
             )
+            (root / "scheduler" / "runs").mkdir(parents=True)
+            (root / "scheduler" / "jobs.json").write_text('{"secret":"do-not-return"}')
+            (root / "scheduler" / "state.json").write_text('{"output_tail":"do-not-return"}')
+            (root / "scheduler" / "runs" / "demo.jsonl").write_text('{"output_tail":"do-not-return"}\n')
             (activity / "demo.json").write_text(
                 json.dumps(
                     {
@@ -105,6 +109,10 @@ class QuirqCatalogTests(unittest.TestCase):
                 row for row in result["tree"] if row["path"] == "secrets.env"
             )
             self.assertTrue(secret_row["sensitive"])
+            tree = {row["path"]: row for row in result["tree"]}
+            self.assertIn("Saved manual commands", tree["scheduler"]["description"])
+            self.assertIn("Command execution", tree["scheduler/state.json"]["description"])
+            self.assertIn("output tail", tree["scheduler/runs/demo.jsonl"]["description"])
             outputs = result["project_outputs"]
             self.assertEqual(outputs["project_count"], 1)
             self.assertEqual(outputs["projects"][0]["project_id"], "demo")

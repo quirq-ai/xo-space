@@ -5,7 +5,7 @@ import {toast} from '../core/ui.js';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
-const duration=value=>value==null?'—':Number(value).toFixed(2)+'s';
+const duration=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toFixed(2)+'s';
 function relativeTime(value){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000));
   if(!Number.isFinite(seconds))return 'unknown time';
@@ -16,7 +16,8 @@ function relativeTime(value){
 }
 
 export function mountCommands(root){
-  let jobs=[],editing=null,timer=null,refreshing=false,historyId=null;
+  let jobs=[],editing=null,timer=null,refreshing=false,refreshQueued=false,historyId=null;
+  let saving=false,polling=false,revision=0,historyRevision=0;
   const busy=new Set();
   root.innerHTML=`
     <div class="setup-card-head"><div><span>05 · Local execution</span><h2>Commands</h2></div>
@@ -74,7 +75,7 @@ export function mountCommands(root){
         <div class="setup-actions">
           <button class="setup-primary" type="button" data-command-action="run"${running?' disabled':disabled}>${running?'Running…':'Run'}</button>
           <button class="setup-secondary" type="button" data-command-action="runs"${disabled}>Runs</button>
-          <button class="setup-secondary" type="button" data-command-action="edit"${disabled}>Edit</button>
+          <button class="setup-secondary" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
           <button class="setup-secondary is-danger" type="button" data-command-action="delete"${disabled}>Delete</button>
         </div></article>`;
     }).join(''):'<div class="setup-empty"><b>No commands yet</b><span>Add a command to run it here and keep every result.</span></div>';
@@ -86,8 +87,13 @@ export function mountCommands(root){
     if(jobs.some(job=>job.running))timer=setTimeout(pollRunning,3000);
   }
   async function pollRunning(){
+    if(refreshing||polling){schedulePoll();return;}
+    polling=true;
+    const mine=revision;
     const active=jobs.filter(job=>job.running&&!busy.has(job.id));
     const results=await Promise.all(active.map(async job=>({id:job.id,res:await apiFetch(path(job.id))})));
+    polling=false;
+    if(mine!==revision){schedulePoll();return;}
     for(const {id,res} of results){
       if(res.ok)jobs=jobs.map(job=>job.id===id?res.data:job);
       else if(res.status===404)jobs=jobs.filter(job=>job.id!==id);
@@ -97,16 +103,22 @@ export function mountCommands(root){
     if(drawer.open&&results.some(({id})=>id===historyId))await loadRuns(historyId);
   }
   async function refresh(){
-    if(refreshing)return;
+    if(refreshing){refreshQueued=true;return;}
     refreshing=true;
+    /* Writes invalidate older reads, and a full list refresh supersedes polls. */
+    const mine=++revision;
     const res=await apiFetch('/api/schedules');
     refreshing=false;
-    if(!res.ok){showError(res.error);return;}
-    jobs=res.data.jobs||[];
-    render();
+    if(mine===revision){
+      if(!res.ok)showError(res.error);
+      else{jobs=res.data.jobs||[];render();}
+    }
+    if(refreshQueued){refreshQueued=false;await refresh();}
+    else schedulePoll();
   }
 
   function edit(job=null){
+    if(saving)return;
     editing=job;
     form.reset();
     showError('');
@@ -122,6 +134,7 @@ export function mountCommands(root){
   }
   form.addEventListener('submit',async event=>{
     event.preventDefault();
+    if(saving)return;
     showError('');
     const line=field('line').value.trim();
     let command;
@@ -134,19 +147,34 @@ export function mountCommands(root){
       every_seconds:field('interval').value.trim()?Number(field('interval').value):null,
       enabled:editing?.enabled??true,project_id:editing?.project_id??null};
     const controls=[...form.elements,root.querySelector('#command-add')];
+    const editingId=editing?.id;
+    saving=true;revision++;
+    if(editingId)busy.add(editingId);
     controls.forEach(el=>el.disabled=true);
-    const res=await apiFetch(editing?path(editing.id):'/api/schedules',{method:editing?'PUT':'POST',body});
+    render();
+    const res=await apiFetch(editingId?path(editingId):'/api/schedules',{method:editingId?'PUT':'POST',body});
+    saving=false;revision++;
+    if(editingId)busy.delete(editingId);
     controls.forEach(el=>el.disabled=false);
-    if(!res.ok){showError(res.error);return;}
+    if(!res.ok){
+      showError(res.error);render();
+      if(res.status===409)await refresh();
+      return;
+    }
     form.hidden=true;
     editing=null;
+    const saved=res.data;
+    jobs=jobs.some(job=>job.id===saved.id)
+      ?jobs.map(job=>job.id===saved.id?saved:job):[...jobs,saved];
+    render();
     toast('Command saved');
     await refresh();
   });
 
   async function loadRuns(id){
+    const mine=++historyRevision;
     const res=await apiFetch(path(id)+'/runs?limit=20');
-    if(historyId!==id||!drawer.open)return;
+    if(mine!==historyRevision||historyId!==id||!drawer.open)return;
     const body=root.querySelector('#command-runs-body');
     if(!res.ok){body.textContent=res.error;return;}
     body.innerHTML=`<p>Full output on this machine: <code class="setup-command-log">${esc(res.data.log_path)}</code></p>`
@@ -159,6 +187,7 @@ export function mountCommands(root){
   }
   list.addEventListener('click',async event=>{
     const button=event.target.closest('[data-command-action]');
+    if(!button||button.disabled)return;
     const id=button?.closest('[data-command-id]')?.dataset.commandId;
     const job=jobs.find(item=>item.id===id);
     if(!job||busy.has(id))return;
@@ -174,9 +203,11 @@ export function mountCommands(root){
     }
     if(action==='delete'&&!confirm('Delete '+job.name+'? Saved run history and logs will be kept on disk.'))return;
     busy.add(id);
+    revision++;
     render();
     const res=await apiFetch(path(id)+(action==='run'?'/run':''),{method:action==='run'?'POST':'DELETE'});
     busy.delete(id);
+    revision++;
     if(!res.ok){
       showError(res.error);
       toast(res.error);
@@ -193,8 +224,10 @@ export function mountCommands(root){
     render();
   });
   root.querySelector('#command-add').addEventListener('click',()=>edit());
-  root.querySelector('#command-cancel').addEventListener('click',()=>{form.hidden=true;editing=null;showError('');});
+  root.querySelector('#command-cancel').addEventListener('click',()=>{if(saving)return;form.hidden=true;editing=null;showError('');});
   root.querySelector('#command-runs-close').addEventListener('click',()=>drawer.close());
-  drawer.addEventListener('close',()=>{historyId=null;});
+  drawer.addEventListener('close',()=>{historyId=null;historyRevision++;});
+  /* A modal's keys belong to the dialog, not the app's numbered tab shortcuts. */
+  drawer.addEventListener('keydown',event=>event.stopPropagation());
   return {refresh};
 }

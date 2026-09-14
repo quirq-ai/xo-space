@@ -30,7 +30,7 @@ class SpaceCommandsTests(unittest.TestCase):
         self.addCleanup(scheduler.reset_state)
         app = FastAPI()
         app.include_router(router)
-        self.client = TestClient(app, client=("127.0.0.1", 12345))
+        self.client = TestClient(app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
         self.remote = TestClient(app, client=("192.0.2.10", 12345))
         self.payload = {"name": "Check checkout", "description": "A saved local command",
                         "command": {"argv": [sys.executable, "-c", "print('result')"], "timeout": 5}}
@@ -145,6 +145,124 @@ class SpaceCommandsTests(unittest.TestCase):
                 self.assertEqual(record['status'], status)
                 self.assertEqual(record['output_tail'], result.output[-2000:])
         self.assertEqual(len(scheduler.list_runs(job['id'])), 4)
+
+    def test_history_write_failure_keeps_the_completed_result_for_retry(self):
+        job = scheduler.create_job(self.payload)
+        scheduler.run_now(job['id'])
+        scheduler._running[job['id']].thread.join(5)
+        # A real filesystem failure: the history directory is occupied by a
+        # file. GET reports it and must retain the completed executor result.
+        blocked = scheduler.scheduler_dir() / 'runs'
+        blocked.write_text('not a directory')
+        report = scheduler.tick()
+        self.assertEqual(report.started, [])
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn('could not be appended', report.errors[0])
+        response = self.client.get(f"/api/schedules/{job['id']}")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('could not be appended', response.json()['detail'])
+        self.assertIn(job['id'], scheduler._running)
+        blocked.unlink()
+        response = self.client.get(f"/api/schedules/{job['id']}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['last_result']['output_tail'], 'result\n')
+        self.assertFalse(response.json()['running'])
+        self.assertEqual([run['status'] for run in scheduler.list_runs(job['id'])], ['ok'])
+
+    def test_state_write_failure_retries_without_duplicating_history(self):
+        job = scheduler.create_job(self.payload)
+        scheduler.run_now(job['id'])
+        scheduler._running[job['id']].thread.join(5)
+        with patch.object(scheduler.os, 'replace', side_effect=OSError('disk unavailable')):
+            response = self.client.get(f"/api/schedules/{job['id']}/runs")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('state.json', response.json()['detail'])
+        self.assertIn(job['id'], scheduler._running)
+        self.assertEqual(len(scheduler.runs_file(job['id']).read_text().splitlines()), 1)
+        view = self.client.get(f"/api/schedules/{job['id']}").json()
+        self.assertEqual(view['last_result']['status'], 'ok')
+        self.assertEqual(view['last_result']['output_tail'], 'result\n')
+        self.assertFalse(view['running'])
+        self.assertEqual(len(scheduler.list_runs(job['id'])), 1)
+        scheduler.reset_state()  # emulate the next process reading durable state
+        self.assertEqual(scheduler.get_job(job['id'])['last_result'], view['last_result'])
+
+    def test_failed_thread_start_releases_manual_and_scheduled_slots(self):
+        now = scheduler.now_utc()
+        manual = scheduler.create_job(self.payload, now=now)
+        scheduled = scheduler.create_job({**self.payload, 'every_seconds': 60}, now=now)
+        with patch.object(scheduler.threading.Thread, 'start', side_effect=RuntimeError('no thread available')):
+            with self.assertRaises(scheduler.SchedulerError):
+                scheduler.run_now(manual['id'], now=now)
+            report = scheduler.tick(now=now + timedelta(seconds=60))
+        self.assertEqual(report.started, [])
+        self.assertEqual(len(report.errors), 1)
+        self.assertEqual(scheduler._running, {})
+        for job in (manual, scheduled):
+            view = scheduler.get_job(job['id'])
+            self.assertFalse(view['running'])
+            self.assertIsNone(view['running_since'])
+            self.assertIsNone(view['last_result'])
+            self.assertEqual(scheduler.list_runs(job['id']), [])
+        scheduler.run_now(manual['id'])
+        scheduler._running[manual['id']].thread.join(5)
+        self.assertEqual(scheduler.get_job(manual['id'])['last_result']['status'], 'ok')
+
+    def test_read_recovers_restart_state_once_without_the_watcher(self):
+        job = scheduler.create_job(self.payload)
+        started = '2026-09-11T10:00:05Z'
+        state = json.loads(scheduler.state_file().read_text())
+        state['jobs'][job['id']]['running_since'] = started
+        scheduler._write_doc(scheduler.state_file(), state)
+        with patch.dict(os.environ, {'XO_SCHEDULER_ENABLED': '0'}), \
+                patch.object(scheduler, 'run_spec_sync') as executor:
+            view = self.client.get(f"/api/schedules/{job['id']}").json()
+            self.assertFalse(view['running'])
+            self.assertIsNone(view['running_since'])
+            self.assertEqual(view['last_run'], started)
+            self.assertEqual(view['last_result']['status'], 'lost')
+            self.assertEqual(view['last_result']['started_at'], started)
+            self.client.get('/api/schedules')
+            runs = self.client.get(f"/api/schedules/{job['id']}/runs").json()['runs']
+            self.assertEqual(len(runs), 1)
+            executor.assert_not_called()
+
+    def test_deleting_a_completed_job_harvests_before_removing_state(self):
+        job = scheduler.create_job(self.payload)
+        scheduler.run_now(job['id'])
+        scheduler._running[job['id']].thread.join(5)
+        # No tick or GET between completion and deletion.
+        self.assertEqual(self.client.delete(f"/api/schedules/{job['id']}").status_code, 200)
+        scheduler.reset_state()
+        runs = [json.loads(line) for line in scheduler.runs_file(job['id']).read_text().splitlines()]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]['status'], 'ok')
+        self.assertEqual(runs[0]['output_tail'], 'result\n')
+        self.assertEqual(scheduler.list_jobs(), [])
+        self.assertNotIn(job['id'], json.loads(scheduler.state_file().read_text())['jobs'])
+
+    def test_manual_run_and_scheduled_tick_share_the_concurrency_limit(self):
+        now = scheduler.now_utc()
+        release = threading.Event()
+        def blocking_run(spec):
+            release.wait(5)
+            return CommandResult(argv=spec.argv, returncode=0, output='done', duration_seconds=0.1)
+        manual = scheduler.create_job(self.payload, now=now)
+        scheduled = scheduler.create_job({**self.payload, 'every_seconds': 60}, now=now)
+        with patch.object(scheduler, 'run_spec_sync', side_effect=blocking_run):
+            scheduler.run_now(manual['id'], now=now)
+            try:
+                report = scheduler.tick(now=now + timedelta(seconds=60))
+                self.assertEqual(report.started, [])
+                self.assertEqual(report.deferred, [scheduled['id']])
+            finally:
+                release.set()
+                scheduler._running[manual['id']].thread.join(5)
+            report = scheduler.tick(now=now + timedelta(seconds=61))
+            self.assertEqual(report.finished, [manual['id']])
+            self.assertEqual(report.started, [scheduled['id']])
+            scheduler._running[scheduled['id']].thread.join(5)
+            self.assertEqual(scheduler.get_job(scheduled['id'])['last_result']['trigger'], 'schedule')
 
     def test_setup_ui_pins(self):
         root = Path(__file__).resolve().parents[1] / 'space_ui'

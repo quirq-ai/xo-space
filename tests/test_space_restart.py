@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import shutil
@@ -47,10 +48,15 @@ class RestartModeTests(unittest.TestCase):
                 self.assertEqual(runtime_config.restart_mode(), 'native')
             with patch.dict(os.environ, {'UVICORN_RELOAD': '1'}):
                 self.assertEqual(runtime_config.restart_mode(), 'foreground')
+                with patch.dict(os.environ, {'QUIRQ_MANAGED_CONTAINER': 'true'}):
+                    self.assertEqual(runtime_config.restart_mode(), 'foreground')
             script.unlink()
             self.assertEqual(runtime_config.restart_mode(), 'foreground')
             with patch.dict(os.environ, {'QUIRQ_MANAGED_CONTAINER': 'true'}):
                 self.assertEqual(runtime_config.restart_mode(), 'managed')
+
+    def test_checked_in_runner_is_executable(self):
+        self.assertTrue(os.access(ROOT / 'cowork-api.sh', os.X_OK))
 
 
 class RestartRouteTests(unittest.TestCase):
@@ -68,7 +74,9 @@ class RestartRouteTests(unittest.TestCase):
 
     def test_native_spawn_foreground_refusal_and_legacy_alias(self):
         for route in ('/space/server/restart', '/api/runtime-config/restart'):
-            with self.subTest(route=route), patch.object(runtime_config, 'restart_mode', return_value='native'), patch(
+            with self.subTest(route=route), patch.object(runtime_config, 'restart_mode', return_value='native'), patch.object(
+                runtime_config, 'native_restart_pid', return_value=12345
+            ), patch(
                 'utils.commands.spawn_detached', return_value=CommandResult(
                     argv=['./cowork-api.sh', 'restart'], returncode=0, output='', duration_seconds=0)
             ) as spawn:
@@ -76,14 +84,19 @@ class RestartRouteTests(unittest.TestCase):
                 self.assertEqual(res.status_code, 200)
                 self.assertTrue(res.json()['restarting'])
                 self.assertEqual(res.json()['mode'], 'native')
-                spawn.assert_called_once_with(['./cowork-api.sh', 'restart'], cwd=runtime_config.REPO_ROOT)
+                spawn.assert_called_once_with(
+                    ['./cowork-api.sh', 'restart-owned', '12345', str(os.getpid())],
+                    cwd=runtime_config.REPO_ROOT,
+                )
             with patch.object(runtime_config, 'restart_mode', return_value='foreground'):
                 res = self.client.post(route)
                 self.assertEqual(res.status_code, 409)
                 self.assertIn('Ctrl-C and re-run', res.json()['detail'])
 
     def test_spawn_failure_is_actionable_and_remote_cannot_restart(self):
-        with patch.object(runtime_config, 'restart_mode', return_value='native'), patch(
+        with patch.object(runtime_config, 'restart_mode', return_value='native'), patch.object(
+            runtime_config, 'native_restart_pid', return_value=12345
+        ), patch(
             'utils.commands.spawn_detached', return_value=CommandResult(
                 argv=['./cowork-api.sh'], returncode=-1, output='permission denied', duration_seconds=0, exception='denied')
         ) as spawn:
@@ -96,21 +109,61 @@ class RestartRouteTests(unittest.TestCase):
                 self.assertEqual(remote.post(route, headers={'X-Forwarded-For': '127.0.0.1'}).status_code, 403)
             spawn.assert_not_called()
 
+    def test_changed_native_pid_refuses_instead_of_spawning(self):
+        with patch.object(runtime_config, 'restart_mode', return_value='native'), patch.object(
+            runtime_config, 'native_restart_pid', return_value=None
+        ), patch('utils.commands.spawn_detached') as spawn:
+            response = self.client.post('/space/server/restart')
+            self.assertEqual(response.status_code, 409)
+            spawn.assert_not_called()
+
+    def test_restart_rejects_browser_cross_origin_forms(self):
+        client = TestClient(self.app, base_url='http://localhost:5002', client=('127.0.0.1', 12345))
+        with patch.object(runtime_config, 'restart_mode', return_value='foreground'):
+            for route in ('/space/server/restart', '/api/runtime-config/restart'):
+                for origin in ('https://evil.example', 'null', 'http://127.0.0.1:5002',
+                               'http://localhost:5003', 'https://localhost:5002',
+                               'http://localhost:5002/path', 'http://user@localhost:5002',
+                               'http://localhost:invalid', 'http://[broken'):
+                    with self.subTest(route=route, origin=origin):
+                        response = client.post(route, headers={'Origin': origin}, data={'run': '1'})
+                        self.assertEqual(response.status_code, 403)
+                self.assertEqual(client.post(route).status_code, 409)
+                self.assertEqual(client.post(route, headers={'Origin': 'http://localhost:5002'}).status_code, 409)
+        rebinding = TestClient(self.app, base_url='http://attacker.example', client=('127.0.0.1', 12345))
+        self.assertEqual(rebinding.post('/space/server/restart', headers={
+            'Origin': 'http://attacker.example',
+        }).status_code, 403)
+
+    def test_local_origin_uses_effective_port_and_ipv6(self):
+        def request(host, origin, scheme='http'):
+            return Request({'type': 'http', 'scheme': scheme, 'path': '/',
+                            'headers': [(b'host', host.encode()), (b'origin', origin.encode())],
+                            'client': ('::1', 1), 'server': ('::1', 80)})
+        self.assertTrue(space._is_local_mutation(request('localhost', 'http://localhost:80')))
+        self.assertTrue(space._is_local_mutation(request('[::1]:5002', 'http://[::1]:5002')))
+        self.assertFalse(space._is_local_mutation(request('localhost', 'http://localhost:0')))
+
 
 class ManagedRestartTests(unittest.IsolatedAsyncioTestCase):
     async def test_managed_termination_is_deferred_until_after_response(self):
-        request = Request({'type': 'http', 'client': ('::1', 12345)})
+        request = Request({'type': 'http', 'client': ('::1', 12345), 'headers': []})
+        sent = []
+        async def send(message):
+            sent.append(message)
+        def terminate(*_args):
+            self.assertEqual(sent[-1]['type'], 'http.response.body')
+            self.assertFalse(sent[-1].get('more_body', False))
         with patch.object(runtime_config, 'restart_mode', return_value='managed'), patch(
-            'routers.space.os.kill'
-        ) as kill, patch('routers.space.asyncio.get_running_loop') as loop, patch(
+            'routers.space.os.kill', side_effect=terminate
+        ) as kill, patch(
             'routers.space.asyncio.sleep', new_callable=AsyncMock
         ) as sleep:
             response = await space.space_server_restart(request)
-            self.assertEqual(response['mode'], 'managed')
-            self.assertTrue(response['restarting'])
+            self.assertEqual(json.loads(response.body)['mode'], 'managed')
+            self.assertTrue(json.loads(response.body)['restarting'])
             kill.assert_not_called()
-            coroutine = loop.return_value.create_task.call_args.args[0]
-            await coroutine
+            await response(request.scope, AsyncMock(), send)
             sleep.assert_awaited_once_with(0.4)
             kill.assert_called_once_with(os.getpid(), space.signal.SIGTERM)
 
@@ -118,8 +171,8 @@ class ManagedRestartTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(os.name == 'posix' and shutil.which('pgrep'), 'native process manager needs POSIX and pgrep')
 class NativeRestartIntegrationTests(unittest.TestCase):
     def test_native_route_restarts_with_a_new_process(self):
-        # A miniature install with private pid/lock/log files. Disable only the
-        # script's global orphan sweep: this fixture must not touch other servers.
+        # A miniature install with private pid/lock/log files. Intercept the
+        # broad CLI sweep for safety and assert API restart never calls it.
         import sys
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -128,7 +181,9 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                 port = sock.getsockname()[1]
             script = (ROOT / 'cowork-api.sh').read_text().replace('/tmp/xo-space', str(root / 'xo-space'))
             dispatch = 'case "${1:-restart}" in'
-            overrides = ('find_orphan_server_pids() { :; }\n'
+            sweep_file = root / 'sweeps'
+            overrides = ('kill_hindering_processes() { printf "sweep\\n" >> '
+                         + shlex.quote(str(sweep_file)) + '; }\n'
                          'resolve_python_cmd() { printf "%s\\n" '+shlex.quote(sys.executable)+'; }\n')
             script = script.replace(dispatch, overrides + dispatch)
             runner = root / 'cowork-api.sh'
@@ -161,6 +216,20 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                     before = status()
                 self.assertIsNotNone(before, (root / 'xo-space.log').read_text())
                 self.assertEqual(before['restart_mode'], 'native')
+                sweeps = sweep_file.read_text()
+                # Simulate ownership changing after the API reads its PID.
+                # Both supplied PIDs still belong only to this fixture.
+                pid_file = root / 'xo-space.pid'
+                managed_pid = pid_file.read_text().strip()
+                pid_file.write_text('1')
+                try:
+                    stale = run_sync([str(runner), 'restart-owned', managed_pid, str(before['pid'])],
+                                     cwd=root, env=env, timeout=5)
+                    self.assertFalse(stale.ok)
+                    self.assertIn('runner changed', stale.output)
+                    self.assertEqual(status()['instance_id'], before['instance_id'])
+                finally:
+                    pid_file.write_text(managed_pid)
                 response = httpx.post(f'http://127.0.0.1:{port}/space/server/restart', timeout=5)
                 self.assertEqual(response.status_code, 200, response.text)
                 deadline = time.monotonic() + 30
@@ -174,5 +243,6 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                 self.assertNotEqual(after['instance_id'], before['instance_id'])
                 self.assertNotEqual(after['pid'], before['pid'])
                 self.assertEqual(after['restart_mode'], 'native')
+                self.assertEqual(sweep_file.read_text(), sweeps, 'API restart entered the broad CLI sweep')
             finally:
                 run_sync([str(runner), 'stop'], cwd=root, env=env, timeout=20)

@@ -6,8 +6,8 @@
    project `.xo` data. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
-import {pollServer} from '../core/server-widget.js?v=20260913-commands1';
-import {mountCommands} from './setup-commands.js';
+import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
+import {mountCommands} from './setup-commands.js?v=20260914-commands2';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -607,7 +607,7 @@ async function restartRuntime(){
   for(let attempt=0;attempt<60;attempt+=1){
     await delay(1000);
     const probe=await pollServer();
-    if(probe.ok&&probe.data.instance_id&&probe.data.instance_id!==(res.data?.instance_id||previousInstance)){
+    if(probe.ok&&probe.data?.instance_id&&probe.data.instance_id!==(res.data?.instance_id||previousInstance)){
       location.reload();
       return;
     }
