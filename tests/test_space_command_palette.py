@@ -37,6 +37,22 @@ class CommandPaletteCompositionTests(unittest.TestCase):
         self.assertRegex(index, r'href="css/command-palette\.css\?v=\d{8}-[a-z0-9]+"')
         self.assertRegex(index, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
 
+    def test_navbar_trigger_opens_the_palette(self) -> None:
+        index = read("index.html")
+        # the compact navbar affordance: a search icon + shortcut badge
+        self.assertIn('id="cmdk-trigger"', index)
+        self.assertIn('id="cmdk-trigger-kbd"', index)
+        toolbar = read("js/core/toolbar.js")
+        # the trigger and the `/` shortcut ask the palette to open by event,
+        # without importing it (shell chrome talks by event)
+        self.assertIn("space:open-command-palette", toolbar)
+        self.assertIn("getElementById('cmdk-trigger')", toolbar)
+        palette = read("js/core/command-palette.js")
+        self.assertIn("addEventListener('space:open-command-palette'", palette)
+        # the inline page-search field is now shown only for an active filter,
+        # so the navbar defaults to just the trigger
+        self.assertIn("const showLocal=!!search&&value!==''", toolbar)
+
     def test_opens_on_cmd_or_ctrl_k_from_anywhere(self) -> None:
         src = read("js/core/command-palette.js")
         # the chord: meta OR ctrl + k, not alt; capture phase + preventDefault

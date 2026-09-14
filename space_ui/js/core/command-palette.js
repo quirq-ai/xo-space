@@ -263,4 +263,7 @@ export function initCommandPalette({switchTo,refreshCurrentView}={}){
       open?close():openPalette();
     }
   },{capture:true});
+  /* The navbar trigger and the `/` shortcut ask to open without importing
+     this module (shell chrome talks by event, like the lens switch). */
+  addEventListener('space:open-command-palette',()=>{if(!open)openPalette();});
 }

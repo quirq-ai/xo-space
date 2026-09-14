@@ -1,3 +1,16 @@
+  /* navbar trigger: the compact search-icon + shortcut that opens the palette;
+     it is the default search affordance in the top bar. */
+  .cmdk-trigger{display:inline-flex;align-items:center;gap:8px;height:32px;
+    padding:0 8px 0 10px;border:1px solid var(--line);border-radius:9px;
+    background:var(--bg-2);color:var(--ink-3);transition:all .16s var(--ease)}
+  .cmdk-trigger:hover{color:var(--ink-2);border-color:var(--line);background:var(--bg-3)}
+  .cmdk-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cmdk-trigger svg{flex:none;color:var(--ink-3)}
+  .cmdk-trigger-label{font:400 12.5px var(--sans)}
+  .cmdk-trigger kbd{font:500 10px/1 var(--mono);color:var(--ink-3);
+    border:1px solid var(--line);border-radius:5px;padding:3px 5px;background:var(--bg-3)}
+  @media (max-width:640px){.cmdk-trigger-label{display:none}}
+
   /* ---------------- command palette (Cmd+K) ----------------
      A shadcn-Command-styled overlay built from the shared tokens: dimmed
      backdrop, centred panel, grouped list, keyboard-driven. No build step. */

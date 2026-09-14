@@ -10,7 +10,18 @@ export function initToolbar(){
   const clear=document.getElementById('view-search-clear');
   const hint=document.getElementById('view-search-hint');
   const graphInput=document.getElementById('q');
+  const trigger=document.getElementById('cmdk-trigger');
+  const triggerKbd=document.getElementById('cmdk-trigger-kbd');
   if(!topbar||!controls||!graphSearch||!localSearch||!input||!clear)return;
+  /* The compact Cmd+K trigger is the navbar's default search affordance; it
+     opens the command palette, which owns navigation and page search. */
+  if(trigger){
+    trigger.addEventListener('click',()=>dispatchEvent(new CustomEvent('space:open-command-palette')));
+    if(triggerKbd){
+      const mac=/Mac|iPhone|iPad|iPod/i.test(navigator.platform||navigator.userAgent||'');
+      triggerKbd.textContent=mac?'\u2318K':'Ctrl K';
+    }
+  }
   let current=null,descriptor=null,search=null;
   const closeGraphMenus=()=>{
     document.getElementById('qac')?.classList.remove('is-open');
@@ -23,9 +34,16 @@ export function initToolbar(){
     search=!graph&&config?.search&&typeof config.search.setValue==='function'?config.search:null;
     const mode=graph?'graph':search?'search':'none';
     topbar.dataset.toolbar=mode;
-    controls.hidden=mode==='none';
+    const value=search?String(search.getValue?.()??''):'';
+    /* The inline field is now a detail view for an ACTIVE page filter: the
+       compact Cmd+K trigger is the default entry, so the field only shows once
+       the current page has a non-empty query (set and cleared through the
+       palette's "search this page"), and an empty page reads as just the
+       trigger. */
+    const showLocal=!!search&&value!=='';
     graphSearch.hidden=!graph;
-    localSearch.hidden=!search;
+    localSearch.hidden=!showLocal;
+    controls.hidden=!graph&&!showLocal;
     if(!graph)closeGraphMenus();
     const meta=document.getElementById('fmeta');
     if(meta)meta.hidden=!graph;
@@ -35,7 +53,6 @@ export function initToolbar(){
       input.placeholder=search.placeholder||'Search this page…';
       input.setAttribute('aria-label',search.label||input.placeholder.replace(/…$/, ''));
       input.disabled=disabled||!!search.disabled;
-      const value=String(search.getValue?.()??'');
       if(input.value!==value)input.value=value;
       clear.hidden=!value;
       clear.disabled=input.disabled;
@@ -77,9 +94,13 @@ export function initToolbar(){
     if(event.defaultPrevented||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||
       /INPUT|TEXTAREA|SELECT/.test(focused?.tagName||'')||focused?.isContentEditable)return;
     if(event.key!=='/')return;
-    const target=topbar.dataset.toolbar==='graph'?graphInput:search?input:null;
-    if(!target||target.disabled||controls.hidden)return;
-    event.preventDefault();target.focus();
+    if(topbar.dataset.toolbar==='graph'){
+      if(graphInput&&!graphInput.disabled&&!controls.hidden){event.preventDefault();graphInput.focus();}
+      return;
+    }
+    /* On a page that has a search, `/` opens the palette (that page's search
+       lives inside it now). Pages with no search leave `/` alone. */
+    if(search){event.preventDefault();dispatchEvent(new CustomEvent('space:open-command-palette'));}
   });
   render();
 }

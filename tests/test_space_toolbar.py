@@ -31,6 +31,7 @@ globalThis.history={
   replaceState:(_state,_title,hash)=>{location.hash=hash;},
 };
 globalThis.requestAnimationFrame=fn=>queueMicrotask(fn);
+Object.defineProperty(globalThis,'navigator',{value:{platform:'Linux',userAgent:'node'},configurable:true});
 
 class Element{
   constructor(id='',tagName='DIV'){
@@ -68,6 +69,8 @@ const node=(id,tag='DIV',parent=null)=>{
   const el=new Element(id,tag);parent?.appendChild(el);return el;
 };
 const topbar=node('topbar'),controls=node('toolbar-controls','DIV',topbar);
+const trigger=node('cmdk-trigger','BUTTON',topbar);
+node('cmdk-trigger-kbd','KBD',trigger);
 const sectionNav=node('section-nav');
 const graphRoot=node('graph-root','DIV',sectionNav),graphSearch=node('graph-search','DIV',controls);
 const localSearch=node('view-search-wrap','DIV',controls);
@@ -174,9 +177,13 @@ assert.equal(elements.get('tab-projects').classList.contains('is-on'),true);
 assert.equal(topbar.dataset.toolbar,'graph');
 """)
 
-    def test_queries_clear_and_shortcuts_follow_current_view(self) -> None:
+    def test_search_field_is_active_only_and_shortcuts_follow_current_view(self) -> None:
         self.run_probe(r"""
+/* The Cmd+K trigger is the default navbar search entry; the inline field is
+   revealed only while a page filter is active. `/` opens the palette on a
+   searchable page (its search lives there now) and focuses the map on Graph. */
 let firstQuery='',secondQuery='saved',secondContext,searchable=true;
+let opens=0;addEventListener('space:open-command-palette',()=>opens++);
 register({id:'first',toolbar:{search:{placeholder:'Find projects…',
   getValue:()=>firstQuery,setValue:value=>firstQuery=value}},mount(){}});
 register({id:'second',toolbar:()=>searchable?{search:{placeholder:'Find sessions…',
@@ -184,35 +191,49 @@ register({id:'second',toolbar:()=>searchable?{search:{placeholder:'Find sessions
   mount(_el,ctx){secondContext=ctx;}});
 register({id:'graph',toolbar:{graph:true},mount(){}});
 register({id:'wiki',mount(){}});
+/* first has no query yet: only the trigger shows, the inline field is hidden,
+   and `/` opens the palette rather than focusing a hidden field */
 await registry.switchTo('first');
-assert.equal(key('/').defaultPrevented,true);assert.equal(document.activeElement,input);
-input.value='aurora';input.fire('input');assert.equal(firstQuery,'aurora');
-await registry.switchTo('second');assert.equal(input.value,'saved');
+assert.equal(topbar.dataset.toolbar,'search');
+assert.equal(localSearch.hidden,true);assert.equal(controls.hidden,true);
+assert.equal(key('/').defaultPrevented,true);assert.equal(opens,1);
+assert.equal(document.activeElement,null);
+/* setting a value (as the palette's page search does) reveals the field */
+input.value='aurora';input.fire('input');
+assert.equal(firstQuery,'aurora');assert.equal(localSearch.hidden,false);assert.equal(input.value,'aurora');
+/* a page arriving with a saved query shows the field straight away */
+await registry.switchTo('second');assert.equal(localSearch.hidden,false);assert.equal(input.value,'saved');
 assert.equal(input.attributes['aria-label'],'Find sessions');
+/* Escape in the field clears the query, which hides the field and drops focus */
 input.focus();let escapedOutside=0;
 addEventListener('keydown',event=>{if(event.key==='Escape')escapedOutside++;});
 input.fire('keydown',{key:'Escape'});
-assert.equal(secondQuery,'');assert.equal(document.activeElement,input);assert.equal(escapedOutside,0);
-input.fire('keydown',{key:'Escape'});assert.equal(document.activeElement,null);
-await registry.switchTo('first');assert.equal(input.value,'aurora');
-clear.fire('click');assert.equal(firstQuery,'');assert.equal(document.activeElement,input);
-assert.equal(clear.hidden,true);
-await registry.switchTo('second');
-document.activeElement=null;
+assert.equal(secondQuery,'');assert.equal(localSearch.hidden,true);
+assert.equal(document.activeElement,null);assert.equal(escapedOutside,0);
+/* the clear button clears the active first-page query and hides the field */
+await registry.switchTo('first');assert.equal(input.value,'aurora');assert.equal(localSearch.hidden,false);
+clear.fire('click');assert.equal(firstQuery,'');assert.equal(localSearch.hidden,true);
+/* modifiers, typing and contentEditable never let `/` act */
+await registry.switchTo('second');secondQuery='saved';secondContext.refreshToolbar();
+document.activeElement=null;const before=opens;
 for(const flag of ['ctrlKey','metaKey','altKey','isComposing','defaultPrevented']){
   const event=key('/',{[flag]:true});
-  assert.equal(document.activeElement,null,flag+' must not steal focus');
   if(flag!=='defaultPrevented')assert.equal(event.defaultPrevented,false);
 }
+assert.equal(opens,before,'modified / must not open the palette');
 for(const tagName of ['INPUT','TEXTAREA','SELECT']){
   const other=new Element('',tagName);document.activeElement=other;
   assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElement,other);
 }
 const editable=new Element();editable.isContentEditable=true;document.activeElement=editable;
 assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElement,editable);
-document.activeElement=null;key('/');assert.equal(document.activeElement,input);
+/* a plain / on a searchable page opens the palette */
+document.activeElement=null;key('/');assert.equal(opens,before+1);
+/* a page with no search leaves / alone entirely */
 searchable=false;secondContext.refreshToolbar();
-assert.equal(controls.hidden,true);assert.equal(document.activeElement,null);
+assert.equal(controls.hidden,true);
+document.activeElement=null;assert.equal(key('/').defaultPrevented,false);assert.equal(opens,before+1);
+/* Graph: / focuses the map input, not the palette */
 graphRoot.hidden=true; // The independent Projects root controller owns this state.
 await registry.switchTo('graph');
 assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,true);assert.equal(meta.hidden,false);
@@ -223,4 +244,6 @@ assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(d
 assert.equal(key('/').defaultPrevented,false);
 assert.equal(elements.get('qac').classList.contains('is-open'),false);
 secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'none');
+/* the navbar trigger opens the palette on click */
+const clickOpens=opens;trigger.fire('click');assert.equal(opens,clickOpens+1);
 """)
