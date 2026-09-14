@@ -152,36 +152,38 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(same.status_code, 200, same.text)
         self.assertEqual(client.delete('/api/schedules/'+job['id']).status_code, 200, 'CLI needs no Origin')
 
-    def test_a_declared_public_origin_is_accepted_behind_a_proxy(self) -> None:
-        # A Coder workspace: the browser's Origin is the workspace URL and the
-        # proxy connects from loopback. The operator declares that URL as
-        # QUIRQ_PUBLIC_URL. An undeclared public host stays refused (a DNS-
-        # rebinding page would match Host too), and so does a declared host
-        # on the wrong scheme or a sibling workspace.
-        public = "https://xo-space--shared--x.dev.workspace.helloxo.nl"
-        client = TestClient(self.client.app, base_url=public, client=("127.0.0.1", 12345))
-        with patch.dict(os.environ, {"QUIRQ_PUBLIC_URL": public + "/", "ALLOWED_ORIGINS": ""}):
+    def test_this_coder_workspaces_own_hostname_is_accepted_behind_the_proxy(self) -> None:
+        # A Coder workspace: the browser's Origin is the workspace app URL
+        # (<app>--<workspace>--<owner>.<domain>), the proxy connects from
+        # loopback and forwards the real Host with no forwarding headers. The
+        # pod knows its own workspace and owner from the Coder environment, so
+        # no configuration is needed. The app sees plain http on 5002, so only
+        # the host is compared for this case.
+        host = "xo-space--shared--x.dev.workspace.helloxo.nl"
+        public = "https://" + host
+        client = TestClient(self.client.app, base_url="http://" + host, client=("127.0.0.1", 12345))
+        coder = {"CODER_WORKSPACE_NAME": "shared", "CODER_WORKSPACE_OWNER_NAME": "x"}
+        with patch.dict(os.environ, coder):
             created = client.post("/api/schedules", headers={"Origin": public}, json=_payload("proxied"))
             self.assertEqual(created.status_code, 201, created.text)
             job = created.json()
             edited = client.put(f"/api/schedules/{job['id']}", headers={"Origin": public},
                                 json=_payload("edited"))
             self.assertEqual(edited.status_code, 200, edited.text)
-            for bad in ("http://xo-space--shared--x.dev.workspace.helloxo.nl",
-                        "https://xo-space--shared--y.dev.workspace.helloxo.nl",
-                        "https://attacker.example"):
+            for bad in ("https://xo-space--shared--y.dev.workspace.helloxo.nl",   # another owner
+                        "https://xo-space--other--x.dev.workspace.helloxo.nl",    # another workspace
+                        "https://attacker.example",
+                        "https://xo-space--shared--x.attacker.example"):          # right labels, but not the Host
                 with self.subTest(origin=bad):
                     self.assertEqual(
                         client.delete(f"/api/schedules/{job['id']}", headers={"Origin": bad}).status_code, 403)
             self.assertEqual(client.delete(f"/api/schedules/{job['id']}", headers={"Origin": public}).status_code, 200)
-        # The same request with nothing declared is refused.
-        with patch.dict(os.environ, {"QUIRQ_PUBLIC_URL": "", "ALLOWED_ORIGINS": ""}):
+        # Off Coder (no workspace/owner in the environment) the same request is
+        # refused: a DNS-rebinding page against a local install looks exactly
+        # like this.
+        with patch.dict(os.environ, {"CODER_WORKSPACE_NAME": "", "CODER_WORKSPACE_OWNER_NAME": ""}):
             self.assertEqual(
-                client.post("/api/schedules", headers={"Origin": public}, json=_payload("undeclared")).status_code, 403)
-        # ALLOWED_ORIGINS (the CORS list) declares origins too.
-        with patch.dict(os.environ, {"QUIRQ_PUBLIC_URL": "", "ALLOWED_ORIGINS": "http://localhost:3000, " + public}):
-            self.assertEqual(
-                client.post("/api/schedules", headers={"Origin": public}, json=_payload("via cors list")).status_code, 201)
+                client.post("/api/schedules", headers={"Origin": public}, json=_payload("off coder")).status_code, 403)
 
     def test_same_origin_manual_run_and_default_http_port(self) -> None:
         client = TestClient(self.client.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))

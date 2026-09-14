@@ -449,7 +449,8 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it and every Composio route 401s | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/state.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
-| `QUIRQ_PUBLIC_URL` | externally reachable base URL; also declares the browser origin allowed to mutate (`/api/schedules*`, server stop/restart) when the Space is served through a proxy such as a Coder workspace URL — undeclared public hosts are refused (DNS rebinding) | unset | `http://localhost:${PORT}` | `runtime_config.py`, `routers/space.py` (`_declared_origins`) |
+| `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
+| `CODER_WORKSPACE_NAME` / `CODER_WORKSPACE_OWNER_NAME` | injected by Coder; besides the Space id label, they let the browser-mutation guard recognise this workspace's own app hostname (`<app>--<workspace>--<owner>.<domain>`) so Setup can add/edit/run commands and restart through the workspace proxy with no configuration — any other public host is refused (DNS rebinding) | set by Coder | unset | `services/cowork_agent/coder_identity.py`, `routers/space.py` (`_is_this_coder_workspace_host`) |
 | `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
 
 Because both shapes register the **same** routes (verified: the local route set

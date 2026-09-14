@@ -11,6 +11,7 @@ repo. The UI's DATA comes from the workspace .xo directory via /xo/*.json
 import asyncio
 import ipaddress
 import os
+import re
 import signal
 import time
 from pathlib import Path
@@ -35,23 +36,17 @@ def _is_local(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost")
 
 
-def _origin_triple(value: str, *, strict: bool = True) -> tuple[str, str, int] | None:
-    """``scheme://host[:port]`` → ``(scheme, host, port)``, or ``None``.
-
-    ``strict`` is for a browser's ``Origin`` header, which is exactly an
-    origin: no userinfo, path, query or fragment, no whitespace. The lenient
-    form is for a configured *base URL*, where a path or trailing slash is
-    tolerated and only the origin part is kept.
-    """
+def _origin_triple(value: str) -> tuple[str, str, int] | None:
+    """A browser ``Origin`` → ``(scheme, host, port)``, or ``None`` when it is
+    not exactly an origin (userinfo, path, query, fragment, whitespace)."""
     if not value or any(char.isspace() for char in value):
         return None
     try:
         parsed = urlsplit(value)
         host = parsed.hostname
         if (parsed.scheme not in {"http", "https"} or not host
-                or parsed.username is not None or parsed.password is not None):
-            return None
-        if strict and (parsed.path or parsed.query or parsed.fragment):
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment):
             return None
         port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
     except ValueError:
@@ -59,22 +54,27 @@ def _origin_triple(value: str, *, strict: bool = True) -> tuple[str, str, int] |
     return (parsed.scheme, host, port)
 
 
-def _declared_origins() -> set[tuple[str, str, int]]:
-    """Origins the operator declared as this Space's own.
+_CODER_APP_LABEL = re.compile(r"[a-z0-9-]+")
 
-    ``QUIRQ_PUBLIC_URL`` is the externally reachable base URL (a Coder
-    workspace URL, a reverse proxy); ``ALLOWED_ORIGINS`` is the CORS list
-    ``server.py`` already trusts with credentials. Read per request so a
-    configuration change needs no code change. Unset means "none".
+
+def _is_this_coder_workspace_host(host: str) -> bool:
+    """Whether ``host`` is one of *this* Coder workspace's app hostnames.
+
+    Coder serves a workspace app at ``<app>--<workspace>--<owner>.<domain>``
+    and tells the pod its workspace and owner names through the environment
+    (``coder_identity``). Its proxy forwards the real ``Host`` but adds no
+    forwarding headers (checked against the live proxy), so this is the one
+    signal that a public Origin is the pod's own front door rather than a
+    DNS-rebinding page. Off Coder both names are unset and nothing matches,
+    so a local install keeps refusing every public host.
     """
-    raw_values = [os.getenv("QUIRQ_PUBLIC_URL", "")]
-    raw_values += os.getenv("ALLOWED_ORIGINS", "").split(",")
-    declared: set[tuple[str, str, int]] = set()
-    for raw in raw_values:
-        triple = _origin_triple(raw.strip(), strict=False)
-        if triple is not None:
-            declared.add(triple)
-    return declared
+    from services.cowork_agent.coder_identity import owner_name, workspace_name
+
+    workspace, owner = workspace_name(), owner_name()
+    if not workspace or not owner:
+        return False
+    app, marker, domain = host.partition(f"--{workspace}--{owner}.")
+    return bool(marker) and bool(domain) and _CODER_APP_LABEL.fullmatch(app) is not None
 
 
 def _is_local_mutation(request: Request) -> bool:
@@ -86,14 +86,15 @@ def _is_local_mutation(request: Request) -> bool:
 
     - the loopback origin the request was addressed to — a local install,
       where the browser and the server share the machine;
-    - an origin the operator declared (``QUIRQ_PUBLIC_URL`` /
-      ``ALLOWED_ORIGINS``) — how a Space served through a proxy, such as a
-      Coder workspace URL, is reached; the proxy connects from loopback, the
-      browser's Origin is the public host.
+    - this Coder workspace's own app hostname, when the pod runs under Coder
+      (``_is_this_coder_workspace_host``): the proxy connects from loopback
+      and the browser's Origin is the workspace URL. Only the host is
+      compared for that case — the proxy terminates TLS, so the scheme and
+      port the app sees are not the browser's.
 
-    An *undeclared* public host is refused even when it matches the request's
-    own Host: that is what stops a DNS-rebinding page, whose Origin equals
-    the host it hijacked, from driving a local server. CLI clients send no
+    Any other public host is refused even when it equals the request's own
+    Host: that is what stops a DNS-rebinding page, whose Origin equals the
+    host it hijacked, from driving a local server. CLI clients send no
     Origin; for them the loopback peer is the credential.
     """
     if not _is_local(request):
@@ -104,14 +105,13 @@ def _is_local_mutation(request: Request) -> bool:
     triple = _origin_triple(origin)
     if triple is None:
         return False
-    if triple in _declared_origins():
-        return True
     scheme, host, port = triple
     try:
-        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
-            return False
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return False  # a public hostname that nobody declared
+        loopback = False  # a public hostname
+    if not loopback:
+        return _is_this_coder_workspace_host(host) and host == request.url.hostname
     request_port = request.url.port
     if request_port is None:
         request_port = 443 if request.url.scheme == "https" else 80
