@@ -136,11 +136,11 @@ async function layout(label){
   const dimensions=await page.evaluate(()=>({width:innerWidth,document:document.documentElement.scrollWidth,
     page:document.querySelector('#view-projects').clientWidth,pageScroll:document.querySelector('#view-projects').scrollWidth,
     pageTop:document.querySelector('#view-projects').getBoundingClientRect().top,
-    localModes:!!document.querySelector('#view-projects .prj-head .file-views'),
+    localModes:!!document.querySelector('#view-projects .prj-head .data-views'),
     filterBeforeSort:document.querySelector('#prj-filter').getBoundingClientRect().left<document.querySelector('#prj-sort').getBoundingClientRect().left,
     navBottom:document.querySelector('#section-nav').getBoundingClientRect().bottom}));
   assert.ok(dimensions.document<=dimensions.width,label+' has no document overflow');
-  assert.ok(dimensions.localModes,label+' Files modes belong to the local toolbar');
+  assert.ok(dimensions.localModes,label+' Data modes belong to the local toolbar');
   assert.ok(dimensions.filterBeforeSort,label+' Filter precedes Sort by');
   assert.ok(dimensions.pageScroll<=dimensions.page+1,label+' has no Projects overflow');
   assert.ok(dimensions.pageTop>=dimensions.navBottom-1,label+' scroll viewport clears shared navigation');
@@ -152,7 +152,7 @@ async function layout(label){
 }
 
 try{
-  await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'domcontentloaded'});
+  await page.goto(origin+'/space/#/projects/data/list',{waitUntil:'domcontentloaded'});
   await aurora.waitFor({timeout:5000});
   await within(Promise.all([graphHold.arrived.promise,activityHold.arrived.promise,timelineHold.arrived.promise]),'optional summary requests start');
   assert.equal(await page.locator('.prj-row:visible').count(),catalog.length);
@@ -173,27 +173,29 @@ try{
   assert.equal(await page.locator('#prj-filter').inputValue(),'all');
   checked('All and Live filters, description search, and the empty-results clear action work without detail requests.');
 
-  await aurora.locator('.prj-pin').click();
-  assert.equal(await aurora.locator('.prj-pin').getAttribute('aria-pressed'),'true');
-  await selectFilter('pinned');assert.deepEqual(await visibleIDs(),['aurora-console']);
-  await page.reload({waitUntil:'networkidle'});
-  await selectFilter('pinned');await aurora.waitFor();
+  assert.equal(await page.locator('#view-projects .prj-pin,#view-projects .prj-share,#view-projects .prj-map,#view-projects .prj-row-actions').count(),0,
+    'Data rows reserve their actions for opening the file browser');
+  const pin=()=>page.locator('[data-project-pin="aurora-console"]');
+  await openProjectPage(page,'manage');await pin().click();
+  assert.equal(await pin().getAttribute('aria-pressed'),'true');
+  assert.equal(await pin().evaluate(node=>node===document.activeElement),true);
+  await openProjectList(page);await selectFilter('pinned');assert.deepEqual(await visibleIDs(),['aurora-console']);
+  await page.reload({waitUntil:'networkidle'});await selectFilter('pinned');await aurora.waitFor();
   assert.deepEqual(await visibleIDs(),['aurora-console']);
-  assert.equal(await aurora.locator('.prj-pin').getAttribute('aria-pressed'),'true');
-  await aurora.locator('.prj-pin').click();
-  await page.getByText('Keep your frequent projects here',{exact:true}).waitFor();
-  assert.equal(await page.locator('#prj-filter').evaluate(node=>node===document.activeElement),true,
-    'Removing the final pinned row keeps keyboard focus in the Filter control');
+  await openProjectPage(page,'manage');assert.equal(await pin().getAttribute('aria-pressed'),'true');await pin().click();
+  assert.equal(await pin().getAttribute('aria-pressed'),'false');
+  await openProjectList(page);await page.getByText('Keep your frequent projects here',{exact:true}).waitFor();
+  assert.match(await page.locator('#view-projects').textContent(),/Pin projects in Manage/);
   await page.locator('#view-projects').getByRole('button',{name:'Show all projects',exact:true}).click();
   assert.equal(await page.locator('#prj-filter').inputValue(),'all','Clearing an empty pinned view resets the native Filter');
-  await aurora.locator('.prj-pin').click();
+  await openProjectPage(page,'manage');await pin().click();await openProjectList(page);
   const filter=page.locator('#prj-filter');await filter.focus();await filter.press('p');await filter.press('Enter');
   assert.equal(await filter.inputValue(),'pinned','The native filter supports keyboard selection');
   assert.deepEqual(await visibleIDs(),['aurora-console']);
   await selectFilter('all');
   await page.locator('#prj-sort').selectOption('name');
   assert.equal((await visibleIDs())[0],'atlas-handbook');
-  checked('Pins persist across a reload, Pinned filters correctly, and the sort menu orders projects.');
+  checked('Manage pins persist across reload, update Data Pinned filters, and leave Data rows free of management actions.');
 
   const header=aurora.locator('.prj-row-head');await header.focus();await page.keyboard.press('Enter');
   await body('files').locator('[data-file="README.md"]').waitFor();
@@ -235,7 +237,7 @@ try{
 
   await openProjectPage(page,'manage');await page.waitForURL('**/#/projects/manage');
   await page.locator('#manage-project-add').waitFor();assert.deepEqual(report.writes,[]);
-  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
   checked('The Manage page opens project management and returning restores the current drawer and folder.');
 

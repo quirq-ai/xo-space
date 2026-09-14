@@ -14,6 +14,7 @@ const paths={
   external:'<path d="M14 3h7v7M21 3 10 14M10 3H3v18h18v-7"/>',
   refresh:'<path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3"/>',
   issue:'<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 3v1"/>',
+  star:'<path d="m12 3 2.8 5.7 6.3.9-4.55 4.44 1.08 6.27L12 17.35l-5.63 2.96 1.08-6.27L2.9 9.6l6.3-.9L12 3Z"/>',
 };
 const github='<path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.09c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.64 1.22 3.28.93.1-.73.39-1.22.71-1.5-2.5-.28-5.13-1.25-5.13-5.57 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.09 1.16a10.76 10.76 0 0 1 5.62 0c2.15-1.45 3.09-1.16 3.09-1.16.61 1.55.23 2.7.11 2.98.72.79 1.16 1.79 1.16 3.02 0 4.33-2.63 5.29-5.14 5.57.4.35.76 1.04.76 2.1v3.07c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/>';
 export const icon=name=>'<svg class="project-icon" data-icon="'+name+'" viewBox="0 0 24 24" aria-hidden="true" focusable="false" '+(name==='github'?'fill="currentColor"':'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"')+'>'+(name==='github'?github:paths[name]||paths.copy)+'</svg>';

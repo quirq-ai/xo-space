@@ -6,7 +6,7 @@ const GROUPS=[
     topics:[
       {
         id:'projects',title:'Projects',
-        summary:'Browse Overview, Files and Timeline. Use Manage to add, share and remove projects.',
+        summary:'Browse Overview, Data and Timeline. Use Manage to add, pin, share and remove projects.',
         docs:'/space-walk',view:'projects'
       },
       {

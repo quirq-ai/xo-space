@@ -127,6 +127,39 @@ try{
     assert.equal(await toggle(id).getAttribute('aria-expanded'),'false');assert.equal(await details(id).isVisible(),false);
   }
   assert.equal(countIssues(),0,'Collapsed cards do not load issue mirrors');
+  const pin=row('alpha').locator('[data-project-pin="alpha"]');
+  const pinNode=await pin.elementHandle(),cardNode=await row('alpha').elementHandle();
+  const order=await page.locator('.manage-project-row').evaluateAll(nodes=>nodes.map(node=>node.dataset.projectId));
+  await pin.focus();await pin.press('Space');
+  assert.equal(await pin.getAttribute('aria-pressed'),'true');
+  assert.equal(await pin.evaluate(node=>node===document.activeElement),true);
+  assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');assert.equal(countIssues(),0);
+  assert.equal(await cardNode.evaluate(node=>node===document.querySelector('.manage-project-row[data-project-id="alpha"]')),true);
+  assert.deepEqual(await page.locator('.manage-project-row').evaluateAll(nodes=>nodes.map(node=>node.dataset.projectId)),order);
+  await page.locator('#project-refresh').click();await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  assert.equal(await pinNode.evaluate(node=>node===document.querySelector('[data-project-pin="alpha"]')),true);
+  await page.reload({waitUntil:'networkidle'});await pin.waitFor();
+  assert.equal(await pin.getAttribute('aria-pressed'),'true','Manage pins persist across reload');
+  const key=await page.evaluate(()=>Object.keys(localStorage).find(key=>key.startsWith('space.projects.pins.v1:')));
+  assert.ok(key,'Pin storage keeps its existing workspace-scoped key');
+  await context.route('**/__pins_peer__',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Fictional pin storage peer</title>'}));
+  const peer=await context.newPage();await peer.goto(origin+'/__pins_peer__');
+  await peer.evaluate(key=>localStorage.setItem(key,'[]'),key);
+  await page.waitForFunction(()=>document.querySelector('[data-project-pin="alpha"]').getAttribute('aria-pressed')==='false');
+  await peer.evaluate(key=>localStorage.setItem(key,'["alpha"]'),key);
+  await page.waitForFunction(()=>document.querySelector('[data-project-pin="alpha"]').getAttribute('aria-pressed')==='true');
+  await peer.close();
+  await page.evaluate(key=>{window.fixtureOriginalSetItem=Storage.prototype.setItem;Storage.prototype.setItem=function(name,value){
+    if(name===key)throw new DOMException('Fictional quota','QuotaExceededError');return window.fixtureOriginalSetItem.call(this,name,value);};},key);
+  await pin.click();assert.equal(await pin.getAttribute('aria-pressed'),'false');
+  assert.match(await row('alpha').locator('.manage-project-pin-notice').textContent(),/could not|couldn't|cannot|not saved|this tab|session only/i);
+  assert.equal(await page.evaluate(key=>localStorage.getItem(key),key),'["alpha"]','Failed persistence does not pretend storage changed');
+  await page.evaluate(()=>{Storage.prototype.setItem=window.fixtureOriginalSetItem;});await pin.click();
+  assert.equal(await pin.getAttribute('aria-pressed'),'true');
+  assert.equal(await row('alpha').locator('.manage-project-pin-notice').isVisible(),false);
+  assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');assert.equal(countIssues(),0);
+  checked('Collapsed Manage pin actions retain focus and card order, persist across reload, sync cross-tab storage, and report failed persistence without losing current-tab state.');
+
   await row('alpha').locator('[data-project-copy]').click();
   await page.waitForFunction(()=>window.fixtureCopies.length===1);
   assert.deepEqual(await page.evaluate(()=>window.fixtureCopies),['https://github.com/fictional/aurora']);
@@ -291,16 +324,18 @@ try{
   checked('Share, Remove and Copy stay independent of card expansion, preserve inline drafts, and perform no accidental project mutations.');
 
   await go('inbox/activity');await page.locator('#view-search').fill('older unrelated query');
-  await go('projects/manage');await toggle('alpha').click();
-  await row('alpha').locator('[data-project-activity]').click();
+  await go('projects/manage');assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');
+  assert.equal(await row('alpha').locator('[data-project-activity]').isVisible(),true);
+  await row('alpha').locator('[data-project-activity]').focus();await row('alpha').locator('[data-project-activity]').press('Enter');
   await page.waitForURL('**/#/inbox/activity');
   await page.waitForFunction(()=>document.querySelector('[data-activity-project-filter]').value==='alpha');
   assert.equal(await page.locator('#view-search').inputValue(),'');
   await page.locator('[data-activity-todo-rows]').getByText('Current alpha task',{exact:true}).waitFor();
   assert.match(await page.locator('[data-activity-live-rows]').textContent(),/Fixture agent/);
-  checked('View activity opens the selected project in Inbox, clears older event search, and displays its todos and current sessions.');
+  checked('Collapsed header View activity opens the selected project in Inbox, clears older event search, and displays its todos and current sessions.');
 
-  await go('projects/manage');await details('alpha').locator('[data-iss-state="all"]').click();
+  await go('projects/manage');assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false','Activity does not expand the source card');
+  await toggle('alpha').click();await details('alpha').locator('[data-iss-state="all"]').click();
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
     await page.locator('#view-project-manage').evaluate(node=>{node.scrollTop=0;});

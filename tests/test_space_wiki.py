@@ -329,8 +329,8 @@ class SpaceWikiTests(unittest.TestCase):
                 "from the dataset, not from a view interaction",
             )
 
-    def test_tree_remains_a_files_mode_within_projects(self) -> None:
-        """Files groups the existing List, Graph and Tree renderers; Tree
+    def test_tree_remains_a_data_mode_within_projects(self) -> None:
+        """Data groups the existing List, Graph and Tree renderers; Tree
         keeps its own route and remains a child of Projects."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
@@ -348,7 +348,7 @@ class SpaceWikiTests(unittest.TestCase):
         # what made the control jump when you used it, so the views must not
         # render it at all.
         navigation = (ROOT / "space_ui/js/core/navigation.js").read_text(encoding="utf-8")
-        self.assertIn("['tree','files/tree','Tree'", navigation)
+        self.assertIn("['tree','data/tree','Tree'", navigation)
         self.assertNotIn("data-files-lens", index)
         for source in (projects, tree):
             self.assertNotIn('data-files-lens="', source)
@@ -567,14 +567,15 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('data-panel="files"', projects)
         self.assertIn("Refresh files", projects)
         self.assertIn("if(expanded&&!items.some", projects)
-        # accessible: a real button that reports its state, with Map outside
-        # it (a button inside a button is invalid markup)
+        # Data rows have a single file-browser action; management lives in Manage.
         self.assertIn('<button class="prj-row-head"', projects)
         self.assertIn('aria-expanded="', projects)
         self.assertIn('aria-controls="prj-drawer-', projects)
         head = projects.split('class="prj-row-head"')[1].split("</button>")[0]
         self.assertNotIn("prj-map", head)
         self.assertNotIn("prj-pin", head)
+        for removed_action in ("prj-map", "prj-pin", "prj-share", "createProjectShare"):
+            self.assertNotIn(removed_action, projects)
 
     def test_project_description_falls_back_to_project_docs(self) -> None:
         """Every row showing only "created 11d ago" was the complaint. The
@@ -675,10 +676,10 @@ class SpaceWikiTests(unittest.TestCase):
         # A busy directory lists existing folders as unscaffolded projects.
         self.assertIn("unscaffolded", guide)
         # The 2026-08-29 README rewrite tells the short version on purpose
-        # and hands off to the guide: pin the empty state, the "First run"
-        # paragraph, and the hand-off link instead of the full walkthrough.
+        # and hands off to the guide: check the first-run destination and
+        # guide link instead of duplicating the full walkthrough.
         self.assertIn("First run", readme)
-        self.assertIn("No projects yet", readme)
+        self.assertIn("Manage → Add project", readme)
         self.assertIn("INSTALLATION.md", readme)
         self.assertIn("## Your first run", guide)
         self.assertIn("uv pip install --python", guide)

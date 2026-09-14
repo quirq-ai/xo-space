@@ -1,8 +1,8 @@
-import {isProjectRoute} from './navigation.js?v=20260914-manage1';
+import {isProjectRoute} from './navigation.js?v=20260915-data1';
 /* File previewer — a floating window that renders one file from a project.
 
    Lives in core/, not in a view, because three surfaces open it (the Tree
-   lens, the Files explorer, the graph's detail panel) and views never import
+   lens, the Data file explorer, the graph's detail panel) and views never import
    each other. They dispatch `space:preview-file` with {project, path, name}
    and this module owns everything after that.
 

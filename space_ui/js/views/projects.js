@@ -1,9 +1,9 @@
 /* Projects catalog and on-demand file browsing.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260914-manage1';
-import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
-import {createProjectShare} from '../core/project-share.js?v=20260914-manage1';
+import {projectPage} from '../core/navigation.js?v=20260915-data1';
+import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
+import {isProjectPinned,subscribeProjectPins} from '../core/project-pins.js?v=20260915-data1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
@@ -122,20 +122,15 @@ const filePath=id=>'/api/xo-projects/'+encodeURIComponent(id)+'/tree'
 
 let root=null,items=null,expanded=null;
 let catalogDirty=false,catalogRevision=0,loading=false,lastLoaded=0,pollTimer=null;
-let listError='',pinNotice='';
+let listError='';
 let switchTo=()=>{},refreshToolbar=()=>{};
 let counts=new Map(),live=new Map(),lastEvent=new Map();
 const feeds={counts:'loading',activity:'loading',timeline:'loading'};
 let filter='',viewFilter='all',sortK='activity',fdeb=null;
 const SORTS=[['activity','Recent activity'],['name','Name'],['files','Indexed files'],['created','Newest created']];
 const FILTERS=[['all','All projects'],['live','Live'],['pinned','Pinned']];
-const rowNodes=new Map(),drawers=new Map(),shareForms=new Map();
-const pinKey='space.projects.pins.v1:'+String(API_BASE||location.origin||'local');
-let pinned=new Set();
-try{
-  const saved=JSON.parse(localStorage.getItem(pinKey)||'[]');
-  if(Array.isArray(saved))pinned=new Set(saved.filter(id=>typeof id==='string'&&id.length<=200).slice(0,1000));
-}catch{/* Storage is optional; pins still work for this visit. */}
+const rowNodes=new Map(),drawers=new Map();
+subscribeProjectPins(()=>renderRows());
 
 addEventListener('space:projects-changed',event=>{
   catalogDirty=true;catalogRevision++;
@@ -156,7 +151,7 @@ export default {
     el.innerHTML='<div class="prj">'+head()+'<div id="prj-status" role="status"></div>'
       +'<div class="prj-body"><div class="prj-cols" aria-hidden="true"><div class="prj-cols-inner">'
       +'<span></span><span>Project</span><span>Status</span><span>Indexed files</span><span>Last active</span>'
-      +'</div><span class="prj-cols-map"></span></div><div class="prj-rows"></div>'
+      +'</div></div><div class="prj-rows"></div>'
       +'<div class="prj-empty" hidden></div></div></div>';
     bindHead();renderRows();
     await loadList();
@@ -225,7 +220,6 @@ async function loadList(){
   items=list.data.items;catalogDirty=false;lastLoaded=Date.now();
   const ids=new Set(items.map(p=>p.id));
   for(const [id,node] of rowNodes)if(!ids.has(id)){node.remove();rowNodes.delete(id);drawers.delete(id);}
-  for(const [id,form] of shareForms)if(!ids.has(id)){form.destroy();shareForms.delete(id);}
   if(expanded&&!items.some(p=>p.id===expanded))expanded=null;
   render();openPending();
 }
@@ -235,7 +229,7 @@ const activityOf=p=>Date.parse(live.get(p.id)?.since||lastEvent.get(p.id))||0;
 function visible(){
   const words=filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const rows=(items||[]).filter(p=>words.every(word=>[p.id,p.display_name,p.description].join(' ').toLowerCase().includes(word))
-    &&(viewFilter!=='live'||live.has(p.id))&&(viewFilter!=='pinned'||pinned.has(p.id)));
+    &&(viewFilter!=='live'||live.has(p.id))&&(viewFilter!=='pinned'||isProjectPinned(p.id)));
   const name=(a,b)=>String(a.display_name||a.id).localeCompare(String(b.display_name||b.id))||a.id.localeCompare(b.id);
   const by={name,files:(a,b)=>(filesOf(b.id)??-1)-(filesOf(a.id)??-1),
     created:(a,b)=>(b.unscaffolded?0:Date.parse(b.created_at)||0)-(a.unscaffolded?0:Date.parse(a.created_at)||0),
@@ -254,7 +248,7 @@ function summary(shown){
 }
 function head(){
   return '<header class="prj-hero"><h1 class="prj-sr-only">List</h1><p id="prj-summary"><span id="prj-count">Loading projects…</span></p></header>'
-    +'<div class="prj-head">'+fileViewControls('project-list')+'<span class="prj-spacer"></span>'
+    +'<div class="prj-head">'+dataViewControls('project-list')+'<span class="prj-spacer"></span>'
     +'<div class="prj-filter-control"><label class="prj-filter-label" for="prj-filter">Filter</label>'
     +'<select id="prj-filter">'+FILTERS.map(([key,label])=>'<option value="'+key+'"'+(key===viewFilter?' selected':'')+'>'+label+' (—)</option>').join('')+'</select></div>'
     +'<div class="prj-sort-control"><label class="prj-sort-label" for="prj-sort">Sort by</label>'
@@ -263,7 +257,7 @@ function head(){
 function updateHead(){
   if(!root)return;
   const count=root.querySelector('#prj-count');if(count)count.textContent=summary(items?visible().length:undefined);
-  const totals={all:items?.length,pinned:items?.filter(p=>pinned.has(p.id)).length,
+  const totals={all:items?.length,pinned:items?.filter(p=>isProjectPinned(p.id)).length,
     live:feeds.activity==='ready'?items?.filter(p=>live.has(p.id)).length:undefined};
   const select=root.querySelector('#prj-filter');
   if(select.value!==viewFilter)select.value=viewFilter;
@@ -277,7 +271,6 @@ function updateHead(){
   if(feeds.counts==='error')notes.push('File index unavailable.');
   if(feeds.activity==='error')notes.push('Live status unavailable.');
   if(feeds.timeline==='error')notes.push('Recent activity unavailable.');
-  if(pinNotice)notes.push(pinNotice);
   const status=root.querySelector('#prj-status');status.textContent=notes.join(' ');status.hidden=!notes.length;
 }
 function bindHead(){
@@ -334,9 +327,9 @@ function renderRows(){
 function emptyHTML(){
   if(!items.length)return'<b>No projects yet</b><p>Clone a Git repository into this Space to get started.</p><div class="prj-empty-actions"><button type="button" data-manage-projects>Manage projects</button><button type="button" data-first-run>Getting started</button></div>';
   let title='No matching projects',message='Try a different search or clear the filters.';
-  if(!filter.trim()&&viewFilter==='pinned'){title='Keep your frequent projects here';message='Use the pin beside a project to add it to this list. Pins are saved in this browser.';}
+  if(!filter.trim()&&viewFilter==='pinned'){title='Keep your frequent projects here';message='Pin projects in Manage to keep them here. Pins are saved in this browser.';}
   if(!filter.trim()&&viewFilter==='live'){title=feeds.activity==='loading'?'Checking live projects…':feeds.activity==='error'?'Live status is unavailable':'No projects are live';message=feeds.activity==='ready'?'Projects with open agent sessions appear here.':'You can still browse all projects.';}
-  return'<b>'+esc(title)+'</b><p>'+esc(message)+'</p><div class="prj-empty-actions"><button type="button" data-clear-projects>Show all projects</button></div>';
+  return'<b>'+esc(title)+'</b><p>'+esc(message)+'</p><div class="prj-empty-actions"><button type="button" data-clear-projects>Show all projects</button>'+(viewFilter==='pinned'?'<button type="button" data-manage-projects>Manage projects</button>':'')+'</div>';
 }
 function liveCell(p){
   const entry=live.get(p.id);
@@ -362,39 +355,15 @@ function rowContent(p){
 }
 function rowHTML(p){
   return'<div class="prj-row" id="prj-row-'+esc(p.id)+'"><div class="prj-line">'
-    +'<button class="prj-row-head" type="button" data-id="'+esc(p.id)+'" aria-expanded="false" aria-controls="prj-drawer-'+esc(p.id)+'">'+rowContent(p)+'</button>'
-    +'<div class="prj-row-actions"><button class="prj-pin" type="button" aria-pressed="false">☆</button>'
-    +'<button class="prj-map" type="button" data-map="'+esc(p.id)+'" title="Focus '+esc(p.display_name||p.id)+' on the graph">Graph</button>'
-    +'<button class="prj-share" type="button" data-share="'+esc(p.id)+'" aria-label="Share '+esc(p.display_name||p.id)+'">Share</button></div></div></div>';
+    +'<button class="prj-row-head" type="button" data-id="'+esc(p.id)+'" aria-expanded="false" aria-controls="prj-drawer-'+esc(p.id)+'">'+rowContent(p)+'</button></div></div>';
 }
 function updateRow(node,p){
   const open=expanded===p.id,button=node.querySelector('.prj-row-head');
   node.classList.toggle('is-open',open);button.setAttribute('aria-expanded',String(open));
   const html=rowContent(p);if(button.innerHTML!==html)button.innerHTML=html;
-  const pin=node.querySelector('.prj-pin'),isPinned=pinned.has(p.id);
-  pin.textContent=isPinned?'★':'☆';pin.setAttribute('aria-pressed',String(isPinned));
-  const label=(isPinned?'Unpin ':'Pin ')+(p.display_name||p.id);
-  pin.setAttribute('aria-label',label);pin.title=label;
-  shareForms.get(p.id)?.setLabel(p.display_name||p.id);
-  node.querySelector('.prj-share').setAttribute('aria-label','Share '+(p.display_name||p.id));
 }
 function bindRow(node,id){
   node.querySelector('.prj-row-head').addEventListener('click',()=>toggle(id));
-  node.querySelector('.prj-pin').addEventListener('click',()=>{
-    if(pinned.has(id))pinned.delete(id);else pinned.add(id);
-    try{localStorage.setItem(pinKey,JSON.stringify([...pinned]));pinNotice='';}
-    catch{pinNotice='Pins are kept for this visit because browser storage is unavailable.';}
-    renderRows();
-    if(node.hidden)root.querySelector('#prj-filter').focus({preventScroll:true});
-  });
-  node.querySelector('.prj-map').addEventListener('click',()=>{
-    switchTo('graph');dispatchEvent(new CustomEvent('space:focus-project',{detail:id}));
-  });
-  let share=shareForms.get(id);
-  if(!share){share=createProjectShare({projectId:id});shareForms.set(id,share);}
-  node.appendChild(share.element);
-  const shareButton=node.querySelector('.prj-share');share.setTrigger(shareButton);
-  shareButton.addEventListener('click',()=>share.open());
 }
 function toggle(id){
   expanded=expanded===id?null:id;renderRows();

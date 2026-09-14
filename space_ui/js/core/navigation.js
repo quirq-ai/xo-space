@@ -6,16 +6,16 @@ const pages=(parent,entries)=>Object.freeze(entries.map(([id,slug,label,aliases=
 
 export const PROJECT_PAGES=pages('projects',[
   ['dashboard','overview','Overview',['dashboard']],
-  ['project-list','files/list','List',['list','projects/list','projects/files']],
-  ['graph','files/graph','Graph',['graph','projects/graph']],
-  ['tree','files/tree','Tree',['tree','projects/tree']],
+  ['project-list','data/list','List',['list','projects/list','projects/data','projects/files','projects/files/list']],
+  ['graph','data/graph','Graph',['graph','projects/graph','projects/files/graph']],
+  ['tree','data/tree','Tree',['tree','projects/tree','projects/files/tree']],
   ['time','timeline','Timeline',['time','timeline']],
   ['project-manage','manage','Manage',['setup/projects']],
 ]);
-export const FILE_VIEWS=Object.freeze(PROJECT_PAGES.filter(page=>['project-list','graph','tree'].includes(page.id)));
+export const DATA_VIEWS=Object.freeze(PROJECT_PAGES.filter(page=>['project-list','graph','tree'].includes(page.id)));
 export const PROJECT_SECTIONS=Object.freeze([
   PROJECT_PAGES.find(page=>page.id==='dashboard'),
-  Object.freeze({id:'files',route:'projects/files',label:'Files',parent:'projects'}),
+  Object.freeze({id:'data',route:'projects/data',label:'Data',parent:'projects'}),
   PROJECT_PAGES.find(page=>page.id==='time'),
   PROJECT_PAGES.find(page=>page.id==='project-manage'),
 ]);

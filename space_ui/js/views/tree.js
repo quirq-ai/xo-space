@@ -1,6 +1,6 @@
-import {projectPage} from '../core/navigation.js?v=20260914-manage1';
-import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
-/* Tree — the third Files lens, beside List and Graph.
+import {projectPage} from '../core/navigation.js?v=20260915-data1';
+import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
+/* Tree — the third Data view, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped
    folder, every mapped file), read as a hierarchy instead of as a force
@@ -111,7 +111,7 @@ function onWheel(e){
 }
 
 export default {
-  /* Tree is a Files representation within Projects. */
+  /* Tree is a Data representation within Projects. */
   ...projectPage('tree'),
   toolbar:{search:{
     placeholder:'Filter tree by name…',
@@ -312,7 +312,7 @@ function render(){
 }
 function head(){
   return'<div class="tv-head">'
-    +fileViewControls('tree')
+    +dataViewControls('tree')
     +'<span class="prj-eyebrow">'+plural(model.dirs.size,'project')+' · '
       +plural(model.nDirs,'folder')+' · '+plural(model.nFiles,'file')+'</span>'
     +'<span class="prj-spacer"></span>'
@@ -320,7 +320,7 @@ function head(){
     +'<button class="sess-refresh" data-tv="reset">Reset view</button>'
   +'</div>';
 }
-function emptyToolbar(){return '<div class="tv-head">'+fileViewControls('tree')+'</div>';}
+function emptyToolbar(){return '<div class="tv-head">'+dataViewControls('tree')+'</div>';}
 /* An S-curve, not an elbow: at 228px of column width a bezier reads the
    parent→child direction at a glance without a corner every level. */
 function curve(l){

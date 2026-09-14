@@ -16,7 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-manage1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260915-data1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -578,22 +578,22 @@ async function markAllSeen(){
   }
   await load();
 }
-/* Open: a file link previews it in the Files tab; a view link jumps there;
-   a bare project link lands on the Files list. switchTo is not awaited: its
+/* Open: a file link previews it in the Data tab; a view link jumps there;
+   a bare project link lands on the Data list. switchTo is not awaited: its
    tab and event side effects are synchronous, and the previewer closes on
-   any non-Files view, so the switch must happen before the preview event.
+   any non-Data view, so the switch must happen before the preview event.
    Unknown view ids are ignored by the registry itself. */
 function openLink(it){
   const l=it.link;
   if(!l||typeof l!=='object')return;
   const project=typeof l.project==='string'&&PROJ_RE.test(l.project)?l.project:'';
   if(project&&safePath(l.path)){
-    switchTo('projects/files/list');
+    switchTo('projects/data/list');
     dispatchEvent(new CustomEvent('space:preview-file',{detail:{project,path:l.path}}));
     return;
   }
-  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/files/list':l.view);return;}
-  if(project)switchTo('projects/files/list');
+  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/data/list':l.view);return;}
+  if(project)switchTo('projects/data/list');
 }
 
 /* ── connections section data ──────────────────────────────────────────── */

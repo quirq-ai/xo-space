@@ -49,7 +49,7 @@ class PreviewNavigationTests(unittest.TestCase):
               insertAdjacentHTML(_where,html){this._html+=html;},setPointerCapture(){}
             };
           }
-          function page({hash='#/projects/files/list',store=storage(),respond,items=history,topbarHeight=58}={}){
+          function page({hash='#/projects/data/list',store=storage(),respond,items=history,topbarHeight=58}={}){
             const ids=['preview','preview-body','preview-version','preview-name','preview-path',
               'preview-meta','preview-source','preview-close','header'];
             const els=Object.fromEntries(ids.map(id=>[id,element(id)]));
@@ -144,7 +144,7 @@ class PreviewNavigationTests(unittest.TestCase):
           assert.equal(restored.isOpen(),false);
           assert.equal(restored.els['preview-body'].innerHTML,'');
           restored.save();assert.equal(restored.store.getItem(key),null);
-          for(const hash of ['#/projects/timeline','#/agents/overview','#/inbox/items','#/projects/files/list','#/projects/list']){
+          for(const hash of ['#/projects/timeline','#/agents/overview','#/inbox/items','#/projects/data/list','#/projects/list']){
             const store=storage(new Map([[key,snapshot]]));
             const other=page({hash,store});await settle();
             assert.equal(other.isOpen(),false,'snapshot is only valid for its destination');

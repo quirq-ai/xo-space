@@ -135,7 +135,7 @@ try{
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Manage keeps the clone draft mounted across Setup visits');
   await page.locator('#project-refresh').click();
   await page.locator('#tab-setup').click();
-  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   await page.locator('#prj-row-solo-demo').waitFor();
   assert.doesNotMatch(await page.locator('body').textContent(),/a workspace knowledge graph/i);
   await page.locator('#view-search').fill('demo');

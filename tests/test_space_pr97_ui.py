@@ -895,34 +895,27 @@ class ShellTests(unittest.TestCase):
         app = read("js/app.js")
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
-        navigation_stamp = "20260914-manage1"
-        self.assertIn("./views/wiki.js?v=" + navigation_stamp + "'", app)
-        self.assertIn("./core/registry.js?v=20260914-actions1'", app)
-        files_stamp = "20260914-files2"
-        for view in ("quirq",):
-            self.assertIn("./views/" + view + ".js?v=" + files_stamp + "'", app)
-        for module in ("toolbar",):
-            self.assertIn("./core/" + module + ".js?v=" + files_stamp + "'", app)
-        controls_stamp = "20260914-manage1"
-        for view in ("tree", "atlas", "setup", "sessions", "inbox"):
-            self.assertIn("./views/" + view + ".js?v=" + controls_stamp + "'", app)
+        data_stamp = "20260915-data1"
+        for view in ("wiki", "quirq", "tree", "atlas", "sessions", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
+            self.assertIn("./views/" + view + ".js?v=" + data_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + controls_stamp + "'", app)
-        for view in ("sharing", "projects", "inbox-activity"):
-            self.assertIn("./views/" + view + ".js?v=20260914-details1'", app)
-        self.assertIn("./views/project-manage.js?v=20260914-polish1'", app)
+            self.assertIn("./core/" + module + ".js?v=" + data_stamp + "'", app)
+        self.assertIn("./core/registry.js?v=20260914-actions1'", app)
+        self.assertIn("./core/toolbar.js?v=20260914-files2'", app)
+        controls_stamp = "20260914-manage1"
+        self.assertIn("./views/setup.js?v=" + controls_stamp + "'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         compact_stamp = "20260914-projectcompact1"
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         results_stamp = "20260914-navigation1"
         html = read("index.html")
-        self.assertIn('href="css/projects.css?v=20260914-details1"', html)
-        self.assertIn('href="css/navigation.css?v=20260914-actions1"', html)
+        self.assertIn('href="css/projects.css?v=20260915-data1"', html)
+        self.assertIn('href="css/navigation.css?v=20260915-data1"', html)
         for sheet in ("project-share",):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-inboxshare1"', html)
         for sheet in ("setup",):
             self.assertIn('href="css/' + sheet + '.css?v=' + controls_stamp + '"', html)
-        self.assertIn('href="css/project-management.css?v=20260914-polish1"', html)
+        self.assertIn('href="css/project-management.css?v=20260915-data1"', html)
         for sheet in ("inbox-activity",):
             self.assertIn('href="css/' + sheet + '.css?v=20260914-details1"', html)
         for sheet in ("graph", "preview"):

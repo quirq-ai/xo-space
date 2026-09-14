@@ -1,11 +1,11 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260914-manage1';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260915-data1';
 import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
 const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
-const FILE_IDS=new Set(FILE_VIEWS.map(page=>page.id));
+const DATA_IDS=new Set(DATA_VIEWS.map(page=>page.id));
 const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
 const pageActions=new Map();
 let refreshActions=()=>{};
@@ -24,7 +24,7 @@ export function initSectionNav({refreshCurrentView}){
   if(!nav||!stage||nav.dataset.initialized)return;
   nav.dataset.initialized='true';
   let parent=null,active=null,height=-1,frame=0,refreshable=false;
-  let lastFile=FILE_VIEWS[0];
+  let lastData=DATA_VIEWS[0];
 
   function refreshState({busy=false,available=false}={}){
     const button=nav.querySelector('[data-page-refresh]');
@@ -74,7 +74,7 @@ export function initSectionNav({refreshCurrentView}){
     const links=document.createElement('div');links.className='section-nav-links';
     for(const page of GROUPS[group]){
       const link=document.createElement('a');
-      link.href='#/'+(page.id==='files'?lastFile.route:page.route);link.textContent=page.label;
+      link.href='#/'+(page.id==='data'?lastData.route:page.route);link.textContent=page.label;
       link.dataset.sectionPage=page.id;
       links.appendChild(link);
     }
@@ -114,14 +114,14 @@ export function initSectionNav({refreshCurrentView}){
     if(group!==parent){render(group);parent=group;}
     active=page.id;
     refreshState({busy:detail.refreshing,available:detail.refreshable});
-    const filesActive=group==='projects'&&FILE_IDS.has(page.id);
-    if(filesActive)lastFile=page;
+    const dataActive=group==='projects'&&DATA_IDS.has(page.id);
+    if(dataActive)lastData=page;
     const section=document.getElementById('view-'+(detail.section||page.section||page.id));
     section?.classList.add('has-section-nav');
     for(const link of nav.querySelectorAll('[data-section-page]')){
-      if(link.dataset.sectionPage===(filesActive?'files':page.id))link.setAttribute('aria-current','page');
+      if(link.dataset.sectionPage===(dataActive?'data':page.id))link.setAttribute('aria-current','page');
       else link.removeAttribute('aria-current');
-      if(link.dataset.sectionPage==='files')link.href='#/'+lastFile.route;
+      if(link.dataset.sectionPage==='data')link.href='#/'+lastData.route;
     }
     placeActions();
     const title=nav.querySelector('.section-page-title');

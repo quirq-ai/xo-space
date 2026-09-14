@@ -336,9 +336,9 @@ try{
     await page.reload({waitUntil:'networkidle'});await expectSection(id);
   }
   for(const [alias,id] of [['setup','workspace'],['connectors','connectors'],['secrets','secrets'],['setup/projects','manage']]){
-    await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'networkidle'});
+    await page.goto(origin+'/space/#/projects/data/list',{waitUntil:'networkidle'});
     await page.goto(origin+'/space/#/'+alias,{waitUntil:'networkidle'});await (id==='manage'?expectManage():expectSection(id));
-    await page.goBack();await page.waitForURL('**/#/projects/files/list');
+    await page.goBack();await page.waitForURL('**/#/projects/data/list');
     assert.equal(await page.locator('#view-projects.is-active').count(),1,'Alias normalization does not add an extra history entry');
     await page.goForward();await (id==='manage'?expectManage():expectSection(id));
   }

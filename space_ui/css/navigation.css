@@ -91,20 +91,20 @@
   #view-inbox .inb-conn-acts{grid-column:1;grid-row:4;justify-content:flex-start;margin-top:4px}
 }
 
-/* The three Files pages use the same local representation control. */
+/* The three Data views use the same local representation control. */
 #view-graph{isolation:isolate} /* Keep local controls below the section's menus. */
-.file-views{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:100%;padding:3px;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg-2)}
-.file-views a{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:7px 13px;border:1px solid transparent;border-radius:7px;text-decoration:none;white-space:nowrap;color:var(--ink-3);font:500 12px var(--sans)}
-.file-views a:hover{color:var(--ink);background:var(--bg-3)}
-.file-views a[aria-current=page]{border-color:rgba(168,217,79,.2);background:rgba(168,217,79,.07);color:var(--accent)}
-.file-views a:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.data-views{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:100%;padding:3px;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg-2)}
+.data-views a{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:7px 13px;border:1px solid transparent;border-radius:7px;text-decoration:none;white-space:nowrap;color:var(--ink-3);font:500 12px var(--sans)}
+.data-views a:hover{color:var(--ink);background:var(--bg-3)}
+.data-views a[aria-current=page]{border-color:rgba(168,217,79,.2);background:rgba(168,217,79,.07);color:var(--accent)}
+.data-views a:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 #graph-file-toolbar{position:absolute;top:14px;left:max(26px,calc((100% - 1180px)/2 + 26px));z-index:21}
 #graph-file-toolbar[hidden]{display:none!important}
 #view-graph.has-file-tools #hint,#view-graph.has-file-tools #crumb{top:70px}
 #view-graph.has-file-tools .nodata{top:66px}
 @media(max-width:650px){
-  .file-views a{min-height:38px;padding:8px 12px}
+  .data-views a{min-height:38px;padding:8px 12px}
   #graph-file-toolbar{left:16px}
-  #view-tree .tv-head>.file-views{margin-right:auto}
+  #view-tree .tv-head>.data-views{margin-right:auto}
 }
 @media(max-width:480px){#graph-file-toolbar{left:12px}}

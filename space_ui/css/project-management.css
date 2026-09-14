@@ -26,16 +26,19 @@
 .manage-project-toggle[aria-expanded=true] .manage-project-chevron{transform:rotate(90deg);color:var(--accent)}
 .manage-project-heading-copy{display:flex;flex-direction:column;gap:0;flex:none}
 .manage-project-heading-copy .project-icon-button{width:25px;height:25px}
-.manage-project-row-actions{display:flex;align-items:center;gap:8px;flex:none}
-.manage-project-row-actions>button{white-space:nowrap}
-.manage-project-row-actions>[data-project-remove]:hover{color:#e1937d;background:#e1937d12}
-.manage-project-row-actions>[data-project-share][aria-expanded=true]{color:var(--accent);border-color:var(--accent)}
+.manage-project-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px 12px;flex-wrap:wrap;flex:none}
+.manage-project-primary-actions,.manage-project-icon-actions{display:flex;align-items:center;gap:8px;flex:none}
+.manage-project-icon-actions{gap:6px;padding-left:12px;border-left:1px solid var(--line-soft)}
+.manage-project-row-actions button{white-space:nowrap}
+.manage-project-row-actions [data-project-remove]:hover{color:#e1937d;background:#e1937d12}
+.manage-project-row-actions [data-project-share][aria-expanded=true]{color:var(--accent);border-color:var(--accent)}
+.manage-project-pin-notice{grid-column:1/-1;margin:12px 0 0;color:#e2ae5b;font:400 12px/1.5 var(--sans);overflow-wrap:anywhere;cursor:auto}
 .manage-project-row>.project-share{grid-column:1/-1;margin-top:16px;padding:16px 0 0;border-top:1px solid var(--line-soft)}
 .manage-project-copy-result{grid-column:1/-1;margin:12px 0 0;color:var(--accent);font:400 12px/1.5 var(--sans);overflow-wrap:anywhere}
 .manage-project-copy-result:not(.is-error){position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0)}
 .manage-project-copy-result.is-error{color:#e1937d}
 .manage-project-details{grid-column:1/-1;min-width:0;margin-top:18px;padding-top:20px;border-top:1px solid var(--line-soft)}
-.manage-project-overview{position:relative;padding-bottom:22px}
+.manage-project-overview{position:relative;padding-bottom:4px}
 .manage-project-metadata{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px 28px;margin:0 0 18px}
 .manage-project-metadata>div{min-width:0}
 .manage-project-metadata dt{margin-bottom:5px;font:400 11px/1.5 var(--sans);color:var(--ink-3)}
@@ -53,7 +56,9 @@
 .project-icon{display:inline-block;flex:none;width:16px;height:16px;vertical-align:middle}
 .project-icon-button{display:inline-flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--ink-3);cursor:pointer;transition:color .15s,background .15s,border-color .15s}
 .project-icon-button:hover,.project-icon-button:focus-visible{color:var(--ink);background:var(--bg-3);border-color:var(--line-soft)}
-.manage-project-row-actions>.project-icon-button{width:34px;height:34px;border-color:var(--line-soft);color:var(--ink-2)}
+.manage-project-row-actions .project-icon-button{width:34px;height:34px;border-color:var(--line-soft);color:var(--ink-2)}
+.manage-project-pin-button[aria-pressed=true]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line-soft))}
+.manage-project-pin-button[aria-pressed=true] .project-icon{fill:currentColor}
 .project-icon-button .project-icon{width:14px;height:14px}
 .manage-project-github-copy .project-icon{width:16px;height:16px}
 .project-copy-glyph{display:flex}
@@ -127,12 +132,13 @@ a.iss-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 @media(max-width:650px){
  .project-manage{padding:16px 14px 40px}.manage-project-head{gap:10px}.manage-project-head h1{font-size:18px}.manage-project-tools{gap:6px}
  .manage-project-row{padding:15px;grid-template-columns:minmax(0,1fr);gap:13px}.manage-project-row-actions{justify-content:flex-end;border-top:1px solid var(--line-soft);padding-top:10px;width:100%}
+ .manage-project-icon-actions{padding-left:0;border-left:0}
  .manage-project-toggle{gap:9px}.manage-project-folder{width:32px;height:32px}.manage-project-summary b{font-size:14px}.manage-project-summary code{font-size:10.5px}
  .manage-project-details{margin-top:0;padding-top:16px}.manage-project-metadata{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.manage-project-metadata dd{font-size:12px}.manage-project-metadata code{font-size:11px}
  .manage-project-metadata [data-project-field=github],.manage-project-metadata [data-project-field=uuid]{grid-column:1/-1}
  .manage-project-form,.manage-project-removal{padding:16px}.manage-project-fields{grid-template-columns:1fr;gap:0}.manage-project-member{flex-wrap:wrap;gap:10px}.manage-project-revoke-confirm{align-items:flex-start;flex-shrink:1}
- .manage-project-row-actions>button{min-height:36px}.manage-project-row>.project-share{margin-top:0}
+ .manage-project-row-actions button{min-height:36px}.manage-project-row>.project-share{margin-top:0}
  .iss-meta,.iss-controls{flex:1 1 100%;min-width:0}.project-issues .iss-q{width:100%;flex:1 1 100%}.iss-states{flex:1}.iss-states button{flex:1;min-height:32px}.iss-refresh{min-height:38px}
  .iss-row{grid-template-columns:7px 32px minmax(0,1fr);gap:4px 8px;padding:8px 3px}.iss-title{white-space:normal;overflow-wrap:anywhere;font-size:12px}.iss-when{grid-column:3;min-width:0;text-align:left;font-size:10px}
 }
-@media(max-width:380px){.project-manage{padding-left:12px;padding-right:12px}.manage-project-metadata{grid-template-columns:1fr}.manage-project-row{padding:13px}.manage-project-head h1{font-size:17px;gap:7px}}
+@media(max-width:380px){.project-manage{padding-left:12px;padding-right:12px}.manage-project-metadata{grid-template-columns:1fr}.manage-project-row{padding:13px}.manage-project-head h1{font-size:17px;gap:7px}.manage-project-row-actions{justify-content:space-between}.manage-project-icon-actions{border-left:0;padding-left:0}}

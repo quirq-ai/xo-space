@@ -16,7 +16,7 @@ class AtlasLifecycleTests(unittest.TestCase):
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
-import {fileViewControls} from './space_ui/js/core/file-views.js';
+import {dataViewControls} from './space_ui/js/core/data-views.js';
 const events=new Map(),elements=new Map(),reads=[],boots=[],activations=[];
 let disposed=0,reloads=0,reply={ok:true,data:{version:1}},pending=null;
 function element(id=''){
@@ -36,7 +36,7 @@ function element(id=''){
   };
 }
 const context={
-  AbortController,setTimeout,clearTimeout,fileViewControls,
+  AbortController,setTimeout,clearTimeout,dataViewControls,
   API_BASE:'',projectPage:id=>({id}),toast(){},
   addEventListener:(type,handler)=>events.set(type,handler),
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
@@ -75,7 +75,7 @@ assert.deepEqual(boots,[[1,'Overview']]);
 await open('graph');
 assert.equal(elements.get('view-graph').classList.contains('has-file-tools'),true);
 assert.equal(elements.get('graph-file-toolbar').hidden,false);
-assert.match(elements.get('graph-file-toolbar').innerHTML,/data-file-mode="graph" aria-current="page"/);
+assert.match(elements.get('graph-file-toolbar').innerHTML,/data-data-mode="graph" aria-current="page"/);
 await open('time');await open('dashboard');
 assert.equal(elements.get('view-graph').classList.contains('has-file-tools'),false);
 assert.equal(elements.get('graph-file-toolbar').hidden,true,'Overview does not inherit the Files controls');

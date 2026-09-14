@@ -6,11 +6,11 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260914-manage1';
+import {projectPage} from '../core/navigation.js?v=20260915-data1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
-import {fileViewControls} from '../core/file-views.js?v=20260914-manage1';
+import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};
@@ -180,7 +180,7 @@ function atlasView(id,label,order,lens,dataset=null){
       host=el;go=ctx.switchTo;
       if(id==='graph'&&!el.querySelector('#graph-file-toolbar')){
         const tools=document.createElement('div');tools.id='graph-file-toolbar';
-        tools.innerHTML=fileViewControls('graph');tools.hidden=activeAtlasId!=='graph';
+        tools.innerHTML=dataViewControls('graph');tools.hidden=activeAtlasId!=='graph';
         el.prepend(tools);
       }
       toolbarRefresh=ctx.refreshToolbar||(()=>{});refreshToolbar=toolbarRefresh;

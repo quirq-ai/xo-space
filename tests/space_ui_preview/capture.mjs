@@ -151,14 +151,14 @@ try {
       ['Overview', 'Files', 'Sharing', 'Timeline']);
     assert.equal(await page.locator('.section-nav-label:visible').count(),0,'Navigation does not repeat the primary section label');
     assert.equal(await page.locator('#tab-projects').textContent(), 'Projects');
-    report.checks.push('Default Overview; four Projects pages with Files grouping the original List, Graph and Tree');
+    report.checks.push('Default Overview; four Projects pages with Data grouping the original List, Graph and Tree');
     await projectChrome();
   }
   await screenshot('space-dashboard.png');
   report.screenshots.push('space-dashboard.png');
 
   if(screenshotsOnly) {
-    await page.goto(origin + '/space/#/projects/files/list', {waitUntil: 'networkidle'});
+    await page.goto(origin + '/space/#/projects/data/list', {waitUntil: 'networkidle'});
     await page.locator('.prj-row').first().waitFor();
   } else await lens('projects');
   assert.equal(await page.locator('.prj-row').count(), 10);
@@ -252,7 +252,7 @@ try {
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});
-      await page.goto(origin + '/space/#/projects/files/list', {waitUntil: 'networkidle'});
+      await page.goto(origin + '/space/#/projects/data/list', {waitUntil: 'networkidle'});
       await page.locator('.prj-row').first().waitFor();
       const initialBounds = await page.locator('#section-nav').boundingBox();
       const initialStage = await page.locator('#stage').boundingBox();

@@ -50,7 +50,7 @@ async function createPage(hold=null){
   page.on('response',response=>{if(response.status()>=400)report.errors.push(response.status()+' '+response.url());});
   return page;
 }
-const activeId=route=>route==='projects/files/list'?'projects':route==='projects/files/tree'?'tree':route==='projects/timeline'?'time':route==='projects/manage'?'project-manage':'graph';
+const activeId=route=>route==='projects/data/list'?'projects':route==='projects/data/tree'?'tree':route==='projects/timeline'?'time':route==='projects/manage'?'project-manage':'graph';
 async function active(page,route){
   await page.waitForURL('**/#/'+route);
   await page.locator('#view-'+activeId(route)+'.is-active').waitFor();
@@ -63,7 +63,7 @@ function checked(text){report.checks.push(text);console.log(text);}
 
 let page,hold;
 try{
-  for(const route of ['projects/files/list','projects/files/tree','projects/timeline','projects/manage']){
+  for(const route of ['projects/data/list','projects/data/tree','projects/timeline','projects/manage']){
     page=await createPage();
     await page.goto(origin+'/space/#/'+route,{waitUntil:'networkidle'});await active(page,route);
     assert.equal(await page.locator('#root-btn').isVisible(),true);
@@ -74,10 +74,10 @@ try{
     if(route!=='projects/timeline')assert.equal(await page.evaluate(()=>window.projectCanvasBoots),0,'Searching roots reads metadata without booting a hidden canvas');
     assert.equal(new URL(page.url()).hash,'#/'+route,'Searching roots does not navigate');
     const entries=await page.evaluate(()=>history.length);
-    await page.locator('#root-q').press('Enter');await active(page,'projects/files/graph');
+    await page.locator('#root-q').press('Enter');await active(page,'projects/data/graph');
     await page.waitForFunction(()=>document.querySelector('#root-name').textContent==='Aurora Console'&&!document.querySelector('#q').disabled);
     assert.ok(await page.evaluate(()=>window.projectCanvasBoots)>0);
-    assert.equal(await page.evaluate(()=>history.length),entries+1,'Picking a root adds one Files Graph history entry');
+    assert.equal(await page.evaluate(()=>history.length),entries+1,'Picking a root adds one Data Graph history entry');
     assert.equal(await root.evaluate(node=>node===document.querySelector('#graph-root')),true);
     assert.equal(await page.evaluate(()=>window.projectRootFixtureDocument),'same-document');
     const name=route.replaceAll('/','-')+'-root-selected.png';
@@ -86,11 +86,11 @@ try{
     assert.equal(await root.evaluate(node=>node===document.querySelector('#graph-root')),true);
     await page.context().close();
   }
-  checked('Direct Files List, Files Tree and Manage do not boot the atlas before root selection; those pages and Timeline open Files Graph once at the selected root and preserve history and control identity.');
+  checked('Direct Data List, Data Tree and Manage do not boot the atlas before root selection; those pages and Timeline open Data Graph once at the selected root and preserve history and control identity.');
 
   hold={arrived:gate(),release:gate()};
   page=await createPage(hold);
-  await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'domcontentloaded'});await active(page,'projects/files/list');
+  await page.goto(origin+'/space/#/projects/data/list',{waitUntil:'domcontentloaded'});await active(page,'projects/data/list');
   await page.locator('#root-btn').click();await arrived(hold.arrived.promise);
   assert.equal(await page.locator('#root-q').isDisabled(),true);
   await page.locator('#tab-setup').click();await page.locator('#setup-panel-workspace').waitFor();

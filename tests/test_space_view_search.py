@@ -21,12 +21,12 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const {projectPage}=await import(pathToFileURL(process.argv[1]+'/space_ui/js/core/navigation.js'));
-const {fileViewControls}=await import(pathToFileURL(process.argv[1]+'/space_ui/js/core/file-views.js'));
+const {dataViewControls}=await import(pathToFileURL(process.argv[1]+'/space_ui/js/core/data-views.js'));
 
 function module(name,extra={}){
   const events=new Map(),timers=new Map();let serial=0;
   const context={
-    API_BASE:'',projectPage,fileViewControls,location:{origin:'http://space.test'},addEventListener:(type,fn)=>events.set(type,fn),
+    API_BASE:'',projectPage,dataViewControls,location:{origin:'http://space.test'},addEventListener:(type,fn)=>events.set(type,fn),
     document:{getElementById:()=>null},CSS:{escape:value=>value},
     setTimeout:fn=>{timers.set(++serial,fn);return serial;},
     clearTimeout:id=>timers.delete(id),...extra,
@@ -40,14 +40,12 @@ function module(name,extra={}){
   }};
 }
 
-// Projects: exercise the real selectors and pin actions without pretending
+// Projects: exercise the real selectors and shared pin state without pretending
 // innerHTML is a DOM. The browser projects-experience harness covers keyed
 // nodes, focus, request failures, debounce rendering and project handoffs.
-const storage=new Map([['space.projects.pins.v1:http://space.test','["beta"]']]);
+const pinned=new Set(['beta']);let pinsChanged;
 const projects=module('projects',{
-  // Sharing form behavior has its own component and browser tests.
-  createProjectShare:()=>({element:{},setTrigger(){},open(){}}),
-  localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
+  isProjectPinned:id=>pinned.has(id),subscribeProjectPins:callback=>{pinsChanged=callback;return()=>{};},
 });
 const ps=projects.view.toolbar.search;
 ps.setValue('AUR');projects.flush(); // safe before mount/data
@@ -97,16 +95,10 @@ ps.setValue('finance');projects.flush();assert.deepEqual(projectIds(),['gamma'],
 projects.evaluate("viewFilter='pinned'");
 assert.deepEqual(projectIds(),[],'pins do not bypass the current search');
 ps.setValue('');projects.flush();assert.deepEqual(projectIds(),['beta'],'stored browser pins restore');
-projects.evaluate(`
-  globalThis.pinActions=new Map();
-  bindRow({hidden:false,appendChild(){},querySelector:selector=>({addEventListener:(_type,fn)=>pinActions.set(selector,fn)})},'alpha');
-  pinActions.get('.prj-pin')();
-`);
-assert.deepEqual(projectIds(),['alpha','beta'],'pin action immediately updates the filtered list');
-assert.deepEqual(JSON.parse(storage.get('space.projects.pins.v1:http://space.test')),['beta','alpha']);
-projects.evaluate("pinActions.get('.prj-pin')()");
-assert.deepEqual(projectIds(),['beta'],'unpin removes a project from the pinned filter');
-assert.deepEqual(JSON.parse(storage.get('space.projects.pins.v1:http://space.test')),['beta']);
+pinned.add('alpha');pinsChanged({source:'local',persisted:true});
+assert.deepEqual(projectIds(),['alpha','beta'],'Manage pin changes immediately update the filtered list');
+pinned.delete('alpha');pinsChanged({source:'storage',persisted:true});
+assert.deepEqual(projectIds(),['beta'],'cross-tab unpin updates the pinned filter');
 projects.evaluate("viewFilter='all'");
 assert.deepEqual(projectIds(),['alpha','gamma','beta','delta'],'clearing the filter restores the full catalog');
 

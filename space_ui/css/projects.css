@@ -17,17 +17,16 @@
   .prj-sort button.is-on{color:var(--bg);background:var(--accent)}
 
   /* Column headers share the row's grid AND its box model — same tracks,
-     same padding, same trailing Map slot — so labels sit exactly over their
+     same padding — so labels sit exactly over their
      values instead of near them. */
   .prj-cols-inner,.prj-row-head{
     display:grid;
     grid-template-columns:14px minmax(0,1fr) 68px 150px 132px;
     align-items:center;gap:14px;
   }
-  .prj-cols{display:flex;gap:8px;padding:0 14px 7px 0;font:600 10px var(--mono);
+  .prj-cols{display:flex;gap:8px;padding:0 0 7px;font:600 10px var(--mono);
     letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
-  .prj-cols-inner{flex:1;min-width:0;padding:0 4px 0 17px}
-  .prj-cols-map{flex:none;min-width:62px}
+  .prj-cols-inner{flex:1;min-width:0;padding:0 17px}
 
   .prj-rows{display:flex;flex-direction:column;gap:8px}
   .prj-row{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;
@@ -35,7 +34,7 @@
   .prj-row:hover{border-color:var(--line)}
   .prj-row.is-open{border-color:#2c3240;background:var(--bg-3)}
   .prj-row.is-empty .prj-name b{color:var(--ink-2)}
-  .prj-line{display:flex;align-items:stretch;gap:8px;padding-right:14px}
+  .prj-line{display:flex;align-items:stretch;gap:8px;padding-right:0}
   .prj-row-head{flex:1;min-width:0;text-align:left;padding:12px 4px 12px 17px;
     border-radius:12px 0 0 12px;color:var(--ink)}
   .prj-row-head:hover .prj-name b{color:var(--accent)}
@@ -62,13 +61,6 @@
   .prj-when{font:400 10.5px var(--mono);letter-spacing:.04em;color:var(--ink-3);
     white-space:nowrap}
   .prj-when.is-none{color:var(--ink-3)}
-  .prj-map{align-self:center;font:600 9.5px var(--mono);letter-spacing:.1em;
-    text-transform:uppercase;color:var(--ink-3);background:var(--bg-3);
-    border:1px solid var(--line);border-radius:999px;padding:7px 13px;flex:none;
-    min-width:62px;transition:all .16s var(--ease)}
-  .prj-map:hover{color:var(--accent);border-color:var(--accent);background:transparent}
-  .prj-map:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-
   /* skeletons: a shaped placeholder says "loading" without the word */
   .prj-skel{height:52px;border-radius:12px;background:linear-gradient(90deg,
     var(--bg-2) 0%,var(--bg-3) 40%,var(--bg-2) 80%);background-size:280% 100%;
@@ -119,7 +111,6 @@
       grid-template-areas:'c n' '. live' '. files' '. when'}
     .prj-name small{white-space:normal}
     .prj-when{justify-content:flex-start;padding-right:80px}
-    .prj-map{position:absolute;right:14px;bottom:14px}
   }
 
   /* Tree lens — the workspace as a horizontal tree that grows left to right.
@@ -292,12 +283,11 @@
 #view-projects #prj-status button{color:var(--accent);font:500 12px var(--sans);text-decoration:underline;text-underline-offset:3px}
 
 #view-projects .prj-cols-inner,#view-projects .prj-row-head{grid-template-columns:14px minmax(0,1fr) 72px 138px 118px;gap:12px}
-#view-projects .prj-cols{padding-right:12px;gap:8px;font-size:9px;letter-spacing:.1em}
-#view-projects .prj-cols-map{width:172px;min-width:172px}
+#view-projects .prj-cols{padding-right:0;gap:8px;font-size:9px;letter-spacing:.1em}
 #view-projects .prj-rows{gap:8px}
 #view-projects .prj-row{border-radius:11px}
 #view-projects .prj-row.is-open{border-color:rgba(168,217,79,.24);background:var(--bg-2)}
-#view-projects .prj-row-head{padding:15px 4px 15px 17px;border-radius:11px 0 0 11px}
+#view-projects .prj-row-head{padding:15px 17px;border-radius:11px}
 #view-projects .prj-row-head:focus-visible{outline-offset:-2px}
 #view-projects .prj-name{gap:4px 8px}
 #view-projects .prj-name b{max-width:100%;font-size:14px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
@@ -306,13 +296,6 @@
 #view-projects .prj-num{flex-wrap:wrap;gap:3px 7px;white-space:normal;line-height:1.45}
 #view-projects .prj-num em{white-space:nowrap}
 #view-projects .prj-when{font-size:10px;line-height:1.45}
-#view-projects .prj-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;width:172px;min-width:172px;flex-shrink:0}
-#view-projects .prj-pin{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border:1px solid transparent;border-radius:8px;color:var(--ink-3);font-size:18px;line-height:1}
-#view-projects .prj-pin:hover{background:var(--bg-3);color:var(--ink)}
-#view-projects .prj-pin[aria-pressed=true]{color:var(--accent);background:rgba(168,217,79,.06)}
-#view-projects .prj-map,#view-projects .prj-share{position:static;min-width:62px;min-height:34px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-3);font:500 11px var(--sans);letter-spacing:0;text-transform:none}
-#view-projects .prj-map:hover,#view-projects .prj-share:hover{border-color:var(--accent);color:var(--accent)}
-#view-projects .prj-share[aria-expanded=true]{border-color:var(--accent);color:var(--accent)}
 
 #view-projects .prj-drawer{padding:0 16px 16px;border-top-color:var(--line-soft)}
 #view-projects .prj-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0}
@@ -338,16 +321,13 @@
 @media(max-width:650px){
   #view-projects .prj{padding-left:16px;padding-right:16px;padding-top:10px}
   #view-projects .prj-head{gap:10px}
-  #view-projects .prj-head>.file-views{flex:1 1 100%}
-  #view-projects .prj-head>.file-views a{flex:1}
+  #view-projects .prj-head>.data-views{flex:1 1 100%}
+  #view-projects .prj-head>.data-views a{flex:1}
   #view-projects .prj-head>.prj-spacer{display:none}
   #view-projects .prj-filter-control,#view-projects .prj-sort-control{flex:1 1 130px;flex-direction:column;align-items:stretch;gap:6px}
   #view-projects #prj-filter,#view-projects #prj-sort{width:100%;min-width:0;min-height:40px}
-  #view-projects .prj-row-head{width:100%;padding:14px 14px 10px;grid-template-columns:12px minmax(0,1fr) auto;grid-template-areas:'c n n' '. live when' '. files files';gap:6px 10px;border-radius:11px 11px 0 0}
+  #view-projects .prj-row-head{width:100%;padding:14px;grid-template-columns:12px minmax(0,1fr) auto;grid-template-areas:'c n n' '. live when' '. files files';gap:6px 10px;border-radius:11px}
   #view-projects .prj-when{justify-content:flex-end;padding-right:0}
-  #view-projects .prj-row-actions{align-self:flex-end;width:auto;min-width:0;gap:7px;padding:0 12px 12px}
-  #view-projects .prj-pin{width:40px;height:40px;border-color:var(--line-soft)}
-  #view-projects .prj-map,#view-projects .prj-share{min-height:40px;min-width:68px}
   #view-projects .prj-drawer{padding:0 12px 12px}
   #view-projects .prj-detail-head{flex-wrap:wrap;gap:8px;padding:12px 0}
   #view-projects .prj-detail-refresh{min-height:36px;margin-left:auto}

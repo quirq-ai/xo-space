@@ -7,23 +7,25 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 | Section | Default route | Pages |
 |---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, Files (List, Graph, Tree), Timeline, Manage |
+| Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Commands, Server |
 
-Space starts at Projects Overview. **Files** contains the existing List, Graph
-and Tree views at `#/projects/files/list`, `#/projects/files/graph` and
-`#/projects/files/tree`. The List / Graph / Tree links sit in each view’s local
-toolbar. The Files section link remembers the last view used; a direct
-`#/projects/files` link opens List. Clicking Projects or pressing `1` always
+Space starts at Projects Overview. **Data** contains the existing List, Graph
+and Tree views at `#/projects/data/list`, `#/projects/data/graph` and
+`#/projects/data/tree`. The List / Graph / Tree links sit in each view’s local
+toolbar. The Data section link remembers the last view used; a direct
+`#/projects/data` link opens List. Clicking Projects or pressing `1` always
 opens Overview. The section roots
 `#/projects`, `#/agents`, `#/inbox`, and `#/setup` normalize to their defaults.
 Legacy `#/dashboard`, `#/graph`, `#/tree`, and `#/time` links open
 the corresponding Projects page. `#/sharing` and `#/projects/sharing` now open
 Inbox Sharing at `#/inbox/sharing`. The previous `#/projects/list`,
 `#/projects/graph` and `#/projects/tree` links also remain valid and normalize
-to the corresponding Files route. Connectors and Secrets keep their aliases
+to the corresponding Data route. The former `#/projects/files`,
+`#/projects/files/list`, `#/projects/files/graph` and `#/projects/files/tree` addresses
+remain aliases for Data. Connectors and Secrets keep their aliases
 `#/connectors` and `#/secrets`. Technical details is a child of Setup Server at
 `#/setup/server/details`; `#/quirq` remains an alias. Stored Inbox links using
 `view: "projects"` continue to open List; that API value is independent of the
@@ -41,17 +43,18 @@ autocomplete in the topbar. Every Projects page keeps **Graph root** and
 **Refresh** together in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
 `#/setup/projects` link opens Manage. Cards start collapsed; one card opens at a time to show
-Issues and **View activity**, while inline sharing drafts stay mounted. Copy icons
+metadata and Issues, while inline sharing drafts stay mounted. Copy icons
 beside recorded metadata copy its exact value; tooltips and keyboard focus identify
-each action. **Copy GitHub URL**, **Share** and **Remove** work
-independently of expansion. Refresh rereads the active page’s data without reloading the app, retaining its
+each action. **View activity**, **Share**, **Pin**, **Copy GitHub URL** and **Remove**
+are grouped in each card header and work while collapsed. Pins keep their existing
+browser storage and feed Data List’s **Pinned** filter, including across open tabs. Refresh rereads the active page’s data without reloading the app, retaining its
 query, selected root and existing project drawers. Inbox Sharing keeps **Share a project**,
 **Check now**, and **Refresh** beside its own navigation.
-Each Files List and Manage project row has **Share**, which opens a Space ID form
-in that list. Cancel keeps you on the page; submitting grants access to that
+Each Manage project card has **Share**, which opens a Space ID form
+in that card. Cancel keeps you on the page; submitting grants access to that
 Space ID. Drafts stay with their project while you filter, refresh or navigate.
-Choosing a node from Files List, Files Tree, Manage or
-Timeline opens Files Graph rooted on that node. The secondary navigation does
+Choosing a node from Data List, Data Tree, Manage or
+Timeline opens Data Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, both activity pages, and
 the Agents session list have their own search; typing there keeps you on that page.
@@ -95,8 +98,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, per-view refresh and failure isolation. Primary sections are configured independently of their pages. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
 | `js/core/project-actions.js` | The Add handoff opens Manage’s clone form only after current navigation completes. The legacy Setup-project event opens Manage without opening Add. |
-| `js/core/project-share.js` | Reusable inline Space ID form for Files List and Manage project rows, with draft retention, pending-state protection, and the existing share endpoint. |
-| `js/core/file-views.js` | Native List, Graph and Tree links shared by the local Files toolbars. |
+| `js/core/project-share.js` | Reusable inline Space ID form for Manage project cards, with draft retention, pending-state protection, and the existing share endpoint. |
+| `js/core/project-pins.js` | Browser-local project pins shared by Manage actions and Data filtering, with storage-event synchronization and an in-memory fallback. |
+| `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
 | `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
@@ -111,14 +115,14 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/inbox-activity.js` | Independent workspace Activity and Sharing activity pages. Workspace events, live sessions and project names come from their existing read APIs; Sharing activity reads the relay’s recent-event buffer. |
 | `js/views/sharing.js` | Inbox Sharing management: shared repositories, incoming clones, commits, Apply, members, grants and revocations. Existing Sharing links normalize to `#/inbox/sharing`. |
-| `js/views/projects.js` | Files List: searchable catalog, browser-local pins, Live filter and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Registers `project-list` at `#/projects/files/list`. |
+| `js/views/projects.js` | Data List: searchable catalog, Pinned and Live filters and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Registers `project-list` at `#/projects/data/list`. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
-| `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/files/tree`. |
+| `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/data/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
 | `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
-| `js/views/project-management.js` | Clone, collapsible project cards, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
+| `js/views/project-management.js` | Clone, collapsible project cards, pins, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
 | `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through Refresh. Styled by `css/project-management.css`. |
 | `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |

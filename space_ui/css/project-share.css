@@ -1,4 +1,4 @@
-/* Shared inline form used by Files List and Setup project rows. */
+/* Inline sharing form used by Manage project cards. */
 .project-share{min-width:0;padding:14px 16px 16px;border-top:1px solid var(--line-soft);font-family:var(--sans)}
 .project-share[hidden]{display:none!important}
 .project-share>label[for]{display:block;margin:0 0 7px;color:var(--ink-2);font:500 12px var(--sans)}

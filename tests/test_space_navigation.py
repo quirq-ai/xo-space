@@ -75,7 +75,7 @@ for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)
   }
 }
 const registry=await import(new URL('js/core/registry.js',base));
-const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,FILE_VIEWS,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
+const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
 const registered=[];
 for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);|(\w+)\((\w*)\)\.forEach\(registerView\);/g)){
   const result=factory?views[factory](factoryArgument?views[factoryArgument]:undefined):[argument?views[name](views[argument]):views[name]];
@@ -94,13 +94,13 @@ assert.deepEqual(PRIMARY_TABS.map(tab=>[tab.id,tab.defaultView]),expectedTabs.ma
 assert.deepEqual(tabs.children.map(tab=>[tab.id,tab.tagName,tab.href]),expectedTabs.map((id,i)=>['tab-'+id,'A','#/'+defaults[i]]));
 assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Inbox','Setup']);
 assert.deepEqual(PROJECT_PAGES.map(page=>[page.id,page.route,page.label]),[
-  ['dashboard','projects/overview','Overview'],['project-list','projects/files/list','List'],
-  ['graph','projects/files/graph','Graph'],['tree','projects/files/tree','Tree'],
+  ['dashboard','projects/overview','Overview'],['project-list','projects/data/list','List'],
+  ['graph','projects/data/graph','Graph'],['tree','projects/data/tree','Tree'],
   ['time','projects/timeline','Timeline'],['project-manage','projects/manage','Manage']]);
 assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
-  ['dashboard','projects/overview','Overview'],['files','projects/files','Files'],
+  ['dashboard','projects/overview','Overview'],['data','projects/data','Data'],
   ['time','projects/timeline','Timeline'],['project-manage','projects/manage','Manage']]);
-assert.deepEqual(FILE_VIEWS.map(page=>page.id),['project-list','graph','tree']);
+assert.deepEqual(DATA_VIEWS.map(page=>page.id),['project-list','graph','tree']);
 assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','tools','models','trends'].map(page=>'agents/'+page));
 assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
@@ -109,9 +109,10 @@ assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
 const setupRoutes=['workspace','intelligence','connectors','secrets','commands','server'].map(id=>'setup/'+id);
 const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
 const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
-  setup:'setup/workspace','setup/projects':'projects/manage',dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',
-  'projects/files':'projects/files/list','projects/list':'projects/files/list',
-  'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
+  setup:'setup/workspace','setup/projects':'projects/manage',dashboard:'projects/overview',list:'projects/data/list',graph:'projects/data/graph',tree:'projects/data/tree',
+  'projects/data':'projects/data/list','projects/files':'projects/data/list',
+  'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
+  'projects/graph':'projects/data/graph','projects/tree':'projects/data/tree',
   sharing:'inbox/sharing','projects/sharing':'inbox/sharing',time:'projects/timeline',timeline:'projects/timeline',
   secrets:'setup/secrets',connectors:'setup/connectors',quirq:'setup/server/details'};
 function canonical(target){return aliases[target]||pages.find(page=>page.id===target)?.route||target;}
@@ -141,10 +142,10 @@ for(const tagName of ['INPUT','TEXTAREA','SELECT']){
 }
 document.activeElement=null;
 dispatchEvent({type:'keydown',key:'5'});assertPage('setup/workspace');
-await registry.switchTo('projects/files/list');
+await registry.switchTo('projects/data/list');
 const primary=elements.get('tab-projects'),click=overrides=>({button:0,preventDefault(){this.prevented=true;},...overrides});
 for(const modifiers of [{metaKey:true},{ctrlKey:true},{shiftKey:true},{button:1}]){
-  const event=click(modifiers);primary.listeners.click(event);assert.equal(event.prevented,undefined);assertPage('projects/files/list');
+  const event=click(modifiers);primary.listeners.click(event);assert.equal(event.prevented,undefined);assertPage('projects/data/list');
 }
 const ordinary=click({});primary.listeners.click(ordinary);assert.equal(ordinary.prevented,true);assertPage('projects/overview');
 
@@ -162,13 +163,13 @@ await registry.switchTo('secrets');assert.equal(historyPushes,aliasPushes);
 history.back();assertPage('agents/sessions');history.forward();assertPage('setup/secrets');
 await registry.switchTo('projects/overview');
 const fileStart=historyPosition;
-await registry.switchTo('projects/files');assertPage('projects/files/list');
-await registry.switchTo('projects/files/graph');await registry.switchTo('projects/files/tree');
-assert.equal(historyPosition,fileStart+3,'Each Files mode gets one history entry');
-history.back();assertPage('projects/files/graph');history.back();assertPage('projects/files/list');
-history.forward();assertPage('projects/files/graph');
+await registry.switchTo('projects/data');assertPage('projects/data/list');
+await registry.switchTo('projects/data/graph');await registry.switchTo('projects/data/tree');
+assert.equal(historyPosition,fileStart+3,'Each Data mode gets one history entry');
+history.back();assertPage('projects/data/graph');history.back();assertPage('projects/data/list');
+history.forward();assertPage('projects/data/graph');
 location.hash='#/projects/tree';const legacyLength=history.length,legacyPushes=historyPushes;
-dispatchEvent(new CustomEvent('hashchange'));assertPage('projects/files/tree');
+dispatchEvent(new CustomEvent('hashchange'));assertPage('projects/data/tree');
 assert.equal(history.length,legacyLength);assert.equal(historyPushes,legacyPushes,'Legacy Files routes normalize in place');
 assert.equal(elements.has('view-setup/projects'),false,'The old Setup project route does not create a duplicate manager');
 assert.equal(registered.find(view=>view.id==='project-manage').parent,'projects');
@@ -194,7 +195,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/data", "#/projects/data/list", "#/projects/data/graph", "#/projects/data/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

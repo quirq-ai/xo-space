@@ -30,13 +30,13 @@ the old interface. The browser fixes relative timestamps and seeds graph
 layout randomness; images are unmodified captures of the rendered app.
 
 The full check verifies the four primary sections, Projects Overview default,
-Overview / Files / Timeline / Manage, the Files List / Graph / Tree modes and
+Overview / Data / Timeline / Manage, the Data List / Graph / Tree modes and
 canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
 
 `projects-root.mjs` checks direct List, Tree and Manage loads, root search
-without booting a hidden graph, selection into Files Graph, browser history,
+without booting a hidden graph, selection into Data Graph, browser history,
 Timeline root selection, and leaving Projects during a pending metadata read. It blocks service writes
 and external requests; run it with the same environment variables as `capture.mjs`.
 It fails on console errors, uncaught page errors and unsuccessful HTTP responses.
@@ -48,13 +48,15 @@ node tests/space_ui_preview/section-navigation.mjs /tmp/space-section-navigation
 node tests/space_ui_preview/projects-experience.mjs /tmp/space-projects-experience
 ```
 
-The section check covers canonical URLs and legacy aliases, section defaults
+The section check covers canonical `projects/data/{list,graph,tree}` URLs and legacy
+`projects/files` aliases, section defaults
 versus List, Back/Forward, native links, toolbar ownership, List and Setup state
 across map changes, Inbox Activity and Sharing activity ordering, and Sharing
 legacy aliases resolving to Inbox. It captures all Projects pages
 and representative Agents, Inbox and Setup pages at 1440px, 390px and 320px,
 including content clearance below secondary navigation. The Projects check
-covers catalog availability, filtering, pins, file browsing, retained
+covers catalog availability, filtering, Manage pins reflected in the Data Pinned
+filter, the absence of management actions in Data rows, file browsing, retained
 file drawers, and out-of-order folder responses. All service writes stay blocked or inside
 explicit browser-owned fixtures.
 
@@ -66,9 +68,9 @@ node tests/space_ui_preview/inbox-activity.mjs /tmp/space-inbox-activity
 node tests/space_ui_preview/project-actions.mjs /tmp/space-project-actions
 ```
 
-The inline check exercises both Files List and Manage: Space ID validation,
+The inline check exercises Manage: Space ID validation,
 cancellation, retained drafts, unchanged routes, mocked error/success responses,
-and duplicate submission protection across both lists. The activity check covers
+and duplicate submission protection after leaving and returning. The activity check covers
 workspace history, scoped todos and session details, pagination, repository events, independent
 search/selection, escaped payloads, partial errors and late reads. Both capture
 1440px, 390px and 320px layouts. The actions check verifies per-page data refresh,
@@ -128,7 +130,8 @@ tests separately exercise file deletion and clone publication in temporary folde
 The Manage refresh check holds catalog and access reads across a section change,
 then verifies re-entry fetches current data and never enables deletion from an old
 access response. It only uses fictional GET responses. The Manage details check
-covers the single-open accordion, keyboard copy/tooltips, metadata refresh focus,
+covers the single-open accordion, collapsed Activity and pin actions, reload and
+cross-tab pin persistence, failed-storage feedback, keyboard copy/tooltips, metadata refresh focus,
 lazy Issues, retained issue filters and recorded closed
 history, safe GitHub URL copying, independent row actions and the Inbox activity
 handoff. Clipboard operations and API responses stay inside the browser fixture. Add

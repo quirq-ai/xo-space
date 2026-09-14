@@ -144,10 +144,10 @@ try{
   const pending=holdToken=gate();await submit(page,'github','token');await pending.arrived.promise;
   assert.equal(await token.isDisabled(),true);
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
-  await openProjectList(page);await page.waitForURL('**/#/projects/files/list');
+  await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   pending.release.resolve();
   await page.waitForFunction(()=>document.querySelector('[data-native-connector="github"] .conn-state').textContent==='Connected');
-  assert.equal(new URL(page.url()).hash,'#/projects/files/list','Pending save does not take over navigation');
+  assert.equal(new URL(page.url()).hash,'#/projects/data/list','Pending save does not take over navigation');
   await page.locator('#tab-setup').click();await page.locator('#setup-nav [data-setup-go="connectors"]').click();
   await page.locator('#view-search').fill('');
   assert.equal(await token.inputValue(),'','Successful save clears token from DOM');

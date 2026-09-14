@@ -93,7 +93,8 @@ async function layout(id,width){
 try{
   await openProjectList(page);await page.locator('#prj-row-aurora-console').waitFor();
   assert.equal(await page.locator('#view-projects #prj-add,#view-projects #prj-refresh').count(),0);
-  await page.locator('#view-search').fill('Aurora');await page.locator('#prj-row-aurora-console .prj-pin').click();
+  await openProjectPage(page,'manage');await page.locator('[data-project-pin="aurora-console"]').click();
+  await openProjectList(page);await page.locator('#view-search').fill('Aurora');
   await page.locator('#prj-filter').selectOption('pinned');await page.locator('#prj-row-aurora-console .prj-row-head').click();
   await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] [data-cd="src"]').click();await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] [data-file="src/main.ts"]').waitFor();
   const drawer=await page.locator('#prj-drawer-aurora-console').elementHandle();

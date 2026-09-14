@@ -9,7 +9,7 @@ PRELUDE = r'''
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {fileViewControls} from './space_ui/js/core/file-views.js';
+import {dataViewControls} from './space_ui/js/core/data-views.js';
 const events=new Map(),elements=new Map();
 class Element{
  constructor(id){this.id=id;this.value='';this.hidden=false;this.disabled=false;this.textContent='';this.innerHTML='';this.listeners=new Map();this.attributes={};this.children=[];
@@ -28,7 +28,7 @@ class Element{
 }
 const document={activeElement:null,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id);},
  querySelectorAll:()=>[],createElement:()=>new Element('')};
-const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,fileViewControls,
+const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,dataViewControls,
  addEventListener:(name,handler)=>{if(!events.has(name))events.set(name,[]);events.get(name).push(handler);},
  esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
 };
@@ -86,7 +86,7 @@ assert.equal(node('root-btn').listeners.get('click').length,1,'Context changes n
         self.probe(r'''
 const graph=fixture('files-root','Files'),dashboard=fixture('overview-root','Overview');
 const reads=[],boots=[],navigations=[],applied=[],focused=[];
-Object.assign(context,{API_BASE:'',projectPage:id=>({id,route:id==='dashboard'?'projects/overview':'projects/files/graph'}),toast(){},
+Object.assign(context,{API_BASE:'',projectPage:id=>({id,route:id==='dashboard'?'projects/overview':'projects/data/graph'}),toast(){},
  localStorage:{getItem:()=>null,setItem(){}},apiFetch:async url=>{reads.push(url);return{ok:true,data:url.includes('dashboard')?dashboard:graph};},
  recordBoot:(dataset,data)=>boots.push([dataset,data.root.id]),recordRoot:id=>applied.push(id),recordFocus:id=>focused.push(id)});
 let atlas=fs.readFileSync('space_ui/js/views/atlas.js','utf8').replace(/^import .*?;\n/gm,'').replaceAll('export const','const').replaceAll('export function','function');
@@ -108,9 +108,9 @@ emit('space:view',{id:'sharing',tab:'inbox'});assert.equal(node('graph-root').hi
 emit('space:view',{id:'tree',tab:'projects'});
 emit('space:focus-project','older-preview-target');
 node('root-btn').emit('click');await settle();node('root-q').value='Fixture';node('root-q').emit('input');node('root-q').emit('keydown',{key:'Enter'});await settle();
-assert.deepEqual(navigations,['projects/files/graph']);assert.deepEqual(boots,[['graph','files-root']]);assert.equal(applied.at(-1),'files-root-project');
+assert.deepEqual(navigations,['projects/data/graph']);assert.deepEqual(boots,[['graph','files-root']]);assert.equal(applied.at(-1),'files-root-project');
 assert.equal(node('view-graph').classList.contains('has-file-tools'),true);
-assert.match(node('graph-file-toolbar').innerHTML,/data-file-mode="graph" aria-current="page"/);
+assert.match(node('graph-file-toolbar').innerHTML,/data-data-mode="graph" aria-current="page"/);
 assert.deepEqual(focused,[],'A newer root choice supersedes an older parked preview focus');
 await go('projects/overview');assert.deepEqual(boots.at(-1),['dashboard','overview-root']);
 assert.equal(node('graph-file-toolbar').hidden,true,'Overview hides the Files controls while preserving their DOM');

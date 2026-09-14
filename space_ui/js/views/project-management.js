@@ -3,8 +3,9 @@
 import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {createProjectShare,isProjectSharing} from '../core/project-share.js?v=20260914-manage1';
-import {createProjectIssues} from '../core/project-issues.js?v=20260914-polish1';
-import {icon,copyButton,bindProjectUi} from '../core/project-ui.js?v=20260914-polish1';
+import {createProjectIssues} from '../core/project-issues.js?v=20260915-data1';
+import {icon,copyButton,bindProjectUi} from '../core/project-ui.js?v=20260915-data1';
+import {isProjectPinned,toggleProjectPin,subscribeProjectPins} from '../core/project-pins.js?v=20260915-data1';
 
 const base=API_BASE+'/api/xo-projects';
 const path=id=>base+'/'+encodeURIComponent(id);
@@ -63,6 +64,9 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
   const removal=$('#manage-project-removal'),confirmInput=$('#manage-project-confirm');
   const list=$('#manage-project-list'),listStatus=$('#manage-project-list-status');
   bindProjectUi(el);
+  subscribeProjectPins(({persisted})=>{for(const row of projectRows.values()){
+    paintPin(row);if(persisted){row.pinNotice.hidden=true;row.pinNotice.textContent='';}
+  }});
   function error(selector,message){const node=$(selector);node.textContent=message||'';node.hidden=!message;}
   function draftChanged(){onDraftChange(hasDraft());}
   function hasDraft(){return !form.hidden||Boolean(selected)||[...projectRows.values()].some(row=>row.share.hasDraft());}
@@ -107,19 +111,24 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
           +'<span class="manage-project-chevron" aria-hidden="true">'+icon('chevron')+'</span></button>'
           +'<div class="manage-project-heading-copy">'+copyButton('project name',recorded(item.display_name)||item.id,'data-project-copy-field="name"')
           +copyButton('project ID',item.id,'data-project-copy-field="id"')+'</div></div><div class="manage-project-row-actions">'
-          +'<button class="project-icon-button manage-project-github-copy" type="button" data-project-copy="'+esc(item.id)+'" aria-label="Copy GitHub URL" data-tip="Copy GitHub URL">'+icon('github')+'</button>'
+          +'<div class="manage-project-primary-actions">'
+          +'<button class="setup-secondary" type="button" data-project-activity="'+esc(item.id)+'" data-tip="View project activity">'+icon('activity')+'<span>View activity</span></button>'
           +'<button class="setup-secondary manage-project-share-button" type="button" data-project-share="'+esc(item.id)+'" data-tip="Share project">'+icon('share')+'<span>Share</span></button>'
-          +'<button class="project-icon-button manage-project-remove-button" type="button" data-project-remove="'+esc(item.id)+'" aria-label="Remove project" data-tip="Remove project">'+icon('trash')+'</button></div>'
+          +'</div><div class="manage-project-icon-actions">'
+          +'<button class="project-icon-button manage-project-pin-button" type="button" data-project-pin="'+esc(item.id)+'" aria-pressed="false" aria-label="Pin project" data-tip="Pin project">'+icon('star')+'</button>'
+          +'<button class="project-icon-button manage-project-github-copy" type="button" data-project-copy="'+esc(item.id)+'" aria-label="Copy GitHub URL" data-tip="Copy GitHub URL">'+icon('github')+'</button>'
+          +'<button class="project-icon-button manage-project-remove-button" type="button" data-project-remove="'+esc(item.id)+'" aria-label="Remove project" data-tip="Remove project">'+icon('trash')+'</button></div></div>'
+          +'<p class="manage-project-pin-notice" role="status" hidden></p>'
           +'<p class="manage-project-copy-result" role="status" hidden></p>'
           +'<div class="manage-project-details" id="'+detailsId+'" hidden>'
-          +'<section class="manage-project-overview" aria-label="Project details"><dl class="manage-project-metadata"></dl>'
-          +'<div class="manage-project-detail-actions"><button class="setup-secondary" type="button" data-project-activity="'+esc(item.id)+'" data-tip="View project activity">'+icon('activity')+'<span>View activity</span></button></div></section></div>';
+          +'<section class="manage-project-overview" aria-label="Project details"><dl class="manage-project-metadata"></dl></section></div>';
         const share=createProjectShare({projectId:item.id,onDraftChange:draftChanged,
           onBusyChange:()=>sharingChanged(item.id)});
         row={element,share,expanded:false,item,metadata:null,metadataLoaded:false,metadataPending:null,metadataError:'',metadataFields:new Map(),
           copyButton:element.querySelector('[data-project-copy]'),copyResult:element.querySelector('.manage-project-copy-result'),
           toggle:element.querySelector('[data-project-toggle]'),details:element.querySelector('.manage-project-details'),
           metadataNode:element.querySelector('.manage-project-metadata'),headingCopy:element.querySelector('.manage-project-heading-copy'),
+          pinButton:element.querySelector('[data-project-pin]'),pinNotice:element.querySelector('.manage-project-pin-notice'),
           summary:element.querySelector('.manage-project-summary'),
           shareButton:element.querySelector('[data-project-share]'),removeButton:element.querySelector('[data-project-remove]')};
         row.issues=createProjectIssues({projectId:item.id});row.details.appendChild(row.issues.element);
@@ -133,6 +142,7 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
       updateCopy(row.headingCopy.querySelector('[data-project-copy-field="id"]'),'project ID',item.id);
       paintMetadata(row);
       row.share.setLabel(name);row.element.setAttribute('aria-label',name);
+      paintPin(row);
       row.shareButton.setAttribute('aria-label','Share '+name);row.shareButton.dataset.tip='Share '+name;
       row.removeButton.setAttribute('aria-label','Remove '+name);row.removeButton.dataset.tip='Remove '+name;
       row.copyButton.setAttribute('aria-label','Copy GitHub URL for '+name);
@@ -142,6 +152,17 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     list.scrollTop=scrollTop;
     if(focused?.isConnected&&focused.getClientRects().length)focused.focus({preventScroll:true});
     updateControls();
+  }
+  function paintPin(row){
+    const pinned=isProjectPinned(row.item.id),label=(pinned?'Unpin ':'Pin ')+(recorded(row.item.display_name)||row.item.id);
+    row.pinButton.setAttribute('aria-pressed',String(pinned));row.pinButton.setAttribute('aria-label',label);
+    row.pinButton.dataset.tip=label;row.element.classList.toggle('is-pinned',pinned);
+  }
+  function pinProject(id){
+    const row=projectRows.get(id);if(!row)return;
+    const result=toggleProjectPin(id);paintPin(row);
+    row.pinNotice.textContent=result.persisted?'':'Pin change applies to this session only.';
+    row.pinNotice.hidden=result.persisted;
   }
   function updateCopy(button,label,value){
     if(button.dataset.copyValue!==value||button.dataset.copyLabel!==label){
@@ -403,6 +424,8 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     if(copy){copyGithub(copy.dataset.projectCopy);return;}
     const activity=event.target.closest('[data-project-activity]');
     if(activity){onViewActivity(activity.dataset.projectActivity);return;}
+    const pin=event.target.closest('[data-project-pin]');
+    if(pin){pinProject(pin.dataset.projectPin);return;}
     const shareButton=event.target.closest('[data-project-share]');
     if(shareButton){if(!busy&&!creating)projectRows.get(shareButton.dataset.projectShare)?.share.open();return;}
     const removeButton=event.target.closest('[data-project-remove]');
@@ -417,7 +440,7 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     const peerConfirm=event.target.closest('[data-project-peer]');
     if(peerConfirm){revokeAccess(peerConfirm.dataset.projectPeer,'peer');return;}
     const card=event.target.closest('[data-project-card]');
-    if(card&&!event.target.closest('button,a,input,select,textarea,label,.manage-project-details,.project-share,.manage-project-copy-result')){
+    if(card&&!event.target.closest('button,a,input,select,textarea,label,.manage-project-details,.project-share,.manage-project-copy-result,.manage-project-pin-notice')){
       toggleProject(card.dataset.projectId);
     }
   });

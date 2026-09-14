@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {openProjectList,openProjectPage} from './routes.mjs';
+import {openProjectList} from './routes.mjs';
 const origin=process.env.SPACE_PREVIEW_URL||'http://127.0.0.1:5101',endpoint=new URL(origin);
 assert.equal(endpoint.hostname,'127.0.0.1');assert.ok(!['5002','5112'].includes(endpoint.port));
 const output=resolve(process.argv[2]||'/private/tmp/space-inline-sharing');await mkdir(output,{recursive:true});
@@ -39,13 +39,12 @@ page.on('console',message=>{
 await page.addInitScript(()=>{window.inlineSharingDocument='same-document';window.sharedAccessEvents=[];
   addEventListener('space:project-access-changed',event=>window.sharedAccessEvents.push(event.detail));});
 const checked=text=>{report.checks.push(text);console.log(text);};
-const formFor=(scope,id='aurora-console')=>page.locator((scope==='list'?'#view-projects':'#view-project-manage')+' form.project-share[data-project-id="'+id+'"]');
-const triggerFor=(scope,id='aurora-console')=>page.locator(scope==='list'?'.prj-share[data-share="'+id+'"]':'[data-project-share="'+id+'"]');
+const formFor=(_scope,id='aurora-console')=>page.locator('#view-project-manage form.project-share[data-project-id="'+id+'"]');
+const triggerFor=(_scope,id='aurora-console')=>page.locator('[data-project-share="'+id+'"]');
 async function go(scope){
-  if(scope==='list')await openProjectList(page);
-  else{await page.evaluate(()=>{location.hash='#/projects/manage';});await page.locator('#view-project-manage').waitFor({state:'visible'});await triggerFor(scope).waitFor();}
+  await page.evaluate(()=>{location.hash='#/projects/manage';});await page.locator('#view-project-manage').waitFor({state:'visible'});await triggerFor(scope).waitFor();
 }
-function routeFor(scope){return scope==='list'?'#/projects/files/list':'#/projects/manage';}
+function routeFor(){return '#/projects/manage';}
 async function assertInline(scope){
   assert.equal(new URL(page.url()).hash,routeFor(scope));
   assert.equal(await page.evaluate(()=>window.inlineSharingDocument),'same-document');
@@ -59,8 +58,8 @@ async function refresh(scope){
   await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
 }
 try{
-  await page.goto(origin+'/space/#/projects/files/list',{waitUntil:'networkidle'});
-  for(const scope of ['list','manage']){
+  await page.goto(origin+'/space/#/projects/data/list',{waitUntil:'networkidle'});
+  for(const scope of ['manage']){
     await go(scope);const form=await open(scope),input=form.locator('input'),submit=form.locator('[data-share-submit]'),cancel=form.locator('[data-share-cancel]');
     const before=report.mockedShares.length;
     assert.equal(await input.evaluate(node=>node===document.activeElement),true,scope+' opens with Space ID focused');
@@ -69,16 +68,9 @@ try{
     await input.fill('recipient-'+scope+'-draft');const node=await input.elementHandle();
     await refresh(scope);assert.equal(await node.evaluate(element=>element.isConnected),true);
     assert.equal(await input.inputValue(),'recipient-'+scope+'-draft');
-    if(scope==='list'){
-      await page.locator('#view-search').fill('No matching fixture');await form.waitFor({state:'hidden'});
-      await page.locator('#view-search').fill('Aurora');await form.waitFor({state:'visible'});
-      await page.locator('#prj-sort').selectOption('name');
-      await openProjectPage(page,'tree');await go(scope);
-    }else{
-      await page.locator('#manage-project-add').click();await page.locator('#manage-project-repository').fill('https://github.com/fictional/keep-clone-draft.git');
-      await page.evaluate(()=>{location.hash='#/setup/workspace';});await page.locator('#setup-panel-workspace').waitFor({state:'visible'});await go(scope);
-      assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fictional/keep-clone-draft.git');
-    }
+    await page.locator('#manage-project-add').click();await page.locator('#manage-project-repository').fill('https://github.com/fictional/keep-clone-draft.git');
+    await page.evaluate(()=>{location.hash='#/setup/workspace';});await page.locator('#setup-panel-workspace').waitFor({state:'visible'});await go(scope);
+    assert.equal(await page.locator('#manage-project-repository').inputValue(),'https://github.com/fictional/keep-clone-draft.git');
     assert.equal(await node.evaluate(element=>element===document.querySelector(element.tagName.toLowerCase()+'#'+element.id)),true);
     assert.equal(await input.inputValue(),'recipient-'+scope+'-draft');await assertInline(scope);
     await cancel.click();await form.waitFor({state:'hidden'});
@@ -92,22 +84,22 @@ try{
     await input.press('Enter');await hold.arrived.promise;
     assert.equal(await input.isDisabled(),true);assert.equal(await submit.isDisabled(),true);assert.equal(await cancel.isDisabled(),true);
     await form.evaluate(element=>element.requestSubmit());assert.equal(report.mockedShares.length,before+1);
-    await go(scope==='list'?'manage':'list');const other=await open(scope==='list'?'manage':'list');
-    assert.equal(await other.locator('[data-share-submit]').isDisabled(),true,'One pending project grant locks both lists');
-    await other.evaluate(element=>element.requestSubmit());assert.equal(report.mockedShares.length,before+1);
+    await openProjectList(page);assert.equal(await page.locator('#view-projects .project-share,#view-projects .prj-share').count(),0,'Data has no sharing controls');
+    await go(scope);assert.equal(await submit.isDisabled(),true,'A pending grant remains locked after returning to Manage');
+    await form.evaluate(element=>element.requestSubmit());assert.equal(report.mockedShares.length,before+1);
     await go(scope);hold.release.resolve();await form.locator('[data-share-result][data-state="error"]').waitFor();
     assert.equal(await submit.isDisabled(),false);assert.equal(await input.inputValue(),'  recipient-'+scope+'  ');
-    assert.equal((await page.evaluate(()=>window.sharedAccessEvents)).length,scope==='list'?0:1,'Failure emits no access-change event');
+    assert.equal((await page.evaluate(()=>window.sharedAccessEvents)).length,0,'Failure emits no access-change event');
     nextResponse={status:200,data:{ok:true,repo:'github.com/fictional/aurora-console'}};
     await submit.click();await form.locator('[data-share-result][data-state="success"]').waitFor();
     assert.match(await form.locator('[data-share-result]').textContent(),new RegExp('recipient-'+scope));
     assert.equal(await submit.isDisabled(),true,'A confirmed identical recipient is not submitted twice');
     assert.deepEqual(report.mockedShares.at(-1),{path:'/api/xo-projects/aurora-console/share',body:{workspace_id:'recipient-'+scope}});
     await assertInline(scope);
-    checked(scope+': mocked submission trims the Space ID, locks duplicate requests across both lists, preserves input after errors, and confirms success inline.');
+    checked(scope+': mocked submission trims the Space ID, locks duplicate requests across navigation, preserves input after errors, and confirms success inline.');
     await cancel.click();
   }
-  for(const scope of ['list','manage']){
+  for(const scope of ['manage']){
     await go(scope);const form=await open(scope);await form.locator('input').fill('recipient-space-id-for-preview');
     for(const width of [1440,390,320]){
       await page.setViewportSize({width,height:1000});await form.scrollIntoViewIfNeeded();
@@ -118,7 +110,7 @@ try{
     }
     await form.locator('[data-share-cancel]').click();
   }
-  checked('Both inline forms fit desktop, 390px and 320px screens without page overflow.');
+  checked('Manage inline sharing fits desktop, 390px and 320px screens without page overflow.');
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.blockedWrites,[]);
 }catch(error){report.failure=error.stack;await page.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});throw error;}
 finally{for(const hold of holds)hold.release.resolve();pending?.release.resolve();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await browser.close();}

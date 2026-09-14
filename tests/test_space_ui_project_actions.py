@@ -86,11 +86,11 @@ class ProjectActionTests(unittest.TestCase):
     def test_switch_result_rejects_missing_failed_and_stale_activations(self):
         self.probe(r"""
 const mount=gate();let mounts=0,shows=0;
-register({id:'slow',route:'projects/files/list',mount:()=>{mounts++;return mount.promise;},show:()=>{shows++;}});
+register({id:'slow',route:'projects/data/list',mount:()=>{mounts++;return mount.promise;},show:()=>{shows++;}});
 register({id:'other',route:'inbox/items'});
 assert.equal(await registry.switchTo('missing'),false);
 const first=registry.switchTo('slow');
-assert.equal(location.hash,'#/projects/files/list');
+assert.equal(location.hash,'#/projects/data/list');
 assert.equal(await registry.switchTo('other'),true);
 const latest=registry.switchTo('slow');
 mount.resolve();
@@ -244,7 +244,7 @@ for(const [id,route,run] of [
 const activityEvents=()=>emitted.filter(event=>event.type==='space:activity-project');
 for(const [completed,hash,allowed] of [
   [true,'#/inbox/activity',true],[false,'#/inbox/activity',false],
-  [undefined,'#/inbox/activity',false],[true,'#/projects/files/list',false],
+  [undefined,'#/inbox/activity',false],[true,'#/projects/data/list',false],
 ]){
   emitted.length=0;
   await actions.openProjectActivity(async route=>{
@@ -254,7 +254,7 @@ for(const [completed,hash,allowed] of [
   if(allowed)assert.deepEqual(activityEvents()[0].detail,{project_id:'alpha-project'});
 }
 const mounted=gate();register({id:'inbox-activity',route:'inbox/activity',mount:()=>mounted.promise});
-register({id:'other',route:'projects/files/list'});emitted.length=0;
+register({id:'other',route:'projects/data/list'});emitted.length=0;
 const old=actions.openProjectActivity(registry.switchTo,'alpha-project');await settle();
 await registry.switchTo('other');const latest=registry.switchTo('inbox/activity');
 mounted.resolve();await Promise.all([old,latest]);

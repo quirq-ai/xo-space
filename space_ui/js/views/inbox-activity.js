@@ -2,7 +2,7 @@
    recent events have different retention, so each owns a separate page. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,rel} from '../core/ui.js';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260914-manage1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260915-data1';
 
 const LIMIT=200;
 const text=value=>typeof value==='string'?value.trim():'';
@@ -289,7 +289,7 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
         root.addEventListener('click',async event=>{
           const button=event.target.closest('[data-activity-project]');if(!button)return;
           const target=button.dataset.activityProject;
-          if(await go('projects/files/list')===true&&location.hash==='#/projects/files/list')dispatchEvent(new CustomEvent('space:open-project',{detail:target}));
+          if(await go('projects/data/list')===true&&location.hash==='#/projects/data/list')dispatchEvent(new CustomEvent('space:open-project',{detail:target}));
         });
       },
       show(){

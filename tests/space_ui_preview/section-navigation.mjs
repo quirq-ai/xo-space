@@ -55,16 +55,17 @@ await context.route('**/*',async route=>{
     totals:{files:0,bytes:0},watcher:{enabled:false},activity:{},tree:[],project_outputs:{project_count:10}});
   return route.continue();
 });
-const groups={projects:[['dashboard','overview','Overview'],['project-list','files/list','List'],['graph','files/graph','Graph'],
-  ['tree','files/tree','Tree'],['time','timeline','Timeline'],['project-manage','manage','Manage']],
+const groups={projects:[['dashboard','overview','Overview'],['project-list','data/list','List'],['graph','data/graph','Graph'],
+  ['tree','data/tree','Tree'],['time','timeline','Timeline'],['project-manage','manage','Manage']],
   agents:['overview','sessions','tools','models','trends'].map(slug=>['agents-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
   inbox:[...['items','connections','jobs','activity'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
     ['inbox-sharing-activity','sharing-activity','Sharing activity'],['sharing','sharing','Sharing']]};
 const defaults={projects:'projects/overview',agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace'};
 const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,'setup/projects':'projects/manage',
-  dashboard:'projects/overview',list:'projects/files/list',graph:'projects/files/graph',tree:'projects/files/tree',sharing:'inbox/sharing','projects/sharing':'inbox/sharing',
-  'projects/files':'projects/files/list','projects/list':'projects/files/list',
-  'projects/graph':'projects/files/graph','projects/tree':'projects/files/tree',
+  dashboard:'projects/overview',list:'projects/data/list',graph:'projects/data/graph',tree:'projects/data/tree',sharing:'inbox/sharing','projects/sharing':'inbox/sharing',
+  'projects/data':'projects/data/list','projects/files':'projects/data/list',
+  'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
+  'projects/graph':'projects/data/graph','projects/tree':'projects/data/tree',
   time:'projects/timeline',timeline:'projects/timeline',sessions:'agents/overview',
   connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
 const checked=text=>{report.checks.push(text);console.log(text);};
@@ -74,22 +75,22 @@ async function expectRoute(route){
   assert.equal(await page.locator('.tabs [aria-current="page"]').getAttribute('id'),'tab-'+group);
   assert.equal(await page.locator('.view.is-active').count(),1,'Only one mounted view is visible');
   if(definition){
-    const file=group==='projects'&&definition[1].startsWith('files/');
+    const file=group==='projects'&&definition[1].startsWith('data/');
     const selector=group==='projects'?projectPageSelector(definition[0]):'#section-nav [data-section-page="'+definition[0]+'"]';
     await page.locator(selector+'[aria-current="page"]').waitFor();
     if(group==='projects'){
       assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.sectionPage,node.textContent])),
-        [['A','dashboard','Overview'],['A','files','Files'],['A','time','Timeline'],['A','project-manage','Manage']]);
-      assert.equal(await page.locator('#section-nav [data-file-mode]').count(),0,'Files modes stay out of section navigation');
-      assert.equal(await page.locator('.view.is-active .file-views:visible').count(),file?1:0);
+        [['A','dashboard','Overview'],['A','data','Data'],['A','time','Timeline'],['A','project-manage','Manage']]);
+      assert.equal(await page.locator('#section-nav [data-data-mode]').count(),0,'Data modes stay out of section navigation');
+      assert.equal(await page.locator('.view.is-active .data-views:visible').count(),file?1:0);
       if(file){
-        assert.equal(await page.locator('.view.is-active .file-views').evaluate(node=>
+        assert.equal(await page.locator('.view.is-active .data-views').evaluate(node=>
           !!node.closest('#view-projects .prj-head,#graph-file-toolbar,#view-tree .tv-head')),true,
-          'Files modes belong to each representation toolbar');
-        assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('aria-current'),'page');
-        assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/'+route);
-        assert.deepEqual(await page.locator('.view.is-active .file-views [data-file-mode]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.fileMode,node.getAttribute('href'),node.textContent])),
-          [['A','project-list','#/projects/files/list','List'],['A','graph','#/projects/files/graph','Graph'],['A','tree','#/projects/files/tree','Tree']]);
+          'Data modes belong to each representation toolbar');
+        assert.equal(await page.locator('#section-nav [data-section-page="data"]').getAttribute('aria-current'),'page');
+        assert.equal(await page.locator('#section-nav [data-section-page="data"]').getAttribute('href'),'#/'+route);
+        assert.deepEqual(await page.locator('.view.is-active .data-views [data-data-mode]').evaluateAll(nodes=>nodes.map(node=>[node.tagName,node.dataset.dataMode,node.getAttribute('href'),node.textContent])),
+          [['A','project-list','#/projects/data/list','List'],['A','graph','#/projects/data/graph','Graph'],['A','tree','#/projects/data/tree','Tree']]);
       }
     }else assert.deepEqual(await page.locator('#section-nav [data-section-page]').evaluateAll(nodes=>nodes.map(node=>[
       node.tagName,node.dataset.sectionPage,node.getAttribute('href'),node.textContent])),
@@ -123,7 +124,7 @@ async function layout(label){
       navBottom:nav.hidden?null:nav.getBoundingClientRect().bottom,withNav:view.classList.contains('has-section-nav'),
       scopes:projects?[...nav.querySelectorAll('.section-nav-links > a')].map(rect):[],
       scopeArea:projects?rect(nav.querySelector('.section-nav-links')):null,
-      modes:view.querySelector('.file-views')?.getClientRects().length?rect(view.querySelector('.file-views')):null,
+      modes:view.querySelector('.data-views')?.getClientRects().length?rect(view.querySelector('.data-views')):null,
       actions:projects?rect(nav.querySelector('.section-nav-actions')):null,
       sharing:[...nav.querySelectorAll('.sharing-page-actions button')].filter(node=>node.getClientRects().length).map(rect),
       manage:projects?rect(nav.querySelector('.section-nav-action')):null};
@@ -141,7 +142,7 @@ async function layout(label){
     assert.ok(action.left>=-1&&action.right<=box.width+1&&action.bottom<=box.navBottom+1,label+' Sharing actions fit the section bar');
     if(box.width>=1440)assert.ok(Math.abs(action.top-box.sharing[0].top)<2,label+' Sharing actions align on desktop');
   }
-  if(box.modes)assert.ok(box.modes.left>=-1&&box.modes.right<=box.width+1,label+' local Files modes fit the viewport');
+  if(box.modes)assert.ok(box.modes.left>=-1&&box.modes.right<=box.width+1,label+' local Data modes fit the viewport');
   report.layouts.push({label,...box});
 }
 async function screenshot(name){await page.mouse.move(2,998);await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);}
@@ -160,16 +161,16 @@ try{
   }
   await openProjectList(page);await page.locator('.prj-row').first().waitFor();
   await page.locator('#tab-projects').click();await expectRoute('projects/overview');
-  await leaf('project-list');await expectRoute('projects/files/list');
+  await leaf('project-list');await expectRoute('projects/data/list');
   const historyBefore=await page.evaluate(()=>history.length);
   await leaf('project-list');assert.equal(await page.evaluate(()=>history.length),historyBefore);
-  await leaf('tree');await expectRoute('projects/files/tree');await page.goBack();await expectRoute('projects/files/list');
-  await page.goBack();await expectRoute('projects/overview');await page.goForward();await expectRoute('projects/files/list');
-  await page.evaluate(()=>{location.hash='#/tree';});await expectRoute('projects/files/tree');
-  await page.goBack();await expectRoute('projects/files/list');
+  await leaf('tree');await expectRoute('projects/data/tree');await page.goBack();await expectRoute('projects/data/list');
+  await page.goBack();await expectRoute('projects/overview');await page.goForward();await expectRoute('projects/data/list');
+  await page.evaluate(()=>{location.hash='#/tree';});await expectRoute('projects/data/tree');
+  await page.goBack();await expectRoute('projects/data/list');
   await leaf('tree');await leaf('time');
-  assert.equal(await page.locator('#section-nav [data-section-page="files"]').getAttribute('href'),'#/projects/files/tree');
-  await page.locator('#section-nav [data-section-page="files"]').click();await expectRoute('projects/files/tree');
+  assert.equal(await page.locator('#section-nav [data-section-page="data"]').getAttribute('href'),'#/projects/data/tree');
+  await page.locator('#section-nav [data-section-page="data"]').click();await expectRoute('projects/data/tree');
   await leaf('project-list');
   checked('Projects defaults to Overview; List has a separate identity, and browser history has one entry per navigation.');
   const search=page.locator('#view-search');
@@ -197,13 +198,13 @@ try{
   assert.equal(await page.locator('#preview.is-open').count(),0);
   await openProjectPage(page,'manage');await page.locator('#manage-project-add').click();await expectRoute('projects/manage');
   await go('setup/workspace');await page.locator('#xo-root-input').fill('/fictional/retained-draft');
-  await go('projects/files/list');await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-row.is-dir').first().click();
+  await go('projects/data/list');await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-row.is-dir').first().click();
   await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-here').waitFor();
   const folder=await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-crumbs').textContent();
-  for(const route of ['projects/overview','projects/files/graph','projects/timeline','projects/overview'])await go(route);
+  for(const route of ['projects/overview','projects/data/graph','projects/timeline','projects/overview'])await go(route);
   await page.locator('#root-btn').click();await page.locator('#rootdd.is-open').waitFor();
   await page.locator('#root-btn').click();await page.waitForFunction(()=>!document.querySelector('#rootdd').classList.contains('is-open'));
-  await go('projects/files/list');assert.equal(await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-crumbs').textContent(),folder);
+  await go('projects/data/list');assert.equal(await page.locator('.prj-drawer:not([hidden]) [data-panel="files"] .fx-crumbs').textContent(),folder);
   assert.equal(await search.inputValue(),'aurora');
   await page.locator('#tab-projects').click();await expectRoute(defaults.projects);
   await page.locator('#tab-setup').click();await expectRoute(defaults.setup);
@@ -215,11 +216,11 @@ try{
   await leaf('agents-sessions');await expectRoute('agents/sessions');assert.equal(await search.inputValue(),'Aurora');
   await page.locator('#tab-agents').click();await expectRoute('agents/overview');assert.equal(await search.isVisible(),false);
   await go('inbox/items');await page.locator('[data-id="legacy-project"][data-act="toggle"]').click();
-  await page.locator('[data-id="legacy-project"][data-act="open"]').click();await expectRoute('projects/files/list');
+  await page.locator('[data-id="legacy-project"][data-act="open"]').click();await expectRoute('projects/data/list');
   await go('inbox/items');await page.locator('[data-id="file-handoff"][data-act="toggle"]').click();
-  await page.locator('[data-id="file-handoff"][data-act="open"]').click();await expectRoute('projects/files/list');
+  await page.locator('[data-id="file-handoff"][data-act="open"]').click();await expectRoute('projects/data/list');
   await page.locator('#preview.is-open').waitFor();await page.locator('#preview-body .pv-md').waitFor();
-  await go('inbox/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/files/list');
+  await go('inbox/sharing');await page.locator('[data-act="list"]').first().click();await expectRoute('projects/data/list');
   await page.locator('.prj-row-head[aria-expanded="true"]').waitFor();
   checked('Agents page routes own their toolbar while preserving queries; Inbox legacy/file links and Sharing still open List.');
   for(const [index,[group,route]] of Object.entries(defaults).entries()){
@@ -261,9 +262,9 @@ try{
   treeGate={arrived:gate(),release:gate()};const delayedTree=treeGate;
   await page.locator('#project-refresh').click();
   await Promise.race([delayedTree.arrived.promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Tree Refresh did not reach its fixture')),5000))]);
-  await page.locator('.view.is-active .file-views [data-file-mode="project-list"]').click();await expectRoute('projects/files/list');
-  delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/files/list');
-  checked('Files mode links remain usable during a delayed Tree refresh, and its late read cannot reclaim List.');
+  await page.locator('.view.is-active .data-views [data-data-mode="project-list"]').click();await expectRoute('projects/data/list');
+  delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/data/list');
+  checked('Data mode links remain usable during a delayed Tree refresh, and its late read cannot reclaim List.');
   const captures=[...groups.projects.map(([,slug])=>'projects/'+slug),'agents/overview','agents/sessions',
     'inbox/items','inbox/connections','inbox/jobs','inbox/activity','inbox/sharing-activity','inbox/sharing','setup/workspace'];
   for(const width of [1440,390,320]){

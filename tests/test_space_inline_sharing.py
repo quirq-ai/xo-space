@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PRELUDE = r"""
 import assert from 'node:assert/strict';
 const events=[],requests=[];
-globalThis.location={pathname:'/space/',search:'',hash:'#/projects/files/list'};
+globalThis.location={pathname:'/space/',search:'',hash:'#/projects/manage'};
 globalThis.CustomEvent=class{constructor(type,options={}){this.type=type;this.detail=options.detail;}};
 globalThis.dispatchEvent=event=>events.push(event);
 class Element{
@@ -99,7 +99,7 @@ form.open();assert.equal(form.input.value,'recipient-draft','Opening an already 
 await form.cancel.fire('click');assert.equal(form.element.hidden,true);assert.equal(form.input.value,'');
 assert.equal(document.activeElement,form.trigger);assert.equal(form.hasDraft(),false);
 assert.deepEqual([drafts[0],drafts.at(-1)],[true,false]);
-assert.equal(location.hash,'#/projects/files/list');assert.equal(events.length,0);
+assert.equal(location.hash,'#/projects/manage');assert.equal(events.length,0);
 assert.equal(requests.length,0);
 """)
 
@@ -119,10 +119,10 @@ assert.deepEqual(events.map(event=>[event.type,event.detail]),[['space:project-a
 await form.element.fire('submit');assert.equal(requests.length,1,'Same successful recipient is not resubmitted');
 form.input.value='another-space';await form.input.fire('input');assert.equal(form.submit.disabled,false);
 await form.element.fire('submit');assert.equal(requests.length,2);
-assert.equal(location.hash,'#/projects/files/list');
+assert.equal(location.hash,'#/projects/manage');
 """)
 
-    def test_pending_share_is_deduplicated_across_both_list_instances(self):
+    def test_pending_share_is_deduplicated_across_component_instances(self):
         self.probe(r"""
 const deferred=gate(),busyA=[],busyB=[];respond=()=>deferred.promise;
 const a=create('fictional-project',{onBusyChange:value=>busyA.push(value)});
