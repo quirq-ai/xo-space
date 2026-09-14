@@ -1,0 +1,15 @@
+{
+  "agent:sample_agent:11111111-1111-4111-8111-111111111111": {
+    "sessionId": "sample-session-1",
+    "nativeSessionId": "11111111-1111-4111-8111-111111111111",
+    "directory": "/home/you/xo-projects/sample-project",
+    "backend": "sample_agent",
+    "updatedAt": 1767258600000,
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 300,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

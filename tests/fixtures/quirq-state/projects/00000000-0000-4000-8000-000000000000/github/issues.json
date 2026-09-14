@@ -1,0 +1,28 @@
+{
+  "$schema": "xo/github-issues.schema.json",
+  "schema": 1,
+  "repo": "acme/sample-project",
+  "fetched_at": "2026-01-01T09:00:00Z",
+  "since": null,
+  "rate": {
+    "remaining": 4999,
+    "reset_at": "2026-01-01T10:00:00Z",
+    "limit": 5000,
+    "cost": 1
+  },
+  "error": null,
+  "issues_enabled": true,
+  "issues": {
+    "I_kwDOsample0001": {
+      "node_id": "I_kwDOsample0001",
+      "number": 1,
+      "title": "Add a license",
+      "state": "open",
+      "state_reason": null,
+      "assignees": [],
+      "labels": [],
+      "url": "https://github.com/acme/sample-project/issues/1",
+      "updated_at": "2025-12-30T12:00:00Z"
+    }
+  }
+}

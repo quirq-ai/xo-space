@@ -46,8 +46,9 @@ instead of replaying sessions onto surviving totals.
 1. Project data is keyed by `pid`; a folder name is only a label.
 2. Times are ISO-8601 UTC ending in `Z` (milliseconds on event lines).
 3. Every event line starts with `ts` and `type`.
-4. Every data file carries a `schema` number. Rebuilt views in `cache/` are
-   exempt.
+4. Every data file carries a `schema` number. Exempt: rebuilt views in
+   `cache/`, and files keyed by name, where an extra key would read as an entry
+   (`secrets/token.json` by provider, session-index shards by session).
 
 ## Adding a store
 
@@ -66,8 +67,31 @@ instead of replaying sessions onto surviving totals.
 - `BACKUP_PASSWORD` in the checkout's `.env`.
 - `/tmp/xo-space.{pid,lock,log}`: the `cowork-api.sh` daemon's process files.
 
+## The example files
+
+Every folder holds example files for one project, `sample-project`, with the
+same pid (`00000000-0000-4000-8000-000000000000`) as the `.xo/` sample in
+`tests/fixtures/xo-project/`. Values are placeholders: paths start at
+`/home/you`, credentials read `replace-with-...`, and the agent is
+`sample_agent`. Names the code derives (session-index shards, sharing bookmarks
+and removal markers, lock sentinels) are the names it would give.
+
+Three kinds of file have no example, on purpose:
+
+- the UI's views in `cache/` (`graph.json`, `dashboard.json`, `sessions.json`),
+  whose shape belongs to their builders;
+- adapter cursor files in `projects/` (`<source>-offsets.json`), whose shape
+  belongs to each adapter;
+- rotated segments (`timeline.<stamp>.jsonl`, `events.<stamp>.jsonl`,
+  `commands.log.1`), older copies of the files shown.
+
+`tests/test_quirq_state_layout.py` checks that the examples follow the four
+rules, match their JSON schemas, and read back through the stores that own
+them.
+
 ## Tracking this sample in git
 
-Each folder holds a `.gitkeep` so git tracks it. The repository's `.gitignore`
-ignores `logs/` directories, which also hides `logs/.gitkeep` here: add it with
-`git add -f tests/fixtures/quirq-state/logs/.gitkeep`.
+The repository's `.gitignore` hides two parts of this sample: `logs/`
+directories and `token.json` files, a guard for real credentials. The examples
+here hold none, so add them with
+`git add -f tests/fixtures/quirq-state/logs tests/fixtures/quirq-state/secrets/token.json`.

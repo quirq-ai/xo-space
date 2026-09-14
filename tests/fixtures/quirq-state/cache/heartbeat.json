@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "last_tick_at": "2026-01-01T09:15:00Z",
+  "tick_count": 1234,
+  "duration_ms": 6,
+  "scheduler": {
+    "enabled": true,
+    "started": [],
+    "finished": [],
+    "skipped": [],
+    "deferred": [],
+    "lost": [],
+    "errors": []
+  }
+}
