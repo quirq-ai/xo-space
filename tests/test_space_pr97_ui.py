@@ -917,17 +917,18 @@ class ShellTests(unittest.TestCase):
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         html = read("index.html")
         for sheet in ("projects", "project-management", "inbox-activity",
-                      "connectors", "sessions", "shadcn", "command-palette"):
+                      "connectors", "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
         for sheet in ("base", "chrome", "graph", "preview", "navigation"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
         # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
         # with Run now in Inbox) restamped the files it changed.
-        jobs_stamp = "20260916-jobs2"
+        jobs_stamp = "20260916-jobs3"
         for module in ("views/inbox", "views/setup", "views/wiki", "core/command-palette"):
             self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
-        for sheet in ("inbox", "setup"):
+        # its calendar landed in the shared shadcn styles
+        for sheet in ("inbox", "setup", "shadcn"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.

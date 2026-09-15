@@ -1,13 +1,15 @@
 /* Setup's Jobs panel uses the scheduler's definitions, executor and history.
-   A Manual job has no interval; a Scheduled job's plain-language schedule is
-   translated to every_seconds/first_run_at by core/jobs.js. The editor is its
-   own card above the list, and shows what sets the chosen kind apart first.
-   Nothing is seeded or executed on mount. */
+   A job repeats (every_seconds, with an optional first_run_at anchor) or runs
+   once (every_seconds null, with first_run_at as its one time, or none to wait
+   for Run now). core/jobs.js translates the plain-language form to those
+   fields; the editor is its own card above the list, with a shadcn calendar
+   for both kinds. Nothing is seeded or executed on mount. */
 import {apiFetch,API_BASE} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {UNITS,WEEKDAYS,clockTime,describeChoice,describeSchedule,durationText,isScheduled,jobToSchedule,
-  runsPerDay,scheduleToFields,splitDuration,statusText,upcomingRuns,utcOffset} from '../core/jobs.js?v=20260916-jobs2';
+import {calendar,wireCalendar} from '../core/shadcn.js?v=20260916-jobs3';
+import {UNITS,WEEKDAYS,dayKey,describeChoice,describeOnce,describeSchedule,durationText,isScheduled,jobToOnce,jobToSchedule,
+  onceToFields,parseDay,runsPerDay,scheduleToFields,splitDuration,startForJob,statusText,upcomingRuns,utcOffset} from '../core/jobs.js?v=20260916-jobs3';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
@@ -23,7 +25,6 @@ const ICONS={
   hourly:icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   daily:icon('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   weekly:icon('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>'),
-  manual:icon('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'),
 };
 const PRESETS=[['custom','Every…','Minutes, hours or days'],['hourly','Hourly','At a minute past each hour'],
   ['daily','Daily','At a time each day'],['weekly','Weekly','On one day each week']];
@@ -33,6 +34,7 @@ const localTime=value=>{
   return Number.isNaN(d.getTime())?String(value):d.toLocaleString([],{dateStyle:'medium',timeStyle:'short'});
 };
 const shortTime=d=>d.toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+const longDay=d=>d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short',year:'numeric'});
 
 function agentPrompt(){
   return `---
@@ -46,7 +48,7 @@ Manage jobs through the Space API at /api/schedules, never by editing its files.
 
 - Call the Space server on the machine where it runs (usually http://127.0.0.1:5002, or 5003). If you can't reach it, or a change is refused, stop and tell me.
 - Jobs run on the server, as the server's user, without a shell. Always give an absolute cwd, an argv list and a timeout in seconds. Never put secrets in a command.
-- A job is manual (every_seconds null, it runs only when someone runs it) unless I ask for a schedule. For a scheduled job, use every_seconds, plus first_run_at with a UTC offset when I give a time (my time zone is UTC${utcOffset()}); "every day at 9 pm" is every_seconds 86400 with first_run_at at the next 21:00. Check that next_run matches what I asked.
+- A job repeats or runs once. To repeat, use every_seconds, plus first_run_at with a UTC offset when I give a time (my time zone is UTC${utcOffset()}); "every day at 9 pm" is every_seconds 86400 with first_run_at at the next 21:00. To run once at a time, set every_seconds null and first_run_at to that time; it runs once and stays listed. With every_seconds null and no first_run_at, it runs only when someone runs it. Unless I ask for a time or a schedule, use that last form. Check that next_run matches what I asked.
 - Check for duplicates first. Edits replace the whole definition. Don't run anything unless I ask.
 - When done, report each job's name, id, working directory and schedule.
 `;
@@ -66,6 +68,8 @@ export function mountCommands(root){
   /* A custom interval reopened for editing keeps its anchor, so saving it
      unchanged does not move the job's run times. */
   let editingAnchor=null;
+  /* The month the calendar shows; moves with its arrows. */
+  let calendarMonth=new Date();
   const busy=new Set();
   root.innerHTML=`
     <section class="setup-card setup-job-editor" id="command-editor" aria-labelledby="command-form-title" hidden>
@@ -74,23 +78,40 @@ export function mountCommands(root){
       <form id="command-form" class="setup-command-form" novalidate>
         <fieldset class="setup-job-kind">
           <legend>What kind of job is this?</legend>
-          <label class="setup-job-kind-option"><input type="radio" name="kind" value="scheduled"><span><b>Scheduled</b><small>Runs on its own, on a schedule you choose.</small></span></label>
-          <label class="setup-job-kind-option"><input type="radio" name="kind" value="manual"><span><b>Manual</b><small>Saved for later. Runs only when you click Run now.</small></span></label>
+          <label class="setup-job-kind-option"><input type="radio" name="kind" value="scheduled"><span><b>Repeating</b><small>Runs again and again, on a schedule you choose.</small></span></label>
+          <label class="setup-job-kind-option"><input type="radio" name="kind" value="once"><span><b>One time</b><small>Runs once on the day and time you pick, or whenever you click Run now.</small></span></label>
         </fieldset>
-        <fieldset id="command-schedule" class="setup-job-section" hidden>
+        <fieldset id="command-when" class="setup-job-section" hidden>
           <legend class="setup-job-heading">When should it run?</legend>
-          <div class="setup-job-presets">${PRESETS.map(([value,label,hint])=>`<label class="setup-job-preset"><input type="radio" name="repeat" value="${value}"><span class="setup-job-icon">${ICONS[value]}</span><span><b>${label}</b><small>${hint}</small></span></label>`).join('')}</div>
-          <div class="setup-job-detail" data-repeat="custom"><span>Every</span><input name="every" type="number" min="1" step="1" inputmode="numeric" value="30" aria-label="Repeat every"><select name="unit" aria-label="Repeat unit"><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option><option value="seconds">seconds</option></select></div>
-          <div class="setup-job-detail" data-repeat="hourly"><span>At minute</span><input name="minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="0" aria-label="Minute past the hour"><span>past each hour</span></div>
-          <div class="setup-job-detail" data-repeat="daily"><span>At</span><input name="dailyTime" type="time" value="09:00" aria-label="Time of day"></div>
-          <div class="setup-job-detail" data-repeat="weekly"><span>On</span><select name="weekday" aria-label="Day of the week">${WEEKDAYS.map((day,index)=>`<option value="${index}">${day}</option>`).join('')}</select><span>at</span><input name="weeklyTime" type="time" value="09:00" aria-label="Time on that day"><small>or pick a day below</small></div>
-          <div class="setup-job-week" id="command-week" role="group" aria-label="Runs over the next 7 days"></div>
+          <div class="setup-job-when">
+            <div class="setup-job-calendar">
+              <p class="setup-job-calendar-label" id="command-calendar-label">Starting</p>
+              <div id="command-calendar"></div>
+              <div class="setup-job-date-row"><span id="command-date-text"></span>
+                <button type="button" class="setup-secondary setup-job-clear" id="command-date-clear" hidden>Clear date</button></div>
+              <input type="hidden" name="date">
+            </div>
+            <div class="setup-job-when-controls">
+              <div id="command-schedule">
+                <p class="setup-job-subheading">How often?</p>
+                <div class="setup-job-presets">${PRESETS.map(([value,label,hint])=>`<label class="setup-job-preset"><input type="radio" name="repeat" value="${value}"><span class="setup-job-icon">${ICONS[value]}</span><span><b>${label}</b><small>${hint}</small></span></label>`).join('')}</div>
+                <div class="setup-job-detail" data-repeat="custom"><span>Every</span><input name="every" type="number" min="1" step="1" inputmode="numeric" value="30" aria-label="Repeat every"><select name="unit" aria-label="Repeat unit"><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option><option value="seconds">seconds</option></select></div>
+                <div class="setup-job-detail" id="command-start-time"><span>First run at</span><input name="startTime" type="time" value="09:00" aria-label="Time of the first run"><span>on the start date</span></div>
+                <div class="setup-job-detail" data-repeat="hourly"><span>At minute</span><input name="minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="0" aria-label="Minute past the hour"><span>past each hour</span></div>
+                <div class="setup-job-detail" data-repeat="daily"><span>At</span><input name="dailyTime" type="time" value="09:00" aria-label="Time of day"></div>
+                <div class="setup-job-detail" data-repeat="weekly"><span>On</span><select name="weekday" aria-label="Day of the week">${WEEKDAYS.map((day,index)=>`<option value="${index}">${day}</option>`).join('')}</select><span>at</span><input name="weeklyTime" type="time" value="09:00" aria-label="Time on that day"></div>
+                <p class="setup-job-hint">Pick a start date on the calendar to begin later; leave it empty to start right away. Days with runs get a dot.</p>
+              </div>
+              <div id="command-once" hidden>
+                <div class="setup-job-detail"><span>At</span><input name="onceTime" type="time" value="09:00" aria-label="Time it runs"></div>
+                <p class="setup-job-hint">Pick the day on the calendar. With no day picked, the job waits until you click <b>Run now</b>, here or in Inbox → Jobs. After it runs it stays in the list, so you can run it again or pick a new time.</p>
+              </div>
+            </div>
+          </div>
           <p id="command-schedule-preview" class="setup-job-preview" aria-live="polite"></p>
           <p id="command-next-runs" class="setup-job-next"></p>
-          <small>Times are in your time zone (UTC${utcOffset()}). A job keeps a fixed interval, so a daily time can move by an hour when daylight saving starts or ends. Scheduled jobs run only while <b>Update activity automatically</b> is on in Intelligence layer.</small>
+          <small>Times are in your time zone (UTC${utcOffset()}).<span id="command-dst"> A repeating job keeps a fixed interval, so a daily time can move by an hour when daylight saving starts or ends.</span> Timed jobs run only while <b>Update activity automatically</b> is on in Intelligence layer.</small>
         </fieldset>
-        <div id="command-manual" class="setup-job-manual" hidden>${ICONS.manual}<div><b>No schedule</b>
-          <p>It waits for you. Click <b>Run now</b> on this job, here or in Inbox → Jobs, whenever you want it to run.</p></div></div>
         <div id="command-fields" class="setup-job-fields" hidden>
           <h4 class="setup-job-heading">What should it run?</h4>
           <label for="command-name">Name</label>
@@ -139,10 +160,15 @@ export function mountCommands(root){
   const listError=root.querySelector('#command-list-error');
   const list=root.querySelector('#command-list');
   const fields=root.querySelector('#command-fields');
+  const when=root.querySelector('#command-when');
   const schedule=root.querySelector('#command-schedule');
-  const manual=root.querySelector('#command-manual');
-  const details=[...root.querySelectorAll('.setup-job-detail')];
-  const week=root.querySelector('#command-week');
+  const once=root.querySelector('#command-once');
+  const details=[...root.querySelectorAll('.setup-job-detail[data-repeat]')];
+  const startTimeRow=root.querySelector('#command-start-time');
+  const calendarHost=root.querySelector('#command-calendar');
+  const calendarLabel=root.querySelector('#command-calendar-label');
+  const dateText=root.querySelector('#command-date-text');
+  const dateClear=root.querySelector('#command-date-clear');
   const preview=root.querySelector('#command-schedule-preview');
   const nextRuns=root.querySelector('#command-next-runs');
   const field=name=>form.elements.namedItem(name);
@@ -155,55 +181,79 @@ export function mountCommands(root){
   function scheduleChoice(){
     const repeat=field('repeat').value;
     return {kind:repeat,every:field('every').value,unit:field('unit').value,minute:field('minute').value,
-      weekday:field('weekday').value,time:field(repeat==='weekly'?'weeklyTime':'dailyTime').value,anchor:editingAnchor};
+      weekday:field('weekday').value,time:field(repeat==='weekly'?'weeklyTime':'dailyTime').value,
+      start:field('date').value,startTime:field('startTime').value,anchor:editingAnchor};
   }
-  /* The preview says in words what will be saved, and the week strip shows
-     where the runs land, before anything is sent. On Weekly the strip's days
-     are buttons that pick the day. */
-  function syncPreview(){
-    const clear=()=>{nextRuns.textContent='';week.innerHTML='';};
-    if(kind()!=='scheduled'){preview.textContent='';clear();return;}
-    const choice=scheduleChoice(),out=scheduleToFields(choice);
-    preview.classList.toggle('is-error',Boolean(out.error));
-    if(out.error){preview.textContent=out.error;clear();return;}
-    const now=new Date(),unanchored=choice.kind==='custom'&&!choice.anchor;
-    const first=choice.kind==='custom'
-      ?(choice.anchor?'It keeps its current run times.':'First run '+durationText(choice.every,choice.unit)+' after you save.')
-      :'First run: '+localTime(out.first_run_at)+'.';
-    preview.textContent='→ '+describeChoice(choice)+'. '+first;
-    nextRuns.textContent='Next runs'+(unanchored?' if saved now':'')+': '+upcomingRuns(out,now,3).map(shortTime).join(' · ');
-    const picking=choice.kind==='weekly';
-    const focused=week.contains(document.activeElement)?document.activeElement.dataset.weekday:null;
-    week.innerHTML=runsPerDay(out,now,7).map((day,index)=>{
-      const weekday=day.date.getDay();
-      const detail=day.count===0?'—':day.count===1?clockTime(day.first):day.count+' runs';
-      const inner=`<span>${index===0?'Today':WEEKDAYS[weekday].slice(0,3)}</span><b>${day.date.getDate()}</b><small>${detail}</small>`;
-      const cls='setup-job-day'+(day.count?' has-runs':'');
-      return picking
-        ?`<button type="button" class="${cls}" data-weekday="${weekday}" aria-pressed="${String(weekday)===choice.weekday}" aria-label="Run on ${WEEKDAYS[weekday]}s">${inner}</button>`
-        :`<div class="${cls}">${inner}</div>`;
-    }).join('');
-    if(focused!=null)week.querySelector(`[data-weekday="${focused}"]`)?.focus();
+  const onceChoice=()=>({date:field('date').value,time:field('onceTime').value,original:editing?.first_run_at||null});
+  const timing=(now=new Date())=>kind()==='once'?onceToFields(onceChoice(),now):scheduleToFields(scheduleChoice(),now);
+
+  /* The calendar picks the start day (Repeating) or the run day (One time);
+     for a repeating job, days in the shown weeks that get a run are dotted. */
+  function renderCalendar(focus=''){
+    const now=new Date(),out=kind()==='scheduled'?scheduleToFields(scheduleChoice(),now):null;
+    let marks=null;
+    if(out&&!out.error){
+      const first=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth(),1);
+      const gridStart=new Date(first.getFullYear(),first.getMonth(),1-first.getDay());
+      marks=new Set(runsPerDay(out,now,42,gridStart).filter(day=>day.count).map(day=>dayKey(day.date)));
+    }
+    calendarHost.innerHTML=calendar({month:calendarMonth,selected:field('date').value,today:dayKey(now),min:dayKey(now),marks,focus});
+    if(focus)calendarHost.querySelector(`[data-slot="calendar-day-button"][data-day="${focus}"]`)?.focus();
   }
-  /* Nothing but the kind choice shows until a kind is picked; then the part
-     that differs (schedule, or the no-schedule note) comes first. */
-  function syncForm(){
+  wireCalendar(calendarHost,{
+    onSelect(key){
+      if(saving)return;
+      field('date').value=field('date').value===key?'':key;
+      syncForm(key);
+    },
+    onMonth(step,focus){
+      calendarMonth=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+step,1);
+      renderCalendar(focus);
+    },
+  });
+  dateClear.addEventListener('click',()=>{if(!saving){field('date').value='';syncForm();}});
+
+  /* The preview says in words what will be saved, before anything is sent. */
+  function syncPreview(focus=''){
     const chosen=kind();
+    if(!chosen){preview.textContent='';nextRuns.textContent='';return;}
+    const now=new Date(),picked=parseDay(field('date').value);
+    dateText.textContent=picked?(chosen==='once'?'Runs on ':'Starting ')+longDay(picked)
+      :chosen==='once'?'No day picked: it waits for Run now':'No start date: it starts right away';
+    dateClear.hidden=!picked;
+    const out=timing(now);
+    preview.classList.toggle('is-error',Boolean(out.error));
+    if(out.error){preview.textContent=out.error;nextRuns.textContent='';}
+    else if(chosen==='once'){
+      preview.textContent=out.first_run_at?'→ Runs once on '+localTime(out.first_run_at)+'.':'→ It runs only when you click Run now.';
+      nextRuns.textContent='';
+    }else{
+      const choice=scheduleChoice(),unanchored=choice.kind==='custom'&&!choice.start&&!choice.anchor;
+      const first=unanchored?'First run '+durationText(choice.every,choice.unit)+' after you save.'
+        :choice.kind==='custom'&&!choice.start?'It keeps its current run times.'
+        :'First run: '+localTime(out.first_run_at)+'.';
+      preview.textContent='→ '+describeChoice(choice)+(picked?', from '+longDay(picked):'')+'. '+first;
+      nextRuns.textContent='Next runs'+(unanchored?' if saved now':'')+': '+upcomingRuns(out,now,3).map(shortTime).join(' · ');
+    }
+    renderCalendar(focus);
+  }
+  /* Nothing but the kind choice shows until a kind is picked; then when it
+     runs comes first, then what it runs. */
+  function syncForm(focus=''){
+    const chosen=kind();
+    when.hidden=!chosen;
     fields.hidden=!chosen;
     schedule.hidden=chosen!=='scheduled';
-    manual.hidden=chosen!=='manual';
+    once.hidden=chosen!=='once';
     const repeat=field('repeat').value;
     for(const detail of details)detail.hidden=detail.dataset.repeat!==repeat;
-    syncPreview();
+    startTimeRow.hidden=!(repeat==='custom'&&field('date').value);
+    calendarLabel.textContent=chosen==='once'?'Run on':'Starting (optional)';
+    root.querySelector('#command-dst').hidden=chosen==='once';
+    syncPreview(focus);
   }
-  form.addEventListener('change',syncForm);
-  form.addEventListener('input',syncPreview);
-  week.addEventListener('click',event=>{
-    const day=event.target.closest('[data-weekday]');
-    if(!day||saving)return;
-    field('weekday').value=day.dataset.weekday;
-    syncPreview();
-  });
+  form.addEventListener('change',()=>syncForm());
+  form.addEventListener('input',()=>syncPreview());
 
   const help=root.querySelector('#command-help'),tip=root.querySelector('#command-help-tip');
   const helpArea=help.parentElement;
@@ -238,17 +288,18 @@ export function mountCommands(root){
       const scheduled=isScheduled(job);
       const status=running?'Running since '+localTime(job.running_since)
         :result?statusText(result.status)+' · '+relativeTime(result.finished_at)+' · '+duration(result.duration_seconds):'Not run yet';
-      const when=scheduled
+      const paused=job.enabled===false&&job.next_run?' · paused':'';
+      const whenText=scheduled
         ?describeSchedule(job)+(job.enabled?(job.next_run?' · next '+localTime(job.next_run):''):' · paused')
-        :'Runs only when you click Run now';
+        :describeOnce(job,localTime)+paused;
       const disabled=busy.has(job.id)?' disabled':'';
       return `<article class="setup-command-row" data-command-id="${esc(job.id)}">
-        <div class="setup-command-info"><div class="setup-job-title"><b>${esc(job.name)}</b><span class="setup-job-badge ${scheduled?'is-scheduled':'is-manual'}">${scheduled?'Scheduled':'Manual'}</span></div>
+        <div class="setup-command-info"><div class="setup-job-title"><b>${esc(job.name)}</b><span class="setup-job-badge ${scheduled?'is-scheduled':'is-once'}">${scheduled?'Repeating':'One time'}</span></div>
           ${job.description?`<p>${esc(job.description)}</p>`:''}
           <code>${esc(JSON.stringify(job.command.argv))}</code>
           <p class="setup-command-cwd">Runs in: <code>${esc(job.command.cwd||'Server working directory')}</code></p>
           <div class="setup-command-meta"><span class="setup-command-result ${running?'is-running':result?.status==='ok'?'is-good':result?'is-error':''}" role="status">${esc(status)}</span>
-            <span>${esc(when)}</span></div>
+            <span>${esc(whenText)}</span></div>
           ${result?`<div class="setup-command-preview"><span>Latest result · exit ${esc(result.returncode??'—')}</span>
             <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre></div>`:''}
         </div>
@@ -258,7 +309,7 @@ export function mountCommands(root){
           <button class="setup-secondary" type="button" data-command-action="edit"${saving?' disabled':disabled}>Edit</button>
           <button class="setup-secondary is-danger" type="button" data-command-action="delete"${disabled}>Delete</button>
         </div></article>`;
-    }).join(''):'<div class="setup-empty"><b>No jobs yet</b><span>Click New job to schedule a command, or save one to run when you choose.</span></div>';
+    }).join(''):'<div class="setup-empty"><b>No jobs yet</b><span>Click New job to set up one that repeats, or one that runs once.</span></div>';
     schedulePoll();
   }
 
@@ -310,13 +361,24 @@ export function mountCommands(root){
     field('timeout').value=limit.value;
     field('timeoutUnit').value=limit.unit;
     const plan=jobToSchedule(job);
-    editingAnchor=plan?.kind==='custom'?plan.anchor:null;
-    if(job)setRadio('kind',plan?'scheduled':'manual');
+    editingAnchor=null;
+    field('date').value='';
+    if(job)setRadio('kind',plan?'scheduled':'once');
     setRadio('repeat',plan?.kind||'custom');
-    if(plan?.kind==='custom'){field('every').value=plan.every;field('unit').value=plan.unit;}
-    if(plan?.kind==='hourly')field('minute').value=plan.minute;
-    if(plan?.kind==='daily')field('dailyTime').value=plan.time;
-    if(plan?.kind==='weekly'){field('weekday').value=String(plan.weekday);field('weeklyTime').value=plan.time;}
+    if(plan){
+      const {start,startTime}=startForJob(job);
+      field('date').value=start;
+      if(startTime)field('startTime').value=startTime;
+      if(plan.kind==='custom'){field('every').value=plan.every;field('unit').value=plan.unit;if(!start)editingAnchor=plan.anchor;}
+      if(plan.kind==='hourly')field('minute').value=plan.minute;
+      if(plan.kind==='daily')field('dailyTime').value=plan.time;
+      if(plan.kind==='weekly'){field('weekday').value=String(plan.weekday);field('weeklyTime').value=plan.time;}
+    }else if(job){
+      const saved=jobToOnce(job);
+      field('date').value=saved.date;
+      if(saved.time)field('onceTime').value=saved.time;
+    }
+    calendarMonth=parseDay(field('date').value)||new Date();
     syncForm();
     editor.hidden=false;
     editor.scrollIntoView({block:'start'});
@@ -330,7 +392,7 @@ export function mountCommands(root){
     if(saving)return;
     showError('');
     const chosen=kind();
-    if(!chosen){showError('Choose Scheduled or Manual.');return;}
+    if(!chosen){showError('Choose Repeating or One time.');return;}
     const line=field('line').value.trim();
     let command;
     try{command=line.startsWith('[')?{argv:JSON.parse(line)}:{command:line};}
@@ -340,15 +402,13 @@ export function mountCommands(root){
     command.timeout=limit;
     if(field('cwd').value.trim())command.cwd=field('cwd').value.trim();
     if(editing?.command.env)command.env=editing.command.env;
-    let timing={every_seconds:null,first_run_at:null};
-    if(chosen==='scheduled'){
-      timing=scheduleToFields(scheduleChoice());
-      if(timing.error){showError(timing.error);return;}
-    }
+    const when=timing();
+    if(when.error){showError(when.error);return;}
     const body={name:field('name').value.trim(),description:field('description').value.trim(),command,
-      every_seconds:timing.every_seconds,first_run_at:timing.first_run_at,
+      every_seconds:when.every_seconds,first_run_at:when.first_run_at,
       enabled:editing?.enabled??true,project_id:editing?.project_id??null};
-    const controls=[...form.elements,root.querySelector('#command-add'),root.querySelector('#command-close')];
+    const controls=[...form.elements,root.querySelector('#command-add'),root.querySelector('#command-close'),
+      ...calendarHost.querySelectorAll('button')];
     const editingId=editing?.id;
     saving=true;revision++;
     if(editingId)busy.add(editingId);
@@ -359,7 +419,7 @@ export function mountCommands(root){
     if(editingId)busy.delete(editingId);
     controls.forEach(el=>el.disabled=false);
     if(!res.ok){
-      showError(res.error);render();
+      showError(res.error);render();syncForm();
       if(res.status===409)await refresh();
       return;
     }

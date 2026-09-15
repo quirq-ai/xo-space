@@ -177,7 +177,7 @@
 .setup-job-close:hover{color:var(--ink);border-color:var(--ink-3)}
 .setup-command-form>fieldset:first-child{margin-top:0}
 .setup-command-form .setup-job-heading{margin:24px 0 10px;padding:0;font:600 14px var(--sans);color:var(--ink)}
-.setup-job-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.setup-job-presets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .setup-command-form .setup-job-preset{display:flex;align-items:flex-start;gap:9px;min-width:0;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:9px;cursor:pointer}
 .setup-job-preset:has(input:checked){border-color:var(--accent);background:rgba(168,217,79,.06)}
 .setup-job-preset input{margin-top:2px!important}
@@ -189,22 +189,17 @@
 .setup-job-detail input[type=number]{width:6em}
 .setup-job-detail input[type=time]{width:auto}
 .setup-command-form .setup-job-detail small{margin:0}
-.setup-job-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-top:14px}
-.setup-job-day{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0;padding:8px 2px;border:1px solid var(--line-soft);border-radius:9px;background:var(--bg);color:var(--ink-3);font:400 11px/1.3 var(--sans);text-align:center}
-.setup-job-day b{font:600 15px var(--sans);color:var(--ink-2)}
-.setup-job-day small{margin:0!important;font-size:11px!important;overflow-wrap:anywhere}
-.setup-job-day.has-runs{border-color:rgba(168,217,79,.35)}
-.setup-job-day.has-runs b{color:var(--ink)}
-.setup-job-day.has-runs small{color:var(--accent)}
-button.setup-job-day{cursor:pointer}
-button.setup-job-day:hover{border-color:var(--ink-3)}
-button.setup-job-day[aria-pressed=true]{border-color:var(--accent);background:rgba(168,217,79,.1)}
+.setup-job-when{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:start}
+.setup-job-calendar{border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.setup-job-calendar-label{margin:0;padding:12px 12px 0;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-job-date-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;min-height:30px;max-width:272px;padding:0 12px 12px;font:400 12px/1.4 var(--sans);color:var(--ink-2)}
+.setup-commands .setup-job-clear{padding:4px 10px;font-size:12px}
+.setup-command-form .setup-job-subheading{margin:0 0 8px;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-job-when-controls>div>.setup-job-detail:first-child{margin-top:0}
+.setup-job-hint{margin:12px 0 0;font:400 12px/1.5 var(--sans);color:var(--ink-3)}
+.setup-job-hint b{color:var(--ink-2);font-weight:500}
 .setup-job-next{margin:2px 0 0;font:400 12px/1.5 var(--sans);color:var(--ink-2)}
 .setup-job-next:empty{display:none}
-.setup-job-manual{display:flex;align-items:flex-start;gap:12px;margin-top:16px;padding:14px 16px;border:1px dashed var(--line);border-radius:9px;background:var(--bg);color:var(--accent)}
-.setup-job-manual svg{flex-shrink:0}
-.setup-job-manual b{font:500 13px var(--sans);color:var(--ink)}
-.setup-job-manual p{margin:4px 0 0;font:400 12px/1.5 var(--sans);color:var(--ink-2)}
 .setup-job-preview{margin:12px 0 0;font:500 12px/1.5 var(--sans);color:var(--accent)}
 .setup-job-preview.is-error{color:#e1937d}
 .setup-job-preview:empty{display:none}
@@ -247,7 +242,8 @@ button.setup-job-day[aria-pressed=true]{border-color:var(--accent);background:rg
 .setup-run{border-top:1px solid var(--line);padding-top:16px;margin-top:20px}
 .setup-run>b{font:500 12px var(--sans)}
 .setup-run pre{padding:12px;margin-top:10px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
-@media(max-width:600px){.setup-job-kind{grid-template-columns:1fr}.setup-job-presets{grid-template-columns:1fr 1fr}.setup-job-week{gap:3px}.setup-job-day small{font-size:10px!important}}
+@media(max-width:760px){.setup-job-when{grid-template-columns:1fr}.setup-job-calendar{justify-self:start}}
+@media(max-width:600px){.setup-job-kind{grid-template-columns:1fr}}
 
 .setup-identity-body{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px 20px}
 .setup-identity-space{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;margin:0}

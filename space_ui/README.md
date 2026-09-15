@@ -263,36 +263,44 @@ command. Process restart belongs on Setup.
 
 **Jobs** starts empty. A job is a saved command. **New job** and **Edit** open a
 separate **New job** card above the **Your jobs** list (✕ or Cancel closes it).
-The card asks which kind the job is before anything else, then shows what sets
-that kind apart first. **Scheduled** (runs on its own) opens **When should it
-run?**: four preset tiles (Every… N seconds/minutes/hours/days, Hourly at a
-minute, Daily at a time, Weekly on a day at a time) with only the chosen tile's
-inputs, a 7-day strip from today marking each day's run time or run count (on
-Weekly, clicking a day picks it), and the next three runs. **Manual** (saved to
-run only when someone clicks **Run now**) shows a “No schedule” panel. **What
-should it run?** follows for both: a name, optional description, command line
-or argv JSON, optional folder and a time limit (“Stop it if a run takes longer
-than” N seconds, minutes or hours; 5 minutes for a new job). `js/core/jobs.js` translates that into the scheduler's
-own fields, so the API is unchanged: `every_seconds`, plus a `first_run_at`
-anchor at the next matching local time with that date's UTC offset (a custom
-interval sends no anchor). A live preview states the schedule and first run
-before saving. Runs keep a fixed interval, so a daily time can move by an hour
-across a daylight-saving change; the form says so. **Edit** reopens a job as the
-choice that produced it (an interval that matches no preset opens as a custom
-interval and keeps its existing anchor), can switch its kind (Manual sends a
-null interval; the id and history stay), and preserves existing environment,
-project and enabled settings. A command line is split without a shell;
-validation errors appear in the card. Rows carry a Scheduled/Manual badge and
-the schedule in words with the next run in local time.
+The card asks which kind the job is before anything else: **Repeating** (runs
+again and again) or **One time** (runs once on a day and time, or whenever
+someone clicks **Run now**). **When should it run?** follows for both, with a
+shadcn Calendar (`calendar()`/`wireCalendar()` in `js/core/shadcn.js`, styled in
+`css/shadcn.css`; past days disabled). For Repeating the calendar picks an
+optional start date, and days in the shown weeks that get a run are dotted;
+four preset tiles (Every… N seconds/minutes/hours/days, Hourly at a minute,
+Daily at a time, Weekly on a day at a time) show only the chosen tile's inputs,
+and a custom interval with a start date also asks for the first run's time.
+For One time the calendar picks the day and a time input the time; with no day
+it waits for Run now, and a time already past is refused (except the job's own
+saved time). A live preview states the schedule and first run, plus the next
+three runs for Repeating. **What should it run?** follows: a name, optional
+description, command line or argv JSON, optional folder and a time limit (“Stop
+it if a run takes longer than” N seconds, minutes or hours; 5 minutes for a new
+job). `js/core/jobs.js` translates the form into the scheduler's own fields, so
+the API has no presets: Repeating is `every_seconds` plus a `first_run_at`
+anchor at the first matching local time on or after the start (a custom
+interval without a start sends no anchor); One time is a null `every_seconds`
+with `first_run_at` at its time, or none. Runs keep a fixed interval, so a daily
+time can move by an hour across a daylight-saving change; the form says so.
+**Edit** reopens a job as the choice that produced it (an interval that matches
+no preset opens as a custom interval and keeps its existing anchor; a first run
+still ahead shows as its start date), can switch its kind (the id and history
+stay), and preserves existing environment, project and enabled settings. A
+command line is split without a shell; validation errors appear in the card.
+Rows carry a Repeating/One time badge with the schedule in words and the next
+run in local time, or “Runs once on …”, “Ran once on …” or “Runs when you click
+Run now”; a one-time job stays listed after it runs.
 
 The information tooltip beside **Your jobs** explains **Copy agent prompt**.
 The card shows the full `POST /api/schedules` creation URL. The button copies a
 short skill (`xo-space-jobs`, SKILL.md format) for the agent: use `/api/schedules`
 on the machine running Space, never edit its files; jobs run on the server
 without a shell, so give an absolute cwd, an argv list and a timeout in seconds,
-and no secrets; stay manual (a null `every_seconds`) unless asked, with
-`every_seconds` and `first_run_at` (the browser's UTC offset is filled in) for
-schedules; avoid duplicates, remember edits replace the whole definition, and
+and no secrets; `every_seconds` and `first_run_at` (the browser's UTC offset is
+filled in) to repeat, a null `every_seconds` with `first_run_at` to run once at
+a time, and neither unless asked for a time or schedule; avoid duplicates, remember edits replace the whole definition, and
 run nothing unasked. If clipboard access is unavailable, a selectable copy
 appears without changing a job draft.
 
@@ -362,9 +370,9 @@ button carries an unread badge (`counts.new`: polled every 60 s while another
 tab is shown; while Inbox is open the view's own 30 s read feeds it).
 
 **Jobs** follows Connections and reads `/api/schedules`
-independently. It lists every job, scheduled and manual, with the same
-Scheduled/Manual badge and plain-language schedule as Setup; scheduled jobs also
-show their enabled state and next due time, and every job shows its
+independently. It lists every job, repeating and one-time, with the same
+Repeating/One time badge and plain-language schedule as Setup; repeating jobs
+also show their enabled state and next due time, and every job shows its
 latest/running status. **Run now** is the section's one write
 (`POST /api/schedules/{id}/run`; a 409 re-reads the list). **Results** opens the
 same results drawer used by Setup; **Open Setup** returns to job management.

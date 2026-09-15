@@ -93,9 +93,9 @@ try{
   assert.equal(await page.locator('.inb-connections-page').isVisible(),false);
   assert.equal(await page.locator('#view-search').isVisible(),false,'Item search is absent from Jobs');
   initial.release.resolve();await expectCount(5);await settled();
-  assert.match(await item('manual').textContent(),/Manual[\s\S]*Runs only when you click Run now/,'Manual jobs are listed');
+  assert.match(await item('manual').textContent(),/One time[\s\S]*Runs when you click Run now/,'Manual jobs are listed');
   assert.doesNotMatch(await item('manual').textContent(),/Next due/);
-  assert.match(await item('half-minute').textContent(),/Scheduled[\s\S]*Every 30 seconds/);
+  assert.match(await item('half-minute').textContent(),/Repeating[\s\S]*Every 30 seconds/);
   assert.match(await item('ninety-seconds').textContent(),/Every 90 seconds[\s\S]*Paused[\s\S]*Failed/);
   assert.match(await item('hourly').textContent(),/Every hour at :\d\d[\s\S]*Running/);
   assert.equal(await item('hourly').locator('[data-act="job-run"]').isDisabled(),true,'A running job cannot be started again');

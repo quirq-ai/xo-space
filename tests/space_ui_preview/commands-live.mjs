@@ -43,7 +43,7 @@ try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await page.locator('#command-add').click();
-  await page.locator('input[name="kind"][value="manual"]').check();
+  await page.locator('input[name="kind"][value="once"]').check();
   await page.locator('#command-name').fill('Verify isolated command execution');
   await page.locator('#command-description').fill('Print a fixture result with automatic jobs disabled.');
   await page.locator('#command-line').fill(JSON.stringify(argv));

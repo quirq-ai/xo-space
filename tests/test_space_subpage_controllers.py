@@ -51,6 +51,7 @@ function inbox(){
     collectorLabels:()=>'',every:()=>'',pollLine:()=>({text:'Up to date'}),accountLabel:()=>'',
     openCommandResults:job=>results.push(job),
     describeSchedule:job=>job.every_seconds==null?'Manual':'Every minute',
+    describeOnce:()=>'Runs when you click Run now',
     isScheduled:job=>job?.every_seconds!=null,statusText:status=>String(status),
   });
   const views=Array.from(mod.evaluate('createInboxViews()'));

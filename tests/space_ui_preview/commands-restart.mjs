@@ -113,7 +113,7 @@ async function waitEnabled(selector){await page.waitForFunction(selector=>{
   const element=document.querySelector(selector);return element&&!element.disabled;
 },selector);}
 /* New job asks for the kind first; the rest of the form appears after. */
-async function newJob(kind='manual'){
+async function newJob(kind='once'){
   await page.locator('#command-add').click();
   await page.locator('input[name="kind"][value="'+kind+'"]').check();
 }
@@ -140,8 +140,8 @@ try{
   await page.locator('#command-add').click();
   assert.equal(await page.locator('#command-name').isVisible(),false,'New job asks for the kind first');
   await page.locator('#command-save').click();
-  await page.waitForFunction(()=>document.querySelector('#command-error')?.textContent.includes('Scheduled or Manual'));
-  await page.locator('input[name="kind"][value="manual"]').check();
+  await page.waitForFunction(()=>document.querySelector('#command-error')?.textContent.includes('Repeating or One time'));
+  await page.locator('input[name="kind"][value="once"]').check();
   assert.equal(await page.locator('#command-schedule').isVisible(),false,'A manual job has no schedule fields');
   await commandFields('Manual check');
   await page.locator('#command-description').fill('A manual fixture command');
@@ -152,11 +152,11 @@ try{
   await row('job-3').waitFor();
   assert.equal(jobs.find(job=>job.id==='job-3').every_seconds,null);
   assert.equal(jobs.find(job=>job.id==='job-3').command.timeout,12);
-  assert.match(await row('job-3').textContent(),/Manual[\s\S]*Runs only when you click Run now/);
+  assert.match(await row('job-3').textContent(),/One time[\s\S]*Runs when you click Run now/);
   assert.equal(writes.some(write=>write.path.endsWith('/run')),false);
 
   await action('job-3','edit').click();
-  assert.equal(await page.locator('input[name="kind"][value="manual"]').isChecked(),true,'Edit reopens the saved kind');
+  assert.equal(await page.locator('input[name="kind"][value="once"]').isChecked(),true,'Edit reopens the saved kind');
   assert.equal(await page.locator('select[name="timeoutUnit"]').inputValue(),'seconds');
   await commandFields('Edited manual check','git status --short');
   await page.locator('input[name="kind"][value="scheduled"]').check();

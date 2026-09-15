@@ -16,7 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs2';
+import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 
 const dtfmt=iso=>{
@@ -413,11 +413,11 @@ function jobRowHTML(job){
     ?'<span>'+esc(describeSchedule(job))+'</span>'
       +'<span class="inb-job-enabled'+(job.enabled===false?' is-disabled':'')+'">'+(job.enabled===false?'Paused':'Enabled')+'</span>'
       +(dtfmt(job.next_run)?'<span>Next due '+esc(dtfmt(job.next_run))+'</span>':'')
-    :'<span>Runs only when you click Run now</span>';
+    :'<span>'+esc(describeOnce(job,dtfmt))+'</span>';
   const runOff=job.running||jobRunBusy.has(job.id)?' disabled':'';
   return'<article class="inb-job-row" data-job-id="'+esc(job.id)+'">'
     +'<div class="inb-job-info"><div class="inb-job-title"><h3>'+name+'</h3>'
-        +'<span class="inb-job-kind'+(scheduled?' is-scheduled':'')+'">'+(scheduled?'Scheduled':'Manual')+'</span></div>'
+        +'<span class="inb-job-kind'+(scheduled?' is-scheduled':'')+'">'+(scheduled?'Repeating':'One time')+'</span></div>'
       +(job.description?'<p>'+esc(job.description)+'</p>':'')
       +'<div class="inb-job-meta">'+when+'</div>'
       +'<div class="inb-job-result'+tone+'" role="status">'+esc(status)+'</div>'

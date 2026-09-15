@@ -51,38 +51,59 @@ function parseTime(value){
   return hour<24&&minute<60?{hour,minute}:null;
 }
 
-/* The next local instant strictly after now for an hourly, daily or weekly
-   pattern. The scheduler also accepts a past anchor, but a future one makes
-   the preview's "next run" true without a round trip. */
-function nextOccurrence(now,{kind,hour=0,minute=0,weekday=0}){
-  const d=new Date(now.getTime());
+/* "2026-09-16" for a local date, the key the calendar and the form share. */
+export const dayKey=d=>d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());
+/* A day key back to local midnight, or null. */
+export function parseDay(value){
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||''));
+  if(!match)return null;
+  const d=new Date(Number(match[1]),Number(match[2])-1,Number(match[3]));
+  return dayKey(d)===match[0]?d:null;
+}
+const atTime=(day,{hour,minute})=>new Date(day.getFullYear(),day.getMonth(),day.getDate(),hour,minute);
+
+/* The next local instant for an hourly, daily or weekly pattern: strictly
+   after now, or, with a start day still ahead, the first on or after that
+   day. The scheduler also accepts a past anchor, but a future one makes the
+   preview's "next run" true without a round trip. */
+function nextOccurrence(now,{kind,hour=0,minute=0,weekday=0},start=null){
+  const floor=start&&start>now?start:null;
+  const late=d=>floor?d<floor:d<=now;
+  const d=new Date((floor||now).getTime());
   d.setSeconds(0,0);
   if(kind==='hourly'){
     d.setMinutes(minute);
-    if(d<=now)d.setHours(d.getHours()+1);
+    if(late(d))d.setHours(d.getHours()+1);
     return d;
   }
   d.setHours(hour,minute);
   if(kind==='weekly')d.setDate(d.getDate()+((weekday-d.getDay()+7)%7));
-  if(d<=now)d.setDate(d.getDate()+(kind==='weekly'?7:1));
+  if(late(d))d.setDate(d.getDate()+(kind==='weekly'?7:1));
   return d;
 }
 
-/* A form choice → {every_seconds, first_run_at}, or {error} in plain words.
-   choice.kind is custom | hourly | daily | weekly. A custom choice keeps an
-   edited job's existing anchor so saving does not shift its grid. */
+/* A repeating form choice → {every_seconds, first_run_at}, or {error} in
+   plain words. choice.kind is custom | hourly | daily | weekly; choice.start
+   is an optional day key ("Starting"), and a custom choice also takes
+   choice.startTime. Without a start, a custom choice keeps an edited job's
+   existing anchor so saving does not shift its grid. */
 export function scheduleToFields(choice,now=new Date()){
   const kind=choice?.kind;
+  const start=choice?.start?parseDay(choice.start):null;
+  if(choice?.start&&!start)return{error:'Pick a start date from the calendar.'};
   if(kind==='custom'){
     const every=num(choice.every);
     if(!Number.isInteger(every)||every<1)return{error:'Enter how often it runs as a whole number, such as 30.'};
     if(!UNITS[choice.unit])return{error:'Choose seconds, minutes, hours or days.'};
-    return{every_seconds:every*UNITS[choice.unit],first_run_at:choice.anchor||null};
+    if(!start)return{every_seconds:every*UNITS[choice.unit],first_run_at:choice.anchor||null};
+    const time=parseTime(choice.startTime);
+    if(!time)return{error:'Choose the time of the first run.'};
+    return{every_seconds:every*UNITS[choice.unit],first_run_at:toOffsetIso(atTime(start,time))};
   }
   if(kind==='hourly'){
     const minute=num(choice.minute);
     if(!Number.isInteger(minute)||minute<0||minute>59)return{error:'Enter a minute from 0 to 59.'};
-    return{every_seconds:HOUR,first_run_at:toOffsetIso(nextOccurrence(now,{kind,minute}))};
+    return{every_seconds:HOUR,first_run_at:toOffsetIso(nextOccurrence(now,{kind,minute},start))};
   }
   if(kind==='daily'||kind==='weekly'){
     const time=parseTime(choice.time);
@@ -90,9 +111,52 @@ export function scheduleToFields(choice,now=new Date()){
     const weekday=num(choice.weekday);
     if(kind==='weekly'&&!(Number.isInteger(weekday)&&weekday>=0&&weekday<7))return{error:'Choose a day of the week.'};
     const every=kind==='daily'?DAY:WEEK;
-    return{every_seconds:every,first_run_at:toOffsetIso(nextOccurrence(now,{kind,...time,weekday}))};
+    return{every_seconds:every,first_run_at:toOffsetIso(nextOccurrence(now,{kind,...time,weekday},start))};
   }
   return{error:'Choose how often the job runs.'};
+}
+
+/* A one-time choice {date, time, original} → {every_seconds:null,
+   first_run_at}, or {error}. No date means it waits for Run now. A time
+   already past is refused unless it is the job's saved one (editing a job
+   that has run must not force a new date). */
+export function onceToFields(choice,now=new Date()){
+  if(!choice?.date)return{every_seconds:null,first_run_at:null};
+  const day=parseDay(choice.date),time=parseTime(choice.time);
+  if(!day)return{error:'Pick the day from the calendar.'};
+  if(!time)return{error:'Choose the time it should run.'};
+  const at=atTime(day,time);
+  const saved=choice.original&&Date.parse(choice.original)===at.getTime();
+  if(at<=now&&!saved)return{error:'Pick a time later than now, or clear the date to run it only with Run now.'};
+  return{every_seconds:null,first_run_at:toOffsetIso(at)};
+}
+
+/* A saved one-time or manual job → {date, time} for the form ('' when it has
+   no time), or null for a repeating job. */
+export function jobToOnce(job){
+  if(isScheduled(job))return null;
+  const at=new Date(job?.first_run_at||NaN);
+  return Number.isNaN(at.getTime())?{date:'',time:''}:{date:dayKey(at),time:hhmm(at)};
+}
+
+/* The start day to show when editing a repeating job whose first run is
+   still ahead and later than it would be without one, or ''. */
+export function startForJob(job,now=new Date()){
+  const plan=jobToSchedule(job),first=Date.parse(job?.first_run_at||'');
+  if(!plan||Number.isNaN(first)||first<=now.getTime())return{start:'',startTime:''};
+  const at=new Date(first);
+  if(plan.kind!=='custom'){
+    const plain=Date.parse(scheduleToFields(plan,now).first_run_at||'');
+    if(!(plain<first))return{start:'',startTime:''};
+  }
+  return{start:dayKey(at),startTime:hhmm(at)};
+}
+
+/* "Runs once on …", "Ran once on …" or "Runs when you click Run now". */
+export function describeOnce(job,format=d=>d.toLocaleString([],{dateStyle:'medium',timeStyle:'short'})){
+  if(!job?.first_run_at)return'Runs when you click Run now';
+  if(job.next_run)return'Runs once on '+format(new Date(job.next_run));
+  return(job.last_result?'Ran once on ':'Was set for ')+format(new Date(job.first_run_at));
 }
 
 /* "09:00" in the browser's local time. */
@@ -120,15 +184,15 @@ export function upcomingRuns(fields,now=new Date(),count=3){
 /* One entry per local day from today: how many runs fall on it and the first
    of them. Counted arithmetically, so an every-second job costs the same as a
    weekly one; local midnights keep 23- and 25-hour days right. */
-export function runsPerDay(fields,now=new Date(),days=7){
+export function runsPerDay(fields,now=new Date(),days=7,from=now){
   const first=firstSlot(fields,now),every=Number(fields?.every_seconds)*1000;
   return Array.from({length:days},(_,i)=>{
-    const date=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i);
+    const date=new Date(from.getFullYear(),from.getMonth(),from.getDate()+i);
     if(first==null)return{date,count:0,first:null};
-    const end=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i+1).getTime();
-    const from=Math.max(0,Math.ceil((date.getTime()-first)/every));
-    const count=Math.max(0,Math.ceil((end-first)/every)-from);
-    return{date,count,first:count?new Date(first+from*every):null};
+    const end=new Date(from.getFullYear(),from.getMonth(),from.getDate()+i+1).getTime();
+    const firstIndex=Math.max(0,Math.ceil((date.getTime()-first)/every));
+    const count=Math.max(0,Math.ceil((end-first)/every)-firstIndex);
+    return{date,count,first:count?new Date(first+firstIndex*every):null};
   });
 }
 
