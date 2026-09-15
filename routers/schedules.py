@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
+from routers.browser_guard import is_local_mutation
 from utils.commands import scheduler
 from utils.commands.scheduler import (
     ConcurrencyLimitError,
@@ -31,9 +32,7 @@ router = APIRouter()
 
 
 def _require_local(request: Request) -> None:
-    from routers.space import _is_local_mutation
-
-    if not _is_local_mutation(request):
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail="commands require a local client and same-origin browser request")
 
 

@@ -933,6 +933,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
+# after the TCP peer is recorded: the browser guard needs the real peer.
+from routers.browser_guard import add_forwarding_middleware
+add_forwarding_middleware(app)
 app.include_router(xo_auth_session_router)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
@@ -1283,6 +1287,8 @@ if __name__ == "__main__":
 
     reload = os.getenv("UVICORN_RELOAD", "").strip().lower() in ("1", "true", "yes")
 
+    # proxy_headers=False: the app applies X-Forwarded-* itself, after
+    # recording the TCP peer (routers/browser_guard.add_forwarding_middleware).
     if reload:
         uvicorn.run(
             "server:app",
@@ -1290,6 +1296,7 @@ if __name__ == "__main__":
             port=port,
             reload=True,
             reload_dirs=[str(Path(__file__).resolve().parent)],
+            proxy_headers=False,
         )
     else:
-        uvicorn.run("server:app", host=host, port=port, reload=False)
+        uvicorn.run("server:app", host=host, port=port, reload=False, proxy_headers=False)

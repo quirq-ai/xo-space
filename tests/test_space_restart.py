@@ -15,11 +15,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from routers import space
+from routers import browser_guard, space
 from routers.cowork_agent.runtime_config import router as runtime_router
 from services.cowork_agent import runtime_config
 from utils.commands import CommandResult, run_sync
@@ -151,17 +151,44 @@ class RestartRouteTests(unittest.TestCase):
             'Origin': 'http://attacker.example',
         }).status_code, 403)
 
+    def test_restart_accepts_a_browser_behind_a_tls_proxy(self):
+        public = 'space.workspace.example.com'
+        client = TestClient(self.app, base_url=f'http://{public}', client=('127.0.0.1', 12345))
+        headers = {'Origin': f'https://{public}', 'Sec-Fetch-Site': 'same-origin'}
+        with patch.object(runtime_config, 'restart_mode', return_value='foreground'):
+            for route in ('/space/server/restart', '/api/runtime-config/restart'):
+                with self.subTest(route=route):
+                    # 409 is the foreground-mode refusal: the guard let it through.
+                    self.assertEqual(client.post(route, headers=headers).status_code, 409)
+
+    def test_update_apply_refuses_cross_site_browsers(self):
+        client = TestClient(self.app, base_url='http://localhost:5002', client=('127.0.0.1', 12345))
+        with patch('services.cowork_agent.self_update.apply_update', return_value={'ok': True}) as apply:
+            self.assertEqual(client.post('/space/update/apply', headers={'Origin': 'https://evil.example'}).status_code, 403)
+            apply.assert_not_called()
+            self.assertEqual(client.post('/space/update/apply').status_code, 200, 'CLI needs no Origin')
+
     def test_local_origin_uses_effective_port_and_ipv6(self):
         def request(host, origin, scheme='http'):
             return Request({'type': 'http', 'scheme': scheme, 'path': '/',
                             'headers': [(b'host', host.encode()), (b'origin', origin.encode())],
                             'client': ('::1', 1), 'server': ('::1', 80)})
-        self.assertTrue(space._is_local_mutation(request('localhost', 'http://localhost:80')))
-        self.assertTrue(space._is_local_mutation(request('[::1]:5002', 'http://[::1]:5002')))
-        self.assertFalse(space._is_local_mutation(request('localhost', 'http://localhost:0')))
+        self.assertTrue(browser_guard.is_local_mutation(request('localhost', 'http://localhost:80')))
+        self.assertTrue(browser_guard.is_local_mutation(request('[::1]:5002', 'http://[::1]:5002')))
+        self.assertFalse(browser_guard.is_local_mutation(request('localhost', 'http://localhost:0')))
 
 
 class ManagedRestartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_refuses_cross_site_browsers(self):
+        request = Request({'type': 'http', 'scheme': 'http', 'path': '/space/server/stop',
+                           'headers': [(b'host', b'localhost:5002'), (b'origin', b'https://evil.example')],
+                           'client': ('127.0.0.1', 1), 'server': ('127.0.0.1', 5002)})
+        with patch('routers.space.os.kill') as kill:
+            with self.assertRaises(HTTPException) as refused:
+                await space.space_server_stop(request)
+            self.assertEqual(refused.exception.status_code, 403)
+            kill.assert_not_called()
+
     async def test_managed_termination_is_deferred_until_after_response(self):
         request = Request({'type': 'http', 'client': ('::1', 12345), 'headers': []})
         sent = []

@@ -16,12 +16,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from utils.commands import scheduler
 
 try:
+    from routers import browser_guard
     from routers.schedules import router
 except ImportError as exc:  # pragma: no cover - platform gate
     raise unittest.SkipTest(f"routers package needs POSIX: {exc}") from exc
@@ -160,6 +161,78 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202, response.text)
         scheduler._running[job['id']].thread.join(5)
         self.assertEqual(client.get('/api/schedules/'+job['id']).json()['last_result']['status'], 'ok')
+
+    # The Space UI reached through a TLS-terminating proxy (e.g. a Coder app
+    # URL): the proxy connects from loopback over plain http and forwards the
+    # public Host; the browser's Origin is the https public URL.
+    PUBLIC = "space.workspace.example.com"
+
+    def test_browser_behind_a_tls_proxy_can_write_and_run(self) -> None:
+        client = TestClient(self.client.app, base_url=f"http://{self.PUBLIC}", client=("127.0.0.1", 12345))
+        headers = {"Origin": f"https://{self.PUBLIC}", "Sec-Fetch-Site": "same-origin"}
+        created = client.post("/api/schedules", headers=headers, json=_payload("via proxy"))
+        self.assertEqual(created.status_code, 201, created.text)
+        job_id = created.json()["id"]
+        self.assertEqual(client.put(f"/api/schedules/{job_id}", headers=headers,
+                                    json=_payload("renamed")).status_code, 200)
+        run = client.post(f"/api/schedules/{job_id}/run", headers=headers)
+        self.assertEqual(run.status_code, 202, run.text)
+        scheduler._running[job_id].thread.join(5)
+        self.assertEqual(client.delete(f"/api/schedules/{job_id}", headers=headers).status_code, 200)
+
+    def test_proxy_shaped_requests_from_elsewhere_are_refused(self) -> None:
+        job = self.client.post("/api/schedules", json=_payload("guarded")).json()
+        public = f"http://{self.PUBLIC}"
+        https_origin = f"https://{self.PUBLIC}"
+        cases = [
+            # DNS rebinding reaches the plain-http listener, so its Origin is http.
+            ("rebinding", "http://attacker.example:5002", {"Origin": "http://attacker.example:5002"}, "127.0.0.1"),
+            ("plain-http named origin", public, {"Origin": public}, "127.0.0.1"),
+            ("sibling app on the proxy", public,
+             {"Origin": "https://other-app.workspace.example.com"}, "127.0.0.1"),
+            ("cross-site fetch", public, {"Origin": https_origin, "Sec-Fetch-Site": "cross-site"}, "127.0.0.1"),
+            ("same-site fetch", public, {"Origin": https_origin, "Sec-Fetch-Site": "same-site"}, "127.0.0.1"),
+            ("Host on another port", f"http://{self.PUBLIC}:8443", {"Origin": https_origin}, "127.0.0.1"),
+            ("non-loopback peer", public, {"Origin": https_origin}, "10.0.0.7"),
+        ]
+        for label, base_url, headers, peer in cases:
+            client = TestClient(self.client.app, base_url=base_url, client=(peer, 12345))
+            with self.subTest(label):
+                self.assertEqual(client.post(f"/api/schedules/{job['id']}/run", headers=headers).status_code, 403)
+        self.assertEqual(scheduler._running, {})
+
+    def _forwarding_app(self) -> FastAPI:
+        app = FastAPI()
+        app.include_router(router)
+
+        @app.get("/probe")
+        def probe(request: Request) -> dict:
+            return {"client": request.client.host, "scheme": request.url.scheme}
+
+        browser_guard.add_forwarding_middleware(app)
+        return app
+
+    def test_browser_through_a_forwarding_proxy_can_write(self) -> None:
+        # Headers as captured on a Coder pod: the proxy connects from loopback
+        # and adds X-Forwarded-*, which uvicorn would turn into the client.
+        host = "space.workspace.example.com"
+        headers = {"Origin": f"https://{host}", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors",
+                   "X-Forwarded-For": "198.51.100.20", "X-Forwarded-Host": host, "X-Forwarded-Port": "443",
+                   "X-Forwarded-Proto": "https", "X-Real-IP": "203.0.113.7"}
+        client = TestClient(self._forwarding_app(), base_url=f"http://{host}", client=("127.0.0.1", 35054))
+        created = client.post("/api/schedules", headers=headers, json=_payload("through proxy"))
+        self.assertEqual(created.status_code, 201, created.text)
+        # Everything else still sees the forwarded client and scheme.
+        self.assertEqual(client.get("/probe", headers=headers).json(), {"client": "198.51.100.20", "scheme": "https"})
+
+    def test_a_remote_caller_cannot_claim_loopback_through_forwarding_headers(self) -> None:
+        job = self.client.post("/api/schedules", json=_payload("guarded")).json()
+        host = "space.workspace.example.com"
+        remote = TestClient(self._forwarding_app(), base_url=f"http://{host}", client=("192.0.2.10", 40000))
+        response = remote.post(f"/api/schedules/{job['id']}/run", headers={
+            "Origin": f"https://{host}", "X-Forwarded-For": "127.0.0.1", "X-Forwarded-Proto": "https"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(scheduler._running, {})
 
 
 if __name__ == "__main__":

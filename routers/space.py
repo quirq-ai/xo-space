@@ -9,17 +9,17 @@ repo. The UI's DATA comes from the workspace .xo directory via /xo/*.json
 """
 
 import asyncio
-import ipaddress
 import os
 import signal
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+
+from routers.browser_guard import is_local_mutation
 
 # Bundled UI (space_ui/ at the repo root); SPACE_DIR env var overrides, e.g.
 # to point at a live xo-atlas checkout during UI development.
@@ -28,45 +28,6 @@ SPACE_DIR = Path(os.getenv("SPACE_DIR", DEFAULT_SPACE_DIR)).expanduser()
 
 router = APIRouter(prefix="/space", tags=["space"])
 _SERVER_INSTANCE = str(time.time_ns())
-
-
-def _is_local(request: Request) -> bool:
-    host = request.client.host if request.client else ""
-    return host in ("127.0.0.1", "::1", "localhost")
-
-
-def _is_local_mutation(request: Request) -> bool:
-    """Allow local CLI calls and same-origin loopback browser mutations.
-
-    A page on another site can submit a simple POST to localhost without a
-    CORS preflight. Origin checks close that path without requiring CLI
-    clients to manufacture a browser header.
-    """
-    if not _is_local(request):
-        return False
-    origin = request.headers.get("origin")
-    if origin is None:
-        return True
-    if any(char.isspace() for char in origin):
-        return False
-    try:
-        parsed = urlsplit(origin)
-        host = parsed.hostname
-        if (parsed.scheme not in {"http", "https"} or not host
-                or parsed.username is not None or parsed.password is not None
-                or parsed.path or parsed.query or parsed.fragment):
-            return False
-        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
-            return False
-        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
-        request_port = request.url.port
-        if request_port is None:
-            request_port = 443 if request.url.scheme == "https" else 80
-        return (parsed.scheme, host, port) == (
-            request.url.scheme, request.url.hostname, request_port,
-        )
-    except ValueError:
-        return False
 
 
 @router.get("/server/status")
@@ -94,8 +55,8 @@ async def space_setup_status():
 
 @router.post("/server/stop")
 async def space_server_stop(request: Request):
-    """Gracefully stop the server. Localhost only; restart via ./cowork-api.sh start."""
-    if not _is_local(request):
+    """Gracefully stop the server. Local, same-origin only; restart via ./cowork-api.sh start."""
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail="stop is allowed from localhost only")
 
     async def _terminate_soon():
@@ -109,7 +70,7 @@ async def space_server_stop(request: Request):
 @router.post("/server/restart")
 async def space_server_restart(request: Request):
     """Restart through the install's supervisor; never start a second server."""
-    if not _is_local_mutation(request):
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail="restart requires a local, same-origin request")
     from services.cowork_agent.runtime_config import REPO_ROOT, native_restart_pid, restart_mode
     from utils.commands import spawn_detached
@@ -160,10 +121,10 @@ async def space_update_status():
 
 @router.post("/update/apply")
 async def space_update_apply(request: Request):
-    """Fast-forward the checkout to the remote branch. Localhost only, like
-    /server/stop: it changes the code on disk. The running server keeps the
-    old version until restarted."""
-    if not _is_local(request):
+    """Fast-forward the checkout to the remote branch. Local, same-origin only,
+    like /server/stop: it changes the code on disk. The running server keeps
+    the old version until restarted."""
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403,
                             detail="update is allowed from localhost only")
     from services.cowork_agent.self_update import UpdateError, apply_update

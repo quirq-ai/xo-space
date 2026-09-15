@@ -9,39 +9,55 @@ const path=id=>'/api/schedules/'+encodeURIComponent(id);
 const duration=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toFixed(2)+'s';
 const createEndpoint=()=>new URL(API_BASE+'/api/schedules',location.href).href;
 
-function agentPrompt(){
-  // Deliberately omit the page query string: it can contain proxy credentials.
-  const endpoint=createEndpoint();
-  return `Add the commands I describe to Saved commands in XO Space using this API.
-
-Create job: POST ${endpoint}
-Content-Type: application/json
-
-This is the same endpoint used by Add command → Save command. Run API calls on the machine hosting Space; writes require a local client. If this URL is remote, use the server's configured loopback address and port. If it is a read-only preview, report that and use the running Space API instead.
-
-First GET ${endpoint} and check for an existing job. Adapt this complete request to the command I want:
-
-${'```sh'}
-curl --fail-with-body --silent --show-error --request POST '${endpoint}' \\
-  --header 'Content-Type: application/json' \\
-  --data-binary @- <<'JSON'
-{
-  "name": "Check repository",
-  "description": "Show local Git changes",
-  "command": {"argv": ["git", "status", "--short"], "timeout": 30},
-  "every_seconds": null,
-  "enabled": true
+/* The browser's offset at copy time, e.g. "+05:30", so the agent can turn
+   "9 pm" into a first_run_at the server accepts. */
+function utcOffset(date=new Date()){
+  const minutes=-date.getTimezoneOffset(),abs=Math.abs(minutes);
+  return (minutes<0?'-':'+')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
 }
-JSON
-${'```'}
 
-A successful create returns HTTP 201 and the saved job, including its id. Without command.cwd, execution uses the Space server's working directory. Set command.cwd to the intended absolute project directory when needed. Commands use argv without a shell; shell operators are not interpreted. Keep credentials out of arguments and descriptions.
+const pad2=n=>String(n).padStart(2,'0');
 
-Keep every_seconds null for manual runs unless I ask for a schedule. For an interval, use an integer in seconds at least as long as the configured watcher tick. Automatic runs require the watcher and scheduler to be enabled.
+/* A datetime-local value is the browser's local time; the scheduler needs an
+   explicit offset, e.g. "2026-09-15T21:00:00+05:30". The offset is taken for
+   that date, so a daylight-saving change between now and then is honoured. */
+function localInputToIso(value){
+  if(!value)return null;
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime()))return null;
+  return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())
+    +'T'+pad2(d.getHours())+':'+pad2(d.getMinutes())+':00'+utcOffset(d);
+}
 
-Verify the saved command with GET ${endpoint}/{id} and report its name and ID. Do not execute it unless I ask. I can click Run in Setup → Commands and open its Inbox for results.
+const localTime=value=>{
+  const d=new Date(value);
+  return Number.isNaN(d.getTime())?String(value):d.toLocaleString([],{dateStyle:'medium',timeStyle:'short'});
+};
 
-If I request a run: POST ${endpoint}/{id}/run. Check GET ${endpoint}/{id} for completion and GET ${endpoint}/{id}/runs for results and the exact log_path. Default logs: ~/.quirq/logs/scheduler/{id}.log; history: ~/.quirq/scheduler/runs/{id}.jsonl. Use the API rather than editing scheduler files directly.`;
+/* The stored UTC stamp shown back in the browser's local time. */
+function isoToLocalInput(value){
+  if(!value)return '';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime()))return '';
+  return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+'T'+pad2(d.getHours())+':'+pad2(d.getMinutes());
+}
+
+function agentPrompt(){
+  return `---
+name: xo-space-saved-commands
+description: Add, schedule, edit or run saved commands in XO Space (Setup → Commands) through its /api/schedules API.
+---
+
+# XO Space saved commands
+
+Manage saved commands through the Space API at /api/schedules, never by editing its files.
+
+- Call the Space server on the machine where it runs (usually http://127.0.0.1:5002, or 5003). If you can't reach it, or a change is refused, stop and tell me.
+- Commands run on the server, as the server's user, without a shell. Always give an absolute cwd, an argv list and a timeout. Never put secrets in a command.
+- Keep commands manual unless I ask for a schedule. For a schedule, use every_seconds, plus first_run_at with a UTC offset when I give a start time (my time zone is UTC${utcOffset()}). Check that next_run matches what I asked.
+- Check for duplicates first. Edits replace the whole definition. Don't run anything unless I ask.
+- When done, report each command's name, id, working directory and schedule.
+`;
 }
 function relativeTime(value){
   const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000));
@@ -59,7 +75,7 @@ export function mountCommands(root){
   root.innerHTML=`
     <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3>Saved commands</h3>
       <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding commands with an agent" aria-describedby="command-help-tip">i</button>
-        <span id="command-help-tip" role="tooltip" hidden>Copy a complete curl request for POST /api/schedules and paste it into your agent to add commands here.</span></span></div>
+        <span id="command-help-tip" role="tooltip" hidden>Copy a short skill for your agent, then describe the commands you want and it adds them here through /api/schedules.</span></span></div>
       <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-secondary" id="command-add">Add command</button></div></div>
     <div class="setup-command-body">
       <p class="setup-command-endpoint"><span>Create job</span><code>POST ${esc(createEndpoint())}</code></p>
@@ -84,8 +100,9 @@ export function mountCommands(root){
         <div class="setup-command-numbers">
           <div><label for="command-timeout">Timeout (seconds)</label><input id="command-timeout" name="timeout" type="number" step="any" value="30"></div>
           <div><label for="command-interval">Interval (seconds, optional)</label><input id="command-interval" name="interval" type="number" placeholder="Manual only"></div>
+          <div><label for="command-first-run">First run at (optional)</label><input id="command-first-run" name="firstRun" type="datetime-local" step="60" disabled></div>
         </div>
-        <small>Leave blank for manual runs. Intervals run automatically through the watcher.</small>
+        <small>Leave the interval blank for manual runs. Intervals run automatically through the watcher. First run at needs an interval and uses your time zone (UTC${utcOffset()}); a past time keeps the same schedule and runs at the next slot.</small>
         <div class="setup-actions">
           <button class="setup-primary" id="command-save" type="submit">Save command</button>
           <button class="setup-secondary" id="command-cancel" type="button">Cancel</button>
@@ -99,6 +116,13 @@ export function mountCommands(root){
   const list=root.querySelector('#command-list');
   const field=name=>form.elements.namedItem(name);
   function showError(message){error.textContent=message||'';error.hidden=!message;}
+  /* The scheduler refuses a start time on a manual-only command. */
+  function syncFirstRun(){
+    const scheduled=Boolean(field('interval').value.trim());
+    field('firstRun').disabled=!scheduled;
+    if(!scheduled)field('firstRun').value='';
+  }
+  field('interval').addEventListener('input',syncFirstRun);
 
   const help=root.querySelector('#command-help'),tip=root.querySelector('#command-help-tip');
   const helpArea=help.parentElement;
@@ -139,7 +163,7 @@ export function mountCommands(root){
           <code>${esc(JSON.stringify(job.command.argv))}</code>
           <p class="setup-command-cwd">Working directory: <code>${esc(job.command.cwd||'Server working directory')}</code></p>
           <div class="setup-command-meta"><span class="setup-command-result ${running?'is-running':result?.status==='ok'?'is-good':result?'is-error':''}" role="status">${esc(status)}</span>
-            <span>${job.every_seconds==null?'Manual only':'Runs every '+esc(job.every_seconds)+'s'+(job.enabled?'':' · disabled')}</span></div>
+            <span>${job.every_seconds==null?'Manual only':'Runs every '+esc(job.every_seconds)+'s'+(job.enabled?(job.next_run?' · next '+esc(localTime(job.next_run)):''):' · disabled')}</span></div>
           ${result?`<div class="setup-command-preview"><span>Latest result · exit ${esc(result.returncode??'—')}</span>
             <pre>${esc(String(result.output_tail||result.reason||'(no output)').trimEnd().slice(0,400))}</pre></div>`:''}
         </div>
@@ -199,6 +223,8 @@ export function mountCommands(root){
     field('cwd').value=job?.command.cwd||'';
     field('timeout').value=job?.command.timeout??30;
     field('interval').value=job?.every_seconds??'';
+    field('firstRun').value=isoToLocalInput(job?.first_run_at);
+    syncFirstRun();
     form.hidden=false;
     field('name').focus();
   }
@@ -215,6 +241,7 @@ export function mountCommands(root){
     if(editing?.command.env)command.env=editing.command.env;
     const body={name:field('name').value.trim(),description:field('description').value.trim(),command,
       every_seconds:field('interval').value.trim()?Number(field('interval').value):null,
+      first_run_at:field('interval').value.trim()?localInputToIso(field('firstRun').value):null,
       enabled:editing?.enabled??true,project_id:editing?.project_id??null};
     const controls=[...form.elements,root.querySelector('#command-add')];
     const editingId=editing?.id;
@@ -226,6 +253,7 @@ export function mountCommands(root){
     saving=false;revision++;
     if(editingId)busy.delete(editingId);
     controls.forEach(el=>el.disabled=false);
+    syncFirstRun();
     if(!res.ok){
       showError(res.error);render();
       if(res.status===409)await refresh();
