@@ -928,8 +928,10 @@ class ShellTests(unittest.TestCase):
         for module in ("views/inbox", "views/setup", "views/wiki", "core/command-palette"):
             self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
         # its calendar landed in the shared shadcn styles
-        for sheet in ("inbox", "setup", "shadcn"):
+        for sheet in ("inbox", "shadcn"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
+        # the radio focus fix restamped the Setup styles once more
+        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

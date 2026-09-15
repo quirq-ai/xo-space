@@ -163,7 +163,11 @@
 .setup-command-form fieldset{min-width:0;margin:15px 0 0;padding:0;border:0}
 .setup-command-form legend{padding:0;margin-bottom:8px;font:500 12px var(--sans);color:var(--ink-2)}
 .setup-command-form select{padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:400 13px var(--sans)}
-.setup-command-form input[type=radio]{width:auto;flex-shrink:0;margin:0;accent-color:var(--accent)}
+/* Radios opt out of the text-input box above: no padding, border or fill, and
+   no square focus glow. Keyboard focus rings the whole tile instead. */
+.setup-command-form input[type=radio]{width:16px;height:16px;flex-shrink:0;margin:0;padding:0;border:0;border-radius:50%;background:none;accent-color:var(--accent)}
+.setup-command-form input[type=radio]:focus,.setup-command-form input[type=radio]:focus-visible{box-shadow:none;outline:none}
+.setup-job-kind-option:has(input:focus-visible),.setup-job-preset:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 .setup-job-fields{display:flex;flex-direction:column}
 .setup-job-kind{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .setup-job-kind legend{grid-column:1/-1}
