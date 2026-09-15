@@ -11,7 +11,8 @@ Loaded by ``services.cowork_agent.engine.usage_loader.load_usage_module()`` when
     aggregate_for_sync(*, since_date=None) / sync_payload
 
 This module owns only what is OpenClaw-specific: where session transcripts live
-(``OPENCLAW_AGENTS_DIR/<agent>/sessions/*.jsonl`` with gateway filename rules),
+(each agent's SQLite store, see ``agent_db``, or for an agent without one
+``OPENCLAW_AGENTS_DIR/<agent>/sessions/*.jsonl`` with gateway filename rules),
 how one gateway record maps to a normalized usage entry (``parse_file``), and
 the ``/api/usage`` dashboard rollup. Everything that operates purely on the
 normalized entries — summaries, analytics, sessions, and the daily sync rollup —
@@ -26,6 +27,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Optional
 
 from services.cowork_agent.adapters import usage_common as _uc
+from services.cowork_agent.adapters.openclaw import agent_db
 from services.cowork_agent.engine.messages import content_blocks
 
 
@@ -103,6 +105,11 @@ def _list_agent_ids() -> list[str]:
 
 
 def _discover_one_agent(agent_id: str) -> list[str]:
+    if agent_db.has_database(agent_id):
+        return sorted(
+            agent_db.generation_locator(agent_id, session_id)
+            for session_id in agent_db.list_generation_ids(agent_id)
+        )
     sessions_dir = os.path.join(_agents_dir(), agent_id, "sessions")
     try:
         names = os.listdir(sessions_dir)
@@ -140,6 +147,28 @@ def _record_time(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _read_records(path: str) -> list[dict]:
+    """A session's transcript records: a database generation (see
+    ``agent_db.generation_locator``) or a JSONL file. Undecodable lines are
+    skipped; a missing file raises."""
+    located = agent_db.parse_generation_locator(path)
+    if located:
+        return agent_db.read_generation(*located)
+    records: list[dict] = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Contract — discovery + parser (OpenClaw-specific)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +195,7 @@ def parse_file(
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
 ) -> tuple[dict, list]:
-    """Parse a single openclaw session JSONL.
+    """Parse a single openclaw session transcript (JSONL file or database generation).
 
     Returns (session_meta, entries) where each entry carries
     ``role="user"|"assistant"``. User entries are minimal; assistant entries
@@ -176,78 +205,70 @@ def parse_file(
     session_meta: dict = {}
     entries: list = []
 
-    with open(path, "r") as f:
-        last_user_ts: Optional[float] = None
+    last_user_ts: Optional[float] = None
 
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    for record in _read_records(path):
+
+        rtype = record.get("type")
+        if rtype == "session":
+            session_meta = {
+                "sessionId": record.get("id"),
+                "sessionFile": os.path.basename(path),
+                "startTimestamp": record.get("timestamp"),
+            }
+            continue
+        if rtype != "message":
+            continue
+
+        msg = record.get("message", {})
+        role = msg.get("role")
+        ts_str = record.get("timestamp") or msg.get("timestamp")
+
+        ts_epoch_ms: Optional[int] = None
+        if isinstance(ts_str, str):
             try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
+                ts_epoch_ms = int(
+                    datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() * 1000
+                )
+            except Exception:
+                pass
+        elif isinstance(ts_str, (int, float)):
+            ts_epoch_ms = int(ts_str) if ts_str > 1e12 else int(ts_str * 1000)
+
+        if ts_epoch_ms:
+            if start_ms and ts_epoch_ms < start_ms:
+                continue
+            if end_ms and ts_epoch_ms > end_ms:
                 continue
 
-            rtype = record.get("type")
-            if rtype == "session":
-                session_meta = {
-                    "sessionId": record.get("id"),
-                    "sessionFile": os.path.basename(path),
-                    "startTimestamp": record.get("timestamp"),
-                }
-                continue
-            if rtype != "message":
-                continue
+        if role == "user":
+            last_user_ts = ts_epoch_ms
+            entries.append({"role": "user", "timestamp": ts_epoch_ms})
+            continue
 
-            msg = record.get("message", {})
-            role = msg.get("role")
-            ts_str = record.get("timestamp") or msg.get("timestamp")
+        if role != "assistant":
+            continue
 
-            ts_epoch_ms: Optional[int] = None
-            if isinstance(ts_str, str):
-                try:
-                    ts_epoch_ms = int(
-                        datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp() * 1000
-                    )
-                except Exception:
-                    pass
-            elif isinstance(ts_str, (int, float)):
-                ts_epoch_ms = int(ts_str) if ts_str > 1e12 else int(ts_str * 1000)
+        usage = msg.get("usage")
+        if not usage:
+            continue
 
-            if ts_epoch_ms:
-                if start_ms and ts_epoch_ms < start_ms:
-                    continue
-                if end_ms and ts_epoch_ms > end_ms:
-                    continue
+        tool_names, tool_result_counts = _extract_tool_counts(msg)
+        duration_ms = msg.get("durationMs")
+        if not (isinstance(duration_ms, (int, float)) and duration_ms > 0):
+            duration_ms = (ts_epoch_ms - last_user_ts) if (last_user_ts and ts_epoch_ms) else None
 
-            if role == "user":
-                last_user_ts = ts_epoch_ms
-                entries.append({"role": "user", "timestamp": ts_epoch_ms})
-                continue
-
-            if role != "assistant":
-                continue
-
-            usage = msg.get("usage")
-            if not usage:
-                continue
-
-            tool_names, tool_result_counts = _extract_tool_counts(msg)
-            duration_ms = msg.get("durationMs")
-            if not (isinstance(duration_ms, (int, float)) and duration_ms > 0):
-                duration_ms = (ts_epoch_ms - last_user_ts) if (last_user_ts and ts_epoch_ms) else None
-
-            entries.append({
-                "role": "assistant",
-                "usage": usage,
-                "provider": msg.get("provider"),
-                "model": msg.get("model"),
-                "timestamp": ts_epoch_ms,
-                "stopReason": msg.get("stopReason"),
-                "toolNames": tool_names,
-                "toolResultCounts": tool_result_counts,
-                "durationMs": duration_ms,
-            })
+        entries.append({
+            "role": "assistant",
+            "usage": usage,
+            "provider": msg.get("provider"),
+            "model": msg.get("model"),
+            "timestamp": ts_epoch_ms,
+            "stopReason": msg.get("stopReason"),
+            "toolNames": tool_names,
+            "toolResultCounts": tool_result_counts,
+            "durationMs": duration_ms,
+        })
 
     return session_meta, entries
 
@@ -287,17 +308,19 @@ def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
     cutoff_ms = int(cutoff.timestamp() * 1000)
 
     for sf in get_session_files():
-        # session_id = base part of filename (handles .reset/.deleted archives)
-        name = os.path.basename(sf)
-        session_id: Optional[str] = None
-        for marker in (".jsonl.reset.", ".jsonl.deleted."):
-            idx = name.find(marker)
-            if idx > 0:
-                session_id = name[:idx]
-                break
-        if session_id is None:
-            if name.endswith(".jsonl") and ".checkpoint." not in name:
-                session_id = name[:-len(".jsonl")]
+        located = agent_db.parse_generation_locator(sf)
+        session_id: Optional[str] = located[1] if located else None
+        if located is None:
+            # session_id = base part of filename (handles .reset/.deleted archives)
+            name = os.path.basename(sf)
+            for marker in (".jsonl.reset.", ".jsonl.deleted."):
+                idx = name.find(marker)
+                if idx > 0:
+                    session_id = name[:idx]
+                    break
+            if session_id is None:
+                if name.endswith(".jsonl") and ".checkpoint." not in name:
+                    session_id = name[:-len(".jsonl")]
         if session_id is None:
             continue
 
@@ -307,14 +330,14 @@ def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
         # tokens/cost/messages but +1 to total_sessions. Without this we report
         # 27 sessions where the gateway reports 29 on the same data.
         try:
-            if os.path.getmtime(sf) * 1000 >= cutoff_ms:
+            updated_ms = agent_db.generation_updated_ms(*located) if located else os.path.getmtime(sf) * 1000
+            if updated_ms is not None and updated_ms >= cutoff_ms:
                 session_ids.add(session_id)
         except OSError:
             pass
 
         try:
-            with open(sf, "r") as f:
-                records = [json.loads(line) for line in f if line.strip()]
+            records = _read_records(sf)
         except Exception:
             continue
 

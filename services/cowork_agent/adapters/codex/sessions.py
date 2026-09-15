@@ -319,7 +319,7 @@ def get_messages(session_id: str) -> list:
 def _persist_session_directory(session_id: str, directory: str) -> bool:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    for project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+    for project_id, _project_dir, index in _session_index.iter_session_indexes():
         for key, meta in index.items():
             if meta.get("sessionId") != session_id:
                 continue

@@ -39,7 +39,8 @@
   "runtime_setup": {
     "installs_cli": true,
     "session_globs": [
-      "agents/*/sessions/*.jsonl"
+      "agents/*/sessions/*.jsonl",
+      "agents/*/agent/openclaw-agent.sqlite"
     ],
     "secrets": [
       {

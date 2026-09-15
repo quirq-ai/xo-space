@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.adapters.process import terminate_process_tree
 from services.cowork_agent.adapters.antigravity import transcript as _t
 from services.cowork_agent.adapters.antigravity.auth import (
     LOGIN_REQUIRED_MESSAGE,
@@ -137,8 +138,8 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
 
 
 def find_session_key_for_session_id(session_id: str) -> str | None:
-    """Search xo-projects sessions for a matching our-session-id."""
-    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+    """Search xo-projects sessions (and the no-project scope) for a matching our-session-id."""
+    for _project_id, _project_dir, index in _session_index.iter_session_indexes():
         for key, meta in index.items():
             if meta.get("sessionId") == session_id:
                 native = meta.get("nativeSessionId")
@@ -399,12 +400,16 @@ class AntigravityAdapter(BaseAgentAdapter):
         emitted: set = set()
         final_text: str = ""
         error_emitted: bool = False
+        proc = None
         try:
             cmd = self._build_cmd(
                 question, cwd, native_conversation_id=native_resume, model=model, log_file=log_file
             )
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=out_fh, stderr=err_fh, env=self._subprocess_env(), cwd=cwd,
+                # Own process group, so a cancelled turn stops every tool
+                # process agy started (see adapters/process.py).
+                start_new_session=True,
             )
             wait_task = asyncio.create_task(proc.wait())
             timeout = self.config.get("timeout", 300)
@@ -483,6 +488,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                            "error": "agy produced no response. Please try again."}
                 error_emitted = True
         finally:
+            # A cancelled turn (Stop, or the stream closed) must not keep running.
+            await terminate_process_tree(proc)
             # Roll up token usage onto the session index (best-effort).
             if sk and cid:
                 try:

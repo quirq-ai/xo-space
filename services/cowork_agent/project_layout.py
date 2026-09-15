@@ -124,6 +124,20 @@ def workspace_timeline_path() -> Path:
     return xo_runtime_root() / "timeline.jsonl"
 
 
+#: The agent id a chat carries when no project is selected. The adapters key
+#: such sessions ``<backend>:default:web:<id>`` and run them in the projects
+#: root, so no project folder backs their session index.
+NO_PROJECT_SESSION_SCOPE = "default"
+
+
+def no_project_runtime_dir() -> Path:
+    """``~/.quirq/projects/_no_project/``: the session index for chats started
+    with no project selected (unless a real ``default`` project folder exists,
+    which then owns them). History like the per-project homes beside it: a
+    later turn has to find its session here to resume it."""
+    return xo_runtime_root() / "_no_project"
+
+
 # ── Runtime home (machine-local; never synced) ─────────────────────────────────
 # Machine-local telemetry lives OUTSIDE every project tree, in the Quirq state
 # home keyed by ``project.json:pid`` (docs/syncplan.md §4).

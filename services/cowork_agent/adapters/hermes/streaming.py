@@ -11,10 +11,10 @@ Hermes streams chunks like::
            "usage": {...}}
     data: [DONE]
 
-The new session id is returned in the response header ``X-Hermes-Session-Id``;
-this module exposes that to the caller as ``native_session_id`` on the final
-done event. The HTTP-level call lives here so the adapter's ``run``/``stream``
-methods stay thin.
+The session id travels in the ``X-Hermes-Session-Id`` header both ways: the
+adapter sends XO's session id (hermes creates a new session under it) and the
+response echoes it; this module hands that back as ``native_session_id`` on the
+final done event. The HTTP-level call lives here so the adapter stays thin.
 """
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ def _build_headers(session_id: str | None) -> dict[str, str]:
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
-    # Hermes derives a new id when the header is absent; continuing a session
-    # means echoing back the id we got in the previous response header.
+    # The api_server uses a supplied id as the session id, creating the session
+    # under it when it is new, and echoes it back in the response header.
     if session_id and HERMES_SESSION_HEADER:
         headers[HERMES_SESSION_HEADER] = session_id
     return headers
@@ -156,38 +156,3 @@ async def stream_to_normalized(
             yield {"type": "error", "error": f"Hermes transport error: {exc}"}
 
     yield {"done": True, "native_session_id": native_session_id}
-
-
-async def run_collected(
-    question: str,
-    session_id: str | None,
-    *,
-    gateway_base: str | None = None,
-) -> tuple[str, str | None]:
-    """Non-streaming collected response.
-
-    Returns ``(response_text, native_session_id)``. Raises on transport error
-    or non-200 status — non-streaming callers want exceptions, not events.
-    """
-    if not HERMES_API_TOKEN:
-        raise RuntimeError("Hermes API_SERVER_KEY is not set")
-
-    async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-        response = await client.post(
-            _completions_url(gateway_base),
-            headers=_build_headers(session_id),
-            json=_build_body(question, stream=False),
-        )
-        native_session_id = (
-            response.headers.get(HERMES_SESSION_HEADER) or session_id or None
-        )
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Hermes API error: {response.status_code} {response.text}"
-            )
-        data = response.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return "", native_session_id
-        message = choices[0].get("message") or {}
-        return str(message.get("content") or ""), native_session_id

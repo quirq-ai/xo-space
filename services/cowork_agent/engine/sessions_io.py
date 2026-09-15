@@ -111,21 +111,39 @@ def read_session_index_at(
     return merged
 
 
+def _no_project_root(name: str) -> Optional[Path]:
+    """The no-project session scope's root, or None for any other name."""
+    if name != project_layout.NO_PROJECT_SESSION_SCOPE:
+        return None
+    return project_layout.no_project_runtime_dir()
+
+
 def read_session_index(name: str) -> dict:
-    """Merged ``{key: row}`` for a project, resolved from its folder name."""
+    """Merged ``{key: row}`` for a project, resolved from its folder name.
+
+    ``default`` with no such folder is the no-project scope: chats started with
+    no project selected.
+    """
     runtime_root, legacy_root = project_layout.runtime_read_roots(name)
     if runtime_root is None:
-        return {}
+        scope_root = _no_project_root(name)
+        return read_session_index_at(scope_root) if scope_root is not None else {}
     return read_session_index_at(runtime_root, legacy_root=legacy_root)
 
 
 def write_session_row(name: str, composite_key: str, row: dict) -> bool:
-    """Replace one row in a project's session index. Returns ``True`` on write."""
+    """Replace one row in a project's session index. Returns ``True`` on write.
+
+    A project that doesn't exist gets nothing, except ``default``, which then
+    means the no-project scope (see :func:`read_session_index`).
+    """
     if not name or not composite_key or not isinstance(row, dict):
         return False
     runtime_root = project_layout.runtime_dir_for_project(name, create=True)
     if runtime_root is None:
-        return False
+        runtime_root = _no_project_root(name)
+        if runtime_root is None:
+            return False
     shard_dir = runtime_root / project_layout.RUNTIME_SESSION_SHARDS_SUBDIR
     shard_dir.mkdir(parents=True, exist_ok=True)
     _write_shard_atomic(shard_dir / shard_filename(composite_key), {composite_key: row})
@@ -145,6 +163,21 @@ def iter_project_session_indexes() -> Iterator[tuple[str, Path, dict]]:
         index = read_session_index(entry.name)
         if index:
             yield entry.name, entry, index
+
+
+def iter_session_indexes() -> Iterator[tuple[str, Path, dict]]:
+    """Every project's session index, then the no-project scope's.
+
+    Session lookups (resume, messages, ownership, listing) use this: a chat
+    started with no project selected must still be found on its next turn.
+    """
+    yield from iter_project_session_indexes()
+    scope = project_layout.NO_PROJECT_SESSION_SCOPE
+    if project_layout.runtime_read_roots(scope)[0] is not None:
+        return  # a real ``default`` project owns them; already yielded above
+    index = read_session_index_at(project_layout.no_project_runtime_dir())
+    if index:
+        yield scope, xo_projects_root(), index
 
 
 # ── Adapter sessions-capability resolution ────────────────────────────────────
@@ -185,6 +218,11 @@ def load_all_sessions() -> list[dict]:
             if not session_id or session_id in seen_ids:
                 continue
             seen_ids.add(session_id)
+            # A backend that also lists its native store (below) reports the
+            # same conversation under its native id; don't list it twice.
+            native_id = meta.get("nativeSessionId")
+            if isinstance(native_id, str) and native_id:
+                seen_ids.add(native_id)
 
             updated_at = meta.get("updatedAt")
             time_updated = ms_to_iso(updated_at) if updated_at else iso_now()
@@ -238,7 +276,7 @@ def load_all_sessions() -> list[dict]:
     # The per-session enrichment inside still routes by each row's OWN backend
     # tag, so a project dir holding mixed-backend sessions resolves correctly.
     if getattr(active_mod, "USES_PROJECT_SESSIONS", False):
-        for project_id, project_dir, index in iter_project_session_indexes():
+        for project_id, project_dir, index in iter_session_indexes():
             _ingest_project_index(index, project_id, project_dir)
 
     # Native (non-project) sessions from the active backend's own store
@@ -271,7 +309,7 @@ def find_session_file(session_id: str) -> Path | None:
     """
     # xo-projects: check the session index for metadata to find the native
     # file.
-    for _project_id, _project_dir, index in iter_project_session_indexes():
+    for _project_id, _project_dir, index in iter_session_indexes():
         for meta in index.values():
             if meta.get("sessionId") != session_id:
                 continue
@@ -303,7 +341,7 @@ def find_session_file(session_id: str) -> Path | None:
 def find_session_backend(session_id: str) -> str | None:
     """Return the adapter name that owns session_id, or None."""
     # xo-projects: read the backend tag directly from the session index.
-    for _project_id, _project_dir, index in iter_project_session_indexes():
+    for _project_id, _project_dir, index in iter_session_indexes():
         for meta in index.values():
             if meta.get("sessionId") == session_id:
                 tag = meta.get("backend", "")

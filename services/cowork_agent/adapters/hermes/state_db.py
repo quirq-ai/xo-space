@@ -202,6 +202,30 @@ def find_hermes_profile(session_id: str) -> str | None:
     return None
 
 
+def session_title_and_start(session_id: str) -> tuple[str | None, str | None]:
+    """``(title, started_at ISO)`` for one hermes session, or ``(None, None)``.
+
+    Lets a project-index row for a hermes session show the same title and
+    creation time the native listing above does.
+    """
+    profile = find_hermes_profile(session_id)
+    if profile is None:
+        return None, None
+    db_path = HERMES_DIR / "state.db" if profile == _DEFAULT_PROFILE else HERMES_PROFILES_DIR / profile / "state.db"
+    try:
+        with _ro_connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT title, started_at FROM sessions WHERE id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if row is None:
+        return None, None
+    title = (row["title"] or "").strip() or _derive_title_from_first_message(db_path, session_id)
+    return title, _epoch_to_iso(row["started_at"])
+
+
 def load_hermes_session_records(session_id: str) -> list[dict[str, Any]]:
     """Return the session's messages as openclaw-shaped JSONL records.
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.adapters.process import terminate_process_tree
 from services.cowork_agent.project_layout import (
     project_dir as _xo_project_dir,
     xo_projects_root,
@@ -149,8 +150,9 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
 
 def find_session_key_for_session_id(session_id: str) -> str | None:
     """Search xo-projects sessions for a matching session_id.
-    (Verbatim from claude_code/adapter.py:177-198 — backend-agnostic.)"""
-    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+    (Verbatim from claude_code/adapter.py:177-198 — backend-agnostic; includes
+    the no-project scope.)"""
+    for _project_id, _project_dir, index in _session_index.iter_session_indexes():
         for key, meta in index.items():
             if meta.get("sessionId") == session_id:
                 native = meta.get("nativeSessionId")
@@ -437,6 +439,7 @@ class CodexAdapter(BaseAgentAdapter):
         native_session_id: str | None = None
         response_parts: list[str] = []
         usage: dict = {}
+        proc = None
         try:
             cmd = self._build_cmd(
                 question, native_resume_id, agent_type=agent_type, cwd=effective_cwd, model=model,
@@ -451,6 +454,9 @@ class CodexAdapter(BaseAgentAdapter):
                 #                                       arrives on the stdout wire (error event).
                 env=self._subprocess_env(),
                 cwd=effective_cwd,
+                # Own process group, so a cancelled turn stops every tool
+                # process codex started (see adapters/process.py).
+                start_new_session=True,
             )
 
             async for raw_line in proc.stdout:
@@ -487,6 +493,8 @@ class CodexAdapter(BaseAgentAdapter):
 
             await proc.wait()
         finally:
+            # A cancelled turn (Stop, or the stream closed) must not keep running.
+            await terminate_process_tree(proc)
             # Roll usage onto the index even on cancellation. nativeSessionId was
             # already patched from inside the loop; here we add the turn's tokens
             # (key-remapped) + bump the timestamp. Nothing to do if codex never

@@ -30,14 +30,16 @@ from services.cowork_agent.helpers import (
 )
 from services.cowork_agent.adapters.openclaw.store import (
     _agent_model_to_display,
-    apply_agent_list_entry,
+    apply_agent_entry,
     ensure_openclaw_agent_disk,
     find_agent_entry_index,
     list_agent_entries,
     load_openclaw_config,
     resolve_agent_workspace_dir,
+    with_agent_entries,
     write_openclaw_config,
 )
+from services.cowork_agent.adapters.openclaw import agent_db
 from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
 from services.cowork_agent.registry.settings import _WORKSPACE_DOC_FILES
 
@@ -66,7 +68,7 @@ def _patch_into_config(cfg: dict, agent_id: str, body) -> dict:
     aid = normalize_agent_id(agent_id)
     if find_agent_entry_index(list_agent_entries(cfg), aid) < 0:
         ws_dir = resolve_agent_workspace_dir(cfg, aid)
-        cfg = apply_agent_list_entry(cfg, aid, aid, ws_dir)
+        cfg = apply_agent_entry(cfg, aid, aid, ws_dir)
     entries = list_agent_entries(cfg)
     idx = find_agent_entry_index(entries, aid)
     if idx < 0:
@@ -118,9 +120,7 @@ def _patch_into_config(cfg: dict, agent_id: str, body) -> dict:
         else:
             entry.pop("identity", None)
     next_list[idx] = entry
-    agents_block = dict(cfg.get("agents") or {})
-    agents_block["list"] = next_list
-    return {**cfg, "agents": agents_block}
+    return with_agent_entries(cfg, next_list)
 
 
 # ── Uniform agents contract ───────────────────────────────────────────────────
@@ -179,7 +179,7 @@ def create_agent(body) -> dict | JSONResponse:
         # OpenClaw agents live under ~/.openclaw/agents/<id>/ and are listed in
         # ~/.openclaw/openclaw.json. Their workspace (~/.openclaw/workspace-<id>/)
         # is created and seeded by ensure_openclaw_agent_disk() below.
-        next_cfg = apply_agent_list_entry(cfg, agent_id, display_name, workspace_dir)
+        next_cfg = apply_agent_entry(cfg, agent_id, display_name, workspace_dir)
         write_openclaw_config(next_cfg)
         ensure_openclaw_agent_disk(agent_id, workspace_dir)
     except Exception as e:
@@ -228,19 +228,10 @@ def get_detail(agent_id: str) -> dict | None:
     if isinstance(auth_profiles_raw, dict):
         auth_profiles_safe = _redact_secrets_nested(auth_profiles_raw)
 
-    sessions_index_path = agent_root / "sessions" / "sessions.json"
-    session_ids: list[str] = []
-    session_count = 0
-    idx_data = _read_json_file_safe(sessions_index_path)
-    if isinstance(idx_data, dict):
-        seen_ids: set[str] = set()
-        for _key, meta in idx_data.items():
-            if isinstance(meta, dict):
-                sid = meta.get("sessionId")
-                if isinstance(sid, str) and sid.strip():
-                    seen_ids.add(sid.strip())
-        session_count = len(seen_ids)
-        session_ids = sorted(seen_ids)[:80]
+    sessions_index_path = agent_db.session_store_path(aid)
+    seen_ids = {info.session_id for info in agent_db.list_sessions(aid) if info.session_id}
+    session_count = len(seen_ids)
+    session_ids = sorted(seen_ids)[:80]
 
     global_auth = (cfg.get("auth") or {}).get("profiles")
     global_auth_summary = _summarize_auth_profiles(global_auth) if isinstance(global_auth, dict) else {}

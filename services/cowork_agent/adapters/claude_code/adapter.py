@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.adapters.process import terminate_process_tree
 from services.cowork_agent.project_layout import (
     project_dir as _xo_project_dir,
     xo_projects_root,
@@ -149,8 +150,8 @@ def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
 
 
 def find_session_key_for_session_id(session_id: str) -> str | None:
-    """Search xo-projects sessions for a matching session_id."""
-    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+    """Search xo-projects sessions (and the no-project scope) for a matching session_id."""
+    for _project_id, _project_dir, index in _session_index.iter_session_indexes():
         for key, meta in index.items():
             if meta.get("sessionId") == session_id:
                 native = meta.get("nativeSessionId")
@@ -427,6 +428,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             native_resume_id = get_native_session_id(sk)
 
         mcp_config_path = write_session_mcp_config(user_id, sk)
+        proc = None
         try:
             cmd = self._build_cmd(
                 question, native_resume_id, stream=True, agent_type=agent_type, cwd=effective_cwd,
@@ -440,6 +442,9 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 stderr=asyncio.subprocess.PIPE,
                 env=self._subprocess_env(),
                 cwd=effective_cwd,
+                # Own process group, so a cancelled turn stops every tool
+                # process the CLI started (see adapters/process.py).
+                start_new_session=True,
             )
 
             native_session_id: str | None = None
@@ -497,6 +502,8 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 response_parts.append(result_text)
                 yield {"type": "token", "token": result_text}
         finally:
+            # A cancelled turn (Stop, or the stream closed) must not keep running.
+            await terminate_process_tree(proc)
             cleanup_session_mcp_config(mcp_config_path)
             # Always roll up usage onto the sessions index, even on cancellation.
             # ``nativeSessionId`` itself was already written from inside the loop

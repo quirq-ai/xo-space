@@ -43,17 +43,55 @@ def write_openclaw_config(cfg: dict) -> None:
     tmp.replace(OPENCLAW_JSON)
 
 
-# ── agents.list traversal ────────────────────────────────────────────────────
+# ── Agent roster traversal ───────────────────────────────────────────────────
+#
+# Current OpenClaw keys agents by id under ``agents.entries``
+# (``src/config/types.agents.ts``); the earlier ``agents.list`` array is
+# rejected by its config schema and only migrated by ``openclaw doctor``. Both
+# forms are read. Writes keep the form the file already uses, and a config
+# with no roster yet gets ``agents.entries``.
+
+
+def _uses_legacy_list(cfg: dict) -> bool:
+    agents = cfg.get("agents")
+    return (
+        isinstance(agents, dict)
+        and isinstance(agents.get("list"), list)
+        and not isinstance(agents.get("entries"), dict)
+    )
 
 
 def list_agent_entries(cfg: dict) -> list[dict]:
+    """Every configured agent, as a dict carrying its ``id``."""
     agents = cfg.get("agents")
     if not isinstance(agents, dict):
         return []
+    entries = agents.get("entries")
+    if isinstance(entries, dict):
+        return [
+            {**entry, "id": agent_id}
+            for agent_id, entry in entries.items()
+            if agent_id and isinstance(entry, dict)
+        ]
     lst = agents.get("list")
     if not isinstance(lst, list):
         return []
     return [e for e in lst if isinstance(e, dict) and e.get("id")]
+
+
+def with_agent_entries(cfg: dict, entries: list[dict]) -> dict:
+    """Return ``cfg`` with its roster replaced by ``entries`` (each carrying
+    ``id``), written in the roster form the config already uses."""
+    agents_block = dict(cfg.get("agents") or {})
+    if _uses_legacy_list(cfg):
+        agents_block["list"] = [dict(e) for e in entries]
+    else:
+        # ``default`` belongs to the legacy list only; entries reject it.
+        agents_block["entries"] = {
+            str(e["id"]): {k: v for k, v in e.items() if k not in ("id", "default")}
+            for e in entries
+        }
+    return {**cfg, "agents": agents_block}
 
 
 def find_agent_entry_index(entries: list[dict], agent_id: str) -> int:
@@ -107,16 +145,14 @@ def _agent_model_to_display(model_value) -> str | None:
     return None
 
 
-def apply_agent_list_entry(cfg: dict, agent_id: str, name: str, workspace: Path) -> dict:
+def apply_agent_entry(cfg: dict, agent_id: str, name: str, workspace: Path) -> dict:
     """
-    Append or update agents.list like OpenClaw applyAgentConfig (add branch).
-    When the list is empty and the new id is not the default agent, inserts {id: main} first.
+    Add or update an agent's roster entry like OpenClaw applyAgentConfig (add branch).
+    When the roster is empty and the new id is not the default agent, adds the default agent first.
     """
     aid = normalize_agent_id(agent_id)
     default_id = resolve_default_agent_id(cfg)
-    agents_block = dict(cfg.get("agents") or {})
-    lst = list_agent_entries(cfg)
-    next_list = [dict(e) for e in lst]
+    next_list = [dict(e) for e in list_agent_entries(cfg)]
     idx = find_agent_entry_index(next_list, aid)
     next_entry: dict = {"id": aid, "name": name, "workspace": str(workspace)}
     if idx >= 0:
@@ -125,8 +161,7 @@ def apply_agent_list_entry(cfg: dict, agent_id: str, name: str, workspace: Path)
         if len(next_list) == 0 and aid != default_id:
             next_list.append({"id": default_id})
         next_list.append(next_entry)
-    agents_block["list"] = next_list
-    return {**cfg, "agents": agents_block}
+    return with_agent_entries(cfg, next_list)
 
 
 # ── Workspace / agent-disk scaffolding ───────────────────────────────────────
@@ -144,19 +179,14 @@ def seed_agent_workspace(workspace_dir: Path, template_dir: Path) -> None:
 
 
 def ensure_openclaw_agent_disk(agent_id: str, workspace_dir: Path) -> None:
-    """Initialize OpenClaw's ~/.openclaw/agents/<id>/ store and seed the
+    """Create OpenClaw's ~/.openclaw/agents/<id>/agent/ dir and seed the
     agent's workspace directory.
 
-    Sets up the OpenClaw-internal session store and agent dir, then creates
-    and seeds ``workspace_dir`` (legacy behavior: a dedicated
-    ~/.openclaw/workspace-<id>/ folder) from the default workspace template.
+    OpenClaw creates the agent's session store there itself on first use.
+    ``workspace_dir`` (legacy behavior: a dedicated ~/.openclaw/workspace-<id>/
+    folder) is created and seeded from the default workspace template.
     """
     aid = normalize_agent_id(agent_id)
-    sessions_dir = AGENTS_DIR / aid / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    idx_file = sessions_dir / "sessions.json"
-    if not idx_file.exists():
-        idx_file.write_text("{}", encoding="utf-8")
     (AGENTS_DIR / aid / "agent").mkdir(parents=True, exist_ok=True)
     tpl = DEFAULT_OPENCLAW_WORKSPACE if DEFAULT_OPENCLAW_WORKSPACE.is_dir() else Path()
     seed_agent_workspace(workspace_dir, tpl)

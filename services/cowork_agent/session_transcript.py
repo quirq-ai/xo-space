@@ -81,15 +81,25 @@ def build_transcript(title: str, messages: list[dict], *, include_tools: bool = 
     }
 
 
+def _first_user_text(messages: list[dict]) -> str:
+    for bubble in build_transcript("", messages)["messages"]:
+        if bubble["role"] == "user":
+            return bubble["content"]
+    return ""
+
+
 def load_transcript(session_id: str, *, include_tools: bool = False) -> dict:
     """The transcript of a known session; SessionNotFound otherwise. Reads
     messages through the owning adapter's sessions capability, exactly as
-    GET /api/messages does."""
+    GET /api/messages does, so a session some backend owns is served even
+    when the active backend's listing doesn't include it. The title is the
+    listed one, else the first user message."""
     session = next((s for s in load_all_sessions() if s.get("id") == session_id), None)
-    if session is None:
-        raise SessionNotFound(session_id)
     backend = find_session_backend(session_id)
+    if session is None and backend is None:
+        raise SessionNotFound(session_id)
     mod = try_load_capability("sessions", agent=backend) if backend else None
     fn = getattr(mod, "get_messages", None) if mod else None
     messages = fn(session_id) if fn else []
-    return build_transcript(session.get("title") or "", messages, include_tools=include_tools)
+    title = (session or {}).get("title") or _first_user_text(messages)
+    return build_transcript(title, messages, include_tools=include_tools)

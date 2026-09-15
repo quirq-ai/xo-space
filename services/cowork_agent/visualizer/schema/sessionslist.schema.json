@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/sessionslist.schema.json",
   "title": "xo sessionslist — adapter-owned per-session index",
-  "description": "One row per cowork session. Written by the runtime adapters (services/cowork_agent/adapters/claude_code/adapter.py, services/cowork_agent/adapters/openclaw/transcript.py) at session start AND on every subsequent usage update. NEVER written by agents (AGENTS.md §1) and NEVER written by the watcher — the watcher keeps its augmenting fields in the sibling `sessions-augment.json` file (see docs/watcher-design.md §3.7). The top-level object is keyed by the composite session id `<backend>:<agent_id>:<surface>:<8hex>` produced by the adapter (e.g. `claude:blackhole:web:67a1ac06`).",
+  "description": "One row per cowork session. Written by the runtime adapters (services/cowork_agent/adapters/claude_code/adapter.py, services/cowork_agent/adapters/<backend>/adapter.py and sessionslist.py) at session start AND on every subsequent usage update. NEVER written by agents (AGENTS.md §1) and NEVER written by the watcher — the watcher keeps its augmenting fields in the sibling `sessions-augment.json` file (see docs/watcher-design.md §3.7). The top-level object is keyed by the composite session id `<backend>:<agent_id>:<surface>:<8hex>` produced by the adapter (e.g. `claude:blackhole:web:67a1ac06`).",
   "type": "object",
   "additionalProperties": { "$ref": "#/definitions/session_row" },
   "definitions": {

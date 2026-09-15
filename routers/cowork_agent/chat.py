@@ -3,8 +3,8 @@ Chat prompt / streaming / abort routes.
 
 The router is backend-agnostic. An agent may contribute a ``chat`` capability
 (``services/cowork_agent/adapters/<name>/chat.py``):
-  - ``handle_prompt(...)`` — fully owns POST /api/chat/prompt (e.g. openclaw's
-    direct prefetch path). When absent, the prompt goes through AgentDispatcher.
+  - ``handle_prompt(...)`` — fully owns POST /api/chat/prompt. When absent,
+    the prompt goes through AgentDispatcher.
   - ``get_sse_generator(stream_id, stream_info)`` — the SSE generator for a
     stream that handler registered.
   - ``resolve_agent_id(body)`` — resolve an agent_id/profile from the prompt
@@ -32,7 +32,12 @@ log = logging.getLogger(__name__)
 # double-mount) gets a graceful done event rather than "Stream not found".
 # Maps stream_id -> {session_id, started_at}
 _recently_started: dict[str, dict] = {}
-_RECENTLY_STARTED_TTL = 600  # seconds — must outlast SSE_HEARTBEAT_TIMEOUT (45s) + full reconnect backoff
+_RECENTLY_STARTED_TTL = 600  # seconds — must outlast the frontend's 45 s heartbeat watchdog + full reconnect backoff
+
+# stream_id -> the producer task of an open dispatcher stream, so
+# POST /api/chat/abort can cancel the running turn (the adapter's cancellation
+# path stops the agent process).
+_running_producers: dict[str, asyncio.Task] = {}
 
 router = APIRouter()
 
@@ -86,9 +91,8 @@ def _adapter_sse_generator(stream_info: dict, stream_id: str):
 def _session_id_from_sse(chunk: str) -> str | None:
     """Best-effort extract a ``session_id`` from an SSE chunk's data payload.
 
-    Adapter-owned streams resolve their session id mid-stream (e.g. an
-    openclaw prefetch only learns it from the gateway, then emits it in a
-    ``session-created`` event). This keeps ``_recently_started``'s session_id
+    Adapter-owned streams may resolve their session id mid-stream and emit
+    it in a ``session-created`` event. This keeps ``_recently_started``'s session_id
     current so a post-``done`` reconnect can replay session-created + done.
     Backend-agnostic: parses only the generic SSE wire shape.
     """
@@ -111,7 +115,11 @@ _KEEPALIVE_INTERVAL = 20  # seconds of silence before emitting an SSE keepalive 
 _SENTINEL = object()  # marks end-of-stream in the keepalive queue
 
 
-async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None):
+async def _dispatcher_sse(
+    stream_info: dict,
+    _session_id_out: list | None = None,
+    stream_id: str | None = None,
+):
     """
     SSE generator for non-OpenClaw agents using AgentDispatcher.
 
@@ -173,6 +181,8 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
             await queue.put(_SENTINEL)
 
     producer = asyncio.create_task(_produce())
+    if stream_id:
+        _running_producers[stream_id] = producer
     try:
         while True:
             try:
@@ -204,6 +214,8 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
                 event_id += 1
     finally:
         producer.cancel()
+        if stream_id:
+            _running_producers.pop(stream_id, None)
 
     resolved_session_id = our_session_id or final_native_session_id
     if _session_id_out is not None:
@@ -245,7 +257,7 @@ async def chat_prompt(request: Request):
     is_new_session = not bool(session_id)
 
     # Resolve agent_id from explicit field or workspace hint (all agents, new sessions only).
-    # For openclaw this becomes xo_agent_id (xo-projects subdir for the transcript tee).
+    # It names the session's project (the xo-projects subdir) for every backend.
     agent_id = body.get("agent_id")
     if not agent_id and is_new_session:
         workspace_hint = body.get("workspace", "")
@@ -271,9 +283,9 @@ async def chat_prompt(request: Request):
         if resolver:
             agent_id = resolver(body)
 
-    # Optional adapter hook: an agent may fully own the prompt path (e.g.
-    # openclaw's direct prefetch/streaming). When present it returns the
-    # response; otherwise we fall through to the shared dispatcher path.
+    # Optional adapter hook: an agent may fully own the prompt path. When
+    # present it returns the response; otherwise we fall through to the shared
+    # dispatcher path.
     chat_mod = try_load_capability("chat", agent=agent_name)
     handle_prompt = getattr(chat_mod, "handle_prompt", None) if chat_mod else None
     if handle_prompt:
@@ -334,7 +346,7 @@ async def chat_stream(stream_id: str):
                 yield f"id: 1\nevent: error\ndata: {json.dumps({'error_message': 'Stream not found'})}\n\n"
             generator = not_found()
     elif adapter_gen is not None:
-        # Adapter-owned stream (e.g. openclaw prefetch / live gateway stream).
+        # Adapter-owned stream (registered by a chat.handle_prompt hook).
         # Give it the same reconnect grace as the dispatcher path below: a native
         # EventSource auto-reconnects the instant the server closes the
         # connection after `done`, and that reconnect can land before the client
@@ -370,7 +382,7 @@ async def chat_stream(stream_id: str):
         session_id_out: list = []
         async def _dispatcher_with_signal():
             try:
-                async for chunk in _dispatcher_sse(stream_info, session_id_out):
+                async for chunk in _dispatcher_sse(stream_info, session_id_out, stream_id):
                     yield chunk
             finally:
                 if session_id_out:
@@ -398,7 +410,13 @@ async def chat_abort(request: Request):
     body = await request.json()
     stream_id = body.get("stream_id")
     if stream_id:
+        # Not opened yet: drop the registration so it never starts.
         active_streams.pop(stream_id, None)
+        # Already streaming: cancel the turn. The adapter's cancellation path
+        # stops the agent, and the SSE stream ends with its done event.
+        producer = _running_producers.get(stream_id)
+        if producer is not None and not producer.done():
+            producer.cancel()
     return {"ok": True}
 
 

@@ -90,7 +90,18 @@ class TranscriptRouteTests(unittest.TestCase):
         self.assertIn("[Bash] ls -la", with_tools["messages"][1]["content"])
 
     def test_unknown_session_is_404(self) -> None:
-        with patch.object(st, "load_all_sessions", return_value=[]):
+        with patch.object(st, "load_all_sessions", return_value=[]), \
+             patch.object(st, "find_session_backend", return_value=None):
             r = self.client.get("/api/sessions/nope/transcript")
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.json(), {"detail": "Session not found"})
+
+    def test_a_session_another_backend_owns_is_served_like_its_messages(self) -> None:
+        # The active backend doesn't list it, but GET /api/messages can read it.
+        with patch.object(st, "load_all_sessions", return_value=[]), \
+             patch.object(st, "find_session_backend", return_value="x"), \
+             patch.object(st, "try_load_capability", return_value=type("M", (), {"get_messages": staticmethod(lambda sid: RECORD)})):
+            r = self.client.get(f"/api/sessions/{SID}/transcript")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["title"], "Summarize what this project is")
+        self.assertEqual([m["role"] for m in r.json()["messages"]], ["user", "assistant"])

@@ -4,12 +4,13 @@ Hermes adapter: drives the local Hermes gateway (``hermes gateway``) on
 
 Session model
 -------------
-Hermes owns session storage in ``~/.hermes/state.db`` (and one DB per profile
-under ``~/.hermes/profiles/<name>/state.db``). xo-cowork is stateless: it
-sends the previous session id via the ``X-Hermes-Session-Id`` request header
-to continue, or omits it to start fresh. The hermes server derives a new id
-and returns it back in the same header on the response — that becomes the
-``native_session_id`` we hand back to chat_prompt.
+The same as the CLI backends: XO mints the session id, writes the
+session-index row before the request, and resumes by looking the row up.
+Hermes' api_server takes a client-supplied ``X-Hermes-Session-Id`` and creates
+the session under it, so XO's id is also the hermes id (the analogue of
+claude_code's pre-allocated ``--session-id``). Hermes owns message storage in
+``~/.hermes/state.db`` (and one DB per profile under
+``~/.hermes/profiles/<name>/state.db``).
 
 Reads happen via ``services.cowork_agent.adapters.hermes.state_db`` (read-only) so
 the sidebar can list/transcript sessions without going through the API.
@@ -19,6 +20,10 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.project_layout import (
+    project_dir as _xo_project_dir,
+    xo_projects_root,
+)
 
 
 class HermesAdapter(BaseAgentAdapter):
@@ -39,20 +44,20 @@ class HermesAdapter(BaseAgentAdapter):
         session_id: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Non-streaming chat: post once, return collected message + native id."""
-        from services.cowork_agent.adapters.hermes.streaming import run_collected
-        from services.cowork_agent.adapters.hermes.sessionslist import write_session_row
-
-        gateway_base = self._resolve_gateway_base(kwargs.get("agent_id"), session_id)
-        response_text, native_session_id = await run_collected(
-            question, session_id, gateway_base=gateway_base,
-        )
-        write_session_row(
-            agent_id=kwargs.get("agent_id"),
-            our_session_id=kwargs.get("our_session_id") or session_id,
-            native_session_id=native_session_id,
-        )
-        return {"message": response_text, "native_session_id": native_session_id}
+        """Non-streaming chat: the streamed turn, collected."""
+        parts: list[str] = []
+        error: str | None = None
+        native_session_id: str | None = None
+        async for event in self.stream(question, session_id, **kwargs):
+            if event.get("done"):
+                native_session_id = event.get("native_session_id")
+            elif event.get("type") == "token":
+                parts.append(event.get("token", ""))
+            elif event.get("type") == "error":
+                error = event.get("error") or error
+        if error and not parts:
+            raise RuntimeError(error)
+        return {"message": "".join(parts), "native_session_id": native_session_id}
 
     async def stream(
         self,
@@ -63,109 +68,143 @@ class HermesAdapter(BaseAgentAdapter):
         """Streaming chat: yields ``{type: token, token: ...}`` then exactly one
         ``{done: True, native_session_id: ...}``.
 
-        On a brand-new session (no session_id), the native id surfaces in the
-        ``X-Hermes-Session-Id`` response header — the streaming helper resolves
-        it and includes it in the done event. We also emit a
-        ``session-id-resolved`` event before tokens so the SSE dispatcher can
-        emit ``session-created`` to the frontend immediately on the first chunk.
-
         Profile routing: hermes's api_server inherits a single profile at
         process startup, so to route different agents to different profiles
         we maintain a per-profile gateway pool (see ``gateway_pool.py``).
-        ``agent_id`` from the caller picks which gateway URL to hit; the
-        default profile keeps using the hermes.sh-managed gateway on 8642.
+        The profile named like the selected agent/project picks the gateway;
+        the default profile keeps using the hermes.sh-managed gateway on 8642.
         """
-        from services.cowork_agent.adapters.hermes.streaming import stream_to_normalized
-        from services.cowork_agent.adapters.hermes.sessionslist import write_session_row
-        from services.cowork_agent.adapters.hermes.state_db import register_inflight_exchange
         from services.cowork_agent.adapters.hermes.paths import HERMES_MODEL
+        from services.cowork_agent.adapters.hermes.sessionslist import (
+            agent_id_from_key,
+            find_session_row,
+            make_session_key,
+            touch_session_row,
+            write_preliminary_entry,
+        )
+        from services.cowork_agent.adapters.hermes.state_db import register_inflight_exchange
+        from services.cowork_agent.adapters.hermes.streaming import stream_to_normalized
 
         # _dispatcher_sse always passes session_id=None; the real ID is in our_session_id
-        our_session_id = kwargs.get("our_session_id")
-        if not session_id:
-            session_id = our_session_id
+        our_session_id: str | None = kwargs.get("our_session_id") or session_id
+        is_new: bool = kwargs.get("is_new_session", session_id is None)
+        agent_id: str | None = kwargs.get("agent_id")
 
-        gateway_base = self._resolve_gateway_base(kwargs.get("agent_id"), session_id)
-        is_fresh_session = not session_id
+        session_key: str | None = kwargs.get("session_key")
+        project_id: str | None = None
+        native_session_id: str | None = our_session_id
+        if not is_new and our_session_id:
+            found = find_session_row(our_session_id)
+            if found is not None:
+                project_id, session_key, meta = found
+                native_session_id = meta.get("nativeSessionId") or our_session_id
+            # No row: a session listed from hermes' own store; its id is native.
+        elif is_new and our_session_id and not session_key:
+            session_key = make_session_key(agent_id or "default", our_session_id)
+
+        if session_key and project_id is None:
+            project_id = agent_id_from_key(session_key)
+        if is_new and session_key and our_session_id:
+            write_preliminary_entry(
+                session_key, our_session_id, our_session_id, self._resolve_cwd(project_id)
+            )
+
+        profile = self._resolve_profile(
+            agent_id or project_id, None if is_new else native_session_id
+        )
+        gateway_base = self._resolve_gateway_base(profile)
+
         accumulated: list[str] = []
-        async for event in stream_to_normalized(
-            question, session_id, gateway_base=gateway_base,
-        ):
-            if event.get("type") == "error":
+        resolved = native_session_id
+        try:
+            async for event in stream_to_normalized(
+                question, native_session_id, gateway_base=gateway_base,
+            ):
+                if event.get("done"):
+                    resolved = event.get("native_session_id") or resolved
+                    break
+                if event.get("type") == "token":
+                    accumulated.append(event.get("token", ""))
                 yield event
-                continue
-            if event.get("type") == "token":
-                accumulated.append(event.get("token", ""))
-                yield event
-                continue
-            if event.get("done"):
-                native_id = event.get("native_session_id")
-                # Cache the just-completed exchange so /api/messages can serve it
-                # during the 3-10 s window before hermes commits to state.db.
-                if native_id:
-                    register_inflight_exchange(
-                        native_id,
-                        user_text=question,
-                        assistant_text="".join(accumulated),
-                        model=HERMES_MODEL,
-                    )
-                # Upsert the per-project sessionslist row so the xo-coworker
-                # dashboard sees this hermes session. No-op when no agent_id
-                # was supplied (agent-only chat with no project selected).
-                write_session_row(
-                    agent_id=kwargs.get("agent_id"),
-                    our_session_id=our_session_id or session_id,
-                    native_session_id=native_id,
-                )
-                # Surface the resolved id for the dispatcher's session-created
-                # event whenever this was a brand-new session.
-                if is_fresh_session and native_id:
-                    yield {"type": "session-id-resolved", "session_id": native_id}
-                yield {"done": True, "native_session_id": native_id}
-                return
-            yield event
+        finally:
+            if session_key and project_id:
+                touch_session_row(project_id, session_key, resolved)
+
+        # Cache the just-completed exchange so /api/messages can serve it
+        # during the 3-10 s window before hermes commits to state.db.
+        if resolved:
+            register_inflight_exchange(
+                resolved,
+                user_text=question,
+                assistant_text="".join(accumulated),
+                model=HERMES_MODEL,
+            )
+        yield {"done": True, "native_session_id": resolved}
 
     # ── Concrete overrides ────────────────────────────────────────────────────
 
     @staticmethod
-    def _resolve_gateway_base(agent_id: str | None, session_id: str | None = None) -> str | None:
-        """Pick the gateway base URL for ``agent_id`` via the per-profile pool.
+    def _resolve_cwd(project_id: str | None) -> str:
+        """The session's project folder, as the CLI backends compute it.
 
-        Returns ``None`` for the default profile (or unknown agent_id) so the
-        streaming helper falls back to ``HERMES_API_URL`` — i.e. the
-        hermes.sh-managed gateway on port 8642. Any pool failure (invalid
-        profile, spawn timeout) is logged and downgraded to ``None`` rather
-        than failing the chat outright: the user just hits the default
-        profile, same as before this feature shipped.
+        ``~/xo-projects/<project>/`` (created if missing), or the projects root
+        when no project is selected.
+        """
+        if project_id and project_id not in ("default", ""):
+            project = _xo_project_dir(project_id)
+            project.mkdir(parents=True, exist_ok=True)
+            return str(project)
+        return str(xo_projects_root())
 
-        Session-continuation fallback: the FE only sends ``agent_id`` on
-        new sessions. When continuing an existing session it sends just
-        the session_id, so without this fallback the request would hit
-        the default gateway, hermes wouldn't recognize the X-Hermes-Session-Id
-        (because the session lives in a different profile's state.db),
-        and the chat would silently start a fresh session under
-        ``default`` — exactly the cross-profile leak we built the pool to
-        prevent. We back-resolve the owning profile from state.db via
-        ``find_hermes_profile`` so continuations land in the right place.
+    @staticmethod
+    def _resolve_profile(agent_id: str | None, native_session_id: str | None) -> str | None:
+        """The hermes profile a turn runs in, or None for the default profile.
+
+        A continuation runs in the profile whose state.db owns the session:
+        the default gateway would not recognise another profile's
+        ``X-Hermes-Session-Id`` and would silently start a fresh session under
+        ``default`` — the cross-profile leak the pool exists to prevent. A new
+        session runs in the profile named like the selected agent/project,
+        when one exists.
+        """
+        from services.cowork_agent.adapters.hermes.state_db import (
+            find_hermes_profile,
+            list_all_profile_names,
+        )
+
+        if native_session_id:
+            try:
+                owner = find_hermes_profile(native_session_id)
+            except Exception:  # noqa: BLE001 — never fail chat for a routing hint
+                owner = None
+            if owner:
+                return None if owner == "default" else owner
+        if agent_id and agent_id != "default":
+            try:
+                if agent_id in list_all_profile_names():
+                    return agent_id
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+    @staticmethod
+    def _resolve_gateway_base(profile: str | None) -> str | None:
+        """Pick the gateway base URL for ``profile`` via the per-profile pool.
+
+        Returns ``None`` for the default profile so the streaming helper falls
+        back to ``HERMES_API_URL`` — the hermes.sh-managed gateway on port
+        8642. Any pool failure (invalid profile, spawn timeout) is logged and
+        downgraded to ``None`` rather than failing the chat outright.
         """
         from services.cowork_agent.adapters.hermes import gateway_pool
 
-        if not agent_id and session_id:
-            try:
-                from services.cowork_agent.adapters.hermes.state_db import find_hermes_profile
-                resolved = find_hermes_profile(session_id)
-                if resolved and resolved != "default":
-                    agent_id = resolved
-            except Exception:  # noqa: BLE001 — never fail chat for a routing hint
-                pass
-
         try:
-            return gateway_pool.ensure_gateway(agent_id)
+            return gateway_pool.ensure_gateway(profile)
         except (ValueError, FileNotFoundError, RuntimeError) as exc:
             import logging
             logging.getLogger(__name__).warning(
-                "hermes pool: falling back to default gateway for agent_id=%r (%s)",
-                agent_id, exc,
+                "hermes pool: falling back to default gateway for profile=%r (%s)",
+                profile, exc,
             )
             return None
 

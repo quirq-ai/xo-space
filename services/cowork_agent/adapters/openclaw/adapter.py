@@ -1,10 +1,26 @@
+"""
+OpenClaw adapter: drives the local OpenClaw gateway's OpenAI-compatible
+``/v1/chat/completions`` endpoint.
+
+Session model
+-------------
+The same as the other chat backends: XO mints the session id, writes the
+session-index row before the request, and resumes by looking the row up. The
+row is keyed by the OpenClaw session key sent in the session header
+(``agent:<openclaw agent>:web:<8hex>``); OpenClaw creates the session under
+that key on the first turn and owns the transcript, whose id is recorded on
+the row as ``nativeSessionId`` (see ``sessionslist.py``).
+"""
 from __future__ import annotations
 
-import pathlib
 import uuid
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.project_layout import (
+    project_dir as _xo_project_dir,
+    xo_projects_root,
+)
 
 
 class OpenclawAdapter(BaseAgentAdapter):
@@ -25,77 +41,20 @@ class OpenclawAdapter(BaseAgentAdapter):
         session_id: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """
-        Non-streaming execution via OpenClaw HTTP API.
-
-        - New session (session_id=None): calls create_new_session which bootstraps
-          an OpenClaw session and returns accumulated response text.
-        - Existing session: streams to OpenClaw and accumulates the response.
-        """
-        from services.cowork_agent.adapters.openclaw.paths import (
-            OPENCLAW_API_URL,
-            OPENCLAW_GATEWAY_TOKEN,
-            OPENCLAW_MODEL,
-        )
-        from services.cowork_agent.registry.agent_registry import get_active_agent
-        from services.cowork_agent.adapters.openclaw.sessions import find_session_key
-
-        if not session_id:
-            from services.cowork_agent.adapters.openclaw.direct_stream import create_new_session
-            agent = get_active_agent()
-            oc_agent = "main"
-            session_key = f"agent:{oc_agent}:web:{uuid.uuid4().hex[:8]}"
-            _key, native_id, response_text = await create_new_session(question, session_key=session_key)
-            return {"message": response_text, "native_session_id": native_id}
-
-        session_key = find_session_key(session_id)
-        if not session_key:
-            raise ValueError(f"OpenClaw session key not found for session_id={session_id!r}")
-
-        import json
-        import httpx
-        agent = get_active_agent()
-        header = agent.session_header
-        response_text = ""
-
-        async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0)) as client:
-            async with client.stream(
-                "POST",
-                OPENCLAW_API_URL,
-                headers={
-                    "Authorization": f"Bearer {OPENCLAW_GATEWAY_TOKEN}",
-                    "Content-Type": "application/json",
-                    header: session_key,
-                },
-                json={
-                    "model": OPENCLAW_MODEL,
-                    "stream": True,
-                    "messages": [{"role": "user", "content": question}],
-                },
-            ) as response:
-                if response.status_code != 200:
-                    body = await response.aread()
-                    raise RuntimeError(
-                        f"OpenClaw API error: {response.status_code} {body.decode()}"
-                    )
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices", [])
-                    if not choices:
-                        continue
-                    content = choices[0].get("delta", {}).get("content")
-                    if content:
-                        response_text += content
-
-        return {"message": response_text, "native_session_id": session_id}
+        """Non-streaming chat: the streamed turn, collected."""
+        parts: list[str] = []
+        error: str | None = None
+        native_session_id: str | None = None
+        async for event in self.stream(question, session_id, **kwargs):
+            if event.get("done"):
+                native_session_id = event.get("native_session_id")
+            elif event.get("type") == "token":
+                parts.append(event.get("token", ""))
+            elif event.get("type") == "error":
+                error = event.get("error") or error
+        if error and not parts:
+            raise RuntimeError(error)
+        return {"message": "".join(parts), "native_session_id": native_session_id}
 
     async def stream(
         self,
@@ -103,79 +62,96 @@ class OpenclawAdapter(BaseAgentAdapter):
         session_id: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
-        """
-        Streaming via OpenClaw HTTP API, yielding normalized events.
-        Wraps adapters.openclaw.streaming.stream_to_normalized.
-        """
+        """Streaming chat: yields ``{type: token, token: ...}`` then exactly one
+        ``{done: True, native_session_id: ...}``."""
+        from services.cowork_agent.adapters.openclaw import agent_db
+        from services.cowork_agent.adapters.openclaw.sessionslist import (
+            find_session_row,
+            make_session_key,
+            update_session_row,
+            write_preliminary_entry,
+        )
         from services.cowork_agent.adapters.openclaw.streaming import stream_to_normalized
-        from services.cowork_agent.adapters.openclaw.transcript import tee_exchange
-        from services.cowork_agent.adapters.openclaw.sessions import find_session_key
-        from services.cowork_agent.adapters.openclaw.direct_stream import find_session_id_by_key
-        from services.cowork_agent.adapters.openclaw.paths import OPENCLAW_MODEL
 
         # _dispatcher_sse always passes session_id=None; the real ID is in our_session_id
-        if not session_id:
-            session_id = kwargs.get("our_session_id")
+        our_session_id: str | None = kwargs.get("our_session_id") or session_id
+        is_new: bool = kwargs.get("is_new_session", session_id is None)
+        agent_id: str | None = kwargs.get("agent_id")
 
-        xo_agent_id = kwargs.get("agent_id") or kwargs.get("xo_agent_id")
-        oc_agent = kwargs.get("agent_type") or "main"
-        prefetch_task = kwargs.get("openclaw_prefetch_task")
-
-        if prefetch_task is not None:
-            # chat_prompt already started the openclaw HTTP call; await it rather
-            # than making a second request. Fake-stream the accumulated response.
-            try:
-                _key, native_id, response_text = await prefetch_task
-            except Exception as exc:
-                yield {"type": "error", "error": str(exc)}
-                yield {"done": True, "native_session_id": None}
-                return
-            # If chat_prompt's poll didn't resolve session_id in time, signal it
-            # now so _dispatcher_sse can emit session-created before any tokens.
-            if not session_id and native_id:
-                yield {"type": "session-id-resolved", "session_id": native_id}
-            for char in response_text:
-                yield {"type": "token", "token": char}
-            yield {"done": True, "native_session_id": native_id}
-            return
-
-        if session_id:
-            session_key = find_session_key(session_id)
-            if not session_key:
-                yield {"type": "error", "error": f"Session key not found for {session_id!r}"}
-                yield {"done": True, "native_session_id": None}
-                return
-            native_session_id = session_id
-        else:
-            session_key = f"agent:{oc_agent}:web:{uuid.uuid4().hex[:8]}"
-            native_session_id = None
-
-        accumulated: list[str] = []
-        async for event in stream_to_normalized(question, session_key, native_session_id):
-            if event.get("type") == "heartbeat":
-                continue
-            if event.get("type") == "token":
-                accumulated.append(event["token"])
-                yield event
-            elif event.get("done"):
-                resolved = native_session_id or find_session_id_by_key(session_key)
-                response_text = "".join(accumulated)
-                if response_text:
-                    try:
-                        tee_exchange(
-                            session_key,
-                            resolved or session_key,
-                            question,
-                            response_text,
-                            model_id=OPENCLAW_MODEL,
-                            xo_agent_id=xo_agent_id,
-                        )
-                    except Exception:
-                        pass
-                yield {"done": True, "native_session_id": resolved}
-                return
+        project_id: str | None = None
+        session_key: str | None = None
+        if not is_new and our_session_id:
+            found = find_session_row(our_session_id)
+            if found is not None:
+                project_id, session_key, _meta = found
             else:
+                # A session listed from OpenClaw's own store; its id is native.
+                located = agent_db.find_session(our_session_id)
+                session_key = located[1] if located else None
+            if not session_key:
+                yield {"type": "error", "error": f"OpenClaw session not found for {our_session_id!r}"}
+                yield {"done": True, "native_session_id": None}
+                return
+        else:
+            our_session_id = our_session_id or str(uuid.uuid4())
+            project_id = agent_id or "default"
+            session_key = make_session_key(self._resolve_openclaw_agent(agent_id), our_session_id)
+            write_preliminary_entry(
+                project_id, session_key, our_session_id, self._resolve_cwd(project_id)
+            )
+
+        native_session_id: str | None = None
+        recorded = False
+        try:
+            async for event in stream_to_normalized(question, session_key):
+                if event.get("type") == "token" and project_id and not recorded:
+                    # OpenClaw has created the session once it streams; record
+                    # its transcript id now so a cancelled turn keeps the mapping.
+                    recorded = True
+                    update_session_row(project_id, session_key)
                 yield event
+        finally:
+            if project_id:
+                native_session_id = update_session_row(project_id, session_key)
+            else:
+                native_session_id = agent_db.session_id_for_key(session_key)
+
+        yield {"done": True, "native_session_id": native_session_id}
+
+    # ── Concrete overrides ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_cwd(project_id: str | None) -> str:
+        """The session's project folder, as the CLI backends compute it.
+
+        ``~/xo-projects/<project>/`` (created if missing), or the projects root
+        when no project is selected.
+        """
+        if project_id and project_id not in ("default", ""):
+            project = _xo_project_dir(project_id)
+            project.mkdir(parents=True, exist_ok=True)
+            return str(project)
+        return str(xo_projects_root())
+
+    @staticmethod
+    def _resolve_openclaw_agent(agent_id: str | None) -> str:
+        """The OpenClaw agent a new session runs in: the one named like the
+        selected agent/project when it exists, else the configured default."""
+        from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
+        from services.cowork_agent.adapters.openclaw.store import (
+            find_agent_entry_index,
+            list_agent_entries,
+            load_openclaw_config,
+            resolve_default_agent_id,
+        )
+        from services.cowork_agent.helpers import normalize_agent_id
+
+        cfg = load_openclaw_config()
+        if agent_id:
+            aid = normalize_agent_id(agent_id)
+            if (AGENTS_DIR / aid).is_dir() or find_agent_entry_index(list_agent_entries(cfg), aid) >= 0:
+                return aid
+        return resolve_default_agent_id(cfg)
 
     async def setup(self) -> bool:
         """OpenClaw gateway readiness — returns True (gateway is external)."""
