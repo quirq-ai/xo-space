@@ -7,12 +7,12 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260915-skillprompt1';
+import {mountCommands} from './setup-commands.js?v=20260916-jobs1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
-import {mountSetupSearch} from './setup-search.js?v=20260914-manage1';
-import {renderSetupShell} from './setup-shell.js?v=20260914-manage1';
-import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260914-manage1';
+import {mountSetupSearch} from './setup-search.js?v=20260916-jobs1';
+import {renderSetupShell} from './setup-shell.js?v=20260916-jobs1';
+import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs1';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));

@@ -51,9 +51,9 @@ const GROUPS=[
     topics:[
       {
         id:'setup',title:'Setup & installation',
-        summary:'Check roots, runtime health, and credentials. Restart Space and run saved commands with recorded results.',
+        summary:'Check roots, runtime health, and credentials. Restart Space and run scheduled or manual jobs with recorded results.',
         docs:'/space-walk/setup',view:'setup/workspace',viewLabel:'Setup',
-        more:[{label:'Commands docs',path:'/space-walk/setup#run-saved-commands'},
+        more:[{label:'Jobs docs',path:'/space-walk/setup#run-saved-commands'},
           {label:'Install docs',path:'/install-space'}]
       },
       {

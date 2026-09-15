@@ -160,7 +160,30 @@
 .setup-command-form textarea{resize:vertical}
 .setup-command-form #command-line{font-family:var(--mono)}
 .setup-command-form small{margin-top:7px;font-size:12px;line-height:1.5;color:var(--ink-3)}
-.setup-command-numbers{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.setup-command-form fieldset{min-width:0;margin:15px 0 0;padding:0;border:0}
+.setup-command-form legend{padding:0;margin-bottom:8px;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-command-form select{padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:400 13px var(--sans)}
+.setup-command-form input[type=radio]{width:auto;flex-shrink:0;margin:0;accent-color:var(--accent)}
+.setup-job-fields{display:flex;flex-direction:column}
+.setup-job-kind{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.setup-job-kind legend{grid-column:1/-1}
+.setup-command-form .setup-job-kind-option{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;cursor:pointer}
+.setup-job-kind-option:has(input:checked){border-color:var(--accent);background:rgba(168,217,79,.06)}
+.setup-job-kind-option input{margin-top:3px!important}
+.setup-job-kind-option b{display:block;font:500 13px var(--sans);color:var(--ink)}
+.setup-job-kind-option small{display:block;margin-top:3px}
+.setup-command-form .setup-job-option{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px;font:400 13px var(--sans);color:var(--ink-2)}
+.setup-job-option input[type=number]{width:6em}
+.setup-job-option input[type=time]{width:auto}
+.setup-job-preview{margin:4px 0 0;font:500 12px/1.5 var(--sans);color:var(--accent)}
+.setup-job-preview.is-error{color:#e1937d}
+.setup-job-preview:empty{display:none}
+.setup-job-inline{display:flex;gap:8px}
+.setup-job-inline input{max-width:10em}
+.setup-job-title{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.setup-job-title>b{font-size:14px}
+.setup-job-badge{padding:2px 8px;border:1px solid var(--line);border-radius:999px;font:500 11px var(--sans);color:var(--ink-2)}
+.setup-job-badge.is-scheduled{color:var(--accent);border-color:rgba(168,217,79,.35)}
 .setup-command-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;padding:17px 0}
 .setup-command-row+.setup-command-row{border-top:1px solid var(--line-soft)}
 .setup-command-info{flex:1 1 300px;min-width:0;overflow-wrap:anywhere}
@@ -194,7 +217,7 @@
 .setup-run{border-top:1px solid var(--line);padding-top:16px;margin-top:20px}
 .setup-run>b{font:500 12px var(--sans)}
 .setup-run pre{padding:12px;margin-top:10px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
-@media(max-width:600px){.setup-command-numbers{grid-template-columns:1fr}}
+@media(max-width:600px){.setup-job-kind{grid-template-columns:1fr}}
 
 .setup-identity-body{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:18px 20px}
 .setup-identity-space{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;margin:0}

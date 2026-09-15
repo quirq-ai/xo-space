@@ -43,11 +43,13 @@ try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   await page.locator('#setup-nav [data-setup-go="commands"]').click();
   await page.locator('#command-add').click();
+  await page.locator('input[name="kind"][value="manual"]').check();
   await page.locator('#command-name').fill('Verify isolated command execution');
   await page.locator('#command-description').fill('Print a fixture result with automatic jobs disabled.');
   await page.locator('#command-line').fill(JSON.stringify(argv));
   await page.locator('#command-cwd').fill(fixture.cwd);
   await page.locator('#command-timeout').fill('5');
+  await page.locator('select[name="timeoutUnit"]').selectOption('seconds');
   const createdResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/schedules'&&response.request().method()==='POST');
   await page.locator('#command-save').click();
   const response=await createdResponse;
@@ -68,9 +70,9 @@ try{
   await row.locator('.is-good').waitFor({timeout:12000});
   const poll=reads.find(read=>read.path===`/api/schedules/${id}`&&read.time>=startedAt);
   assert.ok(poll&&poll.time-startedAt>=2800,'The UI harvests the result with its 3s running poll');
-  assert.match(await row.textContent(),/ok · .* · [0-9.]+s/);
+  assert.match(await row.textContent(),/Succeeded · .* · [0-9.]+s/);
   assert.match(await row.locator('.setup-command-preview').textContent(),/Isolated browser command completed/);
-  assert.equal((await action('runs').textContent()).trim(),'Inbox');
+  assert.equal((await action('runs').textContent()).trim(),'Results');
   await row.scrollIntoViewIfNeeded();
   await page.screenshot({path:resolve(output,'commands-live-result.png')});
   await action('runs').click();
@@ -87,7 +89,9 @@ try{
   assert.deepEqual(writes.map(write=>write.method),['POST','POST']);
   await page.locator('#command-runs-close').click();
   await action('edit').click();
-  await page.locator('#command-interval').fill('60');
+  await page.locator('input[name="kind"][value="scheduled"]').check();
+  await page.locator('input[name="every"]').fill('1');
+  await page.locator('select[name="unit"]').selectOption('minutes');
   const saved=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/schedules/${id}`&&response.request().method()==='PUT');
   await page.locator('#command-save').click();
   assert.equal((await saved).status(),200);

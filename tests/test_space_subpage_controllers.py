@@ -44,12 +44,14 @@ function inbox(){
     API_BASE:'',document:{activeElement:null,getElementById:()=>null},
     CSS:{escape:value=>value},CustomEvent:class{constructor(type,{detail}){this.type=type;this.detail=detail;}},
     dispatchEvent:event=>events.push(event),
-    apiFetch:path=>new Promise(resolve=>requests.push({path,resolve})),
+    apiFetch:(path,opts)=>new Promise(resolve=>requests.push({path,opts,resolve})),
     clearSlottedInterval:name=>intervals.delete(name),
     setSlottedInterval:(name,fn,ms)=>intervals.set(name,{fn,ms}),
     esc:value=>String(value??''),pills:()=>'',rel:()=>'',toast(){},
     collectorLabels:()=>'',every:()=>'',pollLine:()=>({text:'Up to date'}),accountLabel:()=>'',
     openCommandResults:job=>results.push(job),
+    describeSchedule:job=>job.every_seconds==null?'Manual':'Every minute',
+    isScheduled:job=>job?.every_seconds!=null,statusText:status=>String(status),
   });
   const views=Array.from(mod.evaluate('createInboxViews()'));
   const page=name=>views.find(view=>view.route==='inbox/'+name);
@@ -158,6 +160,27 @@ assert.equal(app.results[0].id,'fresh');
 app.page('jobs').hide();
 assert.equal(app.intervals.has('inbox-jobs-poll'),false);
 assert.equal(app.intervals.has('inbox-badge'),true);
+""")
+
+    def test_jobs_lists_manual_jobs_and_runs_one_now(self) -> None:
+        self.run_probe(r"""
+const app=inbox();await app.mount();
+app.page('jobs').show();
+app.requests[0].resolve({ok:true,data:{jobs:[{id:'nightly',name:'Nightly',every_seconds:86400,enabled:true},
+  {id:'by-hand',name:'By hand',every_seconds:null,enabled:true}]}});await settle();
+assert.deepEqual(Array.from(app.evaluate('jobs.map(job=>job.id)')),['nightly','by-hand'],'manual jobs are listed too');
+assert.equal(app.intervals.get('inbox-jobs-poll').ms,30000);
+app.evaluate("onClick({target:{closest:()=>({dataset:{act:'job-run',job:'by-hand'}})}})");
+const run=app.requests[app.requests.length-1];
+assert.equal(run.path,'/api/schedules/by-hand/run');
+assert.equal(run.opts.method,'POST');
+app.evaluate("onClick({target:{closest:()=>({dataset:{act:'job-run',job:'by-hand'}})}})");
+assert.equal(app.requests.length,2,'a second click while the first is in flight sends nothing');
+run.resolve({ok:true,data:{ok:true,started:true,job:{id:'by-hand',name:'By hand',every_seconds:null,enabled:true,running:true}}});await settle();
+assert.equal(app.evaluate("jobs.find(job=>job.id==='by-hand').running"),true);
+assert.equal(app.intervals.get('inbox-jobs-poll').ms,3000,'a started job is polled every 3s');
+app.evaluate("onClick({target:{closest:()=>({dataset:{act:'job-run',job:'by-hand'}})}})");
+assert.equal(app.requests.length,2,'a running job cannot be started again');
 """)
 
 

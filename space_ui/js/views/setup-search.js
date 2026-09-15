@@ -11,7 +11,7 @@ const SETTINGS=[
   ['intelligence','Activity interval','Intelligence layer · Advanced','activity watcher polling seconds frequency','#runtime-interval'],
   ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
-  ['commands','Commands','Run commands and view their results','jobs scheduled interval automation inbox output logs','#setup-commands-title'],
+  ['commands','Jobs','Schedule commands, or save them to run when you choose','jobs commands scheduled manual interval timeout automation results output logs','#setup-commands-title'],
   ['server','Restart server','Apply saved changes','restart apply runtime','#setup-server-title'],
   ['server','Updates','Check for a newer version of Space','update version upgrade','#update-check'],
 ];

@@ -10,7 +10,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 | Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
-| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Commands, Server |
+| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Jobs, Server |
 
 Space starts at Projects Overview. **Data** contains the existing List, Graph
 and Tree views at `#/projects/data/list`, `#/projects/data/graph` and
@@ -126,14 +126,15 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
 | `js/views/project-management.js` | Clone, collapsible project cards, pins, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
 | `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through Refresh. Styled by `css/project-management.css`. |
-| `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Commands and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
+| `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Jobs and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |
 | `js/core/setup-sections.js` | Setup section IDs, labels, canonical routes and compatibility mappings for old section handoffs. |
 | `js/views/setup-search.js` | Searchable setting names and topics; opens the existing controls without reading their values or rebuilding forms. |
 | `js/views/setup-identity.js` | Read-only Workspace metadata, verified XO user ID and GitHub account from `/space/setup/status`; no tokens or browser session minting. |
 | `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
-| `js/views/setup-commands.js` | Setup Commands card: definition form, run controls, live results and history drawer over `/api/schedules`. |
-| `js/core/command-results.js` | Shared command Inbox/results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
+| `js/views/setup-commands.js` | Setup Jobs card: scheduled/manual kind choice, plain-language schedule and time-limit form, Run now, live results and history drawer over `/api/schedules`. |
+| `js/core/jobs.js` | Job vocabulary shared by Setup and Inbox Jobs, with no DOM or network: schedule presets ↔ `every_seconds`/`first_run_at`, schedule and status wording, duration units. |
+| `js/core/command-results.js` | Shared job results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
 | `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
 
@@ -204,10 +205,10 @@ Every section has a URL that opens it directly:
 | Intelligence layer | `#/setup/intelligence` |
 | Connectors | `#/setup/connectors` |
 | Secrets | `#/setup/secrets` |
-| Commands | `#/setup/commands` |
+| Jobs | `#/setup/commands` |
 | Server | `#/setup/server` |
 
-Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The **Manage** group opens **Connectors**, **Secrets**, **Commands** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone project** opens the Add form in `#/projects/manage`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
+Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and `#/secrets` links resolve to the corresponding canonical URLs. The **Manage** group opens **Connectors**, **Secrets**, **Jobs** or **Server** directly. Secrets lists configured keys with fixed masks and uses `PATCH /api/secrets/{key}` and `DELETE /api/secrets/{key}` to edit the existing environment store. Workspace identity uses the read-only `GET /space/setup/status`; unavailable checks are distinct from missing or rejected credentials. Inbox Jobs' **Open Setup** button opens `#/setup/commands`; Sharing's **Clone project** opens the Add form in `#/projects/manage`. **Server → Technical details** opens Quirq's state browser, whose Setup button returns to `#/setup/server`.
 
 The topbar search stays visible throughout Setup. Search setting names such as
 “folders”, “secrets” or “restart”, then choose a result to open its control.
@@ -260,31 +261,43 @@ when a new server instance responds, so every tab loads the updated code.
 The footer still has no process start control: its Start hint copies a terminal
 command. Process restart belongs on Setup.
 
-**Commands** starts empty. Use **Add command** to save a name, optional description,
-command line or argv JSON, optional working directory, required timeout and optional
-interval. Leave the interval blank for manual-only execution. **First run at** is
-enabled once an interval is set: the browser's local time is sent as
-`first_run_at` with its UTC offset, and a past time keeps the same schedule
-(next slot after now). A command line is split without a shell; validation
-errors appear in the card. Interval jobs show a “Runs every N · next …” chip in
-local time and use the watcher. **Edit** fills in the saved start time and
-preserves existing environment, project and enabled settings.
+**Jobs** starts empty. A job is a saved command. **New job** first asks which kind
+it is, and the rest of the form appears after: **Scheduled** runs on its own,
+**Manual** is saved to run only when someone clicks **Run now**. Both take a name,
+optional description, command line or argv JSON, optional folder and a time limit
+(“Stop it if a run takes longer than” N seconds, minutes or hours; 5 minutes for
+a new job). A scheduled job chooses **How often?** in words: every N
+seconds/minutes/hours/days, every hour at a minute, every day at a time, or every
+week on a day at a time. `js/core/jobs.js` translates that into the scheduler's
+own fields, so the API is unchanged: `every_seconds`, plus a `first_run_at`
+anchor at the next matching local time with that date's UTC offset (a custom
+interval sends no anchor). A live preview states the schedule and first run
+before saving. Runs keep a fixed interval, so a daily time can move by an hour
+across a daylight-saving change; the form says so. **Edit** reopens a job as the
+choice that produced it (an interval that matches no preset opens as a custom
+interval and keeps its existing anchor), can switch its kind (Manual sends a
+null interval; the id and history stay), and preserves existing environment,
+project and enabled settings. A command line is split without a shell;
+validation errors appear in the card. Rows carry a Scheduled/Manual badge and
+the schedule in words with the next run in local time.
 
-The information tooltip beside **Saved commands** explains **Copy agent prompt**.
+The information tooltip beside **Your jobs** explains **Copy agent prompt**.
 The card shows the full `POST /api/schedules` creation URL. The button copies a
-short skill (SKILL.md format) for the agent: use `/api/schedules` on the machine
-running Space, never edit its files; commands run on the server without a shell,
-so give an absolute cwd, an argv list and a timeout, and no secrets; stay manual
-unless asked, with `every_seconds` and `first_run_at` (the browser's UTC offset
-is filled in) for schedules; avoid duplicates, remember edits replace the whole
-definition, and run nothing unasked. If clipboard access is unavailable, a
-selectable copy appears without changing a command draft.
+short skill (`xo-space-jobs`, SKILL.md format) for the agent: use `/api/schedules`
+on the machine running Space, never edit its files; jobs run on the server
+without a shell, so give an absolute cwd, an argv list and a timeout in seconds,
+and no secrets; stay manual (a null `every_seconds`) unless asked, with
+`every_seconds` and `first_run_at` (the browser's UTC offset is filled in) for
+schedules; avoid duplicates, remember edits replace the whole definition, and
+run nothing unasked. If clipboard access is unavailable, a selectable copy
+appears without changing a job draft.
 
-**Run** executes through the command utility and disables while running. The card
+**Run now** executes through the command utility and disables while running. The card
 polls the job every three seconds until the status and duration appear. The row
-shows its configured working directory and a preview of the latest result.
-**Inbox** opens the latest 20 results with escaped output, exit codes, timing,
-and a copyable full-log path. The drawer updates while a command runs and also
+shows its folder and a preview of the latest result, with the status in words
+(Succeeded, Failed, Timed out, Command not found, …).
+**Results** opens the latest 20 results with escaped output, exit codes, timing,
+and a copyable full-log path. The drawer updates while a job runs and also
 offers Refresh. A concurrent run or a full shared execution limit returns 409.
 Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
@@ -345,14 +358,16 @@ button carries an unread badge (`counts.new`: polled every 60 s while another
 tab is shown; while Inbox is open the view's own 30 s read feeds it).
 
 **Jobs** follows Connections and reads `/api/schedules`
-independently. It lists every command with an interval, including disabled jobs,
-with its cadence, enabled state, next due time and latest/running status.
-**Results** opens the same command Inbox used by Setup; **Open Setup** returns
-to command management. Manual-only commands remain in Setup. Jobs refresh on
-entry, through either Refresh button, and every 30 seconds while visible
-(every three seconds while a listed job is running). This section neither runs
-commands nor creates Inbox items, and item search, filters and unread counts
-retain their existing scope.
+independently. It lists every job, scheduled and manual, with the same
+Scheduled/Manual badge and plain-language schedule as Setup; scheduled jobs also
+show their enabled state and next due time, and every job shows its
+latest/running status. **Run now** is the section's one write
+(`POST /api/schedules/{id}/run`; a 409 re-reads the list). **Results** opens the
+same results drawer used by Setup; **Open Setup** returns to job management.
+Jobs refresh on entry, through either Refresh button, and every 30 seconds while
+visible (every three seconds while a listed job is running). This section
+creates no Inbox items, and item search, filters and unread counts retain their
+existing scope.
 
 **Activity** (`#/inbox/activity`) follows Jobs and shows recorded workspace
 project, session, task and file events. It reads `/api/xo-projects/timeline?limit=200`,
