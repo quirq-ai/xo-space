@@ -12,7 +12,7 @@ import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/at
 import {createAgentViews} from './views/sessions.js?v=20260915-data1';
 import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-data1';
 import {createActivityViews} from './views/inbox-activity.js?v=20260915-data1';
-import projectsView from './views/projects.js?v=20260915-data1';
+import projectsView from './views/projects.js?v=20260915-capfloor5';
 import projectManageView from './views/project-manage.js?v=20260915-data1';
 import treeView from './views/tree.js?v=20260915-data1';
 import sharingView from './views/sharing.js?v=20260915-data1';
