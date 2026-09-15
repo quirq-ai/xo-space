@@ -212,7 +212,7 @@ try{
   checked('Project pages retain historical previews, List query and drawer state; leaving the section closes preview and keeps Setup drafts.');
   await go('agents/sessions');await page.locator('#sess-body tr[data-sid]').first().waitFor();
   await search.fill('Aurora');
-  await leaf('agents-tools');await expectRoute('agents/tools');assert.equal(await search.isVisible(),false);
+  await leaf('agents-trends');await expectRoute('agents/trends');assert.equal(await search.isVisible(),false);
   await leaf('agents-sessions');await expectRoute('agents/sessions');assert.equal(await search.inputValue(),'Aurora');
   await page.locator('#tab-agents').click();await expectRoute('agents/overview');assert.equal(await search.isVisible(),false);
   await go('inbox/items');await page.locator('[data-id="legacy-project"][data-act="toggle"]').click();

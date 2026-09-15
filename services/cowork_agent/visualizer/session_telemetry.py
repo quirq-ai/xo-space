@@ -4,6 +4,14 @@ Unlike chat/session-message routes, Space is a host-level observability view:
 it should show all locally available runtimes at once. Providers are discovered
 by capability rather than named here, so adding another source remains a
 drop-in adapter operation.
+
+Provider module contract (``adapters/<name>/session_telemetry.py``):
+``collect_session_telemetry()`` returns the payload validated below;
+``SOURCE_ID``, ``SOURCE_LABEL``, ``COST_STATUS`` and ``META_PRIORITY`` describe
+it; an optional ``SOURCE_CONFIG`` (vendor, path_env, path_default,
+path_kind, path_label, collects, never) lets Space's Configure page show
+and edit where the provider reads from (``services/telemetry_sources.py``).
+A source listed in ``QUIRQ_TELEMETRY_DISABLED`` is reported but never read.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+from services.telemetry_sources import disabled_source_ids
 from services.cowork_agent.adapters.loader import (
     list_capability_providers,
     try_load_capability,
@@ -250,11 +259,26 @@ def build_session_telemetry() -> dict:
     contributions: list[dict] = []
     source_status: list[dict] = []
 
+    disabled = disabled_source_ids()
     for provider in list_capability_providers(_CAPABILITY):
         module = None
         try:
             module = try_load_capability(_CAPABILITY, agent=provider)
             if module is None:
+                continue
+            source_id = str(getattr(module, "SOURCE_ID", provider))
+            if source_id in disabled:
+                # Switched off in the Configure page: listed so the UI can
+                # show and re-enable it, but never read.
+                source = _source_shell(provider, module)
+                source.update({
+                    "status": "disabled",
+                    "available": False,
+                    "cost_status": str(getattr(module, "COST_STATUS", "unknown")),
+                    "message": "Collection is turned off for this source.",
+                })
+                source_status.append(source)
+                _note_provider_available(provider)
                 continue
             collect = getattr(module, "collect_session_telemetry", None)
             if not callable(collect):
@@ -282,6 +306,9 @@ def build_session_telemetry() -> dict:
                 "available": False,
                 "cost_status": str(getattr(module, "COST_STATUS", "unknown")),
                 "message": "Telemetry source unavailable.",
+                # The provider's own explanation (a local path, never data),
+                # so the Configure page can say what to fix.
+                "reason": str(exc),
             })
             source_status.append(source)
 

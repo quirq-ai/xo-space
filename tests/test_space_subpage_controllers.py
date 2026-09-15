@@ -84,15 +84,16 @@ agents.evaluate(`
   };
 `);
 const views=Array.from(agents.evaluate('createAgentViews()'));
-assert.deepEqual(views.map(view=>view.route),['agents/overview','agents/sessions','agents/tools','agents/models','agents/trends']);
+assert.deepEqual(views.map(view=>view.route),['agents/overview','agents/sessions','agents/trends','agents/configure']);
+assert.deepEqual(views[2].aliases,['agents/tools','agents/models'],'old Tools and Models links land on Trends');
 const mounts=views.map(view=>view.mount({}, {refreshToolbar:()=>calls.push(view.id)}));
 assert.equal(agents.evaluate('mounts'),1);
 assert.ok(mounts.every(promise=>promise===mounts[0]),'siblings await the same mounted controller');
 release();await Promise.all(mounts);
 views[1].show();views[1].toolbar().search.setValue('retained query');
 views[2].show();views[1].show();
-assert.deepEqual(pages,['sessions','tools','sessions']);
-assert.deepEqual(calls,['agents-sessions','agents-tools','agents-sessions'],'old mount context must not own sibling refreshes');
+assert.deepEqual(pages,['sessions','trends','sessions']);
+assert.deepEqual(calls,['agents-sessions','agents-trends','agents-sessions'],'old mount context must not own sibling refreshes');
 assert.equal(views[1].toolbar().search.getValue(),'retained query');
 """)
 

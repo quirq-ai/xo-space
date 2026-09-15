@@ -895,12 +895,15 @@ class ShellTests(unittest.TestCase):
         app = read("js/app.js")
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
-        data_stamp = "20260915-data1"
-        for view in ("wiki", "quirq", "tree", "sessions", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
-            self.assertIn("./views/" + view + ".js?v=" + data_stamp + "'", app)
+        # Trends absorbing Tools and Models changed navigation.js, so every
+        # importer of the vocabulary moved to the agents1 stamp.
+        agents_stamp = "20260915-agents2"
+        for view in ("sessions", "atlas", "tree", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
+            self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + data_stamp + "'", app)
-        self.assertIn("./views/atlas.js?v=20260915-timeline1'", app)
+            self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
+        for view in ("wiki", "quirq"):
+            self.assertIn("./views/" + view + ".js?v=20260915-data1'", app)
         self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         self.assertIn("./core/toolbar.js?v=20260914-files2'", app)
         controls_stamp = "20260914-manage1"

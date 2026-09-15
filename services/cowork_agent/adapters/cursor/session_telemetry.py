@@ -31,6 +31,17 @@ SOURCE_ID = "cursor"
 SOURCE_LABEL = "Cursor"
 META_PRIORITY = 20
 COST_STATUS = "unavailable"
+# How Space's Configure page presents and edits this source. Read generically
+# by services/telemetry_sources.py; the env key is the one _cursor_home() honors.
+SOURCE_CONFIG = {
+    "vendor": "cursor",
+    "path_env": "CURSOR_HOME",
+    "path_default": "~/.cursor",
+    "path_kind": "dir",
+    "path_label": "Cursor home",
+    "collects": ["Agent transcripts", "Chat sessions", "Token snapshots"],
+    "never": "No prompt text stored",
+}
 
 MAX_SESSIONS = 500
 MAX_TOOLS_PER_SESSION = 10

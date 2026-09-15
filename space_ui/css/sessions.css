@@ -1,77 +1,97 @@
   /* ---------------- agents tab ---------------- */
+  /* Layout only. Every visual element on this page is a shadcn/ui component
+     (css/shadcn.css, markup from js/core/shadcn.js, charts from
+     js/core/chart.js); these rules place the cards and grids and carry the
+     few page-specific hooks (pager, prompt items, key/value column). */
   #view-agents{overflow-y:auto}
-  /* the global `canvas` rule makes every canvas a full-bleed overlay (graph,
-     timeline). Chart canvases in this tab are ordinary in-flow elements —
-     undo the overlay positioning inside the panel. */
-  .sesswrap canvas{position:static;inset:auto}
   .sesswrap{max-width:1180px;margin:0 auto;padding:26px 26px 60px;font-family:var(--sans)}
-  .sess-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}
-  .sess-subnav,.sess-win{display:flex;gap:2px;background:var(--bg-2);border:1px solid var(--line);border-radius:9px;padding:3px}
-  .sess-subnav{flex-wrap:wrap;max-width:100%}
-  .sess-subnav button{font-size:12.5px;color:var(--ink-2);padding:5px 12px;border-radius:6px}
-  .sess-subnav button.is-on{background:var(--bg-3);color:var(--ink)}
-  .sess-win button{font-size:12px;color:var(--ink-3);padding:4px 10px;border-radius:6px}
-  .sess-win button.is-on{background:var(--bg-3);color:var(--accent)}
-  .sess-sources{display:flex;align-items:center;gap:3px;min-width:0;margin:0;padding:3px 5px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2)}
-  .sess-sources legend{padding:0 4px;font:600 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
-  .sess-sources label{display:flex;align-items:center;gap:6px;padding:4px 7px;border-radius:6px;color:var(--ink-2);font-size:12px;cursor:pointer;white-space:nowrap}
-  .sess-sources label:hover{background:var(--bg-3);color:var(--ink)}
-  .sess-sources label.is-unavailable{color:var(--ink-3)}
-  .sess-sources label i{font:500 8.5px/1 var(--mono);color:var(--err);text-transform:uppercase}
-  .sess-sources input{width:14px;height:14px;margin:0;accent-color:var(--accent);cursor:pointer}
-  .sess-sources input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .sesswrap>[data-slot="card"],.sesswrap>[data-slot="alert"],.sesswrap>[data-slot="empty"],#sess-body>[data-slot="card"],#sess-body>[data-slot="empty"]{margin-bottom:16px}
+  .sess-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+  .sess-sources{padding:6px 10px 6px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
+  .sess-sources>div.is-unavailable [data-slot="label"]{color:var(--muted-foreground)}
   .sess-spacer{flex:1}
+  .sess-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+  .sess-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px;align-items:start}
+  .sess-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:16px}
+  .sess-grid2-wide{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}
+  /* chart rows inside a Trends card, above that card's table */
+  .sess-in-card{margin-bottom:20px}
+  .sess-tools-charts{grid-template-columns:minmax(0,2fr) minmax(0,1fr);align-items:center}
+  .sess-crumbs{margin-bottom:16px}
+  .sess-crumbs [data-slot="breadcrumb-page"]{display:inline-flex;align-items:center;gap:6px}
+  .sess-share{display:flex;align-items:center;gap:10px;min-width:160px}
+  .sess-share [data-slot="progress"]{width:120px}
+  .sess-share span{font:500 12px var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .sess-dim{color:var(--muted-foreground);font:500 11.5px var(--mono)}
+  .kv-key{width:190px;color:var(--muted-foreground)}
+  .sess-pager{display:flex;flex-direction:column;align-items:center;gap:8px;width:100%}
+  .sess-pager>span{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted-foreground)}
+  .sess-prompts-sub{font-size:11.5px;color:var(--muted-foreground);margin-bottom:8px}
+  .sess-prompt{padding-left:0;padding-right:0}
+  .sess-prompt-meta{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted-foreground)}
+  .sess-prompt-text{flex-basis:100%;white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
+  .sess-prompt-trunc{color:var(--muted-foreground);font-style:italic}
+  .sess-note{display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted-foreground);font-size:12.5px;padding:26px 0;text-align:center}
+  .sess-skeleton [data-slot="card"]{margin-bottom:16px}
+  /* Shared button class other views (Tree, Sharing) still use; kept here
+     until they move to the shadcn Button. */
   .sess-refresh{font-size:13px;color:var(--ink-2);border:1px solid var(--line);border-radius:9px;padding:6px 12px}
   .sess-refresh:hover{color:var(--accent);border-color:var(--accent)}
-  .scard{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;padding:18px 20px;margin-bottom:16px}
-  .scard .eyebrow2{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-bottom:12px}
-  .sess-hero{display:flex;align-items:baseline;gap:26px;flex-wrap:wrap}
-  .sess-hero .big{font:600 44px/1 var(--serif);color:var(--accent)}
-  .sess-hero .unit{font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--ink-3)}
-  .sess-hero .kv{color:var(--ink-2);font-size:13px}
-  .sess-hero .kv b{color:var(--ink)}
-  .sgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .sgrid .scard{margin-bottom:0}
-  .scards4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
-  .scards4 .scard{margin:0}
-  .scards4 .v{font:600 24px/1.2 var(--serif);color:var(--ink)}
-  .scards4 .v.acc{color:var(--accent)}
-  .scards4 .s{font-size:11.5px;color:var(--ink-3);margin-top:4px}
-  table.stbl{width:100%;border-collapse:collapse;font-size:12.5px}
-  .stbl th{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap}
-  .stbl td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);vertical-align:top}
-  .stbl td b{color:var(--ink);font-weight:500}
-  .stbl tr.rowlink{cursor:pointer}
-  .stbl tr.rowlink:hover td{background:var(--bg-3)}
-  .stbl .num{text-align:right;font-family:var(--mono);font-size:11.5px}
-  .stbl .num.acc{color:var(--accent)}
-  .stbl .num.err{color:var(--err)}
-  .chip{font:500 10.5px/1 var(--mono);background:var(--bg-3);border:1px solid var(--line);border-radius:5px;padding:3px 6px;color:var(--ink-2);white-space:nowrap}
-  .source-chip{display:inline-flex;align-items:center;gap:5px;font:600 9.5px/1 var(--mono);letter-spacing:.04em;border:1px solid var(--line);border-radius:999px;padding:4px 7px;color:var(--ink-2);white-space:nowrap}
-  .source-chip::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
-  .source-chip.source-claude_code{color:#d7a75d;background:rgba(215,167,93,.07)}
-  .source-chip.source-codex{color:var(--accent);background:rgba(168,217,79,.07)}
-  .source-chip.source-cursor{color:#7eb6ff;background:rgba(126,182,255,.08)}
-  .sess-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:14px}
-  .sess-pager button{font-size:12px;color:var(--ink-2);border:1px solid var(--line);border-radius:9px;padding:5px 12px}
-  .sess-pager button:hover:not(:disabled){color:var(--accent);border-color:var(--accent)}
-  .sess-pager button:disabled{opacity:.35;cursor:default}
-  .sess-pager span{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
-  .sess-prompts-sub{font-size:11.5px;color:var(--ink-3);margin-bottom:12px}
-  .sess-prompt{padding:10px 0;border-bottom:1px solid var(--line-soft)}
-  .sess-prompt:last-child{border-bottom:none;padding-bottom:0}
-  .sess-prompt-meta{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:11px;color:var(--ink-3)}
-  .sess-prompt-text{white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
-  .sess-prompt-trunc{color:var(--ink-3);font-style:italic}
-  .sess-back{font-size:12.5px;color:var(--accent);margin-bottom:14px;display:inline-block;cursor:pointer}
-  .sess-note{color:var(--ink-3);font-size:12.5px;padding:26px 0;text-align:center}
-  .sess-cost-note{margin-top:10px;color:var(--ink-3);font-size:10.5px;line-height:1.45}
-  .sess-empty-filter{display:flex;align-items:baseline;justify-content:center;gap:10px;padding:34px;text-align:center}
-  .sess-empty-filter b{color:var(--ink);font-size:14px}
-  .sess-empty-filter span{color:var(--ink-3);font-size:12.5px}
-  .sess-err{border-left:3px solid var(--err);padding:14px 16px;background:var(--bg-2);border-radius:0 10px 10px 0;color:var(--ink-2)}
-  .sess-err b{color:var(--ink)}
-  .kvrow{display:grid;grid-template-columns:180px 1fr;font-size:12.5px;padding:7px 0;border-bottom:1px solid var(--line-soft)}
-  .kvrow dt{color:var(--ink-3)}
-  .kvrow dd{color:var(--ink-2);word-break:break-all}
-  @media(max-width:900px){.sgrid{grid-template-columns:1fr}.scards4{grid-template-columns:1fr 1fr}}
+  @media(max-width:900px){
+    .sess-grid2,.sess-grid2-wide{grid-template-columns:1fr}
+    .sess-grid4{grid-template-columns:1fr 1fr}
+    .sess-grid3,.sess-tools-charts{grid-template-columns:1fr 1fr}
+  }
+  @media(max-width:560px){.sess-grid4,.sess-grid3{grid-template-columns:1fr}}
+
+  /* ---- Configure: telemetry source cards ----
+     Structure and rhythm follow xo-swarm's agent cards (hero, title +
+     badge, "Powered by", Overview | Details tabs, footer control) and its
+     StatTile / StatusPill. One accent per card: --vendor, set inline. */
+  .sess-configure-intro{margin:-6px 0 20px;font-size:13px;color:var(--muted-foreground)}
+  .sess-configure-intro a{color:var(--foreground);text-decoration:underline;text-underline-offset:3px}
+  .sess-agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-items:stretch}
+  .sess-agent-card{--vendor:var(--ink-3);padding-top:0;gap:16px;overflow:hidden;transition:border-color .2s var(--ease),box-shadow .2s var(--ease)}
+  .sess-agent-card:hover{border-color:color-mix(in srgb,var(--vendor) 35%,var(--border));box-shadow:0 10px 28px -14px color-mix(in srgb,var(--vendor) 40%,transparent)}
+  .sess-agent-card[data-collection="off"] .sess-agent-hero,.sess-agent-card[data-collection="off"] [data-slot="card-content"]{opacity:.6}
+  /* hero: the vendor mark on a tinted panel, status pill in the corner */
+  .sess-agent-hero{
+    position:relative;display:flex;align-items:center;justify-content:center;height:112px;
+    background:radial-gradient(60% 90% at 50% 100%,color-mix(in srgb,var(--vendor) 22%,transparent),transparent 70%),
+      linear-gradient(180deg,color-mix(in srgb,var(--vendor) 6%,var(--card)),var(--card));
+    border-bottom:1px solid var(--border-soft);
+  }
+  .sess-agent-mark{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:14px;color:var(--vendor);background:color-mix(in srgb,var(--vendor) 12%,var(--card));border:1px solid color-mix(in srgb,var(--vendor) 28%,transparent);box-shadow:0 8px 24px -10px color-mix(in srgb,var(--vendor) 60%,transparent)}
+  .sess-agent-mark svg{width:26px;height:26px}
+  .sess-status-pill{position:absolute;top:10px;right:10px;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--border);border-radius:999px;background:color-mix(in srgb,var(--card) 80%,transparent);font:500 10.5px var(--mono);color:var(--ink-2)}
+  .sess-status-pill i{width:6px;height:6px;border-radius:50%;background:var(--ink-3)}
+  .sess-status-pill[data-state="on"] i{background:var(--accent)}
+  .sess-status-pill[data-state="down"] i{background:var(--err)}
+  .sess-status-pill[data-state="pending"] i{background:#e2ae5b;animation:ui-pulse 1.6s ease-in-out infinite}
+  .sess-agent-card [data-slot="card-title"]{font-size:15px}
+  .sess-agent-card [data-slot="badge"][data-vendor-tag]{color:var(--vendor);border-color:color-mix(in srgb,var(--vendor) 35%,transparent);background:color-mix(in srgb,var(--vendor) 10%,transparent)}
+  .sess-agent-card [data-slot="tabs"]{gap:12px}
+  /* StatTile: icon + label row, then the value */
+  .sess-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .sess-tile{display:flex;flex-direction:column;gap:6px;min-width:0;padding:10px 12px;border:1px solid var(--border-soft);border-radius:var(--radius);background:var(--background)}
+  .sess-tile>span{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted-foreground);white-space:nowrap}
+  .sess-tile>span svg{width:13px;height:13px;color:var(--vendor)}
+  .sess-tile>b{font:600 19px/1 var(--sans);color:var(--foreground);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess-tile-wide{grid-column:1/-1}
+  .sess-tile-spark{min-width:0}
+  .sess-tile-spark [data-slot="chart"] .chart-empty{padding:10px 0;font-size:11px}
+  /* Details tab */
+  .sess-path-state{display:inline-flex;align-items:center;gap:5px;margin-left:auto;font:500 10.5px var(--mono);color:var(--muted-foreground)}
+  .sess-path-state i{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+  .sess-path-state[data-tone="warn"] i{background:#e2ae5b}
+  .sess-agent-note{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--accent)}
+  .sess-agent-note svg{width:14px;height:14px}
+  .sess-features{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+  .sess-features li{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+  .sess-features li svg{width:14px;height:14px;flex:none;color:var(--vendor)}
+  .sess-features li.is-muted{color:var(--muted-foreground)}
+  .sess-features li.is-muted svg{color:var(--muted-foreground)}
+  /* footer: the switch, and the id on the right */
+  .sess-agent-card [data-slot="card-footer"]{justify-content:space-between;margin-top:auto}
+  .sess-agent-switch{flex:none;white-space:nowrap;font-size:12.5px;font-weight:500}
+  .sess-agent-id{font:500 11px var(--mono);color:var(--muted-foreground)}
