@@ -926,6 +926,12 @@ _CORS_ORIGINS = [
     if o.strip()
 ]
 
+# Every POST/PUT/PATCH/DELETE, on every route, is refused when a browser sent it
+# from another site; the CORS allow list names the other sites trusted to write.
+# Added before CORS so it runs inside it and a refusal still carries CORS headers.
+from routers.browser_guard import add_browser_write_guard, add_forwarding_middleware
+add_browser_write_guard(app, _CORS_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
@@ -935,7 +941,6 @@ app.add_middleware(
 )
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
-from routers.browser_guard import add_forwarding_middleware
 add_forwarding_middleware(app)
 app.include_router(xo_auth_session_router)
 app.include_router(auth_router)
