@@ -261,18 +261,23 @@ command. Process restart belongs on Setup.
 
 **Commands** starts empty. Use **Add command** to save a name, optional description,
 command line or argv JSON, optional working directory, required timeout and optional
-interval. Leave the interval blank for manual-only execution. A command line is
-split without a shell; validation errors appear in the card. Interval jobs show a
-“Runs every N” chip and use the watcher. **Edit** preserves existing environment,
-project and enabled settings.
+interval. Leave the interval blank for manual-only execution. **First run at** is
+enabled once an interval is set: the browser's local time is sent as
+`first_run_at` with its UTC offset, and a past time keeps the same schedule
+(next slot after now). A command line is split without a shell; validation
+errors appear in the card. Interval jobs show a “Runs every N · next …” chip in
+local time and use the watcher. **Edit** fills in the saved start time and
+preserves existing environment, project and enabled settings.
 
 The information tooltip beside **Saved commands** explains **Copy agent prompt**.
-The card shows the full `POST /api/schedules` creation URL. The copied prompt
-includes a complete curl request with JSON, checks for existing jobs, defaults
-to manual execution and asks the agent to verify the saved command. It excludes
-page query parameters. If clipboard access is unavailable, a selectable prompt
-appears without changing a command draft. The page also shows how to run commands,
-the default log/history paths and where to find the exact log path in Inbox.
+The card shows the full `POST /api/schedules` creation URL. The button copies a
+short skill (SKILL.md format) for the agent: use `/api/schedules` on the machine
+running Space, never edit its files; commands run on the server without a shell,
+so give an absolute cwd, an argv list and a timeout, and no secrets; stay manual
+unless asked, with `every_seconds` and `first_run_at` (the browser's UTC offset
+is filled in) for schedules; avoid duplicates, remember edits replace the whole
+definition, and run nothing unasked. If clipboard access is unavailable, a
+selectable copy appears without changing a command draft.
 
 **Run** executes through the command utility and disables while running. The card
 polls the job every three seconds until the status and duration appear. The row

@@ -20,7 +20,7 @@ import sharingView from './views/sharing.js?v=20260915-data1';
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260915-data1';
 import quirqView from './views/quirq.js?v=20260915-data1';
-import {createSetupViews} from './views/setup.js?v=20260914-manage1';
+import {createSetupViews} from './views/setup.js?v=20260915-skillprompt1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
 
 
