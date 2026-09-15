@@ -14,7 +14,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {AGENT_PAGES} from '../core/navigation.js?v=20260915-agents2';
 import {icons,button,badge,card,table,sortHead,checkbox,label,toggleGroup,pagination,skeleton,alert,breadcrumb,empty,item,itemGroup,itemSeparator,spinner,switchControl,input} from '../core/shadcn.js?v=20260915-agents2';
-import {areaChart,barChartHorizontal,barChartStacked,donutChart,radialChart,heatmapChart} from '../core/chart.js?v=20260915-agents2';
+import {areaChart,barChartHorizontal,barChartStacked,donutChart,radialChart,heatmapChart} from '../core/chart.js?v=20260915-typesync1';
 
 let _open=null;
 let _toolbar=()=>null;
@@ -103,7 +103,7 @@ const costNote='* Partial estimate includes only sources that report cost; — m
 
 /* ---- shadcn building blocks specific to this page ---- */
 const sourceBadge=id=>badge(esc(agentLabel(id)),{variant:'outline',source:id});
-const modelBadge=m=>badge(esc(mshort(m)),{variant:'secondary',mono:true});
+const modelBadge=m=>badge(esc(mshort(m)),{variant:'secondary'});
 const statCard=(label,value,foot,{tone=null,action='',attrs=''}={})=>card({stat:true,tone,description:label,title:value,action,footer:foot,attrs});
 /* Overview hero: one bold primary figure, one smaller secondary figure. */
 const heroCard=(label,value,secondary,secondaryLabel,{tone=null,action='',attrs=''}={})=>card({stat:'hero',tone,description:label,title:value,action,attrs,
@@ -204,7 +204,7 @@ function render(){
     wrap.innerHTML=pageHead+alert({variant:'destructive',icon:off?icons.wifiOff:icons.alert,
       title:off?'xo-space is unreachable':'Could not load .xo/sessions.json',
       description:(off
-        ?'<span>The request never reached the server (stopped or restarting; the footer pill tracks it). Not a telemetry-source problem.</span>'
+        ?'<span>The request never reached the server (stopped or restarting). Not a telemetry-source problem.</span>'
         :'<span>'+esc(failed)+'. The API reads local telemetry for each runtime (Claude Code: <b>ARGUS_DB</b>; Codex: <b>CODEX_HOME</b>; Cursor: <b>CURSOR_HOME</b>).</span>')
         +button(icons.refresh+'Retry',{variant:'outline',size:'sm',attrs:'id="sess-retry"'})});
     document.getElementById('sess-retry').addEventListener('click',load);return;
@@ -672,7 +672,7 @@ function agentCard(row){
     :editing
       ?'<div class="sess-path is-editing">'
         +'<label class="sess-path-key" for="'+inputId+'">'+esc(row.path.env)+'</label>'
-        +input({id:inputId,value:srcDraft.has(row.id)?srcDraft.get(row.id):row.path.configured,placeholder:row.path.default,mono:true,disabled:busy,attrs:'data-path-input="'+esc(row.id)+'"'})
+        +input({id:inputId,value:srcDraft.has(row.id)?srcDraft.get(row.id):row.path.configured,placeholder:row.path.default,disabled:busy,attrs:'data-path-input="'+esc(row.id)+'"'})
         +'</div>'
         +'<div class="sess-path-actions">'
         +(row.path.configured?button('Use default',{variant:'ghost',size:'sm',disabled:busy,attrs:'data-path-reset="'+esc(row.id)+'" title="'+esc(row.path.default)+'"'}):'')

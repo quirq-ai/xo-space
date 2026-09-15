@@ -206,8 +206,8 @@ function renderMountError(el,v){
   const box=document.createElement('div');
   box.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:32px';
   box.innerHTML='<div>'
-    +'<div style="font:400 10px ui-monospace,monospace;letter-spacing:.14em;color:#7d786d">VIEW FAILED</div>'
-    +'<p style="max-width:44ch;color:#b3ada0;font-size:14px;margin:10px 0 0">The '+v.label
+    +'<div style="font:600 11px var(--sans);letter-spacing:.06em;color:var(--ink-3)">VIEW FAILED</div>'
+    +'<p style="max-width:44ch;color:var(--ink-2);font-size:14px;margin:10px 0 0">The '+v.label
     +' view hit an error and was isolated. The other tabs keep working. Details are in the browser console.</p>'
     +'</div>';
   el.appendChild(box);

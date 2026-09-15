@@ -24,14 +24,14 @@
   .sess-crumbs [data-slot="breadcrumb-page"]{display:inline-flex;align-items:center;gap:6px}
   .sess-share{display:flex;align-items:center;gap:10px;min-width:160px}
   .sess-share [data-slot="progress"]{width:120px}
-  .sess-share span{font:500 12px var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums}
-  .sess-dim{color:var(--muted-foreground);font:500 11.5px var(--mono)}
+  .sess-share span{font:500 12px var(--sans);color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .sess-dim{color:var(--muted-foreground);font:500 12px var(--sans)}
   .kv-key{width:190px;color:var(--muted-foreground)}
   .sess-pager{display:flex;flex-direction:column;align-items:center;gap:8px;width:100%}
-  .sess-pager>span{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted-foreground)}
-  .sess-prompts-sub{font-size:11.5px;color:var(--muted-foreground);margin-bottom:8px}
+  .sess-pager>span{font:600 11px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground)}
+  .sess-prompts-sub{font-size:12px;color:var(--muted-foreground);margin-bottom:8px}
   .sess-prompt{padding-left:0;padding-right:0}
-  .sess-prompt-meta{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted-foreground)}
+  .sess-prompt-meta{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted-foreground)}
   .sess-prompt-text{flex-basis:100%;white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
   .sess-prompt-trunc{color:var(--muted-foreground);font-style:italic}
   .sess-note{display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted-foreground);font-size:12.5px;padding:26px 0;text-align:center}
@@ -62,7 +62,7 @@
   .sess-agent-mark svg{width:18px;height:18px}
   .sess-agent-title{display:flex;flex:1;flex-direction:column;gap:4px;min-width:0}
   .sess-agent-title [data-slot="card-title"]{display:flex;align-items:center;gap:8px;font:600 14px/1.2 var(--sans);white-space:nowrap}
-  .sess-agent-card [data-slot="badge"][data-vendor-tag]{color:var(--vendor);border-color:color-mix(in srgb,var(--vendor) 40%,transparent);background:color-mix(in srgb,var(--vendor) 10%,transparent);font-size:10.5px;padding:1px 7px}
+  .sess-agent-card [data-slot="badge"][data-vendor-tag]{color:var(--vendor);border-color:color-mix(in srgb,var(--vendor) 40%,transparent);background:color-mix(in srgb,var(--vendor) 10%,transparent);font-size:11px;padding:1px 7px}
   .sess-agent-status{display:flex;align-items:center;gap:6px;font-size:12px;line-height:1.2;color:var(--muted-foreground)}
   .sess-agent-status i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--ink-3)}
   .sess-agent-status[data-state="on"] i{background:var(--accent)}
@@ -72,13 +72,13 @@
   /* stats band */
   .sess-agent-card .sess-agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:12px 16px 14px}
   .sess-stat{display:flex;flex-direction:column;gap:3px;min-width:0}
-  .sess-stat span{font-size:11px;line-height:1.2;color:var(--muted-foreground)}
+  .sess-stat span{font-size:12px;line-height:1.2;color:var(--muted-foreground)}
   .sess-stat b{font:600 15px/1.2 var(--sans);color:var(--foreground);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* path band */
   .sess-agent-card .sess-agent-foot{display:flex;flex-direction:column;gap:8px;align-items:stretch;padding:10px 16px;border-top:1px solid var(--border-soft);background:rgba(22,26,32,.45)}
   .sess-path{display:flex;align-items:center;gap:10px;min-width:0;min-height:28px}
-  .sess-path-key{flex:none;font:500 11px var(--mono);letter-spacing:.02em;color:var(--muted-foreground)}
-  .sess-path-value{flex:1;min-width:0;font:400 12px var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess-path-key{flex:none;font:500 12px var(--mono);letter-spacing:.02em;color:var(--muted-foreground)}
+  .sess-path-value{flex:1;min-width:0;font:400 12px var(--sans);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sess-path .ui-btn{flex:none}
   .sess-path.is-editing [data-slot="input"]{flex:1;height:28px;font-size:12px;background:var(--background)}
   .sess-path-actions{display:flex;justify-content:flex-end;gap:6px}

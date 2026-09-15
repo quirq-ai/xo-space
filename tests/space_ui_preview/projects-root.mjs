@@ -75,7 +75,7 @@ try{
     assert.equal(new URL(page.url()).hash,'#/'+route,'Searching roots does not navigate');
     const entries=await page.evaluate(()=>history.length);
     await page.locator('#root-q').press('Enter');await active(page,'projects/data/graph');
-    await page.waitForFunction(()=>document.querySelector('#root-name').textContent==='Aurora Console'&&/\d+/.test(document.querySelector('#fmeta')?.textContent||''));
+    await page.waitForFunction(()=>document.querySelector('#root-name').textContent==='Aurora Console'&&/\d+/.test(document.querySelector('#counts')?.textContent||''));
     assert.ok(await page.evaluate(()=>window.projectCanvasBoots)>0);
     assert.equal(await page.evaluate(()=>history.length),entries+1,'Picking a root adds one Data Graph history entry');
     assert.equal(await root.evaluate(node=>node===document.querySelector('#graph-root')),true);

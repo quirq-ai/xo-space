@@ -4,7 +4,7 @@ import {apiFetch} from '../core/api.js';
 
 const esc=value=>String(value??'').replace(/[&<>"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
 const text=value=>typeof value==='string'?value.trim():'';
-const row=(label,value)=>'<div><dt>'+esc(label)+'</dt><dd>'+esc(value)+'</dd></div>';
+const row=(label,value,cls='')=>'<div><dt>'+esc(label)+'</dt><dd'+(cls?' class="'+cls+'"':'')+'>'+esc(value)+'</dd></div>';
 
 export function mountIdentity(el){
   let revision=0,refreshing=false,refreshQueued=false;
@@ -32,7 +32,7 @@ export function mountIdentity(el){
     }
     el.innerHTML='<div class="setup-card-head"><h3>Workspace identity</h3></div>'
       +'<div class="setup-identity-body"><dl class="setup-identity-space">'
-      +row('Space ID',spaceValue)
+      +row('Space ID',spaceValue,spaceId?'setup-identity-id':'')
       +(text(space?.label)?row('Workspace name',space.label):'')
       +(text(space?.owner)?row('Workspace owner',space.owner):'')
       +'</dl>'+connection('xo','XO account')+connection('github','GitHub')

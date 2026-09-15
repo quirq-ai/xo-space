@@ -290,7 +290,7 @@ export function heatmapChart(host,{byDay,weeks=16,key='value',config,format=v=>S
   const end=new Date(today.getTime()+(6-dow)*864e5);
   const start=new Date(end.getTime()-(weeks*7-1)*864e5);
   let vmax=1;byDay.forEach(v=>{if(v>vmax)vmax=v;});
-  ['Mon','','Wed','','Fri','','Sun'].forEach((l,r)=>l&&text(svg,2,top+r*(cell+gap)+11,l,{class:'chart-axis-tick mono'}));
+  ['Mon','','Wed','','Fri','','Sun'].forEach((l,r)=>l&&text(svg,2,top+r*(cell+gap)+11,l,{class:'chart-axis-tick'}));
   for(let i=0;i<weeks*7;i++){
     const d=new Date(start.getTime()+i*864e5);
     if(d>today)break;

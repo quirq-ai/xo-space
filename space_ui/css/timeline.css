@@ -19,21 +19,21 @@
 #view-time .thead .ghost:hover{color:var(--ink);border-color:var(--ink-3)}
 #view-time #tplay{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;min-height:38px;padding:8px 12px;border:1px solid var(--accent);border-radius:8px;background:var(--accent);color:var(--bg);font:500 12px var(--sans);white-space:nowrap;cursor:pointer}
 #view-time #tplay svg{flex:none}
-#view-time #treadout{flex:none;min-width:76px;text-align:right;white-space:nowrap;color:var(--accent);font:400 13px/1.5 var(--mono);font-variant-numeric:tabular-nums}
+#view-time #treadout{flex:none;min-width:76px;text-align:right;white-space:nowrap;color:var(--accent);font:400 13px/1.5 var(--sans);font-variant-numeric:tabular-nums}
 #view-time .scrubrow{flex:none;margin:12px 0 2px;min-width:0}
 #view-time #tscrub{display:block;width:100%;appearance:none;-webkit-appearance:none;height:20px;background:transparent;cursor:ew-resize}
 #view-time #tscrub::-webkit-slider-runnable-track{height:1px;background:var(--line)}
 #view-time #tscrub::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--accent);margin-top:-6px;box-shadow:0 0 0 4px rgba(168,217,79,.16)}
 #view-time #tscrub::-moz-range-track{height:1px;background:var(--line)}
 #view-time #tscrub::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(168,217,79,.16)}
-#view-time .ticks{display:flex;justify-content:space-between;gap:8px;min-width:0;margin-top:3px;color:var(--ink-3);font:400 10px/1.5 var(--mono)}
+#view-time .ticks{display:flex;justify-content:space-between;gap:8px;min-width:0;margin-top:3px;color:var(--ink-3);font:400 11px/1.5 var(--sans);font-variant-numeric:tabular-nums}
 #view-time .ticks span{min-width:0;white-space:nowrap}
 #view-time .trange{display:flex;align-items:center;flex:none;flex-wrap:wrap;gap:8px 12px;min-width:0;min-height:30px;margin-top:8px}
 #view-time .tyears{display:flex;gap:4px;flex-wrap:wrap;min-width:0}
 #view-time .tyears button{min-height:30px;padding:5px 10px;border:1px solid var(--line-soft);border-radius:6px;background:transparent;color:var(--ink-3);font:400 11px var(--sans);cursor:pointer;transition:color .16s var(--ease),border-color .16s var(--ease)}
 #view-time .tyears button:hover{color:var(--ink);border-color:var(--ink-3)}
 #view-time .tyears button.is-on{color:var(--accent);background:rgba(168,217,79,.07);border-color:rgba(168,217,79,.2)}
-#view-time .thint{margin-left:auto;color:var(--ink-3);font:400 10px/1.5 var(--sans);white-space:nowrap}
+#view-time .thint{margin-left:auto;color:var(--ink-3);font:400 12px/1.5 var(--sans);white-space:nowrap}
 #view-time #tmilestone{flex:none;min-height:18px;margin-top:8px;color:var(--ink-2);font:400 12px/1.5 var(--sans);overflow-wrap:anywhere;transition:opacity .4s var(--ease)}
 /* The SVG may be wider than the viewport. Keep wheel/drag panning local,
    with the remaining height assigned to the plot rather than a page hero. */
@@ -48,9 +48,9 @@
   #view-time .thead{gap:8px}
   #view-time .atlas-lens-switch{flex:1 1 100%;width:100%}
   #view-time .atlas-lens-switch button{flex:1;min-height:38px;padding:8px 12px}
-  #view-time .thead .ghost,#view-time #tplay{min-height:38px;font-size:11px;padding:8px 10px}
+  #view-time .thead .ghost,#view-time #tplay{min-height:38px;font-size:12px;padding:8px 10px}
   #view-time #treadout{min-width:70px;font-size:12px}
-  #view-time .ticks{gap:4px;font-size:9px}
+  #view-time .ticks{gap:4px;font-size:11px}
   #view-time .scrubrow{margin-top:10px}
   #view-time .trange{margin-top:6px;min-height:30px}
   #view-time .tyears button{min-height:30px;padding:5px 9px}

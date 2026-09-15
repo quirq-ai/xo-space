@@ -6,12 +6,12 @@
 
   /* header strip: lens pill · summary · filter · sort · refresh */
   .prj-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
-  .prj-eyebrow{font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--ink-3);
+  .prj-eyebrow{font:600 11px/1 var(--sans);letter-spacing:.06em;color:var(--ink-3);
     text-transform:uppercase}
   .prj-spacer{flex:1}
   .prj-sort{display:flex;gap:2px;background:var(--bg-2);border:1px solid var(--line-soft);
     border-radius:999px;padding:2px}
-  .prj-sort button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .prj-sort button{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);border-radius:999px;padding:5px 10px;transition:all .16s var(--ease)}
   .prj-sort button:hover{color:var(--ink)}
   .prj-sort button.is-on{color:var(--bg);background:var(--accent)}
@@ -24,8 +24,8 @@
     grid-template-columns:14px minmax(0,1fr) 68px 150px 132px;
     align-items:center;gap:14px;
   }
-  .prj-cols{display:flex;gap:8px;padding:0 0 7px;font:600 10px var(--mono);
-    letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+  .prj-cols{display:flex;gap:8px;padding:0 0 7px;font:600 11px var(--sans);
+    letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
   .prj-cols-inner{flex:1;min-width:0;padding:0 17px}
 
   .prj-rows{display:flex;flex-direction:column;gap:8px}
@@ -45,21 +45,21 @@
   .prj-name{flex-wrap:wrap}
   .prj-name b{font-size:14px;font-weight:500;color:var(--ink);overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
-  .prj-name em{font:400 10.5px var(--mono);font-style:normal;color:var(--ink-3)}
+  .prj-name em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3)}
   .prj-name small{flex:1 0 100%;font-size:12px;color:var(--ink-3);overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   /* live dot: the only saturated thing in a row, because it is the only
      thing that is happening right now */
-  .prj-live{font:600 9.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  .prj-live{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--accent);align-items:center}
   .prj-live i{width:6px;height:6px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 0 3px rgba(168,217,79,.14)}
   .prj-live.is-idle{min-height:6px}
-  .prj-num{font:400 11px var(--mono);color:var(--ink-2);white-space:nowrap;gap:7px}
+  .prj-num{font:400 12px var(--sans);color:var(--ink-2);white-space:nowrap;gap:7px;font-variant-numeric:tabular-nums}
   .prj-num em{font-style:normal;color:var(--ink-3)}
   .prj-num.is-none{color:var(--ink-3)}
-  .prj-when{font:400 10.5px var(--mono);letter-spacing:.04em;color:var(--ink-3);
-    white-space:nowrap}
+  .prj-when{font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);
+    white-space:nowrap;font-variant-numeric:tabular-nums}
   .prj-when.is-none{color:var(--ink-3)}
   /* skeletons: a shaped placeholder says "loading" without the word */
   .prj-skel{height:52px;border-radius:12px;background:linear-gradient(90deg,
@@ -71,7 +71,7 @@
 
   .prj-empty{padding:46px 22px;text-align:center;border:1px dashed var(--line);
     border-radius:12px;background:var(--bg-2)}
-  .prj-empty b{display:block;font:500 15px var(--serif);color:var(--ink);margin-bottom:7px}
+  .prj-empty b{display:block;font:600 15px var(--sans);color:var(--ink);margin-bottom:7px}
   .prj-empty p{font-size:12.5px;color:var(--ink-3);max-width:52ch;margin:0 auto;line-height:1.6}
 
   /* drawer */
@@ -81,7 +81,7 @@
   .prj-panel{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:10px;
     padding:12px 14px;min-height:98px;display:flex;flex-direction:column}
   .prj-row.is-open .prj-panel{background:var(--bg-2)}
-  .prj-ptitle{font:600 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
+  .prj-ptitle{font:600 11px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);margin-bottom:10px;flex:none}
   .prj-pbody{flex:1;min-height:0}
   /* one-line empty states sit centred so a 1-line and a 2-line note leave the
@@ -173,28 +173,28 @@
   .tv-node .tv-name{font-size:12.5px;color:var(--ink);line-height:1.15;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tv-node.is-project .tv-name{color:var(--accent);font-weight:500}
-  .tv-node.is-root .tv-name{font:500 13.5px var(--serif);color:var(--ink)}
-  .tv-node .tv-count{font:400 9px var(--mono);letter-spacing:.06em;color:var(--ink-4);
-    line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tv-node.is-root .tv-name{font:600 13.5px var(--sans);color:var(--ink)}
+  .tv-node .tv-count{font:400 11px var(--sans);letter-spacing:.02em;color:var(--ink-3);
+    line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
   .tv-caret{color:var(--ink-4);font-size:8px;justify-self:end}
   .tv-node.is-open .tv-caret{color:var(--accent)}
 
   /* ---- leaf cards ---- */
   .tv-stack{position:absolute;width:196px;padding:7px 0 8px;border-radius:9px;
     background:rgba(16,19,24,.62);border:1px solid var(--line-soft)}
-  .tv-stack-head{font:600 8.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;
-    color:var(--ink-4);padding:0 10px 5px;margin-bottom:2px;
+  .tv-stack-head{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-3);padding:0 10px 5px;margin-bottom:2px;
     border-bottom:1px solid var(--line-soft)}
   .tv-leaf{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:baseline;
     width:100%;text-align:left;height:20px;padding:0 10px;border-radius:5px}
   .tv-leaf:hover{background:var(--bg-3)}
   .tv-leaf:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  .tv-leaf .tv-name{font-size:11.5px;color:var(--ink-2);overflow:hidden;
+  .tv-leaf .tv-name{font-size:12px;color:var(--ink-2);overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .tv-leaf:hover .tv-name{color:var(--ink)}
-  .tv-leaf .tv-tag{font:400 8.5px var(--mono);letter-spacing:.08em;color:var(--ink-4);
+  .tv-leaf .tv-tag{font:400 11px var(--sans);letter-spacing:.06em;color:var(--ink-3);
     text-transform:uppercase}
-  .tv-leaf.is-more{color:var(--accent);font:500 9.5px var(--mono);letter-spacing:.1em;
+  .tv-leaf.is-more{color:var(--accent);font:500 11px var(--sans);letter-spacing:.06em;
     text-transform:uppercase;margin-top:3px}
 
   /* ---- growth ---- */
@@ -211,12 +211,12 @@
   /* file explorer (Files panel of a project drawer) */
   .prj-panel-wide{grid-column:1/-1}
   .fx-crumbs{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px;margin-bottom:6px;
-    font:500 12px var(--mono)}
+    font:500 12px var(--sans)}
   .fx-crumb{color:var(--ink-3);padding:2px 4px;border-radius:4px}
   .fx-crumb:hover{color:var(--ink);background:var(--bg-2)}
   .fx-sep{color:var(--ink-4)}
   .fx-here{color:var(--ink)}
-  .fx-meta{font:400 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .fx-meta{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);margin-bottom:9px}
   /* folders left, files right; on a narrow drawer they stack */
   /* stretch, not start: sized to its own content the folders pane rendered
@@ -245,19 +245,19 @@
   .fx-ico{color:var(--ink-4);font-size:9px;line-height:1.5}
   .fx-row.is-dir .fx-ico{color:var(--accent)}
   .fx-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .fx-size,.fx-when{font:400 11px var(--mono);color:var(--ink-3);white-space:nowrap}
+  .fx-size,.fx-when{font:400 12px var(--sans);color:var(--ink-3);white-space:nowrap;font-variant-numeric:tabular-nums}
   .fx-when{min-width:70px;text-align:right}
 
   /* One chip class per todo status; the set is owned by
      services/cowork_agent/visualizer/todo_status.py and
      tests/test_todo_status.py fails if these stop matching it. */
-  .tchip{font:500 10px/1 var(--mono);color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:3px 6px;flex:none;white-space:nowrap}
+  .tchip{font:500 11px/1 var(--sans);color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:3px 6px;flex:none;white-space:nowrap}
   .tchip.st-in_progress{color:var(--accent);border-color:var(--accent)}
   .tchip.st-pending{color:var(--ink-2)}
   .tchip.st-blocked{color:#e0b04c;border-color:#e0b04c}
   .tchip.st-completed,.tchip.st-cancelled{color:var(--ink-3)}
-  .truntime{font:500 10.5px/1 var(--mono);color:var(--ink-3);flex:none}
-  .tmuted{color:var(--ink-3);font-size:11.5px;margin-left:auto;flex:none}
+  .truntime{font:500 12px/1 var(--sans);color:var(--ink-3);flex:none}
+  .tmuted{color:var(--ink-3);font-size:12px;margin-left:auto;flex:none}
 
 /* Projects List. These overrides stay inside the List view: Tree and Sharing
    also use the foundation classes above. */
@@ -283,7 +283,7 @@
 #view-projects #prj-status button{color:var(--accent);font:500 12px var(--sans);text-decoration:underline;text-underline-offset:3px}
 
 #view-projects .prj-cols-inner,#view-projects .prj-row-head{grid-template-columns:14px minmax(0,1fr) 72px 138px 118px;gap:12px}
-#view-projects .prj-cols{padding-right:0;gap:8px;font-size:9px;letter-spacing:.1em}
+#view-projects .prj-cols{padding-right:0;gap:8px;font-size:11px;letter-spacing:.06em}
 #view-projects .prj-rows{gap:8px}
 #view-projects .prj-row{border-radius:11px}
 #view-projects .prj-row.is-open{border-color:rgba(168,217,79,.24);background:var(--bg-2)}
@@ -291,27 +291,27 @@
 #view-projects .prj-row-head:focus-visible{outline-offset:-2px}
 #view-projects .prj-name{gap:4px 8px}
 #view-projects .prj-name b{max-width:100%;font-size:14px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
-#view-projects .prj-name em{max-width:100%;overflow-wrap:anywhere;font-size:10px}
-#view-projects .prj-name small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;font-size:11.5px;line-height:1.5;margin-top:1px}
+#view-projects .prj-name em{max-width:100%;overflow-wrap:anywhere;font-size:12px}
+#view-projects .prj-name small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow-wrap:anywhere;font-size:12px;line-height:1.5;margin-top:1px}
 #view-projects .prj-num{flex-wrap:wrap;gap:3px 7px;white-space:normal;line-height:1.45}
 #view-projects .prj-num em{white-space:nowrap}
-#view-projects .prj-when{font-size:10px;line-height:1.45}
+#view-projects .prj-when{font-size:12px;line-height:1.45}
 
 #view-projects .prj-drawer{padding:0 16px 16px;border-top-color:var(--line-soft)}
 #view-projects .prj-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0}
 #view-projects .prj-files-title{margin:0;font:500 12px/1.4 var(--sans);color:var(--ink-2)}
-#view-projects .prj-detail-refresh{flex-shrink:0;min-height:34px;padding:7px 10px;font-size:11px}
+#view-projects .prj-detail-refresh{flex-shrink:0;min-height:34px;padding:7px 10px;font-size:12px}
 #view-projects .prj-panel{padding:14px;min-width:0;border-radius:8px;background:var(--bg)}
 #view-projects .prj-row.is-open .prj-panel{background:var(--bg)}
 #view-projects .prj-ptitle{font:500 11px/1.4 var(--sans);letter-spacing:0;text-transform:none;color:var(--ink-2);margin-bottom:11px}
-#view-projects .fx-crumbs{font-size:11px;line-height:1.6;overflow-wrap:anywhere}
+#view-projects .fx-crumbs{font-size:12px;line-height:1.6;overflow-wrap:anywhere}
 #view-projects .fx-crumb,#view-projects .fx-here{max-width:100%;overflow-wrap:anywhere;white-space:normal}
 #view-projects .fx-row{min-height:34px}
 #view-projects .fx-files .fx-row{grid-template-columns:14px minmax(0,1fr) 70px 80px;column-gap:10px}
 #view-projects .fx-dirs .fx-name{white-space:normal;overflow-wrap:anywhere}
-#view-projects .fx-meta{font-size:10px;letter-spacing:.03em;line-height:1.6}
+#view-projects .fx-meta{font-size:11px;letter-spacing:.03em;line-height:1.6}
 #view-projects .prj-empty{padding:42px 22px;border-style:solid}
-#view-projects .prj-empty b{font:500 23px/1.25 var(--serif);margin-bottom:10px}
+#view-projects .prj-empty b{font:500 23px/1.25 var(--sans);margin-bottom:10px}
 #view-projects .prj-empty p{font-size:12px;line-height:1.7}
 #view-projects .prj-empty-actions{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:9px;margin-top:18px}
 
@@ -336,12 +336,12 @@
   #view-projects .fx-files .fx-row{grid-template-columns:12px minmax(0,1fr) auto;gap:3px 8px;padding:8px 3px}
   #view-projects .fx-files .fx-ico{grid-column:1;grid-row:1}
   #view-projects .fx-files .fx-name{grid-column:2;grid-row:1;white-space:normal;overflow-wrap:anywhere;line-height:1.45}
-  #view-projects .fx-files .fx-size{grid-column:3;grid-row:1;font-size:10px}
-  #view-projects .fx-files .fx-when{grid-column:2/-1;grid-row:2;text-align:left;min-width:0;font-size:10px}
+  #view-projects .fx-files .fx-size{grid-column:3;grid-row:1;font-size:12px}
+  #view-projects .fx-files .fx-when{grid-column:2/-1;grid-row:2;text-align:left;min-width:0;font-size:12px}
   #view-projects .fx-dirs .fx-row{gap:8px;padding-left:3px;padding-right:3px}
-  #view-projects .fx-dirs .fx-size{font-size:10px}
+  #view-projects .fx-dirs .fx-size{font-size:12px}
 }
 @media(max-width:480px){
   #view-projects .prj{padding-left:12px;padding-right:12px}
-  #view-projects .prj-name small{font-size:11px}
+  #view-projects .prj-name small{font-size:12px}
 }

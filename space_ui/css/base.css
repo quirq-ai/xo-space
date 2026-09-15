@@ -1,19 +1,28 @@
+  /* Inter 4.001 variable (SIL OFL 1.1, fonts/inter/LICENSE.txt), served locally so
+     Space looks the same on every OS and works offline. */
+  @font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url("../fonts/inter/InterVariable.woff2") format("woff2")}
+  @font-face{font-family:"Inter";font-style:italic;font-weight:100 900;font-display:swap;src:url("../fonts/inter/InterVariable-Italic.woff2") format("woff2")}
   :root{
     --bg:#0b0c0f; --bg-2:#101318; --bg-3:#161a20;
     --line:#242832; --line-soft:#1b1f27;
-    --ink:#e9e4d9; --ink-2:#b3ada0; --ink-3:#888276; --ink-4:#6f6b61;
+    /* Text greys, APCA Lc on the dark cards: --ink 90 primary, --ink-2 64 secondary, --ink-3 50
+       helper and meta, --ink-4 36 decoration only (never words). Secondary sits where GitHub (46)
+       and Radix (61) dark themes put it: readable, clearly not white. Small text uses three
+       steps: 13px body and values, 12px labels, helpers and buttons, 11px pills and uppercase
+       labels; nothing smaller. */
+    --ink:#e9e4d9; --ink-2:#beb9ac; --ink-3:#a6a094; --ink-4:#898478;
     --eng:#a2b56b; --res:#6f93ad; --ops:#cfc9bb; --mkt:#c8674c;
     --accent:#a8d94f; --accent-deep:#83d63a; --err:#c8674c;
-    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
-    --sans:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    /* Sans for words; mono only for code, commands, logs and IDs. */
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --ease:cubic-bezier(.22,.61,.36,1);
-    --topbar-h:58px; --footer-h:42px;
+    --topbar-h:58px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{
-    display:grid;grid-template-rows:var(--topbar-h) 1fr var(--footer-h);
+    display:grid;grid-template-rows:var(--topbar-h) 1fr;
     background:var(--bg);color:var(--ink);font:400 14px/1.5 var(--sans);
     overflow:hidden;-webkit-font-smoothing:antialiased;
   }
@@ -32,11 +41,11 @@
   .topbar-right{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0;flex-wrap:nowrap}
   .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
   .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
-  .brand b{font:600 19px var(--serif);letter-spacing:.06em;color:var(--ink)}
-  .brand span{font:400 10px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+  .brand b{font:600 18px var(--sans);letter-spacing:-.01em;color:var(--ink)}
+  .brand span{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
   .tabs{display:flex;gap:2px;justify-self:center;width:max-content;max-width:100%;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;padding:3px}
   .tabs :is(button,a){
-    font:400 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);
+    font:500 13px var(--sans);color:var(--ink-2);
     padding:7px 15px;border-radius:7px;text-decoration:none;white-space:nowrap;transition:color .16s var(--ease),background .16s var(--ease);
   }
   .tabs :is(button,a):hover{color:var(--ink)}
@@ -60,7 +69,7 @@
   .rootpick{position:relative}
   #root-btn{
     display:flex;align-items:center;gap:7px;white-space:nowrap;
-    font:400 10.5px var(--mono);letter-spacing:.08em;color:var(--ink-2);
+    font:400 11px var(--sans);letter-spacing:.02em;color:var(--ink-2);
     background:var(--bg-2);border:1px solid var(--line);border-radius:8px;
     padding:9px 13px;transition:all .16s var(--ease);
   }
@@ -74,7 +83,7 @@
     border-radius:12px;padding:10px;box-shadow:0 20px 44px rgba(0,0,0,.6);
   }
   .rootdd.is-open{display:block}
-  .rootdd .hint{font:400 9px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-bottom:7px}
+  .rootdd .hint{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:7px}
   .rootdd input{
     width:100%;background:var(--bg-3);border:1px solid var(--line);border-radius:8px;
     padding:8px 10px;font-size:13px;outline:none;
@@ -83,7 +92,7 @@
   .rootdd .ac{position:static;box-shadow:none;border:none;background:none;backdrop-filter:none;
     padding:4px 0 0;max-height:240px}
   #root-reset{
-    width:100%;margin-top:8px;font:400 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    width:100%;margin-top:8px;font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-2);border:1px solid var(--line);border-radius:8px;padding:7px 0;
     transition:all .16s var(--ease);
   }
@@ -98,7 +107,7 @@
   .searchwrap input:focus{border-color:#39404d;background:var(--bg-3)}
   .searchwrap kbd{
     position:absolute;right:10px;top:50%;translate:0 -50%;
-    font:400 10px var(--mono);color:var(--ink-3);border:1px solid var(--line);border-radius:4px;
+    font:400 11px var(--sans);color:var(--ink-3);border:1px solid var(--line);border-radius:4px;
     padding:1px 5px;transition:opacity .16s var(--ease);
   }
   .searchwrap input:focus~kbd{opacity:0}
@@ -122,6 +131,6 @@
   .ac .tdot{width:8px;height:8px;border-radius:50%;flex:none}
   .ac .tdot.dia{border-radius:2px;rotate:45deg}
   .ac em{font-style:normal;color:var(--accent)}
-  .ac .meta{margin-left:auto;font:400 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+  .ac .meta{margin-left:auto;font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
   .ac .empty{padding:12px;color:var(--ink-3);font-size:12.5px}
-  .ac .empty small{display:block;color:var(--ink-4);margin-top:2px}
+  .ac .empty small{display:block;color:var(--ink-3);margin-top:2px}

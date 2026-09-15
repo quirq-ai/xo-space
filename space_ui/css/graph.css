@@ -4,32 +4,32 @@
   .atlas-project-refresh{position:absolute;right:16px;bottom:16px;z-index:13;display:flex;align-items:center;gap:10px;max-width:calc(100% - 32px);padding:9px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;font-size:12px;color:var(--ink-2)}
   .atlas-project-refresh button{padding:5px 8px;border:1px solid var(--line);border-radius:6px;color:var(--accent);white-space:nowrap}
   .atlas-project-refresh button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  #hint{top:52px;left:18px;max-width:430px;font-size:11.5px;line-height:1.65;color:var(--ink-3);transition:opacity .5s var(--ease)}
+  #hint{top:52px;left:18px;max-width:430px;font-size:12px;line-height:1.65;color:var(--ink-3);transition:opacity .5s var(--ease)}
   #hint b{color:var(--ink-2);font-weight:500}
   /* wrap: with dozens of generated projects a single row would overflow the
      stage, which silently becomes scrollable and lets focus scrolls drag the
      whole view strip sideways */
   #legend{bottom:38px;left:18px;right:18px;display:flex;gap:6px 15px;align-items:center;flex-wrap:wrap;max-height:96px;overflow:hidden}
-  #legend .li{display:flex;gap:6px;align-items:center;font:400 10px var(--mono);letter-spacing:.06em;color:var(--ink-3)}
+  #legend .li{display:flex;gap:6px;align-items:center;font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3)}
   #legend .sw{width:8px;height:8px;border-radius:50%}
   #legend .sw-ring{box-sizing:border-box;background:transparent;border:1px solid var(--ink-3)}
-  #legend .li-dim{opacity:.48}
-  #counts{bottom:16px;left:18px;font:400 10px var(--mono);letter-spacing:.06em;color:#5c584f}
+  #legend .li-dim{opacity:.72}
+  #counts{bottom:16px;left:18px;font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);font-variant-numeric:tabular-nums}
   #crumb{
     top:16px;right:18px;display:none;align-items:center;gap:12px;
     background:rgba(16,19,24,.92);backdrop-filter:blur(10px);border:1px solid var(--line);
     border-radius:999px;padding:7px 8px 7px 15px;
   }
   #crumb.is-on{display:flex}
-  #crumb .name{font:400 14px var(--serif);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #crumb .depth{font:400 10px var(--mono);letter-spacing:.08em;color:var(--ink-3);white-space:nowrap}
+  #crumb .name{font:400 14px var(--sans);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #crumb .depth{font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);white-space:nowrap}
   #crumb button{
-    font:400 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
+    font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);
     border:1px solid var(--line);border-radius:999px;padding:4px 11px;transition:all .16s var(--ease);
   }
   #crumb button:hover{color:var(--ink);border-color:#39404d}
   #simstat{bottom:16px;right:18px;display:flex;gap:7px;align-items:center;
-    font:400 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);
+    font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
     transition:opacity .5s var(--ease)}
   #simstat .pip{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1.1s infinite var(--ease)}
   @keyframes pulse{0%,100%{opacity:.25;transform:scale(.75)}50%{opacity:1;transform:scale(1)}}
@@ -42,21 +42,21 @@
   }
   #hc.is-on{display:block}
   #hc .art{padding:15px 16px 12px}
-  #hc .kicker{font:400 8.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink-2)}
-  #hc h5{font:500 17px/1.22 var(--serif);margin-top:5px;color:var(--ink);text-wrap:balance}
-  #hc .sub{font:400 10px var(--mono);letter-spacing:.04em;color:var(--ink-2);margin-top:4px}
+  #hc .kicker{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2)}
+  #hc h5{font:600 17px/1.22 var(--sans);margin-top:5px;color:var(--ink);text-wrap:balance}
+  #hc .sub{font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-2);margin-top:4px}
   #hc dl{display:grid;grid-template-columns:52px 1fr;gap:7px 10px;padding:11px 16px}
-  #hc dt{font:400 8.5px/1.6 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:#56534b}
-  #hc dd{font-size:11.5px;line-height:1.45;color:var(--ink-2)}
-  #hc dd.mono{font:400 10px/1.6 var(--mono);word-break:break-all}
+  #hc dt{font:400 11px/1.6 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  #hc dd{font-size:12px;line-height:1.45;color:var(--ink-2)}
+  #hc dd.path{font:400 12px/1.6 var(--sans);word-break:break-all}
   #hc .foot{
     border-top:1px solid var(--line-soft);padding:7px 16px;
-    font:400 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#56534b;
+    font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
   }
 
   /* ---------------- detail panel ---------------- */
   #panel{
-    position:fixed;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px));right:0;bottom:var(--footer-h);width:352px;z-index:50;
+    position:fixed;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px));right:0;bottom:0;width:352px;z-index:50;
     background:rgba(13,16,20,.96);backdrop-filter:blur(18px);border-left:1px solid var(--line);
     transform:translateX(102%);transition:transform .32s var(--ease);
     display:flex;flex-direction:column;
@@ -70,25 +70,25 @@
   #panel .close:hover{color:var(--ink);background:var(--bg-3)}
   #panel .scroll{overflow-y:auto;flex:1}
   .poster{padding:30px 22px 20px}
-  .poster .kicker{font:400 9.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink-2)}
-  .poster h3{font:500 25px/1.2 var(--serif);letter-spacing:.005em;margin:8px 0 6px;text-wrap:balance}
-  .poster .sub{font:italic 400 13px var(--serif);color:var(--ink-2)}
-  .poster .path{font:400 10px var(--mono);color:var(--ink-3);margin-top:9px;word-break:break-all}
+  .poster .kicker{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2)}
+  .poster h3{font:500 25px/1.2 var(--sans);letter-spacing:.005em;margin:8px 0 6px;text-wrap:balance}
+  .poster .sub{font:400 13px var(--sans);color:var(--ink-2)}
+  .poster .path{font:400 12px var(--sans);color:var(--ink-3);margin-top:9px;word-break:break-all}
   .psec{padding:18px 22px 4px}
-  .psec h4{font:400 9.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
+  .psec h4{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
   .psec p{font-size:13px;line-height:1.62;color:var(--ink-2)}
   .conn{display:flex;align-items:baseline;gap:9px;width:100%;text-align:left;padding:7px 6px;border-radius:8px;
     font-size:13.5px;color:var(--ink);transition:background .16s var(--ease)}
   .conn:hover{background:var(--bg-3)}
   .conn .cdot{width:6px;height:6px;border-radius:50%;flex:none;align-self:center}
-  .conn .rel{font:italic 400 11.5px var(--serif);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .conn .yr{margin-left:auto;font:400 10px var(--mono);color:var(--ink-3);white-space:nowrap}
+  .conn .rel{font:400 12px var(--sans);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .conn .yr{margin-left:auto;font:400 12px var(--sans);color:var(--ink-3);white-space:nowrap;font-variant-numeric:tabular-nums}
   /* Todos section — reuses the Files tab's .prj-todo/.tchip vocabulary
      (projects.css, loaded globally) so a status reads the same in both places. */
   .psec h4 .tref{float:right;margin-top:-2px;font-size:12px;line-height:1;color:var(--ink-3);
     padding:2px 5px;border-radius:5px;transition:all .16s var(--ease)}
   .psec h4 .tref:hover{color:var(--ink);background:var(--bg-3)}
-  .ptally{font:400 9.5px var(--mono);letter-spacing:.12em;color:var(--ink-3);margin:-3px 0 9px}
+  .ptally{font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);margin:-3px 0 9px}
   .psec .prj-todo.ptodo{width:100%;text-align:left;padding:5px 6px;border-radius:7px;
     transition:background .16s var(--ease)}
   .psec .prj-todo.ptodo:hover{background:var(--bg-3)}
@@ -98,7 +98,7 @@
   .psec .prj-todo.is-flash{background:rgba(168,217,79,.16);box-shadow:inset 0 0 0 1px rgba(168,217,79,.4)}
   .pacts{display:flex;flex-wrap:wrap;gap:7px;padding:16px 22px 22px}
   .pacts button{
-    font:400 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
+    font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);
     border:1px solid var(--line);border-radius:999px;padding:7px 13px;transition:all .16s var(--ease);
   }
   .pacts button:hover{color:var(--ink);border-color:#39404d;background:var(--bg-3)}

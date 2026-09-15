@@ -286,8 +286,6 @@ const HUBS=NODES.filter(n=>n.type==='hub');
 const XCOUNT=EDGES.filter(e=>e.kind==='x').length;
 const noun=DATA.meta.noun||'artifacts';
 const collectionLabel=DATA.meta.collectionLabel||'clusters';
-document.getElementById('fmeta').textContent=
-  `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
 
 const colorOf=n=>n.type==='root'?'#e9e4d9':CAT[n.cat].color;
 function radiusOf(n){
@@ -688,24 +686,24 @@ function drawGraph(now){
     const sx=(n.x-cam.x)*k+GW/2,sy=(n.y-cam.y)*k+GH/2;
     if(sx<-100||sx>GW+100||sy<-50||sy>GH+50)continue;
     if(n.type==='hub'){
-      gc.font='500 17px '+SERIF;
+      gc.font='500 17px '+SANS;
       halo(n.label,sx,sy-n.r*k-12,`rgba(233,228,217,${.94*a})`);
-      gc.font='400 8.5px '+MONO;
+      gc.font='500 11px '+SANS;
       const hubCount=leafCountByCat.get(n.cat)||0;
       const hubNoun=hubCount===1?noun.replace(/s$/,''):noun;
-      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(125,120,109,${a})`,.14);
+      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(166,160,148,${a})`,.06);
     }else if(n.type==='group'){
       const on=n.id===hoverId||n.id===selId||(focusSet&&focusSet.has(n.id));
       if(!(on||k>.8))continue;
       const closed=!expanded.get(n.id);
-      gc.font='400 9px '+MONO;
+      gc.font='500 11px '+SANS;
       const t=n.label.toUpperCase()+(closed?` +${leafCountByGroup.get(n.id)||0}`:'');
-      halo(t,sx,sy-n.r*k-7,`rgba(179,173,160,${.72*a})`,.1);
+      halo(t,sx,sy-n.r*k-7,`rgba(166,160,148,${a})`,.06);
     }else if(n.type==='leaf'){
       const on=n.id===hoverId||n.id===selId||n.id===rootId||(focusSet&&focusSet.has(n.id))||(pathIds&&pathIds.includes(n.id));
       if(!(on||k>1.55||(k>1.05&&n.degree>=4)))continue;
       gc.font='400 11px '+SANS;
-      halo(n.label,sx,sy-n.r*k-7,on?`rgba(233,228,217,${.94*a})`:`rgba(179,173,160,${.62*a})`);
+      halo(n.label,sx,sy-n.r*k-7,on?`rgba(233,228,217,${.94*a})`:`rgba(166,160,148,${.9*a})`);
     }
   }
   drawSatLabels(k);
@@ -724,11 +722,10 @@ function drawGraph(now){
   /* settling status */
   document.getElementById('simstat').style.opacity=simAlpha>.05?1:0;
 }
-const SERIF=`"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif`;
-const SANS=`system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif`;
-const MONO=`ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace`;
+/* Canvas text cannot read CSS variables: keep in step with --sans in base.css. */
+const SANS=`"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif`;
 function halo(s,x,y,fill,tracking){
-  if(tracking){gc.save();/* cheap letterspacing for tiny mono caps */
+  if(tracking){gc.save();/* cheap letterspacing for tiny caps */
     gc.letterSpacing=(tracking*10)+'px';}
   gc.lineWidth=3.5;gc.strokeStyle='rgba(11,12,15,.88)';gc.lineJoin='round';
   gc.strokeText(s,x,y);gc.fillStyle=fill;gc.fillText(s,x,y);
@@ -948,7 +945,7 @@ function showHC(n,mx,my){
   if(n.type==='leaf'){
     rows=`<dl>
       ${n.date?`<dt>Born</dt><dd>${fmtDate(n.date)}</dd>`:''}
-      <dt>Where</dt><dd class="mono">${esc(n.path)}</dd>
+      <dt>Where</dt><dd class="path">${esc(n.path)}</dd>
       <dt>Ties</dt><dd>${n.degree-1} connection${n.degree-1===1?'':'s'} · ${esc(byId.get(n.group).label)}</dd>
     </dl>`;
   }else if(n.type==='group'){
@@ -1247,16 +1244,16 @@ function drawSatLabels(k){
   const host=satAnchor();
   if(!host)return;
   const sx=(host.x-cam.x)*k+GW/2,sy=(host.y-cam.y)*k+GH/2;
-  gc.font='400 8.5px '+MONO;
+  gc.font='500 11px '+SANS;
   const total=satRows.length;
   /* Clear of the outermost shell, not of the node: the caption sitting inside
      the orbit collides with the dots at the bottom of the constellation. */
   const shells=Math.max(...satDots.map(s=>satSlot(s.i).shell))+1;
   const out=(host.r+26+(shells-1)*19)*k+15;
-  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,'rgba(168,217,79,.9)',.14);
+  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,'rgba(168,217,79,.9)',.06);
   const s=satDots.find(d=>d.key===satHover);
   if(!s||k<SAT_MIN_K)return;
-  gc.font='400 10.5px '+SANS;
+  gc.font='400 11px '+SANS;
   const t=s.content.length>44?s.content.slice(0,43)+'…':s.content;
   halo(t,(s.x-cam.x)*k+GW/2,(s.y-cam.y)*k+GH/2-s.r*k-7,'rgba(233,228,217,.95)');
 }
@@ -1634,7 +1631,7 @@ function buildTimeline(){
     const none=document.createElementNS(SVGNS,'text');
     none.setAttribute('x',SW/2);none.setAttribute('y',H/2);
     none.setAttribute('text-anchor','middle');
-    none.setAttribute('style',`font:italic 400 13px ${SERIF};fill:#56534b`);
+    none.setAttribute('style',`font:400 13px ${SANS};fill:var(--ink-3)`);
     none.textContent=Object.keys(CAT).length?'No project matches the filter.':'No projects mapped yet.';
     tsvg.appendChild(none);
   }
@@ -1691,11 +1688,11 @@ function buildTimeline(){
       lb.setAttribute('x',ax);lb.setAttribute('y',ay);
       lb.setAttribute('text-anchor','start');
       lb.setAttribute('transform',`rotate(-40 ${ax} ${ay})`);
-      lb.setAttribute('style',`font:italic 500 10.5px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
+      lb.setAttribute('style',`font:500 11px ${SANS};fill:${live?hexA(CAT[cat].color,.95):'var(--ink-3)'}`);
     }else{
       lb.setAttribute('x',x+colW/2);lb.setAttribute('y',M.t-14);
       lb.setAttribute('text-anchor','middle');
-      lb.setAttribute('style',`font:italic 500 13px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
+      lb.setAttribute('style',`font:500 13px ${SANS};fill:${live?hexA(CAT[cat].color,.95):'var(--ink-3)'}`);
     }
     lb.appendChild(document.createTextNode(label));
     labelsG.appendChild(lb);
@@ -1704,7 +1701,7 @@ function buildTimeline(){
       const why=document.createElementNS(SVGNS,'text');
       why.setAttribute('x',x+colW/2);why.setAttribute('y',(M.t+H-M.b)/2);
       why.setAttribute('text-anchor','middle');
-      why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
+      why.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
       why.textContent=tMode==='project'?'NO COMMIT DATA':'NO DATED FILES';
       labelsG.appendChild(why);
     }
@@ -1713,7 +1710,7 @@ function buildTimeline(){
       const sub=document.createElementNS(SVGNS,'text');
       sub.setAttribute('x',x+colW/2);sub.setAttribute('y',H-4);
       sub.setAttribute('text-anchor','middle');
-      sub.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.06em;fill:#56534b`);
+      sub.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
       sub.textContent=colW>=70?`${total} COMMIT${total===1?'':'S'}`:String(total);
       labelsG.appendChild(sub);
     }
@@ -1735,7 +1732,7 @@ function buildTimeline(){
         const tx=document.createElementNS(SVGNS,'text');
         tx.setAttribute('x',M.l-12);tx.setAttribute('y',y+3);
         tx.setAttribute('text-anchor','end');
-        tx.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.08em;fill:#56534b`);
+        tx.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
         const opts=d.getMonth()===0?{month:'short',year:'2-digit'}:{month:'short'};
         tx.textContent=d.toLocaleDateString('en-US',opts).toUpperCase();
         tsvg.appendChild(tx);
@@ -1934,7 +1931,7 @@ function drawTrace(){
     t.setAttribute('x',left?n.tx-10-step:n.tx+10+step);
     t.setAttribute('y',n.ty+3);
     t.setAttribute('text-anchor',left?'end':'start');
-    t.setAttribute('style',`font:400 9.5px ${SERIF};fill:#b3ada0`);
+    t.setAttribute('style',`font:400 11px ${SANS};fill:var(--ink-2)`);
     t.textContent=n.label;
     g.appendChild(t);
   });

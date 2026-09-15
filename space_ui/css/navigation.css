@@ -23,12 +23,12 @@
 .section-nav-actions .section-nav-action{margin-left:0}
 #section-nav .rootpick{min-width:0}
 #section-nav #root-btn{min-height:36px;max-width:100%;padding:7px 10px}
-#section-nav #root-btn .rlab{display:inline;font-size:10px;letter-spacing:0;flex:none}
+#section-nav #root-btn .rlab{display:inline;font-size:11px;letter-spacing:0;flex:none}
 #section-nav #root-btn b{min-width:0}
 #section-nav .rootdd{left:auto;right:0;max-width:calc(100vw - 24px)}
 #section-nav a:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:5px}
 .section-page-title{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.sess-page-head h1,.inb-page-head h1{font:500 30px/1.2 var(--serif);letter-spacing:-.02em;color:var(--ink)}
+.sess-page-head h1,.inb-page-head h1{font:500 30px/1.2 var(--sans);letter-spacing:-.02em;color:var(--ink)}
 #stage>.view.has-section-nav{top:var(--section-nav-height,0px)}
 
 /* Content headings and tools follow the same edge and spacing. */
@@ -65,7 +65,7 @@
   #view-agents .sesswrap,#view-inbox .inb{padding:22px 16px 50px}
   #view-tree .tv-head{padding-left:16px;padding-right:16px}
   #view-sharing .prj{padding:20px 16px 50px}
-  #view-graph #legend{left:12px;right:12px;bottom:40px;max-height:74px;gap:6px 12px;padding:8px 10px;background:rgba(11,12,15,.9);border:1px solid var(--line-soft);border-radius:8px;font-size:10px}
+  #view-graph #legend{left:12px;right:12px;bottom:40px;max-height:74px;gap:6px 12px;padding:8px 10px;background:rgba(11,12,15,.9);border:1px solid var(--line-soft);border-radius:8px;font-size:11px}
   #view-graph #counts{left:12px;right:105px;bottom:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #view-graph #simstat{right:12px;bottom:15px}
 }

@@ -110,7 +110,7 @@ try{
     await page.locator('#root-ac button').filter({hasText:'Aurora Console'}).first().click();
     const rootName=await page.locator('#root-name').textContent();
     await reread(id,path,async()=>{
-      await page.waitForFunction(count=>document.querySelector('#fmeta')?.textContent.includes(String(count)),observed.get(path).leaves.length);
+      await page.waitForFunction(count=>document.querySelector('#counts')?.textContent.includes(String(count)),observed.get(path).leaves.length);
       assert.equal(await page.locator('#root-name').textContent(),rootName,id+' retains the selected root');
       assert.equal(await page.locator('#cmdk-trigger').isVisible(),true,id+' keeps the command palette trigger');
     });

@@ -12,11 +12,11 @@
   .chat-si:hover{background:var(--bg-3)}
   .chat-si.is-on{background:var(--bg-3);border-color:var(--line-soft)}
   .chat-si .t{font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .chat-si .m{font:500 10px var(--mono);color:var(--ink-3)}
+  .chat-si .m{font:500 12px var(--sans);color:var(--ink-3)}
   .chat-main{flex:1;min-width:0;display:flex;flex-direction:column}
   .chat-log{flex:1;overflow-y:auto;padding:22px 26px;display:flex;flex-direction:column;gap:14px}
   .chat-note{color:var(--ink-3);font-size:12.5px;max-width:52ch}
-  .chat-err{color:#e07a5f;font-size:12px;margin-top:8px;font-family:var(--mono)}
+  .chat-err{color:#e07a5f;font-size:12px;margin-top:8px;font-family:var(--sans)}
   .msg{max-width:76ch;font-size:13.5px;line-height:1.6;color:var(--ink-2)}
   .msg-user{align-self:flex-end;background:var(--bg-3);border:1px solid var(--line-soft);border-radius:12px 12px 3px 12px;padding:9px 13px;white-space:pre-wrap;color:var(--ink)}
   .msg-ai{align-self:flex-start;white-space:normal}
@@ -34,7 +34,7 @@
   .md a{color:var(--accent)}
   .md-code{background:var(--bg-3);border:1px solid var(--line-soft);border-radius:9px;padding:10px 12px;margin:8px 0;overflow-x:auto;position:relative}
   .md-code code{font:500 12px var(--mono);background:none;border:none;padding:0;white-space:pre}
-  .md-code[data-lang]::before{content:attr(data-lang);position:absolute;top:6px;right:10px;font:500 9px var(--mono);letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase}
+  .md-code[data-lang]::before{content:attr(data-lang);position:absolute;top:6px;right:10px;font:500 11px var(--sans);letter-spacing:.06em;color:var(--ink-3);text-transform:uppercase}
   .md s{color:var(--ink-3)}
   .md hr{border:0;border-top:1px solid var(--line-soft);margin:12px 0}
   .md blockquote{margin:8px 0;padding:2px 12px;border-left:3px solid var(--line);color:var(--ink-2)}
@@ -46,7 +46,7 @@
   .md-table tbody tr:nth-child(even){background:var(--bg-2)}
   /* reasoning + tool parts */
   .msg-reason,.msg-tool{margin:8px 0;border:1px solid var(--line-soft);border-radius:9px;background:var(--bg-2)}
-  .msg-reason summary,.msg-tool summary{cursor:pointer;padding:7px 11px;font:500 11px var(--mono);color:var(--ink-3);list-style:none}
+  .msg-reason summary,.msg-tool summary{cursor:pointer;padding:7px 11px;font:500 12px var(--sans);color:var(--ink-3);list-style:none}
   .msg-reason summary::-webkit-details-marker,.msg-tool summary::-webkit-details-marker{display:none}
   .msg-reason[open] summary,.msg-tool[open] summary{border-bottom:1px solid var(--line-soft)}
   .msg-reason .md{padding:9px 12px;color:var(--ink-3);font-size:12.5px}
@@ -54,10 +54,10 @@
   .msg-tool.st-completed .tdot{background:var(--accent)}
   .msg-tool.st-error .tdot{background:#e07a5f}
   .msg-tool .tst{color:var(--ink-3);margin-left:6px}
-  .msg-tool .tlab{font:600 9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);padding:8px 12px 0}
-  .msg-tool pre{margin:4px 0 8px;padding:0 12px 4px;font:500 11.5px var(--mono);color:var(--ink-2);overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
+  .msg-tool .tlab{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:8px 12px 0}
+  .msg-tool pre{margin:4px 0 8px;padding:0 12px 4px;font:500 12px var(--mono);color:var(--ink-2);overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
   /* status + composer */
-  .chat-status{padding:4px 26px;font:500 11px var(--mono);color:var(--accent)}
+  .chat-status{padding:4px 26px;font:500 12px var(--sans);color:var(--accent)}
   .chat-form{display:flex;gap:10px;align-items:flex-end;padding:14px 26px 18px;border-top:1px solid var(--line-soft);background:var(--bg-2)}
   #chat-proj{flex:none;max-width:170px;font-size:12px;color:var(--ink-2);background:var(--bg-3);border:1px solid var(--line-soft);border-radius:8px;padding:8px}
   #chat-input{flex:1;resize:none;min-height:38px;max-height:160px;padding:9px 12px;font-size:13px;font-family:var(--sans);color:var(--ink);background:var(--bg-3);border:1px solid var(--line-soft);border-radius:10px;outline:none;line-height:1.5}

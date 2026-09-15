@@ -6,13 +6,13 @@
 
   /* header strip: eyebrow · summary · filter · mark all seen · refresh */
   .inb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
-  .inb-eyebrow{font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--ink-3);
+  .inb-eyebrow{font:600 11px/1 var(--sans);letter-spacing:.06em;color:var(--ink-3);
     text-transform:uppercase}
   .inb-sum{font-size:12.5px;color:var(--ink-2)}
   .inb-spacer{flex:1}
   .inb-filter{display:flex;gap:2px;background:var(--bg-2);border:1px solid var(--line-soft);
     border-radius:999px;padding:2px}
-  .inb-filter button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .inb-filter button{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);border-radius:999px;padding:5px 10px;transition:all .16s var(--ease)}
   .inb-filter button:hover{color:var(--ink)}
   .inb-filter button.is-on{color:var(--bg);background:var(--accent)}
@@ -27,8 +27,8 @@
   /* tab badge: the unseen count, painted onto the Inbox tab button by
      inbox.js; inverts when the tab itself is lit */
   .inb-badge{display:inline-block;margin-left:7px;min-width:16px;padding:1px 5px;
-    border-radius:999px;font:600 9px/1.4 var(--mono);letter-spacing:0;text-align:center;
-    color:#14100a;background:var(--accent-deep)}
+    border-radius:999px;font:600 11px/1.4 var(--sans);letter-spacing:0;text-align:center;
+    color:#14100a;background:var(--accent-deep);font-variant-numeric:tabular-nums}
   .tabs :is(button,a).is-on .inb-badge{color:var(--accent);background:#14100a}
 
   /* rows: dot · kind · title · project · when */
@@ -46,7 +46,7 @@
   .inb-dot{width:8px;height:8px;border-radius:50%;background:var(--ink-4);opacity:.55}
   .inb-row.is-new .inb-dot{background:var(--accent);opacity:1;
     box-shadow:0 0 0 3px rgba(168,217,79,.14)}
-  .inb-kind{font:500 10px/1 var(--mono);color:var(--ink-2);background:var(--bg-3);
+  .inb-kind{font:500 11px/1 var(--sans);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line);border-radius:5px;padding:3px 6px;white-space:nowrap}
   .inb-row.is-new .inb-kind{color:var(--accent);border-color:rgba(168,217,79,.4)}
   .inb-title{min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;
@@ -54,10 +54,10 @@
   .inb-row.is-new .inb-title{font-weight:500}
   .inb-row.is-done .inb-title{color:var(--ink-3)}
   /* pinned columns, so a row without a project chip keeps its time flush right */
-  .inb-proj{grid-column:4;font:400 10.5px var(--mono);color:var(--ink-3);white-space:nowrap;
+  .inb-proj{grid-column:4;font:400 12px var(--sans);color:var(--ink-3);white-space:nowrap;
     max-width:200px;overflow:hidden;text-overflow:ellipsis}
-  .inb-when{grid-column:5;font:400 10.5px var(--mono);letter-spacing:.04em;color:var(--ink-3);
-    white-space:nowrap;text-align:right}
+  .inb-when{grid-column:5;font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);
+    white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
 
   /* expanded body: the text as written, then the actions */
   .inb-body{padding:0 16px 14px 38px;border-top:1px solid var(--line-soft)}
@@ -74,7 +74,7 @@
   @media (prefers-reduced-motion:reduce){.inb-skel{animation:none}}
   .inb-empty{padding:46px 22px;text-align:center;border:1px dashed var(--line);
     border-radius:12px;background:var(--bg-2)}
-  .inb-empty b{display:block;font:500 15px var(--serif);color:var(--ink);margin-bottom:7px}
+  .inb-empty b{display:block;font:600 15px var(--sans);color:var(--ink);margin-bottom:7px}
   .inb-empty p{font-size:12.5px;color:var(--ink-3);max-width:52ch;margin:0 auto;line-height:1.6}
   .inb-fail{margin-bottom:10px;padding:12px 16px;border-left:3px solid var(--err);
     border-radius:0 10px 10px 0;background:var(--bg-2);color:var(--ink-2);font-size:12.5px}
@@ -93,7 +93,7 @@
   /* Scheduled jobs stay separate from item filters and Inbox bulk actions. */
   .inb-jobs{margin-bottom:18px;border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);overflow:hidden}
   .inb-jobs-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:10px 14px}
-  .inb-jobs-head h2{display:flex;align-items:center;gap:8px;margin:0;font:600 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+  .inb-jobs-head h2{display:flex;align-items:center;gap:8px;margin:0;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
   .inb-jobs-head h2 b{padding:2px 7px;border:1px solid var(--line);border-radius:999px;background:var(--bg-3);font-weight:600;letter-spacing:0;color:var(--ink-2)}
   .inb-jobs-actions{display:flex;flex-wrap:wrap;gap:6px}
   .inb-jobs-state{margin:0;padding:12px 14px;border-top:1px solid var(--line-soft);font-size:12.5px;line-height:1.6;color:var(--ink-3);overflow-wrap:anywhere}
@@ -102,10 +102,10 @@
   .inb-job-info h3{margin:0;font:500 13.5px var(--sans);color:var(--ink)}
   .inb-job-info p{margin:5px 0 0;font-size:12px;line-height:1.5;color:var(--ink-3)}
   .inb-job-row>.inb-btn{flex-shrink:0}
-  .inb-job-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin-top:8px;font:400 10.5px/1.6 var(--mono);color:var(--ink-2)}
+  .inb-job-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin-top:8px;font:400 12px/1.6 var(--sans);color:var(--ink-2)}
   .inb-job-enabled{color:var(--accent)}
   .inb-job-enabled.is-disabled{color:var(--ink-3)}
-  .inb-job-result{margin-top:6px;font:400 10.5px/1.6 var(--mono);color:var(--ink-3)}
+  .inb-job-result{margin-top:6px;font:400 12px/1.6 var(--sans);color:var(--ink-3)}
   .inb-job-result.is-good{color:var(--accent)}
   .inb-job-result.is-running{color:#e2ae5b}
   .inb-job-result.is-error,.inb-jobs-state.is-error{color:#e1937d}
@@ -116,7 +116,7 @@
 
   /* source pills: a second strip under the header, client-side only */
   .inb-src{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 14px}
-  .inb-src button{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .inb-src button{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:4px 10px;
     background:var(--bg-2);transition:all .16s var(--ease)}
   .inb-src button:hover{color:var(--ink);border-color:var(--line)}
@@ -131,14 +131,14 @@
   .inb-conns{margin-bottom:14px;border:1px solid var(--line-soft);border-radius:12px;
     background:var(--bg-2)}
   .inb-conns-head{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
-    padding:9px 14px;border-radius:12px;font:600 10.5px/1 var(--mono);letter-spacing:.14em;
+    padding:9px 14px;border-radius:12px;font:600 11px/1 var(--sans);letter-spacing:.06em;
     text-transform:uppercase;color:var(--ink-3);transition:color .16s var(--ease)}
   .inb-conns-head:hover{color:var(--ink)}
   .inb-conns-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .inb-conns-head i{font-style:normal;width:10px;color:var(--ink-4)}
   .inb-conns-head b{font-weight:600;letter-spacing:0;color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line);border-radius:999px;padding:2px 7px}
-  .inb-conns-head em{font-style:normal;letter-spacing:.06em;color:var(--err)}
+  .inb-conns-head em{font-style:normal;letter-spacing:.06em;color:#e1937d}
   .inb-conn-row{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) minmax(0,1fr) auto;
     align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line-soft);
     font-size:12.5px}
@@ -146,8 +146,8 @@
   /* the account the toolkit polls as, muted beside the name; capped so a
      long email cannot starve the meta columns */
   .inb-conn-acct{display:inline-block;margin-left:8px;max-width:200px;vertical-align:bottom;
-    font:400 10.5px var(--mono);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
-  .inb-conn-meta{font:400 10.5px var(--mono);color:var(--ink-3);min-width:0;overflow:hidden;
+    font:400 12px var(--sans);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
+  .inb-conn-meta{font:400 12px var(--sans);color:var(--ink-3);min-width:0;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .inb-conn-meta.is-error{color:#e1937d}
   /* the section's one-line states: loading, failed, nothing polled yet */

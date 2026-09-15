@@ -365,9 +365,9 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260914-navigation1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260915-typesync1">', html)
         # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))
