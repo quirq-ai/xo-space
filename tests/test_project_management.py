@@ -385,6 +385,27 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 400)
             self.assertEqual(response.json()["detail"]["code"], "confirmation_required")
 
+    async def test_router_accepts_tls_proxy_and_ip_origins_but_not_rebinding(self):
+        app = FastAPI()
+        app.include_router(router)
+
+        async def delete(base_url, headers):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url) as client:
+                return await client.request("DELETE", "/api/xo-projects/demo", json={"confirm_project_id": "different"}, headers=headers)
+
+        public = "xo-space--shared--owner.dev.workspace.example.com"
+        # 400 confirmation_required means the request got past the guard.
+        for base_url, headers in ((f"http://{public}", {"Origin": f"https://{public}", "Sec-Fetch-Site": "same-origin"}),
+                                  ("http://192.168.1.10:5002", {"Origin": "http://192.168.1.10:5002"}),
+                                  ("http://localhost:5003", {"Origin": "http://localhost:5003"})):
+            with self.subTest(base_url=base_url):
+                self.assertEqual((await delete(base_url, headers)).status_code, 400)
+        for base_url, headers in (("http://attacker.example:5002", {"Origin": "http://attacker.example:5002"}),
+                                  (f"http://{public}", {"Origin": f"https://{public}", "Sec-Fetch-Site": "same-site"})):
+            with self.subTest(base_url=base_url, headers=headers):
+                self.assertEqual((await delete(base_url, headers)).status_code, 403)
+        self.assertTrue(self.project.exists())
+
     async def test_router_strict_bodies_and_service_errors(self):
         app = FastAPI()
         app.include_router(router)

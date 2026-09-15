@@ -161,6 +161,45 @@ class SchedulerApiTests(unittest.TestCase):
         scheduler._running[job['id']].thread.join(5)
         self.assertEqual(client.get('/api/schedules/'+job['id']).json()['last_result']['status'], 'ok')
 
+    # The Space UI reached through a TLS-terminating proxy (e.g. a Coder app
+    # URL): the proxy connects from loopback over plain http and forwards the
+    # public Host; the browser's Origin is the https public URL.
+    PUBLIC = "xo-space--shared--owner.dev.workspace.example.com"
+
+    def test_browser_behind_a_tls_proxy_can_write_and_run(self) -> None:
+        client = TestClient(self.client.app, base_url=f"http://{self.PUBLIC}", client=("127.0.0.1", 12345))
+        headers = {"Origin": f"https://{self.PUBLIC}", "Sec-Fetch-Site": "same-origin"}
+        created = client.post("/api/schedules", headers=headers, json=_payload("via proxy"))
+        self.assertEqual(created.status_code, 201, created.text)
+        job_id = created.json()["id"]
+        self.assertEqual(client.put(f"/api/schedules/{job_id}", headers=headers,
+                                    json=_payload("renamed")).status_code, 200)
+        run = client.post(f"/api/schedules/{job_id}/run", headers=headers)
+        self.assertEqual(run.status_code, 202, run.text)
+        scheduler._running[job_id].thread.join(5)
+        self.assertEqual(client.delete(f"/api/schedules/{job_id}", headers=headers).status_code, 200)
+
+    def test_proxy_shaped_requests_from_elsewhere_are_refused(self) -> None:
+        job = self.client.post("/api/schedules", json=_payload("guarded")).json()
+        public = f"http://{self.PUBLIC}"
+        https_origin = f"https://{self.PUBLIC}"
+        cases = [
+            # DNS rebinding reaches the plain-http listener, so its Origin is http.
+            ("rebinding", "http://attacker.example:5002", {"Origin": "http://attacker.example:5002"}, "127.0.0.1"),
+            ("plain-http named origin", public, {"Origin": public}, "127.0.0.1"),
+            ("sibling app on the proxy", public,
+             {"Origin": "https://other-app--shared--owner.dev.workspace.example.com"}, "127.0.0.1"),
+            ("cross-site fetch", public, {"Origin": https_origin, "Sec-Fetch-Site": "cross-site"}, "127.0.0.1"),
+            ("same-site fetch", public, {"Origin": https_origin, "Sec-Fetch-Site": "same-site"}, "127.0.0.1"),
+            ("Host on another port", f"http://{self.PUBLIC}:8443", {"Origin": https_origin}, "127.0.0.1"),
+            ("non-loopback peer", public, {"Origin": https_origin}, "10.0.0.7"),
+        ]
+        for label, base_url, headers, peer in cases:
+            client = TestClient(self.client.app, base_url=base_url, client=(peer, 12345))
+            with self.subTest(label):
+                self.assertEqual(client.post(f"/api/schedules/{job['id']}/run", headers=headers).status_code, 403)
+        self.assertEqual(scheduler._running, {})
+
 
 if __name__ == "__main__":
     unittest.main()
