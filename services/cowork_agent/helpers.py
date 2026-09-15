@@ -103,16 +103,29 @@ def strip_workspace_preamble(text: str) -> str:
 
 
 def derive_title(records: list[dict]) -> str:
-    """Extract a title from the first user message text (OpenClaw/simplified format)."""
+    """Extract a title from the first user message text (OpenClaw/simplified format).
+
+    OpenClaw stores a user message's ``content`` as a plain string when the
+    turn came through its OpenAI-compatible endpoint, and as text blocks
+    otherwise; both are read.
+    """
     for r in records:
-        if r.get("type") == "message" and r.get("message", {}).get("role") == "user":
-            content = r["message"].get("content", [])
-            for block in content:
-                if block.get("type") == "text":
-                    text = strip_workspace_preamble(block["text"].strip())
-                    if not text or text.startswith("Read HEARTBEAT.md"):
-                        continue
-                    return text[:80] + ("..." if len(text) > 80 else "")
+        message = r.get("message")
+        if r.get("type") != "message" or not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        elif not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                # Strip the preamble first: its marker starts with the blank
+                # line that a leading .strip() would remove.
+                text = strip_workspace_preamble(block["text"]).strip()
+                if not text or text.startswith("Read HEARTBEAT.md"):
+                    continue
+                return text[:80] + ("..." if len(text) > 80 else "")
     return "Untitled Session"
 
 

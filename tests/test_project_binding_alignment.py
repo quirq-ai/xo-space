@@ -169,10 +169,84 @@ class HermesBindingTests(_Sandbox):
 # ── openclaw ──────────────────────────────────────────────────────────────────
 
 
+class _FakeOpenclawCli:
+    """Applies ``agents add`` and ``config patch --stdin`` to the sandbox
+    openclaw.json as the real CLI does. ``agents add`` refuses an existing id,
+    names the identity after the id, creates the agent directory and stamps
+    ``agents.ownership`` once the roster has more than one agent. ``config
+    patch`` applies a JSON merge patch (``null`` deletes). Writing nothing, it
+    refuses a config that is already invalid (an ``identity`` with keys outside
+    OpenClaw's schema) with the CLI's invalid-config report, and a patch that
+    would make it invalid with a validation error."""
+
+    IDENTITY_KEYS = {"name", "theme", "emoji", "avatar"}
+
+    def __init__(self, config: Path, agents_dir: Path) -> None:
+        self.config = config
+        self.agents_dir = agents_dir
+        self.calls: list[list[str]] = []
+        self.fail_on: str | None = None
+
+    @staticmethod
+    def _result(argv, returncode: int = 0, stderr: str = "") -> CommandResult:
+        return CommandResult(argv=list(argv), returncode=returncode, output="", stderr=stderr, duration_seconds=0.0)
+
+    @classmethod
+    def _merge(cls, target: dict, changes: dict) -> None:
+        for key, value in changes.items():
+            if value is None:
+                target.pop(key, None)
+            elif isinstance(value, dict):
+                if not isinstance(target.get(key), dict):
+                    target[key] = {}
+                cls._merge(target[key], value)
+            else:
+                target[key] = value
+
+    def __call__(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if self.fail_on and self.fail_on in argv:
+            return self._result(argv, 1, 'Config warnings: plugin not installed\n"research" is reserved.')
+        cfg = json.loads(self.config.read_text())
+        agents = cfg.setdefault("agents", {})
+        entries = agents.setdefault("entries", {})
+        if argv[1:3] == ["agents", "add"]:
+            aid, workspace = argv[3], argv[argv.index("--workspace") + 1]
+            if aid in entries:
+                return self._result(argv, 1, f'Agent "{aid}" already exists.')
+            entries[aid] = {"name": aid, "workspace": workspace, "identity": {"name": aid}}
+            if len(entries) > 1:
+                agents["ownership"] = "explicit"
+            (self.agents_dir / aid / "agent").mkdir(parents=True, exist_ok=True)
+        elif argv[1:4] == ["config", "patch", "--stdin"]:
+            problem = self._identity_problem(cfg)
+            if problem:
+                return self._result(argv, 1, (
+                    "OpenClaw config is invalid\nProblem:\n"
+                    f"  - openclaw.json:1 — {problem}\n\n"
+                    'Run "openclaw doctor --fix" to repair the config, then retry.'
+                ))
+            self._merge(cfg, json.loads(kwargs["input"]))
+            problem = self._identity_problem(cfg)
+            if problem:
+                return self._result(argv, 1, f"Config validation failed: {problem}")
+        self.config.write_text(json.dumps(cfg))
+        return self._result(argv)
+
+    @classmethod
+    def _identity_problem(cls, cfg: dict) -> str | None:
+        for aid, entry in cfg["agents"]["entries"].items():
+            unknown = sorted(set(entry.get("identity") or {}) - cls.IDENTITY_KEYS)
+            if unknown:
+                return f'agents.entries.{aid}.identity: Unrecognized key: "{unknown[0]}"'
+        return None
+
+
 class OpenclawBindingTests(_Sandbox):
     def setUp(self) -> None:
         super().setUp()
-        home = self.base / "openclaw"
+        self.home = home = self.base / "openclaw"
         self.agents_dir = home / "agents"
         self.config = home / "openclaw.json"
         home.mkdir()
@@ -180,46 +254,74 @@ class OpenclawBindingTests(_Sandbox):
         for target, name, value in (
             (oc_store, "OPENCLAW_JSON", self.config),
             (oc_store, "OPENCLAW_DIR", home),
-            (oc_store, "AGENTS_DIR", self.agents_dir),
             (oc_store, "DEFAULT_OPENCLAW_WORKSPACE", home / "workspace"),
             (openclaw_binding, "OPENCLAW_JSON", self.config),
+            (openclaw_binding, "DEFAULT_OPENCLAW_WORKSPACE", home / "workspace"),
             (openclaw_agents, "AGENTS_DIR", self.agents_dir),
+            (openclaw_agents, "DEFAULT_OPENCLAW_WORKSPACE", home / "workspace"),
+            (openclaw_binding.cli, "_last_write", None),
         ):
             self.start(patch.object(target, name, value))
+        self.cli = _FakeOpenclawCli(self.config, self.agents_dir)
+        self.start(patch("services.cowork_agent.adapters.openclaw.cli.run_sync", side_effect=self.cli))
 
     def cfg(self) -> dict:
         return json.loads(self.config.read_text())
 
-    def test_a_project_gets_an_agent_that_runs_in_it(self) -> None:
-        self.assertEqual(openclaw_binding.ensure_project_agent("research"), "research")
-        entry = self.cfg()["agents"]["entries"]["research"]
-        self.assertEqual(entry["cwd"], str(project_layout.project_dir("research")))
-        self.assertEqual(entry["workspace"], str((self.base / "openclaw" / "workspace-research").resolve()))
-        self.assertTrue((self.agents_dir / "research" / "agent").is_dir())
+    def commands(self) -> list[list[str]]:
+        return [call[1:3] for call in self.cli.calls]
 
-        with patch.object(openclaw_binding, "write_openclaw_config") as write:
-            openclaw_binding.ensure_project_agent("research")
-        write.assert_not_called()
+    def test_a_project_gets_an_agent_that_runs_in_it(self) -> None:
+        (self.home / "workspace").mkdir()
+        (self.home / "workspace" / "SOUL.md").write_text("main soul")
+        self.assertEqual(openclaw_binding.cli.seconds_until_applied(), 0.0)
+        self.assertEqual(openclaw_binding.ensure_project_agent("research"), "research")
+        agents = self.cfg()["agents"]
+        entry = agents["entries"]["research"]
+        workspace = (self.home / "workspace-research").resolve()
+        self.assertEqual(entry["cwd"], str(project_layout.project_dir("research")))
+        self.assertEqual(entry["workspace"], str(workspace))
+        self.assertNotIn("identity", entry)
+        self.assertEqual(agents["ownership"], "explicit")
+        self.assertEqual((workspace / "SOUL.md").read_text(), "main soul")
+        self.assertEqual(self.commands(), [["agents", "add"], ["config", "patch"]])
+        # The first turn lets that last write reach the gateway.
+        self.assertGreater(openclaw_binding.cli.seconds_until_applied(), 0.0)
+
+        self.cli.calls.clear()
+        openclaw_binding.ensure_project_agent("research")
+        self.assertEqual(self.cli.calls, [])
 
     def test_an_existing_agent_is_repointed_and_keeps_its_settings(self) -> None:
         self.config.write_text(json.dumps({"agents": {"entries": {"research": {"model": "m", "cwd": "/elsewhere"}}}}))
         openclaw_binding.ensure_project_agent("research")
         entry = self.cfg()["agents"]["entries"]["research"]
         self.assertEqual((entry["model"], entry["cwd"]), ("m", str(project_layout.project_dir("research"))))
+        self.assertEqual(self.commands(), [["config", "patch"]])
 
     def test_a_chat_without_a_project_uses_the_default_agent(self) -> None:
-        with patch.object(openclaw_binding, "write_openclaw_config") as write:
-            self.assertEqual(openclaw_binding.ensure_project_agent(None), "main")
-            self.assertEqual(openclaw_binding.ensure_project_agent("default"), "main")
-        write.assert_not_called()
+        self.assertEqual(openclaw_binding.ensure_project_agent(None), "main")
+        self.assertEqual(openclaw_binding.ensure_project_agent("default"), "main")
+        self.assertEqual(self.cli.calls, [])
         self.assertEqual(openclaw_adapter.OpenclawAdapter._resolve_openclaw_agent("research"), "research")
 
-    def test_a_legacy_list_config_gets_the_agent_without_cwd(self) -> None:
-        self.config.write_text(json.dumps({"agents": {"list": [{"id": "main"}]}}))
-        openclaw_binding.ensure_project_agent("research")
-        entries = self.cfg()["agents"]["list"]
-        self.assertEqual([e["id"] for e in entries], ["main", "research"])
-        self.assertNotIn("cwd", entries[1])
+    def test_a_chat_without_a_project_does_not_wait_for_the_config_lock(self) -> None:
+        class _Held:
+            def __enter__(self):
+                raise AssertionError("took config_lock")
+
+            def __exit__(self, *exc):
+                return False
+
+        with patch.object(openclaw_binding, "config_lock", _Held()):
+            self.assertEqual(openclaw_binding.ensure_project_agent(None), "main")
+
+    def test_a_failed_cli_call_is_reported_with_the_clis_reason(self) -> None:
+        self.cli.fail_on = "add"
+        with self.assertRaises(openclaw_binding.BindingError) as caught:
+            openclaw_binding.ensure_project_agent("research")
+        self.assertIn('"research" is reserved.', str(caught.exception))
+        self.assertNotIn("research", self.cfg()["agents"]["entries"])
 
     def test_no_openclaw_config_is_an_error(self) -> None:
         self.config.unlink()
@@ -249,13 +351,60 @@ class OpenclawBindingTests(_Sandbox):
         (self.agents_dir / "old").mkdir(parents=True)
         self.assertEqual([a["name"] for a in openclaw_agents.list_agents()], ["research", "old"])
 
-    def test_cwd_is_not_written_into_a_legacy_list_config(self) -> None:
-        entries = oc_store.apply_agent_entry({}, "main", "Main", Path("/w"), cwd=Path("/p"))
-        self.assertEqual(entries["agents"]["entries"]["main"]["cwd"], "/p")
-        legacy = oc_store.apply_agent_entry(
-            {"agents": {"list": [{"id": "main"}]}}, "main", "Main", Path("/w"), cwd=Path("/p")
+    def test_patch_sets_and_clears_fields_through_the_cli(self) -> None:
+        openclaw_agents.create_agent(_body("Research"))
+        fields = dict(name="Research Desk", description="Finds things", model="openai/gpt-5.5",
+                      workspace=None, identity_name=None, identity_emoji=None)
+        openclaw_agents.patch("research", SimpleNamespace(model_fields_set={"name", "description", "model"}, **fields))
+        entry = self.cfg()["agents"]["entries"]["research"]
+        self.assertEqual((entry["name"], entry["description"], entry["model"]),
+                         ("Research Desk", "Finds things", "openai/gpt-5.5"))
+        self.assertEqual(_record("research")["name"], "Research Desk")
+        self.assertEqual(openclaw_agents.get_detail("research")["description"], "Finds things")
+
+        self.cli.calls.clear()
+        cleared = {**fields, "name": None, "description": "", "model": ""}
+        openclaw_agents.patch("research", SimpleNamespace(model_fields_set={"description", "model"}, **cleared))
+        entry = self.cfg()["agents"]["entries"]["research"]
+        self.assertNotIn("model", entry)
+        self.assertNotIn("description", entry)
+        self.assertEqual(self.commands(), [["config", "patch"]])
+
+    def test_a_rejected_patch_changes_nothing_and_says_why(self) -> None:
+        # An earlier XO release wrote descriptions as identity.bio, which makes
+        # the whole config invalid for OpenClaw; the CLI refuses every write
+        # until `openclaw doctor --fix`, and the error names the bad key.
+        invalid = {"agents": {"entries": {"main": {}, "old": {"identity": {"bio": "legacy"}}}}}
+        self.config.write_text(json.dumps(invalid))
+        (self.agents_dir / "old").mkdir(parents=True)
+        fields = dict(name="New", description=None, model="m", workspace=None, identity_name=None, identity_emoji="x")
+        response = openclaw_agents.patch(
+            "old", SimpleNamespace(model_fields_set={"name", "model", "identity_emoji"}, **fields)
         )
-        self.assertNotIn("cwd", legacy["agents"]["list"][0])
+        self.assertEqual(response.status_code, 500)
+        detail = json.loads(response.body)["detail"]
+        self.assertIn('agents.entries.old.identity: Unrecognized key: "bio"', detail)
+        self.assertIn('openclaw doctor --fix', detail)
+        self.assertEqual(self.cfg(), invalid)
+
+    def test_a_patch_that_would_invalidate_the_config_changes_nothing(self) -> None:
+        openclaw_agents.create_agent(_body("Research"))
+        before = self.cfg()
+        with self.assertRaises(openclaw_binding.cli.OpenclawCliError) as caught:
+            openclaw_binding.cli.patch({"agents": {"entries": {"research": {"identity": {"bio": "x"}}}}})
+        self.assertIn('Config validation failed: agents.entries.research.identity: Unrecognized key: "bio"', str(caught.exception))
+        self.assertEqual(self.cfg(), before)
+
+    def test_create_adopts_an_entry_openclaw_has_not_run_yet(self) -> None:
+        self.config.write_text(json.dumps({"agents": {"entries": {"main": {}, "hand": {"model": "m"}}}}))
+        (self.home / "workspace").mkdir()
+        (self.home / "workspace" / "SOUL.md").write_text("main soul")
+        openclaw_agents.create_agent(_body("Hand"))
+        self.assertTrue((self.agents_dir / "hand" / "agent").is_dir())
+        self.assertEqual((self.home / "workspace-hand" / "SOUL.md").read_text(), "main soul")
+        self.assertEqual(openclaw_agents.get_detail("hand")["display_name"], "Hand")
+        self.assertEqual(self.cfg()["agents"]["entries"]["hand"]["model"], "m")
+        self.assertEqual(self.commands(), [["config", "patch"]])
 
 
 class CliAgentListingTests(_Sandbox):

@@ -69,6 +69,8 @@
     "config_set":       ["{binary}", "config", "set", "{path}", "{value}"],
     "config_set_batch": ["{binary}", "config", "set", "--batch-json", "{batch_json}"],
     "models_set":       ["{binary}", "models", "set", "{model}"],
+    "agents_add":       ["{binary}", "agents", "add", "{agent_id}", "--non-interactive", "--workspace", "{workspace}", "--json"],
+    "config_patch_stdin": ["{binary}", "config", "patch", "--stdin"],
     "plugin_enable":    ["{binary}", "config", "set", "plugins.entries.{plugin}.enabled", "true"],
     "onboard":          ["{binary}", "onboard", "--non-interactive", "--accept-risk", "--mode", "local", "--auth-choice", "{auth_choice}"]
   },

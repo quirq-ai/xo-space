@@ -10,8 +10,9 @@ Implements the uniform agents contract (same surface every adapter exposes):
   delete(agent_id)           -> resp | None     # None if not ours
 
 OpenClaw agents live under ``~/.openclaw/agents/<id>/`` and are listed in
-``openclaw.json`` (mutated via the adapter ``store`` module). The core router forwards
-here via ``load_capability('agents', …)`` instead of branching on
+``openclaw.json``, which is read directly and written only through the
+``openclaw`` CLI (``cli.py``). The core router forwards here via
+``load_capability('agents', …)`` instead of branching on
 ``backend == "openclaw"``.
 """
 from __future__ import annotations
@@ -32,19 +33,17 @@ from services.cowork_agent.helpers import (
 )
 from services.cowork_agent.adapters.openclaw.store import (
     _agent_model_to_display,
-    apply_agent_entry,
-    ensure_openclaw_agent_disk,
     find_agent_entry_index,
     list_agent_entries,
     load_openclaw_config,
     resolve_agent_workspace_dir,
-    with_agent_entries,
-    write_openclaw_config,
+    seed_agent_workspace,
 )
 from services.cowork_agent.adapters.openclaw import agent_db
-from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
+from services.cowork_agent.adapters.openclaw import cli as oc_cli
+from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR, DEFAULT_OPENCLAW_WORKSPACE
 from services.cowork_agent.registry.settings import _WORKSPACE_DOC_FILES
-from services.cowork_agent.adapters.openclaw.project_binding import config_lock
+from services.cowork_agent.adapters.openclaw.project_binding import add_agent, config_lock
 from services.cowork_agent.project_layout import (
     project_dir as xo_project_dir,
     project_dir_exists,
@@ -88,6 +87,12 @@ def _write(agent_id: str, data: dict) -> None:
     write_json_atomic(_meta_path(agent_id), data)
 
 
+def _entry_description(entry: dict) -> str:
+    """The agent's ``description`` from its roster entry, or ""."""
+    description = entry.get("description")
+    return description if isinstance(description, str) else ""
+
+
 def _agent_info_for_id(cfg: dict, agent_id: str, display_name: str | None, description: str) -> dict:
     """xo-cowork AgentInfo shape; `name` is the OpenClaw agent id so session.directory grouping matches.
 
@@ -116,63 +121,48 @@ def _agent_info_for_id(cfg: dict, agent_id: str, display_name: str | None, descr
     }
 
 
-def _patch_into_config(cfg: dict, agent_id: str, body) -> dict:
+def _write_patch(cfg: dict, agent_id: str, body) -> None:
+    """Apply an agents PATCH body to the agent's roster entry as one
+    ``openclaw config patch``: changed fields set, cleared ones deleted, all or
+    nothing. Adds the entry first when the agent has a directory but no entry.
+    Call with ``config_lock`` held."""
     aid = normalize_agent_id(agent_id)
+    workspace: Path | None = None
+    if body.workspace is not None:
+        workspace = Path(body.workspace.strip()).expanduser().resolve()
+        if not _path_must_be_under_home(workspace):
+            raise ValueError("workspace must resolve to a path under your home directory")
     if find_agent_entry_index(list_agent_entries(cfg), aid) < 0:
-        ws_dir = resolve_agent_workspace_dir(cfg, aid)
-        cfg = apply_agent_entry(cfg, aid, aid, ws_dir)
+        add_agent(cfg, aid, aid)
+        cfg = load_openclaw_config()
     entries = list_agent_entries(cfg)
     idx = find_agent_entry_index(entries, aid)
     if idx < 0:
         raise RuntimeError("could not resolve agent in openclaw.json")
-    next_list = [dict(e) for e in entries]
-    entry = dict(next_list[idx])
+    current_identity = entries[idx].get("identity")
+    current_identity = current_identity if isinstance(current_identity, dict) else {}
+
+    # Merge-patch values: a string sets the field, None deletes it.
+    changes: dict = {}
     if body.name is not None:
-        stripped = body.name.strip()
-        entry["name"] = stripped or aid
-    if body.workspace is not None:
-        ws = Path(body.workspace.strip()).expanduser().resolve()
-        if not _path_must_be_under_home(ws):
-            raise ValueError("workspace must resolve to a path under your home directory")
-        entry["workspace"] = str(ws)
-    if body.description is not None:
-        desc = body.description.strip()
-        ident = dict(entry.get("identity") or {})
-        if desc:
-            ident["bio"] = desc
-            entry["identity"] = ident
-        else:
-            ident.pop("bio", None)
-            if ident:
-                entry["identity"] = ident
-            else:
-                entry.pop("identity", None)
-    if body.model is not None:
-        m = body.model.strip()
-        if m:
-            entry["model"] = m
-        else:
-            entry.pop("model", None)
-    if body.identity_name is not None or body.identity_emoji is not None:
-        ident = dict(entry.get("identity") or {})
-        if body.identity_name is not None:
-            nv = body.identity_name.strip()
-            if nv:
-                ident["name"] = nv
-            else:
-                ident.pop("name", None)
-        if body.identity_emoji is not None:
-            ev = body.identity_emoji.strip()
-            if ev:
-                ident["emoji"] = ev
-            else:
-                ident.pop("emoji", None)
-        if ident:
-            entry["identity"] = ident
-        else:
-            entry.pop("identity", None)
-    next_list[idx] = entry
-    return with_agent_entries(cfg, next_list)
+        changes["name"] = body.name.strip() or aid
+    if workspace is not None:
+        changes["workspace"] = str(workspace)
+    for key, raw in (("model", body.model), ("description", body.description)):
+        if raw is not None:
+            changes[key] = raw.strip() or None
+
+    identity = {
+        key: raw.strip() or None
+        for key, raw in (("name", body.identity_name), ("emoji", body.identity_emoji))
+        if raw is not None
+    }
+    if identity:
+        remaining = {k: v for k, v in {**current_identity, **identity}.items() if v is not None}
+        changes["identity"] = identity if remaining else None
+
+    if changes:
+        oc_cli.patch({"agents": {"entries": {aid: changes}}})
 
 
 # ── Uniform agents contract ───────────────────────────────────────────────────
@@ -207,12 +197,7 @@ def list_agents() -> list[dict]:
                 continue
             meta = entries.get(aid, {})
             display = meta.get("name") if isinstance(meta.get("name"), str) else None
-            desc = ""
-            if isinstance(meta.get("identity"), dict):
-                ident = meta["identity"]
-                if isinstance(ident.get("bio"), str):
-                    desc = ident["bio"]
-            agents.append(_agent_info_for_id(cfg, d.name, display, desc))
+            agents.append(_agent_info_for_id(cfg, d.name, display, _entry_description(meta)))
     return agents
 
 
@@ -244,16 +229,24 @@ def create_agent(body) -> dict | JSONResponse:
     try:
         with config_lock:
             cfg = load_openclaw_config()
-            # The persona workspace: the one asked for, else the agent's
-            # configured one, else a dedicated ~/.openclaw/workspace-<id>/
-            # folder; ensure_openclaw_agent_disk() seeds it below.
-            workspace_dir = requested_workspace or resolve_agent_workspace_dir(cfg, agent_id)
             scaffold_project(agent_id, display_name=display_name, description=description)
-            next_cfg = apply_agent_entry(
-                cfg, agent_id, display_name, workspace_dir, cwd=xo_project_dir(agent_id)
-            )
-            write_openclaw_config(next_cfg)
-            ensure_openclaw_agent_disk(agent_id, workspace_dir)
+            cwd = xo_project_dir(agent_id)
+            if find_agent_entry_index(list_agent_entries(cfg), agent_id) < 0:
+                # The persona workspace: the one asked for, else a dedicated
+                # ~/.openclaw/workspace-<id>/ folder, which add_agent seeds.
+                add_agent(cfg, agent_id, display_name, cwd=cwd, workspace=requested_workspace)
+            else:
+                changes = {"name": display_name, "cwd": str(cwd)}
+                if requested_workspace is not None:
+                    changes["workspace"] = str(requested_workspace)
+                oc_cli.patch({"agents": {"entries": {agent_id: changes}}})
+                # An entry OpenClaw has not run yet has no agent directory or
+                # seeded workspace; give it both, as a new agent gets.
+                (AGENTS_DIR / agent_id / "agent").mkdir(parents=True, exist_ok=True)
+                seed_agent_workspace(
+                    requested_workspace or resolve_agent_workspace_dir(cfg, agent_id), DEFAULT_OPENCLAW_WORKSPACE
+                )
+            next_cfg = load_openclaw_config()
         _write(agent_id, {
             "$schema": _SCHEMA_ID,
             "schema": _SCHEMA_VERSION,
@@ -282,13 +275,8 @@ def get_detail(agent_id: str) -> dict | None:
     entry = dict(entries[idx]) if idx >= 0 else {}
 
     display = entry.get("name") if isinstance(entry.get("name"), str) else None
-    desc = ""
-    identity_cfg: dict = {}
-    if isinstance(entry.get("identity"), dict):
-        identity_cfg = dict(entry["identity"])
-        bio = identity_cfg.get("bio")
-        if isinstance(bio, str):
-            desc = bio
+    desc = _entry_description(entry)
+    identity_cfg: dict = dict(entry["identity"]) if isinstance(entry.get("identity"), dict) else {}
 
     ws_path = resolve_agent_workspace_dir(cfg, aid)
     workspace_path_str = str(ws_path)
@@ -352,7 +340,7 @@ def get_detail(agent_id: str) -> dict | None:
 
 
 def patch(agent_id: str, body) -> dict | JSONResponse | None:
-    """Patch an openclaw agent via openclaw.json; None if not ours."""
+    """Patch an openclaw agent's roster entry through the openclaw CLI; None if not ours."""
     aid = normalize_agent_id(agent_id)
     if not (AGENTS_DIR / aid).is_dir():
         return None
@@ -361,9 +349,7 @@ def patch(agent_id: str, body) -> dict | JSONResponse | None:
         return detail if detail else JSONResponse(status_code=404, content={"detail": "Not found"})
     try:
         with config_lock:
-            cfg = load_openclaw_config()
-            next_cfg = _patch_into_config(cfg, aid, body)
-            write_openclaw_config(next_cfg)
+            _write_patch(load_openclaw_config(), aid, body)
         record = _load_owned(aid)
         if record is not None and (body.name is not None or body.description is not None):
             if body.name is not None:

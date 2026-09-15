@@ -66,6 +66,7 @@ class OpenclawAdapter(BaseAgentAdapter):
         """Streaming chat: yields ``{type: token, token: ...}`` then exactly one
         ``{done: True, native_session_id: ...}``."""
         from services.cowork_agent.adapters.openclaw import agent_db
+        from services.cowork_agent.adapters.openclaw.cli import seconds_until_applied
         from services.cowork_agent.adapters.openclaw.project_binding import BindingError
         from services.cowork_agent.adapters.openclaw.sessionslist import (
             find_session_row,
@@ -73,7 +74,7 @@ class OpenclawAdapter(BaseAgentAdapter):
             update_session_row,
             write_preliminary_entry,
         )
-        from services.cowork_agent.adapters.openclaw.streaming import stream_to_normalized
+        from services.cowork_agent.adapters.openclaw.streaming import stream_to_normalized, wait_for_agent
 
         # _dispatcher_sse always passes session_id=None; the real ID is in our_session_id
         our_session_id: str | None = kwargs.get("our_session_id") or session_id
@@ -98,10 +99,21 @@ class OpenclawAdapter(BaseAgentAdapter):
             our_session_id = our_session_id or str(uuid.uuid4())
             project_id = agent_id or "default"
             try:
-                # Binding may write openclaw.json; keep it off the event loop.
+                # Binding runs the openclaw CLI; keep it off the event loop.
                 openclaw_agent = await asyncio.to_thread(self._resolve_openclaw_agent, agent_id)
             except BindingError as exc:
                 yield {"type": "error", "error": f"The OpenClaw agent for this project is not ready: {exc}"}
+                yield {"done": True, "native_session_id": None}
+                return
+            # The gateway applies config writes after a short debounce: let the
+            # binding's last write (the agent, its cwd) land, then wait until
+            # the gateway serves the agent before the first turn.
+            settle = seconds_until_applied()
+            if settle > 0:
+                await asyncio.sleep(settle)
+            not_ready = await wait_for_agent(openclaw_agent)
+            if not_ready:
+                yield {"type": "error", "error": not_ready}
                 yield {"done": True, "native_session_id": None}
                 return
             session_key = make_session_key(openclaw_agent, our_session_id)

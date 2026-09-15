@@ -1,10 +1,11 @@
 """
-Read/write access to OpenClaw's on-disk layout: `openclaw.json` plus the
-per-agent directories under `~/.openclaw/agents/<id>/`.
+Read access to OpenClaw's on-disk layout: `openclaw.json` plus the per-agent
+directories under `~/.openclaw/agents/<id>/`.
 
-Everything that mutates the config or scaffolds agent directories lives here;
-callers get plain dicts and `Path` objects back and stay oblivious to the
-underlying JSON shape.
+Callers get plain dicts and `Path` objects back and stay oblivious to the
+underlying JSON shape. Nothing here writes `openclaw.json`: every write goes
+through the `openclaw` CLI (`cli.py`), which validates it and keeps the roster
+in the form the installed release requires.
 """
 
 import json
@@ -12,7 +13,6 @@ import shutil
 from pathlib import Path
 
 from services.cowork_agent.adapters.openclaw.paths import (
-    AGENTS_DIR,
     DEFAULT_OPENCLAW_WORKSPACE,
     OPENCLAW_DIR,
     OPENCLAW_JSON,
@@ -21,7 +21,7 @@ from services.cowork_agent.registry.settings import _WORKSPACE_SEED_FILES
 from services.cowork_agent.helpers import normalize_agent_id
 
 
-# ── openclaw.json read/write ─────────────────────────────────────────────────
+# ── openclaw.json read ───────────────────────────────────────────────────────
 
 
 def load_openclaw_config() -> dict:
@@ -35,30 +35,12 @@ def load_openclaw_config() -> dict:
         return {}
 
 
-def write_openclaw_config(cfg: dict) -> None:
-    OPENCLAW_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = OPENCLAW_JSON.with_suffix(".tmp")
-    text = json.dumps(cfg, indent=2) + "\n"
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(OPENCLAW_JSON)
-
-
 # ── Agent roster traversal ───────────────────────────────────────────────────
 #
 # Current OpenClaw keys agents by id under ``agents.entries``
-# (``src/config/types.agents.ts``); the earlier ``agents.list`` array is
-# rejected by its config schema and only migrated by ``openclaw doctor``. Both
-# forms are read. Writes keep the form the file already uses, and a config
-# with no roster yet gets ``agents.entries``.
-
-
-def uses_legacy_list(cfg: dict) -> bool:
-    agents = cfg.get("agents")
-    return (
-        isinstance(agents, dict)
-        and isinstance(agents.get("list"), list)
-        and not isinstance(agents.get("entries"), dict)
-    )
+# (``src/config/types.agents.ts``); the earlier ``agents.list`` array is only
+# migrated by OpenClaw itself (the CLI's writes persist the keyed roster). Both
+# forms are read.
 
 
 def list_agent_entries(cfg: dict) -> list[dict]:
@@ -77,21 +59,6 @@ def list_agent_entries(cfg: dict) -> list[dict]:
     if not isinstance(lst, list):
         return []
     return [e for e in lst if isinstance(e, dict) and e.get("id")]
-
-
-def with_agent_entries(cfg: dict, entries: list[dict]) -> dict:
-    """Return ``cfg`` with its roster replaced by ``entries`` (each carrying
-    ``id``), written in the roster form the config already uses."""
-    agents_block = dict(cfg.get("agents") or {})
-    if uses_legacy_list(cfg):
-        agents_block["list"] = [dict(e) for e in entries]
-    else:
-        # ``default`` belongs to the legacy list only; entries reject it.
-        agents_block["entries"] = {
-            str(e["id"]): {k: v for k, v in e.items() if k not in ("id", "default")}
-            for e in entries
-        }
-    return {**cfg, "agents": agents_block}
 
 
 def find_agent_entry_index(entries: list[dict], agent_id: str) -> int:
@@ -145,39 +112,12 @@ def _agent_model_to_display(model_value) -> str | None:
     return None
 
 
-def apply_agent_entry(
-    cfg: dict, agent_id: str, name: str, workspace: Path, *, cwd: Path | None = None
-) -> dict:
-    """
-    Add or update an agent's roster entry like OpenClaw applyAgentConfig (add branch).
-    When the roster is empty and the new id is not the default agent, adds the default agent first.
-
-    ``cwd`` is the agent's run directory (``agents.entries.<id>.cwd``, OpenClaw
-    ``resolveAgentRunCwd``): its turns' tools run there and the project context
-    files (``AGENTS.md``) are read from it, while persona files stay in the
-    workspace. It is not written into a legacy ``agents.list`` config, whose
-    OpenClaw release may not accept the key.
-    """
-    aid = normalize_agent_id(agent_id)
-    default_id = resolve_default_agent_id(cfg)
-    next_list = [dict(e) for e in list_agent_entries(cfg)]
-    idx = find_agent_entry_index(next_list, aid)
-    next_entry: dict = {"id": aid, "name": name, "workspace": str(workspace)}
-    if cwd is not None and not uses_legacy_list(cfg):
-        next_entry["cwd"] = str(cwd)
-    if idx >= 0:
-        next_list[idx] = {**next_list[idx], **next_entry}
-    else:
-        if len(next_list) == 0 and aid != default_id:
-            next_list.append({"id": default_id})
-        next_list.append(next_entry)
-    return with_agent_entries(cfg, next_list)
-
-
-# ── Workspace / agent-disk scaffolding ───────────────────────────────────────
+# ── Workspace scaffolding ────────────────────────────────────────────────────
 
 
 def seed_agent_workspace(workspace_dir: Path, template_dir: Path) -> None:
+    """Create ``workspace_dir`` and copy the template's seed files that it
+    does not have yet."""
     workspace_dir.mkdir(parents=True, exist_ok=True)
     if not template_dir.is_dir():
         return
@@ -186,17 +126,3 @@ def seed_agent_workspace(workspace_dir: Path, template_dir: Path) -> None:
         dst = workspace_dir / fname
         if src.is_file() and not dst.exists():
             shutil.copy2(src, dst)
-
-
-def ensure_openclaw_agent_disk(agent_id: str, workspace_dir: Path) -> None:
-    """Create OpenClaw's ~/.openclaw/agents/<id>/agent/ dir and seed the
-    agent's workspace directory.
-
-    OpenClaw creates the agent's session store there itself on first use.
-    ``workspace_dir`` (legacy behavior: a dedicated ~/.openclaw/workspace-<id>/
-    folder) is created and seeded from the default workspace template.
-    """
-    aid = normalize_agent_id(agent_id)
-    (AGENTS_DIR / aid / "agent").mkdir(parents=True, exist_ok=True)
-    tpl = DEFAULT_OPENCLAW_WORKSPACE if DEFAULT_OPENCLAW_WORKSPACE.is_dir() else Path()
-    seed_agent_workspace(workspace_dir, tpl)

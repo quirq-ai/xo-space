@@ -221,72 +221,49 @@ def _openclaw_config_path() -> str:
 
 def _upsert_openclaw_config(email: str) -> None:
     """
-    Update ~/.openclaw/openclaw.json post-login:
+    Update ~/.openclaw/openclaw.json post-login, through the openclaw CLI (one
+    validated, hot-applied ``config set --batch-json`` write):
       1. auth.profiles["openai:<email>"] = {provider, mode, email}
       2. agents.defaults.model.primary = _OPENCLAW_DEFAULT_PRIMARY_MODEL (always overwrite)
 
-    Best-effort: missing/malformed file is logged and skipped, never raised.
-    Atomic write via temp file + os.replace so a crash mid-write cannot corrupt the file.
+    Best-effort: a missing config or a failed CLI call is logged and skipped,
+    never raised. Runs the CLI synchronously; call it off the event loop.
     """
+    from services.cowork_agent.registry.agent_registry import get_agent
+    from utils.commands import run_sync
+
     path = _openclaw_config_path()
     if not os.path.isfile(path):
         print(f"[codex-setup] openclaw.json not found at {path}, skipping config upsert")
         return
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"[codex-setup] failed to read {path} ({e}); skipping config upsert")
-        return
-    if not isinstance(data, dict):
-        print(f"[codex-setup] {path} is not a JSON object; skipping config upsert")
-        return
-
-    auth = data.get("auth")
-    if not isinstance(auth, dict):
-        auth = {}
-        data["auth"] = auth
-    profiles = auth.get("profiles")
-    if not isinstance(profiles, dict):
-        profiles = {}
-        auth["profiles"] = profiles
     profile_key = f"openai:{email}"
-    profiles[profile_key] = {
-        "provider": "openai",
-        "mode": "oauth",
-        "email": email,
-    }
-
-    agents = data.get("agents")
-    if not isinstance(agents, dict):
-        agents = {}
-        data["agents"] = agents
-    defaults = agents.get("defaults")
-    if not isinstance(defaults, dict):
-        defaults = {}
-        agents["defaults"] = defaults
-    model = defaults.get("model")
-    if not isinstance(model, dict):
-        model = {}
-        defaults["model"] = model
-    model["primary"] = _OPENCLAW_DEFAULT_PRIMARY_MODEL
-
-    tmp_path = path + ".tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp_path, path)
+    batch = [
+        {
+            # Bracket notation: the key holds ':' '@' and '.'.
+            "path": f"auth.profiles[{json.dumps(profile_key)}]",
+            "value": {"provider": "openai", "mode": "oauth", "email": email},
+        },
+        {"path": "agents.defaults.model.primary", "value": _OPENCLAW_DEFAULT_PRIMARY_MODEL},
+    ]
+    manifest = get_agent("openclaw")
+    result = run_sync(
+        manifest.command("config_set_batch", batch_json=json.dumps(batch)),
+        cwd=manifest.cwd,
+        timeout=manifest.cli_timeout_seconds,
+        separate_stderr=True,
+    )
+    if result.ok:
         print(
             f"[codex-setup] openclaw.json updated: profile={profile_key}, "
             f"primary={_OPENCLAW_DEFAULT_PRIMARY_MODEL}"
         )
-    except OSError as e:
-        print(f"[codex-setup] failed to write {path} ({e}); skipping config upsert")
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        return
+    # The CLI lists what is wrong as "- …" lines before its last line (the
+    # reason or the remedy); config warnings printed first are left out.
+    lines = [line.strip() for line in (result.stderr or result.output or result.exception or "").splitlines() if line.strip()]
+    problems = [line[2:] for line in lines[:-1] if line.startswith("- ")]
+    detail = "; ".join(problems + lines[-1:])[:500] or f"exit {result.returncode}"
+    print(f"[codex-setup] openclaw config set failed ({detail}); skipping config upsert")
 
 
 def _agent_auth_profiles_path() -> str:
@@ -832,7 +809,7 @@ async def codex_setup():
                                 _persist_token_to_env_files(token)
                                 print(f"[codex-setup] token persisted (len={len(token)})")
                                 if email:
-                                    _upsert_openclaw_config(email)
+                                    await asyncio.to_thread(_upsert_openclaw_config, email)
                                     expires_ms = creds.get("expires_ms")
                                     if refresh and expires_ms:
                                         _upsert_agent_auth_profile(email, token, refresh, expires_ms)

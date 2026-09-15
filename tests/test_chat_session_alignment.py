@@ -11,8 +11,9 @@ docs/session15sept/agent-backend-parity-audit.md §3.3:
   backends: XO mints the session id, the index row exists before the request,
   and the next turn resumes from it (F-C3, F-C4, F-S5).
 - openclaw is read from the SQLite store current releases write, and its
-  roster is written as ``agents.entries`` (the ``agents.list`` form survives
-  only in configs that already use it).
+  roster is read in both the ``agents.entries`` and legacy ``agents.list``
+  forms. Every turn names the session's agent, and a new chat waits until the
+  gateway serves that agent.
 """
 from __future__ import annotations
 
@@ -27,7 +28,10 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 from routers.cowork_agent import chat as chat_router
+from services.cowork_agent import helpers
 from services.cowork_agent.adapters import process as process_mod
 from services.cowork_agent.adapters.hermes import adapter as hermes_adapter
 from services.cowork_agent.adapters.hermes import sessionslist as hermes_rows
@@ -281,23 +285,20 @@ USAGE = {"input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 1, "cost": {"to
 
 
 class OpenclawRosterTests(unittest.TestCase):
-    def test_entries_are_read_and_written_as_entries(self) -> None:
-        cfg = {"agents": {"entries": {"main": {"name": "Main"}}}}
-        self.assertEqual([e["id"] for e in oc_store.list_agent_entries(cfg)], ["main"])
-        out = oc_store.apply_agent_entry(cfg, "research", "Research", Path("/w"))
-        self.assertEqual(out["agents"]["entries"]["main"], {"name": "Main"})
-        self.assertEqual(out["agents"]["entries"]["research"], {"name": "Research", "workspace": "/w"})
-        self.assertNotIn("list", out["agents"])
+    def test_entries_are_read(self) -> None:
+        cfg = {"agents": {"entries": {"main": {"name": "Main"}, "research": {}}}}
+        self.assertEqual(
+            oc_store.list_agent_entries(cfg), [{"name": "Main", "id": "main"}, {"id": "research"}]
+        )
+        self.assertEqual(oc_store.resolve_default_agent_id(cfg), "main")
 
-    def test_a_config_that_uses_the_legacy_list_keeps_it(self) -> None:
-        cfg = {"agents": {"list": [{"id": "main", "default": True}]}}
-        out = oc_store.apply_agent_entry(cfg, "research", "Research", Path("/w"))
-        self.assertEqual([e["id"] for e in out["agents"]["list"]], ["main", "research"])
-        self.assertNotIn("entries", out["agents"])
+    def test_a_config_that_uses_the_legacy_list_is_read(self) -> None:
+        cfg = {"agents": {"list": [{"id": "work"}, {"id": "main", "default": True}]}}
+        self.assertEqual([e["id"] for e in oc_store.list_agent_entries(cfg)], ["work", "main"])
+        self.assertEqual(oc_store.resolve_default_agent_id(cfg), "main")
 
-    def test_a_config_without_a_roster_gets_entries_with_the_default_agent(self) -> None:
-        out = oc_store.apply_agent_entry({}, "research", "Research", Path("/w"))
-        self.assertEqual(sorted(out["agents"]["entries"]), ["main", "research"])
+    def test_a_config_without_a_roster_has_the_main_agent(self) -> None:
+        self.assertEqual((oc_store.list_agent_entries({}), oc_store.resolve_default_agent_id({})), ([], "main"))
 
 
 class OpenclawStoreTests(_Sandbox):
@@ -350,7 +351,7 @@ class OpenclawChatTests(OpenclawStoreTests):
     SID = "9a8b7c6d-0000-4000-8000-000000000002"
     KEY = "agent:main:web:9a8b7c6d"
 
-    def _turn(self, question: str, **kwargs):
+    def _turn(self, question: str, ready_error: str | None = None, **kwargs):
         keys: list[str] = []
 
         async def fake_stream(q, session_key):
@@ -358,15 +359,32 @@ class OpenclawChatTests(OpenclawStoreTests):
             _gateway_turn(self.db, session_key, "oc-native-1", 1000, q, "reply", USAGE)
             yield {"type": "token", "token": "reply"}
 
+        async def fake_ready(agent_id):
+            return ready_error
+
         adapter = openclaw_adapter.OpenclawAdapter.__new__(openclaw_adapter.OpenclawAdapter)
 
         async def collect():
             return [event async for event in adapter.stream(question, None, **kwargs)]
 
         with patch.object(oc_streaming, "stream_to_normalized", fake_stream), \
+             patch.object(oc_streaming, "wait_for_agent", fake_ready), \
+             patch("services.cowork_agent.adapters.openclaw.cli.seconds_until_applied", return_value=0.0), \
              patch.object(openclaw_adapter.OpenclawAdapter, "_resolve_openclaw_agent", staticmethod(lambda a: "main")):
             events = asyncio.run(collect())
         return keys, events
+
+    def test_a_new_chat_does_not_start_before_the_gateway_serves_its_agent(self) -> None:
+        keys, events = self._turn(
+            "x", ready_error="OpenClaw has not loaded agent 'main'",
+            our_session_id=self.SID, is_new_session=True, agent_id="proj",
+        )
+        self.assertEqual(keys, [])
+        self.assertEqual(events, [
+            {"type": "error", "error": "OpenClaw has not loaded agent 'main'"},
+            {"done": True, "native_session_id": None},
+        ])
+        self.assertEqual(sessions_io.read_session_index("proj"), {})
 
     def test_a_chat_is_indexed_resumed_and_read_back(self) -> None:
         keys, events = self._turn("first", our_session_id=self.SID, is_new_session=True, agent_id="proj")
@@ -397,3 +415,110 @@ class OpenclawChatTests(OpenclawStoreTests):
         _keys, events = self._turn("x", our_session_id="missing", is_new_session=False)
         self.assertEqual(events[0]["type"], "error")
         self.assertEqual(events[-1], {"done": True, "native_session_id": None})
+
+
+class OpenclawRequestTargetTests(unittest.TestCase):
+    """Every turn names the session's agent: with more than one agent
+    configured, OpenClaw rejects ``openclaw/default`` (no explicit owner)."""
+
+    def _stream(self, session_key: str, body: bytes) -> tuple[list[httpx.Request], list[dict]]:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, content=body)
+
+        real_client = httpx.AsyncClient
+
+        def client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        async def collect():
+            return [e async for e in oc_streaming.stream_to_normalized("hi", session_key)]
+
+        with patch.object(oc_streaming.httpx, "AsyncClient", client):
+            events = asyncio.run(collect())
+        return requests, events
+
+    def test_a_turn_names_the_agent_of_its_session_key(self) -> None:
+        body = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+        requests, events = self._stream("agent:tester:web:e795c0d6", body)
+        self.assertEqual(json.loads(requests[0].content)["model"], "openclaw/tester")
+        self.assertEqual(requests[0].headers["x-openclaw-agent-id"], "tester")
+        self.assertEqual(events, [{"type": "token", "token": "ok"}])
+
+    def test_a_key_without_an_agent_keeps_the_configured_alias(self) -> None:
+        requests, _events = self._stream("not-an-agent-key", b"data: [DONE]\n\n")
+        self.assertEqual(json.loads(requests[0].content)["model"], oc_streaming.OPENCLAW_MODEL)
+        self.assertNotIn("x-openclaw-agent-id", requests[0].headers)
+
+    def test_an_in_stream_gateway_error_is_reported(self) -> None:
+        body = b'data: {"error":{"message":"internal error","type":"api_error"}}\n\ndata: [DONE]\n\n'
+        _requests, events = self._stream("agent:main:web:cafebabe", body)
+        self.assertEqual(events, [{"type": "error", "error": "OpenClaw error: internal error"}])
+
+    def _wait(self, served: list, timeout: float = 5.0) -> tuple[list[httpx.Request], str | None]:
+        """``served[i]`` is the model ids the i-th ``/v1/models`` poll lists
+        (the last repeats), or an exception the transport raises."""
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            item = served[min(len(requests), len(served)) - 1]
+            if isinstance(item, Exception):
+                raise item
+            return httpx.Response(200, json={"data": [{"id": model} for model in item]})
+
+        real_client = httpx.AsyncClient
+
+        def client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with patch.object(oc_streaming.httpx, "AsyncClient", client), \
+             patch.object(oc_streaming, "_READY_POLL_SECONDS", 0):
+            result = asyncio.run(oc_streaming.wait_for_agent("tester", timeout=timeout))
+        return requests, result
+
+    def test_a_new_agent_is_waited_for_until_the_gateway_serves_it(self) -> None:
+        requests, result = self._wait([["openclaw/main"], ["openclaw/main", "openclaw/tester"]])
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0].url.path, "/v1/models")
+
+    def test_an_agent_the_gateway_never_serves_is_reported(self) -> None:
+        _requests, result = self._wait([["openclaw/main"]], timeout=0)
+        self.assertIn("has not loaded agent 'tester'", result)
+
+    def test_an_unreachable_gateway_does_not_hold_the_turn(self) -> None:
+        _requests, result = self._wait([httpx.ConnectError("refused")])
+        self.assertIsNone(result)
+
+
+class OpenclawTitleTests(unittest.TestCase):
+    """A session is titled by its first user message, however OpenClaw
+    stored it: chats through the OpenAI-compatible endpoint keep the user's
+    ``content`` as a plain string, other turns as text blocks."""
+
+    PREAMBLE = "\n\n---\n\n> **Project context**\n> Working directory: `/p`"
+
+    def test_a_string_user_message_titles_the_session(self) -> None:
+        records = [
+            {"type": "session", "id": "s"},
+            {"type": "custom_message", "message": None},
+            {"type": "message", "message": {"role": "user", "content": "say hi, nothing else" + self.PREAMBLE}},
+            {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]}},
+        ]
+        self.assertEqual(helpers.derive_title(records), "say hi, nothing else")
+
+    def test_text_blocks_still_title_the_session(self) -> None:
+        records = [{"type": "message", "message": {"role": "user", "content": [
+            {"type": "image"}, {"type": "text", "text": "summarise the report"},
+        ]}}]
+        self.assertEqual(helpers.derive_title(records), "summarise the report")
+
+    def test_no_user_text_is_untitled(self) -> None:
+        self.assertEqual(helpers.derive_title([]), "Untitled Session")
+        empty = [{"type": "message", "message": {"role": "user", "content": "   "}}]
+        self.assertEqual(helpers.derive_title(empty), "Untitled Session")
+        preamble_only = [{"type": "message", "message": {"role": "user", "content": self.PREAMBLE}}]
+        self.assertEqual(helpers.derive_title(preamble_only), "Untitled Session")
