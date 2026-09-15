@@ -79,7 +79,7 @@ node('view-search-hint','KBD',localSearch);
 node('root-btn','BUTTON',graphRoot);
 const rootInput=node('root-q','INPUT',graphRoot);
 node('rootdd','DIV',graphRoot);node('root-ac','DIV',graphRoot);
-const stage=node('stage'),tabs=node('tabs');
+const meta=node('fmeta'),stage=node('stage'),tabs=node('tabs');
 globalThis.document={activeElement:null,
   getElementById:id=>elements.get(id)||null,
   querySelector:selector=>selector==='.topbar'?topbar:selector==='.tabs'?tabs:null,
@@ -134,7 +134,7 @@ await registry.switchTo('projects');
 assert.equal(input.value,'retained');
 gate.resolve();await loading;
 assert.equal(graphShows,0);assert.equal(location.hash,'#/projects');
-assert.equal(topbar.dataset.toolbar,'search');
+assert.equal(topbar.dataset.toolbar,'search');assert.equal(meta.hidden,true);
 graphContext.refreshToolbar();
 assert.equal(topbar.dataset.toolbar,'search');assert.equal(input.value,'retained');
 """)
@@ -235,11 +235,11 @@ document.activeElement=null;assert.equal(key('/').defaultPrevented,false);assert
 /* Graph: / opens the palette; there is no navbar map field */
 graphRoot.hidden=true; // The independent Projects root controller owns this state.
 await registry.switchTo('graph');
-assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,true);
+assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,true);assert.equal(meta.hidden,false);
 assert.equal(controls.hidden,true);
 const graphOpens=opens;key('/');assert.equal(opens,graphOpens+1);assert.equal(document.activeElement,null);
 await registry.switchTo('wiki');
-assert.equal(controls.hidden,true);assert.equal(document.activeElement,null);
+assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
 assert.equal(key('/').defaultPrevented,false);
 secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'none');
 /* the navbar trigger opens the palette on click */

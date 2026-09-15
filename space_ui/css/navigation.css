@@ -65,8 +65,7 @@
   #view-agents .sesswrap,#view-inbox .inb{padding:22px 16px 50px}
   #view-tree .tv-head{padding-left:16px;padding-right:16px}
   #view-sharing .prj{padding:20px 16px 50px}
-  #view-graph #legend{left:12px;right:12px;bottom:40px;max-height:74px;gap:6px 12px;padding:8px 10px;background:rgba(11,12,15,.9);border:1px solid var(--line-soft);border-radius:8px;font-size:11px}
-  #view-graph #counts{left:12px;right:105px;bottom:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #view-graph #legend{left:12px;right:105px;bottom:15px;max-height:74px;gap:6px 12px;padding:8px 10px;background:rgba(11,12,15,.9);border:1px solid var(--line-soft);border-radius:8px;font-size:11px}
   #view-graph #simstat{right:12px;bottom:15px}
 }
 @media(max-width:480px){

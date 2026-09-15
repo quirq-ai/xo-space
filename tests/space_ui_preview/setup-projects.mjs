@@ -142,7 +142,7 @@ try{
   // Boot the graph before the catalog changes so later checks exercise the
   // existing atlas rather than a fresh map loaded after the mutation.
   await openProjectPage(page,'graph');
-  await page.waitForFunction(()=>/\d+/.test(document.querySelector('#counts')?.textContent||''));
+  await page.waitForFunction(()=>/\d+/.test(document.querySelector('#fmeta')?.textContent||''));
   assert.equal(await page.locator('.atlas-project-refresh').count(),0);
   await page.locator('#tab-setup').click();await chooseProjects();
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true);
@@ -265,7 +265,7 @@ try{
     await openProjectPage(page,lens);
     await page.locator('#view-'+lens+'.is-active').waitFor();
     await page.waitForLoadState('networkidle');
-    if(lens==='graph')await page.waitForFunction(()=>/\d+/.test(document.querySelector('#counts')?.textContent||''));
+    if(lens==='graph')await page.waitForFunction(()=>/\d+/.test(document.querySelector('#fmeta')?.textContent||''));
     const notice=page.locator('#view-'+lens+' .atlas-project-refresh');
     if(await notice.isVisible()){
       await notice.getByRole('button',{name:'Refresh map',exact:true}).click();

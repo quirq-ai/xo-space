@@ -9,12 +9,11 @@
   /* wrap: with dozens of generated projects a single row would overflow the
      stage, which silently becomes scrollable and lets focus scrolls drag the
      whole view strip sideways */
-  #legend{bottom:38px;left:18px;right:18px;display:flex;gap:6px 15px;align-items:center;flex-wrap:wrap;max-height:96px;overflow:hidden}
+  #legend{bottom:16px;left:18px;right:120px;display:flex;gap:6px 15px;align-items:center;flex-wrap:wrap;max-height:96px;overflow:hidden}
   #legend .li{display:flex;gap:6px;align-items:center;font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3)}
   #legend .sw{width:8px;height:8px;border-radius:50%}
   #legend .sw-ring{box-sizing:border-box;background:transparent;border:1px solid var(--ink-3)}
   #legend .li-dim{opacity:.72}
-  #counts{bottom:16px;left:18px;font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);font-variant-numeric:tabular-nums}
   #crumb{
     top:16px;right:18px;display:none;align-items:center;gap:12px;
     background:rgba(16,19,24,.92);backdrop-filter:blur(10px);border:1px solid var(--line);
@@ -56,7 +55,7 @@
 
   /* ---------------- detail panel ---------------- */
   #panel{
-    position:fixed;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px));right:0;bottom:0;width:352px;z-index:50;
+    position:fixed;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px));right:0;bottom:var(--footer-h);width:352px;z-index:50;
     background:rgba(13,16,20,.96);backdrop-filter:blur(18px);border-left:1px solid var(--line);
     transform:translateX(102%);transition:transform .32s var(--ease);
     display:flex;flex-direction:column;

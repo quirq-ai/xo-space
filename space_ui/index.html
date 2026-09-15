@@ -4,12 +4,12 @@
 <link rel="preload" href="fonts/inter/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
 <style>html{color-scheme:dark}</style>
 </head><body>
-<link rel="stylesheet" href="css/base.css?v=20260915-typesync1">
+<link rel="stylesheet" href="css/base.css?v=20260915-footer1">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260915-typesync1">
+<link rel="stylesheet" href="css/graph.css?v=20260915-footer1">
 <link rel="stylesheet" href="css/sessions.css?v=20260915-typesync1">
 <link rel="stylesheet" href="css/timeline.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/chrome.css?v=20260915-typesync1">
+<link rel="stylesheet" href="css/chrome.css?v=20260915-footer1">
 <link rel="stylesheet" href="css/projects.css?v=20260915-typesync1">
 <link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">
 <link rel="stylesheet" href="css/sharing.css?v=20260915-typesync1">
@@ -19,9 +19,9 @@
 <link rel="stylesheet" href="css/quirq.css?v=20260915-typesync1">
 <link rel="stylesheet" href="css/setup.css?v=20260915-typesync1">
 <link rel="stylesheet" href="css/project-management.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/preview.css?v=20260915-typesync1">
+<link rel="stylesheet" href="css/preview.css?v=20260915-footer1">
 <link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/navigation.css?v=20260915-typesync1">
+<link rel="stylesheet" href="css/navigation.css?v=20260915-footer1">
 <link rel="stylesheet" href="css/command-palette.css?v=20260915-typesync1">
 <link rel="stylesheet" href="css/shadcn.css?v=20260915-typesync1">
 
@@ -84,7 +84,6 @@
     <canvas id="gcanvas"></canvas>
     <p class="ov" id="hint"><b>Click</b> a node to focus its neighbourhood &middot; <b>Double-click</b> a cluster to open or close it &middot; <b>Drag</b> to reposition &middot; <b>Scroll</b> to zoom</p>
     <div class="ov" id="legend"></div>
-    <div class="ov" id="counts"></div>
     <div class="ov" id="crumb">
       <span class="name" id="crumb-name"></span>
       <span class="depth" id="crumb-depth"></span>
@@ -159,6 +158,21 @@
 <div id="hc"></div>
 <div id="toast"></div>
 
+<footer>
+  <div class="srv">
+    <span class="pip" id="srv-pip"></span>
+    <span id="srv-text">checking xo-space&hellip;</span>
+    <button id="srv-btn" hidden></button>
+    <div class="srvpop" id="srvpop">
+      <div class="hint">Start the server from a shell</div>
+      <pre>cd xo-space &amp;&amp; ./cowork-api.sh start</pre>
+      <button id="srv-copy">Copy command</button>
+      <p>A page can check the server, but starting or stopping it needs a shell. This pill keeps polling and flips back on by itself.</p>
+    </div>
+  </div>
+  <div class="meta" id="fmeta"></div>
+</footer>
+
 <!-- Cache stamps for the core modules that many files import bare. The
      StaticFiles mount sends no Cache-Control, so a browser may hold a
      heuristically fresh copy of core/api.js or core/ui.js that lacks an
@@ -175,7 +189,7 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260915-typesync1"></script>
+<script type="module" src="js/app.js?v=20260915-footer1"></script>
 
 
 </body></html>

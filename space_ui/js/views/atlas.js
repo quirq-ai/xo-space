@@ -283,9 +283,10 @@ NODES.forEach(n=>n.degree=n.adj.length);
 const LEAVES=NODES.filter(n=>n.type==='leaf');
 const GROUPS=NODES.filter(n=>n.type==='group');
 const HUBS=NODES.filter(n=>n.type==='hub');
-const XCOUNT=EDGES.filter(e=>e.kind==='x').length;
 const noun=DATA.meta.noun||'artifacts';
 const collectionLabel=DATA.meta.collectionLabel||'clusters';
+document.getElementById('fmeta').textContent=
+  `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
 
 const colorOf=n=>n.type==='root'?'#e9e4d9':CAT[n.cat].color;
 function radiusOf(n){
@@ -931,8 +932,6 @@ hooks.setRoot=setRoot;
     Object.values(CAT).map(c=>`<span class="li"><span class="sw" style="background:${c.color}"></span>${esc(c.name)}</span>`).join('')+
     shapeDefs.map((d,i)=>`<span class="li"${i===0?' style="margin-left:6px"':''}>${glyph[d.shape]||glyph.disc}${esc(d.label)}</span>`).join('')+
     typeDefs.map((d,i)=>`<span class="li${d.weight==='dim'?' li-dim':''}"${i===0?' style="margin-left:6px"':''}><span class="sw sw-ring"></span>${esc(d.label.toLowerCase())}</span>`).join('');
-  document.getElementById('counts').textContent=
-    `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · ${XCOUNT} cross-ties`;
 }
 
 /* ============================== HOVER CARD ============================== */

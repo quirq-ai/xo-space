@@ -906,17 +906,24 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=20260915-data1'", app)
         # the Cmd+K palette landed alongside
         self.assertIn("./core/command-palette.js?v=20260915-cmdk4'", app)
-        # The typography pass (Inter, readable small text, no footer) restamped
-        # every file it changed on top of development.
+        # The typography pass (Inter, readable small text) restamped every file
+        # it changed on top of development.
         type_stamp = "20260915-typesync1"
-        for module in ("views/sessions", "views/atlas", "views/setup", "core/registry", "core/toolbar"):
-            self.assertIn("./" + module + ".js?v=" + type_stamp + "'", app)
+        self.assertIn("./core/registry.js?v=" + type_stamp + "'", app)
+        # Restoring the footer (and dropping the graph's duplicate counts line)
+        # moved these again; toolbar.js is back to development's copy.
+        footer_stamp = "20260915-footer1"
+        for module in ("views/sessions", "views/atlas", "views/setup"):
+            self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
+        self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         html = read("index.html")
-        for sheet in ("projects", "navigation", "project-management", "inbox-activity", "graph", "preview",
+        for sheet in ("projects", "project-management", "inbox-activity",
                       "inbox", "setup", "connectors", "sessions", "shadcn", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
+        for sheet in ("base", "chrome", "graph", "preview", "navigation"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.

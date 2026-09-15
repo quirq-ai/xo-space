@@ -38,7 +38,7 @@ page.on('request', request => {
 });
 
 async function settleGraph() {
-  await page.waitForFunction(() => /\d+/.test(document.querySelector('#counts')?.textContent || ''));
+  await page.waitForFunction(() => /\d+/.test(document.querySelector('#fmeta')?.textContent || ''));
   await page.waitForFunction(() => document.querySelector('#simstat')?.style.opacity === '0', undefined, {timeout: 20000});
 }
 async function screenshot(name) {
@@ -276,10 +276,14 @@ try {
       const overlaps=Math.min(files.x+files.width,active.x+active.width)>Math.max(files.x,active.x)+1
         &&Math.min(files.y+files.height,active.y+active.height)>Math.max(files.y,active.y)+1;
       assert.equal(overlaps,false, `File counts and activity do not overlap at ${width}px`);
+      const footer = await page.locator('body > footer').boundingBox();
+      const status = await page.locator('footer .srv').boundingBox();
+      assert.ok(status.y >= footer.y && status.y + status.height <= footer.y + footer.height,
+        `Server status stays inside the footer at ${width}px`);
       await screenshot(`projects-mobile-${width}.png`);
       report.screenshots.push(`projects-mobile-${width}.png`);
     }
-    report.checks.push('320px and 375px: lenses anchored below the contextual header, no page overflow, readable project counts/activity');
+    report.checks.push('320px and 375px: lenses anchored below the contextual header, no page overflow, readable project counts/activity and footer');
   }
   assert.deepEqual(errors, [], 'No console errors, uncaught exceptions or HTTP failures');
   report.checks.push('No browser console, page or HTTP errors');

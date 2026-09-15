@@ -110,7 +110,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
 | `js/core/connections.js` | Pure formatters over one `GET /api/connections` entry: `every` (cadence), `collectorLabels`, `pollLine` (last poll or the error). Shared by the Inbox's Connections section and Setup Connectors so both read the same. |
-| `js/core/server-widget.js` | `pollServer()`, the server status probe that Setup's restart flow uses. |
+| `js/core/server-widget.js` | Footer server pill (status poll + terminal start hint). |
 | `js/core/preview.js` | File previewer drawer. Any view opens it with a `space:preview-file` event; markdown renders through `markdown.js`, HTML renders in an empty-`sandbox` iframe, everything else as escaped source. |
 | `js/views/atlas.js` | Projects Overview, Graph and Timeline. Changing projections rebuilds only the atlas engine, disposes its listeners and frames, and ignores superseded reads; the document and other mounted pages remain intact. |
 | `js/views/sessions.js` | Five Agents routes under `#/agents/`, sharing one mounted telemetry view: session telemetry from `/xo/sessions.json`, contributed by whichever backends implement the `session_telemetry` capability. The module file keeps its `sessions.js` name; the data file `sessions.json` and the internal Sessions sub-view are session telemetry, not the tab. |
@@ -173,7 +173,7 @@ lookup rather than a workspace file.
 
 - Override the folder with the `SPACE_DIR` env var (e.g. to point at a live
   xo-atlas checkout during UI development).
-- Setup's restart flow polls `GET /space/server/status`. (The backend also
+- The footer server pill polls `GET /space/server/status`. (The backend also
   exposes `POST /space/server/stop`, localhost-only, but the UI deliberately
   carries no stop control.)
 
@@ -248,7 +248,7 @@ repositories still require an active, bound caller and individual revocation.
 
 **Restart server**, **Apply & restart** and the update action appear in Server,
 with only the relevant restart button visible. They use `/space/server/restart`. Restart takes
-a few seconds; tabs may report the server unreachable before it returns. The page reloads
+a few seconds; the footer pill may go offline before it returns. The page reloads
 when a new server instance responds, so every tab loads the updated code.
 
 | `restart_mode` | How it works |
@@ -257,8 +257,8 @@ when a new server instance responds, so every tab loads the updated code.
 | `native` | The pid file belongs to `./cowork-api.sh start`; a detached `cowork-api.sh restart-owned` helper checks ownership and restarts only that installation. |
 | `foreground` | No supervisor or matching pid file: the button is disabled with “Ctrl-C and re-run”. The route returns 409. |
 
-The UI has no process start control: start the server from a terminal. Process
-restart belongs on Setup.
+The footer still has no process start control: its Start hint copies a terminal
+command. Process restart belongs on Setup.
 
 **Commands** starts empty. Use **Add command** to save a name, optional description,
 command line or argv JSON, optional working directory, required timeout and optional

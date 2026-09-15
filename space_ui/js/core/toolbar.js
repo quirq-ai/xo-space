@@ -35,6 +35,8 @@ export function initToolbar(){
     const showLocal=!!search&&value!=='';
     localSearch.hidden=!showLocal;
     controls.hidden=!showLocal;
+    const meta=document.getElementById('fmeta');
+    if(meta)meta.hidden=!graph;
     const disabled=!!config?.disabled;
     if(search){
       input.placeholder=search.placeholder||'Search this page…';

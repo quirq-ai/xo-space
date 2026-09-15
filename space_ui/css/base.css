@@ -17,12 +17,12 @@
     --sans:"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --ease:cubic-bezier(.22,.61,.36,1);
-    --topbar-h:58px;
+    --topbar-h:58px; --footer-h:42px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{
-    display:grid;grid-template-rows:var(--topbar-h) 1fr;
+    display:grid;grid-template-rows:var(--topbar-h) 1fr var(--footer-h);
     background:var(--bg);color:var(--ink);font:400 14px/1.5 var(--sans);
     overflow:hidden;-webkit-font-smoothing:antialiased;
   }

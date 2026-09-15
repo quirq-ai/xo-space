@@ -204,7 +204,7 @@ function render(){
     wrap.innerHTML=pageHead+alert({variant:'destructive',icon:off?icons.wifiOff:icons.alert,
       title:off?'xo-space is unreachable':'Could not load .xo/sessions.json',
       description:(off
-        ?'<span>The request never reached the server (stopped or restarting). Not a telemetry-source problem.</span>'
+        ?'<span>The request never reached the server (stopped or restarting; the footer pill tracks it). Not a telemetry-source problem.</span>'
         :'<span>'+esc(failed)+'. The API reads local telemetry for each runtime (Claude Code: <b>ARGUS_DB</b>; Codex: <b>CODEX_HOME</b>; Cursor: <b>CURSOR_HOME</b>).</span>')
         +button(icons.refresh+'Retry',{variant:'outline',size:'sm',attrs:'id="sess-retry"'})});
     document.getElementById('sess-retry').addEventListener('click',load);return;
