@@ -219,36 +219,105 @@ install_env() {
 }
 
 # ==============================================================
-# Setup: Enable channels in openclaw.json (using jq if available)
+# Setup: openclaw.json, written only through the openclaw CLI
+#
+# Values go through `openclaw config set --batch-file`, which validates them
+# against the installed release's schema before writing (a hand-built file
+# once carried keys the release rejects). node, which the CLI itself needs,
+# builds each batch from the environment into a mode-600 temp file that is
+# removed afterwards, so values stay out of the process list. Reads that only
+# decide whether a value is missing look at the file directly. Slack is set up
+# by `openclaw channels add` (configure_slack_channel), not here.
 # ==============================================================
-enable_channels() {
+
+# config_has <dotted.path>: whether openclaw.json sets that path.
+config_has() {
+    OC_PATH="$1" OC_CONFIG_FILE="$CONFIG_FILE" node -e '
+        let node;
+        try { node = JSON.parse(require("fs").readFileSync(process.env.OC_CONFIG_FILE, "utf8")); }
+        catch { process.exit(1); }
+        for (const key of process.env.OC_PATH.split(".")) {
+            if (node === null || typeof node !== "object" || !(key in node)) process.exit(1);
+            node = node[key];
+        }' 2>/dev/null
+}
+
+# apply_config_batch <node script>: the script writes a JSON array of
+# {path, value} to the file named by its first argument; the batch is then
+# applied in one validated `openclaw config set --batch-file`.
+apply_config_batch() {
+    local script="$1" batch rc=0
+    batch="$(umask 077 && mktemp "${TMPDIR:-/tmp}/openclaw-config.XXXXXX")" || return 1
+    if ! node -e "$script" "$batch"; then
+        rm -f "$batch"
+        return 1
+    fi
+    openclaw config set --batch-file "$batch" || rc=$?
+    rm -f "$batch"
+    return "$rc"
+}
+
+INITIAL_CONFIG_JS=$(cat <<'JS'
+const env = process.env;
+const on = (value) => value === "true";
+const set = [
+    ["gateway.mode", "local"],
+    ["gateway.trustedProxies", ["127.0.0.1"]],
+    ["gateway.http.endpoints.chatCompletions.enabled", true],
+    ["gateway.http.endpoints.responses.enabled", true],
+    ["commands.native", "auto"],
+    ["commands.nativeSkills", "auto"],
+    ["channels.telegram", {
+        enabled: on(env.OC_TELEGRAM), dmPolicy: "open", allowFrom: ["*"],
+        groupPolicy: "allowlist", streaming: { mode: "partial" },
+    }],
+    ["channels.whatsapp", {
+        enabled: on(env.OC_WHATSAPP), dmPolicy: "open", selfChatMode: false,
+        allowFrom: ["*"], groupPolicy: "allowlist", mediaMaxMb: 50,
+    }],
+    // WhatsApp's inbound debounce lives under messages, not the channel.
+    ["messages.inbound.byChannel.whatsapp", 0],
+    ["messages.ackReactionScope", "group-mentions"],
+    ["plugins.entries.telegram", { enabled: on(env.OC_TELEGRAM) }],
+    ["plugins.entries.whatsapp", { enabled: on(env.OC_WHATSAPP) }],
+    ["agents.defaults.maxConcurrent", 4],
+    ["agents.defaults.subagents.maxConcurrent", 8],
+    ["agents.defaults.model.primary", env.OC_PRIMARY_MODEL],
+];
+if (env.OC_UI_ORIGIN) set.push(["gateway.controlUi.allowedOrigins", [env.OC_UI_ORIGIN]]);
+if (env.ANTHROPIC_API_KEY) set.push(["plugins.entries.anthropic", { enabled: true }]);
+if (env.OPENAI_API_KEY) set.push(["plugins.entries.openai", { config: { personality: "off" } }]);
+require("fs").writeFileSync(process.argv[1], JSON.stringify(set.map(([path, value]) => ({ path, value }))));
+JS
+)
+
+# ==============================================================
+# Setup: the initial openclaw.json (channels, gateway, default model)
+# ==============================================================
+write_initial_config() {
     log "Configuring channels..."
     mkdir -p "$OPENCLAW_DIR"
+    # Ensure WhatsApp credentials directory exists
+    mkdir -p "$OPENCLAW_DIR/credentials/whatsapp/default"
 
-    if [ -f "$CONFIG_FILE" ]; then
-        log_warn "openclaw.json already exists, skipping channel config"
+    if ! command -v openclaw &>/dev/null; then
+        log_error "openclaw CLI not found — cannot write openclaw.json"
+        return 1
+    fi
+    # Configured already (by an earlier setup or by hand): leave it alone.
+    if config_has gateway.mode; then
+        log_warn "openclaw.json is already configured, skipping channel config"
         return 0
     fi
 
     local telegram_enabled="${TELEGRAM_ENABLED:-true}"
     local whatsapp_enabled="${WHATSAPP_ENABLED:-false}"
-    local slack_enabled="${SLACK_ENABLED:-false}"
-    local control_ui_origin="${OPENCLAW_CONTROL_UI_ORIGIN:-}"
 
     # Parse ENABLED_CHANNELS JSON array if set (from Coder multi-select)
     if [ -n "${ENABLED_CHANNELS:-}" ]; then
         echo "$ENABLED_CHANNELS" | grep -q '"telegram"' && telegram_enabled=true || telegram_enabled=false
         echo "$ENABLED_CHANNELS" | grep -q '"whatsapp"' && whatsapp_enabled=true || whatsapp_enabled=false
-        echo "$ENABLED_CHANNELS" | grep -q '"slack"' && slack_enabled=true || slack_enabled=false
     fi
-
-    # Auto-enable Slack if tokens are provided
-    if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_APP_TOKEN:-}" ]; then
-        slack_enabled=true
-    fi
-
-    # Ensure WhatsApp credentials directory exists
-    mkdir -p "$OPENCLAW_DIR/credentials/whatsapp/default"
 
     # Determine primary model by which API keys are present (precedence:
     # Anthropic > OpenAI > OpenRouter):
@@ -256,8 +325,7 @@ enable_channels() {
     #   only OpenRouter        → openrouter/auto
     #   only Anthropic / both / neither → anthropic (default)
     # configure_openrouter() re-asserts this via the CLI (and honors
-    # OPENCLAW_PRIMARY_MODEL); setting it here too keeps the file sane even if
-    # that later CLI step fails.
+    # OPENCLAW_PRIMARY_MODEL).
     local primary_model="anthropic/claude-opus-4-8"
     if [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
         primary_model="openai/gpt-5.5"
@@ -266,222 +334,30 @@ enable_channels() {
     fi
     log "Primary model provider: $primary_model"
 
-    if command -v jq &>/dev/null; then
-        # Build config safely with jq
-        local config
-        config=$(jq -n \
-            --argjson tg_enabled "$telegram_enabled" \
-            --argjson wa_enabled "$whatsapp_enabled" \
-            --argjson slack_enabled "$slack_enabled" \
-            --arg ui_origin "$control_ui_origin" \
-            --arg primary_model "$primary_model" \
-            --arg has_openai "$([ -n "${OPENAI_API_KEY:-}" ] && echo true || echo false)" \
-            --arg has_anthropic "$([ -n "${ANTHROPIC_API_KEY:-}" ] && echo true || echo false)" \
-            --arg slack_bot_token "${SLACK_BOT_TOKEN:-}" \
-            --arg slack_app_token "${SLACK_APP_TOKEN:-}" \
-            '{
-                gateway: {
-                    mode: "local",
-                    trustedProxies: ["127.0.0.1"],
-                    controlUi: {
-                        dangerouslyDisableDeviceAuth: true
-                    },
-                    http: {
-                        endpoints: {
-                            chatCompletions: { enabled: true },
-                            responses: { enabled: true }
-                        }
-                    }
-                },
-                commands: { native: "auto", nativeSkills: "auto" },
-                channels: {
-                    telegram: {
-                        enabled: $tg_enabled,
-                        dmPolicy: "open",
-                        allowFrom: ["*"],
-                        groupPolicy: "allowlist",
-                        streaming: { mode: "partial" }
-                    },
-                    whatsapp: {
-                        enabled: $wa_enabled,
-                        dmPolicy: "open",
-                        selfChatMode: false,
-                        allowFrom: ["*"],
-                        groupPolicy: "allowlist",
-                        debounceMs: 0,
-                        mediaMaxMb: 50
-                    }
-                },
-                plugins: { entries: { telegram: { enabled: $tg_enabled }, whatsapp: { enabled: $wa_enabled } } },
-                agents: {
-                    defaults: {
-                        maxConcurrent: 4,
-                        subagents: { maxConcurrent: 8 },
-                        model: { primary: $primary_model }
-                    }
-                },
-                messages: { ackReactionScope: "group-mentions" }
-            }
-            | if $ui_origin != "" then
-                .gateway.controlUi.allowedOrigins = [$ui_origin]
-              else . end
-            | if $has_anthropic == "true" then
-                .plugins.entries.anthropic = { enabled: true }
-              else . end
-            | if $has_openai == "true" then
-                .plugins.entries.openai = { config: { personality: "off" } }
-              else . end
-            | if $slack_enabled == true then
-                .channels.slack = {
-                    enabled: true,
-                    mode: "socket",
-                    appToken: $slack_app_token,
-                    botToken: $slack_bot_token,
-                    dmPolicy: "open",
-                    allowFrom: ["*"],
-                    groupPolicy: "allowlist"
-                }
-                | .plugins.entries.slack = { enabled: true }
-              else . end')
-        echo "$config" > "$CONFIG_FILE"
+    if OC_TELEGRAM="$telegram_enabled" OC_WHATSAPP="$whatsapp_enabled" \
+        OC_UI_ORIGIN="${OPENCLAW_CONTROL_UI_ORIGIN:-}" OC_PRIMARY_MODEL="$primary_model" \
+        apply_config_batch "$INITIAL_CONFIG_JS"; then
+        log_success "Channels configured (telegram: ${telegram_enabled}, whatsapp: ${whatsapp_enabled})"
     else
-        # Fallback: heredoc (no string concatenation)
-        local model_line="\"primary\": \"${primary_model}\""
-        local openai_plugin=""
-        if [ -n "${OPENAI_API_KEY:-}" ]; then
-            openai_plugin=", \"openai\": { \"config\": { \"personality\": \"off\" } }"
-        fi
-        local anthropic_plugin=""
-        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-            anthropic_plugin=", \"anthropic\": { \"enabled\": true }"
-        fi
-        local slack_plugin=""
-        local slack_channel=""
-        if [ "$slack_enabled" = "true" ] && [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_APP_TOKEN:-}" ]; then
-            slack_plugin=", \"slack\": { \"enabled\": true }"
-            slack_channel=",
-    \"slack\": {
-      \"enabled\": true,
-      \"mode\": \"socket\",
-      \"appToken\": \"${SLACK_APP_TOKEN}\",
-      \"botToken\": \"${SLACK_BOT_TOKEN}\",
-      \"dmPolicy\": \"open\",
-      \"allowFrom\": [\"*\"],
-      \"groupPolicy\": \"allowlist\"
-    }"
-        fi
-
-        if [ -n "$control_ui_origin" ]; then
-            cat > "$CONFIG_FILE" <<EOJSON
-{
-  "gateway": {
-    "mode": "local",
-    "trustedProxies": ["127.0.0.1"],
-    "controlUi": {
-      "allowedOrigins": ["${control_ui_origin}"],
-      "dangerouslyDisableDeviceAuth": true
-    },
-    "http": {
-      "endpoints": {
-        "chatCompletions": { "enabled": true },
-        "responses": { "enabled": true }
-      }
-    }
-  },
-  "commands": { "native": "auto", "nativeSkills": "auto" },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "dmPolicy": "open",
-      "allowFrom": ["*"],
-      "groupPolicy": "allowlist",
-      "streaming": { "mode": "partial" }
-    },
-    "whatsapp": {
-      "enabled": false,
-      "dmPolicy": "open",
-      "selfChatMode": false,
-      "allowFrom": ["*"],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
-    }${slack_channel}
-  },
-  "plugins": { "entries": { "telegram": { "enabled": true }, "whatsapp": { "enabled": false }${slack_plugin}${anthropic_plugin}${openai_plugin} } },
-  "agents": { "defaults": { "maxConcurrent": 4, "subagents": { "maxConcurrent": 8 }, "model": { ${model_line} } } },
-  "messages": { "ackReactionScope": "group-mentions" }
-}
-EOJSON
-        else
-            cat > "$CONFIG_FILE" <<EOJSON
-{
-  "gateway": {
-    "mode": "local",
-    "trustedProxies": ["127.0.0.1"],
-    "controlUi": {
-      "dangerouslyDisableDeviceAuth": true
-    },
-    "http": {
-      "endpoints": {
-        "chatCompletions": { "enabled": true },
-        "responses": { "enabled": true }
-      }
-    }
-  },
-  "commands": { "native": "auto", "nativeSkills": "auto" },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "dmPolicy": "open",
-      "allowFrom": ["*"],
-      "groupPolicy": "allowlist",
-      "streaming": { "mode": "partial" }
-    },
-    "whatsapp": {
-      "enabled": false,
-      "dmPolicy": "open",
-      "selfChatMode": false,
-      "allowFrom": ["*"],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
-    }${slack_channel}
-  },
-  "plugins": { "entries": { "telegram": { "enabled": true }, "whatsapp": { "enabled": false }${slack_plugin}${anthropic_plugin}${openai_plugin} } },
-  "agents": { "defaults": { "maxConcurrent": 4, "subagents": { "maxConcurrent": 8 }, "model": { ${model_line} } } },
-  "messages": { "ackReactionScope": "group-mentions" }
-}
-EOJSON
-        fi
-        # Patch in allow_from and enabled state if needed
-        if [ "$telegram_enabled" = "false" ]; then
-            log_warn "jq not available — Telegram enabled defaults to true in fallback config. Install jq for full config support."
-        fi
+        log_error "openclaw config set rejected the initial config (see above)"
+        return 1
     fi
-
-    log_success "Channels configured (telegram: ${telegram_enabled}, whatsapp: ${whatsapp_enabled}, slack: ${slack_enabled})"
 }
 
 # ==============================================================
 # Setup: Ensure gateway.mode is set
 # ==============================================================
 ensure_gateway_mode() {
-    local control_ui_origin="${OPENCLAW_CONTROL_UI_ORIGIN:-}"
-    if [ -f "$CONFIG_FILE" ] && ! grep -q '"gateway"' "$CONFIG_FILE"; then
-        if command -v jq &>/dev/null; then
-            local tmp
-            if [ -n "$control_ui_origin" ]; then
-                tmp=$(jq --arg origin "$control_ui_origin" '. + {gateway: {mode: "local", controlUi: {allowedOrigins: [$origin], dangerouslyDisableDeviceAuth: true}}}' "$CONFIG_FILE")
-            else
-                tmp=$(jq '. + {gateway: {mode: "local", controlUi: {dangerouslyDisableDeviceAuth: true}}}' "$CONFIG_FILE")
-            fi
-            echo "$tmp" > "$CONFIG_FILE"
-        else
-            local tmpfile
-            tmpfile=$(mktemp)
-            sed '1s/{/{\n  "gateway": { "mode": "local" },/' "$CONFIG_FILE" > "$tmpfile" && mv "$tmpfile" "$CONFIG_FILE"
-        fi
+    [ -f "$CONFIG_FILE" ] || return 0
+    config_has gateway && return 0
+    local script='
+        const set = [{ path: "gateway.mode", value: "local" }];
+        if (process.env.OC_UI_ORIGIN) set.push({ path: "gateway.controlUi.allowedOrigins", value: [process.env.OC_UI_ORIGIN] });
+        require("fs").writeFileSync(process.argv[1], JSON.stringify(set));'
+    if OC_UI_ORIGIN="${OPENCLAW_CONTROL_UI_ORIGIN:-}" apply_config_batch "$script"; then
         log_success "Added gateway.mode=local to config"
+    else
+        log_warn "Could not add gateway.mode to openclaw.json (see above)"
     fi
 }
 
@@ -490,25 +366,27 @@ ensure_gateway_mode() {
 #
 # Applied on every `setup` run so existing workspaces get the field
 # added without needing to delete openclaw.json. Safe on fresh configs
-# too — values are only written if missing.
+# too — only missing values are written, so an explicit false is kept.
 # ==============================================================
 ensure_http_endpoints() {
     [ -f "$CONFIG_FILE" ] || return 0
-    if ! command -v jq &>/dev/null; then
-        log_warn "jq not available — skipping gateway.http.endpoints patch"
+    local endpoint missing=()
+    for endpoint in chatCompletions responses; do
+        config_has "gateway.http.endpoints.${endpoint}.enabled" || missing+=("$endpoint")
+    done
+    if [ "${#missing[@]}" -eq 0 ]; then
+        log_success "Ensured gateway.http.endpoints.{chatCompletions,responses}.enabled"
         return 0
     fi
-    local tmp
-    tmp=$(jq '
-        .gateway //= {}
-        | .gateway.http //= {}
-        | .gateway.http.endpoints //= {}
-        | .gateway.http.endpoints.chatCompletions //= {}
-        | .gateway.http.endpoints.chatCompletions.enabled //= true
-        | .gateway.http.endpoints.responses //= {}
-        | .gateway.http.endpoints.responses.enabled //= true
-    ' "$CONFIG_FILE") && echo "$tmp" > "$CONFIG_FILE"
-    log_success "Ensured gateway.http.endpoints.{chatCompletions,responses}.enabled"
+    local script='
+        const set = process.env.OC_ENDPOINTS.split(" ").map((name) =>
+            ({ path: `gateway.http.endpoints.${name}.enabled`, value: true }));
+        require("fs").writeFileSync(process.argv[1], JSON.stringify(set));'
+    if OC_ENDPOINTS="${missing[*]}" apply_config_batch "$script"; then
+        log_success "Ensured gateway.http.endpoints.{chatCompletions,responses}.enabled"
+    else
+        log_warn "Could not enable gateway.http.endpoints in openclaw.json (see above)"
+    fi
 }
 
 # ==============================================================
@@ -594,6 +472,49 @@ install_codex_plugin() {
 
 install_slack_plugin() {
     install_openclaw_plugin "@openclaw/slack" "slack"
+}
+
+# ==============================================================
+# Setup: Slack channel, through `openclaw channels add`
+#
+# Runs after install_slack_plugin. `--use-env` adds the default Slack account
+# without writing tokens into openclaw.json: the plugin reads SLACK_BOT_TOKEN
+# and SLACK_APP_TOKEN from the gateway's environment (~/.openclaw/.env, which
+# install_env writes). Slack is set up whenever both tokens are present, as
+# before; a channels.slack that already exists is left as configured.
+# ==============================================================
+configure_slack_channel() {
+    if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_APP_TOKEN:-}" ]; then
+        if [ "${SLACK_ENABLED:-false}" = "true" ] || echo "${ENABLED_CHANNELS:-}" | grep -q '"slack"'; then
+            log_warn "Slack selected but SLACK_BOT_TOKEN/SLACK_APP_TOKEN are not both set — Slack channel not configured"
+        fi
+        return 0
+    fi
+    if ! command -v openclaw &>/dev/null; then
+        log_warn "openclaw CLI not found — skipping Slack channel setup"
+        return 0
+    fi
+    if config_has channels.slack; then
+        log "Slack channel already configured — leaving it as is"
+        return 0
+    fi
+
+    log "Adding the Slack channel via CLI..."
+    if ! openclaw channels add --channel slack --use-env --mode socket; then
+        log_warn "openclaw channels add --channel slack failed (see above)"
+        return 0
+    fi
+    local script='
+        require("fs").writeFileSync(process.argv[1], JSON.stringify([
+            { path: "channels.slack.dmPolicy", value: "open" },
+            { path: "channels.slack.allowFrom", value: ["*"] },
+            { path: "channels.slack.groupPolicy", value: "allowlist" },
+        ]));'
+    if apply_config_batch "$script"; then
+        log_success "Slack channel configured (socket mode, tokens from the environment)"
+    else
+        log_warn "Slack channel added, but its access policy could not be set (see above)"
+    fi
 }
 
 # ==============================================================
@@ -971,10 +892,11 @@ run_setup() {
     log "======================"
     validate_env
     install_env
-    enable_channels
     install_cli
+    write_initial_config
     install_codex_plugin
     install_slack_plugin
+    configure_slack_channel
     configure_openrouter
     install_openclaw_peer_deps
     log "Running config doctor..."

@@ -59,19 +59,17 @@ else
 fi
 
 # ==============================================================
-# Step 1 — apt prereqs (jq, curl, unzip).
+# Step 1 — apt prereqs (curl, unzip).
 #   curl is needed by the OpenClaw installer.
-#   jq is used by openclaw.sh's enable_channels.
 # Skip the whole block if every binary is already on PATH.
 # ==============================================================
 install_apt_prereqs() {
     local missing=()
     command -v curl >/dev/null 2>&1 || missing+=("curl")
-    command -v jq   >/dev/null 2>&1 || missing+=("jq")
     command -v unzip >/dev/null 2>&1 || missing+=("unzip")
 
     if [ "${#missing[@]}" -eq 0 ]; then
-        log "apt prereqs already present (curl, jq, unzip)"
+        log "apt prereqs already present (curl, unzip)"
         return 0
     fi
 
