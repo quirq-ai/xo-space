@@ -29,7 +29,7 @@
     padding:0 18px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,#0d0f13,#0b0c0f);position:relative;z-index:60;
   }
-  .topbar-right{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+  .topbar-right{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0;flex-wrap:nowrap}
   .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
   .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
   .brand b{font:600 19px var(--serif);letter-spacing:.06em;color:var(--ink)}
@@ -45,8 +45,8 @@
   /* Auto margins collapse to zero when the buttons need horizontal scrolling. */
   .tabs :is(button,a):first-child{margin-left:auto}
   .tabs :is(button,a):last-child{margin-right:auto}
-  .tright{justify-self:end;display:flex;align-items:center;gap:8px;width:100%;max-width:450px;min-width:0}
-  .resource-links{display:flex;flex:none;align-items:center;gap:6px;white-space:nowrap}
+  .tright{justify-self:end;display:flex;align-items:center;justify-content:flex-end;gap:8px;width:100%;max-width:450px;min-width:0}
+  .resource-links{display:flex;flex:none;align-items:center;gap:6px;white-space:nowrap;flex-wrap:nowrap}
   .resource-links a{
     display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;
     padding:7px 11px;border:1px solid var(--line);background:var(--bg-2);border-radius:8px;text-decoration:none;font:500 13px var(--sans);

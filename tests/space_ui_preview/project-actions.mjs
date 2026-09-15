@@ -109,11 +109,10 @@ try{
     await openProjectPage(page,id);await page.locator('#root-btn').click();await page.locator('#root-q').fill('Aurora Console');
     await page.locator('#root-ac button').filter({hasText:'Aurora Console'}).first().click();
     const rootName=await page.locator('#root-name').textContent();
-    const query=id==='graph'?'README':'Aurora';await page.locator('#q').fill(query);await page.locator('#q').press('Escape');
     await reread(id,path,async()=>{
-      await page.waitForFunction(count=>document.querySelector('#q').placeholder.includes('Search '+count+' '),observed.get(path).leaves.length);
+      await page.waitForFunction(count=>document.querySelector('#fmeta')?.textContent.includes(String(count)),observed.get(path).leaves.length);
       assert.equal(await page.locator('#root-name').textContent(),rootName,id+' retains the selected root');
-      assert.equal(await page.locator('#q').inputValue(),query,id+' retains map search');
+      assert.equal(await page.locator('#cmdk-trigger').isVisible(),true,id+' keeps the command palette trigger');
     });
   }
   checked('Overview and Graph Refresh replace their active datasets without a document reload and retain the chosen root.');

@@ -3,12 +3,12 @@
 <title>XO Space</title>
 <style>html{color-scheme:dark}</style>
 </head><body>
-<link rel="stylesheet" href="css/base.css?v=20260914-controls1">
+<link rel="stylesheet" href="css/base.css?v=20260915-cmdk6">
 <link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
 <link rel="stylesheet" href="css/graph.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/sessions.css?v=20260914-navigation1">
 <link rel="stylesheet" href="css/timeline.css?v=20260915-timeline1">
-<link rel="stylesheet" href="css/chrome.css?v=20260914-actions1">
+<link rel="stylesheet" href="css/chrome.css?v=20260915-cmdk6">
 <link rel="stylesheet" href="css/projects.css?v=20260915-data1">
 <link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">
 <link rel="stylesheet" href="css/sharing.css?v=20260914-navigation1">
@@ -21,7 +21,7 @@
 <link rel="stylesheet" href="css/preview.css?v=20260914-projectcompact1">
 <link rel="stylesheet" href="css/connectors.css?v=20260914-setupapps1">
 <link rel="stylesheet" href="css/navigation.css?v=20260915-timeline1">
-<link rel="stylesheet" href="css/command-palette.css?v=20260915-cmdk2">
+<link rel="stylesheet" href="css/command-palette.css?v=20260915-cmdk6">
 
 
 <div class="topbar" data-toolbar="none">
@@ -35,18 +35,7 @@
     <b>Space</b></div>
   <nav class="tabs" aria-label="Main navigation"><!-- primary sections from core/navigation.js --></nav>
   <div class="topbar-right">
-  <button class="cmdk-trigger" id="cmdk-trigger" type="button" aria-label="Open command menu" title="Search and jump to anything">
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-    <span class="cmdk-trigger-label">Search</span>
-    <kbd id="cmdk-trigger-kbd">&#8984;K</kbd>
-  </button>
   <div class="tright" id="toolbar-controls" hidden>
-    <div class="searchwrap" id="graph-search" hidden>
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.6" stroke="#b3ada0" stroke-width="1.3"/><path d="M9.6 9.6L13 13" stroke="#b3ada0" stroke-width="1.3" stroke-linecap="round"/></svg>
-      <input id="q" type="text" placeholder="Search the map&hellip;" aria-label="Search the map" aria-keyshortcuts="/" autocomplete="off" spellcheck="false">
-      <kbd>/</kbd>
-      <div class="ac" id="qac"></div>
-    </div>
     <div class="searchwrap" id="view-search-wrap" hidden>
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="4.6" stroke="#b3ada0" stroke-width="1.2"/><path d="M9.5 9.5 13 13" stroke="#b3ada0" stroke-width="1.2"/></svg>
       <input id="view-search" type="search" placeholder="Search this page&hellip;" aria-label="Search this page" aria-keyshortcuts="/" autocomplete="off" spellcheck="false">
@@ -55,6 +44,12 @@
     </div>
   </div>
   <nav class="resource-links" aria-label="Resources">
+    <button class="cmdk-trigger" id="cmdk-trigger" type="button" aria-label="Open search. Press Command K or Control K." title="Press &#8984;K to search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="cmdk-trigger-label">Press</span>
+      <kbd id="cmdk-trigger-kbd">&#8984;K</kbd>
+      <span class="cmdk-trigger-hint">to search</span>
+    </button>
     <a id="wiki-link" href="#/wiki" title="Open Space Wiki">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Z"/><path d="M12 6v15"/></svg>
       <span>Wiki</span>
@@ -193,7 +188,7 @@
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>
-<script type="module" src="js/app.js?v=20260915-cmdk2"></script>
+<script type="module" src="js/app.js?v=20260915-cmdk6"></script>
 
 
 </body></html>

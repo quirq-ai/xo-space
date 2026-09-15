@@ -1,15 +1,15 @@
-  /* navbar trigger: the compact search-icon + shortcut that opens the palette;
-     it is the default search affordance in the top bar. */
-  .cmdk-trigger{display:inline-flex;align-items:center;gap:8px;height:32px;
-    padding:0 8px 0 10px;border:1px solid var(--line);border-radius:9px;
-    background:var(--bg-2);color:var(--ink-3);transition:all .16s var(--ease)}
+  /* navbar trigger: hug-content control with a how-to label, not a fake input */
+  .cmdk-trigger{display:inline-flex;align-items:center;gap:6px;height:32px;width:max-content;
+    flex:none;padding:0 8px 0 10px;border:1px solid var(--line);border-radius:9px;
+    background:var(--bg-2);color:var(--ink-3);transition:all .16s var(--ease);white-space:nowrap}
   .cmdk-trigger:hover{color:var(--ink-2);border-color:var(--line);background:var(--bg-3)}
   .cmdk-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .cmdk-trigger svg{flex:none;color:var(--ink-3)}
-  .cmdk-trigger-label{font:400 12.5px var(--sans)}
+  .cmdk-trigger-label,.cmdk-trigger-hint{font:400 12.5px var(--sans)}
   .cmdk-trigger kbd{font:500 10px/1 var(--mono);color:var(--ink-3);
     border:1px solid var(--line);border-radius:5px;padding:3px 5px;background:var(--bg-3)}
-  @media (max-width:640px){.cmdk-trigger-label{display:none}}
+  .resource-links .cmdk-trigger{height:38px;border-radius:8px}
+  @media (max-width:960px){.cmdk-trigger-label,.cmdk-trigger-hint{display:none}}
 
   /* ---------------- command palette (Cmd+K) ----------------
      A shadcn-Command-styled overlay built from the shared tokens: dimmed
@@ -43,15 +43,14 @@
   .cmdk-list{overflow-y:auto;padding:6px}
   .cmdk-group{padding:10px 10px 4px;font:600 10px/1 var(--mono);letter-spacing:.14em;
     text-transform:uppercase;color:var(--ink-4)}
-  .cmdk-opt{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
-    cursor:pointer;color:var(--ink-2);scroll-margin:8px}
+  .cmdk-opt{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;
+    cursor:pointer;color:var(--ink-2);scroll-margin:8px;outline:none;border:0}
   .cmdk-opt-label{flex:1;min-width:0;font-size:13.5px;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
   .cmdk-opt-hint{flex:none;font:400 10px var(--mono);letter-spacing:.04em;color:var(--ink-4)}
-  .cmdk-opt.is-active{background:var(--bg-3);color:var(--ink)}
-  .cmdk-opt.is-active .cmdk-opt-hint{color:var(--accent)}
-  /* an accent tick down the active row, in the app's vocabulary */
-  .cmdk-opt.is-active{box-shadow:inset 2px 0 0 0 var(--accent-deep)}
+  /* shadcn CommandItem: selected is a quiet fill, not a ring or edge tick */
+  .cmdk-opt.is-active{background:color-mix(in srgb,var(--ink) 9%,transparent);color:var(--ink)}
+  .cmdk-opt.is-active .cmdk-opt-hint{color:var(--ink-3)}
 
   .cmdk-empty{padding:26px 12px;text-align:center;color:var(--ink-3);font-size:13px}
 

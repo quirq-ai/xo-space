@@ -900,10 +900,10 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=" + data_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + data_stamp + "'", app)
-        self.assertIn("./views/atlas.js?v=20260915-timeline1'", app)
+        self.assertIn("./views/atlas.js?v=20260915-cmdk4'", app)
         self.assertIn("./core/registry.js?v=20260914-actions1'", app)
         # toolbar advanced with the Cmd+K palette (navbar trigger + `/` handoff)
-        self.assertIn("./core/toolbar.js?v=20260915-cmdk2'", app)
+        self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         controls_stamp = "20260914-manage1"
         self.assertIn("./views/setup.js?v=" + controls_stamp + "'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)

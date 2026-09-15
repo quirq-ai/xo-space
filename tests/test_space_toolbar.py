@@ -69,17 +69,16 @@ const node=(id,tag='DIV',parent=null)=>{
   const el=new Element(id,tag);parent?.appendChild(el);return el;
 };
 const topbar=node('topbar'),controls=node('toolbar-controls','DIV',topbar);
-const trigger=node('cmdk-trigger','BUTTON',topbar);
+const trigger=node('cmdk-trigger','BUTTON',controls);
 node('cmdk-trigger-kbd','KBD',trigger);
 const sectionNav=node('section-nav');
-const graphRoot=node('graph-root','DIV',sectionNav),graphSearch=node('graph-search','DIV',controls);
+const graphRoot=node('graph-root','DIV',sectionNav);
 const localSearch=node('view-search-wrap','DIV',controls);
 const input=node('view-search','INPUT',localSearch),clear=node('view-search-clear','BUTTON',localSearch);
 node('view-search-hint','KBD',localSearch);
-const graphInput=node('q','INPUT',graphSearch);
 node('root-btn','BUTTON',graphRoot);
 const rootInput=node('root-q','INPUT',graphRoot);
-node('rootdd','DIV',graphRoot);node('root-ac','DIV',graphRoot);node('qac','DIV',graphSearch);
+node('rootdd','DIV',graphRoot);node('root-ac','DIV',graphRoot);
 const meta=node('fmeta'),stage=node('stage'),tabs=node('tabs');
 globalThis.document={activeElement:null,
   getElementById:id=>elements.get(id)||null,
@@ -129,8 +128,8 @@ let query='retained';
 register({id:'projects',toolbar:{search:{placeholder:'Find projects…',
   getValue:()=>query,setValue:value=>query=value}},mount(){}});
 const loading=registry.switchTo('graph');
-assert.equal(topbar.dataset.toolbar,'graph');assert.equal(graphInput.disabled,true);
-assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElement,null);
+assert.equal(topbar.dataset.toolbar,'graph');assert.equal(controls.hidden,true);
+assert.equal(key('/').defaultPrevented,true);assert.equal(document.activeElement,null);
 await registry.switchTo('projects');
 assert.equal(input.value,'retained');
 gate.resolve();await loading;
@@ -155,7 +154,7 @@ assert.equal(mounts,1);assert.deepEqual(shows,[],'show must wait for the first m
 assert.equal(settled,false,'reentry must await the shared pending mount');
 gate.resolve();await Promise.all([first,reentry]);
 assert.deepEqual(shows,[true],'only the newest activation shows the ready view');
-assert.equal(topbar.dataset.toolbar,'graph');assert.equal(graphInput.disabled,false);
+assert.equal(topbar.dataset.toolbar,'graph');assert.equal(controls.hidden,true);
 assert.equal(location.hash,'#/graph');
 """)
 
@@ -179,9 +178,9 @@ assert.equal(topbar.dataset.toolbar,'graph');
 
     def test_search_field_is_active_only_and_shortcuts_follow_current_view(self) -> None:
         self.run_probe(r"""
-/* The Cmd+K trigger is the default navbar search entry; the inline field is
+/* The Cmd+K trigger sits with Wiki and GitHub; the inline field is
    revealed only while a page filter is active. `/` opens the palette on a
-   searchable page (its search lives there now) and focuses the map on Graph. */
+   searchable page and on Graph. */
 let firstQuery='',secondQuery='saved',secondContext,searchable=true;
 let opens=0;addEventListener('space:open-command-palette',()=>opens++);
 register({id:'first',toolbar:{search:{placeholder:'Find projects…',
@@ -200,7 +199,7 @@ assert.equal(key('/').defaultPrevented,true);assert.equal(opens,1);
 assert.equal(document.activeElement,null);
 /* setting a value (as the palette's page search does) reveals the field */
 input.value='aurora';input.fire('input');
-assert.equal(firstQuery,'aurora');assert.equal(localSearch.hidden,false);assert.equal(input.value,'aurora');
+assert.equal(firstQuery,'aurora');assert.equal(localSearch.hidden,false);assert.equal(controls.hidden,false);assert.equal(input.value,'aurora');
 /* a page arriving with a saved query shows the field straight away */
 await registry.switchTo('second');assert.equal(localSearch.hidden,false);assert.equal(input.value,'saved');
 assert.equal(input.attributes['aria-label'],'Find sessions');
@@ -231,18 +230,17 @@ assert.equal(key('/').defaultPrevented,false);assert.equal(document.activeElemen
 document.activeElement=null;key('/');assert.equal(opens,before+1);
 /* a page with no search leaves / alone entirely */
 searchable=false;secondContext.refreshToolbar();
-assert.equal(controls.hidden,true);
+assert.equal(controls.hidden,true);assert.equal(localSearch.hidden,true);
 document.activeElement=null;assert.equal(key('/').defaultPrevented,false);assert.equal(opens,before+1);
-/* Graph: / focuses the map input, not the palette */
+/* Graph: / opens the palette; there is no navbar map field */
 graphRoot.hidden=true; // The independent Projects root controller owns this state.
 await registry.switchTo('graph');
 assert.equal(localSearch.hidden,true);assert.equal(graphRoot.hidden,true);assert.equal(meta.hidden,false);
-key('/');assert.equal(document.activeElement,graphInput);
-elements.get('qac').classList.add('is-open');
+assert.equal(controls.hidden,true);
+const graphOpens=opens;key('/');assert.equal(opens,graphOpens+1);assert.equal(document.activeElement,null);
 await registry.switchTo('wiki');
 assert.equal(controls.hidden,true);assert.equal(meta.hidden,true);assert.equal(document.activeElement,null);
 assert.equal(key('/').defaultPrevented,false);
-assert.equal(elements.get('qac').classList.contains('is-open'),false);
 secondContext.refreshToolbar();assert.equal(topbar.dataset.toolbar,'none');
 /* the navbar trigger opens the palette on click */
 const clickOpens=opens;trigger.fire('click');assert.equal(opens,clickOpens+1);

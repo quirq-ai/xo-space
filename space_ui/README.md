@@ -38,8 +38,8 @@ shortcut. Its three-step quickstart and topic cards link to the
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
-The toolbar adapts to the active page. Projects Overview and Graph keep map
-autocomplete in the topbar. Every Projects page keeps **Graph root** and
+The toolbar adapts to the active page. The Cmd+K search trigger sits with
+**Wiki** and **GitHub** in the top-right cluster on every page, including Overview and Graph. Every Projects page keeps **Graph root** and
 **Refresh** together in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
 `#/setup/projects` link opens Manage. Cards start collapsed; one card opens at a time to show
@@ -58,8 +58,8 @@ Timeline opens Data Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, both activity pages, and
 the Agents session list have their own search; typing there keeps you on that page.
-Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
-toolbar. On phones these pages also give back the empty toolbar row.
+Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no
+page-search field; they still show the Cmd+K trigger.
 
 | Page | Search scope |
 |------|--------------|
@@ -74,8 +74,8 @@ toolbar. On phones these pages also give back the empty toolbar row.
 | Sessions list | Project, path, source, model, and session ID in the loaded sessions, intersected with the selected sources. Matching counts distinguish loaded rows from the total. |
 
 Each page remembers its query while you navigate within the app; a full
-reload resets it. Press `/` outside an editable control to focus the visible
-search. In a page search, `Escape` clears the query; pressing it again removes
+reload resets it. Press `/` outside an editable control to open the command
+palette on Graph and on pages that have search. In a page search, `Escape` clears the query; pressing it again removes
 focus. The clear button does the same reset. When Inbox is narrowed, **Mark all
 loaded seen** explicitly includes loaded new items hidden by search or source
 filters.
@@ -104,7 +104,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
-| `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
+| `js/core/toolbar.js` | Shared toolbar: Cmd+K trigger in the navbar search slot, active-filter page search, and the `/` shortcut that opens the palette. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |

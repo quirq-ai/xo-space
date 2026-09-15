@@ -42,11 +42,16 @@ class CommandPaletteCompositionTests(unittest.TestCase):
         # the compact navbar affordance: a search icon + shortcut badge
         self.assertIn('id="cmdk-trigger"', index)
         self.assertIn('id="cmdk-trigger-kbd"', index)
+        self.assertNotIn('id="graph-search"', index)
+        self.assertNotIn('id="q"', index)
+        self.assertLess(index.index('class="resource-links"'), index.index('id="cmdk-trigger"'))
+        self.assertLess(index.index('id="cmdk-trigger"'), index.index('id="wiki-link"'))
         toolbar = read("js/core/toolbar.js")
         # the trigger and the `/` shortcut ask the palette to open by event,
         # without importing it (shell chrome talks by event)
         self.assertIn("space:open-command-palette", toolbar)
         self.assertIn("getElementById('cmdk-trigger')", toolbar)
+        self.assertIn('!trigger)return', toolbar)
         palette = read("js/core/command-palette.js")
         self.assertIn("addEventListener('space:open-command-palette'", palette)
         # the inline page-search field is now shown only for an active filter,
