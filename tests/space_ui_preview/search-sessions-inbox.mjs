@@ -92,7 +92,7 @@ try{
   assert.equal(await search.getAttribute('placeholder'),'Search loaded sessions…');
   await expectRows(10);
   assert.match(await caption.textContent(),/newest 24 loaded of 120 selected sessions/);
-  await page.locator('#sess-next').click();
+  await page.locator('[data-slot="pagination-next"]').click();
   assert.match(await page.locator('.sess-pager').textContent(),/Page 2 of 3/);
   await setQuery('AuRoRa model-comet');
   await expectRows(6);

@@ -2,7 +2,7 @@
    recent events have different retention, so each owns a separate page. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,rel} from '../core/ui.js';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-data1';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 
 const LIMIT=200;
 const text=value=>typeof value==='string'?value.trim():'';

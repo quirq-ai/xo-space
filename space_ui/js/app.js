@@ -4,18 +4,19 @@
 import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260914-actions1';
 import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
-import {initToolbar} from './core/toolbar.js?v=20260914-files2';
-import {initSectionNav} from './core/section-nav.js?v=20260915-data1';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260915-data1';
-import {initPreview} from './core/preview.js?v=20260915-data1';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-timeline1';
-import {createAgentViews} from './views/sessions.js?v=20260915-data1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-data1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260915-data1';
-import projectsView from './views/projects.js?v=20260915-data1';
-import projectManageView from './views/project-manage.js?v=20260915-data1';
-import treeView from './views/tree.js?v=20260915-data1';
-import sharingView from './views/sharing.js?v=20260915-data1';
+import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
+import {initSectionNav} from './core/section-nav.js?v=20260915-agents2';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260915-agents2';
+import {initPreview} from './core/preview.js?v=20260915-agents2';
+import {initCommandPalette} from './core/command-palette.js?v=20260915-cmdk4';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-agents2';
+import {createAgentViews} from './views/sessions.js?v=20260915-agents2';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-agents2';
+import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
+import projectsView from './views/projects.js?v=20260915-agents2';
+import projectManageView from './views/project-manage.js?v=20260915-agents2';
+import treeView from './views/tree.js?v=20260915-agents2';
+import sharingView from './views/sharing.js?v=20260915-agents2';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260915-data1';
@@ -86,3 +87,4 @@ try{
 try{initServerWidget();}catch(err){console.error('Server widget failed to start:',err);}
 try{initInboxBadge();}catch(err){console.error('Inbox badge failed to start:',err);}
 try{initPreview();}catch(err){console.error('Previewer failed to start:',err);}
+try{initCommandPalette({switchTo,refreshCurrentView});}catch(err){console.error('Command palette failed to start:',err);}

@@ -38,7 +38,7 @@ page.on('request', request => {
 });
 
 async function settleGraph() {
-  await page.waitForFunction(() => document.querySelector('#q')?.placeholder.match(/Search \d+/));
+  await page.waitForFunction(() => /\d+/.test(document.querySelector('#fmeta')?.textContent || ''));
   await page.waitForFunction(() => document.querySelector('#simstat')?.style.opacity === '0', undefined, {timeout: 20000});
 }
 async function screenshot(name) {

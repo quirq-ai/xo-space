@@ -1,0 +1,65 @@
+  /* navbar trigger: hug-content control with a how-to label, not a fake input */
+  .cmdk-trigger{display:inline-flex;align-items:center;gap:6px;height:32px;width:max-content;
+    flex:none;padding:0 8px 0 10px;border:1px solid var(--line);border-radius:9px;
+    background:var(--bg-2);color:var(--ink-3);transition:all .16s var(--ease);white-space:nowrap}
+  .cmdk-trigger:hover{color:var(--ink-2);border-color:var(--line);background:var(--bg-3)}
+  .cmdk-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .cmdk-trigger svg{flex:none;color:var(--ink-3)}
+  .cmdk-trigger-label,.cmdk-trigger-hint{font:400 12.5px var(--sans)}
+  .cmdk-trigger kbd{font:500 10px/1 var(--mono);color:var(--ink-3);
+    border:1px solid var(--line);border-radius:5px;padding:3px 5px;background:var(--bg-3)}
+  .resource-links .cmdk-trigger{height:38px;border-radius:8px}
+  @media (max-width:960px){.cmdk-trigger-label,.cmdk-trigger-hint{display:none}}
+
+  /* ---------------- command palette (Cmd+K) ----------------
+     A shadcn-Command-styled overlay built from the shared tokens: dimmed
+     backdrop, centred panel, grouped list, keyboard-driven. No build step. */
+  .cmdk{position:fixed;inset:0;z-index:60;display:flex;justify-content:center;
+    align-items:flex-start;padding:14vh 16px 16px;
+    background:rgba(6,7,9,.6);backdrop-filter:blur(2px);
+    animation:cmdk-fade .12s var(--ease)}
+  .cmdk[hidden]{display:none}
+  @keyframes cmdk-fade{from{opacity:0}to{opacity:1}}
+  @media (prefers-reduced-motion:reduce){.cmdk{animation:none}}
+
+  .cmdk-dialog{width:100%;max-width:560px;max-height:min(60vh,520px);
+    display:flex;flex-direction:column;overflow:hidden;
+    background:var(--bg-2);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 24px 60px -12px rgba(0,0,0,.7),0 0 0 1px rgba(0,0,0,.3);
+    animation:cmdk-pop .14s var(--ease)}
+  @keyframes cmdk-pop{from{transform:translateY(-6px) scale(.985);opacity:0}
+    to{transform:none;opacity:1}}
+  @media (prefers-reduced-motion:reduce){.cmdk-dialog{animation:none}}
+
+  .cmdk-inputwrap{display:flex;align-items:center;gap:10px;padding:13px 15px;
+    border-bottom:1px solid var(--line-soft)}
+  .cmdk-icon{flex:none;color:var(--ink-3)}
+  .cmdk-input{flex:1;min-width:0;background:none;border:0;outline:none;
+    color:var(--ink);font:400 15px var(--sans);padding:0}
+  .cmdk-input::placeholder{color:var(--ink-4)}
+  .cmdk-esc{flex:none;font:500 10px/1 var(--mono);color:var(--ink-3);
+    border:1px solid var(--line);border-radius:6px;padding:4px 6px;background:var(--bg-3)}
+
+  .cmdk-list{overflow-y:auto;padding:6px}
+  .cmdk-group{padding:10px 10px 4px;font:600 10px/1 var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-4)}
+  .cmdk-opt{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;
+    cursor:pointer;color:var(--ink-2);scroll-margin:8px;outline:none;border:0}
+  .cmdk-opt-label{flex:1;min-width:0;font-size:13.5px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .cmdk-opt-hint{flex:none;font:400 10px var(--mono);letter-spacing:.04em;color:var(--ink-4)}
+  /* shadcn CommandItem: selected is a quiet fill, not a ring or edge tick */
+  .cmdk-opt.is-active{background:color-mix(in srgb,var(--ink) 9%,transparent);color:var(--ink)}
+  .cmdk-opt.is-active .cmdk-opt-hint{color:var(--ink-3)}
+
+  .cmdk-empty{padding:26px 12px;text-align:center;color:var(--ink-3);font-size:13px}
+
+  .cmdk-foot{display:flex;gap:16px;padding:9px 14px;border-top:1px solid var(--line-soft);
+    color:var(--ink-4);font-size:11px}
+  .cmdk-foot kbd{font:500 10px/1 var(--mono);color:var(--ink-3);border:1px solid var(--line);
+    border-radius:5px;padding:3px 5px;margin-right:3px;background:var(--bg-3)}
+
+  @media (max-width:560px){
+    .cmdk{padding:8vh 10px 10px}
+    .cmdk-foot{display:none}
+  }

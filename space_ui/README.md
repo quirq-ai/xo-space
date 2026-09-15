@@ -8,7 +8,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 | Section | Default route | Pages |
 |---------|---------------|-------|
 | Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
-| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
+| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Commands, Server |
 
@@ -38,8 +38,8 @@ shortcut. Its three-step quickstart and topic cards link to the
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
-The toolbar adapts to the active page. Projects Overview and Graph keep map
-autocomplete in the topbar. Every Projects page keeps **Graph root** and
+The toolbar adapts to the active page. The Cmd+K search trigger sits with
+**Wiki** and **GitHub** in the top-right cluster on every page, including Overview and Graph. Every Projects page keeps **Graph root** and
 **Refresh** together in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
 `#/setup/projects` link opens Manage. Cards start collapsed; one card opens at a time to show
@@ -58,8 +58,8 @@ Timeline opens Data Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
 for graphs and content; List keeps its counts and actions in a compact row. List, Tree, Timeline, Setup, Inbox Items, both activity pages, and
 the Agents session list have their own search; typing there keeps you on that page.
-Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no search
-toolbar. On phones these pages also give back the empty toolbar row.
+Wiki, Sharing, Quirq, Inbox Connections/Jobs, and the Agents charts/detail have no
+page-search field; they still show the Cmd+K trigger.
 
 | Page | Search scope |
 |------|--------------|
@@ -74,8 +74,8 @@ toolbar. On phones these pages also give back the empty toolbar row.
 | Sessions list | Project, path, source, model, and session ID in the loaded sessions, intersected with the selected sources. Matching counts distinguish loaded rows from the total. |
 
 Each page remembers its query while you navigate within the app; a full
-reload resets it. Press `/` outside an editable control to focus the visible
-search. In a page search, `Escape` clears the query; pressing it again removes
+reload resets it. Press `/` outside an editable control to open the command
+palette on Graph and on pages that have search. In a page search, `Escape` clears the query; pressing it again removes
 focus. The clear button does the same reset. When Inbox is narrowed, **Mark all
 loaded seen** explicitly includes loaded new items hidden by search or source
 filters.
@@ -104,7 +104,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
-| `js/core/toolbar.js` | Shared toolbar: renders the active view's controls, closes hidden map menus, restores page queries, and owns the `/` focus shortcut. |
+| `js/core/toolbar.js` | Shared toolbar: Cmd+K trigger in the navbar search slot, active-filter page search, and the `/` shortcut that opens the palette. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
 | `js/core/ui.js` | Shared UI helpers: `toast`, `esc` (HTML escaping for every interpolated value), `rel` (relative time; empty for a missing stamp), `pills` (a filter strip of `data-<attr>` buttons with `is-on` / `aria-pressed`). |
@@ -302,9 +302,10 @@ the server's environment, including when the watcher is disabled for manual runs
 ## Agents tab
 
 The second topbar tab (`Projects | Agents | Inbox | Setup`)
-is a session-telemetry dashboard: per-session stats rendered as cards,
-tables, and hand-drawn canvas charts (no dependencies), re-skinned to the
-Space theme. The payload is assembled from every backend that implements the
+is a session-telemetry dashboard: per-session stats rendered as shadcn/ui
+components ported to Space (cards, tables, badges, pagination in
+`js/core/shadcn.js` + `css/shadcn.css`) with SVG charts drawn by
+`js/core/chart.js` in shadcn's Chart markup (no dependencies). The payload is assembled from every backend that implements the
 `session_telemetry` capability, so a runtime that reports nothing shows as
 "not available" rather than as a zero. It lives in its own module
 (`js/views/sessions.js`), independent of the atlas's `boot()`; either can
@@ -313,12 +314,22 @@ switchable regardless.
 
 - Data: `GET /xo/sessions.json`, one pre-aggregated payload built from the
   session telemetry every runtime that reports it contributes. Fetched
-  lazily on first open; the Refresh button re-fetches (the file is rebuilt
-  at most every `XO_VIEWS_REFRESH_S`, default 30 s).
+  lazily on first open; the section's Refresh button (shell chrome, shared
+  by every page) re-fetches (the file is rebuilt at most every
+  `XO_VIEWS_REFRESH_S`, default 30 s).
 - Sub-views: Overview · Sessions (list → detail with sub-agents and
-  per-session tools) · Tools · Models · Trends. The `Today/7d/30d/All`
-  window selector filters client-side over per-day rollups shipped in the
-  payload.
+  per-session tools) · Trends (charts only: weekly volume stacked by model
+  and by project, share donuts for models and projects, tool and MCP
+  server usage; nothing the Overview shows repeats here, and each card's
+  Export CSV action downloads the full rows behind it. The old
+  `#/agents/tools` and `#/agents/models` links land here) · Configure
+  (data collection: one card per telemetry source with its vendor tag,
+  collection status, usage and a 30-day sparkline; edit the data location
+  the provider reads, or switch collection off. Backed by
+  `/api/telemetry/sources`; a save rebuilds `sessions.json` in the
+  background. The chat agent and activity watcher stay in Setup's
+  Intelligence layer). The `Today/7d/30d/All` window selector filters
+  client-side over per-day rollups shipped in the payload.
 - No alerts and no prompts by design: those tables are never read, so raw
   prompt text never enters the payload.
 

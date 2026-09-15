@@ -20,6 +20,17 @@ SOURCE_ID = "claude_code"
 SOURCE_LABEL = "Claude Code"
 META_PRIORITY = 100  # keep the legacy Argus meta fields at the top level
 COST_STATUS = "estimated"
+# How Space's Configure page presents and edits this source. Read generically
+# by services/telemetry_sources.py; the env key is the one collect() honors.
+SOURCE_CONFIG = {
+    "vendor": "anthropic",
+    "path_env": "ARGUS_DB",
+    "path_default": "~/.argus/argus.db",
+    "path_kind": "file",
+    "path_label": "Argus database",
+    "collects": ["Sessions and turns", "Token usage", "Tool calls"],
+    "never": "No prompt text stored",
+}
 
 
 def collect_session_telemetry() -> dict:

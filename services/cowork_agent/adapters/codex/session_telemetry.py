@@ -24,6 +24,17 @@ SOURCE_ID = "codex"
 SOURCE_LABEL = "Codex"
 META_PRIORITY = 10
 COST_STATUS = "unavailable"
+# How Space's Configure page presents and edits this source. Read generically
+# by services/telemetry_sources.py; the env key is the one _codex_home() honors.
+SOURCE_CONFIG = {
+    "vendor": "openai",
+    "path_env": "CODEX_HOME",
+    "path_default": "~/.codex",
+    "path_kind": "dir",
+    "path_label": "Codex home",
+    "collects": ["Threads and models", "Token usage", "Tool calls"],
+    "never": "No prompt text stored",
+}
 
 MAX_SESSIONS = 500
 MAX_TOOLS_PER_SESSION = 10

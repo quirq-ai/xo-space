@@ -6,11 +6,11 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260915-data1';
+import {projectPage} from '../core/navigation.js?v=20260915-agents2';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
-import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
+import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
 import {timelineSummary} from '../core/timeline-summary.js?v=20260915-timeline1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
@@ -138,7 +138,7 @@ async function ensureBoot(dataset,force=false){
   for(const node of document.querySelectorAll('.atlas-project-refresh,.nodata'))node.remove();
   bootDataset=dataset;rememberDataset(dataset);projectsDirty=false;
   document.getElementById('tclear').hidden=true;
-  if(!force)document.getElementById('q').value='';
+  const mapSearch=document.getElementById('q');if(!force&&mapSearch)mapSearch.value='';
   rootPicker?.setData(dataset,data);
   try{boot(data,source.label,dataset);}
   catch(error){hooks.dispose?.();hooks={};bootDataset=null;throw error;}
@@ -286,7 +286,6 @@ const HUBS=NODES.filter(n=>n.type==='hub');
 const XCOUNT=EDGES.filter(e=>e.kind==='x').length;
 const noun=DATA.meta.noun||'artifacts';
 const collectionLabel=DATA.meta.collectionLabel||'clusters';
-document.getElementById('q').placeholder=`Search ${LEAVES.length} ${noun}…`;
 document.getElementById('fmeta').textContent=
   `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
 
@@ -1398,7 +1397,8 @@ function wireAC(input,acEl,onPick){
   });
   return clear;
 }
-const clearSearchAC=wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
+const mapInput=document.getElementById('q'),mapAc=document.getElementById('qac');
+const clearSearchAC=(mapInput&&mapAc)?wireAC(mapInput,mapAc,n=>{
   ensureShown(n);
   go(graphRoute);
   clearPath();
@@ -1407,8 +1407,8 @@ const clearSearchAC=wireAC(document.getElementById('q'),document.getElementById(
   flyTo(n.x+(GW>760?PANEL_W/2/kT:0),n.y,kT);
   pulseN={id:n.id,t0:performance.now()};
   toast('Found '+n.label);
-  document.getElementById('q').value='';
-});
+  mapInput.value='';
+}):()=>{};
 
 /* ============================== VIEWS + GLOBAL KEYS ==============================
    Tab/section toggling now lives in core/registry.js. The atlas keeps only
