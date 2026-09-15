@@ -23,8 +23,6 @@ import wikiView from './views/wiki.js?v=20260915-data1';
 import quirqView from './views/quirq.js?v=20260915-data1';
 import {createSetupViews} from './views/setup.js?v=20260914-manage1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
-/* Hidden test page for the shadcn questionnaire port: #/questionnaire. */
-import questionnaireView from './views/questionnaire.js?v=20260915-questionnaire1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
@@ -82,7 +80,6 @@ try{
   registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
-  registerView(questionnaireView);
   createSetupViews(connectorsView).forEach(registerView);
   startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 }catch(err){console.error('Space registry failed to start:',err);}
