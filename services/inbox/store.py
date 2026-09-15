@@ -48,6 +48,8 @@ from services.storage.layout import inbox_dir
 from services.storage.reader import read_json
 from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts  # noqa: F401  (re-exported)
 
+from .policy import policy as loading_policy   # per-source retention quotas (see policy.py)
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = 1
@@ -234,16 +236,41 @@ def normalize_document(raw, *, now: Optional[datetime] = None) -> dict:
     return doc
 
 
+def _oldest_first(items: list[dict]) -> list[dict]:
+    """Retention order: done before open, then oldest first, so a prune drops
+    the least useful rows first."""
+    return sorted(items, key=lambda it: (it.get("status") != "done", parse_ts(it.get("ts")) or _EPOCH))
+
+
 def apply_retention(items: list[dict], now: Optional[datetime] = None) -> tuple[list[dict], int]:
-    """TTL first, then the cap (done first, oldest first). Pure."""
+    """TTL first, then per-source quotas, then the global cap (each: done
+    first, oldest first). The per-source quota (``policy.retention_max``)
+    keeps one noisy feeder from crowding every other source out of the cap;
+    a source with no quota is bounded only by the global cap. Pure."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=DONE_TTL_DAYS)
     kept = [it for it in items
             if not (it.get("status") == "done" and (parse_ts(it.get("ts")) or _EPOCH) < cutoff)]
     pruned = len(items) - len(kept)
+
+    # Per-source quota: an over-quota source sheds its least useful rows
+    # before the global cap runs, so a burst in one source cannot evict
+    # unrelated sources.
+    by_source: dict[Optional[str], list[dict]] = {}
+    for it in kept:
+        by_source.setdefault(it.get("source"), []).append(it)
+    drop: set[int] = set()
+    for source, group in by_source.items():
+        quota = loading_policy(source).retention_max if isinstance(source, str) else None
+        if quota is not None and len(group) > quota:
+            for it in _oldest_first(group)[:len(group) - quota]:
+                drop.add(id(it))
+    if drop:
+        kept = [it for it in kept if id(it) not in drop]
+        pruned += len(drop)
+
     if len(kept) > MAX_ITEMS:
-        order = sorted(kept, key=lambda it: (it.get("status") != "done", parse_ts(it.get("ts")) or _EPOCH))
-        drop = {id(it) for it in order[:len(kept) - MAX_ITEMS]}
+        drop = {id(it) for it in _oldest_first(kept)[:len(kept) - MAX_ITEMS]}
         kept = [it for it in kept if id(it) not in drop]
         pruned += len(drop)
     return kept, pruned

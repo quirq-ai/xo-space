@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable, NamedTuple, Optional
 
 from services.connections import store as connections_store
@@ -34,21 +34,13 @@ from services.cowork_agent.visualizer.workspace_index import list_project_ids
 from services.storage.reader import read_json
 
 from . import store
+from .policy import policy as source_policy   # windows, fetch limits, future slack (see policy.py)
 
 logger = logging.getLogger(__name__)
 
 FEEDER_NAMES = ("timeline", "todos", "sharing", "issues", "connections")
-TIMELINE_FETCH_LIMIT = 500
 TODO_KEY_PREFIX = "todo."   # keys the todos feeder owns; only these are ever auto-closed
 ISSUE_KEY_PREFIX = "issue:"   # keys the issues feeder owns; only these are ever auto-closed
-BOOTSTRAP_WINDOW = timedelta(hours=24)   # no cursor: only the last day, never the whole history
-ISSUES_BOOTSTRAP_WINDOW = timedelta(days=7)   # issues move slower than the timeline; a week is the first read
-CONNECTIONS_FETCH_LIMIT = 200   # newest events read per toolkit per run
-_FUTURE_SLACK = timedelta(days=1)   # an issue updated_at further ahead than this never pins the cursor
-# Connection events are stamped with the producer's time and a calendar event
-# with its start, so only clock skew is tolerated here; anything further ahead
-# is emitted but never pins the cursor (see connections()).
-_CONNECTIONS_FUTURE_SLACK = timedelta(minutes=5)
 _SHARING_TITLES = {
     "shared_with_you": "Repo shared with this workspace: {repo}",
     "fetched": "New commits fetched: {repo}",
@@ -129,12 +121,13 @@ def timeline(doc: dict) -> FeedResult:
     """Workspace ``timeline.jsonl`` events newer than the cursor (or the
     last 24 h when there is none). The cursor advances to the newest event
     fetched, kept or not."""
+    pol = source_policy("timeline")
     types = frozenset(_str_list(store.source_config(doc, "timeline").get("types")))
-    events = resolve_scope("xo-workspace-visualizer").read_timeline(limit=TIMELINE_FETCH_LIMIT, types=types)
-    if len(events) >= TIMELINE_FETCH_LIMIT:
-        logger.info("inbox timeline: fetch cap of %d reached; older events may be skipped", TIMELINE_FETCH_LIMIT)
+    events = resolve_scope("xo-workspace-visualizer").read_timeline(limit=pol.fetch_limit, types=types)
+    if pol.fetch_limit is not None and len(events) >= pol.fetch_limit:
+        logger.info("inbox timeline: fetch cap of %d reached; older events may be skipped", pol.fetch_limit)
     cursor = store.parse_ts(doc["cursors"].get("timeline"))
-    floor = cursor or (datetime.now(timezone.utc) - BOOTSTRAP_WINDOW)
+    floor = cursor or (datetime.now(timezone.utc) - pol.bootstrap)
     newest: Optional[tuple[datetime, str]] = None
     kept: list[dict] = []
     for ev in events:
@@ -278,11 +271,12 @@ def issues(doc: dict) -> FeedResult:
     readable or absent by design (no mirror file at all counts as
     readable-empty); a mirror that exists but cannot be read makes the run
     return ``watched=None`` so the close step is skipped this time."""
+    pol = source_policy("issues")
     states = frozenset(_str_list(store.source_config(doc, "issues").get("states")))
     cursor = store.parse_ts(doc["cursors"].get("issues"))
     now = datetime.now(timezone.utc)
-    floor = cursor or (now - ISSUES_BOOTSTRAP_WINDOW)
-    horizon = now + _FUTURE_SLACK
+    floor = cursor or (now - pol.bootstrap)
+    horizon = now + pol.future_slack
     newest: Optional[tuple[datetime, str]] = None
     items: list[dict] = []
     watched_keys: set[str] = set()
@@ -345,20 +339,22 @@ def connections(doc: dict) -> FeedResult:
 
     Collectors stamp an event with the producer's own time, and a calendar
     collector stamps upcoming events with their start (up to a week ahead).
-    Such an event is still emitted, but a ``ts`` further ahead than
-    :data:`_CONNECTIONS_FUTURE_SLACK` never pins the cursor: otherwise one
-    calendar poll would put the floor days into the future and mail or
-    pages arriving now, from any toolkit, would never surface. Re-reading
-    the same future event on later runs is harmless (keyed upserts)."""
+    Such an event is still emitted, but a ``ts`` further ahead than the
+    connections ``future_slack`` (see :mod:`policy`) never pins the cursor:
+    otherwise one calendar poll would put the floor days into the future and
+    mail or pages arriving now, from any toolkit, would never surface.
+    Re-reading the same future event on later runs is harmless (keyed
+    upserts)."""
+    pol = source_policy("connections")
     cursor = store.parse_ts(doc["cursors"].get("connections"))
     now = datetime.now(timezone.utc)
-    floor = cursor or (now - BOOTSTRAP_WINDOW)
-    horizon = now + _CONNECTIONS_FUTURE_SLACK
+    floor = cursor or (now - pol.bootstrap)
+    horizon = now + pol.future_slack
     newest: Optional[tuple[datetime, str]] = None
     kept: list[tuple[datetime, str, dict]] = []
     for toolkit in connections_store.list_configured():
         try:
-            events = connections_store.read_events(toolkit, limit=CONNECTIONS_FETCH_LIMIT)
+            events = connections_store.read_events(toolkit, limit=pol.fetch_limit)
         except Exception as exc:
             logger.warning("inbox connections: could not read events for %s: %s", toolkit, exc)
             continue

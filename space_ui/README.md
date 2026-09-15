@@ -457,12 +457,23 @@ fresh workspace creates nothing.
 }
 ```
 
-Items are kept newest-first. Retention runs on every write (constants in
-`store.py`): `DONE_TTL_DAYS = 30` prunes done items older than that, then
-`MAX_ITEMS = 500` drops the oldest done items first, then the oldest of the
-rest.
+Items are kept newest-first. Retention runs on every write. First
+`DONE_TTL_DAYS = 30` (a `store.py` constant) prunes done items older than
+that; then each source's per-source quota (declared in
+`services/inbox/policy.py`, e.g. 200 for `timeline` and `connections`) sheds
+that source's oldest rows so one noisy feeder cannot crowd the others out;
+and finally the global `MAX_ITEMS = 500` cap drops the oldest done items
+first, then the oldest of the rest.
 
 ### Feeders (`services/inbox/feeders.py`)
+
+The loading rules the feeders below follow are declared in one place,
+`services/inbox/policy.py`: per source, the cold-start window (used when there
+is no cursor), the rows read per run, how far ahead a producer timestamp may
+sit before it stops pinning the cursor, and the per-source retention quota.
+The content filters a person can override per source (`enabled`, and the
+type/status/state lists) still live in `store.py`'s `DEFAULT_SOURCES` and
+merge through `source_config`.
 
 Best-effort and idempotent. An item whose `key` already exists is updated in
 place (title, body, link, url; status is never reset) and never duplicated. The
