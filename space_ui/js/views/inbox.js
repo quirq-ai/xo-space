@@ -16,6 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
+import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 
 const dtfmt=iso=>{
@@ -122,9 +123,10 @@ let connsOpen=null;         /* open by default; retain an explicit collapse */
 let connsToken=0;
 const connBusy=new Set();   /* toolkits with a Poll now in flight */
 
-/* Scheduled commands have their own read and DOM boundary. A jobs poll must
-   never rebuild an expanded Inbox body or change the item-search scope. */
+/* Jobs have their own read and DOM boundary. A jobs poll must never rebuild
+   an expanded Inbox body or change the item-search scope. */
 let jobs=null;
+const jobRunBusy=new Set(); /* job ids with a Run now request in flight */
 let jobsFailed=null;
 let jobsToken=0;
 let jobsLoading=false;
@@ -396,42 +398,43 @@ function connRowHTML(c){
   +'</div>';
 }
 
-/* ── scheduled jobs ────────────────────────────────────────────────────── */
-const jobsPaintKey=()=>JSON.stringify([jobs,jobsFailed&&failText(jobsFailed)]);
-function jobInterval(seconds){
-  const n=Number(seconds);
-  if(!Number.isFinite(n)||n<=0)return'Interval unavailable';
-  for(const [unit,size] of [['d',86400],['h',3600],['min',60]]){
-    if(n%size===0)return'Every '+(n/size)+' '+unit;
-  }
-  return'Every '+n+' s';
-}
+/* ── jobs (scheduled and manual) ───────────────────────────────────────── */
+const jobsPaintKey=()=>JSON.stringify([jobs,jobsFailed&&failText(jobsFailed),[...jobRunBusy]]);
 function jobRowHTML(job){
   const result=job.last_result;
   const duration=result?.duration_seconds;
   const elapsed=duration!=null&&Number.isFinite(Number(duration))?' · '+Number(duration).toFixed(2)+'s':'';
   const status=job.running?'Running'+(dtfmt(job.running_since)?' since '+dtfmt(job.running_since):'')
-    :result?String(result.status||'Unknown result')+(dtfmt(result.finished_at)?' · '+dtfmt(result.finished_at):'')+elapsed:'Not run yet';
+    :result?statusText(result.status)+(dtfmt(result.finished_at)?' · '+dtfmt(result.finished_at):'')+elapsed:'Not run yet';
   const tone=job.running?' is-running':result?.status==='ok'?' is-good':result?' is-error':'';
+  const scheduled=isScheduled(job);
+  const name=esc(job.name||job.id);
+  const when=scheduled
+    ?'<span>'+esc(describeSchedule(job))+'</span>'
+      +'<span class="inb-job-enabled'+(job.enabled===false?' is-disabled':'')+'">'+(job.enabled===false?'Paused':'Enabled')+'</span>'
+      +(dtfmt(job.next_run)?'<span>Next due '+esc(dtfmt(job.next_run))+'</span>':'')
+    :'<span>'+esc(describeOnce(job,dtfmt))+'</span>';
+  const runOff=job.running||jobRunBusy.has(job.id)?' disabled':'';
   return'<article class="inb-job-row" data-job-id="'+esc(job.id)+'">'
-    +'<div class="inb-job-info"><h3>'+esc(job.name||job.id)+'</h3>'
+    +'<div class="inb-job-info"><div class="inb-job-title"><h3>'+name+'</h3>'
+        +'<span class="inb-job-kind'+(scheduled?' is-scheduled':'')+'">'+(scheduled?'Repeating':'One time')+'</span></div>'
       +(job.description?'<p>'+esc(job.description)+'</p>':'')
-      +'<div class="inb-job-meta"><span>'+esc(jobInterval(job.every_seconds))+'</span>'
-        +'<span class="inb-job-enabled'+(job.enabled===false?' is-disabled':'')+'">'+(job.enabled===false?'Disabled':'Enabled')+'</span>'
-        +(dtfmt(job.next_run)?'<span>Next due '+esc(dtfmt(job.next_run))+'</span>':'')+'</div>'
+      +'<div class="inb-job-meta">'+when+'</div>'
       +'<div class="inb-job-result'+tone+'" role="status">'+esc(status)+'</div>'
-    +'</div><button class="inb-btn" type="button" data-act="job-results" data-job="'+esc(job.id)+'"'
-      +' aria-label="Results for '+esc(job.name||job.id)+'">Results</button>'
-  +'</article>';
+    +'</div><div class="inb-job-acts">'
+      +'<button class="inb-btn" type="button" data-act="job-run" data-job="'+esc(job.id)+'" aria-label="Run '+name+' now"'+runOff+'>'+(job.running?'Running…':'Run now')+'</button>'
+      +'<button class="inb-btn" type="button" data-act="job-results" data-job="'+esc(job.id)+'"'
+        +' aria-label="Results for '+name+'">Results</button>'
+    +'</div></article>';
 }
 function jobsHTML(){
-  const failure=jobsFailed?'<p class="inb-jobs-state is-error" role="status">Could not load scheduled jobs: '
+  const failure=jobsFailed?'<p class="inb-jobs-state is-error" role="status">Could not load jobs: '
     +esc(failText(jobsFailed))+(jobs?' · showing the last good read':'')+'</p>':'';
-  const content=jobs===null?(jobsFailed?'':'<p class="inb-jobs-state" role="status">Loading scheduled jobs…</p>')
-    :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No scheduled jobs. Add an interval to a command in Setup.</p>';
+  const content=jobs===null?(jobsFailed?'':'<p class="inb-jobs-state" role="status">Loading jobs…</p>')
+    :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No jobs yet. Create one in Setup → Jobs.</p>';
   return'<section class="inb-jobs" aria-labelledby="inb-jobs-title" aria-busy="'+jobsLoading+'">'
-    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Scheduled commands'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
-      +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read scheduled jobs">Refresh</button>'
+    +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Saved jobs'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
+      +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read jobs">Refresh</button>'
         +'<button class="inb-btn" type="button" data-act="jobs-setup">Open Setup</button></div></div>'
     +failure+content+'</section>';
 }
@@ -461,12 +464,31 @@ async function loadJobs(){
   jobsInFlight=false;
   if(mine===jobsToken){
     if(res.ok&&Array.isArray(res.data?.jobs)){
-      jobs=res.data.jobs.filter(job=>job&&typeof job==='object'&&typeof job.id==='string'&&job.every_seconds!=null);
+      jobs=res.data.jobs.filter(job=>job&&typeof job==='object'&&typeof job.id==='string');
       jobsFailed=null;
     }else jobsFailed=res.ok?{error:'Unexpected jobs response'}:res;
   }
   if(jobsRefreshQueued){jobsRefreshQueued=false;await loadJobs();return;}
   jobsLoading=false;
+  renderJobs();
+  scheduleJobsPoll();
+}
+/* Run now is the Inbox's one job write. The started job replaces its row, and
+   a read already in flight is discarded so it cannot repaint the old state. */
+async function runJob(id){
+  const job=jobs?.find(item=>item.id===id);
+  if(!job||job.running||jobRunBusy.has(id))return;
+  jobRunBusy.add(id);renderJobs();
+  const res=await apiFetch(API_BASE+'/api/schedules/'+encodeURIComponent(id)+'/run',{method:'POST'});
+  jobRunBusy.delete(id);
+  if(res.ok&&res.data?.job){
+    jobsToken++;
+    jobs=jobs.map(item=>item.id===id?res.data.job:item);
+    toast('Started '+(job.name||id));
+  }else{
+    toast(failText(res));
+    if(res.status===409||res.status===404)loadJobs();
+  }
   renderJobs();
   scheduleJobsPoll();
 }
@@ -496,6 +518,7 @@ function onClick(e){
         if(location.hash==='#/setup/commands')dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}}));
       });
       break;
+    case'job-run':runJob(b.dataset.job);break;
     case'job-results':{
       const job=jobs?.find(item=>item.id===b.dataset.job);
       if(job)openCommandResults({id:job.id,name:job.name||job.id});

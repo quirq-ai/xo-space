@@ -112,6 +112,11 @@ const gate=()=>({arrived:deferred(),release:deferred()});
 async function waitEnabled(selector){await page.waitForFunction(selector=>{
   const element=document.querySelector(selector);return element&&!element.disabled;
 },selector);}
+/* New job asks for the kind first; the rest of the form appears after. */
+async function newJob(kind='once'){
+  await page.locator('#command-add').click();
+  await page.locator('input[name="kind"][value="'+kind+'"]').check();
+}
 async function commandFields(name,line='["git","status"]'){
   await page.locator('#command-name').fill(name);
   await page.locator('#command-line').fill(line);
@@ -133,18 +138,31 @@ try{
   assert.equal(await page.locator('#setup-commands img').count(),0,'Description HTML is literal text');
 
   await page.locator('#command-add').click();
+  assert.equal(await page.locator('#command-name').isVisible(),false,'New job asks for the kind first');
+  await page.locator('#command-save').click();
+  await page.waitForFunction(()=>document.querySelector('#command-error')?.textContent.includes('Repeating or One time'));
+  await page.locator('input[name="kind"][value="once"]').check();
+  assert.equal(await page.locator('#command-schedule').isVisible(),false,'A manual job has no schedule fields');
   await commandFields('Manual check');
   await page.locator('#command-description').fill('A manual fixture command');
   await page.locator('#command-timeout').fill('12');
+  await page.locator('select[name="timeoutUnit"]').selectOption('seconds');
   await page.locator('#command-cwd').fill('/demo/project');
   await page.locator('#command-save').click();
   await row('job-3').waitFor();
   assert.equal(jobs.find(job=>job.id==='job-3').every_seconds,null);
+  assert.equal(jobs.find(job=>job.id==='job-3').command.timeout,12);
+  assert.match(await row('job-3').textContent(),/One time[\s\S]*Runs when you click Run now/);
   assert.equal(writes.some(write=>write.path.endsWith('/run')),false);
 
   await action('job-3','edit').click();
+  assert.equal(await page.locator('input[name="kind"][value="once"]').isChecked(),true,'Edit reopens the saved kind');
+  assert.equal(await page.locator('select[name="timeoutUnit"]').inputValue(),'seconds');
   await commandFields('Edited manual check','git status --short');
-  await page.locator('#command-interval').fill('60');
+  await page.locator('input[name="kind"][value="scheduled"]').check();
+  await page.locator('input[name="every"]').fill('1');
+  await page.locator('select[name="unit"]').selectOption('minutes');
+  assert.match(await page.locator('#command-schedule-preview').textContent(),/Every minute/);
   const putGate=holdPut=gate();
   await page.locator('#command-save').click();await putGate.arrived.promise;
   assert.equal(await action('job-b','edit').isDisabled(),true,'A pending save cannot replace the active form');
@@ -159,6 +177,17 @@ try{
   assert.equal(await row('job-3').locator('b').textContent(),'Edited manual check','A stale list cannot overwrite the saved command');
   assert.deepEqual(jobs.find(job=>job.id==='job-3').command.argv,['git','status','--short']);
   assert.equal(jobs.find(job=>job.id==='job-3').every_seconds,60);
+  assert.equal(jobs.find(job=>job.id==='job-3').first_run_at,null);
+
+  await action('job-3','edit').click();
+  await page.locator('input[name="repeat"][value="daily"]').check();
+  await page.locator('input[name="dailyTime"]').fill('02:00');
+  assert.match(await page.locator('#command-schedule-preview').textContent(),/Every day at 02:00\. First run: /);
+  await page.locator('#command-save').click();
+  await page.waitForFunction(()=>document.querySelector('#command-editor')?.hidden);
+  const daily=jobs.find(job=>job.id==='job-3');
+  assert.equal(daily.every_seconds,86400);
+  assert.match(daily.first_run_at,/T02:00:00[+-]\d\d:\d\d$/,'Every day at 02:00 is a local anchor with its offset');
 
   jobs.find(job=>job.id==='job-b').running=true;
   await action('job-b','edit').click();await commandFields('Keep this draft');
@@ -172,7 +201,7 @@ try{
 
   await action('job-a','run').click();
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-a"] .is-running'));
-  await page.locator('#command-add').click();await commandFields('Draft during run');
+  await newJob();await commandFields('Draft during run');
   await page.locator('#tab-inbox').click();await page.locator('#tab-setup').click();
   await page.locator('#setup-nav [data-setup-go="commands"]').click();
   assert.equal(await page.locator('#command-name').inputValue(),'Draft during run','View refresh preserves a command draft');
@@ -195,10 +224,10 @@ try{
 
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    await page.locator('#command-add').click();await commandFields('Draft commands');
+    await newJob('scheduled');await commandFields('Draft jobs');
     await page.locator('#setup-commands').scrollIntoViewIfNeeded();
-    assert.equal(await within('#setup-commands .setup-card-head>*'),true,width+'px Commands header');
-    assert.equal(await within('#command-form input,#command-form textarea,#command-form button'),true,width+'px Commands form');
+    assert.equal(await within('#setup-commands .setup-card-head>*'),true,width+'px Jobs header');
+    assert.equal(await within('#command-form input,#command-form textarea,#command-form select,#command-form button'),true,width+'px Jobs form');
     await page.waitForTimeout(500);
     await page.screenshot({path:resolve(output,'commands-'+width+'.png')});
     await page.locator('#command-cancel').click();
@@ -212,7 +241,7 @@ try{
   jobs.find(job=>job.id==='job-b').name=longName;
   await page.locator('#setup-refresh').click();await waitEnabled('#setup-refresh');
   await row('job-b').scrollIntoViewIfNeeded();
-  assert.equal(await within('[data-command-id="job-b"] b'),true,'A valid 64-character name fits the narrow Commands row');
+  assert.equal(await within('[data-command-id="job-b"] b'),true,'A valid 64-character name fits the narrow Jobs row');
   await action('job-b','runs').click();await page.locator('.setup-run').first().waitFor();
   assert.equal(await within('#command-runs h2,#command-runs-close'),true,'A valid long name leaves the narrow drawer Close control reachable');
   await page.locator('#command-runs-close').click();
@@ -247,7 +276,7 @@ try{
   await page.locator('#setup-nav [data-setup-go="server"]').click();
   await page.locator('#setup-restart').waitFor();
   assert.deepEqual(errors,[]);
-  console.log('Commands CRUD, safe history, conflicts, draft/read races, watcher-independent 3s polling, desktop/mobile layouts, foreground hints and new-instance restart checks passed. Screenshots: '+output);
+  console.log('Jobs kind choice, plain-language schedules, CRUD, safe history, conflicts, draft/read races, watcher-independent 3s polling, desktop/mobile layouts, foreground hints and new-instance restart checks passed. Screenshots: '+output);
 }catch(error){
   await page.screenshot({path:resolve(output,'failure.png')});
   throw error;

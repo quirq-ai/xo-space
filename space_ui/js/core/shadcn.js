@@ -217,4 +217,75 @@ export function separator({orientation='horizontal',cls='',attrs=''}={}){
   return'<div role="none" data-slot="separator" data-orientation="'+orientation+'"'+(cls?' class="'+cls+'"':'')+a(attrs)+'></div>';
 }
 
+/* Calendar (shadcn's calendar.tsx over react-day-picker, single mode): a
+   caption between ghost nav buttons, a Sunday-first weekday row and weeks of
+   square ghost day buttons; outside days shown. `month` is any date in the
+   month to show; `selected`, `today` and `min` are "YYYY-MM-DD" keys (days
+   before `min` are disabled); `marks` is an optional Set of keys that get a
+   dot; `focus` is the key that takes the roving tabindex. wireCalendar()
+   reports picks and month steps; the caller re-renders from its own state. */
+const dayKey=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+export function calendar({month=new Date(),selected='',today=dayKey(new Date()),min='',marks=null,focus='',attrs=''}={}){
+  const first=new Date(month.getFullYear(),month.getMonth(),1);
+  const monthPrefix=dayKey(first).slice(0,7);
+  const lastOfPrevious=dayKey(new Date(first.getFullYear(),first.getMonth(),0));
+  const inMonth=k=>k&&k.slice(0,7)===monthPrefix;
+  const tabbable=inMonth(focus)?focus:inMonth(selected)?selected:inMonth(today)?today:dayKey(first);
+  const caption=first.toLocaleString(undefined,{month:'long',year:'numeric'});
+  /* 2026-02-01 is a Sunday: seven days from it name the weekday columns. */
+  const weekdays=Array.from({length:7},(_,i)=>new Date(2026,1,1+i));
+  const cursor=new Date(first.getFullYear(),first.getMonth(),1-first.getDay());
+  const weeks=[];
+  do{
+    const days=[];
+    for(let i=0;i<7;i++){
+      const k=dayKey(cursor),outside=!inMonth(k),disabled=Boolean(min&&k<min),chosen=k===selected;
+      days.push('<td role="gridcell" data-slot="calendar-day" data-day="'+k+'"'+(k===today?' data-today="true"':'')
+        +(chosen?' data-selected="true"':'')+(outside?' data-outside="true"':'')+(disabled?' data-disabled="true"':'')
+        +(marks?.has(k)?' data-marked="true"':'')+'>'
+        +'<button type="button" class="ui-btn" data-slot="calendar-day-button" data-variant="ghost" data-size="icon" data-day="'+k+'"'
+        +(chosen?' data-selected-single="true" aria-pressed="true"':'')+' tabindex="'+(k===tabbable?0:-1)+'"'+(disabled?' disabled':'')
+        +' aria-label="'+esc(cursor.toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'})+(k===today?', today':''))+'">'
+        +cursor.getDate()+'</button></td>');
+      cursor.setDate(cursor.getDate()+1);
+    }
+    weeks.push('<tr data-slot="calendar-week">'+days.join('')+'</tr>');
+  }while(inMonth(dayKey(cursor)));
+  return'<div data-slot="calendar"'+a(attrs)+'>'
+    +'<nav data-slot="calendar-nav" aria-label="Navigation bar">'
+      +button(icons.chevronLeft,{variant:'ghost',size:'icon',slot:'calendar-previous',disabled:Boolean(min&&lastOfPrevious<min),attrs:'data-calendar-step="-1" aria-label="Go to the previous month"'})
+      +button(icons.chevronRight,{variant:'ghost',size:'icon',slot:'calendar-next',attrs:'data-calendar-step="1" aria-label="Go to the next month"'})
+    +'</nav>'
+    +'<div data-slot="calendar-caption"><span role="status" aria-live="polite">'+esc(caption)+'</span></div>'
+    +'<table role="grid" data-slot="calendar-grid" aria-label="'+esc(caption)+'">'
+      +'<thead aria-hidden="true"><tr data-slot="calendar-weekdays">'
+        +weekdays.map(d=>'<th scope="col" data-slot="calendar-weekday" aria-label="'+esc(d.toLocaleDateString(undefined,{weekday:'long'}))+'">'
+          +esc(d.toLocaleDateString(undefined,{weekday:'short'}).slice(0,2))+'</th>').join('')
+      +'</tr></thead><tbody>'+weeks.join('')+'</tbody></table>'
+  +'</div>';
+}
+/* Delegated on a host that keeps its listeners while its innerHTML changes.
+   onSelect(key) on a pick; onMonth(step, focusKey) on a nav button or when
+   the arrow keys leave the rendered weeks (focusKey is the day to focus
+   after re-rendering). Enter and Space are the buttons' own. */
+export function wireCalendar(host,{onSelect,onMonth}){
+  host.addEventListener('click',event=>{
+    const step=event.target.closest('[data-calendar-step]');
+    if(step){if(!step.disabled)onMonth(Number(step.dataset.calendarStep),'');return;}
+    const day=event.target.closest('[data-slot="calendar-day-button"]');
+    if(day&&!day.disabled)onSelect(day.dataset.day);
+  });
+  host.addEventListener('keydown',event=>{
+    const day=event.target.closest?.('[data-slot="calendar-day-button"]');
+    const delta={ArrowLeft:-1,ArrowRight:1,ArrowUp:-7,ArrowDown:7}[event.key];
+    if(!day||delta===undefined)return;
+    event.preventDefault();
+    const [y,m,d]=day.dataset.day.split('-').map(Number);
+    const key=dayKey(new Date(y,m-1,d+delta));
+    const next=host.querySelector('[data-slot="calendar-day-button"][data-day="'+key+'"]');
+    if(next&&!next.disabled){day.tabIndex=-1;next.tabIndex=0;next.focus();}
+    else if(!next)onMonth(delta<0?-1:1,key);
+  });
+}
+
 export const spinner=(label='Loading')=>icons.loader.replace('<svg ','<svg data-slot="spinner" role="status" aria-label="'+esc(label)+'" ');

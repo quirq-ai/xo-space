@@ -392,9 +392,15 @@ The old `/api/runtime-config/restart` URL remains a localhost-only alias.
 The footer and Setup share a status probe; Setup reloads only after a new
 instance responds, including in containers where the PID can stay the same.
 
-The Commands card uses `/api/schedules` and the existing `CommandSpec` executor.
-`every_seconds` may be omitted or null for manual-only jobs; the tick never
-launches those jobs. `description` is optional. An interval change resets the
+Setup's Jobs card (Repeating and One time jobs) uses `/api/schedules` and the
+existing `CommandSpec` executor. A job repeats when `every_seconds` is set. With
+`every_seconds` omitted or null it does not repeat: with `first_run_at` it is
+one-time (the tick runs it once at that instant, a past one at once, then clears
+`next_run`; the job and its history stay, and saving it with the same time does
+not run it again), and without `first_run_at` the tick never launches it (Run
+now only). The UI's plain-language schedules ("every day at 02:00", "starting
+1 Oct") live only in `space_ui/js/core/jobs.js`, which translates them to
+`every_seconds` plus a `first_run_at` anchor; the API has no notion of presets. `description` is optional. An interval change resets the
 schedule grid; switching to manual clears `next_run` and keeps the history.
 All create/update/delete/run routes are localhost-only; browser requests must also come from the same loopback origin. Local CLI clients may omit Origin. Manual execution keeps
 single-flight and `XO_SCHEDULER_MAX_CONCURRENT` (409 when busy). GETs and run_now
@@ -406,7 +412,7 @@ execution state, append-only `runs/<id>.jsonl` history (one line per run, starti
 `type`) and `<quirq state>/logs/scheduler/<id>.log` full
 output. Deleting a definition keeps its history and logs. The UI shows the latest
 20 records, each with status, return code, duration and up to 2000 output characters.
-These saved commands and results are user data; deleting the state root loses them.
+These saved jobs and results are user data; deleting the state root loses them.
 
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via

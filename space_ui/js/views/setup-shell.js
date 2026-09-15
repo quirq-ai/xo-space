@@ -1,5 +1,5 @@
 /* Setup layout only. Section IDs and labels are shared with navigation. */
-import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260914-manage1';
+import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260916-jobs3';
 
 export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
@@ -61,7 +61,7 @@ export function renderSetupShell(root){
             <form id="activity-form" novalidate>
               <div class="setup-check-row"><label class="setup-switch" for="runtime-watcher"><input id="runtime-watcher" type="checkbox"><span></span></label><div><b>Update activity automatically</b><small>Keep sessions and project history up to date.</small></div></div>
               <label for="runtime-source-mode">Activity sources</label><select id="runtime-source-mode"><option value="all">All agents</option><option value="active">Chat agent only</option></select>
-              <small>Scheduled commands also need automatic activity updates enabled.</small>
+              <small>Scheduled jobs also need automatic activity updates enabled.</small>
               <details class="setup-inline-details"><summary>Advanced</summary><label for="runtime-interval">Check every</label><div class="setup-number"><input id="runtime-interval" type="number" min=".25" max="60" step=".25" inputmode="decimal"><span>seconds</span></div><small>0.25–60 seconds. Default: 1.</small></details>
               <div class="setup-form-error" id="activity-error" role="alert" hidden></div>
               <div class="setup-actions"><button class="setup-primary" id="activity-save" type="submit">Save activity settings</button></div>
@@ -92,10 +92,10 @@ export function renderSetupShell(root){
         </section>
 
         <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
-          <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Commands</h2>
-            <p>Click <b>Run</b> to execute on this Space’s machine. Open the command’s <b>Inbox</b> for results and recent output. Intervals run automatically while the watcher and scheduler are enabled.</p>
-            <p>Logs: <code>~/.quirq/scheduler/logs/&lt;command-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;command-id&gt;.jsonl</code><br>These are the default paths. Inbox shows the exact log path for your Space.</p></header>
-          <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
+          <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Jobs</h2>
+            <p>A job is a saved command that runs on this Space’s machine. <b>Repeating</b> jobs run again and again on the schedule you choose. <b>One time</b> jobs run once on the day and time you pick, or whenever you click <b>Run now</b>. <b>Results</b> shows each run’s output.</p>
+            <p>Logs: <code>~/.quirq/logs/scheduler/&lt;job-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;job-id&gt;.jsonl</code><br>These are the default paths. Results shows the exact log path for your Space.</p></header>
+          <div class="setup-commands" id="setup-commands"></div>
         </section>
 
         <section class="setup-panel" id="setup-panel-server" aria-labelledby="setup-server-title" hidden>

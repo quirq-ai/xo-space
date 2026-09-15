@@ -90,7 +90,7 @@
     .inb-body{padding-left:16px}
   }
 
-  /* Scheduled jobs stay separate from item filters and Inbox bulk actions. */
+  /* Jobs stay separate from item filters and Inbox bulk actions. */
   .inb-jobs{margin-bottom:18px;border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);overflow:hidden}
   .inb-jobs-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:10px 14px}
   .inb-jobs-head h2{display:flex;align-items:center;gap:8px;margin:0;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
@@ -101,7 +101,10 @@
   .inb-job-info{flex:1;min-width:0;overflow-wrap:anywhere}
   .inb-job-info h3{margin:0;font:500 13.5px var(--sans);color:var(--ink)}
   .inb-job-info p{margin:5px 0 0;font-size:12px;line-height:1.5;color:var(--ink-3)}
-  .inb-job-row>.inb-btn{flex-shrink:0}
+  .inb-job-acts{display:flex;flex-wrap:wrap;gap:6px;flex-shrink:0}
+  .inb-job-title{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .inb-job-kind{padding:1px 7px;border:1px solid var(--line);border-radius:999px;font:500 11px/1.6 var(--sans);color:var(--ink-3)}
+  .inb-job-kind.is-scheduled{color:var(--accent)}
   .inb-job-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px;margin-top:8px;font:400 12px/1.6 var(--sans);color:var(--ink-2)}
   .inb-job-enabled{color:var(--accent)}
   .inb-job-enabled.is-disabled{color:var(--ink-3)}
