@@ -1,5 +1,5 @@
 """
-``~/.quirq/workspace/sessions/sessionslist.json`` — union of every project's
+``~/.quirq/cache/sessions/sessionslist.json`` — union of every project's
 adapter-written session index.
 """
 

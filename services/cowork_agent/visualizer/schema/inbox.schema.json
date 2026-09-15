@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/inbox.schema.json",
-  "title": "xo inbox (~/.quirq/inbox.json)",
+  "title": "xo inbox (~/.quirq/inbox/inbox.json)",
   "description": "Information that arrived in the workspace, its seen/done state, and the feeder cursors. Written by the inbox service (services/inbox/) and hand-editable: unknown keys at the top level and per item survive a rewrite, items without a valid id or title are dropped, an invalid status becomes new.",
   "type": "object",
   "additionalProperties": true,
@@ -87,6 +87,7 @@
         "title":      { "type": "string", "minLength": 1, "maxLength": 300 },
         "body":       { "type": "string", "maxLength": 4000, "default": "" },
         "project_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_:\\-\\.]{1,200}$" },
+        "pid": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,64}$", "description": "The project's pid from .xo/project.json, set with project_id; null for items without a project and for items written before it was recorded." },
         "link": {
           "type": ["object", "null"],
           "description": "Where the Open action goes. Unknown keys are dropped; an empty object becomes null.",

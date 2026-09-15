@@ -94,10 +94,10 @@ class _Base(unittest.TestCase):
                 "url": f"https://mail.google.com/mail/u/0/#all/{key}", "toolkit": toolkit, **extra}
 
     def inbox(self) -> dict:
-        return json.loads((self.root / ".quirq" / "inbox.json").read_text(encoding="utf-8"))
+        return json.loads((self.root / ".quirq" / "inbox" / "inbox.json").read_text(encoding="utf-8"))
 
     def write_inbox(self, doc: dict) -> None:
-        path = self.root / ".quirq" / "inbox.json"
+        path = self.root / ".quirq" / "inbox" / "inbox.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc), encoding="utf-8")
 

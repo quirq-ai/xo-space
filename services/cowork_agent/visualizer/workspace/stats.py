@@ -1,5 +1,5 @@
 """
-``~/.quirq/workspace/stats.json`` — workspace stats = sum of every project's
+``~/.quirq/cache/stats.json`` — workspace stats = sum of every project's
 runtime ``stats.json``.
 """
 

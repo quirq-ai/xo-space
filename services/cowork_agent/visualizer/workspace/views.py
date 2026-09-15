@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from services.cowork_agent.project_layout import (
     workspace_runtime_dir,
+    workspace_timeline_path,
     workspace_xo_dir,
 )
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
@@ -54,14 +55,14 @@ def refresh_seconds() -> float:
 
 
 def view_path(name: str) -> Path:
-    """The file one view is written to, under ``~/.quirq/workspace/``."""
+    """The file one view is written to, under ``~/.quirq/cache/``."""
     if name not in VIEWS:
         raise ValueError(f"unknown view {name!r}")
     return workspace_runtime_dir() / _VIEW_FILENAMES.get(name, f"{name}.json")
 
 
 def graph_path() -> Path:
-    """``~/.quirq/workspace/graph.json`` — the derived d3 graph."""
+    """``~/.quirq/cache/graph.json`` — the derived d3 graph."""
     return view_path("space")
 
 
@@ -102,7 +103,7 @@ def _relocate_history(src: Path) -> Optional[str]:
     try:
         if not src.is_file():
             return None
-        dst = workspace_runtime_dir() / src.name
+        dst = workspace_timeline_path().parent / src.name
         if dst.exists():
             src.unlink()
             return f"{src.name} (superseded)"
@@ -174,7 +175,7 @@ def scaffold() -> None:
         path = view_path(name)
         if not path.exists():
             # write_json_atomic creates the parent, which is
-            # ~/.quirq/workspace/ on a machine that has never built one.
+            # ~/.quirq/cache/ on a machine that has never built one.
             write_json_atomic(path, {"schema": 1, "generated_at": None, name: None})
 
 

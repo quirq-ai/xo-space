@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "toolkit": "gmail",
+  "enabled": true,
+  "interval_s": 900,
+  "collectors": [
+    "unread"
+  ]
+}

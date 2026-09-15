@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from utils.runtime_env import quirq_state_dir
+from utils.runtime_env import logs_dir, quirq_state_dir
 
 log = logging.getLogger(__name__)
 
@@ -192,7 +192,14 @@ def _default_command_log_path() -> Path | None:
     if not _default_command_logging_enabled():
         return None
     override = (os.getenv("QUIRQ_COMMAND_LOG_PATH", "") or "").strip()
-    return Path(override).expanduser() if override else quirq_state_dir() / "commands.log"
+    if override:
+        return Path(override).expanduser()
+    # commands.log sat at the top of the state root before it had folders.
+    # Keep appending there until the server's boot migration moves it, so a
+    # command run before that, or by an older server sharing the root, never
+    # splits the log in two.
+    new, old = logs_dir() / "commands.log", quirq_state_dir() / "commands.log"
+    return old if old.is_file() and not new.exists() else new
 
 
 def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:

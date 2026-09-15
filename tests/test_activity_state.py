@@ -15,10 +15,10 @@ from routers.cowork_agent.bff import workspace_visualizer
 
 
 class ActivityStateTests(unittest.TestCase):
-    def test_paths_live_under_watcher_state_and_normalize_project_id(self) -> None:
-        watcher_root = Path("/machine/.quirq/watcher")
+    def test_paths_live_under_the_cache_and_normalize_project_id(self) -> None:
+        watcher_root = Path("/machine/.quirq/cache")
 
-        with patch.object(state, "watcher_state_dir", return_value=watcher_root):
+        with patch.object(state, "cache_dir", return_value=watcher_root):
             project_path = state.project_activity_path("../My Project")
             workspace_path = state.workspace_activity_path()
 
@@ -31,7 +31,7 @@ class ActivityStateTests(unittest.TestCase):
     def test_activity_sink_writes_only_the_explicit_machine_local_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            target = root / ".quirq" / "watcher" / "activity" / "projects" / "demo.json"
+            target = root / ".quirq" / "cache" / "activity" / "projects" / "demo.json"
             legacy = root / "xo-projects" / "demo" / ".xo" / "activity.json"
             rows = [{
                 "session_id": "session-1",
@@ -89,7 +89,7 @@ class ActivityStateTests(unittest.TestCase):
             root = Path(tmp)
             projects_root = root / "xo-projects"
             legacy_path = projects_root / "demo" / ".xo" / "activity.json"
-            machine_path = root / ".quirq" / "watcher" / "activity" / "projects" / "demo.json"
+            machine_path = root / ".quirq" / "cache" / "activity" / "projects" / "demo.json"
             legacy_path.parent.mkdir(parents=True)
             machine_path.parent.mkdir(parents=True)
             legacy_path.write_text(

@@ -48,7 +48,7 @@ class InboxDocsTests(unittest.TestCase):
             [d for d in quirq_catalog._WORKSPACE_OUTPUT_CONTRACT if d["path"] == "inbox.json"], [],
             "no longer a workspace .xo file",
         )
-        text = quirq_catalog._description("inbox.json", is_dir=False)
+        text = quirq_catalog._description("inbox/inbox.json", is_dir=False)
         self.assertIn("Inbox", text)
         self.assertIn("cursors", text)
 
@@ -66,7 +66,7 @@ class InboxDocsTests(unittest.TestCase):
             "DELETE /api/inbox/{id}",
         ):
             self.assertIn(route, readme)
-        self.assertIn("`~/.quirq/inbox.json`", readme)
+        self.assertIn("`~/.quirq/inbox/inbox.json`", readme)
         self.assertNotIn(".xo/inbox.json", readme)
         self.assertIn("`services/inbox/store.py`", readme)
         for feeder in ("`timeline`", "`todos`", "`sharing`"):
@@ -111,7 +111,7 @@ class InboxDocsTests(unittest.TestCase):
         services_block = dev[start:dev.index("  cowork_agent/  ", start)]
         self.assertIn("  inbox/", services_block)
         self.assertNotIn("cowork_agent/inbox", dev)
-        self.assertIn("~/.quirq/inbox.json", dev)
+        self.assertIn("~/.quirq/inbox/inbox.json", dev)
         self.assertIn("bff/inbox.py", dev)
 
 
@@ -170,7 +170,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         self.assertIn("`register_new_events_listener`", sec)
         self.assertIn('flags it `"auto_closed": true`', flat)
         self.assertIn("never undone by a feeder", flat)
-        self.assertIn("`~/.quirq/inbox.json`", sec)
+        self.assertIn("`~/.quirq/inbox/inbox.json`", sec)
         self.assertIsNone(DASHES.search(sec))
         for agent in AGENT_NAMES:
             self.assertNotIn(agent, sec)

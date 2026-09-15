@@ -21,6 +21,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
+from services import xo_structure
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 from services.cowork_agent.project_layout import runtime_dir_for_project, xo_dir
@@ -53,9 +54,6 @@ from services.cowork_agent.visualizer.workspace import (
 )
 from services.cowork_agent.visualizer.workspace import (
     stats as ws_stats,
-)
-from services.cowork_agent.visualizer.workspace import (
-    timeline as ws_timeline,
 )
 from services.cowork_agent.visualizer.workspace import (
     projects_json,
@@ -186,22 +184,16 @@ class Watcher:
                     continue
                 sessions_augment.apply(rt, sink_events, legacy_root=x)
                 stats.apply(rt, sink_events, legacy_root=x)
-                timeline_lines = timeline.apply(rt, sink_events)
+                # The Space timeline gets the same rendered lines, tagged.
+                timeline.apply(rt, sink_events, project_id=project_id)
             except Exception:
                 logger.exception("sink batch failed for project %s", project_id)
                 continue
 
-            # Workspace timeline gets the same rendered lines, tagged.
-            if timeline_lines:
-                try:
-                    ws_timeline.apply(timeline_lines, project_id=project_id)
-                except Exception:
-                    logger.exception("workspace timeline failed for %s", project_id)
-
         # 5. Activity sink — driven by presence snapshot, not events.
         # Runs for every project (even those with no events this tick)
         # so a session that exited gets evicted from the machine-local
-        # presence snapshot under ~/.quirq/watcher/activity/.
+        # presence snapshot under ~/.quirq/cache/activity/.
         presence: list[dict] = []
         for src in self.sources:
             try:
@@ -220,6 +212,13 @@ class Watcher:
         project_ids = list_project_ids()
 
         for pid in project_ids:
+            # Every project carries the canonical .xo/, including a folder
+            # cloned by hand straight into the projects root. Additive only,
+            # never raises, and one lstat while the folder's .xo/ is unchanged.
+            try:
+                xo_structure.ensure_xo_structure_if_changed(pid)
+            except Exception:
+                logger.exception("xo structure check failed for %s", pid)
             # Identity fill is idempotent (no-ops once _template is cleared).
             # Running it here — alongside the per-project activity sink that
             # already iterates every known project — closes the gap where a
@@ -283,6 +282,7 @@ class Watcher:
             write_json_atomic(
                 watcher_heartbeat_path(),
                 {
+                    "schema": 1,
                     "last_tick_at": _now_iso(),
                     "tick_count": self.tick_count,
                     "duration_ms": int(

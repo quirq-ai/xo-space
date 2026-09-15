@@ -1,5 +1,5 @@
 """
-``~/.quirq/workspace/sessions/sessions-augment.json`` — union of every
+``~/.quirq/cache/sessions/sessions-augment.json`` — union of every
 project's per-project augment file.
 """
 

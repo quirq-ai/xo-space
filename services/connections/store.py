@@ -53,7 +53,7 @@ from services.cowork_agent.connectors.composio.service import TOOLKITS
 from services.errors import ServiceError
 from services.storage.atomic_write import append_jsonl, write_json_atomic
 from services.storage.flock import locked
-from services.storage.paths import quirq_state_dir
+from services.storage.layout import connections_dir
 from services.storage.reader import read_json, read_jsonl_tail_reverse
 from services.timestamps import EPOCH as _EPOCH, iso, now_iso, parse_ts
 
@@ -96,10 +96,6 @@ def _check_known(toolkit) -> str:
     if _check_toolkit(toolkit) not in TOOLKITS:
         raise ConnectionsError("unknown_toolkit", f"Unknown toolkit {toolkit!r}.", 404)
     return toolkit
-
-
-def connections_dir() -> Path:
-    return quirq_state_dir() / "connections"
 
 
 def connection_dir(toolkit: str) -> Path:

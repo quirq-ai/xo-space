@@ -1,7 +1,7 @@
 """The per-connection files under ``~/.quirq/connections/<toolkit>/``.
 
 Hermetic: QUIRQ_STATE_ROOT (and XO_PROJECTS_ROOT) point into a temp dir, so
-the files and the flock sentinels (``quirq_state_dir()/watcher/locks``) both
+the files and the flock sentinels (``quirq_state_dir()/.locks``) both
 land there. Rotation is exercised by patching ``store._ROTATE_BYTES``, never
 by writing 2 MB."""
 
@@ -100,7 +100,7 @@ class ConfigTests(_Base):
         on_disk = self.read_file("gmail", "config.json")
         self.assertEqual(on_disk["collectors"], ["unread"])
         self.assertEqual(store.read_config("gmail"), doc)
-        self.assertTrue((self.root / ".quirq" / "watcher" / "locks").is_dir(), "flock sentinel stayed in the temp root")
+        self.assertTrue((self.root / ".quirq" / ".locks").is_dir(), "flock sentinel stayed in the temp root")
 
     def test_defaults_per_toolkit(self) -> None:
         self.assertEqual(store.write_config("notion")["collectors"], ["recent_pages"])
@@ -354,7 +354,7 @@ class AccountsTests(_Base):
         self.assertEqual(self.accounts_file(), {"schema": 1, "accounts": {"gmail": entry}})
         self.assertFalse((self.conns() / "gmail").exists(), "a label never creates a toolkit folder")
         self.assertEqual(store.list_configured(), [])
-        self.assertTrue((self.root / ".quirq" / "watcher" / "locks").is_dir(), "flock sentinel stayed in the temp root")
+        self.assertTrue((self.root / ".quirq" / ".locks").is_dir(), "flock sentinel stayed in the temp root")
         # an explicit checked_at, and an unpinned account
         from datetime import datetime, timezone
         entry = store.remember_account("googlecalendar", "cal@example.com", None,

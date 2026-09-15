@@ -409,6 +409,9 @@ class ActivityResponse(_ForbidExtra):
 class TimelineEvent(_ForbidExtra):
     ts: str
     type: str
+    # The project's pid (.xo/project.json), on every line written since the
+    # state root had folders; absent on older lines.
+    pid: Optional[str] = None
     session_id: Optional[str] = None
     runtime: Optional[str] = None
     project_id: Optional[str] = None

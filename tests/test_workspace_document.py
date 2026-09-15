@@ -7,14 +7,14 @@ restart. They are files now, materialised by the watcher and served at
 ``/xo/*.json``.
 
 Since syncplan T14 the view name and the file name are different things. The
-graph is written to ``~/.quirq/workspace/graph.json`` — it is derived state,
+graph is written to ``~/.quirq/cache/graph.json`` — it is derived state,
 and ``<XO root>/.xo/space.json`` is the durable Space record, which could not
 survive sharing a path with a file two unlocked writers rebuild. The route
 still answers ``GET /xo/space.json`` with the graph.
 
 T20 finished that move for the other two. ``dashboard.json`` and
 ``sessions.json`` are derived from the same walk, so all three views now live
-under ``~/.quirq/workspace/`` and ``<XO root>/.xo/`` is left holding only the
+under ``~/.quirq/cache/`` and ``<XO root>/.xo/`` is left holding only the
 documents a clone would want. The pre-T20 copies are swept, because a stale
 derived file in the synced tier is machine-local telemetry that T21 would
 force-include in the backup tarball.
@@ -61,7 +61,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
     def test_each_view_is_its_own_file_in_the_runtime_tier(self) -> None:
         """Separate files, separate schemas — a reader after the session
         telemetry does not parse the 168 KB graph to reach it — and all three
-        of them under ``~/.quirq/workspace/`` since T20.
+        of them under ``~/.quirq/cache/`` (``workspace/`` from T20 until the state root had folders).
 
         The ``<XO root>/.xo/`` glob is the other half of the claim: the views
         used to land there, and after the move the synced tier must be left
@@ -84,7 +84,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
         # T14: the graph is derived, so it lives in the runtime tier and
         # leaves <XO root>/.xo/space.json for the Space record. T20 moved the
         # other two files to sit beside it.
-        self.assertEqual(runtime, Path(tmp) / ".quirq" / "workspace")
+        self.assertEqual(runtime, Path(tmp) / ".quirq" / "cache")
         self.assertEqual(graph, runtime / "graph.json")
         self.assertTrue(graph_written)
         self.assertIn("graph.json", names)
@@ -101,7 +101,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
             _workspace(tmp)
             with patch.dict(os.environ, _env(tmp), clear=False):
                 runtime = project_layout.workspace_runtime_dir()
-                self.assertEqual(runtime, Path(tmp) / ".quirq" / "workspace")
+                self.assertEqual(runtime, Path(tmp) / ".quirq" / "cache")
                 for name in views.VIEWS:
                     self.assertEqual(views.view_path(name).parent, runtime)
                 self.assertEqual(
@@ -242,7 +242,7 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
 
         self.assertEqual(left, ["projects.json", "space.json", "xo.json"])
         # activity.json is named by T20 explicitly: nothing has written it
-        # since workspace_activity_path() moved to ~/.quirq/watcher/activity/.
+        # since workspace_activity_path() moved to ~/.quirq/cache/activity/.
         self.assertIn("activity.json", removed)
         self.assertIn("sessions/", removed)
         # Moved, not unlinked — reported as such so a reader of the log can
@@ -286,7 +286,7 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
             with patch.dict(os.environ, _env(tmp), clear=False):
                 views._SWEPT.discard(str(xo))
                 views.sweep_abandoned(force=True)
-                moved = views.workspace_runtime_dir() / "timeline.jsonl"
+                moved = project_layout.workspace_timeline_path()
                 self.assertTrue(moved.is_file(), "history was dropped, not moved")
                 self.assertIn("2026-01-01T00:00:00Z", moved.read_text(encoding="utf-8"))
                 self.assertFalse((xo / "timeline.jsonl").exists())

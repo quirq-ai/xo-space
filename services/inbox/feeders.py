@@ -93,7 +93,7 @@ def _timeline_item(ev: dict) -> Optional[dict]:
         logger.debug("inbox timeline: skipping event without project_id/type")
         return None
     sid = ev.get("session_id") if isinstance(ev.get("session_id"), str) else ""
-    base = dict(kind=kind, source="timeline", project_id=pid, ts=ts)
+    base = dict(kind=kind, source="timeline", project_id=pid, ts=ts, pid=ev.get("pid"))
     if kind == "session.started":
         if not sid:
             return None

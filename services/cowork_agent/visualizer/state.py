@@ -6,11 +6,11 @@ should put their files under :func:`watcher_state_dir`, not construct
 the path themselves. This keeps the watcher's filesystem layout an
 implementation detail the adapter doesn't need to know.
 
-The dir is also where ``ingest.jsonl_tail.OffsetStore`` keeps its
-file offsets (``offsets.json``), so adapter cursor files, the shared
-offset store, and ephemeral live-presence snapshots live side by side
-— one ``~/.quirq/watcher/`` to clean if you ever want to fully reset
-watcher state.
+The dir is ``~/.quirq/projects/``: ``ingest.jsonl_tail.OffsetStore`` keeps
+``offsets.json`` there and adapter cursor files sit beside it, next to the
+per-project history those positions count, so deleting ``projects/`` resets
+both together and nothing is replayed onto surviving totals. The heartbeat
+and live presence are rebuilt every tick and live under ``~/.quirq/cache/``.
 """
 
 from __future__ import annotations
@@ -18,20 +18,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from services.cowork_agent.helpers import normalize_agent_id
-from services.cowork_agent.local_state import legacy_state_dir, quirq_state_dir
+from services.cowork_agent.local_state import legacy_state_dir
+from services.storage.layout import cache_dir, projects_dir
 
 
 def watcher_state_dir() -> Path:
     """Return the directory where watcher infrastructure (offsets,
     per-source cursors, etc.) persists its state. Created on first
     access by the callers that write into it; not pre-created here so
-    a read-only deployment doesn't unnecessarily mkdir."""
-    return quirq_state_dir() / "watcher"
+    a read-only deployment doesn't unnecessarily mkdir.
+
+    ``~/.quirq/projects/``, beside the history the positions count
+    (``~/.quirq/watcher/`` before the state root had folders)."""
+    return projects_dir()
 
 
 def watcher_heartbeat_path() -> Path:
     """Return the watcher's once-per-tick liveness beat."""
-    return watcher_state_dir() / "heartbeat.json"
+    return cache_dir() / "heartbeat.json"
 
 
 def legacy_watcher_state_dir() -> Path:
@@ -45,7 +49,7 @@ def watcher_activity_dir() -> Path:
     Activity is machine-local and ephemeral, so it deliberately lives
     outside portable ``xo-projects/<id>/.xo/`` metadata.
     """
-    return watcher_state_dir() / "activity"
+    return cache_dir() / "activity"
 
 
 def project_activity_path(project_id: str) -> Path:

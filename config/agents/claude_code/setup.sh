@@ -134,7 +134,7 @@ EOF
 # xo-space's load_dotenv() reads this on import; the Claude CLI is
 # then invoked with the resulting process env. Hosted workspace edits are
 # preserved. Managed local Quirq refreshes the file on every boot so values
-# saved by the Setup tab in ~/.quirq/secrets.env take effect.
+# saved by the Setup tab in ~/.quirq/secrets/secrets.env take effect.
 # ==============================================================
 write_env_file() {
     if [ -f "$ENV_FILE" ] && [ "${QUIRQ_MANAGED_CONTAINER:-false}" != "true" ]; then

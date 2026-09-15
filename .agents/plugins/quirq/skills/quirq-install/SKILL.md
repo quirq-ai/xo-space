@@ -29,7 +29,7 @@ Install Quirq (xo-space) on this machine.
 
 4. Run the official installer **as a background task of this session** —
    it runs the server in its foreground and never returns, and the
-   server's output goes to `<dir>/.quirq/quirq.log`, so the task itself
+   server's output goes to `<dir>/.quirq/logs/quirq.log`, so the task itself
    stays quiet:
 
    ```bash
@@ -40,10 +40,10 @@ Install Quirq (xo-space) on this machine.
    ~5 minutes — the first install builds a Python env and can be slow.
 
 6. On success: report the UI at `http://127.0.0.1:<port>/space/`, the log
-   file at `<dir>/.quirq/quirq.log`, and the config file at
+   file at `<dir>/.quirq/logs/quirq.log`, and the config file at
    `<dir>/xo-space/.env` — and say clearly that the server runs only as
    long as this session (or until the background task is killed); the
    `quirq-start` skill brings it back in a later session.
 
-7. On timeout or failure: show the tail of `<dir>/.quirq/quirq.log`
+7. On timeout or failure: show the tail of `<dir>/.quirq/logs/quirq.log`
    verbatim and stop. Do not retry on your own.

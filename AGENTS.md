@@ -27,7 +27,7 @@
   or builds a swarm URL; `tests/test_swarm_api.py` enforces it.
 - Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free code:
   `config.py` is its only env reader, `service.py` its only router-facing surface,
-  and per-repo bookmarks live under `~/.quirq/project_sharing/`, never in a project's `.xo/`.
+  and per-repo bookmarks live under `~/.quirq/sharing/`, never in a project's `.xo/`.
 
 ## Agent-modular architecture (read before touching core)
 

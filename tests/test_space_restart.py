@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import tempfile
 import time
@@ -24,6 +25,21 @@ from services.cowork_agent import runtime_config
 from utils.commands import CommandResult, run_sync
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _processes_started_in(directory: Path) -> list[int]:
+    """PIDs whose working directory is ``directory``: what a fixture launched there."""
+    target = os.path.realpath(directory)
+    found = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if os.readlink(entry / 'cwd') == target:
+                found.append(int(entry.name))
+        except OSError:
+            continue
+    return found
 
 
 class RestartModeTests(unittest.TestCase):
@@ -197,6 +213,24 @@ class ManagedRestartTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('pgrep'), 'native process manager needs POSIX and pgrep')
 class NativeRestartIntegrationTests(unittest.TestCase):
+    def _stop_everything_started_in(self, root, runner, env):
+        # A restart requested through the API runs on its own runner, which
+        # holds the process lock until the new server is confirmed up. A stop
+        # sent before that is refused, which is how this test used to leave the
+        # restarted server running. Retry until nothing launched from the
+        # fixture is left, then kill whatever still is.
+        deadline = time.monotonic() + 30
+        while True:
+            run_sync([str(runner), 'stop'], cwd=root, env=env, timeout=20)
+            if not _processes_started_in(root) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        for pid in _processes_started_in(root):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def test_native_route_restarts_with_a_new_process(self):
         # A miniature install with private pid/lock/log files. Intercept the
         # broad CLI sweep for safety and assert API restart never calls it.
@@ -226,8 +260,11 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                 'app = FastAPI()\napp.include_router(router)\n'
                 f'uvicorn.run(app, host="127.0.0.1", port={port}, log_level="error")\n'
             )
+            # Private roots: the fixture server must never read or write the
+            # developer's real state root or projects.
             env = {**os.environ, 'PORT': str(port), 'HOST': '127.0.0.1',
-                   'QUIRQ_MANAGED_CONTAINER': '0', 'UVICORN_RELOAD': '0'}
+                   'QUIRQ_MANAGED_CONTAINER': '0', 'UVICORN_RELOAD': '0',
+                   'QUIRQ_STATE_ROOT': str(root / 'state'), 'XO_PROJECTS_ROOT': str(root / 'projects')}
             def status():
                 try:
                     return httpx.get(f'http://127.0.0.1:{port}/space/server/status', timeout=0.5).json()
@@ -272,4 +309,5 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                 self.assertEqual(after['restart_mode'], 'native')
                 self.assertEqual(sweep_file.read_text(), sweeps, 'API restart entered the broad CLI sweep')
             finally:
-                run_sync([str(runner), 'stop'], cwd=root, env=env, timeout=20)
+                self._stop_everything_started_in(root, runner, env)
+            self.assertEqual(_processes_started_in(root), [], 'a server started by this test is still running')

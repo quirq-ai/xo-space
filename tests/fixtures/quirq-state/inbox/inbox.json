@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "updated_at": "2026-01-01T09:30:00Z",
+  "sources": {
+    "timeline": {
+      "enabled": true,
+      "types": [
+        "session.started",
+        "todo.added"
+      ]
+    },
+    "todos": {
+      "enabled": true,
+      "statuses": [
+        "blocked"
+      ]
+    },
+    "sharing": {
+      "enabled": true
+    },
+    "issues": {
+      "enabled": true,
+      "states": [
+        "open"
+      ]
+    },
+    "connections": {
+      "enabled": true
+    }
+  },
+  "cursors": {
+    "timeline": "2026-01-01T09:07:00Z"
+  },
+  "items": [
+    {
+      "id": "c0ffee01",
+      "ts": "2026-01-01T09:30:00Z",
+      "source": "api",
+      "kind": "question",
+      "title": "Which license should sample-project use?",
+      "body": "MIT or Apache-2.0?",
+      "project_id": "sample-project",
+      "pid": "00000000-0000-4000-8000-000000000000",
+      "link": null,
+      "url": null,
+      "status": "seen",
+      "key": null
+    },
+    {
+      "id": "e5f6a7b8",
+      "ts": "2026-01-01T09:06:00Z",
+      "source": "timeline",
+      "kind": "todo.added",
+      "title": "Todo added in sample-project: Write the README",
+      "body": "",
+      "project_id": "sample-project",
+      "pid": "00000000-0000-4000-8000-000000000000",
+      "link": {
+        "view": "projects",
+        "project": "sample-project"
+      },
+      "url": null,
+      "status": "new",
+      "key": "timeline:todo.added:_project:a1b2c3d4"
+    }
+  ]
+}

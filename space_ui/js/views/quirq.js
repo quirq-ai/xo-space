@@ -153,43 +153,48 @@ function renderCatalog(data){
 function renderStorageMap(data){
   const tree=data.tree||[];
   const projectOutputs=data.project_outputs||{};
-  const machineFiles=tree.filter(item=>item.kind==='file'&&item.path.startsWith('watcher/'));
+  const machineFiles=tree.filter(item=>item.kind==='file'&&(
+    /^projects\/[^/]*offsets\.json$/.test(item.path)
+    ||item.path.startsWith('.locks/')
+    ||item.path.startsWith('cache/activity/')
+    ||item.path==='cache/heartbeat.json'
+  ));
   const sourceCursorFiles=machineFiles.filter(item=>
     /(^|\/)[^/]+-offsets\.json$/.test(item.path)
   );
-  const lockFiles=machineFiles.filter(item=>item.path.startsWith('watcher/locks/'));
-  const projectActivityFiles=machineFiles.filter(item=>item.path.startsWith('watcher/activity/projects/'));
-  const workspaceActivityFiles=machineFiles.filter(item=>item.path==='watcher/activity/workspace.json');
+  const lockFiles=machineFiles.filter(item=>item.path.startsWith('.locks/'));
+  const projectActivityFiles=machineFiles.filter(item=>item.path.startsWith('cache/activity/projects/'));
+  const workspaceActivityFiles=machineFiles.filter(item=>item.path==='cache/activity/workspace.json');
   const machineContract=[
     {
-      path:'offsets.json',
+      path:'projects/offsets.json',
       purpose:'Shared JSONL byte and inode cursors; source paths remain hidden here.',
       status:(data.watcher?.offsets_present?'1 present · ':'0 present · ')+(data.watcher?.tracked_files||0)+' tracked'
     },
     {
-      path:'*-offsets.json',
+      path:'projects/*-offsets.json',
       purpose:'Optional per-source cursor stores for runtimes that do not tail JSONL.',
       status:sourceCursorFiles.length+' present'
     },
     {
-      path:'locks/*.lock',
+      path:'.locks/*.lock',
       purpose:'Advisory writer coordination; lock filenames use safe path hashes.',
       status:lockFiles.length+' present'
     },
     {
-      path:'activity/projects/<id>.json',
+      path:'cache/activity/projects/<id>.json',
       purpose:'Ephemeral “open now” heartbeat for each discovered XO project.',
       status:projectActivityFiles.length+' present'
     },
     {
-      path:'activity/workspace.json',
+      path:'cache/activity/workspace.json',
       purpose:'Workspace union of live project sessions, refreshed every tick.',
       status:workspaceActivityFiles.length+' present'
     }
   ];
   const projectRows=projectOutputs.project_contract||[];
   const workspaceRows=projectOutputs.workspace_contract||[];
-  const machineRoot=(data.root?.host_path||data.root?.container_path||'~/.quirq')+'/watcher';
+  const machineRoot=(data.root?.host_path||data.root?.container_path||'~/.quirq');
   const xoRoot=projectOutputs.root?.host_path||projectOutputs.root?.container_path||'XO_PROJECTS_ROOT';
   const machineList=machineContract.map(item=>storageRow(
     item.path,
@@ -223,7 +228,7 @@ function renderStorageMap(data){
   const legacy=projectOutputs.legacy_activity_files||0;
   root.querySelector('#quirq-legacy-note').innerHTML=legacy
     ?'<b>'+legacy+' legacy .xo/activity.json file'+(legacy===1?'':'s')+'</b> found. '+esc(projectOutputs.legacy_activity_note)
-    :'Current live activity is correctly stored only under <code>.quirq/watcher/activity</code>.';
+    :'Current live activity is correctly stored only under <code>.quirq/cache/activity</code>.';
 }
 
 function storageRow(path,purpose,status,tone){

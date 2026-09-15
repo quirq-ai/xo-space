@@ -1,4 +1,4 @@
-"""Per-repo relay state, machine-local, under ~/.quirq/project_sharing/.
+"""Per-repo relay state, machine-local, under ~/.quirq/sharing/.
 
 One JSON file per repo identity holding two independent fields:
 `last_reported` (publish step: last remote SHA announced to swarm) and
@@ -19,16 +19,22 @@ import os
 import re
 from pathlib import Path
 
-from services.cowork_agent.local_state import quirq_state_dir
+from services.storage.layout import sharing_dir
 
 log = logging.getLogger(__name__)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
+#: On-disk revision of a bookmark and of a removal marker.
+STATE_SCHEMA = 1
+
 
 def relay_state_dir() -> Path:
-    """~/.quirq/project_sharing (or under QUIRQ_STATE_ROOT). Not pre-created here."""
-    return quirq_state_dir() / "project_sharing"
+    """~/.quirq/sharing (or under QUIRQ_STATE_ROOT). Not pre-created here.
+
+    Earlier releases used ~/.quirq/project_sharing/; the boot migration in
+    services/storage/layout.py moves it."""
+    return sharing_dir()
 
 
 def state_path(repo: str) -> Path:
@@ -59,7 +65,8 @@ def _read(repo: str) -> dict:
 def _write(repo: str, data: dict) -> None:
     path = state_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    stamped = {"schema": STATE_SCHEMA, **{k: v for k, v in data.items() if k != "schema"}}
+    path.write_text(json.dumps(stamped) + "\n", encoding="utf-8")
 
 
 def load_last_reported(repo: str) -> str | None:
@@ -133,7 +140,7 @@ def mark_removed(repo: str, root: Path) -> None:
     except FileExistsError:
         return
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"repo": repo, "projects_root": str(Path(root).resolve())}, handle)
+        json.dump({"schema": STATE_SCHEMA, "repo": repo, "projects_root": str(Path(root).resolve())}, handle)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())

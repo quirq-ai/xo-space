@@ -5,8 +5,9 @@ Secrets and runtime controls are deliberately separate:
 * ``secrets.env`` contains write-only credentials.
 * ``runtime.env`` contains a small allowlisted set of non-secret controls.
 
-Both live below the machine-local Quirq state root, never inside a project's
-portable ``.xo`` directory. Runtime controls are read at process startup, so
+Both live below the machine-local Quirq state root (``settings/runtime.env``
+and ``secrets/secrets.env``), never inside a project's portable ``.xo``
+directory. Runtime controls are read at process startup, so
 changing them produces a truthful ``restart_required`` state instead of
 pretending import-time configuration changed live.
 """
@@ -21,7 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.local_state import quirq_state_dir
+from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
+from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 
@@ -73,6 +76,22 @@ def native_restart_pid() -> int | None:
     return None
 
 
+def _secret_entries() -> list[dict]:
+    """The secret store's entries. Until the lifespan moves ``secrets.env``
+    into ``secrets/``, the configured new home may not exist yet; the old file
+    is read then, so the startup fingerprint matches the moved file's and the
+    move alone never reports a restart."""
+    new_home = secrets_dir() / "secrets.env"
+    old = quirq_state_dir() / "secrets.env"
+    configured = Path(agent_env.ENV_FILE)
+    if configured == new_home and not configured.exists() and old.is_file():
+        try:
+            return agent_env.parse_env_file(old.read_text(encoding="utf-8"))
+        except OSError:
+            return []
+    return load_env_entries()
+
+
 def _secrets_fingerprint() -> str:
     """Hash the write-only secret store without retaining or returning values."""
     digest = hashlib.sha256()
@@ -81,7 +100,7 @@ def _secrets_fingerprint() -> str:
             str(entry.get("key") or "").strip(),
             str(entry.get("value") or ""),
         )
-        for entry in load_env_entries()
+        for entry in _secret_entries()
         if str(entry.get("key") or "").strip()
     )
     for key, value in rows:
@@ -99,11 +118,11 @@ def runtime_config_file() -> Path:
     configured = (os.getenv("QUIRQ_RUNTIME_FILE", "") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return quirq_state_dir() / "runtime.env"
+    return settings_dir() / "runtime.env"
 
 
 def root_config_file() -> Path:
-    return quirq_state_dir() / "roots.env"
+    return settings_dir() / "roots.env"
 
 
 def _parse_env_file(
@@ -641,7 +660,7 @@ def runtime_status() -> dict[str, Any]:
             "secrets_file": _path_status(
                 Path(
                     (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
-                    or state_root / "secrets.env"
+                    or secrets_dir() / "secrets.env"
                 )
             ),
         },

@@ -119,7 +119,7 @@ It stops the running server first (the `cowork-api.sh` daemon included),
 brings down the local Docker compose project when the compose launcher was
 used, and then removes the managed checkout (venv, `.env`, and the
 `rclone.conf` / `mcp-tokens.json` connector credentials with it), the
-`.quirq` state root — `roots.env` is read first, so a root moved from the
+`.quirq` state root (all but `secrets/`, which keeps your credentials) — `roots.env` is read first, so a root moved from the
 Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the
 derived telemetry DB in `~/.argus`, and a legacy `~/.xo-cowork` migration
 source. It ends with a summary of exactly what was removed and what was
@@ -183,7 +183,7 @@ self-contained and you can move or delete it as one folder.
 | `.` | Your projects root — each project is a subdirectory with its own `.xo` |
 | `./xo-space` | The Quirq source checkout |
 | `./xo-space/venv` | Python environment, made by uv — it has no `pip`. To add packages (e.g. the test suite): `~/.local/bin/uv pip install --python ./xo-space/venv/bin/python -r <file>`; uv itself lives in `~/.local/bin`, which the installer does not add to your shell's PATH |
-| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state, including `quirq.log` (server output) and `commands.log` (every external command Quirq runs). If you move the Quirq state root from Setup, both logs move with it. |
+| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state, including `logs/quirq.log` (server output) and `logs/commands.log` (every external command Quirq runs). If you move the Quirq state root from Setup, both logs move with it. |
 
 Open the **Setup** tab after installation. It shows the paths in use, CLI
 readiness, native session file counts, the active chat backend, and the watcher
@@ -244,7 +244,7 @@ Precedence, highest first:
 The Setup tab's `runtime.env` and `secrets.env` are loaded with `override=True`
 and beat all three, so the tab stays authoritative for whatever it manages.
 
-Roots are also read from `roots.env` in the state root, which the Setup tab
+Roots are also read from `settings/roots.env` in the state root, which the Setup tab
 writes. Explicit environment variables take precedence over it.
 
 Quirq refuses to start if the projects root and state root are nested inside

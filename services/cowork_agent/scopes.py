@@ -84,6 +84,9 @@ class _XoReader:
             return None
         return self._runtime_root / relative
 
+    def _timeline_path(self) -> Optional[Path]:
+        return self._runtime_path(self._TIMELINE)
+
     def _read_runtime_json(self, relative: str) -> Optional[dict]:
         path = self._runtime_path(relative)
         return visualizer_reader.read_json(path) if path is not None else None
@@ -110,7 +113,7 @@ class _XoReader:
         before: Optional[str] = None,
         types: Optional[frozenset[str]] = None,
     ) -> list[dict]:
-        path = self._runtime_path(self._TIMELINE)
+        path = self._timeline_path()
         if path is None:
             return []
         return visualizer_reader.read_jsonl_tail_reverse(
@@ -346,20 +349,20 @@ class VisualizerScope(_XoReader):
                 "this project has no runtime home, so a claim cannot be "
                 "recorded; it is created on first write and could not be.",
             )
-        return workitem_claims.claim_workitem(path, workitem_id, **kwargs)
+        return workitem_claims.claim_workitem(path, workitem_id, project_id=self.project_id, **kwargs)
 
     def release_workitem(self, workitem_id: str) -> bool:
         path = self._claims_path()
         if path is None:
             return False
-        return workitem_claims.release_workitem(path, workitem_id)
+        return workitem_claims.release_workitem(path, workitem_id, project_id=self.project_id)
 
     def release_workitem_quiet(self, workitem_id: str) -> bool:
         """The implicit release — closing or deleting a workitem."""
         path = self._claims_path()
         if path is None:
             return False
-        return workitem_claims.release_workitem_quiet(path, workitem_id)
+        return workitem_claims.release_workitem_quiet(path, workitem_id, project_id=self.project_id)
 
     def in_progress_workitem_ids(self) -> frozenset[str]:
         """The workitems an agent is working **right now**, derived."""
@@ -414,10 +417,15 @@ class WorkspaceVisualizerScope(_XoReader):
     def __init__(self) -> None:
         self._xo_root = project_layout.workspace_xo_dir()
         # T20 split this tier the way T19 split the per-project one: the
-        # derived rollups left ``<XO root>/.xo/`` for ``~/.quirq/workspace/``
+        # derived rollups left ``<XO root>/.xo/`` for ``~/.quirq/cache/``
         # and only the records stayed behind.
         self._runtime_root = project_layout.workspace_runtime_dir()
         self._activity_path = watcher_state.workspace_activity_path()
+
+    def _timeline_path(self) -> Optional[Path]:
+        """The Space timeline is history, so it is not in ``cache/`` with the
+        other workspace views: ``~/.quirq/projects/timeline.jsonl``."""
+        return project_layout.workspace_timeline_path()
 
     def _read_session_index(self) -> dict[str, dict]:
         """The workspace union, which is one whole file."""

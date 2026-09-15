@@ -19,11 +19,13 @@ processes dates >= last-synced watermark.
 import asyncio
 import json
 import os
+import shutil
 import datetime
 from collections import defaultdict
 
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.engine.usage_loader import load_usage_module
+from services.storage.layout import usage_dir
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -35,9 +37,11 @@ from services.cowork_agent.engine.usage_loader import load_usage_module
 # triggers a full backfill for the new agent rather than reusing the
 # previous agent's truncation point.
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_WATERMARK_PATH = os.path.join(
-    _REPO_DIR, "data", get_active_agent().name, "usage_sync_state.json"
-)
+_AGENT = get_active_agent().name
+_DEFAULT_WATERMARK_PATH = str(usage_dir() / f"{_AGENT}.json")
+# Earlier releases kept the watermark inside the checkout, where a fresh
+# clone or reinstall lost it and re-sent all usage. Adopted on first read.
+_LEGACY_WATERMARK_PATH = os.path.join(_REPO_DIR, "data", _AGENT, "usage_sync_state.json")
 SYNC_STATE_FILE = os.getenv("USAGE_SYNC_STATE_FILE", _DEFAULT_WATERMARK_PATH)
 
 SYNC_HOUR_UTC = int(os.getenv("USAGE_SYNC_HOUR_UTC", "2"))
@@ -69,7 +73,23 @@ def _debug_log(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _adopt_legacy_watermark() -> None:
+    """Move the watermark from the checkout into ~/.quirq/usage/ once.
+
+    Only for the default path: an explicit USAGE_SYNC_STATE_FILE wins."""
+    if SYNC_STATE_FILE != _DEFAULT_WATERMARK_PATH:
+        return
+    if os.path.exists(SYNC_STATE_FILE) or not os.path.isfile(_LEGACY_WATERMARK_PATH):
+        return
+    try:
+        os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
+        shutil.move(_LEGACY_WATERMARK_PATH, SYNC_STATE_FILE)
+    except OSError as exc:
+        print(f"{_timestamp_prefix()} usage_sync: could not move the old watermark: {exc}")
+
+
 def _load_sync_state() -> dict:
+    _adopt_legacy_watermark()
     if os.path.exists(SYNC_STATE_FILE):
         try:
             with open(SYNC_STATE_FILE) as f:
@@ -79,11 +99,20 @@ def _load_sync_state() -> dict:
     return {}
 
 
+#: On-disk revision of the watermark file.
+SYNC_STATE_SCHEMA = 1
+
+
+def _now_z() -> str:
+    """ISO-8601 UTC ending in ``Z``, the one time format data files use."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _save_sync_state(state: dict) -> None:
     os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
     tmp = SYNC_STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(state, f)
+        json.dump({"schema": SYNC_STATE_SCHEMA, **{k: v for k, v in state.items() if k != "schema"}}, f)
     os.replace(tmp, SYNC_STATE_FILE)
 
 
@@ -128,7 +157,7 @@ def _record_key_probe(state: dict, outcome: str, status: int | None) -> None:
     state["key_probe"] = {
         "outcome": outcome,
         "status": status,
-        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "at": _now_z(),
     }
     try:
         _save_sync_state(state)
@@ -185,7 +214,7 @@ async def _post_records(records: list, daily: dict | None, state: dict) -> None:
             latest_date = max(daily.keys())
             watermark = min(yesterday, latest_date)
             state["last_synced_date"] = watermark
-            state["last_sync_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            state["last_sync_at"] = _now_z()
             _save_sync_state(state)
     elif res.offline:
         print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {res.detail}")

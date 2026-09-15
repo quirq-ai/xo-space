@@ -1,0 +1,9 @@
+{
+  "schema": 2,
+  "pid": "00000000-0000-4000-8000-000000000000",
+  "name": "sample-project",
+  "owner_user_id": "local",
+  "created_at": "2026-01-01T00:00:00Z",
+  "display_name": "sample-project",
+  "description": ""
+}

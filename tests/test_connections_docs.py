@@ -66,7 +66,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         self.assertEqual(d("state.json", is_dir=False), "Installation and onboarding state")
         self.assertEqual(
             d("projects/x/events.jsonl", is_dir=False),
-            "Project runtime state; re-derivable, never synced",
+            "Project history and runtime state, keyed by pid; never synced",
         )
         self.assertEqual(d("connectionsx", is_dir=True), "Directory")
         for rel, is_dir in (("connections", True), ("connections/gmail", True),

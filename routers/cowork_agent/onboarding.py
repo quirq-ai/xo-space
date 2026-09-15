@@ -3,7 +3,7 @@ Onboarding state — persisted on disk so the first-run flow does not
 re-trigger when the user opens xo-cowork in a new browser, incognito
 window, or after clearing localStorage.
 
-Storage: ~/.quirq/state.json (see
+Storage: ~/.quirq/settings/onboarding.json (see
 `services/cowork_agent/xo_cowork_state.py`).
 """
 
@@ -29,6 +29,6 @@ def onboarding_status():
 def onboarding_complete():
     update_state({
         "onboarding_completed": True,
-        "onboarding_completed_at": datetime.now(timezone.utc).isoformat(),
+        "onboarding_completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     })
     return {"ok": True}

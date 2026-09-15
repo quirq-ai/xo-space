@@ -22,8 +22,8 @@ services:
       # The Composio store defaults to ~/.config/composio, which is not mounted —
       # point it inside the state root so proxy tokens survive `compose down`.
       COMPOSIO_STORE_DIR: "/root/.quirq/composio"
-      QUIRQ_RUNTIME_FILE: "/root/.quirq/runtime.env"
-      QUIRQ_SECRETS_FILE: "/root/.quirq/secrets.env"
+      QUIRQ_RUNTIME_FILE: "/root/.quirq/settings/runtime.env"
+      QUIRQ_SECRETS_FILE: "/root/.quirq/secrets/secrets.env"
       QUIRQ_WATCHER_SOURCE_MODE: "all"
       QUIRQ_HOST_HOME: "${HOME}"
       QUIRQ_HOST_PROJECTS_ROOT: "${XO_PROJECTS_ROOT:-${HOME}/xo-projects}"

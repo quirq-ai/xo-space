@@ -13,7 +13,7 @@ from typing import Any, Optional
 import services.cowork_agent.adapters as _adapters_pkg
 from services.cowork_agent import coder_identity
 from services.cowork_agent.local_state import quirq_state_dir
-from services.cowork_agent.project_layout import workspace_xo_dir, xo_projects_root
+from services.cowork_agent.project_layout import workspace_runtime_dir, workspace_xo_dir, xo_projects_root
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 from services.cowork_agent.visualizer.atomic_write import (
     CorruptDocumentError,
@@ -239,7 +239,7 @@ def _apply_body() -> bool:
         current = None
 
     # What sits at this path on an existing install is the *old graph* (a
-    # derived document that now lives in ~/.quirq/workspace/graph.json), or a
+    # derived document that now lives in ~/.quirq/cache/graph.json), or a
     # scaffold placeholder, or an unparseable file.
     legacy = not isinstance(current, dict) or current.get("schema") != SCHEMA
 
@@ -258,7 +258,7 @@ def _apply_body() -> bool:
                 "%s held a pre-T14 document (the derived graph now lives at "
                 "%s); replacing it with the Space record",
                 target,
-                quirq_state_dir() / "workspace" / "graph.json",
+                workspace_runtime_dir() / "graph.json",
             )
         write_json_atomic(target, values)
         return True

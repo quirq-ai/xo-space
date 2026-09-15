@@ -103,5 +103,6 @@ def utc_timestamp_id() -> str:
 
 
 def utc_iso_now() -> str:
-    """ISO-8601 UTC timestamp used in commit messages and manifest.created_at."""
-    return datetime.now(timezone.utc).isoformat()
+    """ISO-8601 UTC timestamp used in commit messages and manifest.created_at,
+    ending in ``Z`` like every other stamp XO Space writes."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

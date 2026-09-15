@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "updated_at": "2026-01-01T09:15:00Z",
+  "open_sessions": [
+    {
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "runtime": "sample_agent",
+      "agent": "sample-model",
+      "user_id": "local",
+      "opened_at": "2026-01-01T09:00:00Z",
+      "last_activity_at": "2026-01-01T09:14:00Z",
+      "project_id": "sample-project"
+    }
+  ]
+}

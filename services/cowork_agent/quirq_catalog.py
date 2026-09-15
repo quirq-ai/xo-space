@@ -19,9 +19,16 @@ from services.cowork_agent.local_state import quirq_state_dir
 from services.cowork_agent.project_layout import (
     runtime_dir_for_project,
     workspace_runtime_dir,
+    workspace_timeline_path,
     xo_projects_root,
 )
 from services.cowork_agent.registry.agent_env import load_env_entries
+from services.cowork_agent.visualizer.state import (
+    watcher_activity_dir,
+    watcher_heartbeat_path,
+    watcher_state_dir,
+)
+from services.storage.layout import settings_dir
 from services.cowork_agent.runtime_config import (
     configured_settings,
     effective_settings,
@@ -40,6 +47,7 @@ _SENSITIVE_NAMES = frozenset({"secrets.env"})
 # ``tier`` says which root a per-project file hangs off.
 _TIER_SYNCED = "synced"
 _TIER_RUNTIME = "runtime"
+_TIER_HISTORY = "history"
 
 _PROJECT_OUTPUT_CONTRACT = (
     {
@@ -131,7 +139,8 @@ _PROJECT_OUTPUT_CONTRACT = (
 # The workspace tier splits the same way the per-project one does, and for the
 # same reason (syncplan T20): the two records a clone would want stay in ``<XO
 # root>/.xo/``, every rollup the watcher recomputes from a walk of the projects
-# root moved to ``~/.quirq/workspace/``.
+# root moved to ``~/.quirq/cache/``, and the Space timeline, history nothing
+# rebuilds, to ``~/.quirq/projects/timeline.jsonl``.
 _WORKSPACE_OUTPUT_CONTRACT = (
     {
         "path": "space.json",
@@ -198,7 +207,7 @@ _WORKSPACE_OUTPUT_CONTRACT = (
     },
     {
         "path": "timeline.jsonl",
-        "tier": _TIER_RUNTIME,
+        "tier": _TIER_HISTORY,
         "producer": "Watcher workspace rollup",
         "purpose": "Multiplexed project timelines tagged with project id",
         "used_by": "Workspace timeline APIs",
@@ -221,17 +230,26 @@ def _read_json(path: Path) -> Any:
 
 def _description(relative_path: str, *, is_dir: bool) -> str:
     if is_dir:
-        if relative_path == "watcher":
-            return "Watcher cursors, locks, and live presence"
-        if relative_path == "watcher/activity":
+        if relative_path == ".locks":
+            return "Advisory write locks; internal, recreated on demand"
+        if relative_path == "cache":
+            return "Safe to delete: derived workspace views, the heartbeat and live presence, rebuilt automatically"
+        if relative_path == "cache/activity":
             return "Ephemeral activity snapshots"
-        if relative_path == "watcher/activity/projects":
+        if relative_path == "cache/activity/projects":
             return "Per-project live presence"
-        # The two runtime tiers (syncplan T19/T20).
         if relative_path == "projects":
-            return "Per-project runtime tier, keyed by project.json:pid"
-        if relative_path == "workspace":
-            return "Derived workspace views, recomputed from a walk of the projects root"
+            return "Per-project history keyed by project.json:pid, the Space timeline, and the watcher's reading positions"
+        if relative_path == "inbox":
+            return "The Space Inbox"
+        if relative_path == "sharing":
+            return "Shared repositories this machine has seen: bookmarks and removal markers"
+        if relative_path == "usage":
+            return "How far usage has been reported to XO, one file per agent"
+        if relative_path == "settings":
+            return "Space-wide choices: saved roots, runtime controls, onboarding"
+        if relative_path == "secrets":
+            return "Credentials; owner-only, values are never shown"
         if relative_path.endswith("/sessionslist.d"):
             return "Session index shards, one file per session"
         # The two runtime-tier workitems directories, for the same reason the
@@ -252,7 +270,9 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Saved manual commands and schedules, execution state, results, and logs"
         if relative_path == "scheduler/runs":
             return "Append-only command run history, one JSONL file per command"
-        if relative_path == "scheduler/logs":
+        if relative_path == "logs":
+            return "Safe to delete: server output, the command log, and saved command output"
+        if relative_path in ("scheduler/logs", "logs/scheduler"):
             return "Full command output logs, retained when a definition is deleted"
         if (
             relative_path.startswith("connections/")
@@ -261,7 +281,7 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Polled connection: what to collect, how often, and what arrived"
         return "Directory"
     name = Path(relative_path).name
-    if relative_path == "inbox.json":
+    if relative_path == "inbox/inbox.json":
         return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
     if relative_path == "scheduler/jobs.json":
         return "Saved commands: arguments, environment overrides, descriptions, timeouts, and optional intervals"
@@ -269,8 +289,20 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Command execution state: next run, running since, and last result"
     if relative_path.startswith("scheduler/runs/"):
         return "Run timestamps, trigger, status, return code, duration, and output tail"
-    if relative_path.startswith("scheduler/logs/"):
+    if relative_path.startswith(("scheduler/logs/", "logs/scheduler/")):
         return "Appended command output through the command logger"
+    if relative_path.startswith("logs/commands.log"):
+        return "Every external command Quirq runs: bounded, redacted, rotated"
+    if relative_path == "logs/quirq.log":
+        return "Server output from the installer"
+    if relative_path.startswith("sharing/removed/"):
+        return "A person's decision to remove this shared repository from this projects root"
+    if relative_path.startswith("sharing/"):
+        return "Bookmark for one shared repository: last reported commit and ledger cursor"
+    if relative_path.startswith("usage/"):
+        return "The last day of usage reported to XO for one agent"
+    if relative_path.startswith(".locks/"):
+        return "Advisory lock sentinel; internal"
     # Files under connections/ come first: the generic state.json rule below
     # would otherwise claim a connection's state.json, and the events rule is
     # scoped here so an unrelated events* file elsewhere keeps its own label.
@@ -281,6 +313,10 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Poll cursors and the last result"
         if name.startswith("events"):
             return "Collected items, append-only, rotated at 2 MB"
+    if relative_path == "secrets/token.json":
+        return "Connector credentials (GitHub, Vercel); values are never shown"
+    if relative_path == "settings/onboarding.json":
+        return "Installation and onboarding state"
     if name == "state.json":
         return "Installation and onboarding state"
     if name == "runtime.env":
@@ -291,15 +327,17 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Write-only credentials; values are masked"
     if name == "offsets.json":
         return "Watcher read cursors; source paths are hidden"
-    if relative_path == "watcher/heartbeat.json":
+    if relative_path == "cache/heartbeat.json":
         return "Watcher liveness beat, rewritten every tick"
-    if relative_path == "watcher/activity/workspace.json":
+    if relative_path == "cache/activity/workspace.json":
         return "Workspace-wide live presence"
-    if relative_path.startswith("watcher/activity/projects/"):
+    if relative_path.startswith("cache/activity/projects/"):
         return "Project live presence"
+    if relative_path.startswith("projects/timeline") and relative_path.count("/") == 1:
+        return "The Space timeline: every project's events tagged with project_id; history, never synced"
     if relative_path.startswith("projects/"):
-        return "Project runtime state; re-derivable, never synced"
-    if relative_path.startswith("workspace/"):
+        return "Project history and runtime state, keyed by pid; never synced"
+    if relative_path.startswith("cache/"):
         return "Derived workspace view; rebuilt from a workspace walk"
     return "Machine-local state file"
 
@@ -348,7 +386,7 @@ def _tree(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "kind": "directory" if is_dir else "file",
                 "size_bytes": size,
                 "modified_at": _iso_time(stat.st_mtime),
-                "sensitive": path.name in _SENSITIVE_NAMES,
+                "sensitive": path.name in _SENSITIVE_NAMES or relative.startswith("secrets/"),
                 "description": _description(relative, is_dir=is_dir),
             }
         )
@@ -360,8 +398,8 @@ def _tree(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     }
 
 
-def _activity(root: Path) -> dict[str, Any]:
-    activity_root = root / "watcher" / "activity"
+def _activity() -> dict[str, Any]:
+    activity_root = watcher_activity_dir()
     workspace = _read_json(activity_root / "workspace.json")
     workspace_sessions = (
         workspace.get("open_sessions", [])
@@ -431,8 +469,9 @@ def _stale_after_seconds(interval_seconds: Any) -> float:
     return max(_HEARTBEAT_STALE_FLOOR_S, interval * _MISSED_TICKS_BEFORE_DEAD)
 
 
-def _watcher(root: Path) -> dict[str, Any]:
-    offsets = _read_json(root / "watcher" / "offsets.json")
+def _watcher() -> dict[str, Any]:
+    offsets_path = watcher_state_dir() / "offsets.json"
+    offsets = _read_json(offsets_path)
     if isinstance(offsets, dict):
         tracked_files = len(offsets)
     elif isinstance(offsets, list):
@@ -444,7 +483,7 @@ def _watcher(root: Path) -> dict[str, Any]:
 
     # Observed liveness. Everything above this line is *configuration*: it
     # says what the watcher was asked to do, never whether the loop is running.
-    heartbeat_path = root / "watcher" / "heartbeat.json"
+    heartbeat_path = watcher_heartbeat_path()
     heartbeat = _read_json(heartbeat_path)
     if not isinstance(heartbeat, dict):
         heartbeat = {}
@@ -468,7 +507,7 @@ def _watcher(root: Path) -> dict[str, Any]:
         "source_mode": applied["watcher_source_mode"],
         "configured_enabled": configured["watcher_enabled"],
         "tracked_files": tracked_files,
-        "offsets_present": (root / "watcher" / "offsets.json").is_file(),
+        "offsets_present": offsets_path.is_file(),
         "heartbeat_present": heartbeat_path.is_file(),
         "last_tick_at": last_tick_at if isinstance(last_tick_at, str) else None,
         "tick_count": (
@@ -489,7 +528,8 @@ def _watcher(root: Path) -> dict[str, Any]:
 
 
 def _install_state(root: Path) -> dict[str, Any]:
-    raw = _read_json(root / "state.json")
+    path = settings_dir() / "onboarding.json"
+    raw = _read_json(path if path.is_file() else root / "state.json")
     if not isinstance(raw, dict):
         return {"present": False}
     return {
@@ -633,6 +673,7 @@ def _project_outputs() -> dict[str, Any]:
 
     workspace_xo = projects_root / ".xo"
     workspace_runtime = workspace_runtime_dir()
+    workspace_history = workspace_timeline_path().parent
     workspace_synced_dirs = [workspace_xo] if workspace_xo.is_dir() else []
     workspace_runtime_dirs = (
         [workspace_runtime] if workspace_runtime.is_dir() else []
@@ -661,17 +702,19 @@ def _project_outputs() -> dict[str, Any]:
             {
                 _TIER_SYNCED: workspace_synced_dirs,
                 _TIER_RUNTIME: workspace_runtime_dirs,
+                _TIER_HISTORY: [workspace_history] if workspace_history.is_dir() else [],
             },
             _WORKSPACE_OUTPUT_CONTRACT,
             prefixes={
                 _TIER_SYNCED: "<XO root>/.xo",
-                _TIER_RUNTIME: "<quirq state>/workspace",
+                _TIER_RUNTIME: "<quirq state>/cache",
+                _TIER_HISTORY: "<quirq state>/projects",
             },
         ),
         "legacy_activity_files": legacy_count,
         "legacy_activity_note": (
             ".xo/activity.json is legacy. Current presence is written only "
-            "under .quirq/watcher/activity."
+            "under .quirq/cache/activity."
         ),
     }
 
@@ -700,8 +743,8 @@ def quirq_catalog() -> dict[str, Any]:
         },
         "totals": totals,
         "tree": tree,
-        "activity": _activity(root),
-        "watcher": _watcher(root),
+        "activity": _activity(),
+        "watcher": _watcher(),
         "runtime": configured_settings(),
         "credentials": [
             {"key": key, "configured": True, "value": "••••••"}

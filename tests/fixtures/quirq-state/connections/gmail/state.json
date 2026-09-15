@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "last_poll_at": "2026-01-01T09:15:00Z",
+  "last_ok_at": "2026-01-01T09:15:00Z",
+  "last_error": null,
+  "cursors": {
+    "unread": {
+      "seen": [
+        "msg-example-1"
+      ]
+    }
+  },
+  "events_total": 1
+}

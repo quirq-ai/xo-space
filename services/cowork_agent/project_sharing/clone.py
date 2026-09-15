@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from services.cowork_agent import project_layout
+from services.xo_structure import ensure_xo_structure
 
 from . import config, git_ops, state
 from .repo_identity import normalize_repo
@@ -180,8 +181,11 @@ async def clone_shared_repo(repo: str, *, automatic: bool = True) -> CloneResult
     except OSError as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         return CloneResult("error", dirname, f"could not move clone into place: {exc}", had_token)
+    # The same .xo/ as every other project. Only .xo/ is touched and nothing
+    # raises: the clone is already in place.
+    ensure_xo_structure(dirname)
     # Remember that XO Space, not the user, put this folder here (survives restarts).
-    state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat())
+    state.save_cloned_at(repo, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     if not automatic:
         state.clear_removed(repo, root)
     return CloneResult("cloned", dirname, "", had_token)

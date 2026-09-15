@@ -8,7 +8,7 @@ Three traps this file works around, all easy to reintroduce:
 
 - `service._write_store` and `action_prefs.bulk_set` take a lock via
   `visualizer.flock.locked`, which places its sentinel under
-  `quirq_state_dir()/watcher/locks/`: the developer's real `~/.quirq` unless
+  `quirq_state_dir()/.locks/`: the developer's real `~/.quirq` unless
   `QUIRQ_STATE_ROOT` points elsewhere. It is patched below.
 - `identity._TOKEN_TTL_SECONDS` and `session_identity._SESSION_TTL` are evaluated
   at import, so `patch.dict(os.environ, ...)` cannot move them. Patch the

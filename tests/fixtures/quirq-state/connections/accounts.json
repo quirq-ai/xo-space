@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "accounts": {
+    "gmail": {
+      "label": "you@example.com",
+      "connected_account_id": "ca_example",
+      "checked_at": "2026-01-01T08:00:00Z"
+    }
+  }
+}
