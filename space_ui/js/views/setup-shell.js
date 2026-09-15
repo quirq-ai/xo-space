@@ -1,5 +1,5 @@
 /* Setup layout only. Section IDs and labels are shared with navigation. */
-import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260916-jobs1';
+import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260916-jobs2';
 
 export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
@@ -95,7 +95,7 @@ export function renderSetupShell(root){
           <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Jobs</h2>
             <p>A job is a saved command that runs on this Space’s machine. <b>Scheduled</b> jobs run on their own, on the schedule you choose. <b>Manual</b> jobs wait until you click <b>Run now</b>. <b>Results</b> shows each run’s output.</p>
             <p>Logs: <code>~/.quirq/logs/scheduler/&lt;job-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;job-id&gt;.jsonl</code><br>These are the default paths. Results shows the exact log path for your Space.</p></header>
-          <section class="setup-card setup-commands" id="setup-commands" aria-label="Jobs"></section>
+          <div class="setup-commands" id="setup-commands"></div>
         </section>
 
         <section class="setup-panel" id="setup-panel-server" aria-labelledby="setup-server-title" hidden>

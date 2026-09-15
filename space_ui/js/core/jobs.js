@@ -95,6 +95,43 @@ export function scheduleToFields(choice,now=new Date()){
   return{error:'Choose how often the job runs.'};
 }
 
+/* "09:00" in the browser's local time. */
+export const clockTime=date=>hhmm(date);
+
+/* Where the first run lands for {every_seconds, first_run_at}: the anchor if
+   it is still ahead, else the next slot on its grid; without an anchor, one
+   interval after now (the moment of saving). This is the scheduler's own
+   first-slot rule, used here only to preview runs before saving. */
+function firstSlot(fields,now){
+  const every=Number(fields?.every_seconds)*1000;
+  if(!(every>0))return null;
+  if(!fields.first_run_at)return now.getTime()+every;
+  const anchor=Date.parse(fields.first_run_at);
+  if(Number.isNaN(anchor))return null;
+  return anchor>=now.getTime()?anchor:anchor+every*(Math.floor((now.getTime()-anchor)/every)+1);
+}
+
+/* The next `count` run times. */
+export function upcomingRuns(fields,now=new Date(),count=3){
+  const first=firstSlot(fields,now),every=Number(fields?.every_seconds)*1000;
+  return first==null?[]:Array.from({length:count},(_,i)=>new Date(first+i*every));
+}
+
+/* One entry per local day from today: how many runs fall on it and the first
+   of them. Counted arithmetically, so an every-second job costs the same as a
+   weekly one; local midnights keep 23- and 25-hour days right. */
+export function runsPerDay(fields,now=new Date(),days=7){
+  const first=firstSlot(fields,now),every=Number(fields?.every_seconds)*1000;
+  return Array.from({length:days},(_,i)=>{
+    const date=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i);
+    if(first==null)return{date,count:0,first:null};
+    const end=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i+1).getTime();
+    const from=Math.max(0,Math.ceil((date.getTime()-first)/every));
+    const count=Math.max(0,Math.ceil((end-first)/every)-from);
+    return{date,count,first:count?new Date(first+from*every):null};
+  });
+}
+
 /* A saved job → the form choice that reproduces it, or null for Manual. The
    upcoming slot (next_run) is read before the anchor, so the local time shown
    is today's, even when the anchor sits on the other side of a DST change. */

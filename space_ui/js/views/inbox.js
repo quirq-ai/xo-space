@@ -16,7 +16,7 @@ import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs1';
+import {describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs2';
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 
 const dtfmt=iso=>{

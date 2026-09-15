@@ -1,12 +1,13 @@
 /* Setup's Jobs panel uses the scheduler's definitions, executor and history.
    A Manual job has no interval; a Scheduled job's plain-language schedule is
-   translated to every_seconds/first_run_at by core/jobs.js. Nothing is seeded
-   or executed on mount. */
+   translated to every_seconds/first_run_at by core/jobs.js. The editor is its
+   own card above the list, and shows what sets the chosen kind apart first.
+   Nothing is seeded or executed on mount. */
 import {apiFetch,API_BASE} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {UNITS,WEEKDAYS,describeChoice,describeSchedule,durationText,isScheduled,jobToSchedule,
-  scheduleToFields,splitDuration,statusText,utcOffset} from '../core/jobs.js?v=20260916-jobs1';
+import {UNITS,WEEKDAYS,clockTime,describeChoice,describeSchedule,durationText,isScheduled,jobToSchedule,
+  runsPerDay,scheduleToFields,splitDuration,statusText,upcomingRuns,utcOffset} from '../core/jobs.js?v=20260916-jobs2';
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const path=id=>'/api/schedules/'+encodeURIComponent(id);
@@ -16,10 +17,22 @@ const createEndpoint=()=>new URL(API_BASE+'/api/schedules',location.href).href;
 const DEFAULT_TIMEOUT_SECONDS=300;
 const TIMEOUT_UNITS=['hours','minutes','seconds'];
 
+const icon=paths=>`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const ICONS={
+  custom:icon('<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>'),
+  hourly:icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  daily:icon('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  weekly:icon('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>'),
+  manual:icon('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/>'),
+};
+const PRESETS=[['custom','Every…','Minutes, hours or days'],['hourly','Hourly','At a minute past each hour'],
+  ['daily','Daily','At a time each day'],['weekly','Weekly','On one day each week']];
+
 const localTime=value=>{
   const d=new Date(value);
   return Number.isNaN(d.getTime())?String(value):d.toLocaleString([],{dateStyle:'medium',timeStyle:'short'});
 };
+const shortTime=d=>d.toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 
 function agentPrompt(){
   return `---
@@ -55,27 +68,31 @@ export function mountCommands(root){
   let editingAnchor=null;
   const busy=new Set();
   root.innerHTML=`
-    <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3>Your jobs</h3>
-      <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding jobs with an agent" aria-describedby="command-help-tip">i</button>
-        <span id="command-help-tip" role="tooltip" hidden>Copy a short skill for your agent, then describe the jobs you want and it adds them here through /api/schedules.</span></span></div>
-      <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-primary" id="command-add">New job</button></div></div>
-    <div class="setup-command-body">
-      <p class="setup-command-endpoint"><span>Create job</span><code>POST ${esc(createEndpoint())}</code></p>
-      <span id="command-prompt-status" class="setup-command-copy-status" role="status"></span>
-      <div id="command-prompt-fallback" class="setup-command-prompt" hidden>
-        <label for="command-prompt-text">Agent prompt — select and copy</label>
-        <textarea id="command-prompt-text" readonly rows="8" spellcheck="false"></textarea>
-        <button type="button" class="setup-secondary" id="command-prompt-close">Close</button>
-      </div>
-      <div class="setup-form-error" id="command-error" role="alert" hidden></div>
-      <form id="command-form" class="setup-command-form" novalidate hidden>
-        <h3 id="command-form-title">New job</h3>
+    <section class="setup-card setup-job-editor" id="command-editor" aria-labelledby="command-form-title" hidden>
+      <div class="setup-card-head"><h3 id="command-form-title">New job</h3>
+        <button type="button" class="setup-job-close" id="command-close" aria-label="Close without saving">✕</button></div>
+      <form id="command-form" class="setup-command-form" novalidate>
         <fieldset class="setup-job-kind">
           <legend>What kind of job is this?</legend>
           <label class="setup-job-kind-option"><input type="radio" name="kind" value="scheduled"><span><b>Scheduled</b><small>Runs on its own, on a schedule you choose.</small></span></label>
           <label class="setup-job-kind-option"><input type="radio" name="kind" value="manual"><span><b>Manual</b><small>Saved for later. Runs only when you click Run now.</small></span></label>
         </fieldset>
+        <fieldset id="command-schedule" class="setup-job-section" hidden>
+          <legend class="setup-job-heading">When should it run?</legend>
+          <div class="setup-job-presets">${PRESETS.map(([value,label,hint])=>`<label class="setup-job-preset"><input type="radio" name="repeat" value="${value}"><span class="setup-job-icon">${ICONS[value]}</span><span><b>${label}</b><small>${hint}</small></span></label>`).join('')}</div>
+          <div class="setup-job-detail" data-repeat="custom"><span>Every</span><input name="every" type="number" min="1" step="1" inputmode="numeric" value="30" aria-label="Repeat every"><select name="unit" aria-label="Repeat unit"><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option><option value="seconds">seconds</option></select></div>
+          <div class="setup-job-detail" data-repeat="hourly"><span>At minute</span><input name="minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="0" aria-label="Minute past the hour"><span>past each hour</span></div>
+          <div class="setup-job-detail" data-repeat="daily"><span>At</span><input name="dailyTime" type="time" value="09:00" aria-label="Time of day"></div>
+          <div class="setup-job-detail" data-repeat="weekly"><span>On</span><select name="weekday" aria-label="Day of the week">${WEEKDAYS.map((day,index)=>`<option value="${index}">${day}</option>`).join('')}</select><span>at</span><input name="weeklyTime" type="time" value="09:00" aria-label="Time on that day"><small>or pick a day below</small></div>
+          <div class="setup-job-week" id="command-week" role="group" aria-label="Runs over the next 7 days"></div>
+          <p id="command-schedule-preview" class="setup-job-preview" aria-live="polite"></p>
+          <p id="command-next-runs" class="setup-job-next"></p>
+          <small>Times are in your time zone (UTC${utcOffset()}). A job keeps a fixed interval, so a daily time can move by an hour when daylight saving starts or ends. Scheduled jobs run only while <b>Update activity automatically</b> is on in Intelligence layer.</small>
+        </fieldset>
+        <div id="command-manual" class="setup-job-manual" hidden>${ICONS.manual}<div><b>No schedule</b>
+          <p>It waits for you. Click <b>Run now</b> on this job, here or in Inbox → Jobs, whenever you want it to run.</p></div></div>
         <div id="command-fields" class="setup-job-fields" hidden>
+          <h4 class="setup-job-heading">What should it run?</h4>
           <label for="command-name">Name</label>
           <input id="command-name" name="name" autocomplete="off" placeholder="Nightly tests">
           <small>Up to 64 letters, numbers, spaces, dots, dashes or underscores.</small>
@@ -87,72 +104,105 @@ export function mountCommands(root){
           <label for="command-cwd">Run in folder (optional)</label>
           <input id="command-cwd" name="cwd" spellcheck="false" placeholder="/home/me/project">
           <small>An absolute path on this Space's machine. Leave it blank to use the server's own folder.</small>
-          <fieldset id="command-schedule" class="setup-job-schedule">
-            <legend>How often?</legend>
-            <label class="setup-job-option"><input type="radio" name="repeat" value="custom"><span>Every</span><input name="every" type="number" min="1" step="1" inputmode="numeric" value="30" aria-label="Repeat every"><select name="unit" aria-label="Repeat unit"><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option><option value="seconds">seconds</option></select></label>
-            <label class="setup-job-option"><input type="radio" name="repeat" value="hourly"><span>Every hour, at minute</span><input name="minute" type="number" min="0" max="59" step="1" inputmode="numeric" value="0" aria-label="Minute past the hour"></label>
-            <label class="setup-job-option"><input type="radio" name="repeat" value="daily"><span>Every day at</span><input name="dailyTime" type="time" value="09:00" aria-label="Time of day"></label>
-            <label class="setup-job-option"><input type="radio" name="repeat" value="weekly"><span>Every week on</span><select name="weekday" aria-label="Day of the week">${WEEKDAYS.map((day,index)=>`<option value="${index}">${day}</option>`).join('')}</select><span>at</span><input name="weeklyTime" type="time" value="09:00" aria-label="Time on that day"></label>
-            <p id="command-schedule-preview" class="setup-job-preview" aria-live="polite"></p>
-            <small>Times are in your time zone (UTC${utcOffset()}). A job keeps a fixed interval, so a daily time can move by an hour when daylight saving starts or ends. Scheduled jobs run only while <b>Update activity automatically</b> is on in Intelligence layer.</small>
-          </fieldset>
           <label for="command-timeout">Stop it if a run takes longer than</label>
           <div class="setup-job-inline"><input id="command-timeout" name="timeout" type="number" min="0" step="any" inputmode="decimal"><select name="timeoutUnit" aria-label="Time limit unit"><option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option></select></div>
           <small>A run still going at that point is stopped and marked Timed out.</small>
         </div>
+        <div class="setup-form-error" id="command-error" role="alert" hidden></div>
         <div class="setup-actions">
           <button class="setup-primary" id="command-save" type="submit">Save job</button>
           <button class="setup-secondary" id="command-cancel" type="button">Cancel</button>
         </div>
       </form>
-      <div id="command-list"><div class="setup-empty">Loading jobs…</div></div>
-    </div>
+    </section>
+    <section class="setup-card" aria-labelledby="command-list-title">
+      <div class="setup-card-head setup-command-head"><div class="setup-command-heading"><h3 id="command-list-title">Your jobs</h3>
+        <span class="setup-command-help"><button type="button" id="command-help" aria-label="About adding jobs with an agent" aria-describedby="command-help-tip">i</button>
+          <span id="command-help-tip" role="tooltip" hidden>Copy a short skill for your agent, then describe the jobs you want and it adds them here through /api/schedules.</span></span></div>
+        <div class="setup-command-tools"><button type="button" class="setup-secondary" id="command-copy-prompt">Copy agent prompt</button><button type="button" class="setup-primary" id="command-add">New job</button></div></div>
+      <div class="setup-command-body">
+        <p class="setup-command-endpoint"><span>Create job</span><code>POST ${esc(createEndpoint())}</code></p>
+        <span id="command-prompt-status" class="setup-command-copy-status" role="status"></span>
+        <div id="command-prompt-fallback" class="setup-command-prompt" hidden>
+          <label for="command-prompt-text">Agent prompt — select and copy</label>
+          <textarea id="command-prompt-text" readonly rows="8" spellcheck="false"></textarea>
+          <button type="button" class="setup-secondary" id="command-prompt-close">Close</button>
+        </div>
+        <div class="setup-form-error" id="command-list-error" role="alert" hidden></div>
+        <div id="command-list"><div class="setup-empty">Loading jobs…</div></div>
+      </div>
+    </section>
 `;
+  const editor=root.querySelector('#command-editor');
   const form=root.querySelector('#command-form');
   const error=root.querySelector('#command-error');
+  const listError=root.querySelector('#command-list-error');
   const list=root.querySelector('#command-list');
   const fields=root.querySelector('#command-fields');
   const schedule=root.querySelector('#command-schedule');
+  const manual=root.querySelector('#command-manual');
+  const details=[...root.querySelectorAll('.setup-job-detail')];
+  const week=root.querySelector('#command-week');
   const preview=root.querySelector('#command-schedule-preview');
+  const nextRuns=root.querySelector('#command-next-runs');
   const field=name=>form.elements.namedItem(name);
   const kind=()=>field('kind').value;
   const setRadio=(name,value)=>{const input=form.querySelector(`input[name="${name}"][value="${value}"]`);if(input)input.checked=true;};
+  /* Form problems show in the editor card; list and run problems in the list card. */
   function showError(message){error.textContent=message||'';error.hidden=!message;}
+  function showListError(message){listError.textContent=message||'';listError.hidden=!message;}
 
   function scheduleChoice(){
     const repeat=field('repeat').value;
     return {kind:repeat,every:field('every').value,unit:field('unit').value,minute:field('minute').value,
       weekday:field('weekday').value,time:field(repeat==='weekly'?'weeklyTime':'dailyTime').value,anchor:editingAnchor};
   }
-  /* The preview says in words what will be saved, before anything is sent. */
+  /* The preview says in words what will be saved, and the week strip shows
+     where the runs land, before anything is sent. On Weekly the strip's days
+     are buttons that pick the day. */
   function syncPreview(){
-    if(kind()!=='scheduled'){preview.textContent='';return;}
+    const clear=()=>{nextRuns.textContent='';week.innerHTML='';};
+    if(kind()!=='scheduled'){preview.textContent='';clear();return;}
     const choice=scheduleChoice(),out=scheduleToFields(choice);
     preview.classList.toggle('is-error',Boolean(out.error));
-    if(out.error){preview.textContent=out.error;return;}
+    if(out.error){preview.textContent=out.error;clear();return;}
+    const now=new Date(),unanchored=choice.kind==='custom'&&!choice.anchor;
     const first=choice.kind==='custom'
       ?(choice.anchor?'It keeps its current run times.':'First run '+durationText(choice.every,choice.unit)+' after you save.')
       :'First run: '+localTime(out.first_run_at)+'.';
     preview.textContent='→ '+describeChoice(choice)+'. '+first;
+    nextRuns.textContent='Next runs'+(unanchored?' if saved now':'')+': '+upcomingRuns(out,now,3).map(shortTime).join(' · ');
+    const picking=choice.kind==='weekly';
+    const focused=week.contains(document.activeElement)?document.activeElement.dataset.weekday:null;
+    week.innerHTML=runsPerDay(out,now,7).map((day,index)=>{
+      const weekday=day.date.getDay();
+      const detail=day.count===0?'—':day.count===1?clockTime(day.first):day.count+' runs';
+      const inner=`<span>${index===0?'Today':WEEKDAYS[weekday].slice(0,3)}</span><b>${day.date.getDate()}</b><small>${detail}</small>`;
+      const cls='setup-job-day'+(day.count?' has-runs':'');
+      return picking
+        ?`<button type="button" class="${cls}" data-weekday="${weekday}" aria-pressed="${String(weekday)===choice.weekday}" aria-label="Run on ${WEEKDAYS[weekday]}s">${inner}</button>`
+        :`<div class="${cls}">${inner}</div>`;
+    }).join('');
+    if(focused!=null)week.querySelector(`[data-weekday="${focused}"]`)?.focus();
   }
-  /* Nothing but the type choice shows until a type is picked. */
+  /* Nothing but the kind choice shows until a kind is picked; then the part
+     that differs (schedule, or the no-schedule note) comes first. */
   function syncForm(){
     const chosen=kind();
     fields.hidden=!chosen;
     schedule.hidden=chosen!=='scheduled';
+    manual.hidden=chosen!=='manual';
+    const repeat=field('repeat').value;
+    for(const detail of details)detail.hidden=detail.dataset.repeat!==repeat;
     syncPreview();
   }
-  form.addEventListener('change',event=>{
-    const wasHidden=fields.hidden;
-    syncForm();
-    if(event.target.name==='kind'&&wasHidden&&!fields.hidden)field('name').focus();
-  });
+  form.addEventListener('change',syncForm);
   form.addEventListener('input',syncPreview);
-  /* Typing into an option's own inputs selects that option. */
-  schedule.addEventListener('focusin',event=>{
-    if(event.target.name==='repeat')return;
-    const radio=event.target.closest('.setup-job-option')?.querySelector('input[name="repeat"]');
-    if(radio&&!radio.checked){radio.checked=true;syncPreview();}
+  week.addEventListener('click',event=>{
+    const day=event.target.closest('[data-weekday]');
+    if(!day||saving)return;
+    field('weekday').value=day.dataset.weekday;
+    syncPreview();
   });
 
   const help=root.querySelector('#command-help'),tip=root.querySelector('#command-help-tip');
@@ -227,7 +277,7 @@ export function mountCommands(root){
     for(const {id,res} of results){
       if(res.ok)jobs=jobs.map(job=>job.id===id?res.data:job);
       else if(res.status===404)jobs=jobs.filter(job=>job.id!==id);
-      else showError(res.error);
+      else showListError(res.error);
     }
     render();
   }
@@ -239,14 +289,14 @@ export function mountCommands(root){
     const res=await apiFetch('/api/schedules');
     refreshing=false;
     if(mine===revision){
-      if(!res.ok)showError(res.error);
+      if(!res.ok)showListError(res.error);
       else{jobs=res.data.jobs||[];render();}
     }
     if(refreshQueued){refreshQueued=false;await refresh();}
     else schedulePoll();
   }
 
-  function edit(job=null){
+  function openEditor(job=null){
     if(saving)return;
     editing=job;
     form.reset();
@@ -268,8 +318,12 @@ export function mountCommands(root){
     if(plan?.kind==='daily')field('dailyTime').value=plan.time;
     if(plan?.kind==='weekly'){field('weekday').value=String(plan.weekday);field('weeklyTime').value=plan.time;}
     syncForm();
-    form.hidden=false;
-    (job?field('name'):form.querySelector('input[name="kind"]')).focus();
+    editor.hidden=false;
+    editor.scrollIntoView({block:'start'});
+    (job?field('name'):form.querySelector('input[name="kind"]')).focus({preventScroll:true});
+  }
+  function closeEditor(){
+    editor.hidden=true;editing=null;editingAnchor=null;showError('');
   }
   form.addEventListener('submit',async event=>{
     event.preventDefault();
@@ -294,7 +348,7 @@ export function mountCommands(root){
     const body={name:field('name').value.trim(),description:field('description').value.trim(),command,
       every_seconds:timing.every_seconds,first_run_at:timing.first_run_at,
       enabled:editing?.enabled??true,project_id:editing?.project_id??null};
-    const controls=[...form.elements,root.querySelector('#command-add')];
+    const controls=[...form.elements,root.querySelector('#command-add'),root.querySelector('#command-close')];
     const editingId=editing?.id;
     saving=true;revision++;
     if(editingId)busy.add(editingId);
@@ -309,8 +363,7 @@ export function mountCommands(root){
       if(res.status===409)await refresh();
       return;
     }
-    form.hidden=true;
-    editing=null;editingAnchor=null;
+    closeEditor();
     const saved=res.data;
     jobs=jobs.some(job=>job.id===saved.id)
       ?jobs.map(job=>job.id===saved.id?saved:job):[...jobs,saved];
@@ -326,7 +379,7 @@ export function mountCommands(root){
     const job=jobs.find(item=>item.id===id);
     if(!job||busy.has(id))return;
     const action=button.dataset.commandAction;
-    if(action==='edit'){edit(job);return;}
+    if(action==='edit'){openEditor(job);return;}
     if(action==='runs'){
       await openCommandResults({id,name:job.name});
       return;
@@ -339,21 +392,21 @@ export function mountCommands(root){
     busy.delete(id);
     revision++;
     if(!res.ok){
-      showError(res.error);
+      showListError(res.error);
       toast(res.error);
       render();
       if(res.status===409)await refresh();
       return;
     }
-    showError('');
+    showListError('');
     if(action==='run')jobs=jobs.map(item=>item.id===id?res.data.job:item);
     else{
       jobs=jobs.filter(item=>item.id!==id);
-      if(editing?.id===id){form.hidden=true;editing=null;editingAnchor=null;}
+      if(editing?.id===id)closeEditor();
     }
     render();
   });
-  root.querySelector('#command-add').addEventListener('click',()=>edit());
-  root.querySelector('#command-cancel').addEventListener('click',()=>{if(saving)return;form.hidden=true;editing=null;editingAnchor=null;showError('');});
+  root.querySelector('#command-add').addEventListener('click',()=>openEditor());
+  for(const id of ['#command-cancel','#command-close'])root.querySelector(id).addEventListener('click',()=>{if(!saving)closeEditor();});
   return {refresh};
 }

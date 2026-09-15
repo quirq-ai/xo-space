@@ -133,7 +133,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/setup-identity.js` | Read-only Workspace metadata, verified XO user ID and GitHub account from `/space/setup/status`; no tokens or browser session minting. |
 | `js/core/setup-state.js` | Factual Setup summaries and the next action from runtime configuration; no authentication or ingestion readiness claims. |
 | `js/views/setup-commands.js` | Setup Jobs card: scheduled/manual kind choice, plain-language schedule and time-limit form, Run now, live results and history drawer over `/api/schedules`. |
-| `js/core/jobs.js` | Job vocabulary shared by Setup and Inbox Jobs, with no DOM or network: schedule presets ↔ `every_seconds`/`first_run_at`, schedule and status wording, duration units. |
+| `js/core/jobs.js` | Job vocabulary shared by Setup and Inbox Jobs, with no DOM or network: schedule presets ↔ `every_seconds`/`first_run_at`, upcoming runs and runs per day for the editor's preview, schedule and status wording, duration units. |
 | `js/core/command-results.js` | Shared job results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
 | `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
 | `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
@@ -261,14 +261,18 @@ when a new server instance responds, so every tab loads the updated code.
 The footer still has no process start control: its Start hint copies a terminal
 command. Process restart belongs on Setup.
 
-**Jobs** starts empty. A job is a saved command. **New job** first asks which kind
-it is, and the rest of the form appears after: **Scheduled** runs on its own,
-**Manual** is saved to run only when someone clicks **Run now**. Both take a name,
-optional description, command line or argv JSON, optional folder and a time limit
-(“Stop it if a run takes longer than” N seconds, minutes or hours; 5 minutes for
-a new job). A scheduled job chooses **How often?** in words: every N
-seconds/minutes/hours/days, every hour at a minute, every day at a time, or every
-week on a day at a time. `js/core/jobs.js` translates that into the scheduler's
+**Jobs** starts empty. A job is a saved command. **New job** and **Edit** open a
+separate **New job** card above the **Your jobs** list (✕ or Cancel closes it).
+The card asks which kind the job is before anything else, then shows what sets
+that kind apart first. **Scheduled** (runs on its own) opens **When should it
+run?**: four preset tiles (Every… N seconds/minutes/hours/days, Hourly at a
+minute, Daily at a time, Weekly on a day at a time) with only the chosen tile's
+inputs, a 7-day strip from today marking each day's run time or run count (on
+Weekly, clicking a day picks it), and the next three runs. **Manual** (saved to
+run only when someone clicks **Run now**) shows a “No schedule” panel. **What
+should it run?** follows for both: a name, optional description, command line
+or argv JSON, optional folder and a time limit (“Stop it if a run takes longer
+than” N seconds, minutes or hours; 5 minutes for a new job). `js/core/jobs.js` translates that into the scheduler's
 own fields, so the API is unchanged: `every_seconds`, plus a `first_run_at`
 anchor at the next matching local time with that date's UTC offset (a custom
 interval sends no anchor). A live preview states the schedule and first run

@@ -924,7 +924,7 @@ class ShellTests(unittest.TestCase):
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
         # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
         # with Run now in Inbox) restamped the files it changed.
-        jobs_stamp = "20260916-jobs1"
+        jobs_stamp = "20260916-jobs2"
         for module in ("views/inbox", "views/setup", "views/wiki", "core/command-palette"):
             self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
         for sheet in ("inbox", "setup"):

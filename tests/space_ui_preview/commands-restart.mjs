@@ -184,7 +184,7 @@ try{
   await page.locator('input[name="dailyTime"]').fill('02:00');
   assert.match(await page.locator('#command-schedule-preview').textContent(),/Every day at 02:00\. First run: /);
   await page.locator('#command-save').click();
-  await page.waitForFunction(()=>document.querySelector('#command-form')?.hidden);
+  await page.waitForFunction(()=>document.querySelector('#command-editor')?.hidden);
   const daily=jobs.find(job=>job.id==='job-3');
   assert.equal(daily.every_seconds,86400);
   assert.match(daily.first_run_at,/T02:00:00[+-]\d\d:\d\d$/,'Every day at 02:00 is a local anchor with its offset');
