@@ -17,6 +17,7 @@ the sidebar can list/transcript sessions without going through the API.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
@@ -109,10 +110,19 @@ class HermesAdapter(BaseAgentAdapter):
                 session_key, our_session_id, our_session_id, self._resolve_cwd(project_id)
             )
 
-        profile = self._resolve_profile(
-            agent_id or project_id, None if is_new else native_session_id
-        )
-        gateway_base = self._resolve_gateway_base(profile)
+        from services.cowork_agent.adapters.hermes.project_binding import BindingError
+
+        try:
+            # Binding may run the hermes CLI and the pool may spawn a gateway;
+            # keep both off the event loop.
+            profile = await asyncio.to_thread(
+                self._resolve_profile, agent_id or project_id, None if is_new else native_session_id
+            )
+            gateway_base = await asyncio.to_thread(self._resolve_gateway_base, profile)
+        except BindingError as exc:
+            yield {"type": "error", "error": f"The hermes profile for this project is not ready: {exc}"}
+            yield {"done": True, "native_session_id": None if is_new else native_session_id}
+            return
 
         accumulated: list[str] = []
         resolved = native_session_id
@@ -163,14 +173,13 @@ class HermesAdapter(BaseAgentAdapter):
         A continuation runs in the profile whose state.db owns the session:
         the default gateway would not recognise another profile's
         ``X-Hermes-Session-Id`` and would silently start a fresh session under
-        ``default`` — the cross-profile leak the pool exists to prevent. A new
-        session runs in the profile named like the selected agent/project,
-        when one exists.
+        ``default`` — the cross-profile leak the pool exists to prevent. Any
+        other turn runs in its project's profile, created and pointed at the
+        project folder if needed (``project_binding``); a chat with no project
+        runs in the default profile. Raises ``project_binding.BindingError``.
         """
-        from services.cowork_agent.adapters.hermes.state_db import (
-            find_hermes_profile,
-            list_all_profile_names,
-        )
+        from services.cowork_agent.adapters.hermes.project_binding import ensure_project_profile
+        from services.cowork_agent.adapters.hermes.state_db import find_hermes_profile
 
         if native_session_id:
             try:
@@ -179,13 +188,7 @@ class HermesAdapter(BaseAgentAdapter):
                 owner = None
             if owner:
                 return None if owner == "default" else owner
-        if agent_id and agent_id != "default":
-            try:
-                if agent_id in list_all_profile_names():
-                    return agent_id
-            except Exception:  # noqa: BLE001
-                pass
-        return None
+        return ensure_project_profile(agent_id)
 
     @staticmethod
     def _resolve_gateway_base(profile: str | None) -> str | None:

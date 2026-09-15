@@ -52,7 +52,7 @@ def write_openclaw_config(cfg: dict) -> None:
 # with no roster yet gets ``agents.entries``.
 
 
-def _uses_legacy_list(cfg: dict) -> bool:
+def uses_legacy_list(cfg: dict) -> bool:
     agents = cfg.get("agents")
     return (
         isinstance(agents, dict)
@@ -83,7 +83,7 @@ def with_agent_entries(cfg: dict, entries: list[dict]) -> dict:
     """Return ``cfg`` with its roster replaced by ``entries`` (each carrying
     ``id``), written in the roster form the config already uses."""
     agents_block = dict(cfg.get("agents") or {})
-    if _uses_legacy_list(cfg):
+    if uses_legacy_list(cfg):
         agents_block["list"] = [dict(e) for e in entries]
     else:
         # ``default`` belongs to the legacy list only; entries reject it.
@@ -145,16 +145,26 @@ def _agent_model_to_display(model_value) -> str | None:
     return None
 
 
-def apply_agent_entry(cfg: dict, agent_id: str, name: str, workspace: Path) -> dict:
+def apply_agent_entry(
+    cfg: dict, agent_id: str, name: str, workspace: Path, *, cwd: Path | None = None
+) -> dict:
     """
     Add or update an agent's roster entry like OpenClaw applyAgentConfig (add branch).
     When the roster is empty and the new id is not the default agent, adds the default agent first.
+
+    ``cwd`` is the agent's run directory (``agents.entries.<id>.cwd``, OpenClaw
+    ``resolveAgentRunCwd``): its turns' tools run there and the project context
+    files (``AGENTS.md``) are read from it, while persona files stay in the
+    workspace. It is not written into a legacy ``agents.list`` config, whose
+    OpenClaw release may not accept the key.
     """
     aid = normalize_agent_id(agent_id)
     default_id = resolve_default_agent_id(cfg)
     next_list = [dict(e) for e in list_agent_entries(cfg)]
     idx = find_agent_entry_index(next_list, aid)
     next_entry: dict = {"id": aid, "name": name, "workspace": str(workspace)}
+    if cwd is not None and not uses_legacy_list(cfg):
+        next_entry["cwd"] = str(cwd)
     if idx >= 0:
         next_list[idx] = {**next_list[idx], **next_entry}
     else:

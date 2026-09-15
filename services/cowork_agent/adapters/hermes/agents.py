@@ -17,30 +17,47 @@ ownership iteration for ANY active agent, so they anchor to
 """
 from __future__ import annotations
 
+import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
 from services.cowork_agent.registry.agent_registry import get_agent
 from services.cowork_agent.helpers import normalize_agent_id
+from services.cowork_agent.project_layout import (
+    project_dir_exists,
+    scaffold_project,
+    xo_dir,
+    xo_projects_root,
+)
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+
+_BACKEND = "hermes"
+
+# Record schema for ``<project>/.xo/agent.json`` (docs/syncplan.md §5.4 ·
+# ``visualizer/schema/agent.schema.json``), shared with the CLI backends.
+_SCHEMA_ID = "xo/agent.schema.json"
+_SCHEMA_VERSION = 1
 
 
 def _agent_info(profile_name: str) -> dict:
     """xo-cowork AgentInfo shape for a hermes profile.
 
     Hermes profiles are independent state DBs under
-    ``~/.hermes/profiles/<name>/state.db`` — *not* workspace directories.
-    They don't map to a single project folder, so ``workspace`` stays empty.
-    Frontend routing should read ``metadata.backend`` directly when this
-    agent is selected (don't derive backend from workspaceDirectory for
-    hermes — multiple profiles would collide on the same path).
+    ``~/.hermes/profiles/<name>/state.db``. A profile bound to an xo-project
+    (``project_binding``) reports that project folder, its ``terminal.cwd``,
+    as ``workspace``; other profiles report an empty one. Frontend routing
+    should read ``metadata.backend`` directly when this agent is selected.
 
     ``sessions_count`` is included so the sidebar can show an authoritative
     count without falling back to "loaded so far" pagination grouping
     (which under-counts and bucks everything unknown under "default").
     """
     from services.cowork_agent.adapters.hermes.paths import HERMES_DIR
+
+    from services.cowork_agent.adapters.hermes.project_binding import configured_cwd
 
     hermes_manifest = get_agent("hermes")
     profile_dir = HERMES_DIR if profile_name == "default" else hermes_manifest.agents_dir / profile_name
@@ -70,7 +87,7 @@ def _agent_info(profile_name: str) -> dict:
             "backend": "hermes",
             "hermes_profile": profile_name,
             "display_name": profile_name,
-            "workspace": "",
+            "workspace": (configured_cwd(profile_name) or "") if profile_name != "default" else "",
             "sessions_count": sessions_count,
         },
     }
@@ -233,6 +250,32 @@ def _run_profile_cli(argv: list[str]) -> tuple[int, str]:
     return result.returncode, output
 
 
+def _meta_path(agent_id: str) -> Path:
+    return xo_dir(agent_id) / "agent.json"
+
+
+def _load(agent_id: str) -> dict | None:
+    """The project's agent record (any backend's), or None."""
+    path = _meta_path(agent_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _load_owned(agent_id: str) -> dict | None:
+    """The project's agent record when it is a hermes one."""
+    meta = _load(agent_id)
+    return meta if isinstance(meta, dict) and meta.get("backend") == _BACKEND else None
+
+
+def _write(agent_id: str, data: dict) -> None:
+    """Write the record to ``<project>/.xo/agent.json``, atomically."""
+    write_json_atomic(_meta_path(agent_id), data)
+
+
 def _profile_dir(profile_id: str) -> Path:
     """Return the on-disk path for a hermes profile (used for collision checks)."""
     return get_agent("hermes").agents_dir / profile_id
@@ -242,64 +285,78 @@ def _profile_dir(profile_id: str) -> Path:
 
 
 def list_agents() -> list[dict]:
-    """Sidebar agents: one per hermes profile."""
+    """Sidebar agents, listed the way the CLI backends list them: every
+    xo-project with a hermes agent record. Profiles from before project
+    binding (no xo-project of that name) are listed too, so they stay
+    reachable."""
     from services.cowork_agent.adapters.hermes.state_db import list_all_profile_names
-    return [_agent_info(profile_name) for profile_name in list_all_profile_names()]
+
+    agents: list[dict] = []
+    listed: set[str] = set()
+    root = xo_projects_root()
+    if root.exists():
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.name.startswith(".") or _load_owned(d.name) is None:
+                continue
+            listed.add(d.name)
+            agents.append(_agent_info(d.name))
+    for profile_name in list_all_profile_names():
+        if profile_name in listed or project_dir_exists(profile_name):
+            continue
+        agents.append(_agent_info(profile_name))
+    return agents
 
 
 def create_agent(body) -> dict | JSONResponse:
-    """Create a hermes profile via ``hermes profile create``."""
+    """Create a hermes agent: scaffold its xo-project, bind the profile named
+    like it (``project_binding``), and write the agent record.
+
+    Like the CLI backends, only an existing agent record is a conflict. The
+    project folder or the profile may already exist (another backend's
+    project, or a profile an earlier chat in the project created) and is
+    adopted.
+    """
+    from services.cowork_agent.adapters.hermes.project_binding import BindingError, ensure_project_profile
+
     display_name = body.name.strip()
     agent_id = normalize_agent_id((body.id or body.name).strip())
+    description = (body.description or "").strip()
 
-    # Hermes profiles are managed by the hermes CLI (`hermes profile create`).
-    # Profile id == sidebar bucket name; the on-disk layout is
-    # ``~/.hermes/profiles/<id>/`` with its own state.db once the first chat
-    # happens. We delegate creation to the CLI so future hermes changes (extra
-    # directories, schema bumps) don't drift here.
-    hermes_manifest = get_agent("hermes")
-    profiles_dir = hermes_manifest.agents_dir  # ~/.hermes/profiles
-
-    # Reject collisions with the default profile or an existing on-disk dir.
     if agent_id == "default":
         return JSONResponse(status_code=400, content={"detail": 'Profile id "default" is reserved.'})
-    if profiles_dir.exists() and (profiles_dir / agent_id).is_dir():
-        return JSONResponse(status_code=409, content={"detail": f'Hermes profile "{agent_id}" already exists.'})
+    if _load(agent_id) is not None:
+        return JSONResponse(status_code=409, content={"detail": f'Agent "{agent_id}" already exists.'})
 
-    argv = [hermes_manifest.binary, "profile", "create", agent_id]
     try:
-        result = subprocess.run(
-            argv,
-            cwd=str(hermes_manifest.cwd),
-            capture_output=True,
-            text=True,
-            timeout=hermes_manifest.cli_timeout_seconds,
-        )
-    except FileNotFoundError:
-        return JSONResponse(status_code=500, content={"detail": "hermes CLI not found on PATH"})
-    except subprocess.TimeoutExpired:
-        return JSONResponse(status_code=504, content={"detail": "hermes profile create timed out"})
+        scaffold_project(agent_id, display_name=display_name, description=description)
     except Exception as e:  # noqa: BLE001
-        return JSONResponse(status_code=500, content={"detail": f"hermes profile create failed: {e}"})
-
-    if result.returncode != 0:
-        stderr = (result.stderr or result.stdout or "").strip()[:500]
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"hermes profile create exited {result.returncode}: {stderr}"},
-        )
+        return JSONResponse(status_code=500, content={"detail": f"project scaffold failed: {e}"})
+    try:
+        ensure_project_profile(agent_id)
+    except BindingError as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
 
     # Best-effort: stamp the display name into the profile dir as a
-    # ``.xo_display_name`` sidecar so future frontend renames have a place to
-    # read from. The profile dir is created by the CLI above; if anything in
-    # that chain went sideways, we still surface the AgentInfo so the user sees
-    # the bucket in the sidebar.
+    # ``.xo_display_name`` sidecar, which the hermes-specific views read.
     try:
-        profile_dir = profiles_dir / agent_id
+        profile_dir = _profile_dir(agent_id)
         if profile_dir.is_dir() and display_name and display_name != agent_id:
             (profile_dir / ".xo_display_name").write_text(display_name + "\n")
     except Exception:
         pass
+
+    try:
+        _write(agent_id, {
+            "$schema": _SCHEMA_ID,
+            "schema": _SCHEMA_VERSION,
+            "id": agent_id,
+            "name": display_name,
+            "description": description,
+            "backend": _BACKEND,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"detail": str(e)})
 
     return _agent_info(agent_id)
 
@@ -331,8 +388,18 @@ def patch(agent_id: str, body) -> dict | JSONResponse | None:
     if not body.model_fields_set:
         return _agent_info(aid)
 
+    # A project-bound agent keeps its id, like the CLI backends: a new name is
+    # the record's display name, not a rename of the profile the project runs in.
+    record = _load_owned(aid)
+    if record is not None and (body.name is not None or body.description is not None):
+        if body.name is not None:
+            record["name"] = body.name.strip()
+        if body.description is not None:
+            record["description"] = body.description.strip()
+        _write(aid, record)
+
     new_name = (body.name or "").strip() if body.name is not None else ""
-    if new_name and new_name != aid:
+    if new_name and new_name != aid and record is None:
         new_id = normalize_agent_id(new_name)
         if new_id == "default":
             return JSONResponse(status_code=400, content={"detail": '"default" is reserved.'})

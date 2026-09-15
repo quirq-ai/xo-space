@@ -104,6 +104,9 @@ def list_agents() -> list[dict]:
                 meta = json.loads(meta_path.read_text())
             except Exception:
                 meta = {}
+            owner = meta.get("backend") if isinstance(meta, dict) else None
+            if isinstance(owner, str) and owner and owner != _BACKEND:
+                continue
             agents.append(_agent_info(d.name, meta))
     return agents
 

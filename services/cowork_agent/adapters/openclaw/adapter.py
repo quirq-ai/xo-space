@@ -13,6 +13,7 @@ the row as ``nativeSessionId`` (see ``sessionslist.py``).
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, AsyncIterator
 
@@ -65,6 +66,7 @@ class OpenclawAdapter(BaseAgentAdapter):
         """Streaming chat: yields ``{type: token, token: ...}`` then exactly one
         ``{done: True, native_session_id: ...}``."""
         from services.cowork_agent.adapters.openclaw import agent_db
+        from services.cowork_agent.adapters.openclaw.project_binding import BindingError
         from services.cowork_agent.adapters.openclaw.sessionslist import (
             find_session_row,
             make_session_key,
@@ -95,7 +97,14 @@ class OpenclawAdapter(BaseAgentAdapter):
         else:
             our_session_id = our_session_id or str(uuid.uuid4())
             project_id = agent_id or "default"
-            session_key = make_session_key(self._resolve_openclaw_agent(agent_id), our_session_id)
+            try:
+                # Binding may write openclaw.json; keep it off the event loop.
+                openclaw_agent = await asyncio.to_thread(self._resolve_openclaw_agent, agent_id)
+            except BindingError as exc:
+                yield {"type": "error", "error": f"The OpenClaw agent for this project is not ready: {exc}"}
+                yield {"done": True, "native_session_id": None}
+                return
+            session_key = make_session_key(openclaw_agent, our_session_id)
             write_preliminary_entry(
                 project_id, session_key, our_session_id, self._resolve_cwd(project_id)
             )
@@ -135,23 +144,13 @@ class OpenclawAdapter(BaseAgentAdapter):
 
     @staticmethod
     def _resolve_openclaw_agent(agent_id: str | None) -> str:
-        """The OpenClaw agent a new session runs in: the one named like the
-        selected agent/project when it exists, else the configured default."""
-        from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
-        from services.cowork_agent.adapters.openclaw.store import (
-            find_agent_entry_index,
-            list_agent_entries,
-            load_openclaw_config,
-            resolve_default_agent_id,
-        )
-        from services.cowork_agent.helpers import normalize_agent_id
+        """The OpenClaw agent a new session runs in: its project's agent,
+        added and pointed at the project folder if needed
+        (``project_binding``), or the configured default agent when the chat
+        has no project. Raises ``project_binding.BindingError``."""
+        from services.cowork_agent.adapters.openclaw.project_binding import ensure_project_agent
 
-        cfg = load_openclaw_config()
-        if agent_id:
-            aid = normalize_agent_id(agent_id)
-            if (AGENTS_DIR / aid).is_dir() or find_agent_entry_index(list_agent_entries(cfg), aid) >= 0:
-                return aid
-        return resolve_default_agent_id(cfg)
+        return ensure_project_agent(agent_id)
 
     async def setup(self) -> bool:
         """OpenClaw gateway readiness — returns True (gateway is external)."""

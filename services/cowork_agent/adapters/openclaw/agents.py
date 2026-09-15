@@ -16,6 +16,8 @@ here via ``load_capability('agents', …)`` instead of branching on
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
@@ -42,11 +44,61 @@ from services.cowork_agent.adapters.openclaw.store import (
 from services.cowork_agent.adapters.openclaw import agent_db
 from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
 from services.cowork_agent.registry.settings import _WORKSPACE_DOC_FILES
+from services.cowork_agent.adapters.openclaw.project_binding import config_lock
+from services.cowork_agent.project_layout import (
+    project_dir as xo_project_dir,
+    project_dir_exists,
+    scaffold_project,
+    xo_dir,
+    xo_projects_root,
+)
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+
+_BACKEND = "openclaw"
+
+# Record schema for ``<project>/.xo/agent.json`` (docs/syncplan.md §5.4 ·
+# ``visualizer/schema/agent.schema.json``), shared with the CLI backends.
+_SCHEMA_ID = "xo/agent.schema.json"
+_SCHEMA_VERSION = 1
+
+
+def _meta_path(agent_id: str) -> Path:
+    return xo_dir(agent_id) / "agent.json"
+
+
+def _load(agent_id: str) -> dict | None:
+    """The project's agent record (any backend's), or None."""
+    path = _meta_path(agent_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _load_owned(agent_id: str) -> dict | None:
+    """The project's agent record when it is an openclaw one."""
+    meta = _load(agent_id)
+    return meta if isinstance(meta, dict) and meta.get("backend") == _BACKEND else None
+
+
+def _write(agent_id: str, data: dict) -> None:
+    """Write the record to ``<project>/.xo/agent.json``, atomically."""
+    write_json_atomic(_meta_path(agent_id), data)
 
 
 def _agent_info_for_id(cfg: dict, agent_id: str, display_name: str | None, description: str) -> dict:
-    """xo-cowork AgentInfo shape; `name` is the OpenClaw agent id so session.directory grouping matches."""
+    """xo-cowork AgentInfo shape; `name` is the OpenClaw agent id so session.directory grouping matches.
+
+    ``workspace`` is the folder the agent's turns run in: its project (the
+    entry's ``cwd``) when bound to one, else its OpenClaw workspace."""
     aid = normalize_agent_id(agent_id)
+    entry = next(
+        (e for e in list_agent_entries(cfg) if normalize_agent_id(str(e.get("id", ""))) == aid),
+        {},
+    )
+    run_cwd = entry.get("cwd") if isinstance(entry.get("cwd"), str) and entry["cwd"].strip() else None
     return {
         "name": aid,
         "description": description or display_name or aid,
@@ -59,7 +111,7 @@ def _agent_info_for_id(cfg: dict, agent_id: str, display_name: str | None, descr
             "backend": "openclaw",
             "openclaw_id": aid,
             "display_name": display_name or aid,
-            "workspace": str(resolve_agent_workspace_dir(cfg, aid)),
+            "workspace": run_cwd or str(resolve_agent_workspace_dir(cfg, aid)),
         },
     }
 
@@ -127,66 +179,94 @@ def _patch_into_config(cfg: dict, agent_id: str, body) -> dict:
 
 
 def list_agents() -> list[dict]:
-    """Sidebar agents: every dir under ~/.openclaw/agents/, enriched from openclaw.json."""
+    """Sidebar agents, listed the way the CLI backends list them: every
+    xo-project with an openclaw agent record. OpenClaw agents from before
+    project binding (no xo-project of that name) are listed too, so they stay
+    reachable."""
     agents: list[dict] = []
     cfg = load_openclaw_config()
     entries = {normalize_agent_id(str(e.get("id", ""))): e for e in list_agent_entries(cfg)}
+    listed: set[str] = set()
+    root = xo_projects_root()
+    if root.exists():
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            record = _load_owned(d.name)
+            if record is None:
+                continue
+            aid = normalize_agent_id(d.name)
+            listed.add(aid)
+            agents.append(_agent_info_for_id(cfg, aid, record.get("name") or None, record.get("description") or ""))
     if AGENTS_DIR.exists():
         for d in sorted(AGENTS_DIR.iterdir()):
             if not d.is_dir():
                 continue
-            aid = d.name
-            meta = entries.get(normalize_agent_id(aid), {})
+            aid = normalize_agent_id(d.name)
+            if aid in listed or project_dir_exists(d.name):
+                continue
+            meta = entries.get(aid, {})
             display = meta.get("name") if isinstance(meta.get("name"), str) else None
             desc = ""
             if isinstance(meta.get("identity"), dict):
                 ident = meta["identity"]
                 if isinstance(ident.get("bio"), str):
                     desc = ident["bio"]
-            agents.append(_agent_info_for_id(cfg, aid, display, desc))
+            agents.append(_agent_info_for_id(cfg, d.name, display, desc))
     return agents
 
 
 def create_agent(body) -> dict | JSONResponse:
-    """Create an openclaw agent: add to openclaw.json + seed the on-disk dir."""
+    """Create an openclaw agent: scaffold its xo-project, add or adopt the
+    OpenClaw agent named like it with ``cwd`` on the project folder (its
+    persona files stay in its workspace), and write the agent record.
+
+    Like the CLI backends, only an existing agent record is a conflict. The
+    project folder or the OpenClaw agent may already exist (another backend's
+    project, or an agent an earlier chat in the project added) and is adopted.
+    """
     display_name = body.name.strip()
     agent_id = normalize_agent_id((body.id or body.name).strip())
     description = (body.description or "").strip()
 
-    cfg = load_openclaw_config()
-    existing_entries = list_agent_entries(cfg)
-    if find_agent_entry_index(existing_entries, agent_id) >= 0:
-        return JSONResponse(status_code=409, content={"detail": f'Agent "{agent_id}" already exists in openclaw.json.'})
-    if (AGENTS_DIR / agent_id).exists():
-        return JSONResponse(status_code=409, content={"detail": f'Agent directory "{agent_id}" already exists under ~/.openclaw/agents.'})
+    if _load(agent_id) is not None:
+        return JSONResponse(status_code=409, content={"detail": f'Agent "{agent_id}" already exists.'})
 
+    requested_workspace: Path | None = None
     if body.workspace and body.workspace.strip():
-        ws = Path(body.workspace.strip()).expanduser().resolve()
-        if not _path_must_be_under_home(ws):
+        requested_workspace = Path(body.workspace.strip()).expanduser().resolve()
+        if not _path_must_be_under_home(requested_workspace):
             return JSONResponse(
                 status_code=400,
                 content={"detail": "workspace must resolve to a path under your home directory."},
             )
-        workspace_dir = ws
-    else:
-        # Restore legacy behavior: default a new agent's workspace to a
-        # dedicated ~/.openclaw/workspace-<id>/ folder (via
-        # resolve_agent_workspace_dir) rather than the agent's openclaw home.
-        # ensure_openclaw_agent_disk() seeds that folder below.
-        workspace_dir = resolve_agent_workspace_dir(cfg, agent_id)
 
     try:
-        # OpenClaw agents live under ~/.openclaw/agents/<id>/ and are listed in
-        # ~/.openclaw/openclaw.json. Their workspace (~/.openclaw/workspace-<id>/)
-        # is created and seeded by ensure_openclaw_agent_disk() below.
-        next_cfg = apply_agent_entry(cfg, agent_id, display_name, workspace_dir)
-        write_openclaw_config(next_cfg)
-        ensure_openclaw_agent_disk(agent_id, workspace_dir)
+        with config_lock:
+            cfg = load_openclaw_config()
+            # The persona workspace: the one asked for, else the agent's
+            # configured one, else a dedicated ~/.openclaw/workspace-<id>/
+            # folder; ensure_openclaw_agent_disk() seeds it below.
+            workspace_dir = requested_workspace or resolve_agent_workspace_dir(cfg, agent_id)
+            scaffold_project(agent_id, display_name=display_name, description=description)
+            next_cfg = apply_agent_entry(
+                cfg, agent_id, display_name, workspace_dir, cwd=xo_project_dir(agent_id)
+            )
+            write_openclaw_config(next_cfg)
+            ensure_openclaw_agent_disk(agent_id, workspace_dir)
+        _write(agent_id, {
+            "$schema": _SCHEMA_ID,
+            "schema": _SCHEMA_VERSION,
+            "id": agent_id,
+            "name": display_name,
+            "description": description,
+            "backend": _BACKEND,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
-    desc = description or display_name
-    return _agent_info_for_id(next_cfg, agent_id, display_name, desc)
+    return _agent_info_for_id(next_cfg, agent_id, display_name, description or display_name)
 
 
 def get_detail(agent_id: str) -> dict | None:
@@ -280,9 +360,17 @@ def patch(agent_id: str, body) -> dict | JSONResponse | None:
         detail = get_detail(aid)
         return detail if detail else JSONResponse(status_code=404, content={"detail": "Not found"})
     try:
-        cfg = load_openclaw_config()
-        next_cfg = _patch_into_config(cfg, aid, body)
-        write_openclaw_config(next_cfg)
+        with config_lock:
+            cfg = load_openclaw_config()
+            next_cfg = _patch_into_config(cfg, aid, body)
+            write_openclaw_config(next_cfg)
+        record = _load_owned(aid)
+        if record is not None and (body.name is not None or body.description is not None):
+            if body.name is not None:
+                record["name"] = body.name.strip() or aid
+            if body.description is not None:
+                record["description"] = body.description.strip()
+            _write(aid, record)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     except Exception as e:
