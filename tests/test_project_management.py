@@ -393,7 +393,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url) as client:
                 return await client.request("DELETE", "/api/xo-projects/demo", json={"confirm_project_id": "different"}, headers=headers)
 
-        public = "xo-space--shared--owner.dev.workspace.example.com"
+        public = "space.workspace.example.com"
         # 400 confirmation_required means the request got past the guard.
         for base_url, headers in ((f"http://{public}", {"Origin": f"https://{public}", "Sec-Fetch-Site": "same-origin"}),
                                   ("http://192.168.1.10:5002", {"Origin": "http://192.168.1.10:5002"}),

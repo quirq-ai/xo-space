@@ -136,7 +136,7 @@ class RestartRouteTests(unittest.TestCase):
         }).status_code, 403)
 
     def test_restart_accepts_a_browser_behind_a_tls_proxy(self):
-        public = 'xo-space--shared--owner.dev.workspace.example.com'
+        public = 'space.workspace.example.com'
         client = TestClient(self.app, base_url=f'http://{public}', client=('127.0.0.1', 12345))
         headers = {'Origin': f'https://{public}', 'Sec-Fetch-Site': 'same-origin'}
         with patch.object(runtime_config, 'restart_mode', return_value='foreground'):
