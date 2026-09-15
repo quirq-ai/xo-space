@@ -24,7 +24,7 @@ body:
         - Chat (a specific runtime)
         - Sessions / usage / cost telemetry
         - Installer / update / restart
-        - Connector (gdrive / onedrive / github / vercel / manus)
+        - Connector (gdrive / onedrive / github / vercel)
         - xo-projects sync / backup
         - Docs / Wiki
     validations:
@@ -90,7 +90,7 @@ body:
       label: Evidence
       description: |
         `curl -s localhost:5002/health` and the tail of the server log —
-        `<state root>/quirq.log` (installer path) or `/tmp/xo-space.log` (`cowork-api.sh`).
+        `<state root>/logs/quirq.log` (installer path) or `/tmp/xo-space.log` (`cowork-api.sh`).
 
         **Redact tokens and keys before pasting** — `/health` reports presence, not values,
         on purpose; logs may not.

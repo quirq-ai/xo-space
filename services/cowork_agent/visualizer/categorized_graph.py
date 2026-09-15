@@ -15,7 +15,7 @@ renaming files.
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import PurePosixPath
 
 from services.cowork_agent.project_layout import project_dir
@@ -288,6 +288,11 @@ def _project_id_from_category(category: str) -> str:
     return category[2:] if category.startswith("p_") else category
 
 
+def _now_iso() -> str:
+    """This projection's freshness stamp — UTC, ISO-8601 with a ``Z``."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def build_categorized_graph(source: dict | None = None) -> dict:
     """Collapse the space graph into the five purpose categories.
 
@@ -420,6 +425,9 @@ def build_categorized_graph(source: dict | None = None) -> dict:
             "title": "Dashboard",
             "tagline": "projects gathered into purpose environments",
             "mappedOn": today.strftime("%d %B %Y"),
+            # This projection's own stamp, not the source graph's: it is a
+            # separate file with a separate freshness (syncplan T25).
+            "generated_at": _now_iso(),
             "workspace": (source.get("meta") or {}).get("workspace"),
             "noun": "projects",
             "collectionLabel": "environments",

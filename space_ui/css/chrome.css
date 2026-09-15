@@ -1,67 +1,94 @@
   /* ---------------- footer / toast ---------------- */
   footer{
     display:flex;align-items:center;justify-content:space-between;gap:14px;
-    padding:0 18px;border-top:1px solid var(--line);font-size:10.5px;color:var(--ink-4);
+    padding:0 18px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-3);
   }
-  footer .meta{font:400 9.5px var(--mono);letter-spacing:.06em;color:#4e4b44}
+  footer .meta{font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3);font-variant-numeric:tabular-nums}
   #toast{
     position:fixed;bottom:56px;left:50%;translate:-50% 0;z-index:90;
     background:var(--bg-3);border:1px solid var(--line);border-radius:999px;
-    padding:7px 16px;font:400 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
+    padding:7px 16px;font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);
     opacity:0;transform:translateY(8px);transition:all .3s var(--ease);pointer-events:none;
   }
   #toast.is-on{opacity:1;transform:none}
 
   /* server widget */
   .srv{position:relative;display:flex;align-items:center;gap:9px;
-    font:400 9.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+    font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3)}
   .srv .pip{width:7px;height:7px;border-radius:50%;background:#565c52}
   .srv .pip.on{background:var(--accent-deep);box-shadow:0 0 8px rgba(131,214,58,.45)}
   .srv .pip.off{background:var(--err)}
-  #srv-btn{font:400 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
+  #srv-btn{font:500 12px var(--sans);color:var(--ink-2);
     border:1px solid var(--line);border-radius:999px;padding:4px 11px;transition:all .16s var(--ease)}
   #srv-btn:hover{color:var(--ink);border-color:#39404d}
   .srvpop{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;display:none;z-index:70;
     background:rgba(16,19,24,.97);backdrop-filter:blur(14px);border:1px solid var(--line);
     border-radius:12px;padding:12px;text-transform:none;letter-spacing:0;box-shadow:0 20px 44px rgba(0,0,0,.6)}
   .srvpop.is-open{display:block}
-  .srvpop .hint{font:400 9px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
+  .srvpop .hint{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
   .srvpop pre{font:400 11px var(--mono);color:var(--accent);background:var(--bg-3);
     border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto}
-  .srvpop p{font:400 11px var(--sans);color:var(--ink-2);margin-top:8px;line-height:1.5}
-  #srv-copy{margin-top:8px;font:400 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .srvpop p{font:400 12px var(--sans);color:var(--ink-2);margin-top:8px;line-height:1.5}
+  #srv-copy{margin-top:8px;font:500 12px var(--sans);
     color:var(--ink-2);border:1px solid var(--line);border-radius:999px;padding:5px 11px}
   #srv-copy:hover{color:var(--ink)}
   /* no-data notice */
   .nodata{position:absolute;inset:0;z-index:20;background:var(--bg);display:flex;flex-direction:column;
     justify-content:center;align-items:flex-start;gap:14px;padding-left:clamp(24px,8vw,120px);max-width:none}
-  .nodata .eyebrow{font:600 10px var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--ink-3)}
-  .nodata h1{font:500 clamp(30px,3.8vw,50px)/1.05 var(--serif);letter-spacing:-.01em;max-width:560px;text-wrap:balance}
+  .nodata .eyebrow{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  .nodata h1{font:500 clamp(30px,3.8vw,50px)/1.05 var(--sans);letter-spacing:-.01em;max-width:560px;text-wrap:balance}
   .nodata p{font-size:13.5px;line-height:1.6;color:var(--ink-2);max-width:460px}
   .nodata pre{font:400 12px var(--mono);color:var(--accent);background:var(--bg-2);
     border:1px solid var(--line);border-radius:8px;padding:10px 14px}
-  .nodata button{font:600 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  .nodata button{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:#14100a;background:var(--accent);border-radius:999px;padding:9px 18px}
-  /* the full single-row topbar (brand + 6 tabs + root picker + search) needs
-     ~1400px; below that, reflow to two rows instead of overflowing the page */
+  @media (max-width:1640px){ .brand>span:not(.mark){display:none} }
+  @media (max-width:1600px){ #root-btn .rlab{display:none} }
+  /* Reflow the primary tabs below the brand, graph controls and resource links. */
   @media (max-width:1400px){
-    .topbar{grid-template-columns:auto 1fr;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
+    .topbar{grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto auto;height:auto;padding:8px 14px;gap:7px 14px}
+    .topbar-right{display:contents}
     .tabs{
-      grid-column:1/-1;grid-row:2;width:100%;max-width:calc(100vw - 28px);
-      justify-self:stretch;justify-content:flex-start;overflow-x:auto;scrollbar-width:none
+      grid-column:1/-1;grid-row:2;max-width:calc(100vw - 28px);
+      overflow-x:auto;scrollbar-width:none
     }
     .tabs::-webkit-scrollbar{display:none}
-    .tabs button{flex:0 0 auto}
+    .tabs :is(button,a){flex:0 0 auto}
     .tright{grid-column:2;grid-row:1}
+    .resource-links{grid-column:3;grid-row:1}
+    .rootdd{left:0;right:auto;width:min(280px,calc(100vw - 28px))}
     body{grid-template-rows:auto 1fr var(--footer-h)}
   }
   @media (max-width:960px){ .brand span{display:none} #hint{display:none} }
   @media (max-width:760px){
     .tright{width:100%;min-width:0}
     .searchwrap{width:auto;min-width:100px;flex:1}
+    .resource-links a span,.resource-links .external-arrow{display:none}
+    .resource-links a{padding:7px 9px;min-width:38px}
     #panel{width:100%}
     footer .attrib{display:none}
   }
+  @media (max-width:640px){
+    .topbar{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto}
+    .resource-links{grid-column:2;grid-row:1;justify-self:end;flex-wrap:nowrap}
+    .tright{grid-column:1/-1;grid-row:2;max-width:none}
+    .tabs{grid-row:2}
+    .topbar:has(#toolbar-controls:not([hidden])){grid-template-rows:auto auto auto}
+    .topbar:has(#toolbar-controls:not([hidden])) .tabs{grid-row:3}
+  }
+  /* Keep the root picker and search inside the viewport alongside the brand
+     when all five Projects lenses are available on a phone. */
+  @media (max-width:480px){
+    .tabs :is(button,a){padding:7px 10px}
+    #root-btn .rlab{display:none}
+    #root-btn b{max-width:56px}
+    .searchwrap{min-width:0}
+    footer{min-width:0}
+    footer .srv{flex:none;white-space:nowrap}
+    footer .meta{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  }
   @media (prefers-reduced-motion:reduce){
-    *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+    /* Zero duration also prevents implicit inherited visibility transitions
+       from delaying focus when a page or form becomes visible. */
+    *,*::before,*::after{animation-duration:.01ms!important;transition-duration:0s!important;transition-delay:0s!important}
   }

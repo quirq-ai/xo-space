@@ -30,8 +30,14 @@ from services.cowork_agent.project_layout import (
     xo_dir,
     xo_projects_root,
 )
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 
 _BACKEND = "antigravity"
+
+# Record schema for ``<project>/.xo/agent.json`` (docs/syncplan.md §5.4 ·
+# ``visualizer/schema/agent.schema.json``).
+_SCHEMA_ID = "xo/agent.schema.json"
+_SCHEMA_VERSION = 1
 
 
 def _meta_path(agent_id: str) -> Path:
@@ -48,10 +54,20 @@ def _load(agent_id: str) -> dict | None:
     return None
 
 
+def _load_owned(agent_id: str) -> dict | None:
+    """``_load`` restricted to records this backend owns."""
+    meta = _load(agent_id)
+    if meta is None:
+        return None
+    backend = meta.get("backend")
+    if isinstance(backend, str) and backend and backend != _BACKEND:
+        return None
+    return meta
+
+
 def _write(agent_id: str, data: dict) -> None:
-    path = _meta_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    """Write the record to ``<project>/.xo/agent.json``, atomically."""
+    write_json_atomic(_meta_path(agent_id), data)
 
 
 def _agent_info(agent_id: str, meta: dict) -> dict:
@@ -106,6 +122,8 @@ def create_agent(body) -> dict | JSONResponse:
     try:
         scaffold_project(agent_id, display_name=display_name, description=description)
         meta = {
+            "$schema": _SCHEMA_ID,
+            "schema": _SCHEMA_VERSION,
             "id": agent_id,
             "name": display_name,
             "description": description,
@@ -120,8 +138,9 @@ def create_agent(body) -> dict | JSONResponse:
 
 
 def get_detail(agent_id: str) -> dict | None:
+    """Full agent snapshot if ``agent_id`` is an antigravity agent, else None."""
     aid = normalize_agent_id(agent_id)
-    meta = _load(aid)
+    meta = _load_owned(aid)
     if meta is None:
         return None
     workspace_path = project_dir(aid)
@@ -153,13 +172,14 @@ def get_detail(agent_id: str) -> dict | None:
 
 
 def patch(agent_id: str, body) -> dict | JSONResponse | None:
+    """Patch an antigravity agent's name/description; None if not ours."""
     aid = normalize_agent_id(agent_id)
-    if _load(aid) is None:
+    if _load_owned(aid) is None:
         return None
     if not body.model_fields_set:
         detail = get_detail(aid)
         return detail if detail else JSONResponse(status_code=404, content={"detail": "Not found"})
-    meta = _load(aid) or {}
+    meta = _load_owned(aid) or {}
     if body.name is not None:
         meta["name"] = body.name.strip()
     if body.description is not None:

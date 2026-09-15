@@ -20,8 +20,8 @@ from pathlib import Path
 
 from services.cowork_agent.helpers import derive_title, iso_now, ms_to_iso, parse_jsonl
 from services.cowork_agent.engine.messages import convert_messages
-from services.cowork_agent.engine.sessions_io import find_session_file, _resolve_index_path
-from services.cowork_agent.project_layout import xo_projects_root
+from services.cowork_agent.engine.sessions_io import find_session_file
+from services.cowork_agent.engine import sessions_io as _session_index
 from services.cowork_agent.adapters.openclaw.paths import AGENTS_DIR
 
 # openclaw tees project sessions into xo-projects AND keeps native sessions
@@ -155,11 +155,7 @@ def get_messages(session_id: str) -> list:
 
 
 def find_session_key(session_id: str) -> str | None:
-    """Look up the openclaw session key for a given session ID.
-
-    Checks the native store under ~/.openclaw/agents/<a>/sessions/ first, then
-    the project-tied sessionslist.json index for tee'd openclaw sessions.
-    """
+    """Look up the openclaw session key for a given session ID."""
     # Native store
     if AGENTS_DIR.exists():
         for agent_dir in AGENTS_DIR.iterdir():
@@ -178,22 +174,10 @@ def find_session_key(session_id: str) -> str | None:
                     return key
 
     # Project-tied (tee'd) sessions
-    projects_root = xo_projects_root()
-    if projects_root.exists():
-        for agent_dir in projects_root.iterdir():
-            if not agent_dir.is_dir() or agent_dir.name.startswith("."):
-                continue
-            idx_path = _resolve_index_path(agent_dir / ".xo" / "sessions")
-            if not idx_path:
-                continue
-            try:
-                with open(idx_path, encoding="utf-8") as f:
-                    index_data = json.load(f)
-            except Exception:
-                continue
-            for key, meta in index_data.items():
-                if isinstance(meta, dict) and meta.get("sessionId") == session_id:
-                    return key
+    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+        for key, meta in index.items():
+            if meta.get("sessionId") == session_id:
+                return key
 
     return None
 

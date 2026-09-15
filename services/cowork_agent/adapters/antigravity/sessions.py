@@ -1,17 +1,4 @@
-"""
-Antigravity (agy) sessions capability.
-
-agy tees its sessions into xo-projects (``.xo/sessions/sessionslist.json``, tagged
-``backend:"antigravity"``), so the generic project-tied scan applies —
-``USES_PROJECT_SESSIONS = True``. The native message store is the per-conversation
-transcript ``brain/<nativeSessionId>/.system_generated/logs/transcript_full.jsonl``
-(keyed by conversation uuid, not by an encoded cwd path like claude_code).
-
-The listing hooks (``enrich_project_session`` / ``resolve_native_file`` /
-``list_native_sessions``) and read hooks (``owns_session`` / ``get_messages`` /
-``set_session_directory``) are what ``engine/sessions_io`` calls instead of
-branching on the backend name.
-"""
+"""Antigravity (agy) sessions capability."""
 from __future__ import annotations
 
 import json
@@ -20,11 +7,16 @@ from pathlib import Path
 
 from services.cowork_agent.adapters.antigravity import transcript as _t
 from services.cowork_agent.adapters.antigravity.paths import transcript_path
-from services.cowork_agent.engine.sessions_io import find_session_file, _resolve_index_path
+from services.cowork_agent.engine.sessions_io import find_session_file
+from services.cowork_agent.engine import sessions_io as _session_index
 from services.cowork_agent.helpers import strip_workspace_preamble
-from services.cowork_agent.project_layout import xo_projects_root
 
 USES_PROJECT_SESSIONS = True
+
+# The ``backend`` tag antigravity writes on every sessionslist row it
+# publishes; used to tell our rows apart from the other project-tied backends'
+# in a shared index.
+_BACKEND = "antigravity"
 
 
 # ── Listing hooks ─────────────────────────────────────────────────────────────
@@ -253,35 +245,25 @@ def get_messages(session_id: str) -> list:
 def _persist_session_directory(session_id: str, directory: str) -> bool:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    def _try_index(index_path: Path) -> bool:
-        if not index_path.exists():
-            return False
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                index_data = json.load(f)
-        except Exception:
-            return False
-        for meta in index_data.values():
-            if not isinstance(meta, dict) or meta.get("sessionId") != session_id:
+    for project_id, _project_dir, index in _session_index.iter_project_session_indexes():
+        for key, meta in index.items():
+            if meta.get("sessionId") != session_id:
                 continue
-            history = meta.get("directoryHistory") or []
+            # Same-index rows from the other project-tied backends are not
+            # ours: the PATCH route loops adapters and takes the first non-
+            # None, so without this we would service (and rewrite) another
+            # backend's row.
+            backend = meta.get("backend")
+            if isinstance(backend, str) and backend and backend != _BACKEND:
+                continue
+            # One row, one shard file, one atomic replace.
+            row = dict(meta)
+            history = list(row.get("directoryHistory") or [])
             history.append({"directory": directory, "selectedAt": now_ms})
-            meta["directoryHistory"] = history[-200:]
-            meta["directory"] = directory
-            meta["updatedAt"] = now_ms
-            index_path.write_text(
-                json.dumps(index_data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            return True
-        return False
-
-    projects_root = xo_projects_root()
-    if projects_root.exists():
-        for agent_dir in projects_root.iterdir():
-            if not agent_dir.is_dir() or agent_dir.name.startswith("."):
-                continue
-            idx_path = _resolve_index_path(agent_dir / ".xo" / "sessions")
-            if idx_path and _try_index(idx_path):
+            row["directoryHistory"] = history[-200:]
+            row["directory"] = directory
+            row["updatedAt"] = now_ms
+            if _session_index.write_session_row(project_id, key, row):
                 return True
     return False
 

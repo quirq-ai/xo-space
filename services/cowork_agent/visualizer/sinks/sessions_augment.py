@@ -1,35 +1,14 @@
-"""``sessions/sessions-augment.json`` sink — watcher-owned per-session
-counters.
-
-Tracks the fields the runtime adapters don't compute:
-
-* ``messageCount`` — total user + assistant messages observed
-* ``toolCallCount`` — total tool_use events (any tool)
-* ``taskCount`` — ``{total, completed, in_progress, pending,
-  cancelled, blocked}`` derived from ``TaskCreated`` /
-  ``TaskStatusChanged``
-* ``firstActivity`` / ``lastActivity`` — epoch ms of the earliest /
-  latest event observed
-* ``ended_at`` — currently always null (filled once session-close
-  detection lands)
-* ``episode_refs`` — preserved verbatim; the
-  :mod:`memory_episodic` watcher writes to this field separately
-
-Keys match :mod:`sessionslist` — composite cowork-key when an
-adapter row exists, else native session id (the BFF merge naturally
-ignores unmatched augment rows).
-
-Read-modify-write per tick. The sink reads the prior augment file,
-applies the new events, writes back atomically.
-"""
+"""``sessions/sessions-augment.json`` sink — watcher-owned per-session counters."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
+from services.cowork_agent.engine import sessions_io as session_index
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.ingest.events import (
     Event,
     FileTouched,
@@ -40,10 +19,13 @@ from services.cowork_agent.visualizer.ingest.events import (
     ToolUseObserved,
 )
 from services.cowork_agent.visualizer.reader import read_json
+from services.cowork_agent.visualizer.todo_status import (
+    TODO_STATUSES,
+    VALID_TODO_STATUSES,
+)
 
 
 _AUGMENT_FILE = Path("sessions/sessions-augment.json")
-_SESSIONSLIST_FILE = Path("sessions/sessionslist.json")
 
 
 def _iso_to_ms(ts: str) -> Optional[int]:
@@ -58,7 +40,9 @@ def _iso_to_ms(ts: str) -> Optional[int]:
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Same string as before; ``utcnow()`` is deprecated and this sink is now
+    # called from a request thread too, where the warning is noise.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _build_native_to_composite_map(sessionslist: Optional[dict]) -> dict[str, str]:
@@ -84,8 +68,9 @@ def _empty_row() -> dict:
         "messageCountByRole": {"user": 0, "assistant": 0,
                                "toolResults": 0, "errors": 0},
         "toolCallCount":  0,
-        "taskCount":      {"total": 0, "completed": 0, "in_progress": 0,
-                           "pending": 0, "cancelled": 0, "blocked": 0},
+        # One counter per status, built from the shared vocabulary so a new
+        # status cannot arrive without a bucket to land in.
+        "taskCount":      {"total": 0, **{st: 0 for st in TODO_STATUSES}},
         "firstActivity":  None,
         "lastActivity":   None,
         "ended_at":       None,
@@ -103,26 +88,42 @@ def _stamp_activity(row: dict, ts: str) -> None:
         row["lastActivity"] = ms
 
 
-# Status transitions we track. Anything else is ignored.
-_VALID_STATUSES = frozenset({
-    "pending", "in_progress", "completed", "cancelled", "blocked",
-})
+# Status transitions we track.
+_VALID_STATUSES = VALID_TODO_STATUSES
 
 
-def apply(xo_dir: Path, events: Iterable[Event]) -> bool:
-    """Apply ``events`` to this project's augment file. Returns
-    ``True`` if the file changed (so the workspace tier knows to
-    re-aggregate).
+def apply(
+    root: Path, events: Iterable[Event], *, legacy_root: Optional[Path] = None
+) -> bool:
+    """
+    Apply ``events`` to this project's augment file. Returns ``True`` if the
+    file changed (so the workspace tier knows to re-aggregate).
     """
     events = list(events)
     if not events:
         return False
 
-    augment_path = xo_dir / _AUGMENT_FILE
-    sessionslist = read_json(xo_dir / _SESSIONSLIST_FILE)
-    native_to_composite = _build_native_to_composite_map(sessionslist)
+    augment_path = root / _AUGMENT_FILE
+    with locked(augment_path):
+        return _apply_locked(root, augment_path, events, legacy_root=legacy_root)
 
-    current = read_json(augment_path) or {}
+
+def _apply_locked(
+    root: Path,
+    augment_path: Path,
+    events: list,
+    *,
+    legacy_root: Optional[Path] = None,
+) -> bool:
+    """The read-modify-write itself. Caller holds the lock."""
+    native_to_composite = _build_native_to_composite_map(
+        session_index.read_session_index_at(root, legacy_root=legacy_root)
+    )
+
+    current = read_json(augment_path)
+    if current is None and legacy_root is not None:
+        current = read_json(legacy_root / _AUGMENT_FILE)
+    current = current or {}
     sessions: dict = dict(current.get("sessions") or {})
 
     # Per-task last-known status, so a TaskCreated followed by
@@ -203,3 +204,52 @@ def apply(xo_dir: Path, events: Iterable[Event]) -> bool:
         "sessions": sessions,
     })
     return True
+
+
+def forget_task(
+    root: Path,
+    *,
+    native_session_id: str,
+    task_id: str,
+    ts: Optional[str] = None,
+    legacy_root: Optional[Path] = None,
+) -> bool:
+    """Drop one task from the counters — its todo was deleted."""
+    augment_path = root / _AUGMENT_FILE
+    with locked(augment_path):
+        current = read_json(augment_path)
+        if current is None and legacy_root is not None:
+            current = read_json(legacy_root / _AUGMENT_FILE)
+        current = current or {}
+        sessions: dict = dict(current.get("sessions") or {})
+        if not sessions:
+            return False
+
+        native_to_composite = _build_native_to_composite_map(
+            session_index.read_session_index_at(root, legacy_root=legacy_root)
+        )
+        key = native_to_composite.get(native_session_id, native_session_id)
+        row = sessions.get(key)
+        if not isinstance(row, dict):
+            return False
+
+        states = row.get("_task_states")
+        if not isinstance(states, dict) or task_id not in states:
+            return False
+        previous = states.pop(task_id)
+
+        tc = row.get("taskCount")
+        if isinstance(tc, dict):
+            if previous in tc:
+                tc[previous] = max(0, int(tc.get(previous, 0)) - 1)
+            tc["total"] = max(0, int(tc.get("total", 0)) - 1)
+
+        if ts:
+            _stamp_activity(row, ts)
+
+        write_json_atomic(augment_path, {
+            "schema": 2,
+            "updated_at": _now_iso(),
+            "sessions": sessions,
+        })
+        return True

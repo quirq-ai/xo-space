@@ -6,29 +6,108 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
+import {projectPage} from '../core/navigation.js?v=20260915-agents2';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
+import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
+import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
+import {timelineSummary} from '../core/timeline-summary.js?v=20260915-timeline1';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
-const hooks={};  /* boot() assigns lifecycle hooks here once it has run */
-let bootPromise=null;
-let bootDataset=null;
+let refreshToolbar=()=>{};
+let hooks={};
+let bootDataset=null,bootRevision=0,activeAtlasId=null;
+let rootPicker=null,pendingRoot=null;
+let timelineFilter=''; // page query survives rebuilding another projection
+const datasetReads=new Map();
+addEventListener('space:view',event=>{
+  const id=event.detail?.id;
+  const graphHost=document.getElementById('view-graph');
+  graphHost?.classList.toggle('has-file-tools',id==='graph');
+  const fileTools=document.getElementById('graph-file-toolbar');
+  if(fileTools)fileTools.hidden=id!=='graph';
+  activeAtlasId=['dashboard','graph','time'].includes(id)?id:null;
+  const projects=event.detail?.tab==='projects'||['dashboard','graph','time','project-list','tree','project-manage'].includes(id);
+  rootPicker?.setContext(projects?id==='dashboard'?'dashboard':'graph':null);
+  if(pendingRoot&&id!==(pendingRoot.dataset==='dashboard'?'dashboard':'graph'))pendingRoot=null;
+  bootRevision++; // a late dataset read cannot reclaim another page
+});
+let projectsDirty=false;
+addEventListener('space:projects-changed',()=>{
+  datasetReads.clear();bootRevision++;projectsDirty=true;
+  rootPicker?.invalidate();
+  if(bootDataset||activeAtlasId)showProjectRefresh();
+});
+
+/* The atlas builds a simulation once. Offer its existing reload explicitly
+   so changing a project never discards unfinished Setup forms automatically. */
+function showProjectRefresh(){
+  if(!projectsDirty)return;
+  for(const id of ['view-graph','view-time']){
+    const view=document.getElementById(id);
+    if(!view||view.querySelector('.atlas-project-refresh'))continue;
+    const notice=document.createElement('div');
+    notice.className='atlas-project-refresh';notice.setAttribute('role','status');
+    notice.innerHTML='<span>Projects changed.</span><button type="button">Refresh map</button>';
+    notice.querySelector('button').addEventListener('click',async()=>{
+      const page=activeAtlasId;if(!page)return;
+      const dataset=activeAtlasId==='dashboard'?'dashboard':'graph';
+      datasetReads.clear();
+      try{if(await ensureBoot(dataset,true)&&activeAtlasId===page){hooks.setActiveView?.(page==='time'?'time':'graph');refreshToolbar();}}
+      catch{if(activeAtlasId===page)renderNoData(view,dataset);}
+    });
+    view.appendChild(notice);
+  }
+}
 
 /* Cross-lens focus: the List's "Map" action and the previewer's Graph button
    dispatch space:focus-project; if the graph has not booted yet the request is
    parked until boot consumes it. (The lens switch itself is shell chrome —
-   core/lens-switch.js — so it cannot move when the lens changes.) */
+   core/section-nav.js — so it cannot move when the page changes.) */
 let pendingFocus=null;
 addEventListener('space:focus-project',e=>{
+  pendingRoot=null;
   pendingFocus=String(e.detail||'');
-  if(hooks.focusProject)hooks.focusProject();
+  if(bootDataset==='graph'&&['graph','time'].includes(activeAtlasId))hooks.focusProject?.();
 });
 
 const DATASETS={
-  dashboard:{url:API_BASE+'/xo/dashboard.json',label:'Dashboard'},
+  dashboard:{url:API_BASE+'/xo/dashboard.json',label:'Overview'},
   graph:{url:API_BASE+'/xo/space.json',label:'Graph'}
 };
 const DATASET_KEY='space.atlasDataset';
+
+async function readDataset(dataset){
+  if(!datasetReads.has(dataset)){
+    const controller=new AbortController();let timer;
+    const request=Promise.race([
+      apiFetch(DATASETS[dataset].url,{signal:controller.signal}),
+      new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve({ok:false,error:'Graph data request timed out'});},12000);}),
+    ]).finally(()=>clearTimeout(timer));
+    datasetReads.set(dataset,request);
+  }
+  const request=datasetReads.get(dataset),response=await request;
+  if(!response.ok){if(datasetReads.get(dataset)===request)datasetReads.delete(dataset);throw new Error(response.error);}
+  return response.data;
+}
+
+export function initProjectRootPicker({switchTo}){
+  if(rootPicker)return;
+  go=switchTo;
+  rootPicker=createProjectRootPicker({readDataset,onPick:({dataset,id})=>{
+    pendingFocus=null;
+    pendingRoot={dataset,id};
+    const page=dataset==='dashboard'?'dashboard':'graph';
+    if(activeAtlasId===page&&bootDataset===dataset&&hooks.setRoot&&!projectsDirty){applyRootSelection(dataset);return;}
+    go(projectPage(page).route);
+  }});
+  rootPicker?.setContext(null);
+}
+
+function applyRootSelection(dataset){
+  const requested=pendingRoot?.dataset===dataset?pendingRoot.id:rootPicker?.selectedRoot(dataset);
+  if(requested&&hooks.setRoot?.(requested)&&pendingRoot?.dataset===dataset)pendingRoot=null;
+}
 
 function savedDataset(){
   try{
@@ -41,32 +120,34 @@ function rememberDataset(dataset){
   try{localStorage.setItem(DATASET_KEY,dataset);}catch(_err){}
 }
 
-/* boot() runs exactly once, no matter which atlas lens mounts first or how
-   many mount concurrently. Switching between the two graph projections
-   reloads once, matching main's dataset switch and resetting the simulation. */
-function ensureBoot(requestedDataset){
-  const dataset=DATASETS[requestedDataset]?requestedDataset:savedDataset();
-  if(bootPromise&&bootDataset!==dataset){
-    rememberDataset(dataset);
-    location.reload();
-    return new Promise(()=>{});
+/* Rebuild only the atlas when changing projections. Its listeners and animation
+   callbacks have an explicit lifetime; List, previews and Setup drafts stay
+   mounted. A late response never activates a page the user has left. */
+async function ensureBoot(dataset,force=false){
+  const page=activeAtlasId;
+  if(!page||(page==='dashboard'?'dashboard':'graph')!==dataset)return false;
+  if(!force&&bootDataset===dataset&&hooks.setActiveView&&!(projectsDirty&&pendingRoot?.dataset===dataset))return true;
+  const revision=++bootRevision;
+  const source=DATASETS[dataset];
+  const data=await readDataset(dataset);
+  if(revision!==bootRevision||activeAtlasId!==page)return false;
+  hooks.dispose?.();hooks={};
+  for(const id of ['panel','hc','crumb','qac']){
+    document.getElementById(id)?.classList.remove('is-open','is-on');
   }
-  bootDataset=dataset;
-  rememberDataset(dataset);
-  if(!bootPromise)bootPromise=(async()=>{
-    const source=DATASETS[dataset];
-    const res=await apiFetch(source.url);
-    if(!res.ok){
-      console.warn('Space could not load '+source.url+':',res.error);
-      throw new Error(res.error);
-    }
-    boot(res.data,source.label);
-  })();
-  return bootPromise;
+  for(const node of document.querySelectorAll('.atlas-project-refresh,.nodata'))node.remove();
+  bootDataset=dataset;rememberDataset(dataset);projectsDirty=false;
+  document.getElementById('tclear').hidden=true;
+  const mapSearch=document.getElementById('q');if(!force&&mapSearch)mapSearch.value='';
+  rootPicker?.setData(dataset,data);
+  try{boot(data,source.label,dataset);}
+  catch(error){hooks.dispose?.();hooks={};bootDataset=null;throw error;}
+  return true;
 }
 
 function renderNoData(el,dataset){
   if(!el)return;
+  el.querySelector('.nodata')?.remove();
   const source=DATASETS[dataset]||DATASETS[savedDataset()];
   const box=document.createElement('div');
   box.className='nodata';
@@ -77,41 +158,99 @@ function renderNoData(el,dataset){
     '<p>then open <b>http://localhost:5002/space/</b></p>'+
     '<button id="nodata-retry">Retry</button>';
   el.appendChild(box);
-  box.querySelector('#nodata-retry').addEventListener('click',()=>location.reload());
+  box.querySelector('#nodata-retry').addEventListener('click',async()=>{
+    const page=activeAtlasId;if(!page)return;
+    datasetReads.delete(dataset);box.remove();
+    try{if(await ensureBoot(dataset,true)&&activeAtlasId===page){hooks.setActiveView?.(page==='time'?'time':'graph');refreshToolbar();}}
+    catch{if(activeAtlasId===page)renderNoData(el,dataset);}
+  });
 }
 
 function atlasView(id,label,order,lens,dataset=null){
+  let host=null,toolbarRefresh=()=>{};
   return{
     id,label,order,
+    toolbar:()=>lens==='graph'
+      ?{graph:true,disabled:!hooks.setActiveView}
+      :{search:{
+        placeholder:'Filter timeline projects…',
+        getValue:()=>hooks.getTimelineFilter?.()||'',
+        setValue:value=>hooks.setTimelineFilter?.(value),
+      },disabled:!hooks.setTimelineFilter},
     async mount(el,ctx){
-      go=ctx.switchTo;
+      host=el;go=ctx.switchTo;
+      if(id==='graph'&&!el.querySelector('#graph-file-toolbar')){
+        const tools=document.createElement('div');tools.id='graph-file-toolbar';
+        tools.innerHTML=dataViewControls('graph');tools.hidden=activeAtlasId!=='graph';
+        el.prepend(tools);
+      }
+      toolbarRefresh=ctx.refreshToolbar||(()=>{});refreshToolbar=toolbarRefresh;
       el.querySelectorAll('[data-atlas-lens]').forEach(button=>{
         button.addEventListener('click',()=>go(button.dataset.atlasLens));
       });
-      try{await ensureBoot(dataset);}
-      catch(err){renderNoData(el,dataset);}
     },
-    show(){if(hooks.setActiveView)hooks.setActiveView(lens);},
+    async show(){
+      refreshToolbar=toolbarRefresh;
+      try{if(await ensureBoot(dataset)&&activeAtlasId===id){hooks.setActiveView?.(lens);toolbarRefresh();}}
+      catch{if(activeAtlasId===id)renderNoData(host,dataset);}
+    },
+    async refresh(){
+      datasetReads.delete(dataset);
+      try{
+        if(await ensureBoot(dataset,true)&&activeAtlasId===id){
+          hooks.setActiveView?.(lens);toolbarRefresh();
+        }
+      }catch(error){
+        if(activeAtlasId===id)renderNoData(host,dataset);
+        throw error;
+      }
+    },
     hide(){if(hooks.setActiveView)hooks.setActiveView(null);}
   };
 }
 export const dashboardView={
   ...atlasView('dashboard','Dashboard',0,'graph','dashboard'),
-  section:'graph'
+  ...projectPage('dashboard'),section:'graph'
 };
-/* Files lands on the List lens (the projects view owns the nav tab); the
-   Graph is its second lens, reachable from the pill or #/graph. */
+/* Projects owns the section. Each projection has its own canonical page URL. */
 export const graphView={
   ...atlasView('graph','Graph',1,'graph','graph'),
-  nav:false,parent:'projects'
+  ...projectPage('graph')
 };
-/* Timeline is pinned to the workspace dataset (space.json): plotting the
-   Dashboard's 5-environment projection there has no git history and reads
-   as broken. Arriving from Dashboard costs one dataset-switch reload, the
-   same hop Dashboard ↔ Files already makes. */
-export const timeView=atlasView('time','Timeline',2,'time','graph');
+/* Timeline is the last lens under Projects, not a top-level tab: it reads a
+   projection of the same workspace the other lenses do, so it belongs behind
+   the shared Projects switch rather than in the primary nav.
+   It is pinned to the workspace dataset (space.json): plotting the Dashboard's
+   5-environment projection there has no git history and reads as broken.
+   Changing projections rebuilds the atlas without reloading other pages. */
+export const timeView={
+  ...atlasView('time','Timeline',2,'time','graph'),
+  ...projectPage('time')
+};
 
-function boot(DATA,DATA_SOURCE){
+function boot(DATA,DATA_SOURCE,bootDataset){
+const lifetime=new AbortController(),timers=new Set(),frames=new Set();
+let disposed=false;
+function listen(target,type,listener,options={}){
+  target.addEventListener(type,listener,{...(typeof options==='boolean'?{capture:options}:options),signal:lifetime.signal});
+}
+function setTimeout(callback,delay){
+  const id=window.setTimeout(()=>{timers.delete(id);if(!disposed)callback();},delay);
+  timers.add(id);return id;
+}
+function clearTimeout(id){timers.delete(id);window.clearTimeout(id);}
+function requestAnimationFrame(callback){
+  const id=window.requestAnimationFrame(time=>{frames.delete(id);if(!disposed)callback(time);});
+  frames.add(id);return id;
+}
+function cancelAnimationFrame(id){frames.delete(id);window.cancelAnimationFrame(id);}
+hooks.dispose=()=>{
+  disposed=true;lifetime.abort();
+  for(const id of timers)window.clearTimeout(id);
+  for(const id of frames)window.cancelAnimationFrame(id);
+  timers.clear();frames.clear();
+};
+
 /* ============================== MODEL FROM LOCAL DATA ==============================
    All graph content comes from .xo/space.json (GET /xo/space.json); nothing is
    embedded here. */
@@ -144,18 +283,10 @@ NODES.forEach(n=>n.degree=n.adj.length);
 const LEAVES=NODES.filter(n=>n.type==='leaf');
 const GROUPS=NODES.filter(n=>n.type==='group');
 const HUBS=NODES.filter(n=>n.type==='hub');
-const XCOUNT=EDGES.filter(e=>e.kind==='x').length;
 const noun=DATA.meta.noun||'artifacts';
 const collectionLabel=DATA.meta.collectionLabel||'clusters';
-document.getElementById('q').placeholder=`Search ${LEAVES.length} ${noun}…`;
 document.getElementById('fmeta').textContent=
   `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
-if(DATA.meta.timelineTitle){
-  document.querySelector('#view-time .thead h2').textContent=DATA.meta.timelineTitle;
-}
-if(DATA.meta.timelineSub){
-  document.getElementById('tsub').textContent=DATA.meta.timelineSub;
-}
 
 const colorOf=n=>n.type==='root'?'#e9e4d9':CAT[n.cat].color;
 function radiusOf(n){
@@ -172,7 +303,15 @@ const hexA=(h,a)=>`rgba(${parseInt(h.slice(1,3),16)},${parseInt(h.slice(3,5),16)
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* expansion + filter state */
-const expanded=new Map(GROUPS.map(g=>[g.id,true]));
+/* Groups start collapsed once the workspace is large enough that simulating
+   every leaf would cost more than it shows. isShown() already excludes a
+   collapsed group's leaves from BOTH shownNodes() and shownEdges(), so the
+   simulated set drops to root+hubs+groups (hundreds, not thousands) with no
+   other change. Collapsed groups already render as a dashed ring with a "+N"
+   count and open on double-click, so nothing is hidden — only deferred. */
+const COLLAPSE_LEAVES_ABOVE=600;
+const START_COLLAPSED=LEAVES.length>COLLAPSE_LEAVES_ABOVE;
+const expanded=new Map(GROUPS.map(g=>[g.id,!START_COLLAPSED]));
 let deptFilter=null;
 const belongsToCategory=(n,cat)=>n.cat===cat||(n.clusters||[]).includes(cat);
 const isShown=n=>{
@@ -184,8 +323,34 @@ const isShown=n=>{
   return true;
 };
 const dimByFilter=n=>deptFilter&&n.cat&&!belongsToCategory(n,deptFilter);
-const shownNodes=()=>NODES.filter(isShown);
-const shownEdges=()=>EDGES.filter(e=>isShown(byId.get(e.s))&&isShown(byId.get(e.t)));
+/* isShown() depends only on `expanded` and `deptFilter`, so the filtered
+   arrays only need rebuilding when one of those changes — not the 4x per frame
+   the old always-filter cost (measured ~19% of simTick at the 1500-leaf cap,
+   plus four throwaway arrays per frame of GC pressure).
+   setExp() bumps _expVersion; deptFilter is folded into the key so a future
+   direct write to it can never leave a stale cache behind.
+   Callers must treat the returned arrays as read-only. */
+let _expVersion=0,_shownKey=null,_shownNodes=[],_shownEdges=[];
+function _refreshShown(){
+  const key=_expVersion+'|'+deptFilter;
+  if(key===_shownKey)return;
+  _shownKey=key;
+  _shownNodes=NODES.filter(isShown);
+  _shownEdges=EDGES.filter(e=>isShown(byId.get(e.s))&&isShown(byId.get(e.t)));
+}
+const shownNodes=()=>{_refreshShown();return _shownNodes;};
+const shownEdges=()=>{_refreshShown();return _shownEdges;};
+
+/* Leaf counts for the hub / collapsed-group labels. Precomputed because the
+   draw loop needs them every frame: the old inline LEAVES.filter(...) was an
+   O(LEAVES) scan per labelled node per frame. */
+const leafCountByGroup=new Map(GROUPS.map(g=>[g.id,0]));
+const leafCountByCat=new Map();
+for(const l of LEAVES){
+  leafCountByGroup.set(l.group,(leafCountByGroup.get(l.group)||0)+1);
+  for(const c of new Set([l.cat,...(l.clusters||[])]))
+    leafCountByCat.set(c,(leafCountByCat.get(c)||0)+1);
+}
 
 /* layout seed */
 const HUB_ANGLE=DATA.hubAngles;
@@ -193,8 +358,6 @@ const HUB_R=520;
 /* root id comes from the data — never hardcode it ('xo' today, anything
    tomorrow); byId.get(unknown).fx throws and kills boot. */
 const root=byId.get(DATA.root.id);root.fx=0;root.fy=0;
-document.getElementById('root-name').textContent=DATA.root.label;
-document.getElementById('root-reset').textContent='Reset to '+DATA.root.label;
 HUBS.forEach(h=>{h.ax=Math.cos(HUB_ANGLE[h.cat])*HUB_R;h.ay=Math.sin(HUB_ANGLE[h.cat])*HUB_R;h.x=h.ax;h.y=h.ay;});
 /* Each project owns an equal sector of the circle; its cluster fan must stay
    inside it. A fixed .5 rad step wraps the whole circle once a project has
@@ -524,24 +687,24 @@ function drawGraph(now){
     const sx=(n.x-cam.x)*k+GW/2,sy=(n.y-cam.y)*k+GH/2;
     if(sx<-100||sx>GW+100||sy<-50||sy>GH+50)continue;
     if(n.type==='hub'){
-      gc.font='500 17px '+SERIF;
+      gc.font='500 17px '+SANS;
       halo(n.label,sx,sy-n.r*k-12,`rgba(233,228,217,${.94*a})`);
-      gc.font='400 8.5px '+MONO;
-      const hubCount=LEAVES.filter(l=>belongsToCategory(l,n.cat)).length;
+      gc.font='500 11px '+SANS;
+      const hubCount=leafCountByCat.get(n.cat)||0;
       const hubNoun=hubCount===1?noun.replace(/s$/,''):noun;
-      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(125,120,109,${a})`,.14);
+      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(166,160,148,${a})`,.06);
     }else if(n.type==='group'){
       const on=n.id===hoverId||n.id===selId||(focusSet&&focusSet.has(n.id));
       if(!(on||k>.8))continue;
       const closed=!expanded.get(n.id);
-      gc.font='400 9px '+MONO;
-      const t=n.label.toUpperCase()+(closed?` +${LEAVES.filter(l=>belongsToCategory(l,n.cat)).length}`:'');
-      halo(t,sx,sy-n.r*k-7,`rgba(179,173,160,${.72*a})`,.1);
+      gc.font='500 11px '+SANS;
+      const t=n.label.toUpperCase()+(closed?` +${leafCountByGroup.get(n.id)||0}`:'');
+      halo(t,sx,sy-n.r*k-7,`rgba(166,160,148,${a})`,.06);
     }else if(n.type==='leaf'){
       const on=n.id===hoverId||n.id===selId||n.id===rootId||(focusSet&&focusSet.has(n.id))||(pathIds&&pathIds.includes(n.id));
       if(!(on||k>1.55||(k>1.05&&n.degree>=4)))continue;
       gc.font='400 11px '+SANS;
-      halo(n.label,sx,sy-n.r*k-7,on?`rgba(233,228,217,${.94*a})`:`rgba(179,173,160,${.62*a})`);
+      halo(n.label,sx,sy-n.r*k-7,on?`rgba(233,228,217,${.94*a})`:`rgba(166,160,148,${.9*a})`);
     }
   }
   drawSatLabels(k);
@@ -560,11 +723,10 @@ function drawGraph(now){
   /* settling status */
   document.getElementById('simstat').style.opacity=simAlpha>.05?1:0;
 }
-const SERIF=`"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif`;
-const SANS=`system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif`;
-const MONO=`ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace`;
+/* Canvas text cannot read CSS variables: keep in step with --sans in base.css. */
+const SANS=`"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif`;
 function halo(s,x,y,fill,tracking){
-  if(tracking){gc.save();/* cheap letterspacing for tiny mono caps */
+  if(tracking){gc.save();/* cheap letterspacing for tiny caps */
     gc.letterSpacing=(tracking*10)+'px';}
   gc.lineWidth=3.5;gc.strokeStyle='rgba(11,12,15,.88)';gc.lineJoin='round';
   gc.strokeText(s,x,y);gc.fillStyle=fill;gc.fillText(s,x,y);
@@ -589,7 +751,7 @@ function pick(mx,my){
   }
   return best;
 }
-gcv.addEventListener('pointerdown',e=>{
+listen(gcv,'pointerdown',e=>{
   gcv.setPointerCapture(e.pointerId);
   downX=lastX=e.clientX;downY=lastY=e.clientY;moved=false;
   if(pickSat(...evXY(e))){camAnim=null;return;} /* satellites are not bodies */
@@ -598,7 +760,7 @@ gcv.addEventListener('pointerdown',e=>{
   else pan=true;
   camAnim=null;
 });
-gcv.addEventListener('pointermove',e=>{
+listen(gcv,'pointermove',e=>{
   if(drag){
     if(Math.hypot(e.clientX-downX,e.clientY-downY)>4)moved=true;
     const w=toWorld(...evXY(e));
@@ -625,7 +787,7 @@ gcv.addEventListener('pointermove',e=>{
   }
 });
 let lastUp=0,clickT=null;
-gcv.addEventListener('pointerup',e=>{
+listen(gcv,'pointerup',e=>{
   if(drag){
     const d=drag;drag=null;
     if(d.type!=='root'&&d.id!==rootId){d.fx=null;d.fy=null;}
@@ -688,6 +850,7 @@ function clearPath(){pathIds=null;pathEdges=null;}
 function setExp(g,v){
   if(expanded.get(g.id)===v)return;
   expanded.set(g.id,v);
+  _expVersion++;   /* invalidates the shownNodes/shownEdges cache */
   if(v){
     const kids=LEAVES.filter(l=>l.group===g.id);
     kids.forEach((l,i)=>{
@@ -702,7 +865,7 @@ function toggleGroup(g){
   if(selId&&!isShown(byId.get(selId)))clearFocus();
   if(focusSet&&selId)focusSet=neighborhood(selId,focusDepth);
 }
-gcv.addEventListener('wheel',e=>{
+listen(gcv,'wheel',e=>{
   e.preventDefault();camAnim=null;
   const f=Math.exp(-e.deltaY*.0016);
   const nk=Math.max(.22,Math.min(5,cam.k*f));
@@ -712,10 +875,9 @@ gcv.addEventListener('wheel',e=>{
   cam.y=w.y-(my-GH/2)/nk;
   cam.k=nk;
 },{passive:false});
-document.getElementById('crumb-clear').addEventListener('click',()=>{clearFocus();clearPath();});
+listen(document.getElementById('crumb-clear'),'click',()=>{clearFocus();clearPath();});
 
 /* ============================== RE-ROOT ============================== */
-const rootdd=document.getElementById('rootdd');
 function computeDepths(rid){
   const m=new Map([[rid,0]]);
   let fr=[rid];
@@ -729,7 +891,8 @@ function computeDepths(rid){
   return m;
 }
 function setRoot(id){
-  if(rootId===id){closeRootDD();return;}
+  if(view!=='graph'||!byId.has(id))return false;
+  if(rootId===id){rootPicker?.setRoot(bootDataset,byId.get(id));return true;}
   const old=byId.get(rootId);
   old.fx=null;old.fy=null;
   rootId=id;
@@ -741,28 +904,13 @@ function setRoot(id){
     r.fx=r.x;r.fy=r.y;rootDepths=computeDepths(id);
   }
   clearFocus();clearPath();
-  document.getElementById('root-name').textContent=r.label;
+  rootPicker?.setRoot(bootDataset,r);
   reheat(.8);
-  go(graphRoute);
   flyTo(r.fx,r.fy,Math.min(Math.max(cam.k,.55),.9),900);
   toast(id===DATA.root.id?'Back to the full space':'Rooted on '+r.label);
-  closeRootDD();
+  return true;
 }
-function closeRootDD(){rootdd.classList.remove('is-open');}
-document.getElementById('root-btn').addEventListener('click',e=>{
-  e.stopPropagation();
-  rootdd.classList.toggle('is-open');
-  if(rootdd.classList.contains('is-open')){
-    const q=document.getElementById('root-q');
-    q.value='';q.focus();
-  }
-});
-document.getElementById('root-reset').addEventListener('click',()=>setRoot(DATA.root.id));
-rootdd.addEventListener('click',e=>e.stopPropagation());
-addEventListener('click',e=>{
-  if(!rootdd.classList.contains('is-open'))return;
-  if(!e.target.closest('.rootpick'))closeRootDD();
-});
+hooks.setRoot=setRoot;
 
 /* legend + counts */
 {
@@ -784,8 +932,6 @@ addEventListener('click',e=>{
     Object.values(CAT).map(c=>`<span class="li"><span class="sw" style="background:${c.color}"></span>${esc(c.name)}</span>`).join('')+
     shapeDefs.map((d,i)=>`<span class="li"${i===0?' style="margin-left:6px"':''}>${glyph[d.shape]||glyph.disc}${esc(d.label)}</span>`).join('')+
     typeDefs.map((d,i)=>`<span class="li${d.weight==='dim'?' li-dim':''}"${i===0?' style="margin-left:6px"':''}><span class="sw sw-ring"></span>${esc(d.label.toLowerCase())}</span>`).join('');
-  document.getElementById('counts').textContent=
-    `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · ${XCOUNT} cross-ties`;
 }
 
 /* ============================== HOVER CARD ============================== */
@@ -798,7 +944,7 @@ function showHC(n,mx,my){
   if(n.type==='leaf'){
     rows=`<dl>
       ${n.date?`<dt>Born</dt><dd>${fmtDate(n.date)}</dd>`:''}
-      <dt>Where</dt><dd class="mono">${esc(n.path)}</dd>
+      <dt>Where</dt><dd class="path">${esc(n.path)}</dd>
       <dt>Ties</dt><dd>${n.degree-1} connection${n.degree-1===1?'':'s'} · ${esc(byId.get(n.group).label)}</dd>
     </dl>`;
   }else if(n.type==='group'){
@@ -877,8 +1023,8 @@ function openPanel(n){
    "<project>/<relative path>" path. A dashboard leaf is a whole project. */
 const previewable=n=>bootDataset==='graph'&&n.type==='leaf'&&!!n.path&&n.path.includes('/');
 function closePanel(){panel.classList.remove('is-open');}
-document.getElementById('panel-close').addEventListener('click',()=>{clearFocus();clearPath();});
-panel.addEventListener('click',e=>{
+listen(document.getElementById('panel-close'),'click',()=>{clearFocus();clearPath();});
+listen(panel,'click',e=>{
   const c=e.target.closest('.conn');
   if(c){
     const n=byId.get(c.dataset.id);
@@ -935,8 +1081,10 @@ const SAT_DOTS=28;    /* dots drawn — beyond this the orbit reads as noise */
 const SAT_ROWS=40;    /* rows listed in the panel */
 const SAT_TTL=20000;  /* ms a fetched list stays fresh (re-click is instant) */
 const SAT_MIN_K=.55;  /* below this zoom, dots would collide with sibling nodes */
-/* Same order the Files tab lists todos in (projects.js:28). Duplicated rather
-   than imported: views never import each other (see the registry contract). */
+/* Same order the Projects tab lists todos in (projects.js). Duplicated rather
+   than imported: views never import each other (see the registry contract).
+   The status set is owned by services/cowork_agent/visualizer/todo_status.py;
+   tests/test_todo_status.py fails if these three stop matching it. */
 const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
 const ST_DONE=new Set(['completed','cancelled']);
 const ST_COLOR={in_progress:ACCENT,blocked:'#e0b04c',pending:'#b3ada0',
@@ -995,7 +1143,7 @@ function syncSats(n){
 }
 async function loadSats(pid,tok){
   const res=await apiFetch(API_BASE+'/api/xo-projects/'+encodeURIComponent(pid)+'/todos');
-  if(tok!==satToken)return; /* a newer selection owns the screen */
+  if(disposed||tok!==satToken)return; /* a newer projection or selection owns the screen */
   const shaped=shapeTodos(res);
   if(shaped.state==='ready'){
     if(satCache.size>40)satCache.clear();
@@ -1095,16 +1243,16 @@ function drawSatLabels(k){
   const host=satAnchor();
   if(!host)return;
   const sx=(host.x-cam.x)*k+GW/2,sy=(host.y-cam.y)*k+GH/2;
-  gc.font='400 8.5px '+MONO;
+  gc.font='500 11px '+SANS;
   const total=satRows.length;
   /* Clear of the outermost shell, not of the node: the caption sitting inside
      the orbit collides with the dots at the bottom of the constellation. */
   const shells=Math.max(...satDots.map(s=>satSlot(s.i).shell))+1;
   const out=(host.r+26+(shells-1)*19)*k+15;
-  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,'rgba(168,217,79,.9)',.14);
+  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,'rgba(168,217,79,.9)',.06);
   const s=satDots.find(d=>d.key===satHover);
   if(!s||k<SAT_MIN_K)return;
-  gc.font='400 10.5px '+SANS;
+  gc.font='400 11px '+SANS;
   const t=s.content.length>44?s.content.slice(0,43)+'…':s.content;
   halo(t,(s.x-cam.x)*k+GW/2,(s.y-cam.y)*k+GH/2-s.r*k-7,'rgba(233,228,217,.95)');
 }
@@ -1201,7 +1349,13 @@ function acRow(n,idx,q){
   return {col,name,meta,dia};
 }
 function wireAC(input,acEl,onPick){
-  let items=[],act=-1;
+  let items=[],act=-1,blurTimer=null;
+  const clear=()=>{
+    clearTimeout(blurTimer);
+    items=[];act=-1;
+    acEl.classList.remove('is-open');
+    acEl.innerHTML='';
+  };
   const render=q=>{
     if(!items.length&&q){acEl.innerHTML=`<div class="empty">No match in this workspace<small>${LEAVES.length} ${noun} mapped</small></div>`;acEl.classList.add('is-open');return;}
     acEl.innerHTML=items.map(([sc,n,idx],i)=>{
@@ -1212,26 +1366,35 @@ function wireAC(input,acEl,onPick){
     acEl.classList.toggle('is-open',items.length>0);
   };
   const pickI=i=>{
-    if(i<0||i>=items.length)return;
+    if(view!=='graph'||i<0||i>=items.length)return;
     const n=items[i][1];
-    acEl.classList.remove('is-open');items=[];act=-1;
+    clear();
     input.value=n.label;
     onPick(n);
   };
-  input.addEventListener('input',()=>{items=rankMatches(input.value);act=items.length?0:-1;render(input.value.trim().toLowerCase());});
-  input.addEventListener('keydown',e=>{
-    if(e.key==='ArrowDown'){act=(act+1)%items.length;render(input.value.toLowerCase());e.preventDefault();}
-    else if(e.key==='ArrowUp'){act=(act-1+items.length)%items.length;render(input.value.toLowerCase());e.preventDefault();}
-    else if(e.key==='Enter'){pickI(act>=0?act:0);e.preventDefault();}
-    else if(e.key==='Escape'){acEl.classList.remove('is-open');items=[];input.blur();}
+  listen(input,'input',()=>{
+    if(view!=='graph'){clear();return;}
+    clearTimeout(blurTimer);
+    items=rankMatches(input.value);act=items.length?0:-1;
+    render(input.value.trim().toLowerCase());
   });
-  input.addEventListener('blur',()=>setTimeout(()=>acEl.classList.remove('is-open'),140));
-  acEl.addEventListener('pointerdown',e=>{
+  listen(input,'keydown',e=>{
+    if(view!=='graph')return;
+    if(e.key==='ArrowDown'&&items.length){act=(act+1)%items.length;render(input.value.toLowerCase());e.preventDefault();}
+    else if(e.key==='ArrowUp'&&items.length){act=(act-1+items.length)%items.length;render(input.value.toLowerCase());e.preventDefault();}
+    else if(e.key==='Enter'){pickI(act>=0?act:0);e.preventDefault();}
+    else if(e.key==='Escape'){input.blur();clear();}
+  });
+  listen(input,'blur',()=>{blurTimer=setTimeout(clear,140);});
+  listen(acEl,'pointerdown',e=>{
+    if(view!=='graph')return;
     const b=e.target.closest('button');
     if(b){e.preventDefault();pickI(+b.dataset.i);}
   });
+  return clear;
 }
-wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
+const mapInput=document.getElementById('q'),mapAc=document.getElementById('qac');
+const clearSearchAC=(mapInput&&mapAc)?wireAC(mapInput,mapAc,n=>{
   ensureShown(n);
   go(graphRoute);
   clearPath();
@@ -1240,18 +1403,14 @@ wireAC(document.getElementById('q'),document.getElementById('qac'),n=>{
   flyTo(n.x+(GW>760?PANEL_W/2/kT:0),n.y,kT);
   pulseN={id:n.id,t0:performance.now()};
   toast('Found '+n.label);
-  document.getElementById('q').value='';
-});
-wireAC(document.getElementById('root-q'),document.getElementById('root-ac'),n=>setRoot(n.id));
-document.getElementById('root-q').addEventListener('keydown',e=>{
-  if(e.key==='Escape')closeRootDD();
-});
+  mapInput.value='';
+}):()=>{};
 
 /* ============================== VIEWS + GLOBAL KEYS ==============================
    Tab/section toggling now lives in core/registry.js. The atlas keeps only
    its internal notion of which of its lenses is active — it gates the sim
-   loop and timeline rebuilds — plus the search-focus and clear keys. */
-let view='graph';
+   loop and timeline rebuilds — plus its own clear key. The shell owns '/'. */
+let view=null;
 /* List → Graph jump: focus the project's hub (graph dataset, `p_<id>`) or
    its project node (dashboard dataset, plain id). Unknown ids no-op. */
 hooks.focusProject=()=>{
@@ -1266,16 +1425,23 @@ hooks.focusProject=()=>{
 };
 hooks.setActiveView=v=>{
   view=v;
+  if(v!=='graph'){
+    if(document.activeElement?.id==='q')document.activeElement.blur();
+    clearSearchAC();
+  }
   document.querySelectorAll('[data-atlas-lens]').forEach(button=>{
     button.classList.toggle('is-on',button.dataset.atlasLens===v);
   });
   hideHC();
   if(v==='graph'&&GW<50)resize(); /* booted while hidden (deep link): size the canvas now */
   if(v==='time'){requestAnimationFrame(()=>{buildTimeline();if(tTrace)drawTrace();});}
+  if(v==='graph')applyRootSelection(bootDataset);
+  if(v==='graph'||v==='time')hooks.focusProject();
 };
-addEventListener('keydown',e=>{
-  const typing=/INPUT|TEXTAREA/.test(document.activeElement?.tagName||'');
-  if(e.key==='/'&&!typing){e.preventDefault();document.getElementById('q').focus();return;}
+listen(window,'keydown',e=>{
+  if(!view||e.defaultPrevented)return;
+  const active=document.activeElement;
+  const typing=/INPUT|TEXTAREA|SELECT/.test(active?.tagName||'')||active?.isContentEditable;
   if(typing)return;
   if(e.key==='Escape'){clearFocus();clearPath();hideHC();}
 });
@@ -1290,10 +1456,20 @@ let TF0=T0G,TF1=T1G;
 let T0=T0G,T1=T1G;
 let tZoomed=false;
 const DAY=86400000,MIN_SPAN=DAY*7;
-let laneFilter='';
+let laneFilter=timelineFilter;
 let tRebuildRAF=null;
 /* one rebuild per frame, however many wheel ticks arrive */
 function scheduleBuild(){cancelAnimationFrame(tRebuildRAF);tRebuildRAF=requestAnimationFrame(buildTimeline);}
+hooks.getTimelineFilter=()=>laneFilter;
+hooks.setTimelineFilter=value=>{
+  if(view!=='time')return;
+  const next=String(value??'');
+  if(next===laneFilter)return;
+  laneFilter=next;timelineFilter=next;
+  document.getElementById('tlanes').value=laneFilter;
+  scheduleBuild();
+  refreshToolbar();
+};
 function setView(a,b){
   a=Math.max(TF0,a);b=Math.min(TF1,b);
   if(b-a<MIN_SPAN){const mid=(a+b)/2;a=Math.max(TF0,mid-MIN_SPAN/2);b=Math.min(TF1,a+MIN_SPAN);}
@@ -1317,25 +1493,25 @@ function renderYears(){
   const inYear=y=>tZoomed&&T0>=+new Date(y,0,1)-DAY&&T1<=+new Date(y+1,0,1)+DAY;
   const many=years.length>1;
   el.innerHTML=(many||tZoomed
-      ?`<button type="button" data-year="all"${tZoomed?'':' class="is-on"'}>All</button>`:'')
-    +(many?years.map(y=>`<button type="button" data-year="${y}"${inYear(y)?' class="is-on"':''}>${y}</button>`).join(''):'');
+      ?`<button type="button" data-year="all" aria-pressed="${!tZoomed}"${tZoomed?'':' class="is-on"'}>All dates</button>`:'')
+    +(many?years.map(y=>`<button type="button" data-year="${y}" aria-pressed="${inYear(y)}"${inYear(y)?' class="is-on"':''}>${y}</button>`).join(''):'');
   el.hidden=!many&&!tZoomed;
 }
-document.getElementById('tyears').addEventListener('click',e=>{
+listen(document.getElementById('tyears'),'click',e=>{
   const b=e.target.closest('[data-year]');if(!b)return;
   stopPlay();
   if(b.dataset.year==='all'){resetView();return;}
   const y=+b.dataset.year;
   setView(+new Date(y,0,1),+new Date(y+1,0,1));
 });
-document.getElementById('tlanes').addEventListener('input',e=>{
-  laneFilter=e.target.value;scheduleBuild();
+listen(document.getElementById('tlanes'),'input',e=>{
+  hooks.setTimelineFilter(e.target.value);
 });
 const SVGNS='http://www.w3.org/2000/svg';
 let tNow=T1G,tPlaying=false,tTrace=null;
 const tplot=document.getElementById('tplot');
 const tsvg=document.createElementNS(SVGNS,'svg');
-tplot.appendChild(tsvg);
+tplot.replaceChildren(tsvg);
 const MILES=DATA.milestones;
 /* Two modes over one axis: 'file' plots every dated artifact as a beeswarm;
    'project' plots each project's git commit history in parallel lanes (one
@@ -1345,48 +1521,43 @@ const MILES=DATA.milestones;
 const GITHIST=DATA.gitHistory||{};
 const histLanes=Object.keys(CAT).filter(cat=>(GITHIST[cat]||[]).length);
 const hasHist=histLanes.length>0;
-/* Both modes plot git dates only, so a project with no repository has no
-   lane at all. Files counts every project; without this note the Timeline
-   silently shows fewer and reads as broken data rather than as the absence
-   of git history it actually is. */
-const fileLanes=()=>Object.keys(CAT).filter(cat=>LEAVES.some(n=>n.cat===cat&&n.date));
-function coverageNote(){
-  const total=Object.keys(CAT).length;
-  const shown=(tMode==='project'?histLanes:fileLanes()).length;
-  const blank=total-shown;
-  if(!total||blank<=0)return'';
-  /* Every project has a lane now, so this counts the empty ones rather than
-     claiming a subset is "shown" — the dark columns are visible evidence. */
-  return ` ${blank} of ${total} project${total===1?'':'s'} ${blank===1?'has':'have'} no git history to plot; their lanes are dark.`;
-}
 const TMODE_KEY='space.timelineMode';
 let tMode='file';
 try{if(localStorage.getItem(TMODE_KEY)==='project'&&hasHist)tMode='project';}catch(_err){}
 let histDots=[];
 {
   const tmodeEl=document.getElementById('tmode');
-  if(tmodeEl&&hasHist)tmodeEl.hidden=false;
+  if(tmodeEl)tmodeEl.hidden=!hasHist;
 }
 document.querySelectorAll('#tmode [data-tmode]').forEach(button=>{
-  button.addEventListener('click',()=>setTMode(button.dataset.tmode));
+  listen(button,'click',()=>setTMode(button.dataset.tmode));
 });
-function defaultSub(){
-  if(tMode==='project'){
-    return'Every project’s git history in parallel · newest at the top · dot size = commits that day.'
-      +coverageNote();
+function timelineLanes(){
+  const q=laneFilter.trim().toLowerCase();
+  return Object.keys(CAT).filter(cat=>!q||CAT[cat].name.toLowerCase().includes(q));
+}
+function refreshTimelineSummary(lanes=timelineLanes()){
+  const result=timelineSummary({mode:tMode,lanes,totalProjects:Object.keys(CAT).length,
+    files:LEAVES,history:GITHIST,start:T0,end:T1,filtered:Boolean(laneFilter.trim())});
+  const summary=document.getElementById('tsummary'),context=document.getElementById('tsub');
+  if(summary.textContent!==result.summary)summary.textContent=result.summary;
+  let detail=result.context;
+  if(tTrace){
+    const list=tTrace.list;
+    if(!list.length)detail=tTrace.label+' has no dated files to trace.';
+    else{
+      const m0=fmtMY(+new Date(list[0].date+'T00:00:00'));
+      const m1=fmtMY(+new Date(list[list.length-1].date+'T00:00:00'));
+      detail=tTrace.label+': '+list.length+' dated '+(list.length===1?'file':'files')+' in trace · '+(m0===m1?m0:m0+' – '+m1)+'.';
+    }
   }
-  return(DATA.meta.timelineSub||
-    'Scrub through the workspace as it grew, newest at the top. Open any cluster from the graph to watch its run unfold here.')
-    /* the two modes fit their own data, so this axis is usually the shorter
-       one; say so, or the mismatch reads as missing history */
-    +(hasHist?' Files plot their git dates only, so this axis is shorter than By project.':'')
-    +coverageNote();
+  if(context.textContent!==detail)context.textContent=detail;
 }
 function syncTModeUI(){
   document.querySelectorAll('#tmode [data-tmode]').forEach(button=>{
-    button.classList.toggle('is-on',button.dataset.tmode===tMode);
+    const selected=button.dataset.tmode===tMode;
+    button.classList.toggle('is-on',selected);button.setAttribute('aria-pressed',String(selected));
   });
-  if(!tTrace)document.getElementById('tsub').textContent=defaultSub();
 }
 function setTMode(mode){
   if(mode===tMode||(mode==='project'&&!hasHist))return;
@@ -1431,15 +1602,16 @@ function computeRange(){
   }
 }
 function buildTimeline(){
+  computeRange();
+  const lanes=timelineLanes();
+  refreshTimelineSummary(lanes);
   const W=tplot.clientWidth,H=tplot.clientHeight;
   if(W<50||H<50)return;
-  computeRange();
   histDots=[];
   /* Every project gets a lane, including the ones with nothing to plot.
-     Dropping them made the Timeline disagree with Files about how many
+     Dropping them made the Timeline disagree with Projects about how many
      projects exist, and a reader cannot tell "no history" from "missing".
      An empty lane is drawn dark and labelled instead. */
-  const allLanes=Object.keys(CAT);
   const hasData=cat=>tMode==='project'
     ?(GITHIST[cat]||[]).length>0
     :LEAVES.some(n=>n.cat===cat&&n.date);
@@ -1447,8 +1619,6 @@ function buildTimeline(){
      is a smear, not a chart. Below MIN_COL the plot stops squeezing and
      grows wider than the pane instead, panning sideways (drag, shift+wheel)
      so the column headers stay legible whatever the project count. */
-  const q=laneFilter.trim().toLowerCase();
-  const lanes=q?allLanes.filter(cat=>CAT[cat].name.toLowerCase().includes(q)):allLanes;
   const laneSet=new Set(lanes);
   const MIN_COL=100;
   const colW=Math.max(MIN_COL,(W-64-16)/Math.max(1,lanes.length));
@@ -1460,8 +1630,8 @@ function buildTimeline(){
     const none=document.createElementNS(SVGNS,'text');
     none.setAttribute('x',SW/2);none.setAttribute('y',H/2);
     none.setAttribute('text-anchor','middle');
-    none.setAttribute('style',`font:italic 400 13px ${SERIF};fill:#56534b`);
-    none.textContent='No project matches the filter.';
+    none.setAttribute('style',`font:400 13px ${SANS};fill:var(--ink-3)`);
+    none.textContent=Object.keys(CAT).length?'No project matches the filter.':'No projects mapped yet.';
     tsvg.appendChild(none);
   }
   /* Time runs vertically: newest at the top, oldest at the bottom. Narrow
@@ -1517,11 +1687,11 @@ function buildTimeline(){
       lb.setAttribute('x',ax);lb.setAttribute('y',ay);
       lb.setAttribute('text-anchor','start');
       lb.setAttribute('transform',`rotate(-40 ${ax} ${ay})`);
-      lb.setAttribute('style',`font:italic 500 10.5px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
+      lb.setAttribute('style',`font:500 11px ${SANS};fill:${live?hexA(CAT[cat].color,.95):'var(--ink-3)'}`);
     }else{
       lb.setAttribute('x',x+colW/2);lb.setAttribute('y',M.t-14);
       lb.setAttribute('text-anchor','middle');
-      lb.setAttribute('style',`font:italic 500 13px ${SERIF};fill:${live?hexA(CAT[cat].color,.95):'rgba(125,120,109,.85)'}`);
+      lb.setAttribute('style',`font:500 13px ${SANS};fill:${live?hexA(CAT[cat].color,.95):'var(--ink-3)'}`);
     }
     lb.appendChild(document.createTextNode(label));
     labelsG.appendChild(lb);
@@ -1530,8 +1700,8 @@ function buildTimeline(){
       const why=document.createElementNS(SVGNS,'text');
       why.setAttribute('x',x+colW/2);why.setAttribute('y',(M.t+H-M.b)/2);
       why.setAttribute('text-anchor','middle');
-      why.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.1em;fill:#56534b`);
-      why.textContent=colW>=104?'NO GIT HISTORY':colW>=64?'NO HISTORY':'—';
+      why.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
+      why.textContent=tMode==='project'?'NO COMMIT DATA':'NO DATED FILES';
       labelsG.appendChild(why);
     }
     if(tMode==='project'&&live){
@@ -1539,7 +1709,7 @@ function buildTimeline(){
       const sub=document.createElementNS(SVGNS,'text');
       sub.setAttribute('x',x+colW/2);sub.setAttribute('y',H-4);
       sub.setAttribute('text-anchor','middle');
-      sub.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.06em;fill:#56534b`);
+      sub.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
       sub.textContent=colW>=70?`${total} COMMIT${total===1?'':'S'}`:String(total);
       labelsG.appendChild(sub);
     }
@@ -1561,7 +1731,7 @@ function buildTimeline(){
         const tx=document.createElementNS(SVGNS,'text');
         tx.setAttribute('x',M.l-12);tx.setAttribute('y',y+3);
         tx.setAttribute('text-anchor','end');
-        tx.setAttribute('style',`font:400 8.5px ${MONO};letter-spacing:.08em;fill:#56534b`);
+        tx.setAttribute('style',`font:500 11px ${SANS};letter-spacing:.06em;fill:var(--ink-3)`);
         const opts=d.getMonth()===0?{month:'short',year:'2-digit'}:{month:'short'};
         tx.textContent=d.toLocaleDateString('en-US',opts).toUpperCase();
         tsvg.appendChild(tx);
@@ -1698,9 +1868,13 @@ function renderTimelineState(){
   const m=[...MILES].reverse().find(x=>+new Date(x.d+'T00:00:00')<=tNow);
   const mEl=document.getElementById('tmilestone');
   /* labelled as what it is: a bare project name here read as a stray file */
-  mEl.textContent=m?'◆ milestone · '+m.t:'';
-  mEl.style.opacity=m?1:0;
-  document.getElementById('tscrub').value=Math.round((tNow-T0)/(T1-T0)*1000);
+  const caption=m?'◆ milestone · '+m.t:'',milestoneHidden=!m;
+  if(mEl.textContent!==caption||mEl.hidden!==milestoneHidden){
+    mEl.textContent=caption;mEl.hidden=milestoneHidden;scheduleBuild();
+  }
+  const scrub=document.getElementById('tscrub');
+  scrub.value=Math.round((tNow-T0)/(T1-T0)*1000);
+  scrub.setAttribute('aria-valuetext',new Date(tNow).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}));
 }
 function traceOnTimeline(n){
   if(tMode!=='file')setTMode('file'); /* traces live on the By-file plot */
@@ -1714,15 +1888,13 @@ function traceOnTimeline(n){
   go('time');
   requestAnimationFrame(()=>{
     if(!list.length){
-      document.getElementById('tsub').textContent=`${n.label} has no git-dated ${noun} to trace.`;
+      refreshTimelineSummary();scheduleBuild();
       document.getElementById('tclear').hidden=false;
       return;
     }
     drawTrace();
     document.getElementById('tclear').hidden=false;
-    const m0=fmtMY(+new Date(list[0].date)),m1=fmtMY(+new Date(list[list.length-1].date));
-    document.getElementById('tsub').textContent=
-      `${n.label}: ${list.length} ${noun}, ${m0===m1?m0:m0+' to '+m1}.`;
+    refreshTimelineSummary();scheduleBuild();
     if(!REDUCED){
       tNow=+new Date(list[0].date+'T00:00:00')-86400000*7;
       startPlay();
@@ -1758,7 +1930,7 @@ function drawTrace(){
     t.setAttribute('x',left?n.tx-10-step:n.tx+10+step);
     t.setAttribute('y',n.ty+3);
     t.setAttribute('text-anchor',left?'end':'start');
-    t.setAttribute('style',`font:400 9.5px ${SERIF};fill:#b3ada0`);
+    t.setAttribute('style',`font:400 11px ${SANS};fill:var(--ink-2)`);
     t.textContent=n.label;
     g.appendChild(t);
   });
@@ -1767,12 +1939,12 @@ function drawTrace(){
 function clearTrace(){
   tTrace=null;
   document.getElementById('tclear').hidden=true;
-  document.getElementById('tsub').textContent=defaultSub();
+  refreshTimelineSummary();scheduleBuild();
   const g=tsvg.querySelector('#ttrace');if(g)g.innerHTML='';
   renderTimelineState();
 }
-document.getElementById('tclear').addEventListener('click',clearTrace);
-document.getElementById('tscrub').addEventListener('input',e=>{
+listen(document.getElementById('tclear'),'click',clearTrace);
+listen(document.getElementById('tscrub'),'input',e=>{
   stopPlay();
   tNow=T0+(+e.target.value/1000)*(T1-T0);
   renderTimelineState();
@@ -1781,6 +1953,8 @@ let playRAF=null;
 function startPlay(){
   tPlaying=true;
   document.querySelector('#tplay span').textContent='Pause';
+  document.getElementById('tplay').setAttribute('aria-pressed','true');
+  document.querySelector('#tplay path').setAttribute('d','M2 1H5V11H2Z M7 1H10V11H7Z');
   const step=()=>{
     tNow+=(T1-T0)/(60*16);
     if(tNow>=T1){tNow=T1;stopPlay();}
@@ -1792,8 +1966,10 @@ function startPlay(){
 function stopPlay(){
   tPlaying=false;cancelAnimationFrame(playRAF);
   document.querySelector('#tplay span').textContent='Play';
+  document.getElementById('tplay').setAttribute('aria-pressed','false');
+  document.querySelector('#tplay path').setAttribute('d','M3 1L11 6L3 11Z');
 }
-document.getElementById('tplay').addEventListener('click',()=>{
+listen(document.getElementById('tplay'),'click',()=>{
   if(tPlaying){stopPlay();return;}
   if(tNow>=T1-3600000)tNow=T0;
   startPlay();
@@ -1821,7 +1997,7 @@ const tOfY=y=>{
   const top=yOf(T1),bottom=yOf(T0);
   return T1-(y-top)/(bottom-top)*(T1-T0);
 };
-tplot.addEventListener('wheel',e=>{
+listen(tplot,'wheel',e=>{
   e.preventDefault();
   if(e.shiftKey||(e.deltaX&&!e.deltaY)){tplot.scrollLeft+=e.deltaX||e.deltaY;return;}
   stopPlay();
@@ -1831,11 +2007,11 @@ tplot.addEventListener('wheel',e=>{
   setView(t-(t-T0)*f,t+(T1-t)*f);
 },{passive:false});
 let tDrag=null,tDragMoved=false;
-tplot.addEventListener('pointerdown',e=>{
+listen(tplot,'pointerdown',e=>{
   if(e.button!==0||tDrag)return;
   tDrag={id:e.pointerId,x:e.clientX,y:e.clientY,x0:e.clientX,y0:e.clientY};tDragMoved=false;
 });
-tplot.addEventListener('pointermove',e=>{
+listen(tplot,'pointermove',e=>{
   if(!tDrag||e.pointerId!==tDrag.id)return;
   /* a release the pane never saw (before capture, outside it) must not
      leave a phantom drag that pans on the next un-pressed hover */
@@ -1866,17 +2042,17 @@ function endDrag(e){
 }
 /* on window, not the pane: an uncaptured release lands wherever the
    pointer is, and the pane only captures once a drag is real */
-addEventListener('pointerup',endDrag);
-addEventListener('pointercancel',endDrag);
-tsvg.addEventListener('pointermove',e=>{
+listen(window,'pointerup',endDrag);
+listen(window,'pointercancel',endDrag);
+listen(tsvg,'pointermove',e=>{
   if(tDrag&&tDragMoved)return;
   const t=e.target;
   if(t.dataset&&t.dataset.id){showHC(byId.get(t.dataset.id),e.clientX,e.clientY);}
   else if(t.dataset&&t.dataset.hist){showHistHC(histDots[+t.dataset.hist],e.clientX,e.clientY);}
   else hideHC();
 });
-tsvg.addEventListener('pointerleave',hideHC);
-tsvg.addEventListener('click',e=>{
+listen(tsvg,'pointerleave',hideHC);
+listen(tsvg,'click',e=>{
   /* a drag that ended on a dot is a pan, not a click */
   if(tDragMoved){tDragMoved=false;return;}
   const t=e.target;
@@ -1905,25 +2081,57 @@ function resize(){
   gcv.style.width=GW+'px';gcv.style.height=GH+'px';
   if(view==='time')buildTimeline();
 }
-addEventListener('resize',resize);
+listen(window,'resize',resize);
 resize();
-for(let i=0;i<260;i++)simTick();
-simAlpha=.35;
-/* initial camera: fit everything, centered */
-{
+/* Layout warm-up.
+
+   This was `for(let i=0;i<260;i++)simTick();` — a synchronous burst of 260
+   O(N^2) ticks that blocked the first paint. Measured: ~2.0s at the 1500-leaf
+   cap, ~7.8s at 3000 leaves, ~33s at 6000. That freeze is the reason the caps
+   in space_index.py have to sit as low as they do.
+
+   The same 260 ticks are budgeted now: a short synchronous burst so the first
+   painted frame is already a readable layout, and the remainder spread across
+   following frames. Worst case is one long frame, not a multi-second hang,
+   whatever the workspace size. */
+const WARM_TICKS=260;
+let warmLeft=WARM_TICKS,warmDone=false;
+function warmStep(budgetMs){
+  const t0=performance.now();
+  while(warmLeft>0&&performance.now()-t0<budgetMs){simTick();warmLeft--;}
+  if(warmLeft===0&&!warmDone){warmDone=true;simAlpha=.35;}
+  return warmDone;
+}
+function fitAll(){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   shownNodes().forEach(n=>{x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x);y1=Math.max(y1,n.y);});
-  const k=Math.max(.3,Math.min(1.6,.94*Math.min(GW/(x1-x0+140),GH/(y1-y0+140))));
-  cam.k=k;
+  if(x1<x0)return;   /* nothing shown yet — leave the camera alone */
+  cam.k=Math.max(.3,Math.min(1.6,.94*Math.min(GW/(x1-x0+140),GH/(y1-y0+140))));
   cam.x=(x0+x1)/2;
   cam.y=(y0+y1)/2;
 }
+warmStep(24);
+fitAll();
+/* Say so, once. A large workspace opens with its groups closed (dashed rings
+   with a +N count); without a word the graph just looks empty of files. */
+if(START_COLLAPSED)setTimeout(()=>toast(
+  `${LEAVES.length} files across ${GROUPS.length} folders — double-click a folder or project to open it`),600);
 function frame(now){
-  if(view==='graph'){simTick();drawGraph(now);}
+  if(view==='graph'){
+    if(!warmDone){
+      warmStep(8);              /* ~half a frame; finishes over a few frames */
+      if(!camAnim)fitAll();     /* track the expanding layout unless flying */
+    }else if(simAlpha>0){
+      /* Gated. simAlpha decays to 0 once the layout settles; the old
+         unconditional simTick() kept doing ~N^2/2 distance computations
+         every frame forever and multiplying the result by zero. */
+      simTick();
+    }
+    drawGraph(now);
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 renderTimelineState();
-hooks.focusProject(); /* consume a List→Graph jump parked before boot */
 
 }

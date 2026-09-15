@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/stats.schema.json",
   "title": "xo stats — rolling project metrics",
-  "description": "Rolling 7d/30d activity stats plus per-session, per-runtime, and per-day breakdowns. Updated by the watcher from normalized runtime events and never hand-edited. Schema 2 adds the optional `by_day` block; schema 1 readers continue to work because `by_day` is optional and BFF helpers treat absence as zero-filled.",
+  "description": "Rolling 7d/30d activity stats plus per-session, per-runtime, and per-day breakdowns. Updated by the watcher from normalized runtime events and never hand-edited. Schema 2 adds the optional `by_day` block; schema 1 readers continue to work because `by_day` is optional and BFF helpers treat absence as zero-filled. The document also carries two underscore-prefixed PRIVATE accumulators the sink persists in-band (`_session_totals`, `_by_day_totals`) so a restart recovers its state without a sidecar; they are declared here because the document is `additionalProperties: false` and the sink has always written them. They are stripped by the BFF route allowlist and are not part of any wire shape. Cost is representable but never computed: see `definitions.cost_usd`.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "rolling"],
@@ -31,9 +31,25 @@
       "type": "object",
       "description": "Per-UTC-day rollup, capped to ~35 entries (30d analytics window + 5d buffer). Keys are YYYY-MM-DD. Introduced in schema 2.",
       "additionalProperties": { "$ref": "#/definitions/day_bucket" }
+    },
+    "_session_totals": {
+      "type": "object",
+      "description": "PRIVATE durable accumulator, keyed by native session id. The sink rebuilds the public `by_session` view from it on every tick, so it must survive a restart — it lives in this file rather than a sidecar. Written by services/cowork_agent/visualizer/sinks/stats.py; stripped before any BFF response. Not a wire field: readers outside the sink must use `by_session`.",
+      "additionalProperties": { "$ref": "#/definitions/session_totals_private" }
+    },
+    "_by_day_totals": {
+      "type": "object",
+      "description": "PRIVATE durable accumulator for `by_day`, keyed YYYY-MM-DD. Same shape as the public view (the sink writes the same object under both keys today) and kept for the same restart-recovery reason as `_session_totals`. Stripped before any BFF response.",
+      "additionalProperties": { "$ref": "#/definitions/day_bucket" }
     }
   },
   "definitions": {
+    "cost_usd": {
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "default": null,
+      "description": "Money attributable to this bucket, in USD. Absent or `null` means UNKNOWN — there is no pricing table in this repo (the real one lives in the out-of-tree Argus daemon and is already stale), so nothing computes this today. syncplan §13 decision O6: cost stays null, and a confident `0.0` is never emitted. `exclusiveMinimum: 0` makes that structural rather than advisory — writing 0.0 as a stand-in for `unknown` is a schema violation, because a bucket that consumed tokens did not cost nothing. Declared at every level so cost is representable the day a pricing table exists; until then a reader MUST render unknown, not $0.00."
+    },
     "tokens": {
       "type": "object",
       "additionalProperties": false,
@@ -52,7 +68,8 @@
         "by_tool":        { "type": "object", "description": "Map of tool name → call count over this window. Populated from per-session tool tallies. Introduced in schema 2 (Phase 2 / Stage 2).", "additionalProperties": { "type": "integer", "minimum": 0 } },
         "files_edited":   { "type": "integer", "minimum": 0 },
         "sessions":       { "type": "integer", "minimum": 0 },
-        "active_minutes": { "type": "integer", "minimum": 0 }
+        "active_minutes": { "type": "integer", "minimum": 0 },
+        "cost_usd":       { "$ref": "#/definitions/cost_usd" }
       }
     },
     "session_stats": {
@@ -63,7 +80,25 @@
         "files":       { "type": "array", "items": { "type": "string" } },
         "duration_ms": { "type": "integer", "minimum": 0 },
         "tools":       { "type": "object", "description": "Per-session tool tally. Map of tool name → call count. Introduced in schema 2.", "additionalProperties": { "type": "integer", "minimum": 0 } },
-        "by_model":    { "type": "object", "description": "Per-session token split by model. Map of model id → {input, output}. Introduced in schema 2.", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "input": { "type": "integer", "minimum": 0 }, "output": { "type": "integer", "minimum": 0 } } } }
+        "by_model":    { "type": "object", "description": "Per-session token split by model. Map of model id → {input, output}. Introduced in schema 2.", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "input": { "type": "integer", "minimum": 0 }, "output": { "type": "integer", "minimum": 0 } } } },
+        "cost_usd":    { "$ref": "#/definitions/cost_usd" }
+      }
+    },
+    "session_totals_private": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One entry of `_session_totals`. The sink's own working state — a superset of `session_stats` carrying the first/last timestamps it needs to recompute `duration_ms` and the rolling windows. `required` lists only the keys every revision of the sink has seeded, so a document written before `tools` / `by_model_tokens` existed still validates.",
+      "required": ["tokens", "files", "duration_ms", "runtime"],
+      "properties": {
+        "tokens":          { "$ref": "#/definitions/tokens" },
+        "files":           { "type": "array", "items": { "type": "string" } },
+        "duration_ms":     { "type": "integer", "minimum": 0 },
+        "first_ts":        { "type": ["string", "null"], "format": "date-time" },
+        "last_ts":         { "type": ["string", "null"], "format": "date-time" },
+        "runtime":         { "type": "string", "description": "Adapter name that owns the session; empty string until the first event names one." },
+        "by_model_tokens": { "type": "object", "additionalProperties": { "$ref": "#/definitions/tokens" } },
+        "tools":           { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "cost_usd":        { "$ref": "#/definitions/cost_usd" }
       }
     },
     "day_bucket": {
@@ -89,10 +124,10 @@
             "user":         { "type": "integer", "minimum": 0 },
             "assistant":    { "type": "integer", "minimum": 0 },
             "toolCalls":    { "type": "integer", "minimum": 0 },
-            "toolResults":  { "type": "integer", "minimum": 0 },
-            "errors":       { "type": "integer", "minimum": 0 }
+            "toolResults":  { "type": "integer", "minimum": 0, "description": "NO PRODUCER. The sink seeds this to 0 and never increments it — no branch in services/cowork_agent/visualizer/sinks/stats.py handles a tool result — so a non-zero value cannot occur today. Optional rather than required precisely so it stays droppable: a permanently-zero counter must not read as a measurement." },
+            "errors":       { "type": "integer", "minimum": 0, "description": "NO PRODUCER — same as `toolResults`. Nothing in ingest/events.py carries an error, so this is seeded to 0 and never incremented." }
           },
-          "required": ["total", "user", "assistant", "toolCalls", "toolResults", "errors"]
+          "required": ["total", "user", "assistant", "toolCalls"]
         },
         "by_model": {
           "type": "object",
@@ -103,11 +138,13 @@
             "properties": {
               "input":  { "type": "integer", "minimum": 0 },
               "output": { "type": "integer", "minimum": 0 },
-              "count":  { "type": "integer", "minimum": 0 }
+              "count":  { "type": "integer", "minimum": 0 },
+              "cost_usd": { "$ref": "#/definitions/cost_usd" }
             },
             "required": ["input", "output", "count"]
           }
         },
+        "cost_usd": { "$ref": "#/definitions/cost_usd" },
         "latency": {
           "type": "object",
           "additionalProperties": false,

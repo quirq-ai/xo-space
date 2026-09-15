@@ -19,6 +19,13 @@
     "session_header": "X-Hermes-Session-Id"
   },
   "model_prefix": "hermes",
+  "mcp": {
+    "format": "yaml",
+    "key_path": ["mcp_servers"],
+    "server_name": "composio",
+    "entry": {"url": "{proxy_url}", "transport": "streamable-http", "enabled": true},
+    "create_if_missing": false
+  },
   "model_capabilities": {
     "function_calling": true,
     "vision": false,

@@ -1,7 +1,8 @@
+import {isProjectRoute} from './navigation.js?v=20260915-agents2';
 /* File previewer — a floating window that renders one file from a project.
 
    Lives in core/, not in a view, because three surfaces open it (the Tree
-   lens, the Files explorer, the graph's detail panel) and views never import
+   lens, the Data file explorer, the graph's detail panel) and views never import
    each other. They dispatch `space:preview-file` with {project, path, name}
    and this module owns everything after that.
 
@@ -57,6 +58,8 @@ let versions=null;  /* /file-history items, or null */
 let cache=null;     /* Map hash → version payload, per open file */
 let source=false;   /* Source toggle */
 let token=0;        /* race guard: only the newest request may paint */
+let pendingVersion=null; /* commit awaiting the restored file's history */
+const RELOAD_KEY='space.previewReload';
 
 export function initPreview(){
   el=document.getElementById('preview');
@@ -64,28 +67,82 @@ export function initPreview(){
   body=el.querySelector('#preview-body');
   picker=el.querySelector('#preview-version');
   el.addEventListener('click',onClick);
-  picker.addEventListener('change',()=>pick(picker.value));
+  picker.addEventListener('change',()=>{pendingVersion=null;pick(picker.value);});
   initDrag();
   addEventListener('space:preview-file',e=>open(e.detail||{}));
-  /* The window belongs to the Files context. The three lenses (List, Graph,
-     Tree) all report tab 'projects' — see registry.js — so switching between
-     them keeps the file open; landing on any other tab leaves it behind, a
-     file preview having nothing to say about Sessions or Secrets. */
+  /* All five Projects lenses report tab 'projects'. Keep the file open
+     within that context; another tab leaves it behind. */
   addEventListener('space:view',e=>{
     if(e.detail?.tab!=='projects'&&el.classList.contains('is-open'))close();
   });
+  addEventListener('space:before-atlas-reload',saveForReload);
   addEventListener('keydown',e=>{
     /* Escape closes the preview first; the graph's own Escape handling only
        gets it once nothing is being previewed. */
     if(e.key==='Escape'&&el.classList.contains('is-open')){e.stopPropagation();close();}
   },true);
+  restoreAfterReload();
+}
+
+/* Compatibility for explicit reload handoffs from older atlas versions.
+   Normal projection changes now keep this preview mounted. Only UI state
+   is handed off; file contents are fetched afresh and never stored here.
+   Consume the record once, including on other routes, so it cannot revive later. */
+function saveForReload(){
+  try{
+    sessionStorage.removeItem(RELOAD_KEY);
+    if(!current||!el.classList.contains('is-open')
+      ||!isProjectRoute(location.hash.replace(/^#\//,'')))return;
+    const r=el.getBoundingClientRect();
+    sessionStorage.setItem(RELOAD_KEY,JSON.stringify({
+      route:location.hash,file:current,source,
+      version:pendingVersion||(picker.value!==''?versions?.[+picker.value]?.hash:null),
+      geometry:{left:r.left,top:r.top,width:el.offsetWidth,height:el.offsetHeight}
+    }));
+  }catch(_err){} /* storage can be unavailable; previewing still works */
+}
+function restoreAfterReload(){
+  let saved;
+  try{
+    const raw=sessionStorage.getItem(RELOAD_KEY);
+    sessionStorage.removeItem(RELOAD_KEY);
+    saved=JSON.parse(raw);
+  }catch(_err){return;}
+  if(!saved||saved.route!==location.hash
+    ||!isProjectRoute(location.hash.replace(/^#\//,'')))return;
+  const file=saved.file;
+  if(!file||typeof file.project!=='string'||!file.project
+    ||typeof file.path!=='string'||!file.path)return;
+  const g=saved.geometry;
+  if(g&&[g.left,g.top,g.width,g.height].every(Number.isFinite)&&g.width>0&&g.height>0){
+    const width=Math.min(g.width,innerWidth),height=Math.min(g.height,innerHeight);
+    el.style.width=width+'px';el.style.height=height+'px';
+    el.style.left=Math.min(Math.max(g.left,64-width),innerWidth-64)+'px';
+    el.style.top=clampTop(g.top)+'px';
+    el.style.right='auto';
+  }
+  open(file,saved);
+}
+
+function clampTop(top){
+  const nav=document.getElementById('section-nav');
+  const inset=Math.ceil(Math.max(document.querySelector('.topbar')?.getBoundingClientRect().bottom||0,
+    nav&&!nav.hidden?nav.getBoundingClientRect().bottom:0));
+  return Math.min(Math.max(top,inset),Math.max(inset,innerHeight-48));
 }
 
 /* Drag by the header. The stylesheet anchors the window to the top-right by
    default; the first drag converts that to explicit left/top once, and from
    then on the coordinates are the source of truth. Clamped so the header can
-   never leave the viewport — a window you cannot grab cannot be recovered. */
+   never leave the viewport or sit behind responsive navigation. */
 function initDrag(){
+  const keepHeaderClear=()=>{
+    const top=parseFloat(el.style.top);
+    if(Number.isFinite(top))el.style.top=clampTop(top)+'px';
+  };
+  addEventListener('resize',keepHeaderClear);
+  const topbar=document.querySelector('.topbar');
+  if(topbar&&typeof ResizeObserver==='function')new ResizeObserver(keepHeaderClear).observe(topbar);
   const header=el.querySelector('header');
   header.addEventListener('pointerdown',e=>{
     if(e.button!==0||e.target.closest('button,select'))return;
@@ -96,7 +153,7 @@ function initDrag(){
     header.setPointerCapture(e.pointerId);
     const move=ev=>{
       el.style.left=Math.min(Math.max(ev.clientX-dx,64-el.offsetWidth),innerWidth-64)+'px';
-      el.style.top=Math.min(Math.max(ev.clientY-dy,0),innerHeight-48)+'px';
+      el.style.top=clampTop(ev.clientY-dy)+'px';
     };
     const up=()=>{
       header.removeEventListener('pointermove',move);
@@ -108,10 +165,11 @@ function initDrag(){
   });
 }
 
-async function open({project,path,name}){
+async function open({project,path,name},restore=null){
   if(!el||!project||!path)return;
   current={project,path,name:name||path.split('/').pop()};
-  data=headData=versions=null;cache=new Map();source=false;
+  data=headData=versions=null;cache=new Map();source=restore?.source===true;
+  pendingVersion=typeof restore?.version==='string'?restore.version:null;
   picker.hidden=true;picker.innerHTML='';
   const mine=++token;
   el.classList.add('is-open');
@@ -132,7 +190,8 @@ async function open({project,path,name}){
 }
 function close(){
   el.classList.remove('is-open');
-  current=null;data=null;headData=null;versions=null;cache=null;token++;
+  current=null;data=null;headData=null;versions=null;cache=null;pendingVersion=null;token++;
+  try{sessionStorage.removeItem(RELOAD_KEY);}catch(_err){}
   picker.hidden=true;picker.innerHTML='';
   if(body){body.classList.remove('is-frame');body.innerHTML='';}
 }
@@ -143,7 +202,9 @@ function close(){
 async function loadVersions(mine){
   const res=await apiFetch(API_BASE+'/api/xo-projects/'+encodeURIComponent(current.project)
     +'/file-history?relative_path='+encodeURIComponent(current.path));
-  if(mine!==token||!res.ok)return;
+  if(mine!==token)return;
+  const restoreVersion=pendingVersion;pendingVersion=null;
+  if(!res.ok)return;
   const items=res.data?.is_repo?res.data.items:[];
   if(!items.length)return;
   versions=items;
@@ -155,6 +216,10 @@ async function loadVersions(mine){
         +(c.subject.length>44?c.subject.slice(0,43)+'…':c.subject))
       +'</option>').join('');
   picker.hidden=false;
+  if(restoreVersion){
+    const index=items.findIndex(item=>item.hash===restoreVersion);
+    if(index>=0){picker.value=String(index);pick(picker.value);}
+  }
 }
 
 /* Show one picked version — through the exact same render path as the live

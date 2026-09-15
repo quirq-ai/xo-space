@@ -5,15 +5,34 @@
   "description": "Sibling file to `sessionslist.json`. Holds the fields the runtime adapters do not compute: message/tool/task counters, first/last activity timestamps, ended_at, and episode_refs. Single writer: the watcher (services/cowork_agent/visualizer/sinks/sessions_augment.py). BFF readers stitch rows here onto the corresponding `sessionslist.json` row at read time (see docs/watcher-design.md §3.7). Keys are the same composite session ids used by `sessionslist.json` so the merge is a simple dict overlay. Schema 2 (Phase 2 / Stage 3) adds the optional `messageCountByRole` field; schema 1 files stay valid because the field is optional and BFF helpers treat absence as zeros.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "sessions"],
+  "required": [
+    "schema",
+    "sessions"
+  ],
   "properties": {
-    "$schema":    { "type": "string" },
-    "schema":     { "type": "integer", "enum": [1, 2] },
-    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "integer",
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "sessions": {
       "type": "object",
       "description": "Map of composite session id (same key as sessionslist.json) → augmenting fields.",
-      "additionalProperties": { "$ref": "#/definitions/augment_row" }
+      "additionalProperties": {
+        "$ref": "#/definitions/augment_row"
+      }
     }
   },
   "definitions": {
@@ -21,40 +40,112 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "messageCount":   { "type": "integer", "minimum": 0, "description": "Count of user+assistant message events observed in the runtime's session log." },
+        "messageCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of user+assistant message events observed in the runtime's session log."
+        },
         "messageCountByRole": {
           "type": "object",
           "additionalProperties": false,
           "description": "Per-role breakdown of message events. Sum of user+assistant should equal messageCount; toolResults and errors are reserved for future event types (currently always 0). Introduced in schema 2.",
           "properties": {
-            "user":        { "type": "integer", "minimum": 0 },
-            "assistant":   { "type": "integer", "minimum": 0 },
-            "toolResults": { "type": "integer", "minimum": 0 },
-            "errors":      { "type": "integer", "minimum": 0 }
+            "user": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "assistant": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolResults": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "errors": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         },
-        "toolCallCount":  { "type": "integer", "minimum": 0, "description": "Count of tool_use events (all tools combined)." },
-        "taskCount":      { "$ref": "#/definitions/task_count" },
-        "firstActivity":  { "type": ["integer", "null"], "minimum": 0, "description": "Epoch ms of the first event the watcher observed for this session." },
-        "lastActivity":   { "type": ["integer", "null"], "minimum": 0, "description": "Epoch ms of the most recent event." },
-        "ended_at":       { "type": ["string", "null"], "format": "date-time", "description": "Set when the watcher detects the session has closed (PID gone, no events for 10+ minutes). Null while live." },
-        "episode_refs":   {
+        "toolCallCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of tool_use events (all tools combined)."
+        },
+        "taskCount": {
+          "$ref": "#/definitions/task_count"
+        },
+        "firstActivity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Epoch ms of the first event the watcher observed for this session."
+        },
+        "lastActivity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Epoch ms of the most recent event."
+        },
+        "ended_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "description": "Set when the watcher detects the session has closed (PID gone, no events for 10+ minutes). Null while live."
+        },
+        "episode_refs": {
           "type": "array",
           "description": "Filenames (basename only) under <project>/memory/episodic/ that the watcher has paired with this session. Append-only; preserved verbatim across merges.",
-          "items": { "type": "string", "pattern": "^[^/\\\\]+\\.md$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[^/\\\\]+\\.md$"
+          }
+        },
+        "_task_states": {
+          "type": "object",
+          "description": "Watcher-private: task_id -> last-seen status. Persisted deliberately (sinks/sessions_augment.py:240-246) because taskCount cannot be decremented correctly across a restart without it, and forget_task uses membership here to keep a replay or double-delete from underflowing. Never serialised to the wire — merge_session_record treats it as watcher-only and the BFF models pick named fields.",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
     "task_count": {
       "type": "object",
+      "description": "`total` plus exactly one counter per todo status. Source of truth for the status keys: services/cowork_agent/visualizer/todo_status.py::TODO_STATUSES (tests/test_todo_status.py asserts these properties match it).",
       "additionalProperties": false,
       "properties": {
-        "total":       { "type": "integer", "minimum": 0 },
-        "completed":   { "type": "integer", "minimum": 0 },
-        "in_progress": { "type": "integer", "minimum": 0 },
-        "pending":     { "type": "integer", "minimum": 0 },
-        "cancelled":   { "type": "integer", "minimum": 0 },
-        "blocked":     { "type": "integer", "minimum": 0 }
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "in_progress": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancelled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   }

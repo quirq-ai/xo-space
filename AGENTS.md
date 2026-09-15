@@ -9,8 +9,25 @@
 ## Architecture conventions
 
 - Put endpoint modules in `routers/` via `APIRouter`.
+- Placement: only code specific to running an agent lives under `services/cowork_agent/`; what a person
+  uses as much as the agent does (Inbox, connections polling, the swarm client) is a top-level package
+  under `services/`. Judge by the consumer, not the dependency (DEVELOPING.md section 7).
+  What those packages share is Space-level too: `services/storage/` (file primitives; the old
+  `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` paths still
+  import), `services/timestamps.py`, `services/errors.py` (`ServiceError`), `services/periodic.py`
+  (`run_forever`) and `routers/cowork_agent/bff/errors.py`. `services/connections` never imports
+  the inbox; the inbox registers a new-events listener with it.
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
+- Every external command runs through `utils/commands.py` (`run` / `run_spec` over an
+  argv list, `safe_arg` for untrusted values). No `shell=True`, no command strings;
+  `tests/test_command_executor.py` enforces it and holds the migration backlog.
+- Every call to xo-swarm-api goes through `services/swarm_api/` (one transport in
+  `_http.py`, one module per feature). No other module reads `CHAT_API_BASE_URL`
+  or builds a swarm URL; `tests/test_swarm_api.py` enforces it.
+- Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free code:
+  `config.py` is its only env reader, `service.py` its only router-facing surface,
+  and per-repo bookmarks live under `~/.quirq/sharing/`, never in a project's `.xo/`.
 
 ## Agent-modular architecture (read before touching core)
 
@@ -23,7 +40,7 @@
   `services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
   `config/models/<name>/` (legacy Plane-A model clients). No other file may name
   an agent (`openclaw`/`hermes`/`claude_code`) in code.
-- Adapters are auto-discovered — adding an agent = drop those folders, zero core
+- Adapters are auto-discovered: adding an agent = drop those folders, zero core
   edits. The one sanctioned core literal is the `openclaw` safe-boot default in
   `registry/agent_registry.py`.
 - Two planes: Plane A = legacy `/ask_question*` via `config/models/<name>/`
@@ -40,9 +57,13 @@
 ## Validation
 
 - The project venv is `venv/bin/python` (system `python3` lacks fastapi).
-- After touching core, run `venv/bin/python scripts/check_agent_modularity.py` (must pass).
-- Import gate + route parity (expect 146 / 149 / 173 for claude_code / openclaw / hermes):
-  `AGENT_NAME=<a> venv/bin/python -c "import server"`.
+- After touching core, uphold the modularity invariant (no agent name in core
+  code; see DEVELOPING.md §6). The AST guard is local dev tooling and is not in
+  this repo; verify by hand against the allowlist in §6 if you do not have it.
+- Import gate + route parity: `venv/bin/python scripts/check_route_parity.py`
+  (must pass). It asserts the invariant (every agent's surface is the shared
+  core plus exactly its own `adapters/<name>/routes.py`) instead of a
+  hardcoded total, which rots on every route added.
 - Validate changes with lints/tests/compile where feasible.
 - Keep edits minimal and targeted to the requested task.
 

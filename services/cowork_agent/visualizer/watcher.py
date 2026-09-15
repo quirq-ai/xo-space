@@ -16,23 +16,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
+from services import xo_structure
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
-from services.cowork_agent.project_layout import xo_dir
+from services.cowork_agent.project_layout import runtime_dir_for_project, xo_dir
+from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.ingest import jsonl_tail
-from services.cowork_agent.visualizer.ingest.events import UsageObserved
+from services.cowork_agent.visualizer.ingest.events import (
+    TaskCreated,
+    TaskStatusChanged,
+    UsageObserved,
+)
 from services.cowork_agent.visualizer.sinks import (
     activity,
     project_json,
     sessions_augment,
     stats,
     timeline,
-    todos,
 )
-from services.cowork_agent.visualizer.state import project_activity_path
+from services.cowork_agent.visualizer.state import (
+    project_activity_path,
+    watcher_heartbeat_path,
+)
 from services.cowork_agent.visualizer.workspace import (
     activity as ws_activity,
 )
@@ -46,26 +56,37 @@ from services.cowork_agent.visualizer.workspace import (
     stats as ws_stats,
 )
 from services.cowork_agent.visualizer.workspace import (
-    timeline as ws_timeline,
-)
-from services.cowork_agent.visualizer.workspace import (
-    workspace_json,
+    projects_json,
+    space_json,
     views as ws_views,
 )
-from services.cowork_agent.visualizer.workspace_index import list_project_ids
+from services.cowork_agent.visualizer.workspace_index import (
+    list_project_ids,
+    project_index_scope,
+)
+from utils.commands import scheduler
+from utils.runtime_env import watcher_tick_interval_seconds
 
 logger = logging.getLogger(__name__)
 
-def _poll_interval_seconds() -> float:
-    raw = (os.getenv("QUIRQ_WATCHER_INTERVAL_SECONDS", "1") or "1").strip()
-    try:
-        interval = float(raw)
-    except ValueError:
-        interval = 1.0
-    return min(60.0, max(0.25, interval))
+def _now_iso() -> str:
+    """UTC, second granularity — the same stamp format the sinks write."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+# One definition, shared with the command scheduler (which treats the tick
+# period as the floor on a job's interval): utils/runtime_env.py.
+_poll_interval_seconds = watcher_tick_interval_seconds
 
 POLL_INTERVAL_S = _poll_interval_seconds()
+
+
+def _sink_events(events: list) -> list:
+    """Drop the task family before the sinks see it."""
+    return [
+        ev for ev in events
+        if not isinstance(ev, (TaskCreated, TaskStatusChanged))
+    ]
 
 
 class Watcher:
@@ -107,10 +128,27 @@ class Watcher:
             )
             self.sources.append(source)
         self.model_by_session: dict[str, str] = {}
+        # Monotonically increasing count of ticks executed since start;
+        # published in the heartbeat so a reader can tell a watcher that is
+        # ticking from one whose file merely happens to be recent.
+        self.tick_count = 0
+        # What the command scheduler did on the last tick (ids only), or
+        # None before the first tick; published in the heartbeat.
+        self.last_scheduler_report: Optional[dict] = None
 
     # ── One tick ────────────────────────────────────────────────────────
 
     def tick(self) -> None:
+        """
+        One pass: drain sources, fan to sinks, refresh the workspace tier,
+        beat.
+        """
+        with project_index_scope():
+            self._tick_body()
+
+    def _tick_body(self) -> None:
+        tick_started = time.monotonic()
+
         # 1. Drain every source.
         events: list = []
         for src in self.sources:
@@ -137,27 +175,25 @@ class Watcher:
         # workspace timeline.
         for project_id, project_events in events_by_project.items():
             x = xo_dir(project_id)
+            sink_events = _sink_events(project_events)
             try:
+                # Identity FIRST, then resolve the runtime home.
                 project_json.fill_identity(x, project_id)
-                sessions_augment.apply(x, project_events)
-                todos.apply(x, project_events)
-                stats.apply(x, project_events)
-                timeline_lines = timeline.apply(x, project_events)
+                rt = runtime_dir_for_project(project_id, create=True)
+                if rt is None:
+                    continue
+                sessions_augment.apply(rt, sink_events, legacy_root=x)
+                stats.apply(rt, sink_events, legacy_root=x)
+                # The Space timeline gets the same rendered lines, tagged.
+                timeline.apply(rt, sink_events, project_id=project_id)
             except Exception:
                 logger.exception("sink batch failed for project %s", project_id)
                 continue
 
-            # Workspace timeline gets the same rendered lines, tagged.
-            if timeline_lines:
-                try:
-                    ws_timeline.apply(timeline_lines, project_id=project_id)
-                except Exception:
-                    logger.exception("workspace timeline failed for %s", project_id)
-
         # 5. Activity sink — driven by presence snapshot, not events.
         # Runs for every project (even those with no events this tick)
         # so a session that exited gets evicted from the machine-local
-        # presence snapshot under ~/.quirq/watcher/activity/.
+        # presence snapshot under ~/.quirq/cache/activity/.
         presence: list[dict] = []
         for src in self.sources:
             try:
@@ -170,7 +206,19 @@ class Watcher:
             if isinstance(pid, str) and pid:
                 presence_by_project[pid].append(row)
 
-        for pid in list_project_ids():
+        # Resolved once, here, and threaded through the workspace tier below.
+        # Inside the scope this is the walk every other caller in this tick
+        # reuses.
+        project_ids = list_project_ids()
+
+        for pid in project_ids:
+            # Every project carries the canonical .xo/, including a folder
+            # cloned by hand straight into the projects root. Additive only,
+            # never raises, and one lstat while the folder's .xo/ is unchanged.
+            try:
+                xo_structure.ensure_xo_structure_if_changed(pid)
+            except Exception:
+                logger.exception("xo structure check failed for %s", pid)
             # Identity fill is idempotent (no-ops once _template is cleared).
             # Running it here — alongside the per-project activity sink that
             # already iterates every known project — closes the gap where a
@@ -195,14 +243,56 @@ class Watcher:
         # mapped file in the workspace and therefore throttles itself to
         # XO_VIEWS_REFRESH_S. Timeline is append-only, handled in step 4.
         try:
-            workspace_json.apply()
+            projects_json.apply(project_ids)
+            space_json.apply()  # self-throttled; the Space record barely moves
             ws_views.apply()   # self-throttled; the only expensive sink here
-            ws_stats.apply()
-            ws_activity.apply()
-            ws_sessionslist.apply()
-            ws_sessions_augment.apply()
+            ws_stats.apply(project_ids)
+            ws_activity.apply(project_ids)
+            ws_sessionslist.apply(project_ids)
+            ws_sessions_augment.apply(project_ids)
         except Exception:
             logger.exception("workspace tier failed")
+
+        # 7. Scheduled commands. This loop is only the scheduler's clock:
+        # the scheduler owns the policy and the state, and its tick only
+        # launches jobs (it never waits for one), so this step costs two
+        # small reads when nothing is due.
+        self._scheduler_step()
+
+        # 8. Liveness beat — last, so duration_ms covers the real tick.
+        self._write_heartbeat(tick_started)
+
+    def _scheduler_step(self) -> None:
+        """Give the command scheduler its once-per-tick call. Never raises:
+        a scheduler bug must not stop telemetry ingestion."""
+        try:
+            report = scheduler.tick()
+        except Exception:
+            logger.exception("scheduler tick failed (non-fatal)")
+            self.last_scheduler_report = {"error": "scheduler tick raised; see log"}
+            return
+        self.last_scheduler_report = report.as_dict()
+        if not report.quiet:
+            logger.info("scheduler: %s", self.last_scheduler_report)
+
+    def _write_heartbeat(self, tick_started: float) -> None:
+        """Persist the once-per-tick liveness beat. Never raises."""
+        self.tick_count += 1
+        try:
+            write_json_atomic(
+                watcher_heartbeat_path(),
+                {
+                    "schema": 1,
+                    "last_tick_at": _now_iso(),
+                    "tick_count": self.tick_count,
+                    "duration_ms": int(
+                        round((time.monotonic() - tick_started) * 1000)
+                    ),
+                    "scheduler": self.last_scheduler_report,
+                },
+            )
+        except Exception:
+            logger.exception("heartbeat write failed (non-fatal)")
 
     # ── Async runner ────────────────────────────────────────────────────
 

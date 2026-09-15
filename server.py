@@ -7,7 +7,7 @@ import asyncio
 import os
 import json
 import datetime
-import subprocess
+import logging
 import sys
 import uuid
 import shutil
@@ -18,6 +18,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+# Reads no environment at import, so it is safe before the dotenv load below.
+from services.storage.layout import secrets_dir, settings_dir
 from pydantic import BaseModel
 from dotenv import dotenv_values, load_dotenv
 import httpx
@@ -25,16 +28,45 @@ import uvicorn
 from config.models.claude_code import ClaudeCodeClient
 from config.models.codex import CodexCodeClient
 from utils.local_port import LocalPortsUnavailableError, resolve_server_port
+from utils.commands import run, run_sync, spawn_detached
+
+
+def _prune_blank_env_shadows(dotenv_path: Path) -> None:
+    """Drop variables exported blank that the checkout's ``.env`` can fill.
+
+    A var exported *empty* (a launcher that always exports ``XO_SPACE_ID``,
+    say, whether or not it has one) is still present in ``os.environ``, and
+    python-dotenv skips a key on membership, not truthiness. Plain
+    ``load_dotenv()`` would therefore leave the blank in place and the ``.env``
+    value would never land: exporting empty ends up worse than not exporting
+    at all. The symptom is a configured value reading as unset (sharing parks
+    on an empty ``XO_SPACE_ID`` despite ``.env`` naming the workspace).
+
+    Only keys ``.env`` has a non-empty value for are dropped, so a variable
+    that legitimately uses ``""`` as an off switch keeps its blank, and a
+    non-empty export still outranks the file. Runs before ``_shell_env_keys``
+    is snapshotted so roots.env precedence stays consistent with it.
+    """
+    try:
+        values = dotenv_values(dotenv_path)
+    except OSError:
+        return
+    for key, value in (values or {}).items():
+        if (value or "").strip() and not os.environ.get(key, "").strip():
+            os.environ.pop(key, None)
+
 
 # Load environment variables. Keys already exported by the shell (or by
 # docker -e / compose) are recorded first: they outrank every file below,
-# exactly as install.sh orders them.
+# exactly as install.sh orders them, but only when they actually carry a
+# value, which is what the prune above guarantees.
+_prune_blank_env_shadows(Path(__file__).resolve().parent / ".env")
 _shell_env_keys = frozenset(os.environ)
 load_dotenv()
 
 
 def _load_storage_roots() -> None:
-    """Apply ``<state root>/roots.env`` — the storage roots the Setup tab writes.
+    """Apply ``<state root>/roots.env``: the storage roots the Setup tab writes.
 
     Precedence, mirroring install.sh: shell/container env > roots.env >
     the checkout's .env. Loading it here is what makes the Setup tab's XO
@@ -49,8 +81,12 @@ def _load_storage_roots() -> None:
     anchor = Path(
         (os.getenv("QUIRQ_STATE_ROOT", "") or "").strip() or Path.home() / ".quirq"
     ).expanduser()
+    # settings/roots.env since the state root has folders; roots.env before.
+    roots_file = anchor / settings_dir().name / "roots.env"
+    if not roots_file.is_file():
+        roots_file = anchor / "roots.env"
     try:
-        values = dotenv_values(anchor / "roots.env")
+        values = dotenv_values(roots_file)
     except OSError:
         return
     for key in ("XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT"):
@@ -63,14 +99,33 @@ _load_storage_roots()
 _quirq_state_root = Path(
     (os.getenv("QUIRQ_STATE_ROOT", "") or "").strip() or Path.home() / ".quirq"
 ).expanduser()
-_quirq_runtime_file = (
-    (os.getenv("QUIRQ_RUNTIME_FILE", "") or "").strip()
-    or str(_quirq_state_root / "runtime.env")
+def _settings_file(configured: str, new: Path, old: Path) -> str:
+    """The file to load: the configured path, else its new home. When that is
+    the new home and it does not exist yet, the file from before the state
+    root had folders is read instead: the move into settings/ and secrets/
+    happens in the lifespan (services/storage/layout.py), after this load."""
+    path = Path(configured).expanduser() if configured else new
+    if path == new and not path.is_file() and old.is_file():
+        return str(old)
+    return str(path)
+
+
+_quirq_runtime_file = _settings_file(
+    (os.getenv("QUIRQ_RUNTIME_FILE", "") or "").strip(),
+    settings_dir() / "runtime.env",
+    _quirq_state_root / "runtime.env",
 )
 load_dotenv(_quirq_runtime_file, override=True)
 _quirq_secrets_file = (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
 if _quirq_secrets_file:
-    load_dotenv(_quirq_secrets_file, override=True)
+    load_dotenv(
+        _settings_file(
+            _quirq_secrets_file,
+            secrets_dir() / "secrets.env",
+            _quirq_state_root / "secrets.env",
+        ),
+        override=True,
+    )
 
 from routers.auth.auth import (
     XO_API_KEY,
@@ -78,6 +133,9 @@ from routers.auth.auth import (
     get_auth_token,
     get_auth_state,
     router as auth_router,
+)
+from routers.cowork_agent.connectors.composio_session import (
+    router as xo_auth_session_router,
 )
 from routers.auth.claude_setup_token import router as claude_setup_token_router
 from routers.auth.codex_setup import router as codex_setup_router
@@ -96,8 +154,9 @@ except Exception as _usage_import_err:
 # Configuration
 # =============================================================================
 
-# External Chat API base URL (xo-swarm-api or similar)
-CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.builders")
+# The swarm base URL and every swarm call live in services/swarm_api.
+from services.swarm_api import base_url as swarm_base_url
+from services.swarm_api.chat import ChatAPIClient
 STAGE = (os.getenv("STAGE", "beta") or "beta").strip().lower()
 IS_LOCAL_STAGE = STAGE == "local"
 
@@ -273,79 +332,6 @@ class AskQuestionRequest(BaseModel):
     agent_type: Optional[str] = None
 
 
-# =============================================================================
-# External Chat API Client
-# =============================================================================
-
-class ChatAPIClient:
-    """Client for external Chat API endpoints."""
-
-    def __init__(self, base_url: str = CHAT_API_BASE_URL):
-        self.base_url = base_url.rstrip("/")
-
-    def _headers(self) -> Dict[str, str]:
-        token = get_auth_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
-    async def push_message(
-        self,
-        project_id: str,
-        user_id: str,
-        message: str,
-        message_type: str = "@xo"
-    ) -> Optional[Dict[str, Any]]:
-        """Push a message to the chat storage via external API."""
-        url = f"{self.base_url}/chat/add_message"
-        payload = {
-            "project_id": project_id,
-            "user_id": user_id,
-            "message": message,
-            "type": message_type
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                response = await client.post(url, json=payload, headers=self._headers())
-                if response.status_code == 200:
-                    print(f"✅ Pushed message: project={project_id}, type={message_type}")
-                    return response.json()
-                else:
-                    print(f"⚠️ Failed to push message: {response.status_code} - {response.text}")
-                    return None
-        except Exception as e:
-            print(f"⚠️ Chat API error: {str(e)}")
-            return None
-
-    async def fetch_messages(
-        self,
-        project_id: str,
-        limit: int = 50
-    ) -> Optional[list]:
-        """Fetch messages from the chat storage."""
-        url = f"{self.base_url}/chat/get_messages"
-        params = {"project_id": project_id, "limit": limit}
-
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                response = await client.get(url, params=params, headers=self._headers())
-                if response.status_code == 200:
-                    data = response.json()
-                    messages = data.get("messages", [])
-                    print(f"✅ Fetched {len(messages)} messages: project={project_id}")
-                    return messages
-                else:
-                    print(f"⚠️ Failed to fetch messages: {response.status_code} - {response.text}")
-                    return None
-        except Exception as e:
-            print(f"⚠️ Chat API error: {str(e)}")
-            return None
-
-    async def get_message_count(self, project_id: str) -> int:
-        """Get message count for a project."""
-        messages = await self.fetch_messages(project_id, limit=100)
-        return len(messages) if messages else 0
-
-
 # Global chat client
 chat_client = ChatAPIClient()
 
@@ -421,7 +407,7 @@ def _session_telemetry_daemons(action: str) -> None:
     Deliberately not gated by QUIRQ_SKIP_BOOT_INSTALL: starting a process that
     pip already installed is not installing software.
 
-    Non-fatal in both directions — a provider that fails to start must not
+    Non-fatal in both directions: a provider that fails to start must not
     block the boot, and one that fails to stop must not hang the shutdown.
     """
 
@@ -451,7 +437,7 @@ def _boot_installs_disabled() -> bool:
     """Whether the boot-time system-dependency installers are switched off.
 
     Set QUIRQ_SKIP_BOOT_INSTALL=1 for deployments that must not download or
-    install anything beyond requirements.txt — the Docker-free native runner
+    install anything beyond requirements.txt: the Docker-free native runner
     does, because it runs on a user's own machine rather than a disposable
     container. Defaults to off, so container and Coder boots are unchanged.
 
@@ -470,25 +456,25 @@ def _run_agent_setup() -> None:
     """Run config/agents/<AGENT_NAME>/setup.sh once at boot.
 
     Dispatches by the AGENT_NAME env var (e.g. AGENT_NAME=openclaw → runs
-    config/agents/openclaw/setup.sh). Idempotent — re-runs on every boot
+    config/agents/openclaw/setup.sh). Idempotent: re-runs on every boot
     but each step (apt install, node install, openclaw CLI install,
     gateway start) is gated on its own "already installed?" check.
     Non-fatal: a failure here logs and returns so the API still comes
     up for debugging.
     """
     if _boot_installs_disabled():
-        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set — skipping agent bootstrap")
+        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping agent bootstrap")
         return
 
     agent = (os.getenv("AGENT_NAME", "") or "").strip()
     if not agent:
-        print("🔧 AGENT_NAME unset — skipping agent bootstrap")
+        print("🔧 AGENT_NAME unset, skipping agent bootstrap")
         return
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
     if not os.path.isfile(script):
-        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}) — skipping")
+        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}), skipping")
         return
 
     print(f"🔧 Running agent setup for AGENT_NAME={agent}...")
@@ -500,18 +486,17 @@ def _run_agent_setup() -> None:
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm
         # + OpenClaw CLI). Steady-state re-runs finish in seconds.
-        result = subprocess.run(
-            ["bash", script],
-            cwd=repo_root,
-            check=False,
-            timeout=900,
-        )
-        if result.returncode == 0:
+        # inherit_output: the script's progress streams straight to the server
+        # log, as it always has, instead of appearing all at once at the end.
+        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True)
+        if result.timed_out:
+            print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
+        elif result.binary_missing or result.exception is not None:
+            print(f"⚠️ Agent setup ({agent}) failed (non-fatal): {result.output}")
+        elif result.returncode == 0:
             print(f"✅ Agent setup ({agent}) completed")
         else:
-            print(f"⚠️ Agent setup ({agent}) exited with code {result.returncode} (non-fatal — server will still start)")
-    except subprocess.TimeoutExpired:
-        print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
+            print(f"⚠️ Agent setup ({agent}) exited with code {result.returncode} (non-fatal, server will still start)")
     except Exception as e:
         print(f"⚠️ Agent setup ({agent}) failed (non-fatal): {e}")
 
@@ -527,17 +512,17 @@ def _install_shared_deps() -> None:
     Non-fatal: a failure logs and returns so the API still comes up.
     """
     if _boot_installs_disabled():
-        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set — skipping shared dep install")
+        print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping shared dep install")
         return
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(repo_root, "scripts", "install_shared_deps.sh")
     if not os.path.isfile(script):
-        print(f"⚠️ No shared-deps script (expected at {script}) — skipping")
+        print(f"⚠️ No shared-deps script (expected at {script}), skipping")
         return
 
     # Invoke via `bash <script>` (below), which does not require the script's
-    # executable bit — so we deliberately do NOT chmod it. chmod-ing on every
+    # executable bit, so we deliberately do NOT chmod it. chmod-ing on every
     # boot would flip the tracked mode (644 → 755) and surface the file as a
     # spurious git change in the workspace.
     print("🔧 Ensuring shared system deps (rclone, gh, gnupg)...")
@@ -546,25 +531,21 @@ def _install_shared_deps() -> None:
         # gh .deb + apt). Steady-state re-runs finish in seconds.
         #
         # The server is typically launched as venv/bin/python WITHOUT venv
-        # activation, so venv/bin is not on PATH — but console scripts pip
+        # activation, so venv/bin is not on PATH, but console scripts pip
         # installs for us (e.g. `argus`) live exactly there, next to the
         # interpreter. Prepend it so the script sees them.
         env = os.environ.copy()
         env["PATH"] = os.pathsep.join(
             [os.path.dirname(sys.executable), env.get("PATH", "")])
-        result = subprocess.run(
-            ["bash", script],
-            cwd=repo_root,
-            check=False,
-            timeout=600,
-            env=env,
-        )
-        if result.returncode == 0:
+        result = run_sync(["bash", script], cwd=repo_root, timeout=600, env=env, inherit_output=True)
+        if result.timed_out:
+            print("⚠️ Shared dep install timed out after 10min (non-fatal)")
+        elif result.binary_missing or result.exception is not None:
+            print(f"⚠️ Shared dep install failed (non-fatal): {result.output}")
+        elif result.returncode == 0:
             print("✅ Shared dep check completed")
         else:
-            print(f"⚠️ Shared dep install exited with code {result.returncode} (non-fatal — server will still start)")
-    except subprocess.TimeoutExpired:
-        print("⚠️ Shared dep install timed out after 10min (non-fatal)")
+            print(f"⚠️ Shared dep install exited with code {result.returncode} (non-fatal, server will still start)")
     except Exception as e:
         print(f"⚠️ Shared dep install failed (non-fatal): {e}")
 
@@ -575,7 +556,7 @@ def _write_install_pointer() -> None:
 
     One fixed path, dynamic contents: ~/.config/quirq/install.json (XDG
     honoured), rewritten on every boot because it is a last-known-location
-    hint, not configuration — port fallbacks and relocated roots must show
+    hint, not configuration: port fallbacks and relocated roots must show
     up here. Consumers verify the recorded paths still exist before
     trusting them, so a stale file after an uninstall is harmless.
     """
@@ -601,12 +582,59 @@ def _write_install_pointer() -> None:
         print(f"⚠️ Could not write install pointer (non-fatal): {e}")
 
 
+_lifespan_logger = logging.getLogger("xo_space.lifespan")
+
+
+def _report_watcher_task_exit(task: "asyncio.Task") -> None:
+    """Surface a watcher task that died, instead of losing it to the GC."""
+    try:
+        if task.cancelled():
+            return
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:  # pragma: no cover - defensive; a callback may not raise
+        return
+    try:
+        if error is None:
+            _lifespan_logger.warning(
+                "Watcher task exited on its own; no further ticks will run"
+            )
+        else:
+            _lifespan_logger.error(
+                "Watcher task died (non-fatal): %r", error, exc_info=error
+            )
+    except Exception:  # pragma: no cover - logging must not break shutdown
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Written first: the pointer must exist even if a later boot step fails,
     # so a half-started install is still discoverable.
     _write_install_pointer()
+
+    # Move machine-local files from where earlier releases kept them into the
+    # state root's folders (services/storage/layout.py), before agent setup,
+    # the watcher or any poller reads or writes one. Never raises.
+    try:
+        from services.storage.layout import migrate_layout
+        _layout_moves = migrate_layout()
+        if _layout_moves:
+            print(f"   State layout: moved {len(_layout_moves)} file(s) or folder(s) into place")
+    except Exception as exc:
+        print(f"⚠️ State layout migration skipped (non-fatal): {exc}")
+
+    # Boot sweep: drop any orphan Claude-Code mcp.json subdirs left behind
+    # by a crash or hard-kill of a previous run. Files there used to carry
+    # the Composio session URL + x-api-key; today they only carry the
+    # loopback-proxy URL, but stale per-session dirs still shouldn't
+    # accumulate.
+    tmp_root = Path(os.getenv("XO_MCP_TMP_ROOT", "/tmp/xo-cowork"))
+    if tmp_root.exists():
+        for child in tmp_root.iterdir():
+            shutil.rmtree(child, ignore_errors=True)
 
     # Bootstrap the agent runtime (OpenClaw, etc.) before serving traffic.
     # Done synchronously so the API doesn't accept requests until the
@@ -623,7 +651,7 @@ async def lifespan(app: FastAPI):
     _session_telemetry_daemons("start")
 
     print("🚀 Starting XO Space API Server...")
-    print(f"   Chat API: {CHAT_API_BASE_URL}")
+    print(f"   Chat API: {swarm_base_url()}")
     _tok = get_auth_token()
     _src = get_auth_state().get("token_source", "none")
     print(f"   Chat API auth: {'enabled (' + _src + ')' if _tok else 'not set'}")
@@ -657,6 +685,10 @@ async def lifespan(app: FastAPI):
             "⚠️ XO startup consume skipped: set both XO_AUTH_SESSION_ID and XO_POLL_TOKEN."
         )
 
+    # Composio identity is strictly per-request: the UI carries a session id,
+    # and each agent config carries that user's opaque MCP proxy token. There is
+    # no process-wide "instance user" to prime. See services/cowork_agent/composio/identity.py.
+
     # Start rclone daemon for the gdrive/onedrive connectors (non-fatal if rclone isn't installed)
     try:
         from services.cowork_agent.connectors.gdrive import ensure_rclone_running
@@ -665,7 +697,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ rclone startup skipped (non-fatal): {exc}")
 
-    # Check gnupg availability (required by xo-projects-sync; non-fatal — does NOT install).
+    # Check gnupg availability (required by xo-projects-sync; non-fatal, does NOT install).
     # Mirrors the rclone pattern: surface missing system deps at boot so they don't
     # only appear as confused 500s on the first /setup attempt.
     try:
@@ -673,7 +705,7 @@ async def lifespan(app: FastAPI):
         check_gpg_available()
         print("   gnupg: available (xo-projects-sync ready)")
     except Exception as exc:
-        print(f"⚠️ gnupg not available — xo-projects-sync /setup will return 500 until installed: {exc}")
+        print(f"⚠️ gnupg not available: xo-projects-sync /setup will return 500 until installed: {exc}")
 
     # Install bundled skills into Claude Code and OpenClaw skill dirs (non-fatal)
     try:
@@ -682,7 +714,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Skill install failed (non-fatal): {exc}")
 
-    # Install the active agent's declared boot-time skills — catalog names listed
+    # Install the active agent's declared boot-time skills: catalog names listed
     # under "startup_skills" in config/agents/<AGENT_NAME>/settings.json. Agents
     # that declare none install nothing. Backgrounded because these shell out to
     # the network (npx/git); boot must not wait on them.
@@ -693,6 +725,21 @@ async def lifespan(app: FastAPI):
         print("   Startup skills: background install scheduled")
     except Exception as exc:
         print(f"⚠️ Startup skill install failed to schedule (non-fatal): {exc}")
+
+    # Point every agent that supports it at this workspace's Composio MCP proxy, and
+    # keep it that way: one sweep now, retries with backoff while XO is unreachable,
+    # then a periodic reconcile (COMPOSIO_MCP_RECONCILE_INTERVAL). This is the only
+    # install path; there is no manual endpoint. Backgrounded because resolving the
+    # workspace-scoped principal costs one XO round trip; boot must not wait on it.
+    # Installs nothing when the backend holds no XO credential or has no workspace
+    # identity. Non-fatal.
+    _mcp_gateway_task = None
+    try:
+        from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
+        _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
+        print("   Composio MCP: background gateway install + reconcile scheduled")
+    except Exception as exc:
+        print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
 
     # Write ~/xo-projects/.xo/xo.json (static defaults) and seed live status
     # in the background. The dispatcher inside seed_agent_status() picks the
@@ -711,6 +758,7 @@ async def lifespan(app: FastAPI):
     _sync_task = None
     _warmup_task = None
     _watcher_task = None
+    _relay_task = None
     if start_usage_sync_scheduler:
         try:
             _sync_task = asyncio.create_task(start_usage_sync_scheduler())
@@ -718,7 +766,51 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
 
-    # Visualizer watcher — materialises portable project metadata from the
+    # One-time tier migration (docs/syncplan.md §9, T21).
+    try:
+        from services.cowork_agent.visualizer.migrate import migrate_runtime_layout
+        _migrated = migrate_runtime_layout()
+        if _migrated:
+            print(f"   Tier migration: updated {_migrated} project(s)")
+    except Exception as e:
+        print(f"⚠️ Tier migration skipped (non-fatal): {e}")
+
+    # GitHub issue poller: refreshes the runtime issue mirror for every
+    # project with a github.com remote (docs/workitems-plan.md §6).
+    _github_poll_task = None
+    try:
+        from services.cowork_agent.github_poller import (
+            poll_interval_seconds,
+            poller_enabled,
+            start_github_poller,
+        )
+        if poller_enabled():
+            _github_poll_task = asyncio.create_task(start_github_poller())
+            print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
+        else:
+            print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
+    except Exception as e:
+        print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
+
+    # Connections poller: runs each due connection's collectors over the
+    # Composio MCP upstream and appends to ~/.quirq/connections/<toolkit>/
+    # events.jsonl, which the Inbox's connections feeder reads.
+    _connections_poll_task = None
+    try:
+        from services.connections.poller import (
+            poller_enabled as connections_poller_enabled,
+            start_connections_poller,
+            tick_seconds as connections_tick_seconds,
+        )
+        if connections_poller_enabled():
+            _connections_poll_task = asyncio.create_task(start_connections_poller())
+            print(f"   Connections poller: background task started ({connections_tick_seconds():.0f}s tick)")
+        else:
+            print("   Connections poller: disabled by XO_CONNECTIONS_POLL_ENABLED")
+    except Exception as e:
+        print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
+
+    # Visualizer watcher: materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
     _watcher_enabled = (
@@ -729,11 +821,23 @@ async def lifespan(app: FastAPI):
         try:
             from services.cowork_agent.visualizer.watcher import start_watcher
             _watcher_task = asyncio.create_task(start_watcher())
+            _watcher_task.add_done_callback(_report_watcher_task_exit)
             print("   Watcher: background task started")
         except Exception as e:
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
     else:
         print("   Watcher: disabled by runtime configuration")
+
+    # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
+    # in a single tick, see services/cowork_agent/project_sharing/poller.py).
+    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_SPACE_ID or no
+    # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
+    try:
+        from services.cowork_agent.project_sharing.poller import run_relay_poller
+        _relay_task = asyncio.create_task(run_relay_poller())
+        print("   Relay: background task started")
+    except Exception as e:
+        print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
@@ -765,6 +869,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    if _relay_task and not _relay_task.done():
+        _relay_task.cancel()
+        try:
+            await _relay_task
+        except asyncio.CancelledError:
+            pass
+
     if _startup_skills_task and not _startup_skills_task.done():
         _startup_skills_task.cancel()
         try:
@@ -776,6 +887,27 @@ async def lifespan(app: FastAPI):
         _xo_status_task.cancel()
         try:
             await _xo_status_task
+        except asyncio.CancelledError:
+            pass
+
+    if _github_poll_task:
+        _github_poll_task.cancel()
+        try:
+            await _github_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _connections_poll_task:
+        _connections_poll_task.cancel()
+        try:
+            await _connections_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _mcp_gateway_task and not _mcp_gateway_task.done():
+        _mcp_gateway_task.cancel()
+        try:
+            await _mcp_gateway_task
         except asyncio.CancelledError:
             pass
     print("👋 Shutting down XO Space API Server...")
@@ -801,6 +933,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
+# after the TCP peer is recorded: the browser guard needs the real peer.
+from routers.browser_guard import add_forwarding_middleware
+add_forwarding_middleware(app)
+app.include_router(xo_auth_session_router)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
@@ -809,10 +946,18 @@ app.include_router(models_router)
 app.include_router(channels_router)
 app.include_router(providers_router)
 
-# Cowork Agent API (migrated from bridge/) — serves the xo-cowork frontend.
+# Cowork Agent API (migrated from bridge/): serves the xo-cowork frontend.
 from routers.cowork_agent import all_routers as cowork_agent_routers
 for _r in cowork_agent_routers:
     app.include_router(_r)
+
+# Local layer: the command scheduler's API (jobs run by the watcher tick).
+from routers.schedules import router as schedules_router
+app.include_router(schedules_router)
+
+# Space: telemetry source configuration (the Agents tab's Configure page).
+from routers.telemetry_sources import router as telemetry_sources_router
+app.include_router(telemetry_sources_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space
@@ -833,7 +978,7 @@ async def root(request: Request):
     ``/space/``; API clients and health checks still receive the JSON status.
     This lets the workspace root URL land on the UI when the API is proxied at
     the port root (e.g. a Coder subdomain app whose base is the port itself,
-    not ``/space``) — the UI then talks to the API same-origin.
+    not ``/space``); the UI then talks to the API same-origin.
     """
     if "text/html" in request.headers.get("accept", ""):
         # Carry the query string across the redirect (still percent-encoded),
@@ -850,7 +995,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.datetime.now().isoformat(),
-        "chat_api_url": CHAT_API_BASE_URL,
+        "chat_api_url": swarm_base_url(),
         "stage": STAGE,
         "auth": get_auth_state(),
         "ai_provider": AI_PROVIDER,
@@ -903,75 +1048,55 @@ async def gateway_restart():
     Resolves the script from the active ``AGENT_NAME`` rather than hardcoding a
     backend; agents without an ``agent.sh`` (e.g. claude_code) return 404.
     """
-    import subprocess
     from services.xo_manifest import resolve_agent_name
     agent = resolve_agent_name()
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")
-    try:
-        result = subprocess.run(
-            [str(script), "restart"],
-            capture_output=True, text=True, timeout=30
-        )
-        return {
-            "status": "restarted" if result.returncode == 0 else "error",
-            "output": result.stdout,
-            "error": result.stderr if result.returncode != 0 else None
-        }
-    except subprocess.TimeoutExpired:
+    # await, not run_sync: a 30 s restart must not stall every other request
+    result = await run([str(script), "restart"], timeout=30, separate_stderr=True)
+    if result.timed_out:
         return {"status": "error", "error": "Restart timed out after 30s"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    if result.binary_missing or result.exception is not None:
+        raise HTTPException(status_code=500, detail={"error": result.output})
+    return {
+        "status": "restarted" if result.returncode == 0 else "error",
+        "output": result.output,
+        "error": result.stderr if result.returncode != 0 else None
+    }
 
 
 @app.post("/app/restart")
 async def app_restart():
     """Restart the XO Space API app process via cowork-api.sh."""
-    import subprocess
     # Timestamped marker: a restart kills every in-flight subprocess (e.g. a
-    # pending auth login) — correlate this line with mid-flow failures.
-    print(f"[app] restart requested at {datetime.datetime.now().isoformat()} — killing process tree")
+    # pending auth login); correlate this line with mid-flow failures.
+    print(f"[app] restart requested at {datetime.datetime.now().isoformat()}, killing process tree")
     script = (Path(__file__).resolve().parent / "cowork-api.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App restart script not found")
-    try:
-        subprocess.Popen(
-            [str(script), "restart"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(script.parent),
-            start_new_session=True,
-        )
-        return {
-            "status": "accepted",
-            "message": "Restart triggered in background"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    spawned = spawn_detached([str(script), "restart"], cwd=str(script.parent))
+    if not spawned.ok:
+        raise HTTPException(status_code=500, detail={"error": spawned.output})
+    return {
+        "status": "accepted",
+        "message": "Restart triggered in background"
+    }
 
 
 @app.post("/app/update")
 async def app_update():
     """Pull latest code safely via cowork-update.sh in background."""
-    import subprocess
     script = (Path(__file__).resolve().parent / "cowork-update.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="App update script not found")
-    try:
-        subprocess.Popen(
-            [str(script)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(script.parent),
-            start_new_session=True,
-        )
-        return {
-            "status": "accepted",
-            "message": "Update triggered in background"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e)})
+    spawned = spawn_detached([str(script)], cwd=str(script.parent))
+    if not spawned.ok:
+        raise HTTPException(status_code=500, detail={"error": spawned.output})
+    return {
+        "status": "accepted",
+        "message": "Update triggered in background"
+    }
 
 
 @app.post("/ask_question")
@@ -1162,6 +1287,8 @@ if __name__ == "__main__":
 
     reload = os.getenv("UVICORN_RELOAD", "").strip().lower() in ("1", "true", "yes")
 
+    # proxy_headers=False: the app applies X-Forwarded-* itself, after
+    # recording the TCP peer (routers/browser_guard.add_forwarding_middleware).
     if reload:
         uvicorn.run(
             "server:app",
@@ -1169,6 +1296,7 @@ if __name__ == "__main__":
             port=port,
             reload=True,
             reload_dirs=[str(Path(__file__).resolve().parent)],
+            proxy_headers=False,
         )
     else:
-        uvicorn.run("server:app", host=host, port=port, reload=False)
+        uvicorn.run("server:app", host=host, port=port, reload=False, proxy_headers=False)

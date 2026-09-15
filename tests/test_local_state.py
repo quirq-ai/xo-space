@@ -16,7 +16,7 @@ class LocalStateTests(unittest.TestCase):
     def test_canonical_roots_distinguish_quirq_from_legacy(self) -> None:
         self.assertEqual(local_state.quirq_state_dir().name, ".quirq")
         self.assertEqual(local_state.legacy_state_dir().name, ".xo-cowork")
-        self.assertEqual(state.watcher_state_dir().parts[-2:], (".quirq", "watcher"))
+        self.assertEqual(state.watcher_state_dir().parts[-2:], (".quirq", "projects"))
 
     def test_quirq_root_can_be_explicitly_mounted(self) -> None:
         with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": "/mounted/quirq"}):
@@ -46,13 +46,13 @@ class LocalStateTests(unittest.TestCase):
                 loaded = xo_cowork_state.get_state()
 
             self.assertEqual(loaded, original)
-            self.assertEqual(json.loads(quirq_file.read_text(encoding="utf-8")), original)
+            self.assertEqual(json.loads(quirq_file.read_text(encoding="utf-8")), {**original, "schema": 1})
             self.assertEqual(json.loads(legacy_file.read_text(encoding="utf-8")), original)
 
     def test_jsonl_offsets_migrate_to_quirq_on_flush(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            new_file = root / ".quirq" / "watcher" / "offsets.json"
+            new_file = root / ".quirq" / "projects" / "offsets.json"
             legacy_file = root / ".xo-cowork" / "watcher" / "offsets.json"
             native_log = Path("/runtime/sessions/session.jsonl")
             legacy_file.parent.mkdir(parents=True)
@@ -76,12 +76,23 @@ class LocalStateTests(unittest.TestCase):
                 "inode": 7,
             })
 
-    def test_todo_locks_live_under_quirq(self) -> None:
-        watcher_root = Path("/machine/.quirq/watcher")
-        with patch.object(flock, "watcher_state_dir", return_value=watcher_root):
-            lock_path = flock._lock_path_for(Path("/projects/demo/.xo/todos.json"))
-        self.assertEqual(lock_path.parent, watcher_root / "locks")
-        self.assertTrue(lock_path.name.startswith("todos.json."))
+    def test_shared_file_locks_live_under_quirq(self) -> None:
+        """Lock sentinels never land in ``.xo/``.
+
+        Both locked files are checked: ``sessions-augment.json``, which
+        the watcher tick and the todos API both write, and
+        ``todos.json``, which the API owns but several concurrent
+        requests can reach at once.
+        """
+        locks_root = Path("/machine/.quirq/.locks")
+        for data_path in (
+            Path("/projects/demo/.xo/sessions/sessions-augment.json"),
+            Path("/projects/demo/.xo/todos.json"),
+        ):
+            with patch.object(flock, "locks_dir", return_value=locks_root):
+                lock_path = flock._lock_path_for(data_path)
+            self.assertEqual(lock_path.parent, locks_root)
+            self.assertTrue(lock_path.name.startswith(data_path.name + "."))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+{"ts": "2026-01-01T02:00:13Z", "type": "job.run", "job_id": "nightly-tests-a1b2c3", "started_at": "2026-01-01T02:00:00Z", "finished_at": "2026-01-01T02:00:13Z", "trigger": "schedule", "status": "ok", "returncode": 0, "duration_seconds": 12.5, "output_tail": "Ran 12 tests in 12.4s\n\nOK\n"}

@@ -1,5 +1,5 @@
 """
-usage_sync.py — Daily usage sync to xo-swarm-api.
+usage_sync.py: Daily usage sync to xo-swarm-api.
 
 Runs as an asyncio background task started from the FastAPI lifespan. The
 parsing/aggregation work lives in the active agent's
@@ -9,7 +9,7 @@ parsing/aggregation work lives in the active agent's
   - watermark I/O
   - delegate to ``module.aggregate_for_sync(since_date=watermark)``
   - decorate records with workspace identifiers
-  - POST to ``${CHAT_API_BASE_URL}/usage/report``
+  - POST /usage/report through services.swarm_api.usage (the one swarm door)
   - advance watermark
 
 On first run (no watermark): full historical backfill. Subsequently: only
@@ -19,20 +19,17 @@ processes dates >= last-synced watermark.
 import asyncio
 import json
 import os
+import shutil
 import datetime
 from collections import defaultdict
 
-import httpx
-
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.engine.usage_loader import load_usage_module
+from services.storage.layout import usage_dir
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-CHAT_API_BASE_URL = os.getenv("CHAT_API_BASE_URL", "https://api-swarm-beta.xo.builders")
-USAGE_REPORT_PATH = "/usage/report"
 
 # Watermark file is namespaced under the active agent so each adapter keeps
 # its own independent sync state. Switching AGENT_NAME (e.g. openclaw →
@@ -40,16 +37,18 @@ USAGE_REPORT_PATH = "/usage/report"
 # triggers a full backfill for the new agent rather than reusing the
 # previous agent's truncation point.
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_WATERMARK_PATH = os.path.join(
-    _REPO_DIR, "data", get_active_agent().name, "usage_sync_state.json"
-)
+_AGENT = get_active_agent().name
+_DEFAULT_WATERMARK_PATH = str(usage_dir() / f"{_AGENT}.json")
+# Earlier releases kept the watermark inside the checkout, where a fresh
+# clone or reinstall lost it and re-sent all usage. Adopted on first read.
+_LEGACY_WATERMARK_PATH = os.path.join(_REPO_DIR, "data", _AGENT, "usage_sync_state.json")
 SYNC_STATE_FILE = os.getenv("USAGE_SYNC_STATE_FILE", _DEFAULT_WATERMARK_PATH)
 
 SYNC_HOUR_UTC = int(os.getenv("USAGE_SYNC_HOUR_UTC", "2"))
 DEBUG_ENABLED = (os.getenv("USAGE_SYNC_DEBUG", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
 DEBUG_INTERVAL_MINUTES = int(os.getenv("USAGE_SYNC_DEBUG_INTERVAL_MINUTES", "0") or "0")
 
-HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+from services.swarm_api import usage as swarm_usage
 
 
 def _timestamp_prefix() -> str:
@@ -74,7 +73,23 @@ def _debug_log(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _adopt_legacy_watermark() -> None:
+    """Move the watermark from the checkout into ~/.quirq/usage/ once.
+
+    Only for the default path: an explicit USAGE_SYNC_STATE_FILE wins."""
+    if SYNC_STATE_FILE != _DEFAULT_WATERMARK_PATH:
+        return
+    if os.path.exists(SYNC_STATE_FILE) or not os.path.isfile(_LEGACY_WATERMARK_PATH):
+        return
+    try:
+        os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
+        shutil.move(_LEGACY_WATERMARK_PATH, SYNC_STATE_FILE)
+    except OSError as exc:
+        print(f"{_timestamp_prefix()} usage_sync: could not move the old watermark: {exc}")
+
+
 def _load_sync_state() -> dict:
+    _adopt_legacy_watermark()
     if os.path.exists(SYNC_STATE_FILE):
         try:
             with open(SYNC_STATE_FILE) as f:
@@ -84,11 +99,20 @@ def _load_sync_state() -> dict:
     return {}
 
 
+#: On-disk revision of the watermark file.
+SYNC_STATE_SCHEMA = 1
+
+
+def _now_z() -> str:
+    """ISO-8601 UTC ending in ``Z``, the one time format data files use."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _save_sync_state(state: dict) -> None:
     os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
     tmp = SYNC_STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(state, f)
+        json.dump({"schema": SYNC_STATE_SCHEMA, **{k: v for k, v in state.items() if k != "schema"}}, f)
     os.replace(tmp, SYNC_STATE_FILE)
 
 
@@ -133,7 +157,7 @@ def _record_key_probe(state: dict, outcome: str, status: int | None) -> None:
     state["key_probe"] = {
         "outcome": outcome,
         "status": status,
-        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "at": _now_z(),
     }
     try:
         _save_sync_state(state)
@@ -141,80 +165,70 @@ def _record_key_probe(state: dict, outcome: str, status: int | None) -> None:
         print(f"{_timestamp_prefix()} usage_sync: could not persist key-probe state: {e}")
 
 
-async def _key_accepted(
-    client: httpx.AsyncClient, url: str, headers: dict, state: dict
-) -> bool:
+async def _key_accepted(state: dict) -> bool:
     """Verify the token before any usage data leaves the machine.
 
     Same endpoint, empty record list: the request carries only the token,
     passes through exactly the auth dependency the real report passes
-    through, and stores nothing on success. Anything but 200 fails closed —
+    through, and stores nothing on success. Anything but 200 fails closed:
     a token the swarm has not accepted sends no usage data, so "reported
     only when the key is valid" is literally true, not just "stored only
     when the key is valid". The outcome is persisted for the Setup tab.
     """
-    try:
-        probe = await client.post(url, json={"records": []}, headers=headers)
-    except Exception as e:
-        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({e}) — nothing sent, will retry next cycle")
+    probe = await swarm_usage.probe_key()
+    if probe.offline or probe.unauthenticated:
+        print(f"{_timestamp_prefix()} usage_sync: could not verify XO_API_KEY ({probe.detail}); nothing sent, will retry next cycle")
         _record_key_probe(state, "unverified", None)
         return False
-    if probe.status_code == 200:
-        _record_key_probe(state, "accepted", probe.status_code)
+    if probe.ok:
+        _record_key_probe(state, "accepted", probe.status)
         return True
-    if probe.status_code in (401, 403):
-        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status_code}) — nothing sent. Fix or remove the key in .env.")
-        _record_key_probe(state, "rejected", probe.status_code)
+    if probe.status in (401, 403):
+        print(f"{_timestamp_prefix()} usage_sync: XO_API_KEY rejected by xo-swarm-api (HTTP {probe.status}); nothing sent. Fix or remove the key in .env.")
+        _record_key_probe(state, "rejected", probe.status)
     else:
-        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status_code} — nothing sent, will retry next cycle")
-        _record_key_probe(state, "unverified", probe.status_code)
+        print(f"{_timestamp_prefix()} usage_sync: key check returned HTTP {probe.status}; nothing sent, will retry next cycle")
+        _record_key_probe(state, "unverified", probe.status)
     return False
 
 
 async def _post_records(records: list, daily: dict | None, state: dict) -> None:
     from routers.auth.auth import get_auth_token
 
-    token = get_auth_token()
-    if not token:
-        print(f"{_timestamp_prefix()} usage_sync: not authenticated — skipping report (nothing sent)")
+    if not get_auth_token():
+        print(f"{_timestamp_prefix()} usage_sync: not authenticated; skipping report (nothing sent)")
         return
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{CHAT_API_BASE_URL.rstrip('/')}{USAGE_REPORT_PATH}"
-
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            if not await _key_accepted(client, url, headers, state):
-                return
-            response = await client.post(url, json={"records": records}, headers=headers)
-
-        if response.status_code == 200:
-            result = response.json()
-            upserted = result.get("upserted", 0)
-            if daily is None:
-                print(f"{_timestamp_prefix()} usage_sync: posted placeholder record (note carried; watermark not advanced)")
-            else:
-                print(f"{_timestamp_prefix()} usage_sync: successfully synced {upserted} day(s) to swarm")
-                yesterday = (
-                    datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
-                ).strftime("%Y-%m-%d")
-                latest_date = max(daily.keys())
-                watermark = min(yesterday, latest_date)
-                state["last_synced_date"] = watermark
-                state["last_sync_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                _save_sync_state(state)
+    if not await _key_accepted(state):
+        return
+    res = await swarm_usage.report(records)
+    if res.ok:
+        result = res.data if isinstance(res.data, dict) else {}
+        upserted = result.get("upserted", 0)
+        if daily is None:
+            print(f"{_timestamp_prefix()} usage_sync: posted placeholder record (note carried; watermark not advanced)")
         else:
-            print(f"{_timestamp_prefix()} usage_sync: POST failed with {response.status_code}: {response.text[:200]}")
-    except Exception as e:
-        print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {e}")
+            print(f"{_timestamp_prefix()} usage_sync: successfully synced {upserted} day(s) to swarm")
+            yesterday = (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            latest_date = max(daily.keys())
+            watermark = min(yesterday, latest_date)
+            state["last_synced_date"] = watermark
+            state["last_sync_at"] = _now_z()
+            _save_sync_state(state)
+    elif res.offline:
+        print(f"{_timestamp_prefix()} usage_sync: error posting to swarm (will retry next cycle): {res.detail}")
+    else:
+        print(f"{_timestamp_prefix()} usage_sync: POST failed with {res.status}: {res.text[:200]}")
 
 
 def usage_reporting_status() -> dict:
     """One fact for the Setup tab: is anything being reported?
 
     ``status`` is one of:
-      - "off"      no key set — nothing is sent, not even a placeholder
+      - "off"      no key set; nothing is sent, not even a placeholder
       - "on"       key set and accepted by xo-swarm-api on the last probe
-      - "blocked"  key set but rejected (HTTP 401/403) — nothing is sent
+      - "blocked"  key set but rejected (HTTP 401/403); nothing is sent
       - "pending"  key set, no conclusive probe yet (first sync still to
                    run, or the last probe could not reach the swarm)
 
@@ -244,7 +258,7 @@ def usage_reporting_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Core sync — delegates parsing/aggregation to the active agent's module
+# Core sync: delegates parsing/aggregation to the active agent's module
 # ---------------------------------------------------------------------------
 
 
@@ -255,9 +269,12 @@ async def _run_sync(is_backfill: bool = False) -> None:
     nothing, posts a zero-valued placeholder whose ``note`` column explains
     why so the analytics surface still shows the sync ran.
     """
-    workspace_id = os.getenv("CODER_WORKSPACE_ID") or "unknown"
+    # Since the rename to XO_SPACE_ID the `workspace_id` column carries the Space id
+    # (the same value as `project_id`), no longer Coder's workspace id. The wire field
+    # keeps its name so the analytics consumer's schema is unchanged; its meaning moved.
+    workspace_id = os.getenv("XO_SPACE_ID") or "unknown"
     workspace_name = os.getenv("CODER_WORKSPACE_NAME") or None
-    project_id = os.getenv("XO_PROJECT_ID") or None
+    project_id = os.getenv("XO_SPACE_ID") or None
 
     state = _load_sync_state()
     last_synced_date = None if is_backfill else state.get("last_synced_date")
@@ -266,7 +283,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
         mod = load_usage_module()
     except Exception as e:
         note = f"failed to load active agent's usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -277,7 +294,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
         aggregated = mod.sync_payload(since_date=last_synced_date)
     except Exception as e:
         note = f"aggregation failed in agent usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -297,7 +314,7 @@ async def _run_sync(is_backfill: bool = False) -> None:
             note = f"no new entries since watermark {last_synced_date}"
         else:
             note = "session files present but contained no usage entries"
-        print(f"{_timestamp_prefix()} usage_sync: {note} — posting placeholder")
+        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
         await _post_records(
             [_empty_record(workspace_id, workspace_name, project_id, note)],
             daily=None, state=state,
@@ -351,7 +368,7 @@ async def start_usage_sync_scheduler() -> None:
     1. If no watermark exists, run full backfill.
     2. Then run daily at SYNC_HOUR_UTC:00 UTC.
 
-    Errors are caught and logged — a failure never crashes the server.
+    Errors are caught and logged; a failure never crashes the server.
     """
     await asyncio.sleep(5)
 

@@ -30,14 +30,14 @@ re-runs the installer.
    first):
 
    ```bash
-   cd <repo_dir> && mkdir -p "<state_root>" && \
-     ./venv/bin/python server.py >> "<state_root>/quirq.log" 2>&1
+   cd <repo_dir> && mkdir -p "<state_root>/logs" && \
+     ./venv/bin/python server.py >> "<state_root>/logs/quirq.log" 2>&1
    ```
 
 5. Poll `/health` on 5002 then 5003 (the server falls back automatically)
    for up to ~60 s.
 
 6. On success report port, `<base_url>/space/`, and the log path
-   (`<state_root>/quirq.log`) — and that the server runs only as long as
+   (`<state_root>/logs/quirq.log`) — and that the server runs only as long as
    this session. On failure show the tail of the log verbatim and stop —
    no retries, no cleanup attempts.

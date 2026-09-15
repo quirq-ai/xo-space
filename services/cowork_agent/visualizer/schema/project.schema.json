@@ -2,17 +2,29 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/project.schema.json",
   "title": "xo project identity",
-  "description": "Single-row identity for this cowork folder. Written once on first boot; immutable thereafter (except `name` which the user may rename).",
+  "description": "Identity and durable provenance for one cowork folder. Three writers contribute to this document and each writes a key-scoped merge — no writer may touch another's keys (docs/syncplan.md §5.1): `visualizer/sinks/project_json.fill_identity` owns `schema`, `pid`, `name`, `owner_user_id`, `created_at` and is the only place that drops `_template`; `project_layout._upsert_metadata` owns `display_name` and `description` (and seeds `name`/`created_at` at scaffold time, because it is what creates the file); the git refresher owns `git`.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "pid", "name", "owner_user_id", "created_at"],
   "properties": {
     "$schema":     { "type": "string", "description": "Editor hint — points at this schema file." },
-    "schema":      { "type": "integer", "const": 1 },
+    "schema":      { "type": "integer", "enum": [1, 2], "description": "Record schema version; 2 is current. 2 only *declares* `display_name`, `description` and `git` — keys that were already being written into a document declared `additionalProperties: false`, so every project.json on disk failed its own validator. A version-1 document is therefore structurally a valid version-2 document and is accepted unchanged: no writer rewrites the version of an existing file, so refusing 1 would just move the same defect to a different key." },
     "_template":   { "type": "boolean", "description": "Present and true on a fresh template. The first agent to boot must populate identity fields and remove this flag." },
-    "pid":         { "type": ["string", "null"], "format": "uuid", "description": "UUID v4. Generated once on first boot. Never regenerated." },
-    "name":        { "type": ["string", "null"], "description": "Human-readable project name. Defaults to the folder name." },
-    "owner_user_id": { "type": ["string", "null"], "description": "Stable user identifier of the project owner." },
-    "created_at":  { "type": ["string", "null"], "format": "date-time", "description": "ISO 8601 UTC timestamp of first boot." }
+    "pid":         { "type": ["string", "null"], "format": "uuid", "description": "UUID v4. Generated once on first boot. Never regenerated — it is the identity that survives a clone, a rename and a restore." },
+    "name":        { "type": ["string", "null"], "description": "Folder name at mint time. NOT the lookup key — every consumer keys on the directory name, which this may have drifted from after a rename." },
+    "display_name": { "type": ["string", "null"], "description": "Human-readable name the user typed at creation. Written by `project_layout._upsert_metadata`; defaults to the project id when the caller supplies none." },
+    "description": { "type": ["string", "null"], "description": "One-line summary the user typed at creation. Written by `project_layout._upsert_metadata`; empty string when the caller supplies none. The projects list falls back to the project's own docs when this is empty." },
+    "owner_user_id": { "type": ["string", "null"], "description": "Stable user identifier of the project owner: the authenticated user_id, else CODER_WORKSPACE_OWNER_NAME, else \"local\". Never overwritten once a real value is stored — that would silently reassign someone else's project. The single exception is the \"local\" placeholder, which identifies nobody and was written identically by every unauthenticated Space; it is upgraded once, when a real identity becomes available (2026-09-08)." },
+    "created_at":  { "type": ["string", "null"], "format": "date-time", "description": "ISO 8601 UTC timestamp of first boot." },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote_url", "default_branch"],
+      "description": "Durable git provenance, refreshed from the project's OWN repo. It lives here as well as in the machine-local `projects.json` cache because a snapshot excludes `.git` but includes this file (`xo_projects_sync/tarball.py:36-42`) — so a restore destroys the directory the remote URL was read from while preserving `project.json`. Provenance kept only in `.git` does not survive the one operation it exists to describe. Absent until the git refresher has run.",
+      "properties": {
+        "remote_url":     { "type": ["string", "null"], "description": "`remote.origin.url` with any `user:token@` userinfo stripped. Null when the folder is not a repo, git is unavailable, or there is no origin." },
+        "default_branch": { "type": ["string", "null"], "description": "Short default branch name. Null when undeterminable (no commits, detached HEAD with no origin/HEAD)." }
+      }
+    }
   }
 }

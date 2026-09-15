@@ -138,7 +138,7 @@ class CategorizedGraphTests(unittest.TestCase):
 
 
 class DashboardUiTests(unittest.TestCase):
-    def test_dashboard_is_first_default_tab_and_shares_the_graph_canvas(
+    def test_dashboard_is_the_default_projects_lens_and_shares_the_graph_canvas(
         self,
     ) -> None:
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
@@ -154,11 +154,13 @@ class DashboardUiTests(unittest.TestCase):
             app.index("registerView(dashboardView);"),
             app.index("registerView(graphView);"),
         )
-        self.assertIn("startRegistry({defaultView:'dashboard'})", app)
+        self.assertIn("startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'})", app)
         self.assertIn(
             "atlasView('dashboard','Dashboard',0,'graph','dashboard')", atlas
         )
-        self.assertIn("section:'graph'", atlas)
+        dashboard = atlas.split("export const dashboardView={", 1)[1].split("};", 1)[0]
+        self.assertIn("projectPage('dashboard')", dashboard)
+        self.assertIn("section:'graph'", dashboard)
         self.assertIn("/xo/dashboard.json", atlas)
         self.assertIn("clusters:l.clusters||[]", atlas)
         self.assertIn("function drawEnclosures(k)", atlas)

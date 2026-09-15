@@ -1,25 +1,10 @@
-"""``stats.json`` sink — rolling 7d/30d + by_runtime + by_session.
-
-Per the stats schema (``services/cowork_agent/project_template/.xo/
-schema/stats.schema.json``):
-
-* ``rolling.7d`` / ``rolling.30d`` — totals over the trailing window
-  with ``{tokens, by_model, files_edited, sessions, active_minutes}``.
-* ``by_session`` — per native session id, ``{tokens, files,
-  duration_ms}``.
-* ``by_runtime`` — totals bucketed by runtime (claude_code / openclaw).
-
-The sink rebuilds from durable state stored INSIDE ``stats.json``
-itself: a private ``_session_totals`` dict that's filtered on read
-into the public ``by_session`` view. That way restart-after-crash
-recovers state from disk; we don't need a sidecar.
-"""
+"""``stats.json`` sink — rolling 7d/30d + by_runtime + by_session."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.ingest.events import (
@@ -150,16 +135,22 @@ def _trim_oldest(buckets: dict, *, max_entries: int) -> dict:
     return {k: buckets[k] for k in keep}
 
 
-def apply(xo_dir: Path, events: Iterable[Event]) -> bool:
-    """Apply events to the project's stats file. Returns ``True`` if
-    the file changed.
+def apply(
+    root: Path, events: Iterable[Event], *, legacy_root: Optional[Path] = None
+) -> bool:
+    """
+    Apply events to the project's stats file. Returns ``True`` if the file
+    changed.
     """
     events = list(events)
     if not events:
         return False
 
-    path = xo_dir / _STATS_FILE
-    current = read_json(path) or {}
+    path = root / _STATS_FILE
+    current = read_json(path)
+    if current is None and legacy_root is not None:
+        current = read_json(legacy_root / _STATS_FILE)
+    current = current or {}
     private = dict(current.get("_session_totals") or {})
     # Private accumulator for by_day — persisted in the same file so
     # restart-after-crash recovers state without a sidecar (same

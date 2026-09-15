@@ -238,8 +238,13 @@ kill_process_tree() {
     local root_pid="$1"
     [ -z "$root_pid" ] && return 0
 
-    # Kill known children first, then the parent.
-    pkill -P "$root_pid" 2>/dev/null || true
+    # A restart requested by the API is itself a child of the old server.
+    # Its separate session survives the parent, but pkill -P would kill it.
+    local child_pid
+    for child_pid in $(pgrep -P "$root_pid" 2>/dev/null || true); do
+        [ "$child_pid" = "$$" ] && continue
+        kill_pid_graceful "$child_pid"
+    done
     kill_pid_graceful "$root_pid"
 }
 
@@ -290,8 +295,16 @@ start_api() {
         return 0
     fi
 
-    kill_hindering_processes
-    wait_for_port_release 10 || true
+    if [ "${1:-}" = "--owned-only" ]; then
+        # The API may restart its own service, never evict another listener.
+        if port_is_in_use "$PORT"; then
+            log_error "Port $PORT is still in use; refusing to stop another process"
+            return 1
+        fi
+    else
+        kill_hindering_processes
+        wait_for_port_release 10 || true
+    fi
 
     local python_cmd
     python_cmd="$(resolve_python_cmd || true)"
@@ -348,9 +361,57 @@ stop_api() {
 
 restart_api() {
     acquire_lock
+    # Allow the API's restart response to flush before stopping its process.
+    sleep 0.4
     stop_api
     sleep 1
     start_api
+}
+
+# Internal API restart: the caller supplies the runner PID and its own server
+# PID. Check both under the lock and never enter the broad CLI orphan sweep.
+restart_owned_api() {
+    local expected_pid="${1:-}"
+    local server_pid="${2:-}"
+    local actual_pid=""
+    local server_parent=""
+    case "$expected_pid:$server_pid" in
+        *[!0-9:]*|:*|*:) log_error "Invalid restart process IDs"; return 1 ;;
+    esac
+    if [ "$expected_pid" -le 1 ] || [ "$server_pid" -le 1 ]; then
+        log_error "Invalid restart process IDs"
+        return 1
+    fi
+    acquire_lock
+    # The HTTP handler has spawned us but still needs to flush its response.
+    sleep 0.4
+    actual_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ "$actual_pid" != "$expected_pid" ] || ! kill -0 "$server_pid" 2>/dev/null; then
+        log_error "The native runner changed; refusing this restart"
+        return 1
+    fi
+    if [ "$server_pid" != "$expected_pid" ]; then
+        server_parent=$(ps -o ppid= -p "$server_pid" 2>/dev/null | tr -d '[:space:]')
+        if [ "$server_parent" != "$expected_pid" ]; then
+            log_error "The server no longer belongs to this native runner"
+            return 1
+        fi
+    fi
+    kill_process_tree "$server_pid"
+    if [ "$expected_pid" != "$server_pid" ]; then
+        kill_pid_graceful "$expected_pid"
+    fi
+    for _ in $(seq 1 10); do
+        kill -0 "$server_pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill_pid_force_if_alive "$server_pid"
+    if [ "$expected_pid" != "$server_pid" ]; then
+        kill_pid_force_if_alive "$expected_pid"
+    fi
+    rm -f "$PID_FILE"
+    wait_for_port_release 10 || return 1
+    start_api --owned-only
 }
 
 status_api() {
@@ -459,6 +520,7 @@ case "${1:-restart}" in
     start)   start_api ;;
     stop)    stop_api ;;
     restart) restart_api ;;
+    restart-owned) restart_owned_api "${2:-}" "${3:-}" ;;
     status)  status_api ;;
     logs)    show_logs ;;
     *)

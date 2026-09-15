@@ -17,6 +17,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+
+from routers.browser_guard import is_local_mutation
 
 # Bundled UI (space_ui/ at the repo root); SPACE_DIR env var overrides, e.g.
 # to point at a live xo-atlas checkout during UI development.
@@ -24,28 +27,36 @@ DEFAULT_SPACE_DIR = str(Path(__file__).resolve().parent.parent / "space_ui")
 SPACE_DIR = Path(os.getenv("SPACE_DIR", DEFAULT_SPACE_DIR)).expanduser()
 
 router = APIRouter(prefix="/space", tags=["space"])
-
-
-def _is_local(request: Request) -> bool:
-    host = request.client.host if request.client else ""
-    return host in ("127.0.0.1", "::1", "localhost")
+_SERVER_INSTANCE = str(time.time_ns())
 
 
 @router.get("/server/status")
 async def space_server_status():
     """Lightweight status for the Space UI widget (also see /health)."""
+    from services.cowork_agent.runtime_config import restart_mode
+
     return {
         "status": "on",
+        "instance_id": _SERVER_INSTANCE,
+        "restart_mode": restart_mode(),
         "pid": os.getpid(),
         "space_dir": str(SPACE_DIR),
         "space_dir_exists": SPACE_DIR.exists(),
     }
 
 
+@router.get("/setup/status")
+async def space_setup_status():
+    """Workspace metadata and verified account status, without credential values."""
+    from services.setup_status import snapshot
+
+    return await snapshot()
+
+
 @router.post("/server/stop")
 async def space_server_stop(request: Request):
-    """Gracefully stop the server. Localhost only; restart via ./cowork-api.sh start."""
-    if not _is_local(request):
+    """Gracefully stop the server. Local, same-origin only; restart via ./cowork-api.sh start."""
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail="stop is allowed from localhost only")
 
     async def _terminate_soon():
@@ -54,6 +65,39 @@ async def space_server_stop(request: Request):
 
     asyncio.get_running_loop().create_task(_terminate_soon())
     return {"status": "stopping", "restart": "./cowork-api.sh start"}
+
+
+@router.post("/server/restart")
+async def space_server_restart(request: Request):
+    """Restart through the install's supervisor; never start a second server."""
+    if not is_local_mutation(request):
+        raise HTTPException(status_code=403, detail="restart requires a local, same-origin request")
+    from services.cowork_agent.runtime_config import REPO_ROOT, native_restart_pid, restart_mode
+    from utils.commands import spawn_detached
+
+    mode = restart_mode()
+    if mode == "foreground":
+        raise HTTPException(status_code=409, detail="Ctrl-C and re-run the server from the terminal where you launched it.")
+    if mode == "native":
+        pid = native_restart_pid()
+        if pid is None:
+            raise HTTPException(status_code=409, detail="The native runner changed; refresh before restarting.")
+        result = spawn_detached(
+            ["./cowork-api.sh", "restart-owned", str(pid), str(os.getpid())], cwd=REPO_ROOT,
+        )
+        if not result.ok:
+            raise HTTPException(status_code=503, detail=f"Could not start the restart script: {result.output}")
+    else:
+        async def _terminate_soon():
+            await asyncio.sleep(0.4)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        # Starlette starts background work only after sending the response body.
+        return JSONResponse(
+            {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE},
+            background=BackgroundTask(_terminate_soon),
+        )
+    return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
 
 
 @router.get("/update/status")
@@ -77,10 +121,10 @@ async def space_update_status():
 
 @router.post("/update/apply")
 async def space_update_apply(request: Request):
-    """Fast-forward the checkout to the remote branch. Localhost only, like
-    /server/stop: it changes the code on disk. The running server keeps the
-    old version until restarted."""
-    if not _is_local(request):
+    """Fast-forward the checkout to the remote branch. Local, same-origin only,
+    like /server/stop: it changes the code on disk. The running server keeps
+    the old version until restarted."""
+    if not is_local_mutation(request):
         raise HTTPException(status_code=403,
                             detail="update is allowed from localhost only")
     from services.cowork_agent.self_update import UpdateError, apply_update

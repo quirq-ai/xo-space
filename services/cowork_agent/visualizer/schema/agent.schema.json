@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/agent.schema.json",
+  "title": "xo agent attachment — one backend's agent record for a project",
+  "description": "Optional and adapter-owned. Present in a project when a project-tied backend has attached an agent to it; the file EXISTING is the signal (the sidebar's `list_agents` keys on existence and tolerates a record it cannot parse), so the contents are advisory rather than structural. Written by exactly one backend per record — the one named in `backend` — through that adapter's `_write`, atomically; no core module writes this file. The document is deliberately OPEN (`additionalProperties: true`): it belongs to whichever adapter created it, and an adapter must be able to carry its own fields without an edit to this core schema. docs/syncplan.md §5.4.\n\nNOTHING is required. Every reader keys on the project's DIRECTORY NAME, never on a field of this document — `get_detail` falls back to the directory name for every display value — and records written before the `backend` tag existed are still on disk. Requiring a key the readers do not need would only strand data this schema cannot help.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema":     { "type": "string", "description": "Editor hint — this schema's `$id`, not a filesystem path. Stamped on records minted after this schema existed; absent on older ones." },
+    "schema":      { "type": "integer", "const": 1, "description": "Record schema version. Absent on every record written before this schema existed, and an absent version means 1: no writer back-fills it, because rewriting an old record purely to stamp a version is a write with no reader behind it." },
+    "id":          { "type": ["string", "null"], "description": "Project directory name at creation time. Informational only — every consumer keys on the actual directory name, which this may have drifted from after a rename." },
+    "name":        { "type": ["string", "null"], "description": "Human-readable display name the user typed. Readers fall back to the directory name when this is absent or empty." },
+    "description": { "type": ["string", "null"], "description": "One-line summary the user typed; the empty string when the creator supplied none." },
+    "backend":     { "type": ["string", "null"], "description": "The adapter name of whichever backend owns this record. An OPEN STRING, never an enumeration: enumerating the known backends here would put backend names in a core file (which this repo forbids outside `adapters/<name>/`, `config/agents/<name>/` and `config/models/<name>/`) and would mean a new backend could not represent its own record without a core schema edit. Absent, null or the empty string means UNTAGGED — such a record predates the tag, and by the deliberate carve-out in docs/syncplan.md §6 T5 it stays claimable by every project-tied adapter, so ownership filtering narrows first-adapter-wins for tagged data without stranding what is already on disk." },
+    "created_at":  { "type": ["string", "null"], "format": "date-time", "description": "ISO 8601 UTC timestamp of record creation." }
+  }
+}

@@ -12,6 +12,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from services.cowork_agent import session_transcript
 from services.cowork_agent.registry.adapter_registry import list_adapters
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.sessions_io import (
@@ -110,8 +111,7 @@ async def update_session(session_id: str, request: Request):
         return JSONResponse(status_code=400, content={"detail": "directory must be a non-empty string"})
 
     # Ask each adapter's sessions capability to set the directory; the owning
-    # backend returns a result dict, the rest return None. Mutually exclusive
-    # per session, so order doesn't matter and no backend is named here.
+    # backend returns a result dict, the rest return None.
     for name in list_adapters():
         mod = try_load_capability("sessions", agent=name)
         fn = getattr(mod, "set_session_directory", None) if mod else None
@@ -130,6 +130,16 @@ def delete_session(session_id: str):
 
 
 # ── Per-session read-only extras ─────────────────────────────────────────────
+
+
+@router.get("/api/sessions/{session_id}/transcript")
+def session_transcript_view(session_id: str, tools: bool = False):
+    """{title, messages:[{id, role, content}]} — one text bubble per turn.
+    The full record (tool calls, reasoning, usage) stays on /api/messages."""
+    try:
+        return session_transcript.load_transcript(session_id, include_tools=tools)
+    except session_transcript.SessionNotFound:
+        return JSONResponse(status_code=404, content={"detail": "Session not found"})
 
 
 @router.get("/api/sessions/{session_id}/todos")

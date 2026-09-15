@@ -2,12 +2,12 @@
   "_shape": {
     "name": "required, unique",
     "description": "optional",
-    "command": "single shell command (use this OR commands, not both)",
-    "commands": ["step 1", "step 2 — run sequentially, stop at first failure"],
+    "command": "one command (use this OR commands, not both): an argv list like [\"npm\", \"install\", \"-g\", \"pkg\"] (preferred) or a string split with POSIX quoting — there is NO shell, so &&, |, ;, > and $() are rejected",
+    "commands": ["step 1", "step 2 — run sequentially, stop at first failure; each step is an argv list or a string as above"],
     "timeout_seconds": "optional, default 300, applies per command",
     "cwd": "optional working directory for every command",
     "success_message": "optional human-authored line shown on success; plain text or with placeholders; a default is used if omitted. Failure is always a generic 'Failed to install <name>.'",
-    "_placeholders": "in any command or success_message: {skills_dir} → active agent's <home_dir>/skills, {home_dir}, {agent_name}. Unknown {..} pass through. Path placeholders expand to raw paths — double-quote them in commands (--dir \"{skills_dir}\") so spaces survive."
+    "_placeholders": "in any command or success_message: {skills_dir} → active agent's <home_dir>/skills, {home_dir}, {agent_name}. Unknown {..} pass through. Placeholders are expanded per argv token after splitting, so a path with spaces stays one argument; no quoting needed."
   },
   "skills": [
     {

@@ -1,18 +1,18 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/todos.schema.json",
-  "title": "xo todos — aggregated across active sessions",
-  "description": "Mirrors each runtime's native todo file shape, keyed per session. One project can have multiple concurrent sessions across runtimes (Claude Code, OpenClaw, etc.).",
+  "title": "xo todos — the project's work items, grouped by session",
+  "description": "Written only by the agent-facing todos HTTP API (POST/PATCH/DELETE /api/xo-projects/{id}/todos), so the document is identical whichever runtime is active. Keyed per session: one project can have several concurrent sessions, plus the `_project` pseudo-session for callers with no session of their own. Schema 2 adds per-todo timestamps and the soft-delete tombstone.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "sessions"],
   "properties": {
     "$schema":    { "type": "string" },
-    "schema":     { "type": "integer", "const": 1 },
+    "schema":     { "type": "integer", "const": 2 },
     "updated_at": { "type": ["string", "null"], "format": "date-time" },
     "sessions": {
       "type": "object",
-      "description": "Map of session_id → session-scoped todo state. Session_id format depends on runtime (e.g. `ses_abc123` for Claude Code).",
+      "description": "Map of session_id → session-scoped todo state. `_project` is the default bucket; any other key is a session id supplied by the caller.",
       "additionalProperties": { "$ref": "#/definitions/session_todos" }
     }
   },
@@ -22,8 +22,8 @@
       "additionalProperties": false,
       "required": ["runtime", "todos"],
       "properties": {
-        "runtime":             { "type": "string", "description": "e.g. `claude_code`, `openclaw`, `cursor`, `aider`." },
-        "source_file":         { "type": ["string", "null"], "description": "Absolute path to the runtime's native todo file. Used by the watcher to re-derive on change." },
+        "runtime":             { "type": "string", "description": "The runtime that owns the session, as the caller declared it: the adapter name of whichever backend is attached." },
+        "source_file":         { "type": ["string", "null"], "description": "Legacy field from the removed watcher sink; always null on documents this API writes." },
         "session_started_at":  { "type": ["string", "null"], "format": "date-time" },
         "todos": {
           "type": "array",
@@ -38,7 +38,15 @@
       "properties": {
         "id":      { "type": "string" },
         "content": { "type": "string" },
-        "status":  { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled", "blocked"] }
+        "status":  { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled", "blocked"],
+                     "description": "Lifecycle only — never deletion. Source of truth: services/cowork_agent/visualizer/todo_status.py::TODO_STATUSES (tests/test_todo_status.py asserts this enum matches it)." },
+        "description": { "type": ["string", "null"] },
+        "active_form": { "type": ["string", "null"] },
+        "created_at":  { "type": ["string", "null"], "format": "date-time" },
+        "updated_at":  { "type": ["string", "null"], "format": "date-time", "description": "Stamped only when a field actually changes, so an idempotent PATCH leaves the document byte-identical." },
+        "deleted_at":  { "type": ["string", "null"], "format": "date-time",
+                         "description": "Tombstone. Non-null means deleted: the record is kept forever and hidden from reads unless ?include_deleted=true. Separate from `status` on purpose — `cancelled` is a decision, deleted means the todo should not have existed." },
+        "deleted_by":  { "type": ["string", "null"], "description": "User id that deleted it, when the caller supplied one." }
       }
     }
   }

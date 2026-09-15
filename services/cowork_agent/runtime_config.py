@@ -5,8 +5,9 @@ Secrets and runtime controls are deliberately separate:
 * ``secrets.env`` contains write-only credentials.
 * ``runtime.env`` contains a small allowlisted set of non-secret controls.
 
-Both live below the machine-local Quirq state root, never inside a project's
-portable ``.xo`` directory. Runtime controls are read at process startup, so
+Both live below the machine-local Quirq state root (``settings/runtime.env``
+and ``secrets/secrets.env``), never inside a project's portable ``.xo``
+directory. Runtime controls are read at process startup, so
 changing them produces a truthful ``restart_required`` state instead of
 pretending import-time configuration changed live.
 """
@@ -21,7 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.local_state import quirq_state_dir
+from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
+from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 
@@ -42,6 +45,51 @@ INSTALL_COMMAND = "curl -fsSL https://quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000
+REPO_ROOT = Path(__file__).resolve().parents[2]
+NATIVE_PID_FILE = Path("/tmp/xo-space.pid")  # cowork-api.sh's process manager
+
+
+def restart_mode() -> str:
+    """Only restart a supervisor-managed process or our native runner.
+
+    The native pid can be the server itself or its bash wrapper. A stale
+    pid file (or another checkout's server) must not enable process control.
+    Reload workers are foreground development processes, not managed servers.
+    """
+    if _as_bool(os.getenv("UVICORN_RELOAD"), default=False):
+        return "foreground"
+    if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
+        return "managed"
+    return "native" if native_restart_pid() is not None else "foreground"
+
+
+def native_restart_pid() -> int | None:
+    """The PID owned by this native server's runner, checked again on restart."""
+    script = REPO_ROOT / "cowork-api.sh"
+    if script.is_file() and os.access(script, os.X_OK):
+        try:
+            pid = int(NATIVE_PID_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+        if pid > 1 and pid in {os.getpid(), os.getppid()}:
+            return pid
+    return None
+
+
+def _secret_entries() -> list[dict]:
+    """The secret store's entries. Until the lifespan moves ``secrets.env``
+    into ``secrets/``, the configured new home may not exist yet; the old file
+    is read then, so the startup fingerprint matches the moved file's and the
+    move alone never reports a restart."""
+    new_home = secrets_dir() / "secrets.env"
+    old = quirq_state_dir() / "secrets.env"
+    configured = Path(agent_env.ENV_FILE)
+    if configured == new_home and not configured.exists() and old.is_file():
+        try:
+            return agent_env.parse_env_file(old.read_text(encoding="utf-8"))
+        except OSError:
+            return []
+    return load_env_entries()
 
 
 def _secrets_fingerprint() -> str:
@@ -52,7 +100,7 @@ def _secrets_fingerprint() -> str:
             str(entry.get("key") or "").strip(),
             str(entry.get("value") or ""),
         )
-        for entry in load_env_entries()
+        for entry in _secret_entries()
         if str(entry.get("key") or "").strip()
     )
     for key, value in rows:
@@ -70,11 +118,11 @@ def runtime_config_file() -> Path:
     configured = (os.getenv("QUIRQ_RUNTIME_FILE", "") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return quirq_state_dir() / "runtime.env"
+    return settings_dir() / "runtime.env"
 
 
 def root_config_file() -> Path:
-    return quirq_state_dir() / "roots.env"
+    return settings_dir() / "roots.env"
 
 
 def _parse_env_file(
@@ -564,6 +612,7 @@ def runtime_status() -> dict[str, Any]:
     configured = configured_settings()
     applied = effective_settings()
     reasons = restart_reasons()
+    mode = restart_mode()
     # Additive and best-effort: the Setup card renders it when present, and
     # a failure here must not take down the whole runtime-config endpoint.
     try:
@@ -578,10 +627,8 @@ def runtime_status() -> dict[str, Any]:
         "applied": applied,
         "restart_required": bool(reasons),
         "restart_reasons": reasons,
-        "restart_supported": _as_bool(
-            os.getenv("QUIRQ_ALLOW_SELF_RESTART"),
-            default=False,
-        ),
+        "restart_supported": mode != "foreground",
+        "restart_mode": mode,
         "managed_container": _as_bool(
             os.getenv("QUIRQ_MANAGED_CONTAINER"),
             default=False,
@@ -613,7 +660,7 @@ def runtime_status() -> dict[str, Any]:
             "secrets_file": _path_status(
                 Path(
                     (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
-                    or state_root / "secrets.env"
+                    or secrets_dir() / "secrets.env"
                 )
             ),
         },

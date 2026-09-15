@@ -16,14 +16,14 @@ let timer=null;
 let loading=false;
 let go=()=>{};
 
-/* No top-level tab: Quirq opens from the button in Setup's header (and stays
+/* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
    its own view rather than a card inside Setup so its 10s refresh and full
    state tree keep a page to themselves. */
 export default {
-  id:'quirq',
+  id:'quirq',route:'setup/server/details',aliases:['quirq'],
   label:'Quirq',
-  order:8,nav:false,parent:'secrets',
+  order:8,nav:false,parent:'setup',
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;
@@ -58,7 +58,7 @@ function renderShell(){
         /* This view has no tab of its own — every other control on the page
            leads further away, so the way home belongs in the hero. */
         +'<div class="quirq-hero-actions">'
-          +'<button id="quirq-back" type="button" data-go-view="secrets">&#8592; Setup</button>'
+          +'<button id="quirq-back" type="button" data-go-view="setup/server">&#8592; Setup</button>'
           +'<button id="quirq-refresh" type="button">Refresh data</button>'
         +'</div>'
       +'</header>'
@@ -70,7 +70,7 @@ function renderShell(){
         +'<div class="quirq-storage-actions">'
           +'<p id="quirq-legacy-note"></p>'
           +'<div>'
-            +'<button type="button" data-go-view="projects">Open project data</button>'
+            +'<button type="button" data-go-view="projects/data/list">Open project data</button>'
             +'<button type="button" data-wiki-page="xo-data">Read the .xo catalog</button>'
             +'<button type="button" data-wiki-page="watcher">Read watcher internals</button>'
           +'</div>'
@@ -153,43 +153,48 @@ function renderCatalog(data){
 function renderStorageMap(data){
   const tree=data.tree||[];
   const projectOutputs=data.project_outputs||{};
-  const machineFiles=tree.filter(item=>item.kind==='file'&&item.path.startsWith('watcher/'));
+  const machineFiles=tree.filter(item=>item.kind==='file'&&(
+    /^projects\/[^/]*offsets\.json$/.test(item.path)
+    ||item.path.startsWith('.locks/')
+    ||item.path.startsWith('cache/activity/')
+    ||item.path==='cache/heartbeat.json'
+  ));
   const sourceCursorFiles=machineFiles.filter(item=>
     /(^|\/)[^/]+-offsets\.json$/.test(item.path)
   );
-  const lockFiles=machineFiles.filter(item=>item.path.startsWith('watcher/locks/'));
-  const projectActivityFiles=machineFiles.filter(item=>item.path.startsWith('watcher/activity/projects/'));
-  const workspaceActivityFiles=machineFiles.filter(item=>item.path==='watcher/activity/workspace.json');
+  const lockFiles=machineFiles.filter(item=>item.path.startsWith('.locks/'));
+  const projectActivityFiles=machineFiles.filter(item=>item.path.startsWith('cache/activity/projects/'));
+  const workspaceActivityFiles=machineFiles.filter(item=>item.path==='cache/activity/workspace.json');
   const machineContract=[
     {
-      path:'offsets.json',
+      path:'projects/offsets.json',
       purpose:'Shared JSONL byte and inode cursors; source paths remain hidden here.',
       status:(data.watcher?.offsets_present?'1 present · ':'0 present · ')+(data.watcher?.tracked_files||0)+' tracked'
     },
     {
-      path:'*-offsets.json',
+      path:'projects/*-offsets.json',
       purpose:'Optional per-source cursor stores for runtimes that do not tail JSONL.',
       status:sourceCursorFiles.length+' present'
     },
     {
-      path:'locks/*.lock',
+      path:'.locks/*.lock',
       purpose:'Advisory writer coordination; lock filenames use safe path hashes.',
       status:lockFiles.length+' present'
     },
     {
-      path:'activity/projects/<id>.json',
+      path:'cache/activity/projects/<id>.json',
       purpose:'Ephemeral “open now” heartbeat for each discovered XO project.',
       status:projectActivityFiles.length+' present'
     },
     {
-      path:'activity/workspace.json',
+      path:'cache/activity/workspace.json',
       purpose:'Workspace union of live project sessions, refreshed every tick.',
       status:workspaceActivityFiles.length+' present'
     }
   ];
   const projectRows=projectOutputs.project_contract||[];
   const workspaceRows=projectOutputs.workspace_contract||[];
-  const machineRoot=(data.root?.host_path||data.root?.container_path||'~/.quirq')+'/watcher';
+  const machineRoot=(data.root?.host_path||data.root?.container_path||'~/.quirq');
   const xoRoot=projectOutputs.root?.host_path||projectOutputs.root?.container_path||'XO_PROJECTS_ROOT';
   const machineList=machineContract.map(item=>storageRow(
     item.path,
@@ -223,7 +228,7 @@ function renderStorageMap(data){
   const legacy=projectOutputs.legacy_activity_files||0;
   root.querySelector('#quirq-legacy-note').innerHTML=legacy
     ?'<b>'+legacy+' legacy .xo/activity.json file'+(legacy===1?'':'s')+'</b> found. '+esc(projectOutputs.legacy_activity_note)
-    :'Current live activity is correctly stored only under <code>.quirq/watcher/activity</code>.';
+    :'Current live activity is correctly stored only under <code>.quirq/cache/activity</code>.';
 }
 
 function storageRow(path,purpose,status,tone){
@@ -251,12 +256,34 @@ function metric(label,value,note){
   return '<div><span>'+esc(label)+'</span><b>'+esc(value)+'</b><p>'+esc(note)+'</p></div>';
 }
 
+// Three states, not two. `enabled` is configuration — it says what the
+// watcher was asked to do, never whether the loop is running — so a
+// crashed watcher used to keep showing "Live". `alive` is the observed
+// heartbeat: enabled but not beating is the failure worth shouting about.
+function watcherBadge(watcher){
+  if(!watcher.enabled)return{text:'Paused',cls:'is-muted',title:'Watcher disabled by runtime configuration'};
+  if(watcher.alive)return{
+    text:'Live',
+    cls:'is-live',
+    title:'Last tick '+(watcher.last_tick_at||'unknown')+' · '+(watcher.tick_count??'?')+' ticks'
+  };
+  return{
+    text:'Stalled',
+    cls:'is-stalled',
+    title:watcher.last_tick_at
+      ?'Watcher is enabled but has not ticked since '+watcher.last_tick_at
+      :'Watcher is enabled but has never written a heartbeat'
+  };
+}
+
 function renderActivity(activity,watcher){
   const projects=activity.projects||[];
   const active=projects.filter(project=>project.open_sessions>0).length;
   const badge=root.querySelector('#quirq-activity-badge');
-  badge.textContent=watcher.enabled?'Live':'Paused';
-  badge.className=watcher.enabled?'is-live':'is-muted';
+  const state=watcherBadge(watcher);
+  badge.textContent=state.text;
+  badge.className=state.cls;
+  badge.title=state.title;
   const target=root.querySelector('#quirq-activity');
   const summary=
     '<div class="quirq-stat-row">'

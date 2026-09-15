@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
-import signal
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from services.cowork_agent.runtime_config import (
@@ -61,21 +57,9 @@ def put_runtime_roots(body: RootConfigRequest) -> dict:
     }
 
 
-async def _terminate_for_managed_restart() -> None:
-    await asyncio.sleep(0.4)
-    os.kill(os.getpid(), signal.SIGTERM)
-
-
 @router.post("/api/runtime-config/restart")
-async def restart_runtime() -> dict:
-    status = runtime_status()
-    if not status["restart_supported"] or not status["managed_container"]:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Automatic restart is available only in the installer-managed "
-                "local Docker container."
-            ),
-        )
-    asyncio.create_task(_terminate_for_managed_restart())
-    return {"ok": True, "restarting": True}
+async def restart_runtime(request: Request) -> dict:
+    """Compatibility alias for the Setup process control."""
+    from routers.space import space_server_restart
+
+    return await space_server_restart(request)

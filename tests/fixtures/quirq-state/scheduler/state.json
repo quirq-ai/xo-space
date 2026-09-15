@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "jobs": {
+    "nightly-tests-a1b2c3": {
+      "next_run": "2026-01-02T02:00:00Z",
+      "last_run": "2026-01-01T02:00:00Z",
+      "running_since": null,
+      "last_result": {
+        "started_at": "2026-01-01T02:00:00Z",
+        "finished_at": "2026-01-01T02:00:13Z",
+        "trigger": "schedule",
+        "status": "ok",
+        "returncode": 0,
+        "duration_seconds": 12.5,
+        "output_tail": "Ran 12 tests in 12.4s\n\nOK\n"
+      }
+    }
+  }
+}

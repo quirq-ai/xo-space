@@ -26,10 +26,10 @@ What you see first depends on where you ran the installer. Quirq does not
 create anything for you: it watches the directory you installed in — your
 workspace, the *XO root* — and shows what is there.
 
-- **An empty directory:** Files says **No projects in this workspace yet**,
+- **An empty directory:** the Projects List says **No projects in this workspace yet**,
   and Dashboard, Graph, Tree and Timeline draw the same empty map. Setup and
-  Wiki work fully; Sessions shows *no data* until a runtime has run a session
-  on this machine.
+  the offline Wiki overview work fully; Sessions shows *no data* until a
+  runtime has run a session on this machine.
 - **A directory that already holds folders:** every non-hidden folder is
   listed as a project on the spot — your existing repos, scratch folders, and
   the `xo-space` checkout the installer just made — each marked
@@ -38,6 +38,9 @@ workspace, the *XO root* — and shows what is there.
   picture. If that is not the collection you meant, point the XO root at a
   narrower directory from the Setup tab; it changes which folders are listed
   and never moves files.
+
+Open **Wiki** at the top right for the local overview. It links to the
+[full Space guides](https://docs.quirq.ai/docs/space), which open online in a new tab.
 
 **A project is a direct child folder of the workspace.** The folder name is
 the project id, and the watcher lists every non-hidden folder it finds on its
@@ -66,8 +69,12 @@ Three ways to get a project in:
    folder exists). The root is printed by the installer (`XO projects:`),
    shown in the Setup tab, and returned by `GET /api/config/workspace`.
 
-Tabs fill in stages: any folder lights up Files (List, Graph, Tree) and a
-Dashboard node; a scaffolded project adds identity and todos; a `.git` inside
+Space opens on Dashboard, the first lens under Projects. Its lens switch is
+**Dashboard | List | Graph | Tree | Sharing**. Clicking Projects opens List
+(`#/projects`); `#/dashboard` still opens Dashboard directly.
+
+Tabs fill in stages: any folder lights up Projects (Dashboard, List, Graph,
+Tree); a scaffolded project adds identity and todos; a `.git` inside
 the project adds a Timeline lane and file dates; an agent session adds live
 badges, drawer events and Sessions telemetry; credentials (Setup or `.env`)
 enable chat, connectors and backup. Nothing is required just to browse.
@@ -112,7 +119,7 @@ It stops the running server first (the `cowork-api.sh` daemon included),
 brings down the local Docker compose project when the compose launcher was
 used, and then removes the managed checkout (venv, `.env`, and the
 `rclone.conf` / `mcp-tokens.json` connector credentials with it), the
-`.quirq` state root — `roots.env` is read first, so a root moved from the
+`.quirq` state root (all but `secrets/`, which keeps your credentials) — `roots.env` is read first, so a root moved from the
 Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the
 derived telemetry DB in `~/.argus`, and a legacy `~/.xo-cowork` migration
 source. It ends with a summary of exactly what was removed and what was
@@ -176,7 +183,7 @@ self-contained and you can move or delete it as one folder.
 | `.` | Your projects root — each project is a subdirectory with its own `.xo` |
 | `./xo-space` | The Quirq source checkout |
 | `./xo-space/venv` | Python environment, made by uv — it has no `pip`. To add packages (e.g. the test suite): `~/.local/bin/uv pip install --python ./xo-space/venv/bin/python -r <file>`; uv itself lives in `~/.local/bin`, which the installer does not add to your shell's PATH |
-| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state |
+| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state, including `logs/quirq.log` (server output) and `logs/commands.log` (every external command Quirq runs). If you move the Quirq state root from Setup, both logs move with it. |
 
 Open the **Setup** tab after installation. It shows the paths in use, CLI
 readiness, native session file counts, the active chat backend, and the watcher
@@ -237,7 +244,7 @@ Precedence, highest first:
 The Setup tab's `runtime.env` and `secrets.env` are loaded with `override=True`
 and beat all three, so the tab stays authoritative for whatever it manages.
 
-Roots are also read from `roots.env` in the state root, which the Setup tab
+Roots are also read from `settings/roots.env` in the state root, which the Setup tab
 writes. Explicit environment variables take precedence over it.
 
 Quirq refuses to start if the projects root and state root are nested inside

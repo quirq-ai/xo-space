@@ -140,7 +140,7 @@ class Source:
         rows: list[dict] = []
         if not _CLAUDE_SESSIONS_DIR.is_dir():
             return rows
-        for f in _CLAUDE_SESSIONS_DIR.glob("*.json"):
+        for f in sorted(_CLAUDE_SESSIONS_DIR.glob("*.json")):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):

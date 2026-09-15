@@ -26,6 +26,7 @@ import tempfile
 from pathlib import Path
 
 from services.cowork_agent.registry.agent_registry import get_active_agent
+from services.storage.layout import ensure_parent_dir
 
 _ENV_FILE_OVERRIDE = (os.getenv("QUIRQ_SECRETS_FILE", "") or "").strip()
 ENV_FILE: Path = (
@@ -63,7 +64,7 @@ def load_env_entries() -> list[dict]:
 
 def _write_env_text(text: str) -> None:
     """Atomically replace the store with owner-only permissions."""
-    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ensure_parent_dir(ENV_FILE)
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{ENV_FILE.name}.",
         dir=ENV_FILE.parent,

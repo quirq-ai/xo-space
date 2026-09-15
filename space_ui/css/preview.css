@@ -6,9 +6,9 @@
    anchored to the top-right; the first drag hands positioning over to
    preview.js, which then owns left/top for the rest of the session. */
   #preview{
-    position:fixed;top:calc(var(--topbar-h) + 16px);right:20px;
+    position:fixed;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px) + 16px);right:20px;
     width:min(620px,52vw);
-    height:min(78vh,calc(100vh - var(--topbar-h) - var(--footer-h) - 32px));
+    height:min(78vh,calc(100vh - var(--topbar-inset,var(--topbar-h)) - var(--section-nav-inset,0px) - var(--footer-h) - 32px));
     min-width:340px;min-height:240px;max-width:96vw;max-height:92vh;
     z-index:60;display:flex;flex-direction:column;
     background:rgba(13,16,20,.975);backdrop-filter:blur(18px);
@@ -25,9 +25,9 @@
   }
   #preview.is-dragging{transition:none;user-select:none}
   @media (max-width:760px){
-    #preview{left:0!important;right:0!important;top:var(--topbar-h)!important;
-      width:100vw;max-width:100vw;height:calc(100vh - var(--topbar-h) - var(--footer-h));
-      border-radius:0;resize:none}
+    #preview{left:0!important;right:0!important;top:calc(var(--topbar-inset,var(--topbar-h)) + var(--section-nav-inset,0px))!important;
+      width:100vw!important;max-width:100vw;height:calc(100vh - var(--topbar-inset,var(--topbar-h)) - var(--section-nav-inset,0px) - var(--footer-h))!important;
+      min-width:0;min-height:0;border-radius:0;resize:none}
   }
 
   #preview>header{
@@ -36,20 +36,26 @@
   }
   #preview.is-dragging>header{cursor:grabbing}
   .pv-title{min-width:0;flex:1}
-  .pv-title b{display:block;font:500 15px/1.25 var(--serif);color:var(--ink);
+  .pv-title b{display:block;font:600 15px/1.25 var(--sans);color:var(--ink);
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .pv-title code{display:block;margin-top:3px;font:400 10.5px var(--mono);
+  .pv-title code{display:block;margin-top:3px;font:400 12px var(--sans);
     color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #preview-meta{display:block;margin-top:5px;font:400 9.5px var(--mono);
-    letter-spacing:.12em;text-transform:uppercase;color:var(--ink-4)}
+  #preview-meta{display:block;margin-top:5px;font:400 11px var(--sans);
+    letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
   .pv-acts{display:flex;align-items:center;gap:7px;flex:none}
   .pv-acts button{
-    font:400 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-2);border:1px solid var(--line);border-radius:999px;
     padding:5px 11px;transition:all .16s var(--ease);
   }
   .pv-acts button:hover{color:var(--ink);border-color:#39404d;background:var(--bg-3)}
   #preview-close{border:0;font-size:13px;padding:4px 7px;letter-spacing:0}
+  @media (max-width:480px){
+    #preview>header{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+    .pv-acts{min-width:0;max-width:100%}
+    .pv-acts #preview-version{min-width:0;flex:1}
+    #preview-close{margin-left:auto}
+  }
 
   .pv-body{flex:1;min-height:0;overflow:auto;padding:18px 22px 26px}
   .pv-note{color:var(--ink-3);font-size:12.5px;line-height:1.55;padding:6px 0}
@@ -73,7 +79,7 @@
      beside it; the native popup does the listing. */
   #preview-version{
     max-width:200px;appearance:none;-webkit-appearance:none;cursor:pointer;
-    font:400 10px var(--mono);letter-spacing:.06em;
+    font:400 11px var(--sans);letter-spacing:.02em;
     color:var(--ink-2);background:var(--bg-3);border:1px solid var(--line);
     border-radius:999px;padding:5px 24px 5px 11px;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23b3ada0'/%3E%3C/svg%3E");
@@ -86,7 +92,7 @@
   /* rendered markdown — same restrained typography as the wiki articles */
   .pv-md{font-size:13.5px;line-height:1.68;color:var(--ink-2)}
   .pv-md h1,.pv-md h2,.pv-md h3,.pv-md h4,.pv-md h5,.pv-md h6{
-    font-family:var(--serif);font-weight:500;color:var(--ink);line-height:1.25;
+    font-family:var(--sans);font-weight:600;color:var(--ink);line-height:1.25;
     margin:22px 0 9px;letter-spacing:-.01em}
   .pv-md h1{font-size:23px;margin-top:4px}
   .pv-md h2{font-size:19px}
@@ -100,7 +106,7 @@
     border:1px solid var(--line-soft);border-radius:5px;padding:1px 5px}
   .pv-md pre{background:var(--bg-3);border:1px solid var(--line-soft);border-radius:9px;
     padding:12px 14px;overflow-x:auto;margin:0 0 13px}
-  .pv-md pre code{border:0;background:none;padding:0;color:var(--ink-2);font-size:11.5px}
+  .pv-md pre code{border:0;background:none;padding:0;color:var(--ink-2);font-size:12px}
   .pv-md blockquote{border-left:2px solid var(--line);padding-left:13px;color:var(--ink-3)}
   .pv-md hr{border:0;border-top:1px solid var(--line-soft);margin:18px 0}
   .pv-md table{border-collapse:collapse;width:100%;font-size:12.5px}

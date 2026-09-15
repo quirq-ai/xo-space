@@ -1,6 +1,6 @@
 """Read-only, privacy-aware catalog of machine-local Quirq state.
 
-The catalog powers the local Quirq view, opened from the Setup tab's header
+The catalog powers the local Quirq view, opened from the Setup tab's Server section
 (deep link ``#/quirq``). It deliberately reports structure and
 operational summaries rather than serving arbitrary files: credential values,
 native session contents, cursor paths, and symlink targets never leave the
@@ -16,8 +16,19 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.local_state import quirq_state_dir
-from services.cowork_agent.project_layout import xo_projects_root
+from services.cowork_agent.project_layout import (
+    runtime_dir_for_project,
+    workspace_runtime_dir,
+    workspace_timeline_path,
+    xo_projects_root,
+)
 from services.cowork_agent.registry.agent_env import load_env_entries
+from services.cowork_agent.visualizer.state import (
+    watcher_activity_dir,
+    watcher_heartbeat_path,
+    watcher_state_dir,
+)
+from services.storage.layout import settings_dir
 from services.cowork_agent.runtime_config import (
     configured_settings,
     effective_settings,
@@ -25,76 +36,178 @@ from services.cowork_agent.runtime_config import (
 )
 
 
+# Liveness thresholds for the watcher heartbeat (see _stale_after_seconds).
+_MISSED_TICKS_BEFORE_DEAD = 5.0
+_HEARTBEAT_STALE_FLOOR_S = 5.0
+
 _MAX_FILES = 500
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _SENSITIVE_NAMES = frozenset({"secrets.env"})
 
+# ``tier`` says which root a per-project file hangs off.
+_TIER_SYNCED = "synced"
+_TIER_RUNTIME = "runtime"
+_TIER_HISTORY = "history"
+
 _PROJECT_OUTPUT_CONTRACT = (
     {
         "path": "project.json",
+        "tier": _TIER_SYNCED,
         "producer": "Watcher identity sink + project scaffold",
         "purpose": "Stable project id, display name, description, and creation time",
         "used_by": "Projects, Graph",
     },
     {
-        "path": "sessions/sessionslist.json",
+        "path": "sessions/sessionslist.d",
+        "tier": _TIER_RUNTIME,
         "producer": "Runtime source adapter",
-        "purpose": "Metadata-only index that maps native sessions to this project",
+        "purpose": "Metadata-only index that maps native sessions to this project, one shard file per session",
         "used_by": "Projects APIs, Graph",
     },
     {
         "path": "sessions/sessions-augment.json",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher session sink",
         "purpose": "Derived message, tool, task, model, timing, and usage summaries",
         "used_by": "Project APIs, Graph",
     },
     {
         "path": "todos.json",
-        "producer": "Watcher todo sink + Todo API",
-        "purpose": "Per-session work items and their lifecycle state",
+        "tier": _TIER_SYNCED,
+        "producer": "Todo API (every runtime; there is no watcher todo sink)",
+        "purpose": "Per-session work items, their lifecycle state, and deletion tombstones",
+        "used_by": "Projects",
+    },
+    {
+        "path": "workitems.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Workitems API (the routes are the file's only writer)",
+        "purpose": (
+            "Authored work items and GitHub adoption records, with deletion "
+            "tombstones"
+        ),
+        "used_by": "Workitems",
+    },
+    {
+        "path": "peers.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Peers API (the routes are the file's only writer)",
+        "purpose": (
+            "Roster of the humans this project is shared with, their roles "
+            "and optional sync endpoints; an empty list means solo"
+        ),
         "used_by": "Projects",
     },
     {
         "path": "stats.json",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher statistics sink",
         "purpose": "Rolling usage, runtime, model, tool, and daily aggregates",
         "used_by": "Project analytics APIs",
     },
     {
         "path": "timeline.jsonl",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher timeline sink",
         "purpose": "Append-only normalized history of sessions, files, tools, and tasks",
         "used_by": "Projects",
     },
+    # The workitems surface spans both tiers on purpose (workitems-plan §3).
+    # The authored half above is durable and travels; these two are not.
+    {
+        "path": "github/issues.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "GitHub issue poller",
+        "purpose": (
+            "Re-fetchable snapshot of the project repo's issues: state, "
+            "assignees, poll budget, and last error"
+        ),
+        "used_by": "Workitems (adopted items)",
+    },
+    {
+        "path": "workitems/claims.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "Workitem claim API",
+        "purpose": (
+            "Which agent session is working which workitem; the only input "
+            "to the derived in_progress"
+        ),
+        "used_by": "Workitems",
+    },
 )
 
+# The workspace tier splits the same way the per-project one does, and for the
+# same reason (syncplan T20): the two records a clone would want stay in ``<XO
+# root>/.xo/``, every rollup the watcher recomputes from a walk of the projects
+# root moved to ``~/.quirq/cache/``, and the Space timeline, history nothing
+# rebuilds, to ``~/.quirq/projects/timeline.jsonl``.
 _WORKSPACE_OUTPUT_CONTRACT = (
     {
-        "path": "workspace.json",
+        "path": "space.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Watcher Space record writer",
+        "purpose": "The Space record: its captured id, label, roots and attached agent backends",
+        "used_by": "Space identity, Setup",
+    },
+    {
+        "path": "projects.json",
+        "tier": _TIER_SYNCED,
         "producer": "Watcher workspace rollup",
-        "purpose": "Workspace identity and the discovered project list",
+        "purpose": "The projects registry: every project directory with its pid, scaffold state and git origin",
         "used_by": "Projects, Graph",
     },
     {
+        "path": "xo.json",
+        "tier": _TIER_SYNCED,
+        "producer": "Server startup + status probes",
+        "purpose": "Frontend manifest: agent capability flags and live model/channel status",
+        "used_by": "Every tab (feature gating)",
+    },
+    {
+        "path": "graph.json",
+        "tier": _TIER_RUNTIME,
+        "purpose": "The derived workspace graph served at GET /xo/space.json",
+        "producer": "Watcher view builder",
+        "used_by": "Graph, Tree, Files list",
+    },
+    {
+        "path": "dashboard.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "Watcher view builder",
+        "purpose": "The same workspace scan collapsed into purpose environments",
+        "used_by": "Dashboard",
+    },
+    {
+        "path": "sessions.json",
+        "tier": _TIER_RUNTIME,
+        "producer": "Watcher view builder",
+        "purpose": "Session telemetry merged across every runtime that reports it",
+        "used_by": "Sessions",
+    },
+    {
         "path": "sessions/sessionslist.json",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher workspace rollup",
         "purpose": "Union of every project session index",
         "used_by": "Workspace APIs, Graph",
     },
     {
         "path": "sessions/sessions-augment.json",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher workspace rollup",
         "purpose": "Union of watcher-derived session summaries",
         "used_by": "Workspace APIs, Graph",
     },
     {
         "path": "stats.json",
+        "tier": _TIER_RUNTIME,
         "producer": "Watcher workspace rollup",
         "purpose": "Aggregated statistics across every project",
         "used_by": "Workspace analytics APIs",
     },
     {
         "path": "timeline.jsonl",
+        "tier": _TIER_HISTORY,
         "producer": "Watcher workspace rollup",
         "purpose": "Multiplexed project timelines tagged with project id",
         "used_by": "Workspace timeline APIs",
@@ -117,14 +230,93 @@ def _read_json(path: Path) -> Any:
 
 def _description(relative_path: str, *, is_dir: bool) -> str:
     if is_dir:
-        if relative_path == "watcher":
-            return "Watcher cursors, locks, and live presence"
-        if relative_path == "watcher/activity":
+        if relative_path == ".locks":
+            return "Advisory write locks; internal, recreated on demand"
+        if relative_path == "cache":
+            return "Safe to delete: derived workspace views, the heartbeat and live presence, rebuilt automatically"
+        if relative_path == "cache/activity":
             return "Ephemeral activity snapshots"
-        if relative_path == "watcher/activity/projects":
+        if relative_path == "cache/activity/projects":
             return "Per-project live presence"
+        if relative_path == "projects":
+            return "Per-project history keyed by project.json:pid, the Space timeline, and the watcher's reading positions"
+        if relative_path == "inbox":
+            return "The Space Inbox"
+        if relative_path == "sharing":
+            return "Shared repositories this machine has seen: bookmarks and removal markers"
+        if relative_path == "usage":
+            return "How far usage has been reported to XO, one file per agent"
+        if relative_path == "settings":
+            return "Space-wide choices: saved roots, runtime controls, onboarding"
+        if relative_path == "secrets":
+            return "Credentials; owner-only, values are never shown"
+        if relative_path.endswith("/sessionslist.d"):
+            return "Session index shards, one file per session"
+        # The two runtime-tier workitems directories, for the same reason the
+        # tiers above are named: they would otherwise be anonymous rows.
+        if relative_path.endswith("/github"):
+            return "GitHub issue mirror, re-fetched by the poller"
+        if relative_path.endswith("/workitems"):
+            return "Live workitem claims for this machine"
+        # Connections polling (Inbox): one folder per polled toolkit. The
+        # per-toolkit rule is scoped to exactly two segments so a deeper
+        # directory does not inherit it.
+        if relative_path == "connections":
+            return (
+                "Per-connection polling: config, state, and collected events, "
+                "one folder per toolkit"
+            )
+        if relative_path == "scheduler":
+            return "Saved manual commands and schedules, execution state, results, and logs"
+        if relative_path == "scheduler/runs":
+            return "Append-only command run history, one JSONL file per command"
+        if relative_path == "logs":
+            return "Safe to delete: server output, the command log, and saved command output"
+        if relative_path in ("scheduler/logs", "logs/scheduler"):
+            return "Full command output logs, retained when a definition is deleted"
+        if (
+            relative_path.startswith("connections/")
+            and len(Path(relative_path).parts) == 2
+        ):
+            return "Polled connection: what to collect, how often, and what arrived"
         return "Directory"
     name = Path(relative_path).name
+    if relative_path == "inbox/inbox.json":
+        return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
+    if relative_path == "scheduler/jobs.json":
+        return "Saved commands: arguments, environment overrides, descriptions, timeouts, and optional intervals"
+    if relative_path == "scheduler/state.json":
+        return "Command execution state: next run, running since, and last result"
+    if relative_path.startswith("scheduler/runs/"):
+        return "Run timestamps, trigger, status, return code, duration, and output tail"
+    if relative_path.startswith(("scheduler/logs/", "logs/scheduler/")):
+        return "Appended command output through the command logger"
+    if relative_path.startswith("logs/commands.log"):
+        return "Every external command Quirq runs: bounded, redacted, rotated"
+    if relative_path == "logs/quirq.log":
+        return "Server output from the installer"
+    if relative_path.startswith("sharing/removed/"):
+        return "A person's decision to remove this shared repository from this projects root"
+    if relative_path.startswith("sharing/"):
+        return "Bookmark for one shared repository: last reported commit and ledger cursor"
+    if relative_path.startswith("usage/"):
+        return "The last day of usage reported to XO for one agent"
+    if relative_path.startswith(".locks/"):
+        return "Advisory lock sentinel; internal"
+    # Files under connections/ come first: the generic state.json rule below
+    # would otherwise claim a connection's state.json, and the events rule is
+    # scoped here so an unrelated events* file elsewhere keeps its own label.
+    if relative_path.startswith("connections/"):
+        if name == "config.json":
+            return "What to collect and how often; hand-editable"
+        if name == "state.json":
+            return "Poll cursors and the last result"
+        if name.startswith("events"):
+            return "Collected items, append-only, rotated at 2 MB"
+    if relative_path == "secrets/token.json":
+        return "Connector credentials (GitHub, Vercel); values are never shown"
+    if relative_path == "settings/onboarding.json":
+        return "Installation and onboarding state"
     if name == "state.json":
         return "Installation and onboarding state"
     if name == "runtime.env":
@@ -135,10 +327,18 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Write-only credentials; values are masked"
     if name == "offsets.json":
         return "Watcher read cursors; source paths are hidden"
-    if relative_path == "watcher/activity/workspace.json":
+    if relative_path == "cache/heartbeat.json":
+        return "Watcher liveness beat, rewritten every tick"
+    if relative_path == "cache/activity/workspace.json":
         return "Workspace-wide live presence"
-    if relative_path.startswith("watcher/activity/projects/"):
+    if relative_path.startswith("cache/activity/projects/"):
         return "Project live presence"
+    if relative_path.startswith("projects/timeline") and relative_path.count("/") == 1:
+        return "The Space timeline: every project's events tagged with project_id; history, never synced"
+    if relative_path.startswith("projects/"):
+        return "Project history and runtime state, keyed by pid; never synced"
+    if relative_path.startswith("cache/"):
+        return "Derived workspace view; rebuilt from a workspace walk"
     return "Machine-local state file"
 
 
@@ -186,7 +386,7 @@ def _tree(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "kind": "directory" if is_dir else "file",
                 "size_bytes": size,
                 "modified_at": _iso_time(stat.st_mtime),
-                "sensitive": path.name in _SENSITIVE_NAMES,
+                "sensitive": path.name in _SENSITIVE_NAMES or relative.startswith("secrets/"),
                 "description": _description(relative, is_dir=is_dir),
             }
         )
@@ -198,8 +398,8 @@ def _tree(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     }
 
 
-def _activity(root: Path) -> dict[str, Any]:
-    activity_root = root / "watcher" / "activity"
+def _activity() -> dict[str, Any]:
+    activity_root = watcher_activity_dir()
     workspace = _read_json(activity_root / "workspace.json")
     workspace_sessions = (
         workspace.get("open_sessions", [])
@@ -242,8 +442,36 @@ def _activity(root: Path) -> dict[str, Any]:
     }
 
 
-def _watcher(root: Path) -> dict[str, Any]:
-    offsets = _read_json(root / "watcher" / "offsets.json")
+def _parse_iso(value: Any) -> datetime | None:
+    """Parse a watcher timestamp, tolerating both ``Z`` and offset forms."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _stale_after_seconds(interval_seconds: Any) -> float:
+    """Age past which a heartbeat means "not ticking"."""
+    try:
+        interval = float(interval_seconds)
+    except (TypeError, ValueError):
+        interval = 1.0
+    if interval <= 0:
+        interval = 1.0
+    return max(_HEARTBEAT_STALE_FLOOR_S, interval * _MISSED_TICKS_BEFORE_DEAD)
+
+
+def _watcher() -> dict[str, Any]:
+    offsets_path = watcher_state_dir() / "offsets.json"
+    offsets = _read_json(offsets_path)
     if isinstance(offsets, dict):
         tracked_files = len(offsets)
     elif isinstance(offsets, list):
@@ -252,18 +480,56 @@ def _watcher(root: Path) -> dict[str, Any]:
         tracked_files = 0
     configured = configured_settings()
     applied = effective_settings()
+
+    # Observed liveness. Everything above this line is *configuration*: it
+    # says what the watcher was asked to do, never whether the loop is running.
+    heartbeat_path = watcher_heartbeat_path()
+    heartbeat = _read_json(heartbeat_path)
+    if not isinstance(heartbeat, dict):
+        heartbeat = {}
+    last_tick_at = heartbeat.get("last_tick_at")
+    last_tick = _parse_iso(last_tick_at)
+    stale_after = _stale_after_seconds(applied["watcher_interval_seconds"])
+    if last_tick is None:
+        age: float | None = None
+    else:
+        # Clamp: the stamp has second granularity, so a beat written in the
+        # same second reads as very slightly in the future.
+        age = round(
+            max(0.0, (datetime.now(timezone.utc) - last_tick).total_seconds()), 3
+        )
+    tick_count = heartbeat.get("tick_count")
+    duration_ms = heartbeat.get("duration_ms")
+
     return {
         "enabled": applied["watcher_enabled"],
         "interval_seconds": applied["watcher_interval_seconds"],
         "source_mode": applied["watcher_source_mode"],
         "configured_enabled": configured["watcher_enabled"],
         "tracked_files": tracked_files,
-        "offsets_present": (root / "watcher" / "offsets.json").is_file(),
+        "offsets_present": offsets_path.is_file(),
+        "heartbeat_present": heartbeat_path.is_file(),
+        "last_tick_at": last_tick_at if isinstance(last_tick_at, str) else None,
+        "tick_count": (
+            tick_count
+            if isinstance(tick_count, int) and not isinstance(tick_count, bool)
+            else None
+        ),
+        "last_tick_duration_ms": (
+            duration_ms
+            if isinstance(duration_ms, (int, float))
+            and not isinstance(duration_ms, bool)
+            else None
+        ),
+        "heartbeat_age_seconds": age,
+        "heartbeat_stale_after_seconds": stale_after,
+        "alive": age is not None and age <= stale_after,
     }
 
 
 def _install_state(root: Path) -> dict[str, Any]:
-    raw = _read_json(root / "state.json")
+    path = settings_dir() / "onboarding.json"
+    raw = _read_json(path if path.is_file() else root / "state.json")
     if not isinstance(raw, dict):
         return {"present": False}
     return {
@@ -273,32 +539,55 @@ def _install_state(root: Path) -> dict[str, Any]:
     }
 
 
+def _measure(path: Path) -> tuple[bool, int, float]:
+    """``(present, bytes, newest mtime)`` for a file **or** a directory."""
+    try:
+        if path.is_symlink():
+            return False, 0, 0.0
+        if path.is_file():
+            stat = path.stat()
+            return True, stat.st_size, stat.st_mtime
+        if path.is_dir():
+            total = 0
+            latest = 0.0
+            found = False
+            for child in sorted(path.iterdir()):
+                if child.is_symlink() or not child.is_file():
+                    continue
+                stat = child.stat()
+                total += stat.st_size
+                latest = max(latest, stat.st_mtime)
+                found = True
+            return found, total, latest
+    except OSError:
+        pass
+    return False, 0, 0.0
+
+
 def _contract_status(
-    xo_dirs: list[Path],
+    bases: dict[str, list[Path]],
     contract: tuple[dict[str, str], ...],
     *,
-    path_prefix: str,
+    prefixes: dict[str, str],
 ) -> list[dict[str, Any]]:
+    """Roll one contract up across every project."""
     rows: list[dict[str, Any]] = []
     for definition in contract:
+        tier = definition.get("tier", _TIER_SYNCED)
         present = 0
         total_bytes = 0
         latest_mtime = 0.0
-        for xo_dir in xo_dirs:
-            path = xo_dir / definition["path"]
-            try:
-                if not path.is_file() or path.is_symlink():
-                    continue
-                stat = path.stat()
-            except OSError:
+        for base in bases.get(tier, ()):
+            found, size, mtime = _measure(base / definition["path"])
+            if not found:
                 continue
             present += 1
-            total_bytes += stat.st_size
-            latest_mtime = max(latest_mtime, stat.st_mtime)
+            total_bytes += size
+            latest_mtime = max(latest_mtime, mtime)
         rows.append(
             {
                 **definition,
-                "location": f"{path_prefix}/{definition['path']}",
+                "location": f"{prefixes[tier]}/{definition['path']}",
                 "present_count": present,
                 "bytes": total_bytes,
                 "updated_at": _iso_time(latest_mtime) if latest_mtime else None,
@@ -308,7 +597,7 @@ def _contract_status(
 
 
 def _project_outputs() -> dict[str, Any]:
-    # Same root helper as every other tab — see project_layout.
+    # Same root helper as every other tab; see project_layout.
     projects_root = xo_projects_root()
     host_root = (
         os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or ""
@@ -328,34 +617,47 @@ def _project_outputs() -> dict[str, Any]:
             try:
                 xo_dir = candidate / ".xo"
                 if candidate.is_dir() and xo_dir.is_dir() and not xo_dir.is_symlink():
-                    project_dirs.append((candidate.name, xo_dir))
+                    # The runtime home is resolved through project_layout,
+                    # which keys it by ``project.json:pid`` and answers None
+                    # for a project that has none yet.
+                    project_dirs.append(
+                        (
+                            candidate.name,
+                            xo_dir,
+                            runtime_dir_for_project(candidate.name),
+                        )
+                    )
             except OSError:
                 continue
             if len(project_dirs) >= 200:
                 break
 
-    xo_dirs = [xo_dir for _, xo_dir in project_dirs]
+    bases = {
+        _TIER_SYNCED: [xo_dir for _, xo_dir, _ in project_dirs],
+        _TIER_RUNTIME: [rt for _, _, rt in project_dirs if rt is not None],
+    }
     projects: list[dict[str, Any]] = []
-    for project_id, xo_dir in project_dirs:
+    for project_id, xo_dir, runtime_dir in project_dirs:
+        roots = {_TIER_SYNCED: xo_dir, _TIER_RUNTIME: runtime_dir}
         files = []
         total_bytes = 0
         latest_mtime = 0.0
         for definition in _PROJECT_OUTPUT_CONTRACT:
-            path = xo_dir / definition["path"]
-            try:
-                if not path.is_file() or path.is_symlink():
-                    continue
-                stat = path.stat()
-            except OSError:
+            base = roots.get(definition.get("tier", _TIER_SYNCED))
+            if base is None:
+                continue
+            found, size, mtime = _measure(base / definition["path"])
+            if not found:
                 continue
             files.append(definition["path"])
-            total_bytes += stat.st_size
-            latest_mtime = max(latest_mtime, stat.st_mtime)
+            total_bytes += size
+            latest_mtime = max(latest_mtime, mtime)
         legacy_activity = (xo_dir / "activity.json").is_file()
         projects.append(
             {
                 "project_id": project_id,
                 "container_path": str(xo_dir),
+                "runtime_path": str(runtime_dir) if runtime_dir else "",
                 "host_path": (
                     str(Path(host_root) / project_id / ".xo")
                     if host_root
@@ -370,7 +672,12 @@ def _project_outputs() -> dict[str, Any]:
         )
 
     workspace_xo = projects_root / ".xo"
-    workspace_dirs = [workspace_xo] if workspace_xo.is_dir() else []
+    workspace_runtime = workspace_runtime_dir()
+    workspace_history = workspace_timeline_path().parent
+    workspace_synced_dirs = [workspace_xo] if workspace_xo.is_dir() else []
+    workspace_runtime_dirs = (
+        [workspace_runtime] if workspace_runtime.is_dir() else []
+    )
     legacy_count = sum(
         1 for row in projects if row["legacy_activity_file"]
     ) + int((workspace_xo / "activity.json").is_file())
@@ -384,19 +691,30 @@ def _project_outputs() -> dict[str, Any]:
         "project_count": len(projects),
         "projects": projects,
         "project_contract": _contract_status(
-            xo_dirs,
+            bases,
             _PROJECT_OUTPUT_CONTRACT,
-            path_prefix="<project>/.xo",
+            prefixes={
+                _TIER_SYNCED: "<project>/.xo",
+                _TIER_RUNTIME: "<quirq state>/projects/<pid>",
+            },
         ),
         "workspace_contract": _contract_status(
-            workspace_dirs,
+            {
+                _TIER_SYNCED: workspace_synced_dirs,
+                _TIER_RUNTIME: workspace_runtime_dirs,
+                _TIER_HISTORY: [workspace_history] if workspace_history.is_dir() else [],
+            },
             _WORKSPACE_OUTPUT_CONTRACT,
-            path_prefix="<XO root>/.xo",
+            prefixes={
+                _TIER_SYNCED: "<XO root>/.xo",
+                _TIER_RUNTIME: "<quirq state>/cache",
+                _TIER_HISTORY: "<quirq state>/projects",
+            },
         ),
         "legacy_activity_files": legacy_count,
         "legacy_activity_note": (
             ".xo/activity.json is legacy. Current presence is written only "
-            "under .quirq/watcher/activity."
+            "under .quirq/cache/activity."
         ),
     }
 
@@ -425,8 +743,8 @@ def quirq_catalog() -> dict[str, Any]:
         },
         "totals": totals,
         "tree": tree,
-        "activity": _activity(root),
-        "watcher": _watcher(root),
+        "activity": _activity(),
+        "watcher": _watcher(),
         "runtime": configured_settings(),
         "credentials": [
             {"key": key, "configured": True, "value": "••••••"}

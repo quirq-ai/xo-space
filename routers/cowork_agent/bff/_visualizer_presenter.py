@@ -14,6 +14,9 @@ trivially testable and cannot drift between the two tiers.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -301,13 +304,33 @@ def performance_for_dates(by_day: dict[str, dict], dates: list[str]) -> list[Per
 # ── timeline event-type filter ─────────────────────────────────────────────────
 
 
-TIMELINE_TYPES = frozenset({
-    "project.created", "session.started", "session.closed",
-    "todo.added", "todo.completed",
-    "file.edited", "file.created",
-    "plan.written", "episode.written",
-    "peer.sync.started", "peer.sync.applied", "peer.sync.conflict",
-})
+def _declared_timeline_types() -> frozenset[str]:
+    """Every event type ``timeline.schema.json`` declares a branch for."""
+    schema_path = (
+        Path(__file__).resolve().parents[3]
+        / "services" / "cowork_agent" / "visualizer" / "schema"
+        / "timeline.schema.json"
+    )
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except Exception:  # pragma: no cover - a packaging accident, not a branch
+        logger.warning("timeline.schema.json unreadable; ?types= will reject all")
+        return frozenset()
+
+    definitions = schema.get("definitions") or {}
+    found: set[str] = set()
+    for branch in schema.get("oneOf") or []:
+        ref = branch.get("$ref", "") if isinstance(branch, dict) else ""
+        node = definitions.get(ref.rsplit("/", 1)[-1]) if ref else branch
+        if not isinstance(node, dict):
+            continue
+        const = ((node.get("properties") or {}).get("type") or {}).get("const")
+        if isinstance(const, str) and const:
+            found.add(const)
+    return frozenset(found)
+
+
+TIMELINE_TYPES = _declared_timeline_types()
 
 
 def parse_types_param(types: Optional[str]) -> Optional[frozenset]:

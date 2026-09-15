@@ -5,26 +5,81 @@
   "description": "Machine-local presence under ~/.quirq/watcher/activity/: which sessions are open right now and when they last did something. Heartbeat-style: refreshed on every meaningful action, stale entries pruned by the watcher.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "open_sessions"],
+  "required": [
+    "schema",
+    "open_sessions"
+  ],
   "properties": {
-    "$schema":    { "type": "string" },
-    "schema":     { "type": "integer", "const": 1 },
-    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "open_sessions": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["session_id", "agent", "user_id", "opened_at", "last_activity_at"],
+        "required": [
+          "session_id",
+          "agent",
+          "user_id"
+        ],
         "properties": {
-          "session_id":       { "type": "string" },
-          "runtime":          { "type": ["string", "null"], "description": "e.g. `claude_code`, `openclaw`." },
-          "agent":            { "type": "string", "description": "Model id, e.g. `claude-opus-4-7`." },
-          "user_id":          { "type": "string" },
-          "opened_at":        { "type": "string", "format": "date-time" },
-          "last_activity_at": { "type": "string", "format": "date-time" },
-          "host":             { "type": ["string", "null"], "description": "Machine the session is running on." },
-          "project_id":       { "type": ["string", "null"], "description": "Present only in the workspace aggregate." }
+          "session_id": {
+            "type": "string"
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "e.g. `claude_code`, `openclaw`."
+          },
+          "agent": {
+            "type": "string",
+            "description": "Model id, e.g. `claude-opus-4-7`."
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "opened_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ISO-8601, or null when the runtime file carried no usable timestamp. T24 made this null rather than now(): stamping the current time for a missing value rewrote the document every tick and defeated write-on-change (syncplan §10 T24)."
+          },
+          "last_activity_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ISO-8601, or null when the runtime file carried no usable timestamp. T24 made this null rather than now(): stamping the current time for a missing value rewrote the document every tick and defeated write-on-change (syncplan §10 T24)."
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine the session is running on."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present only in the workspace aggregate."
+          }
         }
       }
     }

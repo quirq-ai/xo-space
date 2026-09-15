@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "jobs": {
+    "nightly-tests-a1b2c3": {
+      "id": "nightly-tests-a1b2c3",
+      "name": "Nightly tests",
+      "description": "Run the sample project's tests every night",
+      "project_id": "sample-project",
+      "command": {
+        "argv": [
+          "python",
+          "-m",
+          "unittest"
+        ],
+        "timeout": 600,
+        "cwd": "/home/you/xo-projects/sample-project"
+      },
+      "every_seconds": 86400,
+      "enabled": true,
+      "created_at": "2025-12-01T10:00:00Z",
+      "updated_at": "2025-12-01T10:00:00Z"
+    }
+  }
+}

@@ -60,7 +60,7 @@ class RuntimeConfigTests(unittest.TestCase):
                 status["configured"]["xo_projects_root"],
                 str(projects_root),
             )
-            root_file = state_root / "roots.env"
+            root_file = state_root / "settings" / "roots.env"
             self.assertEqual(stat.S_IMODE(root_file.stat().st_mode), 0o600)
             self.assertIn(
                 f"QUIRQ_STATE_ROOT={next_state_root}",

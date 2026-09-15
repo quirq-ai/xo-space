@@ -1,6 +1,6 @@
 # OBJECTIVES.md
 
-> The north-star outcomes for this project. Stable on the order of weeks. Edit when objectives genuinely shift — not when tasks shift (the current plan goes in `PLAN.md`; in-flight todos live in your runtime's todo tool and `.xo/todos.json`).
+> The north-star outcomes for this project. Stable on the order of weeks. Edit when objectives genuinely shift — not when tasks shift (the current plan goes in `PLAN.md`; in-flight todos are recorded through the todo API — see AGENTS.md §5).
 >
 > **`[TEMPLATE]` markers below mean this folder is fresh.** Replace them on first boot.
 

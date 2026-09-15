@@ -36,6 +36,11 @@ make_install() {  # $1 = workspace dir
     echo "PORT=59999" > "$1/xo-space/.env"
     echo keep > "$1/projectA/notes.md"
     echo state > "$1/.quirq/state.json"
+    # The workspace .xo is DURABLE since the tier split (syncplan §9, T21):
+    # space.json and projects.json are records, not watcher output. Every
+    # derived view lives under .quirq now.
+    echo '{"schema":2,"space_id":"s1"}' > "$1/.xo/space.json"
+    echo '{"schema":2,"projects":[]}'   > "$1/.xo/projects.json"
 }
 
 # ---- 1. resolve_repo_dir ---------------------------------------------------
@@ -70,6 +75,15 @@ r5="$( cd "$W/ws1" && source "$W/lib.sh" 2>/dev/null
        printf '%s' "$PROJECTS_ROOT" )"
 check "an exported shell root beats roots.env" "$r5" "$W/shellroot"
 rm -f "$W/ws1/.quirq/roots.env"
+
+mkdir -p "$W/ws1/.quirq/settings"
+echo "XO_PROJECTS_ROOT=$W/ws1/fromsettings" > "$W/ws1/.quirq/settings/roots.env"
+r5b="$( cd "$W/ws1" && source "$W/lib.sh" 2>/dev/null
+       unset XO_PROJECTS_ROOT QUIRQ_STATE_ROOT || true
+       resolve_repo_dir; resolve_workspace_dir; resolve_roots
+       printf '%s' "$PROJECTS_ROOT" )"
+check "settings/roots.env is read before the old roots.env" "$r5b" "$W/ws1/fromsettings"
+rm -rf "$W/ws1/.quirq/settings"
 
 # ---- 3. remove_path guards -------------------------------------------------
 g1="$( source "$W/lib.sh" 2>/dev/null; ( remove_path x "/" ) 2>&1 || true )"
@@ -135,16 +149,34 @@ full="$( cd "$W/ws5" && HOME="$W/home5" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp5"
 state5="$([ -d "$W/ws5/projectA" ] && echo projects || echo lost)"
 state5="$state5|$([ -e "$W/ws5/xo-space" ] && echo checkout || echo nocheckout)"
 state5="$state5|$([ -e "$W/ws5/.quirq" ] && echo quirq || echo noquirq)"
-state5="$state5|$([ -e "$W/ws5/.xo" ] && echo xo || echo noxo)"
+state5="$state5|$([ -f "$W/ws5/.xo/space.json" ] && echo records || echo lostrecords)"
 state5="$state5|$([ -e "$W/home5/.argus" ] && echo argus || echo noargus)"
-check "full run: projects kept; checkout, .quirq, .xo, ~/.argus removed" \
-      "$state5" "projects|nocheckout|noquirq|noxo|noargus"
+# The .xo assertion is the T21 fix: uninstall.sh used to rm -rf the workspace
+# .xo as "watcher output". It now holds space.json and projects.json — durable
+# records describing the projects this run deliberately keeps — so deleting it
+# destroyed data an uninstall promised to leave alone.
+check "full run: projects and Space records kept; checkout, .quirq, ~/.argus removed" \
+      "$state5" "projects|nocheckout|noquirq|records|noargus"
 
 cp "$SRC" "$W/ws5/uninstall-copy.sh"
 again="$( cd "$W/ws5" && HOME="$W/home5" QUIRQ_DAEMON_TMPDIR="$W/tmp5" \
          XO_PROJECTS_ROOT="$W/ws5" QUIRQ_STATE_ROOT="$W/ws5/.quirq" \
          bash ./uninstall-copy.sh --yes >/dev/null 2>&1 && echo ok || echo err )"
 check "second run is graceful (idempotent)" "$again" "ok"
+
+# ---- credentials survive: secrets/ is the one part of the state root kept --
+make_install "$W/ws6"
+cp "$SRC" "$W/ws6/xo-space/uninstall.sh"
+mkdir -p "$W/ws6/.quirq/secrets" "$W/home6" "$W/tmp6"
+echo "K=V" > "$W/ws6/.quirq/secrets/secrets.env"
+echo "{}" > "$W/ws6/.quirq/secrets/token.json"
+kept6="$( cd "$W/ws6" && HOME="$W/home6" PORT=59999 QUIRQ_DAEMON_TMPDIR="$W/tmp6" \
+          XO_PROJECTS_ROOT="$W/ws6" QUIRQ_STATE_ROOT="$W/ws6/.quirq" \
+          bash ./xo-space/uninstall.sh --yes 2>&1 )" || bad "uninstall with secrets exits 0" "$kept6"
+state6="$(ls -A "$W/ws6/.quirq" 2>/dev/null | tr '\n' ' ')|$(ls -A "$W/ws6/.quirq/secrets" 2>/dev/null | tr '\n' ' ')"
+check "secrets/ survives uninstall; the rest of the state root goes" "$state6" "secrets |secrets.env token.json "
+case "$kept6" in *"credentials in $W/ws6/.quirq/secrets"*) ok "the summary names the kept credentials";;
+  *) bad "the summary names the kept credentials" "$kept6";; esac
 
 # ---- summary ---------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

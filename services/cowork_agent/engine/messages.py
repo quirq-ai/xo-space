@@ -9,6 +9,29 @@ UI expects.
 
 from services.cowork_agent.helpers import iso_now, short_id, strip_workspace_preamble
 
+_MCP_PREFIX = "mcp__"
+
+
+def _display_tool_name(raw: str) -> str:
+    """``mcp__<server>__<TOOL>`` -> ``<TOOL>``; anything else is returned as-is.
+
+    MCP clients namespace every tool by the server it came from, so the CLI reports
+    ``mcp__cowork__COMPOSIO_SEARCH_TOOLS``. That prefix is a routing detail of the
+    client — the server itself advertises the bare name — and it only adds noise in
+    the transcript, so it is stripped for display.
+
+    Splits on the FIRST ``__`` after the prefix, matching how the MCP-server
+    analytics view parses the same names (space_ui/js/views/sessions.js). A name
+    that doesn't fit the pattern is passed through untouched rather than guessed at.
+    """
+    if not isinstance(raw, str) or not raw.startswith(_MCP_PREFIX):
+        return raw
+    rest = raw[len(_MCP_PREFIX):]
+    server, sep, tool = rest.partition("__")
+    if not sep or not tool:
+        return raw
+    return tool
+
 
 def _normalize_content(msg: dict) -> str:
     """Extract text from a message's content for deduplication comparison."""
@@ -170,14 +193,14 @@ def _convert_assistant_parts(msg_id, session_id, timestamp, msg):
                 "time_created": timestamp,
                 "data": {
                     "type": "tool",
-                    "tool": block.get("name", "unknown"),
+                    "tool": _display_tool_name(block.get("name", "unknown")),
                     "call_id": block.get("id", ""),
                     "state": {
                         "status": "completed",
                         "input": block.get("arguments", {}),
                         "output": None,
                         "metadata": None,
-                        "title": block.get("name", "tool"),
+                        "title": _display_tool_name(block.get("name", "tool")),
                         "time_start": timestamp,
                         "time_end": timestamp,
                         "time_compacted": None,
@@ -357,14 +380,14 @@ def convert_native_claude_messages(session_id: str, records: list[dict]) -> list
                         "time_created": timestamp,
                         "data": {
                             "type": "tool",
-                            "tool": block.get("name", "unknown"),
+                            "tool": _display_tool_name(block.get("name", "unknown")),
                             "call_id": block.get("id", ""),
                             "state": {
                                 "status": "completed",
                                 "input": block.get("input", {}),
                                 "output": None,
                                 "metadata": None,
-                                "title": block.get("name", "tool"),
+                                "title": _display_tool_name(block.get("name", "tool")),
                                 "time_start": timestamp,
                                 "time_end": timestamp,
                                 "time_compacted": None,

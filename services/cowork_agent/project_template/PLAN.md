@@ -6,7 +6,7 @@
 
 ## Horizon
 
-*Days, not weeks.* Long-horizon goals belong in `OBJECTIVES.md`. Live in-flight todos are tracked by your runtime's native todo tool and surfaced through `.xo/todos.json`. This file is the **bridge**: how the next ~1–5 days will move objectives forward.
+*Days, not weeks.* Long-horizon goals belong in `OBJECTIVES.md`. Live in-flight todos are recorded through the todo API and surfaced in `.xo/todos.json` — see AGENTS.md §5; a native todo tool does not reach it. This file is the **bridge**: how the next ~1–5 days will move objectives forward.
 
 ---
 
