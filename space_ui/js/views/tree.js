@@ -1,5 +1,5 @@
-import {projectPage} from '../core/navigation.js?v=20260915-data1';
-import {dataViewControls} from '../core/data-views.js?v=20260915-data1';
+import {projectPage} from '../core/navigation.js?v=20260915-agents2';
+import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
 /* Tree — the third Data view, beside List and Graph.
 
    Same data as the Graph (.xo/space.json: every project, every mapped

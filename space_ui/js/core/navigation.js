@@ -19,12 +19,13 @@ export const PROJECT_SECTIONS=Object.freeze([
   PROJECT_PAGES.find(page=>page.id==='time'),
   PROJECT_PAGES.find(page=>page.id==='project-manage'),
 ]);
+/* Trends absorbed the former Tools and Models pages; their routes stay
+   valid as aliases so old deep links land on the merged page. */
 export const AGENT_PAGES=Object.freeze(pages('agents',[
   ['agents-overview','overview','Overview'],
   ['agents-sessions','sessions','Sessions'],
-  ['agents-tools','tools','Tools'],
-  ['agents-models','models','Models'],
-  ['agents-trends','trends','Trends'],
+  ['agents-trends','trends','Trends',['agents/tools','agents/models']],
+  ['agents-configure','configure','Configure'],
 ]).map(page=>Object.freeze({...page,section:'agents'})));
 export const INBOX_PAGES=Object.freeze(pages('inbox',[
   ['inbox-items','items','Items'],

@@ -8,7 +8,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 | Section | Default route | Pages |
 |---------|---------------|-------|
 | Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
-| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Tools, Models, Trends |
+| Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Commands, Server |
 
@@ -297,9 +297,10 @@ the server's environment, including when the watcher is disabled for manual runs
 ## Agents tab
 
 The second topbar tab (`Projects | Agents | Inbox | Setup`)
-is a session-telemetry dashboard: per-session stats rendered as cards,
-tables, and hand-drawn canvas charts (no dependencies), re-skinned to the
-Space theme. The payload is assembled from every backend that implements the
+is a session-telemetry dashboard: per-session stats rendered as shadcn/ui
+components ported to Space (cards, tables, badges, pagination in
+`js/core/shadcn.js` + `css/shadcn.css`) with SVG charts drawn by
+`js/core/chart.js` in shadcn's Chart markup (no dependencies). The payload is assembled from every backend that implements the
 `session_telemetry` capability, so a runtime that reports nothing shows as
 "not available" rather than as a zero. It lives in its own module
 (`js/views/sessions.js`), independent of the atlas's `boot()`; either can
@@ -308,12 +309,22 @@ switchable regardless.
 
 - Data: `GET /xo/sessions.json`, one pre-aggregated payload built from the
   session telemetry every runtime that reports it contributes. Fetched
-  lazily on first open; the Refresh button re-fetches (the file is rebuilt
-  at most every `XO_VIEWS_REFRESH_S`, default 30 s).
+  lazily on first open; the section's Refresh button (shell chrome, shared
+  by every page) re-fetches (the file is rebuilt at most every
+  `XO_VIEWS_REFRESH_S`, default 30 s).
 - Sub-views: Overview · Sessions (list → detail with sub-agents and
-  per-session tools) · Tools · Models · Trends. The `Today/7d/30d/All`
-  window selector filters client-side over per-day rollups shipped in the
-  payload.
+  per-session tools) · Trends (charts only: weekly volume stacked by model
+  and by project, share donuts for models and projects, tool and MCP
+  server usage; nothing the Overview shows repeats here, and each card's
+  Export CSV action downloads the full rows behind it. The old
+  `#/agents/tools` and `#/agents/models` links land here) · Configure
+  (data collection: one card per telemetry source with its vendor tag,
+  collection status, usage and a 30-day sparkline; edit the data location
+  the provider reads, or switch collection off. Backed by
+  `/api/telemetry/sources`; a save rebuilds `sessions.json` in the
+  background. The chat agent and activity watcher stay in Setup's
+  Intelligence layer). The `Today/7d/30d/All` window selector filters
+  client-side over per-day rollups shipped in the payload.
 - No alerts and no prompts by design: those tables are never read, so raw
   prompt text never enters the payload.
 

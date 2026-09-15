@@ -352,7 +352,7 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260914-files2';", app
+            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-agents2';", app
         )
         self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
         # both views import core/api.js bare: the stamp is the import map's

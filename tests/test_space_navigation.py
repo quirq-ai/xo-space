@@ -101,7 +101,8 @@ assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['data','projects/data','Data'],
   ['time','projects/timeline','Timeline'],['project-manage','projects/manage','Manage']]);
 assert.deepEqual(DATA_VIEWS.map(page=>page.id),['project-list','graph','tree']);
-assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','tools','models','trends'].map(page=>'agents/'+page));
+assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','trends','configure'].map(page=>'agents/'+page));
+assert.deepEqual(AGENT_PAGES[2].aliases,['agents/tools','agents/models']);
 assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
@@ -109,6 +110,7 @@ assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
 const setupRoutes=['workspace','intelligence','connectors','secrets','commands','server'].map(id=>'setup/'+id);
 const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
 const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
+  'agents/tools':'agents/trends','agents/models':'agents/trends',
   setup:'setup/workspace','setup/projects':'projects/manage',dashboard:'projects/overview',list:'projects/data/list',graph:'projects/data/graph',tree:'projects/data/tree',
   'projects/data':'projects/data/list','projects/files':'projects/data/list',
   'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
@@ -195,7 +197,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/data", "#/projects/data/list", "#/projects/data/graph", "#/projects/data/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/data", "#/projects/data/list", "#/projects/data/graph", "#/projects/data/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/agents/configure", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

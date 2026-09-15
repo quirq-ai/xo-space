@@ -5,24 +5,26 @@ import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/reg
 import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
-import {initSectionNav} from './core/section-nav.js?v=20260915-data1';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260915-data1';
-import {initPreview} from './core/preview.js?v=20260915-data1';
+import {initSectionNav} from './core/section-nav.js?v=20260915-agents2';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260915-agents2';
+import {initPreview} from './core/preview.js?v=20260915-agents2';
 import {initCommandPalette} from './core/command-palette.js?v=20260915-cmdk4';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-cmdk4';
-import {createAgentViews} from './views/sessions.js?v=20260915-data1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-data1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260915-data1';
-import projectsView from './views/projects.js?v=20260915-data1';
-import projectManageView from './views/project-manage.js?v=20260915-data1';
-import treeView from './views/tree.js?v=20260915-data1';
-import sharingView from './views/sharing.js?v=20260915-data1';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-agents2';
+import {createAgentViews} from './views/sessions.js?v=20260915-agents2';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260915-agents2';
+import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
+import projectsView from './views/projects.js?v=20260915-agents2';
+import projectManageView from './views/project-manage.js?v=20260915-agents2';
+import treeView from './views/tree.js?v=20260915-agents2';
+import sharingView from './views/sharing.js?v=20260915-agents2';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260915-data1';
 import quirqView from './views/quirq.js?v=20260915-data1';
 import {createSetupViews} from './views/setup.js?v=20260914-manage1';
 import connectorsView from './views/connectors.js?v=20260914-setupapps1';
+/* Hidden test page for the shadcn questionnaire port: #/questionnaire. */
+import questionnaireView from './views/questionnaire.js?v=20260915-questionnaire1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
@@ -80,6 +82,7 @@ try{
   registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
+  registerView(questionnaireView);
   createSetupViews(connectorsView).forEach(registerView);
   startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 }catch(err){console.error('Space registry failed to start:',err);}
