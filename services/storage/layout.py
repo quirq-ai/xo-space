@@ -13,6 +13,7 @@
     ├── secrets/       credentials
     ├── cache/         safe to delete: rebuilt automatically
     ├── logs/          safe to delete
+    ├── quarantine/    moved aside by a person; delete by hand
     └── .locks/        internal
 
 Each folder is named here once, and every store asks for it through these
@@ -77,6 +78,12 @@ def cache_dir() -> Path:
 
 def locks_dir() -> Path:
     return quirq_state_dir() / ".locks"
+
+
+def quarantine_dir() -> Path:
+    """Data a person moved aside instead of deleting. Nothing reads it; a
+    person empties it by hand."""
+    return quirq_state_dir() / "quarantine"
 
 
 def ensure_parent_dir(path: Path) -> None:
