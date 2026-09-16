@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from services.cowork_agent.project_layout import project_dir
+from services.xo_structure import ensure_xo_structure
 
 from . import crypto, github, manifest
 from .config import SyncConfig, repo_name_for
@@ -319,6 +320,9 @@ async def _restore_one_locked(
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(extracted), str(target))
+        # The same .xo/ as every other project, whatever the snapshot's age.
+        # Additive only, and nothing raises: the restore is already in place.
+        ensure_xo_structure(project_id)
 
     return RestoreResult(
         project_id=project_id,

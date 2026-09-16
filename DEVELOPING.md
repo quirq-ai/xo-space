@@ -317,14 +317,15 @@ from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
 creates what is missing, never rewrites an existing file (an unparseable one
 included), touches nothing outside `.xo/`, and never raises. It runs on every
 way a project comes to exist: `project_layout.scaffold_project`,
-`services/project_management.clone_project`, project sharing's auto-clone, and
-the watcher tick, which covers a folder cloned by hand into the projects root
+`services/project_management.clone_project`, project sharing's auto-clone, a
+restore from backup (`xo_projects_sync/restore.py`), and the watcher tick, which
+covers a folder cloned by hand into the projects root
 (`ensure_xo_structure_if_changed` costs one `lstat` per project while `.xo/` is
 unchanged). A `.xo/` holding `space.json` or `projects.json` belongs to a
 former projects root and is left alone. The project template therefore ships
 no `.xo/` files. The golden sample is `tests/fixtures/xo-project/`, and
 `tests/test_xo_structure.py` holds the module, the sample, the schemas and all
-four creation paths to one another: changing the structure means changing the
+five creation paths to one another: changing the structure means changing the
 module and the sample together.
 
 ### The state root: one folder per subject

@@ -42,6 +42,7 @@ writes it.
   `POST /api/files/mkdir` with `scaffold: true` and by agent creation. The
   template adds the work tier (`AGENTS.md`, `PROJECT.md`, `memory/`, …) beside it.
 - **Cloned through the API**: `POST /api/xo-projects`.
+- **Restored from a backup** through the sync API, whatever the snapshot's age.
 - **Auto-cloned by project sharing**, when a repository shared with this Space
   is cloned into the root.
 - **Cloned or copied by hand** into the projects root: the watcher adds `.xo/`

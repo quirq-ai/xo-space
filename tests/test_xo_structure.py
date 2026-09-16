@@ -6,8 +6,8 @@ tests hold four things to it:
 
 1. the definition in ``services/xo_structure.py`` and the schemas;
 2. every way a project comes to exist: scaffold, the clone API, project
-   sharing's auto-clone, and a folder put into the root by hand and found by
-   the watcher;
+   sharing's auto-clone, a restore from backup, and a folder put into the root
+   by hand and found by the watcher;
 3. the stores that own each document, which must read the new documents and
    keep their shape on first write;
 4. the rules that make the check safe to run against folders a person owns.
@@ -213,6 +213,32 @@ class CreationPathTests(_Sandbox):
         self.assert_matches_fixture(project)
         # Nothing outside .xo/ was touched.
         self.assertEqual(sorted(p.name for p in project.iterdir()), [".xo", "README.md"])
+
+    def test_a_project_restored_from_a_backup(self) -> None:
+        from services.cowork_agent.xo_projects_sync import github, manifest, restore
+        from services.cowork_agent.xo_projects_sync import tarball
+
+        def clone(_url, clone_dir, **_kw):
+            (clone_dir / "snap-1").mkdir(parents=True)
+
+        def extract(_tar, extracted):
+            # An old snapshot: the work tree, and no .xo/ at all.
+            extracted.mkdir(parents=True)
+            (extracted / "README.md").write_text("restored\n", encoding="utf-8")
+
+        snapshot = SimpleNamespace(snapshot_id="snap-1", parts=[], sha256=manifest.sha256_files_concat([]))
+        with patch.object(github, "repo_exists", AsyncMock(return_value=True)), \
+             patch.object(github, "shallow_clone", AsyncMock(side_effect=clone)), \
+             patch.object(manifest.SnapshotManifest, "read", return_value=snapshot), \
+             patch.object(restore.crypto, "decrypt_from_chunks", AsyncMock()), \
+             patch.object(tarball, "extract_tarball", side_effect=extract):
+            asyncio.run(restore._restore_one_locked(
+                PROJECT, cfg=SimpleNamespace(passphrase="x"), auth=None,
+                owner="you", snapshot_id=None, force=False,
+            ))
+        project = self.root / PROJECT
+        self.assert_matches_fixture(project)
+        self.assertEqual((project / "README.md").read_text(encoding="utf-8"), "restored\n")
 
     def test_a_folder_cloned_by_hand_is_found_by_the_watcher(self) -> None:
         project = self.folder()
