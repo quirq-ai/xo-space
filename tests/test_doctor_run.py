@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import unittest
 from unittest.mock import patch
@@ -94,6 +95,14 @@ class ReadCheckTests(DoctorSandbox):
         unknown = [f for c in report["checks"] for f in c["findings"] if f["id"] == "inventory.unknown_file"]
         self.assertEqual([f["subject"] for f in unknown], ["inbox/notes.txt"])
         self.assertEqual(report["level"], "OK")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_an_unlistable_state_subfolder_fails(self) -> None:
+        folder = self.state / "inbox"
+        folder.chmod(0o000)
+        self.addCleanup(folder.chmod, 0o755)
+        finding = self.finding("read.unreadable")
+        self.assertEqual((finding["level"], finding["subject"]), ("FAIL", "inbox"))
 
 
 class ReadOnlyTests(DoctorSandbox):
