@@ -8,8 +8,8 @@ corresponding source module is imported at
 ``services.cowork_agent.adapters.<name>.visualizer_source``.
 
 Unlike the usage loader, a missing source is **not** an error — it
-means the active agent has chosen not to publish watcher telemetry
-(today: ``hermes``). The watcher will run with zero sources in that
+means the active agent has chosen not to publish watcher telemetry.
+The watcher will run with zero sources in that
 case; sinks and the workspace tier keep working on whatever data is
 already on disk.
 

@@ -9,9 +9,11 @@ Two halves with a strict boundary:
   outside of ``reader.py``.
 
 * The writer (the watcher) lives under ``sources/``, ``ingest/``,
-  ``sinks/``, ``workspace/``. It owns every ``.xo/`` file the BFF
-  reads, with one exception: ``.xo/sessions/sessionslist.json`` is
-  adapter-owned.
+  ``sinks/``, ``workspace/``. It writes machine-local state under
+  ``~/.quirq/projects/<pid>/`` and ``~/.quirq/cache/`` and fills identity
+  in ``.xo/project.json``; the ``.xo/`` store documents belong to their
+  APIs. The session index (``~/.quirq/projects/<pid>/sessions/sessionslist.d/``)
+  is adapter-owned.
 
 BFF routes import only the scope handles, not anything in this
 package. The scope handles import from ``reader.py`` only.
