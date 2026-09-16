@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 from services import xo_structure
 from services.cowork_agent import coder_identity, project_layout
+from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.visualizer import peers_store, todos_store, workitems_store
 from services.cowork_agent.visualizer import watcher as watcher_mod
 from services.storage import atomic_write
@@ -102,6 +103,57 @@ class CanonicalSampleTests(unittest.TestCase):
         readme = (FIXTURE / "README.md").read_text(encoding="utf-8")
         for name in (*xo_structure.CANONICAL_FILES, *xo_structure.OPTIONAL_FILES):
             self.assertIn(f"`{name}`", readme)
+
+
+class AgentRecordTests(unittest.TestCase):
+    """``agent.json``, as each adapter that writes one actually writes it."""
+
+    def test_every_adapter_record_satisfies_the_schema_and_ends_in_z(self) -> None:
+        import jsonschema
+
+        from routers.cowork_agent.agents import CreateAgentBody
+        from services.cowork_agent.adapters.loader import (
+            list_capability_providers,
+            try_load_capability,
+        )
+
+        schema = json.loads((SCHEMAS / "agent.schema.json").read_text(encoding="utf-8"))
+        # An adapter keeps its record in the project when its agents capability
+        # names that file; the others (a profile, a gateway agent) keep theirs
+        # in their own home and never write here.
+        writers = [
+            name for name in list_capability_providers("agents")
+            if hasattr(try_load_capability("agents", agent=name), "_meta_path")
+        ]
+        self.assertTrue(writers, "no adapter writes .xo/agent.json")
+        for name in writers:
+            with self.subTest(adapter=name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp).resolve()
+                env = {
+                    "XO_PROJECTS_ROOT": str(base / "projects"),
+                    "QUIRQ_STATE_ROOT": str(base / "state"),
+                    "QUIRQ_COMMAND_LOG": "off",
+                }
+                with patch.dict(os.environ, env), \
+                        patch.object(coder_identity, "resolve_user_id", return_value="local"):
+                    xo_structure._CHECKED.clear()
+                    mod = try_load_capability("agents", agent=name)
+                    mod.create_agent(CreateAgentBody(name="Sample Agent", id="sample-project"))
+                    record = json.loads(mod._meta_path("sample-project").read_text(encoding="utf-8"))
+                    # The detail view reports this backend's rows in the real
+                    # session index, not a path inside the project.
+                    for key, backend in ((f"{name}:x:web:1", name), ("other:x:web:2", "other")):
+                        sessions_io.write_session_row(
+                            "sample-project", key, {"sessionId": f"s-{backend}", "backend": backend},
+                        )
+                    sessions = mod.get_detail("sample-project")["sessions"]
+                    shard_dir = project_layout.project_runtime_dir("sample-project") / "sessions" / "sessionslist.d"
+                xo_structure._CHECKED.clear()
+                jsonschema.Draft7Validator(schema).validate(record)
+                self.assertEqual(record["backend"], name)
+                self.assertRegex(record["created_at"], _STAMP)
+                self.assertEqual(sessions["index_path"], str(shard_dir))
+                self.assertEqual((sessions["count"], sessions["session_ids"]), (1, [f"s-{name}"]))
 
 
 class _Sandbox(unittest.TestCase):

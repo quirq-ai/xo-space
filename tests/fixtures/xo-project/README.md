@@ -29,7 +29,12 @@ the version without guessing.
 
 `agent.json` is the one optional member. An agent adapter writes it when the
 folder is attached to an agent backend; its presence is the signal, and XO Space
-never creates it on its own.
+never creates it on its own. It has no example here because no creation path
+writes it.
+
+| File | Created by | Written afterwards by | Schema |
+|---|---|---|---|
+| `agent.json` | the adapter that owns the agent (`adapters/<name>/agents.py` `create_agent`): `$schema`, `schema`, `id`, `name`, `description`, `backend`, `created_at` ending in `Z` | the same adapter (`patch`: `name`, `description`) | `agent.schema.json` |
 
 ## When a project gets this structure
 
