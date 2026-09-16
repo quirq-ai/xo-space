@@ -16,6 +16,7 @@ from services.cowork_agent.visualizer.ingest.events import (
     UsageObserved,
 )
 from services.cowork_agent.visualizer.reader import read_json
+from services.timestamps import canonical_ts
 
 
 _STATS_FILE = Path("stats.json")
@@ -168,9 +169,11 @@ def apply(
             st["runtime"] = ev.runtime
 
         # Stamp first/last seen
+        # Persisted times end in ``Z`` whatever form the agent wrote.
+        ts = canonical_ts(ev.ts)
         if isinstance(ev, SessionFirstSeen) or st["first_ts"] is None:
-            st["first_ts"] = st["first_ts"] or ev.ts
-        st["last_ts"] = ev.ts
+            st["first_ts"] = st["first_ts"] or ts
+        st["last_ts"] = ts
 
         # ── Per-day bucketing ──
         # Done alongside the per-session work so the same event walk

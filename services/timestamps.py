@@ -43,3 +43,20 @@ def aware(now: datetime) -> datetime:
 def iso(dt: datetime) -> str:
     """``dt`` in :data:`TS_FORMAT`, converted to UTC first."""
     return aware(dt).strftime(TS_FORMAT)
+
+
+def canonical_ts(value):
+    """A producer's ISO-8601 time as UTC ending in ``Z``, for data files.
+
+    Agents write time their own way (``+00:00``, microseconds, naive); records
+    under the state root end in ``Z``. Whole seconds stay whole seconds and a
+    fraction becomes milliseconds, so an already-canonical value is returned
+    unchanged. A value that does not parse is returned as it came, never
+    replaced by a guess.
+    """
+    dt = parse_ts(value)
+    if dt is None:
+        return value
+    if dt.microsecond:
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+    return dt.strftime(TS_FORMAT)
