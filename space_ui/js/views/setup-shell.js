@@ -94,7 +94,7 @@ export function renderSetupShell(root){
         <section class="setup-panel" id="setup-panel-commands" aria-labelledby="setup-commands-title" hidden>
           <header class="setup-section-head setup-commands-intro"><h2 id="setup-commands-title" tabindex="-1">Commands</h2>
             <p>Click <b>Run</b> to execute on this Space’s machine. Open the command’s <b>Inbox</b> for results and recent output. Intervals run automatically while the watcher and scheduler are enabled.</p>
-            <p>Logs: <code>~/.quirq/scheduler/logs/&lt;command-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;command-id&gt;.jsonl</code><br>These are the default paths. Inbox shows the exact log path for your Space.</p></header>
+            <p>Logs: <code>~/.quirq/logs/scheduler/&lt;command-id&gt;.log</code><br>Run history: <code>~/.quirq/scheduler/runs/&lt;command-id&gt;.jsonl</code><br>These are the default paths. Inbox shows the exact log path for your Space.</p></header>
           <section class="setup-card setup-commands" id="setup-commands" aria-label="Commands"></section>
         </section>
 

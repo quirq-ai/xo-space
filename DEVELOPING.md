@@ -344,7 +344,9 @@ subject's folder (a new data source copies `connections/<toolkit>/`:
 The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
 fails until the code and the sample agree. Records inside follow four rules:
 project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines
-start with `ts` and `type`, and data files carry a `schema` number.
+start with `ts` and `type`, and data files carry a `schema` number. The sample's
+README lists the exemptions; `tests/test_state_record_rules.py` feeds the real
+writers each agent's own time format.
 Uninstall removes the state root but keeps `secrets/`, so credentials
 (`secrets.env`, `token.json`) survive a reinstall; the Composio stores stay in
 `~/.config/composio/`.
