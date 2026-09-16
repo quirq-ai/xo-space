@@ -23,6 +23,11 @@ CHECKS: tuple[tuple[str, Check], ...] = (
     ("read", checks.reads),
     ("space", checks.space_identity),
     ("projects", checks.duplicate_ids),
+    ("tmp", checks.stale_temps),
+    ("layout", checks.layout_moves),
+    ("legacy", checks.legacy_pending),
+    ("watcher", checks.heartbeat),
+    ("growth", checks.growth),
 )
 
 
