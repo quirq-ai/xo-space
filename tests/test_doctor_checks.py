@@ -72,6 +72,7 @@ class DuplicateIdTests(DoctorSandbox):
         self.assertEqual(finding["level"], "WARN")
         self.assertIn("copy", finding["observed"])
         self.assertIn("sample-project", finding["observed"])
+        self.assertIn('delete the "pid" line', finding["why_it_matters"])
 
 
 class StaleTempTests(DoctorSandbox):
