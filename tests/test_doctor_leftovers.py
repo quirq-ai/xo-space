@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
 import time
 import unittest
+from unittest.mock import patch
 
 from services.cowork_agent import project_layout
-from services.doctor import projects
+from services.doctor import leftovers, projects
 from services.doctor.context import Context
 from tests.doctor_sandbox import PID, DoctorSandbox
 
@@ -23,7 +25,8 @@ class LeftoverSandbox(DoctorSandbox):
 
     def runtime(self, key: str) -> None:
         folder = self.state / "projects" / key
-        (folder / "sessions").mkdir(parents=True)
+        # exist_ok: PID's folder is already live in the golden sample.
+        (folder / "sessions").mkdir(parents=True, exist_ok=True)
         (folder / "stats.json").write_text('{"schema": 2}', encoding="utf-8")
 
     def runtime_findings(self, now=None) -> list[dict]:
@@ -109,6 +112,73 @@ class DetectionTests(LeftoverSandbox):
         self.assertEqual(found[0]["id"], "runtime.too_many_leftovers")
         self.assertEqual([f["id"] for f in found[1:]], ["runtime.leftover", "runtime.leftover"])
         self.assertTrue(all("action" not in f for f in found))
+
+
+class MoveAsideTests(LeftoverSandbox):
+    def code(self, key: str, **kwargs) -> tuple[str, int]:
+        with self.assertRaises(leftovers.DoctorError) as caught:
+            leftovers.move_aside(key, now=kwargs.get("now", self.now))
+        return caught.exception.code, caught.exception.status
+
+    def test_moves_the_folder_into_quarantine(self) -> None:
+        self.runtime(OTHER)
+        result = leftovers.move_aside(OTHER, now=self.now)
+        self.assertFalse((self.state / "projects" / OTHER).exists())
+        # The golden sample already ships one unrelated quarantined example
+        # (see tests/fixtures/quirq-state/quarantine/); filter to this key's own.
+        [moved] = [p for p in (self.state / "quarantine" / "runtime-leftovers").iterdir()
+                   if p.name.startswith(OTHER + "-")]
+        self.assertTrue(moved.name.startswith(OTHER + "-") and moved.name.endswith("Z"))
+        self.assertTrue((moved / "stats.json").is_file())
+        self.assertEqual((result["moved"], result["key"], result["to"], result["files"]), (True, OTHER, str(moved), 1))
+
+    def test_refuses_a_key_a_project_uses(self) -> None:
+        self.runtime(PID)
+        self.runtime("sample-project")
+        self.assertEqual(self.code(PID), ("doctor_not_leftover", 409))
+        self.assertEqual(self.code("sample-project"), ("doctor_not_leftover", 409))
+        self.assertTrue((self.state / "projects" / PID).is_dir())
+
+    def test_refuses_unsafe_keys_files_and_symlinks(self) -> None:
+        outside = self.state.parent / "outside"
+        outside.mkdir()
+        (self.state / "projects" / OTHER).symlink_to(outside, target_is_directory=True)
+        for key in ("../escape", "", "offsets.json", "a.b", OTHER, "missing-key"):
+            with self.subTest(key=key):
+                self.assertEqual(self.code(key)[1], 400)
+        self.assertTrue(outside.is_dir())
+
+    def test_refuses_recent_folders(self) -> None:
+        self.runtime(OTHER)
+        self.assertEqual(self.code(OTHER, now=time.time()), ("doctor_too_recent", 409))
+
+    def test_refuses_while_a_run_level_rule_fails(self) -> None:
+        self.runtime(OTHER)
+        (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
+        self.assertEqual(self.code(OTHER), ("doctor_keys_unknown", 409))
+        (self.projects / "sample-project" / ".xo" / "project.json").unlink()
+        self.runtime("33333333-3333-4333-8333-333333333333")
+        self.assertEqual(self.code(OTHER), ("doctor_too_many_leftovers", 409))
+        shutil.rmtree(self.projects)
+        self.projects.mkdir()
+        self.assertEqual(self.code(OTHER), ("doctor_projects_root_suspect", 409))
+
+    def test_a_failed_rename_moves_nothing_and_never_copies(self) -> None:
+        self.runtime(OTHER)
+        with patch("services.doctor.leftovers.os.rename", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")):
+            self.assertEqual(self.code(OTHER), ("doctor_move_failed", 500))
+        self.assertTrue((self.state / "projects" / OTHER / "stats.json").is_file())
+        # Same golden-sample caveat as above: check nothing was added for this key.
+        self.assertEqual([p for p in (self.state / "quarantine" / "runtime-leftovers").iterdir()
+                           if p.name.startswith(OTHER + "-")], [])
+
+    def test_refuses_an_existing_target(self) -> None:
+        self.runtime(OTHER)
+        with patch("services.doctor.leftovers._stamp", return_value="20260101T000000Z"):
+            target = self.state / "quarantine" / "runtime-leftovers" / f"{OTHER}-20260101T000000Z"
+            target.mkdir(parents=True)
+            self.assertEqual(self.code(OTHER), ("doctor_move_failed", 500))
+        self.assertTrue((self.state / "projects" / OTHER).is_dir())
 
 
 if __name__ == "__main__":
