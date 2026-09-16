@@ -21,6 +21,8 @@ Check = Callable[[Context], list[Finding]]
 CHECKS: tuple[tuple[str, Check], ...] = (
     ("roots", checks.roots),
     ("read", checks.reads),
+    ("space", checks.space_identity),
+    ("projects", checks.duplicate_ids),
 )
 
 
