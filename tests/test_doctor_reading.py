@@ -115,6 +115,16 @@ class MeasureTreeTests(unittest.TestCase):
         self.assertFalse(readable_dir(self.dir / "a"))
         self.assertFalse(readable_dir(self.dir / "missing"))
 
+    def test_an_unreadable_subdirectory_leaves_the_age_unknown(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory permissions")
+        blocked = self.dir / "sub"
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+        tree = measure_tree(self.dir)
+        self.assertIsNone(tree.newest)
+        self.assertFalse(tree.truncated)
+
 
 class ModelTests(unittest.TestCase):
     def test_worst(self) -> None:

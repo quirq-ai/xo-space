@@ -76,10 +76,18 @@ class Tree:
 
 def measure_tree(path: Path, limit: int = MAX_WALK_ENTRIES) -> Tree:
     """Total size, file count and newest mtime under ``path``, without
-    following symlinks. Past ``limit`` entries the age is unknown."""
+    following symlinks. The age is unknown (``newest`` is ``None``) past
+    ``limit`` entries, or when any part of the tree couldn't be listed or
+    stat'd; ``bytes``/``files`` still count what was seen either way."""
     total = files = seen = 0
     newest = os.lstat(path).st_mtime
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+    unreadable = False
+
+    def _onerror(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=_onerror):
         for name in (*dirnames, *filenames):
             seen += 1
             if seen > limit:
@@ -87,12 +95,13 @@ def measure_tree(path: Path, limit: int = MAX_WALK_ENTRIES) -> Tree:
             try:
                 info = os.lstat(os.path.join(dirpath, name))
             except OSError:
+                unreadable = True
                 continue
             newest = max(newest, info.st_mtime)
             if stat.S_ISREG(info.st_mode):
                 total += info.st_size
                 files += 1
-    return Tree(total, files, newest, False)
+    return Tree(total, files, None if unreadable else newest, False)
 
 
 def readable_dir(path: Path) -> bool:

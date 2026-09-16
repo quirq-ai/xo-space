@@ -89,7 +89,8 @@ def too_recent(ctx: Context, leftover: Leftover) -> bool:
 def _finding(ctx: Context, leftover: Leftover, actionable: bool) -> Finding:
     tree = leftover.tree
     contains = [label for name, label in _CONTENTS if (leftover.path / name).exists()]
-    written = f"Last written {ago(ctx.now - tree.newest)} ago." if tree.newest is not None else "Too large to date."
+    written = (f"Last written {ago(ctx.now - tree.newest)} ago." if tree.newest is not None
+               else "Can't be dated: too large or partly unreadable.")
     return Finding(
         "runtime.leftover", WARN, leftover.key, ctx.display(leftover.path),
         f"No project in {ctx.display(ctx.projects_root)} uses this data. {written}",
