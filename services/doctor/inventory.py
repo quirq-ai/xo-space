@@ -103,10 +103,14 @@ def _match(parts: list[str], pattern: list[str]) -> bool:
     return bool(parts) and fnmatchcase(parts[0], pattern[0]) and _match(parts[1:], pattern[1:])
 
 
+#: Each pattern split once at import, instead of on every spec_for() call (F7).
+_SPEC_PARTS: tuple[tuple[Spec, list[str]], ...] = tuple((spec, spec.pattern.split("/")) for spec in SPECS)
+
+
 def spec_for(base: str, rel: str) -> Optional[Spec]:
     parts = rel.split("/")
-    for spec in SPECS:
-        if spec.base == base and _match(parts, spec.pattern.split("/")):
+    for spec, pattern in _SPEC_PARTS:
+        if spec.base == base and _match(parts, pattern):
             return spec
     return None
 
