@@ -141,6 +141,23 @@ class RuntimeSplitTests(LeftoverSandbox):
         self.runtime("sample-project")
         self.assertEqual(self.splits(), [])
 
+    def test_a_folder_key_another_project_actively_uses_does_not_warn(self) -> None:
+        # "Sample-Project" has no pid, so the server keys it by its folder
+        # name, which normalizes to the same key as sample-project's own
+        # (pre-pid) folder. Restarting the server would merge that folder
+        # into sample-project's pid folder, deleting Sample-Project's data.
+        self.runtime("sample-project")
+        (self.projects / "Sample-Project").mkdir()
+        self.assertEqual(self.splits(), [])
+
+    def test_a_folder_key_equal_to_another_projects_pid_does_not_warn(self) -> None:
+        self.runtime("sample-project")
+        xo = self.projects / "other" / ".xo"
+        xo.mkdir(parents=True)
+        (xo / "project.json").write_text(json.dumps({"schema": 2, "pid": "sample-project", "name": "other"}),
+                                          encoding="utf-8")
+        self.assertEqual(self.splits(), [])
+
 
 class LastKnownNameTests(LeftoverSandbox):
     def leftover_finding(self) -> dict:
