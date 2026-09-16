@@ -241,31 +241,36 @@ def _stale_after() -> float:
 
 def layout_moves(ctx: Context) -> list[Finding]:
     """Files still at a path from before the state root had folders (layout.MOVES)."""
+    old_heartbeat = next(
+        (move.old() for move in layout.MOVES if move.new is not None and move.new() == watcher_heartbeat_path()),
+        None,
+    )
+    age = _heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
+    old_server_fresh = age is not None and age <= _stale_after()
+    if old_server_fresh:
+        old_copy_why = "A server from an older xo-space still writes this old path. Update or stop that install before deleting anything here."
+        not_migrated_why = "A server from an older xo-space is still running and writing the old layout. Update that install."
+    else:
+        old_copy_why = "Every reader ignores the old copy, but it looks like live data. Delete it once you've checked nothing in it is needed."
+        not_migrated_why = "Start the server from this version once to move or clear these files."
+
     old_left: list[Finding] = []
     pending: list[str] = []
-    old_heartbeat: Path | None = None
     for move in layout.MOVES:
         old = move.old()
-        if move.new is not None and move.new() == watcher_heartbeat_path():
-            old_heartbeat = old
         if old is None or not _exists(old):
             continue
         new = move.new() if move.new is not None else None
         if new is not None and _exists(new):
             old_left.append(Finding("layout.old_copy_left", WARN, move.what, ctx.display(old),
                                     f"An old copy of {move.what} is still at {ctx.display(old)}; the current one is {ctx.display(new)}.",
-                                    "Every reader ignores the old copy, but it looks like live data. Delete it once you've checked nothing in it is needed."))
+                                    old_copy_why))
         else:
             pending.append(move.what)
     out = list(old_left)
     if pending:
-        age = _heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
-        if age is not None and age <= _stale_after():
-            why = "A server from an older xo-space is still running and writing the old layout. Update that install."
-        else:
-            why = "Start the server from this version once to move these files."
         out.append(Finding("layout.not_migrated", WARN, "state root", ctx.display(ctx.state_root),
-                           f"{len(pending)} item(s) are still at their old paths: {', '.join(pending)}.", why))
+                           f"{len(pending)} item(s) are still at their old paths: {', '.join(pending)}.", not_migrated_why))
     return out
 
 
