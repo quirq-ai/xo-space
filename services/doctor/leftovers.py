@@ -16,6 +16,7 @@ from typing import Optional
 
 from datetime import datetime, timezone
 
+from services.cowork_agent.helpers import normalize_agent_id
 from services.cowork_agent.project_layout import _is_safe_runtime_key
 from services.doctor.context import Context
 from services.doctor.model import FAIL, WARN, Finding, ago, size
@@ -27,6 +28,10 @@ from services.timestamps import iso
 logger = logging.getLogger(__name__)
 
 LEFTOVER_MIN_AGE_S = 600
+#: A pre-pid runtime folder can briefly coexist with a project's pid folder in
+#: the seconds between minting the pid and the server merging the old folder
+#: in; that's not a split worth reporting yet.
+SPLIT_MIN_AGE_S = 60
 ACTION = {"kind": "move_runtime_leftover_aside"}
 _CONTENTS = (("sessions", "sessions"), ("stats.json", "stats"), ("timeline.jsonl", "timeline"),
              ("github", "issues mirror"), ("workitems", "claims"))
@@ -106,10 +111,44 @@ def _finding(ctx: Context, leftover: Leftover, actionable: bool) -> Finding:
     )
 
 
+def _split_findings(ctx: Context) -> list[Finding]:
+    """F2: a project resolved by pid, but its pre-pid folder-key runtime
+    folder is still sitting beside the pid folder, unmerged (a current server
+    only merges it in when it resolves the project again)."""
+    runtime = ctx.state_root / "projects"
+    out: list[Finding] = []
+    for project in ctx.projects():
+        if project.read.outcome != "ok" or not project.pid:
+            continue
+        folder_key = normalize_agent_id(project.name)
+        if folder_key == project.pid:
+            continue
+        folder_dir = runtime / folder_key
+        if folder_dir.is_symlink() or not folder_dir.is_dir():
+            continue
+        tree = measure_tree(folder_dir)
+        if tree.newest is not None and ctx.now - tree.newest < SPLIT_MIN_AGE_S:
+            continue
+        pid_dir = runtime / project.pid
+        if pid_dir.is_dir():
+            observed = (f"Project {project.name} has runtime data under its folder name "
+                       f"(projects/{folder_key}) as well as its pid (projects/{project.pid}).")
+        else:
+            observed = (f"Project {project.name} has its runtime data under its folder name "
+                       f"(projects/{folder_key}) instead of its pid (projects/{project.pid}).")
+        out.append(Finding(
+            "runtime.split", WARN, project.name, ctx.display(folder_dir), observed,
+            "Data in the folder-name copy isn't shown for this project. Restart the server once; "
+            "it merges that folder into the pid folder.",
+        ))
+    return out
+
+
 def check(ctx: Context) -> list[Finding]:
     result = survey(ctx)
     out = [result.blocked] if result.blocked is not None else []
     out += [_finding(ctx, leftover, result.blocked is None) for leftover in result.leftovers]
+    out += _split_findings(ctx)
     return out
 
 
