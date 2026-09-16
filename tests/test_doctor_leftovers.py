@@ -77,6 +77,17 @@ class DetectionTests(LeftoverSandbox):
         (self.state / "projects" / OTHER).symlink_to(outside, target_is_directory=True)
         self.assertEqual(self.runtime_findings(), [])
 
+    def test_a_partly_unreadable_leftover_has_no_action(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory permissions")
+        self.runtime(OTHER)
+        sessions = self.state / "projects" / OTHER / "sessions"
+        sessions.chmod(0o000)
+        self.addCleanup(sessions.chmod, 0o755)
+        [finding] = self.runtime_findings()
+        self.assertEqual(finding["id"], "runtime.leftover")
+        self.assertNotIn("action", finding)
+
     def test_a_corrupt_project_json_blocks_leftover_detection(self) -> None:
         self.runtime(OTHER)
         (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
