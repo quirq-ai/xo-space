@@ -143,10 +143,44 @@ class MoveAsideTests(LeftoverSandbox):
         outside = self.state.parent / "outside"
         outside.mkdir()
         (self.state / "projects" / OTHER).symlink_to(outside, target_is_directory=True)
-        for key in ("../escape", "", "offsets.json", "a.b", OTHER, "missing-key"):
+        for key in ("../escape", "", "offsets.json", "a.b", OTHER):
             with self.subTest(key=key):
                 self.assertEqual(self.code(key)[1], 400)
         self.assertTrue(outside.is_dir())
+
+    def test_a_safe_key_with_no_folder_is_gone_not_invalid(self) -> None:
+        self.assertEqual(self.code("missing-key"), ("doctor_gone", 409))
+
+    def test_a_second_move_of_the_same_key_is_gone(self) -> None:
+        self.runtime(OTHER)
+        leftovers.move_aside(OTHER, now=self.now)
+        self.assertEqual(self.code(OTHER), ("doctor_gone", 409))
+
+    def test_a_rename_that_finds_the_source_already_gone_is_gone_not_failed(self) -> None:
+        self.runtime(OTHER)
+        source = self.state / "projects" / OTHER
+
+        def _vanish(_src, _dst):
+            shutil.rmtree(source)
+            raise FileNotFoundError()
+
+        with patch("services.doctor.leftovers.os.rename", side_effect=_vanish):
+            self.assertEqual(self.code(OTHER), ("doctor_gone", 409))
+
+    def test_a_leftover_that_vanishes_during_the_survey_is_gone_not_too_recent(self) -> None:
+        self.runtime(OTHER)
+        source = self.state / "projects" / OTHER
+        real_measure_tree = leftovers.measure_tree
+
+        def _vanish_then_measure(path):
+            if path == source:
+                shutil.rmtree(source)
+                from services.doctor.reading import Tree
+                return Tree(0, 0, None, False)
+            return real_measure_tree(path)
+
+        with patch("services.doctor.leftovers.measure_tree", side_effect=_vanish_then_measure):
+            self.assertEqual(self.code(OTHER), ("doctor_gone", 409))
 
     def test_refuses_recent_folders(self) -> None:
         self.runtime(OTHER)
