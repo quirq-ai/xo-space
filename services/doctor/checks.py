@@ -98,15 +98,19 @@ def reads(ctx: Context) -> list[Finding]:
     out: list[Finding] = []
     unknown: list[tuple[str, Path]] = []
     files, truncated, unreadable_dirs = ctx.state_files()
+    # Path.relative_to(...).as_posix() is one of the two hot spots on a large
+    # state root (F7); a plain string slice does the same job on Linux, where
+    # os.sep is already "/".
+    prefix = str(ctx.state_root) + os.sep
     for path in files:
-        rel = path.relative_to(ctx.state_root).as_posix()
+        rel = str(path)[len(prefix):]
         spec = inventory.spec_for(inventory.STATE, rel)
         if spec is None:
             unknown.append((rel, path))
             continue
         _judge(ctx, out, path, rel, spec)
     for path in sorted(unreadable_dirs):
-        out.append(_unreadable_dir_finding(ctx, path, path.relative_to(ctx.state_root).as_posix()))
+        out.append(_unreadable_dir_finding(ctx, path, str(path)[len(prefix):]))
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
                inventory.spec_for(inventory.WORKSPACE, name))
@@ -200,12 +204,16 @@ def stale_temps(ctx: Context) -> list[Finding]:
     skip_top = {".locks", layout.quarantine_dir().name}
     candidates: list[tuple[str, Path]] = []
     files, _, _ = ctx.state_files()
+    prefix = str(ctx.state_root) + os.sep
     for path in files:
-        rel = path.relative_to(ctx.state_root).as_posix()
+        # Cheap name check first: spec_for (a pattern scan) only runs for the
+        # small minority of files that look like a temp name at all (F7).
+        if not (_is_temp_name(path.name) or path.name.startswith(".")):
+            continue
+        rel = str(path)[len(prefix):]
         if rel.split("/", 1)[0] in skip_top or inventory.spec_for(inventory.STATE, rel) is not None:
             continue
-        if _is_temp_name(path.name) or path.name.startswith("."):
-            candidates.append((rel, path))
+        candidates.append((rel, path))
     xo_dirs = [("<projects root>/.xo", ctx.projects_root / ".xo")]
     xo_dirs += [(f"{project.name}/.xo", project.xo) for project in ctx.projects()]
     for label, xo in xo_dirs:
