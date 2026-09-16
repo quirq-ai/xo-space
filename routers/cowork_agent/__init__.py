@@ -26,6 +26,7 @@ from .connectors.composio_mcp_proxy import router as mcp_proxy_router
 from .misc import router as misc_router
 from .onboarding import router as onboarding_router
 from .quirq_state import router as quirq_state_router
+from .doctor import router as doctor_router
 from .runtime_config import router as runtime_config_router
 from .connectors.onedrive import router as onedrive_router
 from .secrets import router as secrets_router
@@ -67,6 +68,7 @@ all_routers: list[APIRouter] = [
     misc_router,
     onboarding_router,
     quirq_state_router,
+    doctor_router,
     runtime_config_router,
     gdrive_router,
     onedrive_router,
