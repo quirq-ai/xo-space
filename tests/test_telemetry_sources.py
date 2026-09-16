@@ -91,9 +91,13 @@ class SaveSourceTests(unittest.TestCase):
         self.provider = _provider("alpha", config={
             "vendor": "openai", "path_env": "ALPHA_HOME", "path_default": "~/.alpha",
         })
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.settings = Path(tmp.name) / "settings" / "telemetry.json"
         patches = [
             mock.patch.object(telemetry_sources, "_load_providers", return_value=[("alpha", self.provider)]),
             mock.patch.object(telemetry_sources.scopes, "resolve_scope", return_value=self.store),
+            mock.patch.object(telemetry_sources, "settings_path", return_value=self.settings),
             mock.patch.dict(os.environ, {}, clear=False),
         ]
         for patch in patches:
@@ -121,14 +125,35 @@ class SaveSourceTests(unittest.TestCase):
                 telemetry_sources.save_source("alpha", path=bad)
         self.assertEqual(self.store.entries, {})
 
-    def test_switch_writes_the_disabled_list(self) -> None:
+    def saved(self) -> dict:
+        import json
+
+        return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def test_switch_writes_the_disabled_list_to_the_settings_file(self) -> None:
         row = telemetry_sources.save_source("alpha", enabled=False)
         self.assertFalse(row["enabled"])
-        self.assertEqual(self.store.entries[telemetry_sources.DISABLED_ENV], "alpha")
+        document = self.saved()
+        self.assertEqual((document["schema"], document["disabled"]), (1, ["alpha"]))
+        self.assertTrue(document["updated_at"].endswith("Z"))
+        self.assertNotIn(telemetry_sources.DISABLED_ENV, self.store.entries)
         row = telemetry_sources.save_source("alpha", enabled=True)
         self.assertTrue(row["enabled"])
+        self.assertEqual(self.saved()["disabled"], [])
+
+    def test_a_switch_saved_by_an_earlier_release_is_carried_into_the_file(self) -> None:
+        self.store.upsert(telemetry_sources.DISABLED_ENV, "cursor")
+        os.environ[telemetry_sources.DISABLED_ENV] = "cursor"
+        self.assertEqual(telemetry_sources.disabled_source_ids(), {"cursor"})
+        telemetry_sources.save_source("alpha", enabled=False)
+        self.assertEqual(self.saved()["disabled"], ["alpha", "cursor"])
         self.assertNotIn(telemetry_sources.DISABLED_ENV, self.store.entries)
         self.assertNotIn(telemetry_sources.DISABLED_ENV, os.environ)
+
+    def test_the_saved_file_decides_over_the_environment(self) -> None:
+        telemetry_sources.save_source("alpha", enabled=True)
+        with mock.patch.dict(os.environ, {telemetry_sources.DISABLED_ENV: "alpha"}):
+            self.assertEqual(telemetry_sources.disabled_source_ids(), set())
 
     def test_unknown_source_is_a_404(self) -> None:
         with self.assertRaises(telemetry_sources.UnknownTelemetrySource) as ctx:
@@ -144,7 +169,9 @@ class BuilderSwitchTests(unittest.TestCase):
             session_telemetry, "list_capability_providers", return_value=["off", "on"]
         ), mock.patch.object(
             session_telemetry, "try_load_capability", side_effect=lambda _c, *, agent: {"on": on, "off": off}[agent]
-        ), mock.patch.dict(os.environ, {telemetry_sources.DISABLED_ENV: "off"}, clear=False):
+        ), mock.patch.dict(os.environ, {telemetry_sources.DISABLED_ENV: "off"}, clear=False), \
+                tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(telemetry_sources, "settings_path", return_value=Path(tmp) / "telemetry.json"):
             data = session_telemetry.build_session_telemetry()
         by_id = {row["id"]: row for row in data["meta"]["sources"]}
         self.assertEqual(by_id["off"]["status"], "disabled")

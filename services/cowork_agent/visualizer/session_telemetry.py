@@ -11,7 +11,8 @@ Provider module contract (``adapters/<name>/session_telemetry.py``):
 it; an optional ``SOURCE_CONFIG`` (vendor, path_env, path_default,
 path_kind, path_label, collects, never) lets Space's Configure page show
 and edit where the provider reads from (``services/telemetry_sources.py``).
-A source listed in ``QUIRQ_TELEMETRY_DISABLED`` is reported but never read.
+A source switched off (``services.telemetry_sources.disabled_source_ids``) is
+reported but never read.
 """
 
 from __future__ import annotations

@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services import usage_sync
+from services import telemetry_sources, usage_sync
 from services.connections import store as connections_store
 from services.cowork_agent import project_layout, runtime_config, xo_cowork_state
 from routers.cowork_agent.bff._visualizer_models import TimelineEvent
@@ -97,6 +97,7 @@ class StorePathTests(_Sandbox):
             "the command log": commands._default_command_log_path(),
             "sharing bookmarks": sharing_state.relay_state_dir(),
             "runtime settings": runtime_config.runtime_config_file(),
+            "telemetry settings": telemetry_sources.settings_path(),
             "saved roots": runtime_config.root_config_file(),
             "rebuilt views": project_layout.workspace_runtime_dir(),
             "the heartbeat": watcher_state.watcher_heartbeat_path(),
@@ -313,6 +314,7 @@ class ExampleStoreTests(unittest.TestCase):
         with patch.object(xo_cowork_state, "STATE_DIR", settings), \
              patch.object(xo_cowork_state, "STATE_FILE", settings / "onboarding.json"):
             self.assertTrue(xo_cowork_state.get_state()["onboarding_completed"])
+        self.assertEqual(telemetry_sources.disabled_source_ids(), {"cursor"})
 
     def test_credentials_and_usage(self) -> None:
         with patch.object(token_store, "TOKEN_FILE", self.root / "secrets" / "token.json"), \

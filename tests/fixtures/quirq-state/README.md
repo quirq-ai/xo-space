@@ -31,7 +31,7 @@ into them.
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |
 | `usage/` | `<agent>.json` | `services/usage_sync.py` | how far usage was reported, so it would be sent again |
-| `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
+| `settings/` | `roots.env`, `runtime.env`, `onboarding.json`, `telemetry.json` | the Setup tab, onboarding, the Agents tab's Configure page | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
 | `logs/` | `quirq.log`, `commands.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only |
