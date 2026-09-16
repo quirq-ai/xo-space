@@ -163,11 +163,18 @@ def _split_findings(ctx: Context) -> list[Finding]:
     only merges it in when it resolves the project again)."""
     runtime = ctx.state_root / "projects"
     out: list[Finding] = []
-    for project in ctx.projects():
+    projects = ctx.projects()
+    for project in projects:
         if project.read.outcome != "ok" or not project.pid:
             continue
         folder_key = normalize_agent_id(project.name)
         if folder_key == project.pid:
+            continue
+        # Another project may actively use this folder key, either as its own
+        # (pid-less) folder name or as its pid. Reporting a split there would
+        # tell someone to restart the server, which would merge that folder
+        # into *this* project's pid folder and take the other project's data.
+        if any(folder_key in other.keys_in_use for other in projects if other is not project):
             continue
         folder_dir = runtime / folder_key
         if folder_dir.is_symlink() or not folder_dir.is_dir():
