@@ -1269,7 +1269,10 @@ async def ask_question_streaming(data: AskQuestionRequest):
 # =============================================================================
 
 if __name__ == "__main__":
-    host = os.getenv("HOST", "0.0.0.0")
+    # Loopback unless HOST says otherwise: the API has no login, so listening on
+    # every interface would expose the user's files to the whole network. The
+    # Docker image sets HOST=0.0.0.0 inside the container instead.
+    host = os.getenv("HOST", "127.0.0.1")
     requested_port = int(os.getenv("PORT", "5002"))
     try:
         port = resolve_server_port(

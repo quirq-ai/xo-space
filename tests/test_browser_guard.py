@@ -164,5 +164,38 @@ class BrowserWriteGuardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
 
+REPO = SERVER.parent
+
+
+class ListenAddressDefaultTests(unittest.TestCase):
+    """The API has no login, so an unset HOST must mean loopback only: every
+    other device on the network can otherwise read and write the user's files.
+    A container listens on its own interfaces (HOST=0.0.0.0 in the Dockerfile)
+    and the host side decides the exposure when it publishes the port."""
+
+    def test_server_py_falls_back_to_loopback(self) -> None:
+        tree = ast.parse(SERVER.read_text(encoding="utf-8"))
+        defaults = [
+            ast.literal_eval(node.args[1]) for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "os.getenv"
+            and len(node.args) == 2 and isinstance(node.args[0], ast.Constant) and node.args[0].value == "HOST"
+        ]
+        self.assertTrue(defaults, "server.py no longer reads HOST with a default")
+        self.assertEqual(set(defaults), {"127.0.0.1"})
+
+    def test_cowork_api_sh_falls_back_to_loopback(self) -> None:
+        script = (REPO / "cowork-api.sh").read_text(encoding="utf-8")
+        self.assertIn('HOST="${CONFIGURED_HOST:-127.0.0.1}"', script)
+        self.assertNotIn(":-0.0.0.0}", script)
+
+    def test_env_example_shows_loopback(self) -> None:
+        example = (REPO / ".env.example").read_text(encoding="utf-8")
+        self.assertRegex(example, r"(?m)^HOST=127\.0\.0\.1\b")
+
+    def test_the_container_image_listens_on_its_own_interfaces(self) -> None:
+        dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        self.assertRegex(dockerfile, r"(?m)^ENV HOST=0\.0\.0\.0\b")
+
+
 if __name__ == "__main__":
     unittest.main()
