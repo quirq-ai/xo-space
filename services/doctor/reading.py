@@ -80,7 +80,11 @@ def measure_tree(path: Path, limit: int = MAX_WALK_ENTRIES) -> Tree:
     ``limit`` entries, or when any part of the tree couldn't be listed or
     stat'd; ``bytes``/``files`` still count what was seen either way."""
     total = files = seen = 0
-    newest = os.lstat(path).st_mtime
+    try:
+        newest = os.lstat(path).st_mtime
+    except OSError:
+        # The root itself vanished or can't be stat'd: undated, not a crash.
+        return Tree(0, 0, None, False)
     unreadable = False
 
     def _onerror(_exc: OSError) -> None:

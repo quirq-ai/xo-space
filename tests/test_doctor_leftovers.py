@@ -180,6 +180,12 @@ class MoveAsideTests(LeftoverSandbox):
             self.assertEqual(self.code(OTHER), ("doctor_move_failed", 500))
         self.assertTrue((self.state / "projects" / OTHER).is_dir())
 
+    def test_a_filesystem_error_during_the_survey_is_a_service_error(self) -> None:
+        self.runtime(OTHER)
+        with patch("services.doctor.leftovers.measure_tree", side_effect=FileNotFoundError()):
+            self.assertEqual(self.code(OTHER), ("doctor_move_failed", 500))
+        self.assertTrue((self.state / "projects" / OTHER).is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
