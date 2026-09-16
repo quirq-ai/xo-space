@@ -72,7 +72,7 @@ class DetectionTests(LeftoverSandbox):
 
     def test_a_folder_named_after_a_project_is_not_leftover(self) -> None:
         self.runtime("sample-project")  # pre-pid runtime folder, not yet merged
-        self.assertEqual(self.runtime_findings(), [])
+        self.assertEqual([f for f in self.runtime_findings() if f["id"] == "runtime.leftover"], [])
 
     def test_files_and_symlinks_in_projects_are_never_candidates(self) -> None:
         outside = self.state.parent / "outside"
@@ -112,6 +112,34 @@ class DetectionTests(LeftoverSandbox):
         self.assertEqual(found[0]["id"], "runtime.too_many_leftovers")
         self.assertEqual([f["id"] for f in found[1:]], ["runtime.leftover", "runtime.leftover"])
         self.assertTrue(all("action" not in f for f in found))
+
+
+class RuntimeSplitTests(LeftoverSandbox):
+    def splits(self, now=None) -> list[dict]:
+        return [f for f in self.runtime_findings(now) if f["id"] == "runtime.split"]
+
+    def test_an_old_folder_key_copy_next_to_the_pid_folder_warns(self) -> None:
+        self.runtime("sample-project")
+        [finding] = self.splits()
+        self.assertEqual(finding["subject"], "sample-project")
+        self.assertNotIn("action", finding)
+        self.assertEqual([f for f in self.runtime_findings() if f["id"] == "runtime.leftover"], [])
+
+    def test_a_freshly_written_folder_key_copy_does_not_warn(self) -> None:
+        self.runtime("sample-project")
+        self.assertEqual(self.splits(now=time.time()), [])
+
+    def test_a_project_with_no_pid_does_not_warn(self) -> None:
+        xo = self.projects / "second-project" / ".xo"
+        xo.mkdir(parents=True)
+        (xo / "project.json").write_text(json.dumps({"schema": 2, "name": "second-project"}), encoding="utf-8")
+        self.runtime("second-project")
+        self.assertEqual(self.splits(), [])
+
+    def test_a_corrupt_project_json_does_not_warn(self) -> None:
+        (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
+        self.runtime("sample-project")
+        self.assertEqual(self.splits(), [])
 
 
 class MoveAsideTests(LeftoverSandbox):
