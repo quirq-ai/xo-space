@@ -126,6 +126,36 @@ class QuirqCatalogTests(unittest.TestCase):
                 outputs["legacy_activity_note"],
             )
 
+    def test_tracked_files_counts_the_offset_entries_not_the_document_keys(self) -> None:
+        settings = {
+            "agent_name": "test",
+            "watcher_enabled": True,
+            "watcher_interval_seconds": 1,
+            "watcher_source_mode": "all",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            with (
+                patch.object(quirq_catalog, "watcher_state_dir", return_value=state),
+                patch.object(quirq_catalog, "watcher_heartbeat_path", return_value=state / "heartbeat.json"),
+                patch.object(quirq_catalog, "configured_settings", return_value=settings),
+                patch.object(quirq_catalog, "effective_settings", return_value=settings),
+            ):
+                self.assertEqual(quirq_catalog._watcher()["tracked_files"], 0)
+
+                # The shape OffsetStore.flush writes: three files, two document keys.
+                (state / "offsets.json").write_text(json.dumps({
+                    "schema": 1,
+                    "offsets": {
+                        f"/home/you/.claude/projects/p/{n}.jsonl": {"offset": 10, "inode": n}
+                        for n in (1, 2, 3)
+                    },
+                }), encoding="utf-8")
+                self.assertEqual(quirq_catalog._watcher()["tracked_files"], 3)
+
+                (state / "offsets.json").write_text("[]", encoding="utf-8")
+                self.assertEqual(quirq_catalog._watcher()["tracked_files"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
