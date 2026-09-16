@@ -21,13 +21,14 @@ There are two deliberately separate execution **planes**. Keep them apart.
 | | Plane A: legacy direct CLI | Plane B: the modular agent system |
 |---|---|---|
 | Entry points | `/ask_question`, `/ask_question_streaming` | `/api/chat/*` and the rest of `/api/*` |
-| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=openclaw\|claude_code\|hermes\|…` |
+| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=claude_code\|codex\|antigravity\|hermes\|openclaw\|…` |
 | Code | `config/models/<name>/client.py` | `services/cowork_agent/adapters/<name>/` |
 | Instantiated | once as `ai_client` in `server.py` | per request via the capability loader |
 | Status | frozen, backward-compatible | where all new work happens |
 
-Codex is **only** a Plane-A model client (no adapter). Plane A never routes
-through the dispatcher; Plane B never touches `/ask_question`.
+Codex is both: a Plane-A model client (`config/models/codex/`) and a Plane-B
+adapter (`adapters/codex/`). Plane A never routes through the dispatcher; Plane
+B never touches `/ask_question`.
 
 ---
 
@@ -143,19 +144,25 @@ and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 
-| capability | what it provides | openclaw | claude_code | hermes | antigravity |
-|---|---|:--:|:--:|:--:|:--:|
-| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ |
-| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ |
-| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ |
-| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ |
-| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ |
-| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ |
-| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ |
-| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | ✓ | no |
-| `streaming` | SSE shaping | ✓ | ✓ | ✓ | no |
-| `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ |
-| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ |
+| capability | what it provides | claude_code | codex | antigravity | hermes | openclaw | cursor |
+|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `agents` | `/api/agents` list/create/detail/patch/delete | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | no | no | no | ✓ | ✓ | no |
+| `streaming` | SSE shaping | ✓ | ✓ | no | ✓ | ✓ | no |
+| `visualizer_source` | watcher feed | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `session_prompts` | Space prompt capture | ✓ | ✓ | no | no | no | no |
+| `session_telemetry` | Space session telemetry (every installed provider) | ✓ | ✓ | no | ✓ | ✓ | ✓ |
+| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ | ✓ | no |
+
+`cursor` is telemetry-only: it ships `session_telemetry` and no `adapter.py`, so
+it is never an `AGENT_NAME` choice (`list_capability_providers` finds it anyway).
 
 `claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
 falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
