@@ -6,6 +6,7 @@ import errno
 import json
 import os
 import shutil
+import signal
 import time
 import unittest
 from unittest.mock import patch
@@ -197,6 +198,54 @@ class LastKnownNameTests(LeftoverSandbox):
         self.append_timeline({"pid": OTHER, "project_id": "old-project", "note": "PLANTED-TIMELINE-SECRET"})
         report = self.report()
         self.assertNotIn("PLANTED-TIMELINE-SECRET", json.dumps(report))
+
+    def test_a_line_that_overflows_the_json_parser_does_not_break_detection(self) -> None:
+        self.runtime(OTHER)
+        path = self.state / "projects" / "timeline.jsonl"
+        with open(path, "ab") as handle:
+            handle.write(b"[" * 200_000 + b"\n")
+        self.append_timeline({"pid": OTHER, "project_id": "old-project"})
+        report = self.report()
+        by_id = {c["id"]: c for c in report["checks"]}
+        self.assertNotEqual(by_id["runtime"]["level"], "ERROR")
+        [finding] = [f for f in by_id["runtime"]["findings"] if f["id"] == "runtime.leftover"]
+        self.assertEqual(finding["details"]["project_name"], "old-project")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "mkfifo not available on this platform")
+    def test_a_fifo_at_the_timeline_path_does_not_hang(self) -> None:
+        self.runtime(OTHER)
+        path = self.state / "projects" / "timeline.jsonl"
+        path.unlink()
+        os.mkfifo(path)
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        def _timeout(_signum, _frame):
+            raise TimeoutError("check() blocked reading a FIFO")
+
+        # A safety net only: if the fix regresses and open() blocks on the
+        # FIFO, don't hang the whole suite forever. TimeoutError is itself an
+        # OSError subclass, so a bare "did it raise" assertion can't tell a
+        # blocked-then-interrupted read from a fast, correct skip; time it
+        # instead.
+        previous = signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(2)
+        started = time.monotonic()
+        try:
+            finding = self.leftover_finding()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, "check() blocked reading the FIFO instead of skipping it")
+        self.assertNotIn("belonged to", finding["observed"])
+        self.assertNotIn("project_name", finding["details"])
+
+    def test_an_overlong_project_id_is_not_used(self) -> None:
+        self.runtime(OTHER)
+        self.append_timeline({"pid": OTHER, "project_id": "x" * 300})
+        finding = self.leftover_finding()
+        self.assertNotIn("belonged to", finding["observed"])
+        self.assertNotIn("project_name", finding["details"])
 
 
 class MoveAsideTests(LeftoverSandbox):
