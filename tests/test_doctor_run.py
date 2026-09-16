@@ -67,7 +67,10 @@ class ReadCheckTests(DoctorSandbox):
 
     def test_an_empty_rebuildable_file_warns(self) -> None:
         (self.state / "cache" / "stats.json").write_text("", encoding="utf-8")
-        self.assertEqual(self.finding("read.empty")["level"], "WARN")
+        finding = self.finding("read.empty")
+        self.assertEqual(finding["level"], "WARN")
+        self.assertIn("deleting it is safe", finding["why_it_matters"])
+        self.assertNotIn("after a minute", finding["why_it_matters"])
 
     def test_wrong_type(self) -> None:
         (self.state / "connections" / "accounts.json").write_text("[]", encoding="utf-8")

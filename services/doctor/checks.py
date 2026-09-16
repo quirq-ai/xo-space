@@ -63,7 +63,8 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, 
         elif keep:
             why = "The store that owns it can't use it, and what it records exists nowhere else."
         else:
-            why = "It is rebuilt from other files. If this is still here after a minute, the writer that rebuilds it is failing."
+            why = ("It is rebuilt from other files, so deleting it is safe: the server writes it again, most "
+                   "within seconds, the GitHub issue mirror on its next poll, and xo.json when the server restarts.")
     return Finding(finding_id, level, subject, ctx.display(path), observed, why,
                    details={"class": spec.klass, "outcome": result.outcome})
 
