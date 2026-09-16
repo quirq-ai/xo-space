@@ -142,6 +142,46 @@ class RuntimeSplitTests(LeftoverSandbox):
         self.assertEqual(self.splits(), [])
 
 
+class LastKnownNameTests(LeftoverSandbox):
+    def leftover_finding(self) -> dict:
+        [finding] = [f for f in self.runtime_findings() if f["id"] == "runtime.leftover"]
+        return finding
+
+    def append_timeline(self, document: dict) -> None:
+        path = self.state / "projects" / "timeline.jsonl"
+        with open(path, "ab") as handle:
+            handle.write(json.dumps(document).encode("utf-8") + b"\n")
+
+    def test_a_known_pid_names_the_project(self) -> None:
+        self.runtime(OTHER)
+        self.append_timeline({"pid": OTHER, "project_id": "old-project"})
+        finding = self.leftover_finding()
+        self.assertIn("It belonged to project old-project", finding["observed"])
+        self.assertEqual(finding["details"]["project_name"], "old-project")
+
+    def test_an_unknown_pid_has_no_name(self) -> None:
+        self.runtime(OTHER)
+        finding = self.leftover_finding()
+        self.assertNotIn("belonged to", finding["observed"])
+        self.assertNotIn("project_name", finding["details"])
+
+    def test_the_name_is_found_past_five_megabytes_of_noise(self) -> None:
+        self.runtime(OTHER)
+        path = self.state / "projects" / "timeline.jsonl"
+        with open(path, "ab") as handle:
+            handle.write(os.urandom(5 * 1024 * 1024).replace(b"\n", b" "))
+            handle.write(b"\n")
+        self.append_timeline({"pid": OTHER, "project_id": "old-project"})
+        finding = self.leftover_finding()
+        self.assertEqual(finding["details"]["project_name"], "old-project")
+
+    def test_other_timeline_fields_never_reach_the_report(self) -> None:
+        self.runtime(OTHER)
+        self.append_timeline({"pid": OTHER, "project_id": "old-project", "note": "PLANTED-TIMELINE-SECRET"})
+        report = self.report()
+        self.assertNotIn("PLANTED-TIMELINE-SECRET", json.dumps(report))
+
+
 class MoveAsideTests(LeftoverSandbox):
     def code(self, key: str, **kwargs) -> tuple[str, int]:
         with self.assertRaises(leftovers.DoctorError) as caught:
