@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -119,6 +120,19 @@ class WalkFilesTests(unittest.TestCase):
                 self.assertEqual([p.relative_to(root).as_posix() for p in unreadable], ["blocked"])
             finally:
                 blocked.chmod(0o755)
+
+    def test_many_files_in_one_folder_walk_quickly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for i in range(20_000):
+                (root / f"f{i}.json").touch()
+            start = time.perf_counter()
+            files, truncated, unreadable = inventory.walk_files(root)
+            elapsed = time.perf_counter() - start
+            self.assertEqual(len(files), 20_000)
+            self.assertFalse(truncated)
+            self.assertEqual(unreadable, [])
+            self.assertLess(elapsed, 1.0, f"walk_files took {elapsed:.2f}s for 20,000 files")
 
 
 if __name__ == "__main__":
