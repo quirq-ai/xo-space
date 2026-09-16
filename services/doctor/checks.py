@@ -101,7 +101,7 @@ def reads(ctx: Context) -> list[Finding]:
     # Path.relative_to(...).as_posix() is one of the two hot spots on a large
     # state root (F7); a plain string slice does the same job on Linux, where
     # os.sep is already "/".
-    prefix = str(ctx.state_root) + os.sep
+    prefix = os.path.join(str(ctx.state_root), "")
     for path in files:
         rel = str(path)[len(prefix):]
         spec = inventory.spec_for(inventory.STATE, rel)
@@ -204,7 +204,7 @@ def stale_temps(ctx: Context) -> list[Finding]:
     skip_top = {".locks", layout.quarantine_dir().name}
     candidates: list[tuple[str, Path]] = []
     files, _, _ = ctx.state_files()
-    prefix = str(ctx.state_root) + os.sep
+    prefix = os.path.join(str(ctx.state_root), "")
     for path in files:
         # Cheap name check first: spec_for (a pattern scan) only runs for the
         # small minority of files that look like a temp name at all (F7).

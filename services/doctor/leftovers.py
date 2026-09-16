@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ SPLIT_MIN_AGE_S = 60
 #: How much of the Space timeline (from the end) is worth scanning for a
 #: leftover's last-known project name; older lines aren't worth the read.
 NAME_SCAN_BYTES = 4 * 1024 * 1024
+#: A project_id past this length is never a real one; don't record it.
+NAME_MAX_LEN = 200
 ACTION = {"kind": "move_runtime_leftover_aside"}
 _CONTENTS = (("sessions", "sessions"), ("stats.json", "stats"), ("timeline.jsonl", "timeline"),
              ("github", "issues mirror"), ("workitems", "claims"))
@@ -107,12 +110,20 @@ def _last_known_names(ctx: Context) -> dict[str, str]:
     path = ctx.state_root / "projects" / "timeline.jsonl"
     names: dict[str, str] = {}
     try:
-        size_bytes = os.stat(path).st_size
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            # A FIFO or other special file: opening it for reading can block
+            # forever waiting for a writer. Nothing but a plain file is worth
+            # reading here.
+            return {}
+        size_bytes = info.st_size
         with open(path, "rb") as handle:
             seeked = size_bytes > NAME_SCAN_BYTES
             if seeked:
                 handle.seek(size_bytes - NAME_SCAN_BYTES)
-            data = handle.read()
+            # Bounded even if the file grows between the stat above and this
+            # read, so the amount read never exceeds NAME_SCAN_BYTES.
+            data = handle.read(NAME_SCAN_BYTES)
     except OSError:
         return {}
     lines = data.split(b"\n")
@@ -123,12 +134,16 @@ def _last_known_names(ctx: Context) -> dict[str, str]:
             continue
         try:
             document = json.loads(raw.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # ValueError covers json.JSONDecodeError; a pathologically deep
+            # line (e.g. thousands of nested "[") can also blow the parser's
+            # recursion limit instead of raising a decode error.
             continue
         if not isinstance(document, dict):
             continue
         pid, project_id = document.get("pid"), document.get("project_id")
-        if isinstance(pid, str) and pid and isinstance(project_id, str) and project_id:
+        if (isinstance(pid, str) and pid and isinstance(project_id, str) and project_id
+                and len(project_id) <= NAME_MAX_LEN):
             names[pid] = project_id
     return names
 
