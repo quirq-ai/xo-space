@@ -7,6 +7,7 @@ copies and never deletes (architecture §9).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -32,6 +33,9 @@ LEFTOVER_MIN_AGE_S = 600
 #: the seconds between minting the pid and the server merging the old folder
 #: in; that's not a split worth reporting yet.
 SPLIT_MIN_AGE_S = 60
+#: How much of the Space timeline (from the end) is worth scanning for a
+#: leftover's last-known project name; older lines aren't worth the read.
+NAME_SCAN_BYTES = 4 * 1024 * 1024
 ACTION = {"kind": "move_runtime_leftover_aside"}
 _CONTENTS = (("sessions", "sessions"), ("stats.json", "stats"), ("timeline.jsonl", "timeline"),
              ("github", "issues mirror"), ("workitems", "claims"))
@@ -95,18 +99,60 @@ def too_recent(ctx: Context, leftover: Leftover) -> bool:
     return newest is None or ctx.now - newest < LEFTOVER_MIN_AGE_S
 
 
-def _finding(ctx: Context, leftover: Leftover, actionable: bool) -> Finding:
+def _last_known_names(ctx: Context) -> dict[str, str]:
+    """The last project_id the Space timeline recorded for each pid, from at
+    most the last ``NAME_SCAN_BYTES`` of ``projects/timeline.jsonl``. Reads
+    nothing else from a line, and nothing but a pid and its project_id
+    reaches the caller."""
+    path = ctx.state_root / "projects" / "timeline.jsonl"
+    names: dict[str, str] = {}
+    try:
+        size_bytes = os.stat(path).st_size
+        with open(path, "rb") as handle:
+            seeked = size_bytes > NAME_SCAN_BYTES
+            if seeked:
+                handle.seek(size_bytes - NAME_SCAN_BYTES)
+            data = handle.read()
+    except OSError:
+        return {}
+    lines = data.split(b"\n")
+    if seeked and lines:
+        lines = lines[1:]  # the partial line the seek landed inside
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            document = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        pid, project_id = document.get("pid"), document.get("project_id")
+        if isinstance(pid, str) and pid and isinstance(project_id, str) and project_id:
+            names[pid] = project_id
+    return names
+
+
+def _finding(ctx: Context, leftover: Leftover, actionable: bool, names: dict[str, str]) -> Finding:
     tree = leftover.tree
     contains = [label for name, label in _CONTENTS if (leftover.path / name).exists()]
     written = (f"Last written {ago(ctx.now - tree.newest)} ago." if tree.newest is not None
                else "Can't be dated: too large or partly unreadable.")
+    project_name = names.get(leftover.key)
+    if project_name:
+        observed = (f"No project in {ctx.display(ctx.projects_root)} uses this data. "
+                    f"It belonged to project {project_name}. {written}")
+    else:
+        observed = f"No project in {ctx.display(ctx.projects_root)} uses this data. {written}"
+    details = {"bytes": tree.bytes, "files": tree.files, "truncated": tree.truncated, "contains": contains,
+               "newest_mtime": None if tree.newest is None else iso(datetime.fromtimestamp(tree.newest, timezone.utc))}
+    if project_name:
+        details["project_name"] = project_name
     return Finding(
-        "runtime.leftover", WARN, leftover.key, ctx.display(leftover.path),
-        f"No project in {ctx.display(ctx.projects_root)} uses this data. {written}",
+        "runtime.leftover", WARN, leftover.key, ctx.display(leftover.path), observed,
         f"It takes {'at least ' if tree.truncated else ''}{size(tree.bytes)} and is never read unless the project folder comes back. "
         "If you moved or renamed the project folder yourself, move it back instead; this data will be picked up again.",
-        details={"bytes": tree.bytes, "files": tree.files, "truncated": tree.truncated, "contains": contains,
-                 "newest_mtime": None if tree.newest is None else iso(datetime.fromtimestamp(tree.newest, timezone.utc))},
+        details=details,
         action=dict(ACTION) if actionable and not too_recent(ctx, leftover) else None,
     )
 
@@ -147,7 +193,8 @@ def _split_findings(ctx: Context) -> list[Finding]:
 def check(ctx: Context) -> list[Finding]:
     result = survey(ctx)
     out = [result.blocked] if result.blocked is not None else []
-    out += [_finding(ctx, leftover, result.blocked is None) for leftover in result.leftovers]
+    names = _last_known_names(ctx) if result.leftovers else {}
+    out += [_finding(ctx, leftover, result.blocked is None, names) for leftover in result.leftovers]
     out += _split_findings(ctx)
     return out
 
