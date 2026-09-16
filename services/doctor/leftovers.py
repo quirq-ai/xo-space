@@ -8,6 +8,8 @@ copies and never deletes (architecture §9).
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,8 @@ from services.cowork_agent.project_layout import _is_safe_runtime_key
 from services.doctor.context import Context
 from services.doctor.model import FAIL, WARN, Finding, ago, size
 from services.doctor.reading import Tree, measure_tree, readable_dir
+from services.errors import ServiceError
+from services.storage import layout
 from services.timestamps import iso
 
 logger = logging.getLogger(__name__)
@@ -107,3 +111,58 @@ def check(ctx: Context) -> list[Finding]:
     out = [result.blocked] if result.blocked is not None else []
     out += [_finding(ctx, leftover, result.blocked is None) for leftover in result.leftovers]
     return out
+
+
+class DoctorError(ServiceError):
+    """A refused or failed doctor action. Nothing was moved."""
+
+
+_BLOCKED = {
+    "runtime.projects_root_suspect": ("doctor_projects_root_suspect",
+                                      "The projects folder is missing or empty, so leftovers can't be told apart from live data."),
+    "runtime.keys_unknown": ("doctor_keys_unknown",
+                             "A project's project.json can't be read, so leftovers can't be told apart from live data."),
+    "runtime.too_many_leftovers": ("doctor_too_many_leftovers",
+                                   "More folders look abandoned than there are projects. Nothing was moved."),
+}
+
+
+def _stamp(now: float) -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now))
+
+
+def move_aside(key: str, *, now: Optional[float] = None) -> dict:
+    """Rename ``projects/<key>`` to ``quarantine/runtime-leftovers/<key>-<time>``.
+
+    Never trusts an earlier report: every §9.1 rule is evaluated again here.
+    """
+    invalid = DoctorError("doctor_invalid_key", "That is not a runtime data folder.", 400)
+    if not isinstance(key, str) or not _is_safe_runtime_key(key):
+        raise invalid
+    ctx = Context.from_environment(now)
+    runtime = ctx.state_root / "projects"
+    source = runtime / key
+    if source.is_symlink() or not source.is_dir() or source.resolve().parent != runtime.resolve():
+        raise invalid
+    result = survey(ctx)
+    if result.blocked is not None:
+        code, message = _BLOCKED[result.blocked.id]
+        raise DoctorError(code, message, 409)
+    leftover = next((item for item in result.leftovers if item.key == key), None)
+    if leftover is None:
+        raise DoctorError("doctor_not_leftover", "A project uses this data now. Nothing was moved.", 409)
+    if too_recent(ctx, leftover):
+        raise DoctorError("doctor_too_recent", "This folder was written to in the last 10 minutes. Try again later.", 409)
+    target = ctx.state_root / layout.quarantine_dir().name / "runtime-leftovers" / f"{key}-{_stamp(ctx.now)}"
+    shown = ctx.display(source)
+    if os.path.lexists(target):
+        raise DoctorError("doctor_move_failed", f"Could not move {shown}: {ctx.display(target)} already exists. Nothing was moved.", 500)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # One rename: it happens or it doesn't. EXDEV (another filesystem) is refused, never copied.
+        os.rename(source, target)
+    except OSError as exc:
+        raise DoctorError("doctor_move_failed", f"Could not move {shown}: {exc.strerror or exc}. Nothing was moved.", 500) from exc
+    logger.info("doctor: moved runtime leftover %s aside to %s", key, target)
+    return {"moved": True, "key": key, "to": ctx.display(target),
+            "bytes": leftover.tree.bytes, "files": leftover.tree.files}
