@@ -135,15 +135,15 @@ def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], b
     found: list[Path] = []
     seen = 0
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        seen += len(dirnames)
-        for name in filenames:
+        for name in (*dirnames, *filenames):
             seen += 1
             if seen > limit:
                 return found, True
-            path = Path(dirpath, name)
-            try:
-                if stat.S_ISREG(path.lstat().st_mode):
-                    found.append(path)
-            except OSError:
-                continue
+            if name in filenames:
+                path = Path(dirpath, name)
+                try:
+                    if stat.S_ISREG(path.lstat().st_mode):
+                        found.append(path)
+                except OSError:
+                    continue
     return found, False

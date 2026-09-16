@@ -83,6 +83,24 @@ class WalkFilesTests(unittest.TestCase):
             self.assertFalse(truncated)
             self.assertTrue(inventory.walk_files(root, limit=1)[1])
 
+    def test_directories_count_toward_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Create 5 nested directories with no files
+            (root / "d1").mkdir()
+            (root / "d2").mkdir()
+            (root / "d3").mkdir()
+            (root / "d4").mkdir()
+            (root / "d5").mkdir()
+            # With limit=3, should hit truncation before visiting all directories
+            files, truncated = inventory.walk_files(root, limit=3)
+            self.assertEqual(files, [])
+            self.assertTrue(truncated)
+            # With default limit, should complete without truncation
+            files, truncated = inventory.walk_files(root)
+            self.assertEqual(files, [])
+            self.assertFalse(truncated)
+
 
 if __name__ == "__main__":
     unittest.main()
