@@ -8,6 +8,7 @@ own table and these tests keep it equal to the fixtures and the schema files.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,9 +79,10 @@ class WalkFilesTests(unittest.TestCase):
             (root / "a" / "f.json").write_text("{}")
             (root / "g.json").write_text("{}")
             (root / "link.json").symlink_to(root / "g.json")
-            files, truncated = inventory.walk_files(root)
+            files, truncated, unreadable = inventory.walk_files(root)
             self.assertEqual(sorted(p.relative_to(root).as_posix() for p in files), ["a/f.json", "g.json"])
             self.assertFalse(truncated)
+            self.assertEqual(unreadable, [])
             self.assertTrue(inventory.walk_files(root, limit=1)[1])
 
     def test_directories_count_toward_limit(self) -> None:
@@ -93,13 +95,30 @@ class WalkFilesTests(unittest.TestCase):
             (root / "d4").mkdir()
             (root / "d5").mkdir()
             # With limit=3, should hit truncation before visiting all directories
-            files, truncated = inventory.walk_files(root, limit=3)
+            files, truncated, unreadable = inventory.walk_files(root, limit=3)
             self.assertEqual(files, [])
             self.assertTrue(truncated)
             # With default limit, should complete without truncation
-            files, truncated = inventory.walk_files(root)
+            files, truncated, unreadable = inventory.walk_files(root)
             self.assertEqual(files, [])
             self.assertFalse(truncated)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_an_unlistable_subfolder_is_reported_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "f.json").write_text("{}")
+            (root / "g.json").write_text("{}")
+            blocked.chmod(0o000)
+            try:
+                files, truncated, unreadable = inventory.walk_files(root)
+                self.assertEqual([p.relative_to(root).as_posix() for p in files], ["g.json"])
+                self.assertFalse(truncated)
+                self.assertEqual([p.relative_to(root).as_posix() for p in unreadable], ["blocked"])
+            finally:
+                blocked.chmod(0o755)
 
 
 if __name__ == "__main__":

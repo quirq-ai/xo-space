@@ -18,6 +18,14 @@ from services.timestamps import parse_ts
 
 MAX_UNKNOWN_LISTED = 50
 
+#: First path segment of every KEEP state pattern, to decide whether an
+#: unlistable folder could be hiding a file whose loss is a FAIL (§7.1).
+_KEEP_TOP_SEGMENTS = frozenset(
+    spec.pattern.split("/", 1)[0]
+    for spec in inventory.SPECS
+    if spec.base == inventory.STATE and spec.klass == inventory.KEEP
+)
+
 
 def roots(ctx: Context) -> list[Finding]:
     if readable_dir(ctx.projects_root):
@@ -67,10 +75,27 @@ def _judge(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inv
         out.append(_read_finding(ctx, path, subject, spec, result))
 
 
+def _listing_error(path: Path) -> str:
+    try:
+        with os.scandir(path):
+            pass
+    except OSError as exc:
+        return exc.strerror or type(exc).__name__
+    return "unknown error"
+
+
+def _unreadable_dir_finding(ctx: Context, path: Path, rel: str) -> Finding:
+    top = rel.split("/", 1)[0]
+    level = FAIL if top in _KEEP_TOP_SEGMENTS else WARN
+    return Finding("read.unreadable", level, rel, ctx.display(path),
+                   f"The folder can't be listed ({_listing_error(path)}).",
+                   "This is not corruption. Check the folder's permissions; nothing inside it can be checked or used until then.")
+
+
 def reads(ctx: Context) -> list[Finding]:
     out: list[Finding] = []
     unknown: list[tuple[str, Path]] = []
-    files, truncated = ctx.state_files()
+    files, truncated, unreadable_dirs = ctx.state_files()
     for path in files:
         rel = path.relative_to(ctx.state_root).as_posix()
         spec = inventory.spec_for(inventory.STATE, rel)
@@ -78,6 +103,8 @@ def reads(ctx: Context) -> list[Finding]:
             unknown.append((rel, path))
             continue
         _judge(ctx, out, path, rel, spec)
+    for path in sorted(unreadable_dirs):
+        out.append(_unreadable_dir_finding(ctx, path, path.relative_to(ctx.state_root).as_posix()))
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
                inventory.spec_for(inventory.WORKSPACE, name))
@@ -168,7 +195,7 @@ def stale_temps(ctx: Context) -> list[Finding]:
     """
     skip_top = {".locks", layout.quarantine_dir().name}
     candidates: list[tuple[str, Path]] = []
-    files, _ = ctx.state_files()
+    files, _, _ = ctx.state_files()
     for path in files:
         rel = path.relative_to(ctx.state_root).as_posix()
         if rel.split("/", 1)[0] in skip_top or inventory.spec_for(inventory.STATE, rel) is not None:

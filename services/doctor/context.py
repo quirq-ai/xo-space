@@ -31,7 +31,7 @@ class Context:
     host_state: str = ""
     host_projects: str = ""
     _reads: dict = field(default_factory=dict, repr=False)
-    _state_files: Optional[tuple[list[Path], bool]] = field(default=None, repr=False)
+    _state_files: Optional[tuple[list[Path], bool, list[Path]]] = field(default=None, repr=False)
     _projects: Optional[list["Project"]] = field(default=None, repr=False)
 
     @classmethod
@@ -52,7 +52,7 @@ class Context:
             self._reads[key] = classify(Path(path), now=self.now, accepted=accepted)
         return self._reads[key]
 
-    def state_files(self) -> tuple[list[Path], bool]:
+    def state_files(self) -> tuple[list[Path], bool, list[Path]]:
         if self._state_files is None:
             self._state_files = inventory.walk_files(self.state_root)
         return self._state_files

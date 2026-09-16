@@ -129,16 +129,23 @@ def names(base: str) -> tuple[str, ...]:
     return tuple(spec.pattern for spec in SPECS if spec.base == base)
 
 
-def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], bool]:
-    """Regular files under ``root`` (no symlinks followed or returned), and
-    whether the walk stopped at ``limit`` entries."""
+def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], bool, list[Path]]:
+    """Regular files under ``root`` (no symlinks followed or returned),
+    whether the walk stopped at ``limit`` entries, and any subfolder ``root``
+    couldn't list (permissions, I/O)."""
     found: list[Path] = []
+    unreadable: list[Path] = []
     seen = 0
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+
+    def _onerror(exc: OSError) -> None:
+        if exc.filename:
+            unreadable.append(Path(exc.filename))
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False, onerror=_onerror):
         for name in (*dirnames, *filenames):
             seen += 1
             if seen > limit:
-                return found, True
+                return found, True, unreadable
             if name in filenames:
                 path = Path(dirpath, name)
                 try:
@@ -146,4 +153,4 @@ def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], b
                         found.append(path)
                 except OSError:
                     continue
-    return found, False
+    return found, False, unreadable
