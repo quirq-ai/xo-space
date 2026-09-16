@@ -268,7 +268,7 @@ def layout_moves(ctx: Context) -> list[Finding]:
         not_migrated_why = "A server from an older xo-space is still running and writing the old layout. Update that install."
     else:
         old_copy_why = "Every reader ignores the old copy, but it looks like live data. Delete it once you've checked nothing in it is needed."
-        not_migrated_why = "Start the server from this version once to move or clear these files."
+        not_migrated_why = "Restart the server once to move or clear these files."
 
     old_left: list[Finding] = []
     pending: list[str] = []
@@ -301,7 +301,7 @@ def legacy_pending(ctx: Context) -> list[Finding]:
             names = ", ".join(path.name for path in pending)
             out.append(Finding("legacy.pending", WARN, project.name, ctx.display(project.xo),
                                f"{len(pending)} runtime file(s) from before runtime data moved to the state folder: {names}.",
-                               "They are no longer written. The one-time move runs the next time a server from this version starts."))
+                               "They are no longer written. Restart the server once to move them into the state folder."))
     return out
 
 

@@ -106,7 +106,7 @@ class LayoutTests(DoctorSandbox):
     def test_not_migrated_advice_depends_on_an_old_server_heartbeat(self) -> None:
         (self.state / "commands.log.1").write_text("old", encoding="utf-8")
         [finding] = [f for f in self.problems() if f["id"] == "layout.not_migrated"]
-        self.assertIn("Start the server from this version once to move or clear these files.", finding["why_it_matters"])
+        self.assertIn("Restart the server once to move or clear these files.", finding["why_it_matters"])
         (self.state / "watcher").mkdir()
         beat = {"schema": 1, "last_tick_at": iso(datetime.fromtimestamp(self.now, timezone.utc))}
         (self.state / "watcher" / "heartbeat.json").write_text(json.dumps(beat), encoding="utf-8")
@@ -130,6 +130,7 @@ class LegacyTests(DoctorSandbox):
         [finding] = [f for f in self.problems() if f["id"] == "legacy.pending"]
         self.assertEqual(finding["subject"], "sample-project")
         self.assertIn("stats.json", finding["observed"])
+        self.assertIn("Restart the server once to move them into the state folder.", finding["why_it_matters"])
 
 
 class HeartbeatTests(DoctorSandbox):
