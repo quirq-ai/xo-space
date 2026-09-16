@@ -15,6 +15,7 @@ from services.doctor.model import FAIL, OK, WARN, Finding, ago, size
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
 from services.storage import layout
 from services.timestamps import parse_ts
+from utils import runtime_env
 
 MAX_UNKNOWN_LISTED = 50
 
@@ -235,8 +236,23 @@ def _heartbeat_age(ctx: Context, path: Path, spec: inventory.Spec | None) -> flo
     return None if stamp is None else max(0.0, ctx.now - stamp.timestamp())
 
 
+def _watcher_enabled() -> bool:
+    """``QUIRQ_WATCHER_ENABLED`` (default true), parsed the same way
+    ``runtime_config.effective_settings`` does, but without resolving the
+    active agent: that also happens inside ``effective_settings`` and has
+    nothing to do with these two watcher env vars, so a broken agent setup
+    must not turn this or the layout check into ERROR."""
+    as_bool = getattr(runtime_config, "_as_bool", None)
+    if as_bool is None:  # pragma: no cover - defensive fallback only
+        def as_bool(value: str | None, *, default: bool) -> bool:
+            if value is None:
+                return default
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+    return as_bool(os.getenv("QUIRQ_WATCHER_ENABLED"), default=True)
+
+
 def _stale_after() -> float:
-    return _stale_after_seconds(runtime_config.effective_settings()["watcher_interval_seconds"])
+    return _stale_after_seconds(runtime_env.watcher_tick_interval_seconds())
 
 
 def layout_moves(ctx: Context) -> list[Finding]:
@@ -290,7 +306,7 @@ def legacy_pending(ctx: Context) -> list[Finding]:
 
 
 def heartbeat(ctx: Context) -> list[Finding]:
-    if not runtime_config.effective_settings()["watcher_enabled"]:
+    if not _watcher_enabled():
         return []
     path = watcher_heartbeat_path()
     age = _heartbeat_age(ctx, path, inventory.spec_for(inventory.STATE, "cache/heartbeat.json"))

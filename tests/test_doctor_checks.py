@@ -154,6 +154,21 @@ class HeartbeatTests(DoctorSandbox):
             self.assertEqual(self.beats(), [])
 
 
+class NoActiveAgentResolutionTests(DoctorSandbox):
+    """The watcher and layout checks must not resolve the active agent (that's
+    Plane B config, unrelated to reading two watcher env vars), so a broken
+    agent setup doesn't turn them into ERROR."""
+
+    def test_heartbeat_and_layout_checks_survive_a_broken_active_agent(self) -> None:
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}), \
+             patch("services.cowork_agent.runtime_config.get_active_agent",
+                   side_effect=RuntimeError("broken agent setup")):
+            report = self.report()
+        by_id = {c["id"]: c for c in report["checks"]}
+        self.assertNotEqual(by_id["watcher"]["level"], "ERROR")
+        self.assertNotEqual(by_id["layout"]["level"], "ERROR")
+
+
 class GrowthTests(DoctorSandbox):
     def test_large_files_quarantine_locks_and_offsets_warn(self) -> None:
         (self.state / "projects" / "timeline.jsonl").write_bytes(b"x" * 64)
