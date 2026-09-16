@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from services.doctor import model
-from services.doctor.reading import classify, measure_tree, readable_dir
+from services.doctor.reading import Tree, classify, measure_tree, readable_dir
 
 ONE = frozenset({1})
 
@@ -114,6 +114,10 @@ class MeasureTreeTests(unittest.TestCase):
         self.assertTrue(readable_dir(self.dir))
         self.assertFalse(readable_dir(self.dir / "a"))
         self.assertFalse(readable_dir(self.dir / "missing"))
+
+    def test_a_missing_root_is_undated_not_a_crash(self) -> None:
+        tree = measure_tree(self.dir / "missing")
+        self.assertEqual(tree, Tree(0, 0, None, False))
 
     def test_an_unreadable_subdirectory_leaves_the_age_unknown(self) -> None:
         if os.geteuid() == 0:

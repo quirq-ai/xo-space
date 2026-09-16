@@ -142,22 +142,27 @@ def move_aside(key: str, *, now: Optional[float] = None) -> dict:
     ctx = Context.from_environment(now)
     runtime = ctx.state_root / "projects"
     source = runtime / key
-    if source.is_symlink() or not source.is_dir() or source.resolve().parent != runtime.resolve():
-        raise invalid
-    result = survey(ctx)
-    if result.blocked is not None:
-        code, message = _BLOCKED[result.blocked.id]
-        raise DoctorError(code, message, 409)
-    leftover = next((item for item in result.leftovers if item.key == key), None)
-    if leftover is None:
-        raise DoctorError("doctor_not_leftover", "A project uses this data now. Nothing was moved.", 409)
-    if too_recent(ctx, leftover):
-        raise DoctorError("doctor_too_recent", "This folder was written to in the last 10 minutes. Try again later.", 409)
-    target = ctx.state_root / layout.quarantine_dir().name / "runtime-leftovers" / f"{key}-{_stamp(ctx.now)}"
     shown = ctx.display(source)
-    if os.path.lexists(target):
-        raise DoctorError("doctor_move_failed", f"Could not move {shown}: {ctx.display(target)} already exists. Nothing was moved.", 500)
+    # Everything below touches the filesystem again (a symlink/permission
+    # check, the survey's own walk, the mkdir and the rename); any OSError
+    # not already turned into a DoctorError above becomes doctor_move_failed
+    # instead of escaping raw (§9.3). DoctorError itself isn't an OSError, so
+    # the specific refusals raised inside this block pass through untouched.
     try:
+        if source.is_symlink() or not source.is_dir() or source.resolve().parent != runtime.resolve():
+            raise invalid
+        result = survey(ctx)
+        if result.blocked is not None:
+            code, message = _BLOCKED[result.blocked.id]
+            raise DoctorError(code, message, 409)
+        leftover = next((item for item in result.leftovers if item.key == key), None)
+        if leftover is None:
+            raise DoctorError("doctor_not_leftover", "A project uses this data now. Nothing was moved.", 409)
+        if too_recent(ctx, leftover):
+            raise DoctorError("doctor_too_recent", "This folder was written to in the last 10 minutes. Try again later.", 409)
+        target = ctx.state_root / layout.quarantine_dir().name / "runtime-leftovers" / f"{key}-{_stamp(ctx.now)}"
+        if os.path.lexists(target):
+            raise DoctorError("doctor_move_failed", f"Could not move {shown}: {ctx.display(target)} already exists. Nothing was moved.", 500)
         target.parent.mkdir(parents=True, exist_ok=True)
         # One rename: it happens or it doesn't. EXDEV (another filesystem) is refused, never copied.
         os.rename(source, target)
