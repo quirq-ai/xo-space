@@ -173,7 +173,9 @@ def duplicate_ids(ctx: Context) -> list[Finding]:
     return [
         Finding("projects.duplicate_id", WARN, pid, ctx.display(ctx.projects_root),
                 f"Folders {', '.join(names)} have the same pid {pid}.",
-                "They write to one runtime folder, so their stats, sessions and timelines merge. Give one of them a new pid.")
+                "They write to one runtime folder, so their stats, sessions and timelines merge. "
+                "If one folder is a copy meant to be its own project, delete the \"pid\" line from that copy's "
+                ".xo/project.json and the server gives it a new pid within seconds. Leave the original's pid alone.")
         for pid, names in sorted(by_pid.items()) if len(names) > 1
     ]
 
