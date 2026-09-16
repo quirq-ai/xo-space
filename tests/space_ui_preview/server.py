@@ -60,6 +60,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/space/update/status": lambda: {"supported": False, "message": "Fictional review server; updates are unavailable."},
             "/xo-auth/session/self": lambda: {"session_id": "fictional-review-session"},
             "/api/connectors/composio/toolkits": lambda: {"toolkits": []},
+            "/api/doctor": fixtures.doctor_report,
         }.get(path)
         if route:
             self.json_response(route())

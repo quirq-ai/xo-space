@@ -3,7 +3,8 @@
    The API returns operational summaries and a filesystem catalog only. Secret
    values, source cursor paths, and raw native-session data never reach this
    view. */
-import {apiFetch} from '../core/api.js';
+import {apiFetch,failText} from '../core/api.js';
+import {toast} from '../core/ui.js';
 
 const esc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -14,6 +15,9 @@ let root=null;
 let timer=null;
 let loading=false;
 let go=()=>{};
+let healthLoading=false;
+let lastHealth=null;
+let pendingMove=null;
 
 /* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
@@ -27,13 +31,17 @@ export default {
     root=el;
     go=ctx.switchTo;
     renderShell();
+    root.querySelector('#quirq-health-run').addEventListener('click',()=>loadHealth());
+    root.querySelector('#quirq-health').addEventListener('click',handleHealthClick);
     root.addEventListener('click',handleCrossViewNavigation);
-    await loadCatalog();
+    await Promise.all([loadCatalog(),loadHealth()]);
   },
   show(){
     if(root){
       loadCatalog();
+      loadHealth();
     }
+    /* Only the catalog polls. Health checks run on open and on "Run checks". */
     if(root&&!timer){
       timer=setInterval(loadCatalog,10000);
     }
@@ -59,6 +67,13 @@ function renderShell(){
           +'<button id="quirq-back" type="button" data-go-view="setup/server">&#8592; Setup</button>'
         +'</div>'
       +'</header>'
+      +'<section class="quirq-panel quirq-health" id="quirq-health">'
+        +'<header><div><span>State health</span><h2>Health checks</h2></div>'
+          +'<div class="quirq-health-actions"><b id="quirq-health-level">—</b>'
+          +'<button id="quirq-health-run" type="button">Run checks</button></div>'
+        +'</header>'
+        +'<div id="quirq-health-list"><div class="quirq-empty">Checking state…</div></div>'
+      +'</section>'
       +'<section class="quirq-path" id="quirq-path"><div class="quirq-skeleton"></div></section>'
       +'<section class="quirq-metrics" id="quirq-metrics" aria-label="Quirq state metrics"></section>'
       +'<section class="quirq-panel quirq-storage-map">'
@@ -368,4 +383,83 @@ function pretty(value){
   return String(value||'Not configured').split('_').map(
     part=>part?part[0].toUpperCase()+part.slice(1):''
   ).join(' ');
+}
+
+/* Health: GET /api/doctor (services/doctor). One finding kind carries an
+   action: moving a leftover runtime folder into quarantine/, confirmed inline. */
+async function loadHealth(){
+  if(healthLoading||!root)return;
+  healthLoading=true;
+  const button=root.querySelector('#quirq-health-run');
+  button.disabled=true;
+  button.textContent='Checking…';
+  const response=await apiFetch('/api/doctor');
+  healthLoading=false;
+  button.disabled=false;
+  button.textContent='Run checks';
+  if(!response.ok){
+    renderHealthFailure(failText(response));
+    return;
+  }
+  lastHealth=response.data;
+  renderHealth(lastHealth);
+}
+
+function renderHealth(report){
+  const level=report.level||'OK';
+  const badge=root.querySelector('#quirq-health-level');
+  badge.textContent=level==='OK'?'Healthy':level;
+  badge.className='is-'+level.toLowerCase();
+  const findings=(report.checks||[]).flatMap(check=>check.error
+    ?[{id:check.id,key:'error:'+check.id,level:'ERROR',subject:check.id,path:'',
+       observed:'This check could not run: '+check.error,why_it_matters:'This part of the state was not checked.'}]
+    :(check.findings||[]).filter(finding=>finding.level!=='OK'));
+  root.querySelector('#quirq-health-list').innerHTML=findings.length
+    ?findings.map(healthRow).join('')
+    :'<div class="quirq-empty">No problems found. Checked '+esc(relativeTime(report.checked_at))+'.</div>';
+}
+
+function healthRow(finding){
+  const confirming=finding.action&&pendingMove===finding.subject;
+  const action=!finding.action?''
+    :confirming
+      ?'<div class="quirq-health-confirm"><p>Move this folder into quarantine? You can move it back by hand.</p>'
+        +'<button type="button" data-move-confirm="'+esc(finding.subject)+'">Move aside</button>'
+        +'<button type="button" data-move-cancel>Cancel</button>'
+        +'<em id="quirq-health-move-error"></em></div>'
+      :'<button type="button" data-move-aside="'+esc(finding.subject)+'">Move aside…</button>';
+  return '<div class="quirq-health-row is-'+esc(String(finding.level).toLowerCase())+'" data-finding="'+esc(finding.key)+'">'
+    +'<div><span>'+esc(finding.level)+' · '+esc(finding.id)+'</span>'
+      +'<b>'+esc(finding.observed)+'</b>'
+      +'<p>'+esc(finding.why_it_matters)+'</p>'
+      +(finding.path?'<code>'+esc(finding.path)+'</code>':'')
+    +'</div>'+action
+  +'</div>';
+}
+
+async function handleHealthClick(event){
+  const start=event.target.closest('[data-move-aside]');
+  if(start){pendingMove=start.dataset.moveAside;renderHealth(lastHealth);return;}
+  if(event.target.closest('[data-move-cancel]')){pendingMove=null;renderHealth(lastHealth);return;}
+  const confirm=event.target.closest('[data-move-confirm]');
+  if(!confirm||confirm.disabled)return;
+  confirm.disabled=true;
+  const key=confirm.dataset.moveConfirm;
+  const response=await apiFetch('/api/doctor/runtime-leftovers/'+encodeURIComponent(key)+'/move-aside',{method:'POST',body:{}});
+  if(response.ok&&response.data?.moved===true&&response.data?.key===key){
+    pendingMove=null;
+    toast('Moved to '+response.data.to);
+    await loadHealth();
+    return;
+  }
+  confirm.disabled=false;
+  const error=root.querySelector('#quirq-health-move-error');
+  if(error)error.textContent=response.ok?'The move could not be confirmed. Run checks again.':failText(response);
+}
+
+function renderHealthFailure(message){
+  const badge=root.querySelector('#quirq-health-level');
+  badge.textContent='—';
+  badge.className='';
+  root.querySelector('#quirq-health-list').innerHTML='<div class="quirq-empty">Health checks unavailable: '+esc(message)+'</div>';
 }

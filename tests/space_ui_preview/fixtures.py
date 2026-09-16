@@ -210,3 +210,22 @@ def sharing():
                       {"project": pid, "shared": True, "available": True, "members": 3,
                        "last_fetch_at": stamp(1), "last_error": None, "clone": None, "auto_cloned_at": None}
                       for pid in ("aurora-console", "atlas-handbook", "retrieval-lab")}}
+
+
+def doctor_report():
+    """One leftover runtime folder with its action, for manual review of the Health panel."""
+    key = "11111111-1111-4111-8111-111111111111"
+    return {
+        "schema": 1, "checked_at": stamp(), "duration_ms": 18, "level": "WARN",
+        "summary": {"OK": 9, "WARN": 1, "FAIL": 0, "ERROR": 0},
+        "roots": {"state": "/demo/.quirq", "projects": "/demo/projects"},
+        "checks": [{"id": "runtime", "level": "WARN", "findings": [{
+            "id": "runtime.leftover", "key": f"runtime.leftover:{key}", "level": "WARN", "subject": key,
+            "path": f"/demo/.quirq/projects/{key}",
+            "observed": "No project in /demo/projects uses this data. Last written 3 days ago.",
+            "why_it_matters": "It takes 41.0 MB and is never read unless the project folder comes back.",
+            "details": {"bytes": 42996121, "files": 318, "truncated": False, "contains": ["sessions", "stats"],
+                        "newest_mtime": stamp(4320)},
+            "action": {"kind": "move_runtime_leftover_aside"},
+        }]}],
+    }
