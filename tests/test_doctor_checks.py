@@ -145,7 +145,7 @@ class HeartbeatTests(DoctorSandbox):
             self.assertIn("last ticked", stale["observed"])
             (self.state / "cache" / "heartbeat.json").unlink()
             [missing] = self.beats()
-            self.assertIn("never written", missing["observed"])
+            self.assertIn("no readable heartbeat yet", missing["observed"])
 
     def test_a_fresh_heartbeat_is_healthy(self) -> None:
         beat = {"schema": 1, "last_tick_at": iso(datetime.fromtimestamp(self.now - 1, timezone.utc))}

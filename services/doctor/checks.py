@@ -313,7 +313,7 @@ def heartbeat(ctx: Context) -> list[Finding]:
     why = "Stats, timelines and the Inbox stop updating while the watcher isn't ticking."
     if age is None:
         return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
-                        "The watcher is enabled but has never written a heartbeat.", why)]
+                        "The watcher is enabled but there is no readable heartbeat yet.", why)]
     if age > _stale_after():
         return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
                         f"The watcher is enabled but last ticked {ago(age)} ago.", why)]
