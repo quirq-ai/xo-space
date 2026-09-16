@@ -902,7 +902,7 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
-        self.assertIn("./views/quirq.js?v=20260915-data1'", app)
+        self.assertIn("./views/quirq.js?v=20260916-doctor1'", app)
         # The typography pass (Inter, readable small text) restamped every file
         # it changed on top of development.
         type_stamp = "20260915-typesync1"
