@@ -5,10 +5,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from services.cowork_agent import runtime_config
+from services.cowork_agent.quirq_catalog import _stale_after_seconds  # the Quirq view's liveness rule, shared
+from services.cowork_agent.visualizer.migrate import _pending_sources  # pure: exists() and glob() only
+from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 from services.doctor import inventory
 from services.doctor.context import Context
-from services.doctor.model import FAIL, OK, WARN, Finding
-from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, readable_dir
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, size
+from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
+from services.storage import layout
 from services.timestamps import parse_ts
 
 MAX_UNKNOWN_LISTED = 50
@@ -143,3 +148,175 @@ def duplicate_ids(ctx: Context) -> list[Finding]:
                 "They write to one runtime folder, so their stats, sessions and timelines merge. Give one of them a new pid.")
         for pid, names in sorted(by_pid.items()) if len(names) > 1
     ]
+
+
+TMP_MIN_AGE_S = 300
+MAX_FILE_BYTES = 50 * 1024 * 1024
+MAX_ENTRIES = 10_000
+
+
+def _is_temp_name(name: str) -> bool:
+    return name.endswith(".tmp") or ".tmp." in name
+
+
+def stale_temps(ctx: Context) -> list[Finding]:
+    """F4. One agent-neutral rule instead of a list of writers (architecture §8.2).
+
+    In the state root a hidden file also counts (mkstemp names such as
+    ``.state-XXXX.json``). In a git-tracked ``.xo/`` it doesn't, because
+    files like ``.gitkeep`` are legitimate there.
+    """
+    skip_top = {".locks", layout.quarantine_dir().name}
+    candidates: list[tuple[str, Path]] = []
+    files, _ = ctx.state_files()
+    for path in files:
+        rel = path.relative_to(ctx.state_root).as_posix()
+        if rel.split("/", 1)[0] in skip_top or inventory.spec_for(inventory.STATE, rel) is not None:
+            continue
+        if _is_temp_name(path.name) or path.name.startswith("."):
+            candidates.append((rel, path))
+    xo_dirs = [("<projects root>/.xo", ctx.projects_root / ".xo")]
+    xo_dirs += [(f"{project.name}/.xo", project.xo) for project in ctx.projects()]
+    for label, xo in xo_dirs:
+        try:
+            entries = sorted(xo.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            if _is_temp_name(path.name) and path.is_file() and not path.is_symlink():
+                candidates.append((f"{label}/{path.name}", path))
+    out: list[Finding] = []
+    for subject, path in sorted(candidates):
+        try:
+            age = ctx.now - path.lstat().st_mtime
+        except OSError:
+            continue
+        if age >= TMP_MIN_AGE_S:
+            out.append(Finding("tmp.stale", WARN, subject, ctx.display(path),
+                               f"A temporary file left {ago(age)} ago.",
+                               "A write was interrupted here. The file it belongs to kept its previous content, and this temporary file can be deleted."))
+    return out
+
+
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _heartbeat_age(ctx: Context, path: Path, spec: inventory.Spec | None) -> float | None:
+    value = ctx.read(path, spec).value
+    stamp = parse_ts(value.get("last_tick_at")) if isinstance(value, dict) else None
+    return None if stamp is None else max(0.0, ctx.now - stamp.timestamp())
+
+
+def _stale_after() -> float:
+    return _stale_after_seconds(runtime_config.effective_settings()["watcher_interval_seconds"])
+
+
+def layout_moves(ctx: Context) -> list[Finding]:
+    """Files still at a path from before the state root had folders (layout.MOVES)."""
+    old_left: list[Finding] = []
+    pending: list[str] = []
+    old_heartbeat: Path | None = None
+    for move in layout.MOVES:
+        old = move.old()
+        if move.new is not None and move.new() == watcher_heartbeat_path():
+            old_heartbeat = old
+        if old is None or not _exists(old):
+            continue
+        new = move.new() if move.new is not None else None
+        if new is not None and _exists(new):
+            old_left.append(Finding("layout.old_copy_left", WARN, move.what, ctx.display(old),
+                                    f"An old copy of {move.what} is still at {ctx.display(old)}; the current one is {ctx.display(new)}.",
+                                    "Every reader ignores the old copy, but it looks like live data. Delete it once you've checked nothing in it is needed."))
+        else:
+            pending.append(move.what)
+    out = list(old_left)
+    if pending:
+        age = _heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
+        if age is not None and age <= _stale_after():
+            why = "A server from an older xo-space is still running and writing the old layout. Update that install."
+        else:
+            why = "Start the server from this version once to move these files."
+        out.append(Finding("layout.not_migrated", WARN, "state root", ctx.display(ctx.state_root),
+                           f"{len(pending)} item(s) are still at their old paths: {', '.join(pending)}.", why))
+    return out
+
+
+def legacy_pending(ctx: Context) -> list[Finding]:
+    """Pre-T19 runtime files still inside a project's .xo/ (visualizer/migrate.py)."""
+    out: list[Finding] = []
+    for project in ctx.projects():
+        if project.xo.is_symlink() or not project.xo.is_dir():
+            continue
+        pending = _pending_sources(project.xo)
+        if pending:
+            names = ", ".join(path.name for path in pending)
+            out.append(Finding("legacy.pending", WARN, project.name, ctx.display(project.xo),
+                               f"{len(pending)} runtime file(s) from before runtime data moved to the state folder: {names}.",
+                               "They are no longer written. The one-time move runs the next time a server from this version starts."))
+    return out
+
+
+def heartbeat(ctx: Context) -> list[Finding]:
+    if not runtime_config.effective_settings()["watcher_enabled"]:
+        return []
+    path = watcher_heartbeat_path()
+    age = _heartbeat_age(ctx, path, inventory.spec_for(inventory.STATE, "cache/heartbeat.json"))
+    why = "Stats, timelines and the Inbox stop updating while the watcher isn't ticking."
+    if age is None:
+        return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
+                        "The watcher is enabled but has never written a heartbeat.", why)]
+    if age > _stale_after():
+        return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
+                        f"The watcher is enabled but last ticked {ago(age)} ago.", why)]
+    return []
+
+
+def _count_entries(path: Path, stop: int) -> int:
+    count = 0
+    try:
+        with os.scandir(path) as entries:
+            for _ in entries:
+                count += 1
+                if count > stop:
+                    break
+    except OSError:
+        return 0
+    return count
+
+
+def growth(ctx: Context) -> list[Finding]:
+    """Things nothing trims (architecture §8.3). WARN only."""
+    state = ctx.state_root
+    out: list[Finding] = []
+    files = [state / "projects" / "timeline.jsonl",
+             *sorted((state / "scheduler" / "runs").glob("*.jsonl")),
+             *sorted((state / "logs" / "scheduler").glob("*.log"))]
+    for path in files:
+        try:
+            nbytes = path.stat().st_size
+        except OSError:
+            continue
+        if nbytes > MAX_FILE_BYTES:
+            out.append(Finding("growth.file_size", WARN, path.relative_to(state).as_posix(), ctx.display(path),
+                               f"The file is {size(nbytes)}.", "Nothing rotates or trims this file; it only gets bigger."))
+    quarantine = state / layout.quarantine_dir().name
+    if quarantine.is_dir() and not quarantine.is_symlink():
+        tree = measure_tree(quarantine)
+        if tree.bytes > MAX_FILE_BYTES:
+            out.append(Finding("growth.quarantine", WARN, "quarantine", ctx.display(quarantine),
+                               f"Moved-aside data takes {size(tree.bytes)}.",
+                               "It stays until you delete it by hand. Check nothing in it is needed, then delete the folders you don't want."))
+    locks = state / ".locks"
+    if _count_entries(locks, MAX_ENTRIES) > MAX_ENTRIES:
+        out.append(Finding("growth.locks", WARN, ".locks", ctx.display(locks),
+                           f"More than {MAX_ENTRIES:,} lock files.",
+                           "Lock files are never removed. Each is tiny, but a huge folder slows every lock."))
+    offsets = state / "projects" / "offsets.json"
+    result = ctx.read(offsets, inventory.spec_for(inventory.STATE, "projects/offsets.json"))
+    entries = result.value.get("offsets") if result.outcome == "ok" else None
+    if isinstance(entries, dict) and len(entries) > MAX_ENTRIES:
+        out.append(Finding("growth.offsets", WARN, "projects/offsets.json", ctx.display(offsets),
+                           f"{len(entries):,} reading positions are stored.",
+                           "Positions for deleted session files are never dropped, so the file only grows."))
+    return out
