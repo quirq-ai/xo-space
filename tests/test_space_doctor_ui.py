@@ -33,6 +33,12 @@ class HealthPanelTests(unittest.TestCase):
         self.assertIn("data-move-confirm", self.quirq)
         self.assertIn("data-move-cancel", self.quirq)
 
+    def test_a_second_move_is_blocked_while_one_is_in_flight(self) -> None:
+        self.assertIn("let movingKey=null;", self.quirq)
+        match = re.search(r"async function handleHealthClick\(event\)\{(.*?)\n\}", self.quirq, re.S)
+        self.assertIsNotNone(match, "handleHealthClick not found")
+        self.assertIn("if(movingKey)return", match.group(1))
+
     def test_assets_are_restamped(self) -> None:
         self.assertIn("./views/quirq.js?v=20260916-doctor1'", read("js/app.js"))
         self.assertIn('href="css/quirq.css?v=20260916-doctor1"', read("index.html"))

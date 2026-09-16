@@ -18,6 +18,7 @@ let go=()=>{};
 let healthLoading=false;
 let lastHealth=null;
 let pendingMove=null;
+let movingKey=null;
 
 /* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
@@ -429,13 +430,14 @@ function renderHealth(report){
 
 function healthRow(finding){
   const confirming=finding.action&&pendingMove===finding.subject;
+  const disabled=movingKey?' disabled':'';
   const action=!finding.action?''
     :confirming
       ?'<div class="quirq-health-confirm"><p>Move this folder into quarantine? You can move it back by hand.</p>'
-        +'<button type="button" data-move-confirm="'+esc(finding.subject)+'">Move aside</button>'
-        +'<button type="button" data-move-cancel>Cancel</button>'
+        +'<button type="button" data-move-confirm="'+esc(finding.subject)+'"'+disabled+'>Move aside</button>'
+        +'<button type="button" data-move-cancel'+disabled+'>Cancel</button>'
         +'<em id="quirq-health-move-error"></em></div>'
-      :'<button type="button" data-move-aside="'+esc(finding.subject)+'">Move aside…</button>';
+      :'<button type="button" data-move-aside="'+esc(finding.subject)+'"'+disabled+'>Move aside…</button>';
   return '<div class="quirq-health-row is-'+esc(String(finding.level).toLowerCase())+'" data-finding="'+esc(finding.key)+'">'
     +'<div><span>'+esc(finding.level)+' · '+esc(finding.id)+'</span>'
       +'<b>'+esc(finding.observed)+'</b>'
@@ -446,21 +448,24 @@ function healthRow(finding){
 }
 
 async function handleHealthClick(event){
+  if(movingKey)return;
   const start=event.target.closest('[data-move-aside]');
   if(start){pendingMove=start.dataset.moveAside;renderHealth(lastHealth);return;}
   if(event.target.closest('[data-move-cancel]')){pendingMove=null;renderHealth(lastHealth);return;}
   const confirm=event.target.closest('[data-move-confirm]');
   if(!confirm||confirm.disabled)return;
-  confirm.disabled=true;
   const key=confirm.dataset.moveConfirm;
+  movingKey=key;
+  renderHealth(lastHealth);
   const response=await apiFetch('/api/doctor/runtime-leftovers/'+encodeURIComponent(key)+'/move-aside',{method:'POST',body:{}});
+  movingKey=null;
   if(response.ok&&response.data?.moved===true&&response.data?.key===key){
     pendingMove=null;
     toast('Moved to '+response.data.to);
     await loadHealth();
     return;
   }
-  confirm.disabled=false;
+  renderHealth(lastHealth);
   const error=root.querySelector('#quirq-health-move-error');
   if(error)error.textContent=response.ok?'The move could not be confirmed. Run checks again.':failText(response);
 }
