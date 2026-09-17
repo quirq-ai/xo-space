@@ -27,6 +27,12 @@ class ComposioNotFound(ComposioError):
     pass
 
 
+# Back-compat aliases for the retired ``swarm_api.composio`` names, kept so call sites
+# and tests that caught the old exception classes keep working.
+SwarmComposioError = ComposioError
+SwarmComposioNotFound = ComposioNotFound
+
+
 _sdk_client: Any = None
 _sdk_key: str = ""
 

@@ -158,7 +158,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("**Where it writes.**", sub)
         self.assertIn("**How it degrades.**", sub)
         self.assertIn("`~/.quirq/connections/<toolkit>/config.json`", sub)
-        self.assertIn("not signed in to XO (no account id)", sub)
+        self.assertIn("add your Composio API key to activate connections", sub)
         self.assertIn("is not turned on in this workspace", sub)
         self.assertIn("`XO_CONNECTIONS_POLL_ENABLED=false`", sub)
         self.assertIn("`XO_CONNECTIONS_POLL_TICK_S`", sub)
@@ -240,13 +240,6 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
             for cid in ids:
                 self.assertIn(f"`{cid}`", prose)
 
-    def test_auth_config_count_matches_the_toolkit_table(self) -> None:
-        from services.cowork_agent.connectors.composio.service import TOOLKITS
-        words = {8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve", 13: "thirteen"}
-        env = read(".env.example")
-        self.assertIn(f"# the {words[len(TOOLKITS)]} COMPOSIO_AUTH_CONFIG_<TOOLKIT> ids", env)
-        self.assertNotRegex(env, rf"# the (?!{words[len(TOOLKITS)]} )\w+ COMPOSIO_AUTH_CONFIG")
-
     def test_developing_guide_and_readme_describe_one_session_per_poll(self) -> None:
         from services.connections import poller
         import services.connections as pkg
@@ -271,18 +264,10 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertNotIn("for one ``tools/call``", pkg.__doc__ or "")
         self.assertTrue(hasattr(pkg, "__doc__") and "opens one session per poll" in squash(pkg.__doc__))
 
-    def test_identity_docs_describe_the_dual_send_and_the_deploy_gap(self) -> None:
-        from services.cowork_agent.connectors.composio import service as composio_service
-        from services.cowork_agent.connectors.composio import state
-        self.assertTrue(callable(state.identity_field_gap))
-        self.assertIsInstance(composio_service.LEGACY_STAMP, str)
+    def test_identity_docs_describe_the_local_key(self) -> None:
         dev = squash(read("DEVELOPING.md"))
-        self.assertIn("Until xo-swarm-api #41 is deployed it is dual-sent as `workspace_id` too", dev)
-        self.assertIn("(`state.identity_field_gap`) is a deploy gap", dev)
-        self.assertIn("`GET /xo-auth/session/self` answers 503 naming xo-swarm-api #41", dev)
-        self.assertIn("Any other 422 (a string detail: the swarm read the id and rejected its value) "
-                      "is authoritative and points at `XO_SPACE_ID`", dev)
-        self.assertIn("(`{account_id, workspace_id}` from a swarm before xo-swarm-api #41; only `account_id` is read", dev)
+        self.assertIn("COMPOSIO_BYO_API_KEY", dev)
+        self.assertIn("Composio runs only when the user supplies their own", dev)
         self.assertIn("or a 422 rejecting the id's value) never falls back", dev)
         # the store ownership rule, in 10.1, the sessions.json row and 10.5
         self.assertNotIn("A v4 store is never refused on ownership grounds", dev)

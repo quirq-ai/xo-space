@@ -132,8 +132,8 @@ class _Base(unittest.TestCase):
                          "the store must resolve under the temp root, never the real ~/.quirq")
         poller.reset_for_tests()
         self.loop = asyncio.new_event_loop()
-        self.known = patch.object(poller.state, "account_id_if_known", return_value="user_x")
-        self.aaccount = patch.object(poller.state, "aaccount_id", new=AsyncMock(return_value="user_x"))
+        self.configured = patch.object(poller.byo_key, "configured", return_value=True)
+        self.userid = patch.object(poller.byo_key, "user_id", return_value="user_x")
         self.scope = patch.object(poller.space_scope, "enabled_toolkits",
                                   return_value=["gmail", "googlecalendar", "notion"])
         # the pins: space_scope.load() reads a path fixed at import time, so it is
@@ -146,7 +146,7 @@ class _Base(unittest.TestCase):
         # identity call a cold cache adds to the first poll succeeds on it too.
         FakeSession.reset(list(DEFAULT_TOOLS), envelope([message(1), message(2)], email=EMAIL))
         self.mocks = {"open": FakeSession.open_mock, "names": FakeSession.list_mock, "call": FakeSession.call_mock}
-        for name, p in (("known", self.known), ("aaccount", self.aaccount), ("scope", self.scope),
+        for name, p in (("configured", self.configured), ("userid", self.userid), ("scope", self.scope),
                         ("pins", self.pins), ("entry", self.entry)):
             self.mocks[name] = p.start()
             self.addCleanup(p.stop)
@@ -187,7 +187,7 @@ class SkipPathsTests(_Base):
         self.assertFalse(self.folder().exists())
         self.assertFalse((self.root / ".quirq" / "connections").exists())
         self.mocks["call"].assert_not_awaited()
-        self.mocks["known"].assert_not_called()
+        self.mocks["userid"].assert_not_called()
 
     def test_disabled_unless_forced(self) -> None:
         store.write_config("gmail", enabled=False)
@@ -283,13 +283,10 @@ class SuccessfulPollTests(_Base):
         self.assertEqual((len(FakeSession.opened), self.mocks["names"].await_count, FakeSession.closed), (1, 1, 1),
                          "the identity call and both collectors ran through one session and one listing")
 
-    def test_cached_identity_wins_and_a_fetch_is_the_fallback(self) -> None:
+    def test_identity_is_the_local_user_id(self) -> None:
         store.write_config("gmail")
         self.assertTrue(self.run_(poller.poll_connection("gmail"))["polled"])
-        self.mocks["aaccount"].assert_not_awaited()
-        self.mocks["known"].return_value = None
         self.assertTrue(self.run_(poller.poll_connection("gmail", force=True))["polled"])
-        self.mocks["aaccount"].assert_awaited_once()
         self.mocks["entry"].assert_called_with("user_x")
 
 
@@ -436,12 +433,9 @@ class IdentityAndScopeTests(_Base):
 
     def test_not_signed_in(self) -> None:
         store.write_config("gmail")
-        self.mocks["known"].return_value = None
-        self.mocks["aaccount"].side_effect = RuntimeError("no token")
+        self.mocks["configured"].return_value = False
         self.assert_failed(self.run_(poller.poll_connection("gmail")), poller.NOT_SIGNED_IN)
         self.mocks["entry"].assert_not_called()
-        self.mocks["aaccount"].side_effect = None
-        self.mocks["aaccount"].return_value = ""
         self.assert_failed(self.run_(poller.poll_connection("gmail", force=True)), poller.NOT_SIGNED_IN)
         self.assert_failed(self.run_(poller.poll_connection("gmail", force=True, user_id=None)), poller.NOT_SIGNED_IN)
 
@@ -621,7 +615,7 @@ class RefreshAccountTests(_Base):
         self.assertEqual(self.refresh("figma")["error"], "no account lookup for figma yet")
         self.assertEqual(FakeSession.opened, [])
         self.mocks["call"].assert_not_awaited()
-        self.mocks["known"].assert_not_called()
+        self.mocks["userid"].assert_not_called()
 
     def test_twice_within_a_minute_answers_from_the_cache(self) -> None:
         self.mocks["call"].return_value = profile()
@@ -672,12 +666,11 @@ class RefreshAccountTests(_Base):
     def test_session_failures_answer_in_the_same_shape(self) -> None:
         store.remember_account("gmail", EMAIL, None,
                                now=datetime.now(timezone.utc) - timedelta(minutes=2))
-        self.mocks["known"].return_value = None
-        self.mocks["aaccount"].side_effect = RuntimeError("no token")
+        self.mocks["configured"].return_value = False
         out = self.refresh()
         self.assertEqual((out["error"], out["account_label"], out["cached"]), (poller.NOT_SIGNED_IN, EMAIL, False))
         self.mocks["entry"].assert_not_called()
-        self.mocks["known"].return_value = "user_x"
+        self.mocks["configured"].return_value = True
         self.mocks["scope"].return_value = ["notion"]
         self.assertEqual(self.refresh()["error"], "gmail is not turned on in this workspace")
         self.mocks["scope"].return_value = ["gmail"]
@@ -725,11 +718,11 @@ class TickTests(_Base):
         self.mocks["call"].return_value = envelope([message(1)], email=EMAIL)
         summary = self.run_(poller.poll_once())
         self.assertEqual(summary, {"configured": 3, "polled": 2, "skipped": 1, "errors": 0})
-        self.assertEqual(self.mocks["known"].call_count, 1, "identity resolved once per tick")
+        self.assertEqual(self.mocks["userid"].call_count, 1, "identity resolved once per tick")
         self.assertEqual(self.mocks["entry"].call_count, 2)
         self.assertFalse((self.root / ".quirq" / "connections" / "figma" / "state.json").exists())
         self.assertEqual(self.run_(poller.poll_once()), {"configured": 3, "polled": 0, "skipped": 3, "errors": 0})
-        self.assertEqual(self.mocks["known"].call_count, 1, "nothing due: no identity round trip")
+        self.assertEqual(self.mocks["userid"].call_count, 1, "nothing due: no identity resolution")
 
     def test_poll_once_counts_errors(self) -> None:
         store.write_config("gmail")
@@ -751,11 +744,9 @@ class TickTests(_Base):
 
     def test_poll_once_with_no_identity_records_the_error_per_connection(self) -> None:
         store.write_config("gmail")
-        self.mocks["known"].return_value = None
-        self.mocks["aaccount"].side_effect = RuntimeError("no token")
+        self.mocks["configured"].return_value = False
         self.assertEqual(self.run_(poller.poll_once()), {"configured": 1, "polled": 0, "skipped": 0, "errors": 1})
         self.assertEqual(store.read_state("gmail")["last_error"], poller.NOT_SIGNED_IN)
-        self.assertEqual(self.mocks["aaccount"].await_count, 1)
 
     def test_cancellation_propagates_and_releases_the_lock(self) -> None:
         store.write_config("gmail")
