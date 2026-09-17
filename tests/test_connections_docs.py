@@ -268,24 +268,15 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         dev = squash(read("DEVELOPING.md"))
         self.assertIn("COMPOSIO_BYO_API_KEY", dev)
         self.assertIn("Composio runs only when the user supplies their own", dev)
-        self.assertIn("or a 422 rejecting the id's value) never falls back", dev)
-        # the store ownership rule, in 10.1, the sessions.json row and 10.5
-        self.assertNotIn("A v4 store is never refused on ownership grounds", dev)
-        self.assertIn("a document carrying the retired `workspace_id` key and no `space_id` is treated as "
-                      "another space's (not adopted, its session queued for the boot sweep, replaced by the next write)", dev)
-        self.assertIn("A store stamped for another space, or with the retired `workspace_id` key only, is not adopted", dev)
-        self.assertIn("A v4 store stamped for another space is not adopted", dev)
-        self.assertIn("(`service.LEGACY_STAMP`)", dev)
-        self.assertIn("Only a store with no stamp at all is adopted", dev)
+        # no XO sign-in, and the store is stamped by the key's fingerprint
+        self.assertIn("There is no", dev)
+        self.assertIn("`backend`", dev)
         env = read(".env.example")
-        block = env[env.index("# This workspace's id at the swarm"): env.index("# XO_SPACE_ID=")]
+        block = env[env.index("# Composio (Gmail"): env.index("COMPOSIO_CALLBACK_URL=")]
         block = squash(re.sub(r"(?m)^#\s?", "", block))   # one comment block, read as prose
-        self.assertIn("and as `workspace_id` too, until xo-swarm-api #41", block)
-        self.assertIn("is a deploy gap, not a sign-in failure", block)
-        self.assertIn("answers 503 naming #41", block)
-        self.assertIn("A 422 rejecting the VALUE means this id is wrong", block)
-        self.assertIn("(or with the retired `workspace_id` key only) is ignored rather than adopted", block)
-        self.assertIsNone(DASHES.search(block))
+        self.assertIn("BRING YOUR OWN KEY", block)
+        self.assertIn("never sent to XO", block)
+        self.assertIn("COMPOSIO_BYO_API_KEY", block)
 
     def test_placement_rule_names_the_shared_space_modules(self) -> None:
         import importlib
