@@ -177,7 +177,7 @@ class ClientTests(_KeyBase):
                                       "headers": {"x-api-key": "sk_live"}})
 
 
-class ServiceBackendTests(_KeyBase):
+class ServiceBackendTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     def setUp(self) -> None:
         super().setUp()
         from services.cowork_agent.connectors.composio import service
@@ -236,6 +236,25 @@ class ServiceBackendTests(_KeyBase):
         byo_key.clear()
         with self.assertRaises(byo_client.ComposioKeyRequired):
             self.service.get_session("space-42")
+
+    def test_proxy_token_is_stable_and_0600(self) -> None:
+        first = self.service.proxy_token()
+        self.assertEqual(first, self.service.proxy_token())
+        self.assertEqual(stat.S_IMODE(self.sessions_path.stat().st_mode), 0o600)
+
+    async def test_proxy_token_survives_a_restart_and_resolves_offline(self) -> None:
+        token = self.service.proxy_token()
+        self._reset()
+        self.assertEqual(
+            await self.service.account_for_proxy_token(token), byo_key.user_id())
+
+    def test_empty_proxy_token_resolves_to_nobody(self) -> None:
+        self.assertIsNone(self.service.account_for_proxy_token_local(""))
+
+    def test_proxy_url_carries_the_token_and_port(self) -> None:
+        with patch.dict(os.environ, {"PORT": "5010"}):
+            url = self.service._composio_proxy_url()
+        self.assertIn("http://127.0.0.1:5010/mcp/composio-proxy/u/", url)
 
 
 def _req(headers=None):
