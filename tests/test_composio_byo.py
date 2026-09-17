@@ -1,0 +1,181 @@
+"""Bring-your-own-key Composio: local key store and SDK client.
+
+Hermetic: the key file is redirected into a temp dir, the lock root points at the
+temp dir, and no ambient COMPOSIO_BYO_API_KEY from the developer's shell leaks in.
+"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from services.cowork_agent.connectors.composio import byo_key
+from services.cowork_agent.connectors.composio import client as byo_client
+
+
+def _sdk_stub(**resources) -> SimpleNamespace:
+    return SimpleNamespace(**resources)
+
+
+class _KeyBase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        tmp = Path(self._tmp.name)
+        self.key_path = tmp / "composio" / "api_key.json"
+        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(tmp / "quirq")}, clear=False)
+        env.start(); self.addCleanup(env.stop)
+        os.environ.pop(byo_key.ENV_VAR, None)
+        self.addCleanup(lambda: os.environ.pop(byo_key.ENV_VAR, None))
+        p = patch.object(byo_key, "_KEY_PATH", self.key_path)
+        p.start(); self.addCleanup(p.stop)
+        # A key change must not be masked by the memoised SDK client.
+        byo_client._sdk_client = None
+        byo_client._sdk_key = ""
+        self.addCleanup(lambda: setattr(byo_client, "_sdk_client", None))
+
+
+class SourceTests(_KeyBase):
+    def test_unset_by_default(self) -> None:
+        self.assertEqual(byo_key.api_key(), "")
+        self.assertIsNone(byo_key.source())
+        self.assertFalse(byo_key.configured())
+
+    def test_file_key_is_read(self) -> None:
+        byo_key.save("sk_file")
+        self.assertEqual(byo_key.api_key(), "sk_file")
+        self.assertEqual(byo_key.source(), "file")
+
+    def test_env_beats_file(self) -> None:
+        byo_key.save("sk_file")
+        with patch.dict(os.environ, {byo_key.ENV_VAR: "sk_env"}):
+            self.assertEqual(byo_key.api_key(), "sk_env")
+            self.assertEqual(byo_key.source(), "env")
+
+    def test_require_raises_when_unset(self) -> None:
+        with self.assertRaises(byo_key.ComposioKeyRequired):
+            byo_key.require()
+
+    def test_user_id_defaults_then_reads_space_env(self) -> None:
+        with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
+            self.assertEqual(byo_key.user_id(), byo_key.DEFAULT_USER_ID)
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertEqual(byo_key.user_id(), "space-42")
+
+
+class FileTests(_KeyBase):
+    def test_saved_file_is_0600_and_has_a_fingerprint(self) -> None:
+        byo_key.save("sk_secret")
+        self.assertEqual(stat.S_IMODE(self.key_path.stat().st_mode), 0o600)
+        data = json.loads(self.key_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["api_key"], "sk_secret")
+        self.assertEqual(data["key_fingerprint"], byo_key.fingerprint("sk_secret"))
+        self.assertEqual(data["auth_configs"], {})
+
+    def test_changing_the_key_resets_the_auth_config_cache(self) -> None:
+        byo_key.save("sk_one")
+        byo_key.save_auth_config("gmail", "ac_1")
+        self.assertEqual(byo_key.load_auth_configs(), {"gmail": "ac_1"})
+        byo_key.save("sk_two")
+        self.assertEqual(byo_key.load_auth_configs(), {})
+
+    def test_auth_config_cache_ignored_when_fingerprint_mismatches_env(self) -> None:
+        byo_key.save("sk_file")
+        byo_key.save_auth_config("gmail", "ac_file")
+        with patch.dict(os.environ, {byo_key.ENV_VAR: "sk_env"}):
+            self.assertEqual(byo_key.load_auth_configs(), {})
+
+    def test_clear_removes_the_file(self) -> None:
+        byo_key.save("sk_x")
+        byo_key.clear()
+        self.assertFalse(self.key_path.exists())
+        self.assertEqual(byo_key.api_key(), "")
+
+
+class ClientTests(_KeyBase):
+    def setUp(self) -> None:
+        super().setUp()
+        byo_key.save("sk_live")
+
+    def test_no_key_raises_before_touching_the_sdk(self) -> None:
+        byo_key.clear()
+        with patch.object(byo_client, "_sdk") as sdk:
+            with self.assertRaises(byo_client.ComposioKeyRequired):
+                byo_client.list_connections()
+        sdk.assert_not_called()
+
+    def test_list_connections_scopes_to_this_user_and_shapes_rows(self) -> None:
+        row = SimpleNamespace(
+            id="ca_1", toolkit=SimpleNamespace(slug="gmail"), status="ACTIVE",
+            auth_scheme="OAUTH2", alias=None, created_at="2026-01-01T00:00:00Z",
+            is_disabled=False,
+        )
+        ca = MagicMock()
+        ca.list.return_value = SimpleNamespace(items=[row])
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            out = byo_client.list_connections(statuses=["ACTIVE"])
+        self.assertEqual(ca.list.call_args.kwargs["user_ids"], [byo_key.user_id()])
+        self.assertEqual(out, [{
+            "toolkit": "GMAIL", "connected_account_id": "ca_1", "status": "ACTIVE",
+            "scheme": "OAUTH2", "alias": None, "created_at": "2026-01-01T00:00:00Z",
+            "is_disabled": False,
+        }])
+
+    def test_a_rejected_key_is_authoritative(self) -> None:
+        import composio_client
+        ca = MagicMock()
+        ca.list.side_effect = composio_client.AuthenticationError.__new__(
+            composio_client.AuthenticationError
+        )
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            with self.assertRaises(byo_client.ComposioError) as raised:
+                byo_client.list_connections()
+        self.assertTrue(raised.exception.authoritative)
+
+    def test_disconnect_not_owned_is_not_found(self) -> None:
+        ca = MagicMock()
+        ca.list.return_value = SimpleNamespace(items=[])
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            with self.assertRaises(byo_client.ComposioNotFound):
+                byo_client.disconnect("ca_other")
+        ca.delete.assert_not_called()
+
+    def test_auth_config_for_reuses_a_cached_enabled_config(self) -> None:
+        byo_key.save_auth_config("gmail", "ac_cached")
+        with patch.object(byo_client, "_sdk") as sdk:
+            self.assertEqual(byo_client.auth_config_for("gmail"), "ac_cached")
+        sdk.assert_not_called()
+
+    def test_auth_config_for_lists_then_creates_managed(self) -> None:
+        acfg = MagicMock()
+        acfg.list.return_value = SimpleNamespace(items=[])
+        acfg.create.return_value = SimpleNamespace(id="ac_new")
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(auth_configs=acfg)):
+            self.assertEqual(byo_client.auth_config_for("gmail"), "ac_new")
+        acfg.create.assert_called_once()
+        self.assertEqual(byo_key.load_auth_configs()["gmail"], "ac_new")
+
+    def test_create_session_addresses_this_user_and_returns_url_and_headers(self) -> None:
+        session = SimpleNamespace(
+            session_id="trs_1",
+            mcp=SimpleNamespace(url="https://mcp.example/s",
+                                headers={"x-api-key": "sk_live"}),
+        )
+        sdk = MagicMock()
+        sdk.create.return_value = session
+        with patch.object(byo_client, "_sdk", return_value=sdk):
+            out = byo_client.create_session({"toolkits": {"enable": ["gmail"]}, "tools": {}})
+        self.assertEqual(sdk.create.call_args.kwargs["user_id"], byo_key.user_id())
+        self.assertTrue(sdk.create.call_args.kwargs["mcp"])
+        self.assertEqual(out["session_id"], "trs_1")
+        self.assertEqual(out["mcp"], {"url": "https://mcp.example/s",
+                                      "headers": {"x-api-key": "sk_live"}})
+
+
+if __name__ == "__main__":
+    unittest.main()
