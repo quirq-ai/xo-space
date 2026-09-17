@@ -69,7 +69,14 @@ async def put_api_key(body: ApiKeyBody, request: Request) -> JSONResponse:
             raise HTTPException(status_code=422, detail="Composio rejected this API key.")
         raise HTTPException(status_code=502, detail=str(exc))
     composio_service.invalidate_session()
-    composio_service.kick_gateway_sweep()
+    # Install the agent MCP gateway now, synchronously, so the agent can reach
+    # Composio without a restart. kick_gateway_sweep() alone is fire-and-forget and
+    # rate-limited, which left a gap right after the first key save; install_gateways
+    # is idempotent and single-flight, so forcing it here is safe.
+    try:
+        await composio_service.install_gateways(announce=False)
+    except Exception as exc:  # noqa: BLE001 — the key is saved; a sweep hiccup is non-fatal
+        log.warning("composio: gateway install after key save failed: %s", exc)
     return JSONResponse({"key_configured": True, "key_source": byo_key.source()})
 
 

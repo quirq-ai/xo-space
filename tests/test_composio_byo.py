@@ -322,8 +322,9 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_put_key_validates_and_saves(self) -> None:
         from routers.cowork_agent.connectors import composio as r
         from services.cowork_agent.connectors.composio import client as c
+        from unittest.mock import AsyncMock
         with patch.object(c, "_sdk") as sdk, \
-                patch.object(r.composio_service, "kick_gateway_sweep"), \
+                patch.object(r.composio_service, "install_gateways", new=AsyncMock()), \
                 patch.object(r.composio_service, "invalidate_session"):
             sdk.return_value.auth_configs.list.return_value = SimpleNamespace(items=[])
             resp = await r.put_api_key(r.ApiKeyBody(api_key="sk_live"), _req())
