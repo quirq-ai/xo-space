@@ -54,6 +54,7 @@ let listener=null;
 let filter='';
 let nativeConnectors=null;
 let keyState={mode:'inactive',key_source:null};   /* GET /api/connectors/composio/backend */
+let keyReplacing=false;   /* Replace pressed: show the input over a configured key */
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -132,12 +133,17 @@ function renderShell(){
 function bindEvents(){
   root.querySelector('#conn-refresh').addEventListener('click',refreshAll);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
-  root.querySelector('#conn-key').addEventListener('click',ev=>{
+  const keyEl=root.querySelector('#conn-key');
+  keyEl.addEventListener('click',ev=>{
     const b=ev.target.closest('button[data-action]');
     if(!b)return;
     if(b.dataset.action==='key-save')saveKey();
     else if(b.dataset.action==='key-remove')removeKey();
-    else if(b.dataset.action==='key-replace'){keyState={mode:'inactive',key_source:null};renderKeyPanel();}
+    else if(b.dataset.action==='key-replace'){keyReplacing=true;renderKeyPanel();}
+    else if(b.dataset.action==='key-cancel'){keyReplacing=false;renderKeyPanel();}
+  });
+  keyEl.addEventListener('keydown',ev=>{
+    if(ev.key==='Enter'&&ev.target.id==='conn-key-input'){ev.preventDefault();saveKey();}
   });
   if(!listener){
     listener=onAuthMessage;
@@ -183,25 +189,49 @@ async function loadAll(){
   }
 }
 
+const KEY_ICON='<span class="conn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" '
+  +'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+  +'<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-4 0 2 2"/></svg></span>';
+
 function renderKeyPanel(){
   const el=root.querySelector('#conn-key');
   if(!el)return;
-  if(keyState.mode==='local'){
-    const src=keyState.key_source==='env'?'environment':'file';
-    el.innerHTML='<div class="conn-key-row"><span>Composio API key: <b>Configured</b> (from '
-      +esc(src)+')</span>'
-      +(keyState.key_source==='env'?''
-        :'<span><button type="button" data-action="key-replace">Replace</button>'
-          +'<button type="button" data-action="key-remove">Remove</button></span>')
+  const configured=keyState.mode==='local';
+  const fromEnv=keyState.key_source==='env';
+  const showInput=!configured||keyReplacing;
+
+  const pill=configured
+    ? '<span class="conn-state is-good">Configured</span>'
+    : '<span class="conn-state is-pending">Not set</span>';
+
+  const sub=configured
+    ? 'Connectors are active. Key held on this machine only'
+      +(fromEnv?', from <code>COMPOSIO_BYO_API_KEY</code>.':', in a private file.')
+    : 'Add your Composio API key to activate connectors. It is stored only on this '
+      +'machine and never sent to XO.';
+
+  let form='';
+  if(showInput){
+    form='<div class="conn-key-form">'
+      +'<input type="password" id="conn-key-input" autocomplete="off" spellcheck="false" '
+      +'placeholder="Paste your Composio API key">'
+      +'<button type="button" class="conn-primary" data-action="key-save">Save key</button>'
+      +(keyReplacing?'<button type="button" class="conn-secondary" data-action="key-cancel">Cancel</button>':'')
       +'</div>';
-  }else{
-    el.innerHTML='<div class="conn-key-row"><label>Composio API key '
-      +'<input type="password" id="conn-key-input" autocomplete="off" '
-      +'placeholder="Paste your Composio API key"></label>'
-      +'<button type="button" data-action="key-save">Save</button></div>'
-      +'<p class="conn-key-note">Add your Composio API key to activate connectors. '
-      +'It is stored only on this machine and never sent to XO.</p>';
+  }else if(configured&&!fromEnv){
+    form='<div class="conn-key-form">'
+      +'<button type="button" class="conn-secondary" data-action="key-replace">Replace</button>'
+      +'<button type="button" class="conn-secondary is-danger" data-action="key-remove">Remove</button>'
+      +'</div>';
   }
+
+  el.className='conn-key'+(configured?' is-set':'');
+  el.innerHTML='<div class="conn-key-head">'+KEY_ICON
+    +'<div class="conn-key-text"><h4>Composio API key</h4><p>'+sub+'</p></div>'
+    +pill+'</div>'+form;
+
+  const input=el.querySelector('#conn-key-input');
+  if(input&&showInput)input.focus();
 }
 
 async function saveKey(){
@@ -215,6 +245,7 @@ async function saveKey(){
     return;
   }
   setAlert(null);
+  keyReplacing=false;
   toast('Composio API key saved');
   await refreshAll();
 }

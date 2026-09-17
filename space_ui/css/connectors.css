@@ -35,6 +35,27 @@
 .conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
 .conn-alert.is-error span{color:var(--err)}
 
+/* Composio API key panel (bring your own key): the gate above the toolkit grid.
+   Reuses the card surface, the .conn-state pill and the .conn-primary/.conn-secondary
+   buttons so it reads as part of the same section. */
+.conn-key{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px}
+.conn-key.is-set{border-color:rgba(168,217,79,.24)}
+.conn-key-head{display:flex;align-items:flex-start;gap:12px}
+.conn-key-head .conn-icon{flex:0 0 36px;color:var(--ink-2)}
+.conn-key.is-set .conn-key-head .conn-icon{color:var(--accent)}
+.conn-key-text{flex:1;min-width:0}
+.conn-key-text h4{margin:0;font:600 14px/1.35 var(--sans);color:var(--ink)}
+.conn-key-text p{margin:4px 0 0;font-size:12px;line-height:1.5;color:var(--ink-3);overflow-wrap:anywhere}
+.conn-key-text code{font:500 11px var(--mono);color:var(--ink-2)}
+.conn-key-head .conn-state{flex:none}
+.conn-key-form{display:flex;gap:8px;margin-top:13px;flex-wrap:wrap;align-items:center}
+.conn-key-form input{
+  flex:1;min-width:200px;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+  background:var(--bg);color:var(--ink);font:400 13px/1.4 var(--sans)
+}
+.conn-key-form input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.conn-key-form .conn-primary,.conn-key-form .conn-secondary{flex:none}
+
 .conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:start}
 
 .conn-card{display:flex;flex-direction:column;min-width:0;min-height:220px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
