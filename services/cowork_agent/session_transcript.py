@@ -12,7 +12,9 @@ Rules (see tests/test_session_transcript.py):
 - consecutive assistant messages merge into one bubble (a turn that ran
   tools is several records in the store), keeping the first record's id;
 - bubbles left empty by the rules above are removed;
-- the title is the session's, cut to TITLE_MAX characters on a word boundary.
+- the title is the session's, cut to TITLE_MAX characters on a word boundary;
+  when the session has no list row (or only the list's placeholder title) it
+  is the first line of the first user message, cut the same way.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.sessions_io import find_session_backend, load_all_sessions
 
 TITLE_MAX = 50
+UNTITLED = "Untitled Session"   # sessions_io's placeholder until a title is derived
 
 
 class SessionNotFound(LookupError):
@@ -82,14 +85,30 @@ def build_transcript(title: str, messages: list[dict], *, include_tools: bool = 
 
 
 def load_transcript(session_id: str, *, include_tools: bool = False) -> dict:
-    """The transcript of a known session; SessionNotFound otherwise. Reads
-    messages through the owning adapter's sessions capability, exactly as
-    GET /api/messages does."""
-    session = next((s for s in load_all_sessions() if s.get("id") == session_id), None)
-    if session is None:
-        raise SessionNotFound(session_id)
+    """The transcript of a session; SessionNotFound when nothing knows the id.
+
+    A session exists here exactly when it exists for GET /api/messages: the
+    owning backend is resolved with `find_session_backend` (which looks across
+    every backend's store) and the messages come from that adapter's sessions
+    capability. The session *list* is consulted only for the title. It must not
+    gate existence: `load_all_sessions()` returns the ACTIVE backend's sessions
+    only, so a session owned by another backend, or one the index has not
+    caught up with, has messages but no list row.
+    """
     backend = find_session_backend(session_id)
     mod = try_load_capability("sessions", agent=backend) if backend else None
     fn = getattr(mod, "get_messages", None) if mod else None
     messages = fn(session_id) if fn else []
-    return build_transcript(session.get("title") or "", messages, include_tools=include_tools)
+
+    session = next((s for s in load_all_sessions() if s.get("id") == session_id), None)
+    if session is None and backend is None and not messages:
+        raise SessionNotFound(session_id)
+
+    transcript = build_transcript((session or {}).get("title") or "", messages,
+                                  include_tools=include_tools)
+    if transcript["title"] in ("", UNTITLED):
+        # no list row, or the list's placeholder: title it from the first prompt
+        first = next((b["content"] for b in transcript["messages"] if b["role"] == "user"), "")
+        derived = truncate_title(first.strip().splitlines()[0]) if first.strip() else ""
+        transcript["title"] = derived or transcript["title"]
+    return transcript
