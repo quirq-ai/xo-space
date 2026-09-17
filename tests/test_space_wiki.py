@@ -203,23 +203,17 @@ class SpaceWikiTests(unittest.TestCase):
         view = (
             ROOT / "space_ui" / "js" / "views" / "connectors.js"
         ).read_text(encoding="utf-8")
-        session = (
-            ROOT / "space_ui" / "js" / "core" / "session.js"
-        ).read_text(encoding="utf-8")
 
         self.assertIn("import connectorsView from './views/connectors.js?v=", app)
         self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
         self.assertIn('href="css/connectors.css?v=', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 
-        # The Composio routes 401 without an identity, so every call must carry
-        # the session header. A view that quietly stopped sending it would show
-        # "sign in" forever.
-        self.assertIn("sessionHeaders()", view)
-        self.assertIn("X-XO-Session", session)
-        # The opaque id is per-tab: persisting it would outlive the server-side
-        # session table, which is in-memory and dies with the process.
-        self.assertNotIn("localStorage", session)
+        # BYO key: connectors run on the user's own Composio key, with no XO session.
+        # The view reads the mode from /backend and sends no session header.
+        self.assertIn("'/backend'", view)
+        self.assertNotIn("sessionHeaders", view)
+        self.assertNotIn("core/session.js", view)
 
         # The callback page posts to "*", so the origin check is what stops any
         # other page forging a completion message.

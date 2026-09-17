@@ -197,7 +197,7 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         # the same pins test_space_wiki keeps, restated here so this feature
         # cannot be the change that breaks them
         self.assertIn("id:'connectors',label:'Connectors'", self.view)
-        self.assertIn("sessionHeaders()", self.view)
+        self.assertNotIn("sessionHeaders", self.view)
         self.assertIn("event.origin!==location.origin", self.view)
         self.assertIn("connector-auth-complete", self.view)
         self.assertIn("connection_request_id=", self.view)
@@ -267,9 +267,9 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         for call in calls:
             self.assertNotIn("sessionHeaders", call)
             self.assertNotIn("headers", call)
-        # the Composio routes still carry it
+        # BYO key: the Composio routes carry no session header either
         self.assertIn("const BASE=API_BASE+'/api/connectors/composio';", self.view)
-        self.assertIn("apiFetch(BASE+'/toolkits',{headers:sessionHeaders()})", self.view)
+        self.assertIn("apiFetch(BASE+'/toolkits')", self.view)
 
     def test_save_sends_the_three_fields_and_disables_while_in_flight(self) -> None:
         save = slice_between(self.view, "async function savePolling(", "async function pollNow(")
@@ -356,7 +356,7 @@ class CacheBusterTests(unittest.TestCase):
         self.assertIn(
             "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260916-jobs3';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260917-byok1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
