@@ -177,5 +177,66 @@ class ClientTests(_KeyBase):
                                       "headers": {"x-api-key": "sk_live"}})
 
 
+class ServiceBackendTests(_KeyBase):
+    def setUp(self) -> None:
+        super().setUp()
+        from services.cowork_agent.connectors.composio import service
+        self.service = service
+        byo_key.save("sk_live")
+        self._sp = tempfile.TemporaryDirectory(); self.addCleanup(self._sp.cleanup)
+        self.sessions_path = Path(self._sp.name) / "sessions.json"
+        for p in (patch.object(service, "_SESSIONS_PATH", self.sessions_path),
+                  patch.object(service, "_LEGACY_SESSIONS_PATHS", ()),
+                  patch.dict(os.environ, {"XO_SPACE_ID": "space-42"})):
+            p.start(); self.addCleanup(p.stop)
+        self._reset()
+        self.addCleanup(self._reset)
+
+    def _reset(self) -> None:
+        s = self.service
+        s._SESSIONS_LOADED = False
+        s._PROXY_TOKENS.clear()
+        s._SESSION_ID = None
+        s._STORE_ACCOUNT = None
+        s._ORPHANED_SESSION_IDS.clear()
+
+    def test_store_records_the_backend_stamp_and_the_local_user(self) -> None:
+        self.service.proxy_token()
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 5)
+        self.assertEqual(data["backend"], "local:" + byo_key.fingerprint("sk_live"))
+        self.assertEqual(data["account_id"], "space-42")
+
+    def test_a_v4_store_is_discarded_but_keeps_proxy_tokens(self) -> None:
+        self.sessions_path.write_text(json.dumps({
+            "version": 4, "space_id": "space-42", "account_id": "old",
+            "session": "trs_old", "proxy_tokens": ["keep-me"],
+        }), encoding="utf-8")
+        self._reset()
+        # The token survives; the org-project session does not.
+        self.assertEqual(self.service.proxy_token(), "keep-me")
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["version"], 5)
+        self.assertIsNone(data["session"])
+        self.assertEqual(data["proxy_tokens"], ["keep-me"])
+        self.assertIn("trs_old", self.service._ORPHANED_SESSION_IDS)
+
+    def test_a_session_from_another_key_is_dropped_tokens_kept(self) -> None:
+        self.sessions_path.write_text(json.dumps({
+            "version": 5, "backend": "local:deadbeefdeadbeef", "account_id": "space-42",
+            "session": "trs_otherkey", "proxy_tokens": ["tok-a"],
+        }), encoding="utf-8")
+        self._reset()
+        self.service._ensure_sessions_loaded()
+        self.assertIn("tok-a", self.service._PROXY_TOKENS)
+        self.assertIsNone(self.service._SESSION_ID)
+        self.assertIn("trs_otherkey", self.service._ORPHANED_SESSION_IDS)
+
+    def test_no_key_makes_get_session_raise_key_required(self) -> None:
+        byo_key.clear()
+        with self.assertRaises(byo_client.ComposioKeyRequired):
+            self.service.get_session("space-42")
+
+
 if __name__ == "__main__":
     unittest.main()
