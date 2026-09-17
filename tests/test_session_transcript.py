@@ -90,7 +90,38 @@ class TranscriptRouteTests(unittest.TestCase):
         self.assertIn("[Bash] ls -la", with_tools["messages"][1]["content"])
 
     def test_unknown_session_is_404(self) -> None:
-        with patch.object(st, "load_all_sessions", return_value=[]):
+        # nothing knows the id: no backend owns it, no messages, no list row
+        with patch.object(st, "load_all_sessions", return_value=[]), \
+             patch.object(st, "find_session_backend", return_value=None):
             r = self.client.get("/api/sessions/nope/transcript")
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.json(), {"detail": "Session not found"})
+
+    def test_a_session_missing_from_the_list_still_has_a_transcript(self) -> None:
+        """The regression: `load_all_sessions()` lists the ACTIVE backend's
+        sessions only, so a session another backend owns (or one the index has
+        not caught up with) has messages and no list row. GET /api/messages
+        serves it; the transcript must too, titled from the first prompt."""
+        messages_of = type("M", (), {"get_messages": staticmethod(lambda sid: RECORD)})
+        with patch.object(st, "load_all_sessions", return_value=[]), \
+             patch.object(st, "find_session_backend", return_value="other-backend"), \
+             patch.object(st, "try_load_capability", return_value=messages_of):
+            r = self.client.get(f"/api/sessions/{SID}/transcript")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["title"], "Summarize what this project is")
+        self.assertEqual([m["role"] for m in body["messages"]], ["user", "assistant"])
+
+    def test_the_placeholder_title_is_replaced_by_the_first_prompt(self) -> None:
+        messages_of = type("M", (), {"get_messages": staticmethod(lambda sid: RECORD)})
+        with patch.object(st, "load_all_sessions", return_value=[{"id": SID, "title": "Untitled Session"}]), \
+             patch.object(st, "find_session_backend", return_value="x"), \
+             patch.object(st, "try_load_capability", return_value=messages_of):
+            body = self.client.get(f"/api/sessions/{SID}/transcript").json()
+        self.assertEqual(body["title"], "Summarize what this project is")
+
+    def test_a_listed_session_with_no_messages_yet_is_an_empty_transcript_not_a_404(self) -> None:
+        with patch.object(st, "load_all_sessions", return_value=[{"id": SID, "title": "Fresh"}]), \
+             patch.object(st, "find_session_backend", return_value=None):
+            r = self.client.get(f"/api/sessions/{SID}/transcript")
+        self.assertEqual((r.status_code, r.json()), (200, {"title": "Fresh", "messages": []}))
