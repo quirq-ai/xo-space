@@ -89,15 +89,17 @@ try{
   assert.equal(await page.locator('[data-act="conns-toggle"]').getAttribute('aria-expanded'),'true');
   assert.equal(await page.locator('.inb-items-page').isVisible(),false);
   await inboxPage('jobs').click();await initial.arrived.promise;
-  assert.match(await page.locator('.inb-jobs').textContent(),/Loading scheduled jobs/);
+  assert.match(await page.locator('.inb-jobs').textContent(),/Loading jobs/);
   assert.equal(await page.locator('.inb-connections-page').isVisible(),false);
   assert.equal(await page.locator('#view-search').isVisible(),false,'Item search is absent from Jobs');
-  initial.release.resolve();await expectCount(4);await settled();
-  assert.equal(await page.locator('[data-job-id="manual"]').count(),0);
-  assert.match(await item('half-minute').textContent(),/Every 30 s/);
-  assert.match(await item('ninety-seconds').textContent(),/Every 90 s[\s\S]*Disabled[\s\S]*failed/);
-  assert.match(await item('hourly').textContent(),/Every 1 h[\s\S]*Running/);
-  assert.match(await item('daily').textContent(),/Every 1 d/);
+  initial.release.resolve();await expectCount(5);await settled();
+  assert.match(await item('manual').textContent(),/One time[\s\S]*Runs when you click Run now/,'Manual jobs are listed');
+  assert.doesNotMatch(await item('manual').textContent(),/Next due/);
+  assert.match(await item('half-minute').textContent(),/Repeating[\s\S]*Every 30 seconds/);
+  assert.match(await item('ninety-seconds').textContent(),/Every 90 seconds[\s\S]*Paused[\s\S]*Failed/);
+  assert.match(await item('hourly').textContent(),/Every hour at :\d\d[\s\S]*Running/);
+  assert.equal(await item('hourly').locator('[data-act="job-run"]').isDisabled(),true,'A running job cannot be started again');
+  assert.match(await item('daily').textContent(),/Every day at \d\d:\d\d/);
   assert.match(await item('half-minute').textContent(),/Next due/);
   assert.equal(await page.evaluate(()=>document.querySelector('[data-act="toggle"][data-id="release"]')===window.retainedInboxHead),true);
   jobs.find(job=>job.id==='hourly').running=false;
@@ -112,7 +114,7 @@ try{
   assert.equal(await page.locator('.inb-row').count(),1);
   assert.equal(await page.locator('.inb-sum').textContent(),countSummary);
   await inboxPage('jobs').click();await settled();
-  assert.equal(await rows.count(),4,'Item query does not filter Jobs');
+  assert.equal(await rows.count(),5,'Item query does not filter Jobs');
 
   jobs.find(job=>job.id==='half-minute').name='Stale schedule response';
   const slow=holdList=gate();await refresh();await slow.arrived.promise;
@@ -125,12 +127,12 @@ try{
   failure='Scheduler temporarily unavailable <img src=x>';
   await refresh();await settled();
   assert.match(await page.locator('.inb-jobs-state.is-error').textContent(),/showing the last good read/);
-  assert.equal(await rows.count(),4);assert.equal(await page.locator('.inb-jobs img').count(),0);
-  failure=null;jobs=seeded.filter(job=>job.every_seconds==null);
+  assert.equal(await rows.count(),5);assert.equal(await page.locator('.inb-jobs img').count(),0);
+  failure=null;jobs=[];
   await refresh();await settled();await expectCount(0);
-  assert.match(await page.locator('.inb-jobs').textContent(),/No scheduled jobs/);
+  assert.match(await page.locator('.inb-jobs').textContent(),/No jobs yet/);
   jobs=structuredClone(seeded);jobs.find(job=>job.id==='hourly').running=false;
-  await refresh();await expectCount(4);await settled();
+  await refresh();await expectCount(5);await settled();
 
   const away=holdList=gate();await refresh();await away.arrived.promise;
   await page.locator('#wiki-link').click();
@@ -184,16 +186,16 @@ try{
   await page.reload({waitUntil:'networkidle'});
   await settled();
   assert.equal(await page.locator('.inb-row').count(),0,'A Jobs deep link does not fetch Items');
-  assert.match(await page.locator('.inb-jobs-state.is-error').textContent(),/Could not load scheduled jobs/);
+  assert.match(await page.locator('.inb-jobs-state.is-error').textContent(),/Could not load jobs/);
   assert.doesNotMatch(await page.locator('.inb-jobs').textContent(),/showing the last good read/);
   assert.equal(await rows.count(),0);
   await inboxPage('items').click();await page.locator('.inb-row').first().waitFor();
   assert.equal(await page.locator('.inb-row').count(),2,'Items remains available when Jobs fails');
   await inboxPage('jobs').click();await settled();
-  failure=null;await refresh();await settled();await expectCount(4);
+  failure=null;await refresh();await settled();await expectCount(5);
   assert.ok(reads.some(read=>read.path==='/api/schedules/half-minute/runs'));
   }else{
-    await expectCount(4);await settled();
+    await expectCount(5);await settled();
   }
 
   /* Publication captures use readable fictional output; the adversarial
@@ -222,7 +224,7 @@ try{
   await page.waitForTimeout(600); /* allow the view's opacity transition to settle */
   await page.screenshot({path:resolve(output,'pr-setup-commands.png')});
   assert.deepEqual(errors,[]);
-  console.log(captureOnly?'Captured fictional Inbox Jobs, shared Results and Setup Commands.':'Inbox Jobs: scheduled-only rows, precise intervals, independent loading, 3s/30s polls, refresh/reentry races, retained focus/expansion/search, empty/error states and shared Results pass at1440/390/320px.');
+  console.log(captureOnly?'Captured fictional Inbox Jobs, shared Results and Setup Commands.':'Inbox Jobs: scheduled and manual rows, plain-language schedules, independent loading, 3s/30s polls, refresh/reentry races, retained focus/expansion/search, empty/error states and shared Results pass at1440/390/320px.');
 }catch(error){
   await page.screenshot({path:resolve(output,'failure.png')});throw error;
 }finally{

@@ -201,7 +201,7 @@ try{
   assert.equal(await page.locator('#runtime-interval').isVisible(),true,'Search reveals the advanced activity control in Intelligence');
   assert.equal(await page.locator('#runtime-interval').evaluate(node=>node===document.activeElement),true);
   assert.equal(await page.locator('#view-search').inputValue(),'');
-  await choose('commands');assert.match(await page.locator('#command-list').textContent(),/No commands yet/);
+  await choose('commands');assert.match(await page.locator('#command-list').textContent(),/No jobs yet/);
   await choose('server');await choose('workspace');
   assert.deepEqual(writes,[],'Navigation and Next never save, run commands or restart');
 

@@ -898,14 +898,11 @@ class ShellTests(unittest.TestCase):
         # Trends absorbing Tools and Models changed navigation.js, so every
         # importer of the vocabulary moved to the agents stamp.
         agents_stamp = "20260915-agents2"
-        for view in ("tree", "inbox", "sharing", "projects", "inbox-activity", "project-manage"):
+        for view in ("tree", "sharing", "projects", "inbox-activity", "project-manage"):
             self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
-        for view in ("wiki", "quirq"):
-            self.assertIn("./views/" + view + ".js?v=20260915-data1'", app)
-        # the Cmd+K palette landed alongside
-        self.assertIn("./core/command-palette.js?v=20260915-cmdk4'", app)
+        self.assertIn("./views/quirq.js?v=20260915-data1'", app)
         # The typography pass (Inter, readable small text) restamped every file
         # it changed on top of development.
         type_stamp = "20260915-typesync1"
@@ -913,18 +910,28 @@ class ShellTests(unittest.TestCase):
         # Restoring the footer (and dropping the graph's duplicate counts line)
         # moved these again; toolbar.js is back to development's copy.
         footer_stamp = "20260915-footer1"
-        for module in ("views/sessions", "views/atlas", "views/setup"):
+        for module in ("views/sessions", "views/atlas"):
             self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
         self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         self.assertIn("./views/connectors.js?v=20260914-setupapps1'", app)
         html = read("index.html")
         for sheet in ("projects", "project-management", "inbox-activity",
-                      "inbox", "setup", "connectors", "sessions", "shadcn", "command-palette"):
+                      "connectors", "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
         for sheet in ("base", "chrome", "graph", "preview", "navigation"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
+        # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
+        # with Run now in Inbox) restamped the files it changed.
+        jobs_stamp = "20260916-jobs3"
+        for module in ("views/inbox", "views/setup", "views/wiki", "core/command-palette"):
+            self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
+        # its calendar landed in the shared shadcn styles
+        for sheet in ("inbox", "shadcn"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
+        # the radio focus fix restamped the Setup styles once more
+        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

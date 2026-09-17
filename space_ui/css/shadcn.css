@@ -323,6 +323,33 @@
 [data-slot="chart-legend-item"]{display:flex;align-items:center;gap:6px}
 [data-slot="chart-legend-indicator"]{width:8px;height:8px;flex:none;border-radius:2px;background:var(--color-bg)}
 
+/* ---------------- calendar ---------------- */
+/* calendar.tsx: root p-3 [--cell-size:--spacing(8)] bg-background, transparent
+   inside a card or popover; nav absolute inset-x-0 top-0 with size-(--cell-size)
+   ghost buttons; caption h-(--cell-size) centred, text-sm font-medium; weekday
+   flex-1 text-[0.8rem] muted; week mt-2 flex; day button aspect-square
+   min-w-(--cell-size) font-normal; today bg-accent rounded-md; selected
+   bg-primary; outside muted; disabled opacity-50. The dot marks days a caller
+   flags (not in shadcn). */
+[data-slot="calendar"]{--cell-size:32px;position:relative;width:fit-content;padding:12px;background:var(--background);color:var(--foreground);user-select:none}
+[data-slot="card-content"] [data-slot="calendar"],[data-slot="popover-content"] [data-slot="calendar"]{background:transparent}
+[data-slot="calendar-nav"]{position:absolute;top:12px;left:12px;right:12px;display:flex;align-items:center;justify-content:space-between;gap:4px}
+[data-slot="calendar-nav"] .ui-btn{width:var(--cell-size);height:var(--cell-size);padding:0}
+[data-slot="calendar-caption"]{display:flex;align-items:center;justify-content:center;height:var(--cell-size);padding:0 var(--cell-size);font:500 13px var(--sans)}
+[data-slot="calendar-grid"]{display:block;width:100%;margin-top:16px;border-collapse:collapse}
+[data-slot="calendar-grid"] thead,[data-slot="calendar-grid"] tbody{display:block}
+[data-slot="calendar-weekdays"],[data-slot="calendar-week"]{display:flex;width:100%}
+[data-slot="calendar-week"]{margin-top:8px}
+[data-slot="calendar-weekday"]{flex:1;min-width:var(--cell-size);padding:0;border-radius:var(--radius);font:400 12.8px var(--sans);color:var(--muted-foreground);text-align:center}
+[data-slot="calendar-day"]{position:relative;flex:1;padding:0;text-align:center}
+[data-slot="calendar-day-button"].ui-btn{position:relative;width:100%;min-width:var(--cell-size);height:var(--cell-size);padding:0;font-weight:400;line-height:1;border-radius:var(--radius)}
+[data-slot="calendar-day"][data-today="true"] [data-slot="calendar-day-button"]{background:var(--ui-accent);color:var(--ui-accent-foreground)}
+[data-slot="calendar-day"][data-outside="true"] [data-slot="calendar-day-button"]{color:var(--muted-foreground)}
+[data-slot="calendar-day-button"][data-selected-single="true"].ui-btn{background:var(--primary);color:var(--primary-foreground)}
+[data-slot="calendar-day-button"].ui-btn:disabled{opacity:.5;color:var(--muted-foreground)}
+[data-slot="calendar-day"][data-marked="true"] [data-slot="calendar-day-button"]::after{content:'';position:absolute;bottom:3px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--primary)}
+[data-slot="calendar-day"][data-marked="true"] [data-slot="calendar-day-button"][data-selected-single="true"]::after{background:var(--primary-foreground)}
+
 /* Tailwind sr-only */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 
