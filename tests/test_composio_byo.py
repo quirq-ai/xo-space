@@ -238,5 +238,55 @@ class ServiceBackendTests(_KeyBase):
             self.service.get_session("space-42")
 
 
+def _req(headers=None):
+    from starlette.requests import Request
+    scope = {"type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
+             "path": "/", "raw_path": b"/", "query_string": b"", "server": ("127.0.0.1", 5002),
+             "client": ("127.0.0.1", 1),
+             "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    from starlette.requests import Request as _R
+    return _R(scope, receive)
+
+
+class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    async def test_no_session_header_needed(self) -> None:
+        from services.cowork_agent.connectors.composio import identity as identity_mod
+        byo_key.save("sk_live")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertEqual(await identity_mod.get_composio_user(_req()), "space-42")
+
+    async def test_cross_site_origin_is_403(self) -> None:
+        from fastapi import HTTPException
+        from services.cowork_agent.connectors.composio import identity as identity_mod
+        byo_key.save("sk_live")
+        req = _req({"origin": "https://evil.example", "sec-fetch-site": "cross-site"})
+        with self.assertRaises(HTTPException) as raised:
+            await identity_mod.get_composio_user(req)
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_resolve_user_none_without_a_key(self) -> None:
+        from services.cowork_agent.connectors.composio import identity as identity_mod
+        self.assertIsNone(await identity_mod.resolve_user(_req()))
+        byo_key.save("sk_live")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertEqual(await identity_mod.resolve_user(_req()), "space-42")
+
+
+class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    async def test_no_key_resolves_to_none(self) -> None:
+        from services.connections import poller
+        self.assertIsNone(await poller.resolve_user_id())
+
+    async def test_key_resolves_to_local_user(self) -> None:
+        from services.connections import poller
+        byo_key.save("sk_live")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertEqual(await poller.resolve_user_id(), "space-42")
+
+
 if __name__ == "__main__":
     unittest.main()
