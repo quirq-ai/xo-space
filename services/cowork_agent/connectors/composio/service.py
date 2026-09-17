@@ -888,21 +888,25 @@ def get_session(user_id: str) -> dict[str, Any]:
 
 
 def build_mcp_server_entry(user_id: str) -> dict[str, Any]:
+    """The MCP endpoint for this workspace's session, as ``{"type", "url", "headers"}``.
+
+    Always xo-swarm-api's per-session MCP proxy, authenticated with this backend's own XO
+    bearer token. Whatever ``mcp.headers`` a swarm response carries is ignored on purpose:
+    Composio's MCP credential is the org-wide API key, which must never reach this
+    process — an older xo-swarm-api used to hand it over here.
+    """
     session = get_session(user_id)
-    url = _attr(session, "mcp", "url")
-    headers = _attr(session, "mcp", "headers", default=None)
-    if not url:
+    session_id = _attr(session, "session_id")
+    if not session_id or not _attr(session, "mcp", "url"):
         # Without this the entry would carry the literal string "None", which is
         # truthy: it passes every downstream guard and fails much later as an
         # opaque connection error.
         raise RuntimeError(
             f"composio: session for user={user_id} exposed no MCP url."
         )
-    entry: dict[str, Any] = {"type": "http", "url": str(url)}
-    if headers:
-        entry["headers"] = dict(headers)
-    log.info("composio: session %s -> %s", _SESSION_ID or "?", url)
-    return entry
+    url, headers = swarm_client.session_mcp_endpoint(str(session_id))
+    log.info("composio: session %s -> %s", session_id, url)
+    return {"type": "http", "url": url, "headers": headers}
 
 
 def _composio_proxy_url() -> str:

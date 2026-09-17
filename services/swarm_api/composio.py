@@ -106,13 +106,7 @@ def _send(
         return client.request(method, url, headers=headers, json=json, params=params)
 
 
-def _request(
-    method: str,
-    path: str,
-    *,
-    json: Optional[dict] = None,
-    params: Optional[dict] = None,
-) -> Any:
+def _auth_headers() -> dict[str, str]:
     # Deferred import: routers.auth imports services.swarm_api at module scope, so this
     # package and routers.auth import each other lazily to avoid a load cycle (same
     # reason _http.py's own auth_token() defers it, and the retired credentials.py did).
@@ -125,10 +119,20 @@ def _request(
             "credential. Set XO_API_KEY, or sign in to XO.",
             authoritative=True,
         )
+    return {"Authorization": f"Bearer {token}"}
 
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    json: Optional[dict] = None,
+    params: Optional[dict] = None,
+) -> Any:
+    headers = _auth_headers()
     url = f"{base_url()}{path}"
     try:
-        resp = _send(method, url, {"Authorization": f"Bearer {token}"}, json=json, params=params)
+        resp = _send(method, url, headers, json=json, params=params)
     except Exception as exc:
         raise SwarmComposioError(
             f"COMPOSIO_API_KEY could not be reached at {url}: {exc}. Check the swarm "
@@ -202,3 +206,15 @@ def update_session(session_id: str, config: dict[str, Any]) -> dict[str, Any]:
 
 def delete_session(session_id: str) -> None:
     _request("DELETE", f"{_PREFIX}/sessions/{session_id}")
+
+
+def session_mcp_endpoint(session_id: str) -> tuple[str, dict[str, str]]:
+    """``(url, headers)`` for talking MCP to one session — through xo-swarm-api, as us.
+
+    Composio's hosted MCP endpoint authenticates with the org-wide API key, so xo-space
+    never talks to it directly: xo-swarm-api proxies it at ``/sessions/{id}/mcp`` and
+    attaches the key on its side. The url is built from :func:`base_url` rather than read
+    off a response, so this backend's XO bearer token can only ever be sent to the swarm.
+    """
+    headers = _auth_headers()
+    return f"{base_url()}{_PREFIX}/sessions/{session_id}/mcp", headers

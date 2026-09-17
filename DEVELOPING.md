@@ -787,6 +787,13 @@ per endpoint. That string is load-bearing, not decoration: `connectors.js` match
 it to show "Composio is not configured" instead of a raw error, and
 `tests/test_composio_swarm_client.py` pins it from the Python side.
 
+MCP traffic takes the same road. Composio's hosted MCP endpoint authenticates with the
+org-wide API key, so xo-space never talks to it directly and never holds that key:
+`build_mcp_server_entry` points at xo-swarm-api's per-session proxy
+(`/connectors/composio/sessions/{id}/mcp`, built from `base_url()` by
+`swarm_client.session_mcp_endpoint`) and authenticates with this backend's XO bearer
+token. Any `mcp.headers` in a swarm session response is ignored on purpose.
+
 ### 10.5 State: a local store
 
 Per-tenant state lives on **this pod**, and only here. It sits in the user's config

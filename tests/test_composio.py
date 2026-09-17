@@ -896,19 +896,30 @@ class ServiceDegradationTests(_ComposioBase):
                 service.build_mcp_server_entry(ACCOUNT)
         self.assertIn("no MCP url", str(raised.exception))
 
-    def test_mcp_entry_carries_url_and_headers(self) -> None:
+    def test_mcp_entry_is_the_swarm_proxy_and_never_the_composio_credential(self) -> None:
+        # Composio's MCP credential is the org-wide API key. Even if a swarm response
+        # carries it (an older xo-swarm-api did), the entry must not: it points at the
+        # swarm's per-session proxy, authenticated as this backend.
         _enable("gmail")
-        with patch.object(
-            swarm_client, "create_session",
-            return_value={
-                "session_id": "sess_1",
-                "mcp": {"url": "https://mcp.example/s", "headers": {"x-a": "b"}},
-            },
-        ):
+        with patch.dict(os.environ, {"CHAT_API_BASE_URL": "https://swarm.test"}), \
+                patch("routers.auth.auth.get_auth_token", return_value="tok"), \
+                patch.object(
+                    swarm_client, "create_session",
+                    return_value={
+                        "session_id": "sess_1",
+                        "mcp": {
+                            "url": "https://backend.composio.dev/mcp/s",
+                            "headers": {"x-api-key": "ak_org_wide"},
+                        },
+                    },
+                ):
             entry = service.build_mcp_server_entry(ACCOUNT)
         self.assertEqual(entry["type"], "http")
-        self.assertEqual(entry["url"], "https://mcp.example/s")
-        self.assertEqual(entry["headers"], {"x-a": "b"})
+        self.assertEqual(
+            entry["url"], "https://swarm.test/connectors/composio/sessions/sess_1/mcp",
+        )
+        self.assertEqual(entry["headers"], {"Authorization": "Bearer tok"})
+        self.assertNotIn("ak_org_wide", repr(entry))
 
 
 def _row(cid, slug="gmail", *, status="ACTIVE", alias=None, created_at=None,

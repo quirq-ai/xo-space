@@ -152,6 +152,21 @@ class ClassificationTests(_SwarmClientBase):
             self.assertEqual(self._call(), rows)
 
 
+class SessionMcpEndpointTests(_SwarmClientBase):
+    def test_it_is_the_swarm_proxy_route_with_this_backends_bearer(self) -> None:
+        with patch("routers.auth.auth.get_auth_token", return_value="tok"):
+            url, headers = swarm_client.session_mcp_endpoint("sess_1")
+        self.assertEqual(url, "https://swarm.test/connectors/composio/sessions/sess_1/mcp")
+        self.assertEqual(headers, {"Authorization": "Bearer tok"})
+
+    def test_no_xo_credential_is_authoritative(self) -> None:
+        with patch("routers.auth.auth.get_auth_token", return_value=None):
+            with self.assertRaises(swarm_client.SwarmComposioError) as raised:
+                swarm_client.session_mcp_endpoint("sess_1")
+        self.assertTrue(raised.exception.authoritative)
+        self.assertIn("COMPOSIO_API_KEY", str(raised.exception))
+
+
 class NotFoundIsASwarmComposioErrorTests(_SwarmClientBase):
     def test_not_found_is_a_subclass_callers_can_catch_broadly_or_narrowly(self) -> None:
         self.assertTrue(issubclass(swarm_client.SwarmComposioNotFound, swarm_client.SwarmComposioError))
