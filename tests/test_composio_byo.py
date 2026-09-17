@@ -288,5 +288,65 @@ class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
             self.assertEqual(await poller.resolve_user_id(), "space-42")
 
 
+class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    async def test_backend_route_reports_inactive_without_a_key(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        resp = await r.get_backend(_req())
+        self.assertEqual(json.loads(resp.body), {"mode": "inactive", "key_source": None})
+
+    async def test_backend_route_reports_local_with_a_key(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        byo_key.save("sk_live")
+        resp = await r.get_backend(_req())
+        self.assertEqual(json.loads(resp.body), {"mode": "local", "key_source": "file"})
+
+    async def test_put_key_validates_and_saves(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        from services.cowork_agent.connectors.composio import client as c
+        with patch.object(c, "_sdk") as sdk, \
+                patch.object(r.composio_service, "kick_gateway_sweep"), \
+                patch.object(r.composio_service, "invalidate_session"):
+            sdk.return_value.auth_configs.list.return_value = SimpleNamespace(items=[])
+            resp = await r.put_api_key(r.ApiKeyBody(api_key="sk_live"), _req())
+        self.assertEqual(json.loads(resp.body)["key_configured"], True)
+        self.assertEqual(byo_key.api_key(), "sk_live")
+
+    async def test_put_key_rejects_a_bad_key(self) -> None:
+        from fastapi import HTTPException
+        from routers.cowork_agent.connectors import composio as r
+        from services.cowork_agent.connectors.composio import client as c
+        with patch.object(c, "_sdk") as sdk, \
+                patch.object(r.composio_service, "invalidate_session"):
+            sdk.return_value.auth_configs.list.side_effect = c.ComposioError(
+                "rejected", authoritative=True)
+            with self.assertRaises(HTTPException) as raised:
+                await r.put_api_key(r.ApiKeyBody(api_key="bad"), _req())
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertFalse(byo_key.configured())   # rolled back
+
+    async def test_put_key_409_when_env(self) -> None:
+        from fastapi import HTTPException
+        from routers.cowork_agent.connectors import composio as r
+        with patch.dict(os.environ, {byo_key.ENV_VAR: "sk_env"}):
+            with self.assertRaises(HTTPException) as raised:
+                await r.put_api_key(r.ApiKeyBody(api_key="x"), _req())
+        self.assertEqual(raised.exception.status_code, 409)
+
+    async def test_connect_without_a_key_is_409(self) -> None:
+        from fastapi import HTTPException
+        from routers.cowork_agent.connectors import composio as r
+        with self.assertRaises(HTTPException) as raised:
+            await r.connect("gmail", r.ConnectBody(), user_id=byo_key.user_id())
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["error"], "composio_key_required")
+
+    async def test_toolkits_without_a_key_are_needs_key(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        resp = await r.list_toolkits(user_id=byo_key.user_id())
+        body = json.loads(resp.body)
+        self.assertFalse(body["key_configured"])
+        self.assertTrue(all(t["status"] == "NEEDS_KEY" for t in body["toolkits"]))
+
+
 if __name__ == "__main__":
     unittest.main()

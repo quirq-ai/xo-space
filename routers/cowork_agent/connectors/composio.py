@@ -5,16 +5,86 @@ import json
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from routers.browser_guard import origin_allowed
+from services.cowork_agent.connectors.composio import byo_key
+from services.cowork_agent.connectors.composio import client as composio_client
 from services.cowork_agent.connectors.composio import service as composio_service
 from services.cowork_agent.connectors.composio import space_scope
 from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _require_key() -> None:
+    """Guard an action route: 409 when no Composio API key is configured."""
+    if not byo_key.configured():
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "composio_key_required",
+                    "detail": "Add your Composio API key to activate connectors."},
+        )
+
+
+def _guard_origin(request: Request) -> None:
+    if not origin_allowed(request):
+        raise HTTPException(status_code=403, detail="Cross-site request refused.")
+
+
+class ApiKeyBody(BaseModel):
+    api_key: str
+
+
+@router.get("/api/connectors/composio/backend")
+async def get_backend(request: Request) -> JSONResponse:
+    _guard_origin(request)
+    return JSONResponse({
+        "mode": "local" if byo_key.configured() else "inactive",
+        "key_source": byo_key.source(),
+    })
+
+
+@router.put("/api/connectors/composio/api-key")
+async def put_api_key(body: ApiKeyBody, request: Request) -> JSONResponse:
+    _guard_origin(request)
+    if byo_key.source() == "env":
+        raise HTTPException(
+            status_code=409,
+            detail="The API key is set by COMPOSIO_BYO_API_KEY in the environment; "
+                   "edit it there.",
+        )
+    key = (body.api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=422, detail="Provide a Composio API key.")
+    byo_key.save(key)
+    try:
+        composio_client._sdk().auth_configs.list(limit=1)
+    except composio_client.ComposioError as exc:
+        byo_key.clear()
+        if getattr(exc, "authoritative", False):
+            raise HTTPException(status_code=422, detail="Composio rejected this API key.")
+        raise HTTPException(status_code=502, detail=str(exc))
+    composio_service.invalidate_session()
+    composio_service.kick_gateway_sweep()
+    return JSONResponse({"key_configured": True, "key_source": byo_key.source()})
+
+
+@router.delete("/api/connectors/composio/api-key")
+async def delete_api_key(request: Request) -> JSONResponse:
+    _guard_origin(request)
+    if byo_key.source() == "env":
+        raise HTTPException(
+            status_code=409,
+            detail="The API key is set by COMPOSIO_BYO_API_KEY in the environment; "
+                   "unset it there.",
+        )
+    byo_key.clear()
+    composio_service.invalidate_session()
+    return JSONResponse({"key_configured": False, "key_source": None})
 
 
 def _status_map_from_rows(
@@ -69,19 +139,27 @@ async def list_toolkits(
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
     from services.cowork_agent.connectors.composio import categories as composio_categories
+
+    key_configured = byo_key.configured()
     # Loading the tab (or its Refresh) is what installs the agent's MCP wiring: the
-    # sweep runs here, in the background, rate-limited.
-    composio_service.kick_gateway_sweep()
-    # One fetch feeds both the primary-account map and the per-toolkit counts.
-    rows = composio_service.newest_first(
-        composio_service.list_connections(user_id)
-    )
+    # sweep runs here, in the background, rate-limited. Nothing to install with no key.
+    if key_configured:
+        composio_service.kick_gateway_sweep()
+        # One fetch feeds both the primary-account map and the per-toolkit counts.
+        rows = composio_service.newest_first(
+            composio_service.list_connections(user_id)
+        )
+    else:
+        rows = []
     status_by_slug = _status_map_from_rows(rows)
     account_counts = _account_counts(rows)
     classified = composio_categories.classified_toolkits()
 
     multi = composio_service.multi_account_config()
     scope = space_scope.load()
+
+    # With no key, the account has no connections here: every toolkit reads NEEDS_KEY.
+    default_status = "NEEDS_AUTH" if key_configured else "NEEDS_KEY"
 
     toolkits: list[dict[str, Any]] = []
     for toolkit_id, meta in composio_service.TOOLKITS.items():
@@ -93,7 +171,7 @@ async def list_toolkits(
             "display_name": meta.display_name,
             "schemes": list(meta.schemes),
             # Account-wide: whether the account holds a connection at all.
-            "status": (connection or {}).get("status", "NEEDS_AUTH"),
+            "status": (connection or {}).get("status", default_status),
             "connected_account_id": (connection or {}).get("connected_account_id"),
             "scheme": (connection or {}).get("scheme"),
             "supports_action_prefs": toolkit_id in classified,
@@ -109,6 +187,8 @@ async def list_toolkits(
         "toolkits": toolkits,
         "multi_account": multi or {"enable": False},
         "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
+        "key_configured": key_configured,
+        "key_source": byo_key.source(),
     })
 
 
@@ -118,6 +198,7 @@ async def connect(
     body: ConnectBody,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     if body.allow_multiple and not composio_service.multi_account_enabled():
         log.info(
             "composio: allow_multiple requested for %s while multi-account mode "
@@ -147,6 +228,7 @@ async def connect_status(
     connection_request_id: str = Query(...),
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     result = composio_service.check_connection(connection_request_id)
     if (result.get("status") or "").upper() == "ACTIVE":
         # The workspace that ran the OAuth flow gets the connection without a second
@@ -188,6 +270,7 @@ async def disconnect(
     actually knows which account this connection belongs to. ``disconnect`` raises
     ``ValueError`` when it says "not yours, or gone".
     """
+    _require_key()
     try:
         ok = composio_service.disconnect(body.connected_account_id)
     except ValueError as exc:
@@ -216,6 +299,7 @@ async def unlink_account(
     pinned it. A toolkit left with no pins is switched off here rather than falling back
     to Composio's most-recently-connected default, which would quietly re-point it.
     """
+    _require_key()
     try:
         accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
     except ValueError as exc:
@@ -248,6 +332,7 @@ async def get_toolkit_scope(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     entry = space_scope.load().get(toolkit) or {}
     return JSONResponse({
         "toolkit": toolkit,
@@ -269,6 +354,7 @@ async def put_toolkit_scope(
     typo is a 422 naming the id, rather than a session creation that fails for every
     toolkit at once.
     """
+    _require_key()
     if toolkit not in composio_service.TOOLKITS:
         raise HTTPException(status_code=404, detail=f"Unknown toolkit '{toolkit}'.")
 
@@ -315,6 +401,7 @@ async def list_toolkit_accounts(
     The account list is account-wide, so a connection made in a sibling workspace shows
     up here unpinned: ready to be enabled, not silently in use.
     """
+    _require_key()
     try:
         accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
     except ValueError as exc:
@@ -357,6 +444,7 @@ async def put_account_alias(
     The alias is what an agent passes as a tool call's `account` parameter, so
     it is checked for uniqueness within the toolkit before the write.
     """
+    _require_key()
     try:
         accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
     except ValueError as exc:
@@ -396,6 +484,7 @@ async def list_toolkit_tools(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     try:
         tools = composio_service.list_tools(user_id, toolkit, include_disabled=True)
     except ValueError as exc:
@@ -412,6 +501,7 @@ async def get_toolkit_prefs(
     toolkit: str,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
     return JSONResponse(
         {"actions": composio_action_prefs.get_toolkit_prefs(toolkit)}
@@ -424,6 +514,7 @@ async def put_toolkit_prefs(
     body: PrefsBody,
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
+    _require_key()
     from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
     from services.cowork_agent.connectors.composio import categories as composio_categories
     if toolkit not in composio_categories.classified_toolkits():
