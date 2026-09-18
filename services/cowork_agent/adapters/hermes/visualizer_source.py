@@ -11,14 +11,22 @@ at chat-done time). Sessions hermes owns but no project references
 are skipped — same rule the other sources follow.
 
 Emitted: :class:`events.SessionFirstSeen`, :class:`events.MessageObserved`,
-:class:`events.ToolUseObserved`. ``UsageObserved`` is NOT emitted
-yet — the hermes ``messages`` schema doesn't surface token counts in
-any column this source can see; needs a hermes-side addition.
+:class:`events.ToolUseObserved` and :class:`events.UsageObserved`.
+
+Hermes keeps no usage per message (``messages.token_count`` stays empty):
+the ``sessions`` row carries the main loop's running totals (input without
+cache, output with reasoning inside it, cache read, cache write), the same
+row ``/api/usage`` and Space's session telemetry read. Each tick compares a
+mapped session's totals with the ones last recorded and emits one
+``UsageObserved`` for the increase, stamped with the session's last activity.
+A total that went down (a rewound or reset session) becomes the new baseline
+and emits nothing, so a count is never subtracted or repeated.
 
 Per-``(profile, session_id)`` offsets persisted to
 ``watcher_state_dir() / "hermes-offsets.json"`` so restarts don't
-replay. The shared ``OffsetStore`` is byte-offset shaped so we own
-our own state file.
+replay: the last message id under ``<profile>:<session_id>``, and the last
+recorded usage totals under ``<profile>:<session_id>#<column>``. The shared
+``OffsetStore`` is byte-offset shaped so we own our own state file.
 
 ``poll_presence`` returns ``[]``; hermes has no per-process state
 file analogous to claude's ``~/.claude/sessions/<pid>.json``.
@@ -41,6 +49,7 @@ from services.cowork_agent.visualizer.ingest.events import (
     MessageObserved,
     SessionFirstSeen,
     ToolUseObserved,
+    UsageObserved,
 )
 from services.cowork_agent.visualizer.state import (
     legacy_watcher_state_dir,
@@ -54,6 +63,14 @@ _OFFSETS_FILE = watcher_state_dir() / "hermes-offsets.json"
 _LEGACY_OFFSETS_FILE = legacy_watcher_state_dir() / "hermes-offsets.json"
 _DEFAULT_PROFILE = "default"
 _BATCH = 500  # messages per session per tick — safety cap on a single query
+
+# ``sessions`` usage column → the UsageObserved field it feeds.
+_USAGE_COLUMNS = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_read_tokens": "cache_read_input_tokens",
+    "cache_write_tokens": "cache_creation_input_tokens",
+}
 
 
 class Source:
@@ -124,9 +141,9 @@ class Source:
         conn.row_factory = sqlite3.Row
         any_change = False
         try:
-            # Pre-fetch session.model for every session we care about so
-            # we don't issue one SELECT per row.
-            session_models = _fetch_session_models(conn, list(session_to_project))
+            # Pre-fetch model and usage totals for every session we care
+            # about so we don't issue one SELECT per row.
+            session_rows = _fetch_sessions(conn, list(session_to_project))
 
             for hermes_sid, project_id in session_to_project.items():
                 offset_key = f"{profile}:{hermes_sid}"
@@ -150,21 +167,66 @@ class Source:
                     )
                     continue
 
-                if not rows:
-                    continue
+                session = session_rows.get(hermes_sid) or {}
+                session_model = session.get("model")
+                if rows:
+                    for row in rows:
+                        yield from self._events_from_row(
+                            row, hermes_sid=hermes_sid, project_id=project_id,
+                            session_model=session_model,
+                        )
+                    self._offsets[offset_key] = int(rows[-1]["id"])
+                    any_change = True
 
-                session_model = session_models.get(hermes_sid)
-                for row in rows:
-                    yield from self._events_from_row(
-                        row, hermes_sid=hermes_sid, project_id=project_id,
-                        session_model=session_model,
-                    )
-
-                self._offsets[offset_key] = int(rows[-1]["id"])
-                any_change = True
+                # Usage is committed with the session row, not per message,
+                # so it is checked whether or not new messages arrived.
+                usage = self._usage_event(
+                    session, offset_key=offset_key, hermes_sid=hermes_sid,
+                    project_id=project_id,
+                )
+                if usage is not None:
+                    yield usage
+                    any_change = True
+                elif session.get("usage_moved"):
+                    any_change = True
         finally:
             conn.close()
         return any_change
+
+    def _usage_event(
+        self,
+        session: dict,
+        *,
+        offset_key: str,
+        hermes_sid: str,
+        project_id: str,
+    ) -> Optional[UsageObserved]:
+        """The increase in a session's usage totals since the last tick, as
+        one event; ``None`` when nothing grew. Records the new totals."""
+        totals = session.get("usage")
+        if not totals:
+            return None
+        delta: dict[str, int] = {}
+        for column, value in totals.items():
+            key = f"{offset_key}#{column}"
+            last = self._offsets.get(key, 0)
+            if value != last:
+                session["usage_moved"] = True
+                self._offsets[key] = value
+            # A lower total is a reset, not negative usage: it is only the
+            # new baseline.
+            if value > last:
+                delta[_USAGE_COLUMNS[column]] = value - last
+        if not delta:
+            return None
+        return UsageObserved(
+            ts=_epoch_to_iso(session.get("last_activity_at")),
+            native_session_id=hermes_sid,
+            runtime=self.name,
+            project_id=project_id,
+            model=session.get("model"),
+            **delta,
+        )
 
     def _events_from_row(
         self,
@@ -244,27 +306,45 @@ def _profile_state_dbs() -> list[tuple[str, Path]]:
     return out
 
 
-def _fetch_session_models(
+def _fetch_sessions(
     conn: sqlite3.Connection, session_ids: list[str]
-) -> dict[str, str]:
-    """One query to grab every relevant session's model. SQLite caps
-    the IN list around 1000 — we batch in chunks of 500 to be safe."""
+) -> dict[str, dict]:
+    """One query per chunk for every relevant session's model, last
+    activity and usage totals. SQLite caps the IN list around 1000 — we
+    batch in chunks of 500 to be safe. A hermes build whose ``sessions``
+    table lacks a usage column yields no ``usage`` (and so no usage
+    events) instead of failing the tick."""
     if not session_ids:
         return {}
-    out: dict[str, str] = {}
+    try:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
+    except sqlite3.Error:
+        return {}
+    usage_columns = [c for c in _USAGE_COLUMNS if c in columns]
+    if len(usage_columns) != len(_USAGE_COLUMNS):
+        usage_columns = []
+    selected = ["id", "model", *usage_columns]
+    if "last_activity_at" in columns:
+        selected.append("last_activity_at")
+    out: dict[str, dict] = {}
     for i in range(0, len(session_ids), 500):
         chunk = session_ids[i : i + 500]
         placeholders = ",".join("?" * len(chunk))
         try:
             rows = conn.execute(
-                f"SELECT id, model FROM sessions WHERE id IN ({placeholders})",
+                f"SELECT {', '.join(selected)} FROM sessions WHERE id IN ({placeholders})",
                 chunk,
             ).fetchall()
         except sqlite3.Error:
             continue
         for row in rows:
-            if row["model"]:
-                out[row["id"]] = str(row["model"])
+            out[row["id"]] = {
+                "model": str(row["model"]) if row["model"] else None,
+                "last_activity_at": row["last_activity_at"] if "last_activity_at" in selected else None,
+                "usage": {
+                    column: max(0, int(row[column] or 0)) for column in usage_columns
+                },
+            }
     return out
 
 

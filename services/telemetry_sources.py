@@ -9,8 +9,16 @@ names an agent), reports the effective path, and writes changes to the env
 store the providers already read through ``os.getenv`` at collection time,
 so a saved path takes effect on the next telemetry rebuild, no restart.
 
-Collection can be switched off per source with ``QUIRQ_TELEMETRY_DISABLED``,
-a comma-separated list of source ids that the telemetry builder honors.
+Collection can be switched off per source. The switch is a Space setting,
+kept in ``~/.quirq/settings/telemetry.json`` (``{"schema": 1, "disabled":
+[source ids]}``). Until that file exists, ``QUIRQ_TELEMETRY_DISABLED`` (a
+comma-separated list of source ids, set by an operator or saved by an earlier
+release into the secrets store) still applies; the first save carries it into
+the file and removes the old key from the secrets store.
+
+A source's data location stays an environment variable in the secrets store:
+it is often the runtime's own home variable, read by the agent itself, so it is
+not a Space-only setting.
 
 This is a Space-level package (a person configures collection; the agent
 only reads it), so it lives beside the inbox and connections rather than
@@ -19,6 +27,7 @@ under ``services/cowork_agent``.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -29,6 +38,12 @@ from services.cowork_agent.adapters.loader import (
     try_load_capability,
 )
 from services.errors import ServiceError
+from services.storage.atomic_write import write_json_atomic
+from services.storage.layout import settings_dir
+from services.storage.reader import read_json
+from services.timestamps import now_iso
+
+logger = logging.getLogger(__name__)
 
 CAPABILITY = "session_telemetry"
 DISABLED_ENV = "QUIRQ_TELEMETRY_DISABLED"
@@ -52,9 +67,45 @@ class InvalidTelemetryPath(ServiceError):
         super().__init__("invalid_path", message, 400)
 
 
+SETTINGS_SCHEMA = 1
+
+
+def settings_path() -> Path:
+    """``~/.quirq/settings/telemetry.json``: which sources are switched off."""
+    return settings_dir() / "telemetry.json"
+
+
+def _saved_disabled() -> set[str] | None:
+    """The saved switch, or ``None`` when nothing has been saved yet."""
+    path = settings_path()
+    document = read_json(path)
+    if document is None:
+        return None
+    disabled = document.get("disabled") if isinstance(document, dict) else None
+    if not isinstance(disabled, list):
+        logger.warning("telemetry settings: %s has no disabled list; ignoring it", path)
+        return None
+    return {str(item).strip() for item in disabled if str(item).strip()}
+
+
 def disabled_source_ids(environ: dict[str, str] | None = None) -> set[str]:
+    saved = _saved_disabled()
+    if saved is not None:
+        return saved
     raw = (environ if environ is not None else os.environ).get(DISABLED_ENV, "") or ""
     return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _save_disabled(disabled: set[str], secrets_store) -> None:
+    write_json_atomic(settings_path(), {
+        "schema": SETTINGS_SCHEMA,
+        "updated_at": now_iso(),
+        "disabled": sorted(disabled),
+    })
+    # The switch lived in the secrets store before it had its own file. The
+    # file decides now, so the old key goes and nothing reads it twice.
+    secrets_store.delete(DISABLED_ENV)
+    os.environ.pop(DISABLED_ENV, None)
 
 
 def _load_providers() -> list[tuple[str, Any]]:
@@ -163,11 +214,5 @@ def save_source(
             disabled.discard(source_id)
         else:
             disabled.add(source_id)
-        if disabled:
-            joined = ",".join(sorted(disabled))
-            handle.upsert(DISABLED_ENV, joined)
-            os.environ[DISABLED_ENV] = joined
-        else:
-            handle.delete(DISABLED_ENV)
-            os.environ.pop(DISABLED_ENV, None)
+        _save_disabled(disabled, handle)
     return describe_source(provider, module)

@@ -19,19 +19,22 @@ sidebar agents, so they are deliberately not modelled here.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
 from services.cowork_agent.helpers import normalize_agent_id
+from services.cowork_agent.engine.sessions_io import read_session_index
 from services.cowork_agent.project_layout import (
+    RUNTIME_SESSION_SHARDS_SUBDIR,
     project_dir,
+    project_runtime_dir,
     scaffold_project,
     xo_dir,
     xo_projects_root,
 )
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
+from services.timestamps import now_iso
 
 _BACKEND = "codex"
 
@@ -55,13 +58,22 @@ def _load(agent_id: str) -> dict | None:
     return None
 
 
+def _owner(meta: dict) -> str | None:
+    """The backend tag on a record, or None when it is untagged."""
+    backend = meta.get("backend") if isinstance(meta, dict) else None
+    return backend if isinstance(backend, str) and backend else None
+
+
+def _is_ours(meta: dict) -> bool:
+    """A record this backend answers for: tagged with it, or untagged (written
+    before the tag existed, so every project-tied backend may claim it)."""
+    return _owner(meta) in (None, _BACKEND)
+
+
 def _load_owned(agent_id: str) -> dict | None:
     """``_load`` restricted to records this backend owns."""
     meta = _load(agent_id)
-    if meta is None:
-        return None
-    backend = meta.get("backend")
-    if isinstance(backend, str) and backend and backend != _BACKEND:
+    if meta is None or not _is_ours(meta):
         return None
     return meta
 
@@ -69,6 +81,21 @@ def _load_owned(agent_id: str) -> dict | None:
 def _write(agent_id: str, data: dict) -> None:
     """Write the record to ``<project>/.xo/agent.json``, atomically."""
     write_json_atomic(_meta_path(agent_id), data)
+
+
+def _sessions_summary(agent_id: str) -> dict:
+    """This backend's rows in the project's session index, and where it lives
+    (``~/.quirq/projects/<pid>/sessions/sessionslist.d/``)."""
+    ids = [
+        row["sessionId"]
+        for row in read_session_index(agent_id).values()
+        if row.get("backend") == _BACKEND and row.get("sessionId")
+    ]
+    return {
+        "index_path": str(project_runtime_dir(agent_id) / RUNTIME_SESSION_SHARDS_SUBDIR),
+        "count": len(ids),
+        "session_ids": ids,
+    }
 
 
 def _agent_info(agent_id: str, meta: dict) -> dict:
@@ -104,7 +131,13 @@ def list_agents() -> list[dict]:
                 meta = json.loads(meta_path.read_text())
             except Exception:
                 meta = {}
-            agents.append(_agent_info(d.name, meta))
+            # Only this backend's agents: the router lists the active backend's
+            # world, and detail/patch answer for owned records only, so another
+            # backend's record listed here would 404 when opened.
+            if not isinstance(meta, dict):
+                meta = {}
+            if _is_ours(meta):
+                agents.append(_agent_info(d.name, meta))
     return agents
 
 
@@ -114,7 +147,23 @@ def create_agent(body) -> dict | JSONResponse:
     agent_id = normalize_agent_id((body.id or body.name).strip())
     description = (body.description or "").strip()
 
-    if _load(agent_id) is not None:
+    # A project holds one agent record, owned by one backend. The project
+    # folder being present is fine; an existing record is never overwritten,
+    # whoever owns it and whether or not it parses.
+    existing = _load(agent_id)
+    if existing is None and _meta_path(agent_id).exists():
+        return JSONResponse(
+            status_code=409,
+            content={"detail": f'Project "{agent_id}" has an agent record that cannot be read '
+                               f'({_meta_path(agent_id)}). Fix or remove it, then try again.'},
+        )
+    if existing is not None and not _is_ours(existing):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": f'Project "{agent_id}" is already attached to the '
+                               f'{_owner(existing)} agent. One project holds one agent record.'},
+        )
+    if existing is not None:
         return JSONResponse(
             status_code=409,
             content={"detail": f'Codex agent "{agent_id}" already exists.'},
@@ -129,7 +178,7 @@ def create_agent(body) -> dict | JSONResponse:
             "name": display_name,
             "description": description,
             "backend": _BACKEND,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now_iso(),
         }
         _write(agent_id, meta)
     except Exception as e:
@@ -162,11 +211,7 @@ def get_detail(agent_id: str) -> dict | None:
             "auth_state": None,
             "auth_profiles": None,
         },
-        "sessions": {
-            "index_path": str(workspace_path / ".sessions"),
-            "count": 0,
-            "session_ids": [],
-        },
+        "sessions": _sessions_summary(aid),
         "openclaw_global_auth": {},
         "backend": _BACKEND,
     }

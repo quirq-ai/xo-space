@@ -31,7 +31,7 @@ into them.
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |
 | `usage/` | `<agent>.json` | `services/usage_sync.py` | how far usage was reported, so it would be sent again |
-| `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
+| `settings/` | `roots.env`, `runtime.env`, `onboarding.json`, `telemetry.json` | the Setup tab, onboarding, the Agents tab's Configure page | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
 | `logs/` | `quirq.log`, `commands.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only |
@@ -43,12 +43,24 @@ instead of replaying sessions onto surviving totals.
 
 ## The rules for what goes inside a file
 
-1. Project data is keyed by `pid`; a folder name is only a label.
-2. Times are ISO-8601 UTC ending in `Z` (milliseconds on event lines).
+1. Project data is keyed by `pid`; a folder name is only a label. A project
+   whose `.xo/project.json` has no pid yet is kept under its folder name, and
+   its timeline lines carry no `pid` until it has one. Exempt: rebuilt views in
+   `cache/` (keyed by folder name) and session-index keys
+   (`<agent>:<project>:web:<8hex>`, opaque to everything but their adapter).
+2. Times written as text are ISO-8601 UTC ending in `Z`, in whole seconds or
+   milliseconds. Agents write time their own way (`+00:00`, microseconds); the
+   watcher converts it on write (`services/timestamps.canonical_ts`). Epoch
+   numbers (`updatedAt`, `firstActivity`, `expires_at`) are counts, not text.
 3. Every event line starts with `ts` and `type`.
 4. Every data file carries a `schema` number. Exempt: rebuilt views in
-   `cache/`, and files keyed by name, where an extra key would read as an entry
-   (`secrets/token.json` by provider, session-index shards by session).
+   `cache/`; files keyed by name, where an extra key would read as an entry
+   (`secrets/token.json` by provider, session-index shards by session); and an
+   adapter's own reading positions, `projects/<source>-offsets.json`, whose
+   shape belongs to that adapter.
+
+The rules are for data files. Logs (`logs/`) and `.env` files (`settings/`,
+`secrets/`) are text for people and tools, and follow their own formats.
 
 ## Adding a store
 
@@ -82,8 +94,9 @@ Three kinds of file have no example, on purpose:
   whose shape belongs to their builders;
 - adapter cursor files in `projects/` (`<source>-offsets.json`), whose shape
   belongs to each adapter;
-- rotated segments (`timeline.<stamp>.jsonl`, `events.<stamp>.jsonl`,
-  `commands.log.1`), older copies of the files shown.
+- rotated segments (a project's `timeline.<stamp>.jsonl`, `events.<stamp>.jsonl`,
+  `commands.log.1`), older copies of the files shown. The Space timeline,
+  `projects/timeline.jsonl`, is not rotated.
 
 `tests/test_quirq_state_layout.py` checks that the examples follow the four
 rules, match their JSON schemas, and read back through the stores that own

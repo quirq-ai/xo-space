@@ -472,12 +472,11 @@ def _stale_after_seconds(interval_seconds: Any) -> float:
 def _watcher() -> dict[str, Any]:
     offsets_path = watcher_state_dir() / "offsets.json"
     offsets = _read_json(offsets_path)
-    if isinstance(offsets, dict):
-        tracked_files = len(offsets)
-    elif isinstance(offsets, list):
-        tracked_files = len(offsets)
-    else:
-        tracked_files = 0
+    # One entry per file under ``offsets``, the only map the offset store
+    # reads (``ingest/jsonl_tail.OffsetStore``); the document's own keys
+    # (``schema``, ``offsets``) are not files.
+    entries = offsets.get("offsets") if isinstance(offsets, dict) else None
+    tracked_files = len(entries) if isinstance(entries, dict) else 0
     configured = configured_settings()
     applied = effective_settings()
 

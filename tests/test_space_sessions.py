@@ -47,6 +47,8 @@ class SpaceSessionsUiTests(unittest.TestCase):
         self.assertIn("claude_code", providers)
         self.assertIn("codex", providers)
         self.assertIn("cursor", providers)
+        self.assertIn("hermes", providers)
+        self.assertIn("openclaw", providers)
 
     def test_docker_mount_discovery_marks_telemetry_homes_optional(self) -> None:
         root = Path("/runtime-home")

@@ -9,6 +9,7 @@ here, so every project on every machine carries the same ``.xo/``:
 - cloned through ``POST /api/xo-projects``
   (``services/project_management.clone_project``);
 - auto-cloned by project sharing (``project_sharing/clone.py``);
+- restored from a backup (``xo_projects_sync/restore.py``);
 - cloned or copied by hand straight into the projects root, which the watcher
   picks up on its next tick (:func:`ensure_xo_structure_if_changed`).
 

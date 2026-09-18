@@ -29,7 +29,12 @@ the version without guessing.
 
 `agent.json` is the one optional member. An agent adapter writes it when the
 folder is attached to an agent backend; its presence is the signal, and XO Space
-never creates it on its own.
+never creates it on its own. It has no example here because no creation path
+writes it.
+
+| File | Created by | Written afterwards by | Schema |
+|---|---|---|---|
+| `agent.json` | the adapter that owns the agent (`adapters/<name>/agents.py` `create_agent`): `$schema`, `schema`, `id`, `name`, `description`, `backend`, `created_at` ending in `Z` | the same adapter (`patch`: `name`, `description`) | `agent.schema.json` |
 
 ## When a project gets this structure
 
@@ -37,6 +42,7 @@ never creates it on its own.
   `POST /api/files/mkdir` with `scaffold: true` and by agent creation. The
   template adds the work tier (`AGENTS.md`, `PROJECT.md`, `memory/`, …) beside it.
 - **Cloned through the API**: `POST /api/xo-projects`.
+- **Restored from a backup** through the sync API, whatever the snapshot's age.
 - **Auto-cloned by project sharing**, when a repository shared with this Space
   is cloned into the root.
 - **Cloned or copied by hand** into the projects root: the watcher adds `.xo/`

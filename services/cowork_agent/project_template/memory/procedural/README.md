@@ -31,7 +31,7 @@ Writing a skill from a single success creates fabricated procedural knowledge â€
 
 ## How a skill graduates from learned to user-built
 
-Skills synthesized by the agent live in `.xo/skills/learned/`. If the user reviews and endorses one, they may move it to `.xo/skills/user-built/` â€” those are treated as authoritative.
+Skills synthesized by the agent are written here, one `memory/procedural/{slug}.md` per skill (see Format above), never under `.xo/`, which agents only read. A skill the user has reviewed and endorsed is treated as authoritative.
 
 ## Editing
 

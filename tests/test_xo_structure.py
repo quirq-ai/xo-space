@@ -6,8 +6,8 @@ tests hold four things to it:
 
 1. the definition in ``services/xo_structure.py`` and the schemas;
 2. every way a project comes to exist: scaffold, the clone API, project
-   sharing's auto-clone, and a folder put into the root by hand and found by
-   the watcher;
+   sharing's auto-clone, a restore from backup, and a folder put into the root
+   by hand and found by the watcher;
 3. the stores that own each document, which must read the new documents and
    keep their shape on first write;
 4. the rules that make the check safe to run against folders a person owns.
@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 from services import xo_structure
 from services.cowork_agent import coder_identity, project_layout
+from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.visualizer import peers_store, todos_store, workitems_store
 from services.cowork_agent.visualizer import watcher as watcher_mod
 from services.storage import atomic_write
@@ -104,6 +105,57 @@ class CanonicalSampleTests(unittest.TestCase):
             self.assertIn(f"`{name}`", readme)
 
 
+class AgentRecordTests(unittest.TestCase):
+    """``agent.json``, as each adapter that writes one actually writes it."""
+
+    def test_every_adapter_record_satisfies_the_schema_and_ends_in_z(self) -> None:
+        import jsonschema
+
+        from routers.cowork_agent.agents import CreateAgentBody
+        from services.cowork_agent.adapters.loader import (
+            list_capability_providers,
+            try_load_capability,
+        )
+
+        schema = json.loads((SCHEMAS / "agent.schema.json").read_text(encoding="utf-8"))
+        # An adapter keeps its record in the project when its agents capability
+        # names that file; the others (a profile, a gateway agent) keep theirs
+        # in their own home and never write here.
+        writers = [
+            name for name in list_capability_providers("agents")
+            if hasattr(try_load_capability("agents", agent=name), "_meta_path")
+        ]
+        self.assertTrue(writers, "no adapter writes .xo/agent.json")
+        for name in writers:
+            with self.subTest(adapter=name), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp).resolve()
+                env = {
+                    "XO_PROJECTS_ROOT": str(base / "projects"),
+                    "QUIRQ_STATE_ROOT": str(base / "state"),
+                    "QUIRQ_COMMAND_LOG": "off",
+                }
+                with patch.dict(os.environ, env), \
+                        patch.object(coder_identity, "resolve_user_id", return_value="local"):
+                    xo_structure._CHECKED.clear()
+                    mod = try_load_capability("agents", agent=name)
+                    mod.create_agent(CreateAgentBody(name="Sample Agent", id="sample-project"))
+                    record = json.loads(mod._meta_path("sample-project").read_text(encoding="utf-8"))
+                    # The detail view reports this backend's rows in the real
+                    # session index, not a path inside the project.
+                    for key, backend in ((f"{name}:x:web:1", name), ("other:x:web:2", "other")):
+                        sessions_io.write_session_row(
+                            "sample-project", key, {"sessionId": f"s-{backend}", "backend": backend},
+                        )
+                    sessions = mod.get_detail("sample-project")["sessions"]
+                    shard_dir = project_layout.project_runtime_dir("sample-project") / "sessions" / "sessionslist.d"
+                xo_structure._CHECKED.clear()
+                jsonschema.Draft7Validator(schema).validate(record)
+                self.assertEqual(record["backend"], name)
+                self.assertRegex(record["created_at"], _STAMP)
+                self.assertEqual(sessions["index_path"], str(shard_dir))
+                self.assertEqual((sessions["count"], sessions["session_ids"]), (1, [f"s-{name}"]))
+
+
 class _Sandbox(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -161,6 +213,32 @@ class CreationPathTests(_Sandbox):
         self.assert_matches_fixture(project)
         # Nothing outside .xo/ was touched.
         self.assertEqual(sorted(p.name for p in project.iterdir()), [".xo", "README.md"])
+
+    def test_a_project_restored_from_a_backup(self) -> None:
+        from services.cowork_agent.xo_projects_sync import github, manifest, restore
+        from services.cowork_agent.xo_projects_sync import tarball
+
+        def clone(_url, clone_dir, **_kw):
+            (clone_dir / "snap-1").mkdir(parents=True)
+
+        def extract(_tar, extracted):
+            # An old snapshot: the work tree, and no .xo/ at all.
+            extracted.mkdir(parents=True)
+            (extracted / "README.md").write_text("restored\n", encoding="utf-8")
+
+        snapshot = SimpleNamespace(snapshot_id="snap-1", parts=[], sha256=manifest.sha256_files_concat([]))
+        with patch.object(github, "repo_exists", AsyncMock(return_value=True)), \
+             patch.object(github, "shallow_clone", AsyncMock(side_effect=clone)), \
+             patch.object(manifest.SnapshotManifest, "read", return_value=snapshot), \
+             patch.object(restore.crypto, "decrypt_from_chunks", AsyncMock()), \
+             patch.object(tarball, "extract_tarball", side_effect=extract):
+            asyncio.run(restore._restore_one_locked(
+                PROJECT, cfg=SimpleNamespace(passphrase="x"), auth=None,
+                owner="you", snapshot_id=None, force=False,
+            ))
+        project = self.root / PROJECT
+        self.assert_matches_fixture(project)
+        self.assertEqual((project / "README.md").read_text(encoding="utf-8"), "restored\n")
 
     def test_a_folder_cloned_by_hand_is_found_by_the_watcher(self) -> None:
         project = self.folder()

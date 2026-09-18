@@ -21,13 +21,14 @@ There are two deliberately separate execution **planes**. Keep them apart.
 | | Plane A: legacy direct CLI | Plane B: the modular agent system |
 |---|---|---|
 | Entry points | `/ask_question`, `/ask_question_streaming` | `/api/chat/*` and the rest of `/api/*` |
-| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=openclaw\|claude_code\|hermes\|…` |
+| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=claude_code\|codex\|antigravity\|hermes\|openclaw\|…` |
 | Code | `config/models/<name>/client.py` | `services/cowork_agent/adapters/<name>/` |
 | Instantiated | once as `ai_client` in `server.py` | per request via the capability loader |
 | Status | frozen, backward-compatible | where all new work happens |
 
-Codex is **only** a Plane-A model client (no adapter). Plane A never routes
-through the dispatcher; Plane B never touches `/ask_question`.
+Codex is both: a Plane-A model client (`config/models/codex/`) and a Plane-B
+adapter (`adapters/codex/`). Plane A never routes through the dispatcher; Plane
+B never touches `/ask_question`.
 
 ---
 
@@ -143,19 +144,25 @@ and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 
-| capability | what it provides | openclaw | claude_code | hermes | antigravity |
-|---|---|:--:|:--:|:--:|:--:|
-| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ |
-| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ |
-| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ |
-| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ |
-| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ |
-| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ |
-| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ |
-| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | ✓ | no |
-| `streaming` | SSE shaping | ✓ | ✓ | ✓ | no |
-| `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ |
-| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ |
+| capability | what it provides | claude_code | codex | antigravity | hermes | openclaw | cursor |
+|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `agents` | `/api/agents` list/create/detail/patch/delete | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | no | no | no | ✓ | ✓ | no |
+| `streaming` | SSE shaping | ✓ | ✓ | no | ✓ | ✓ | no |
+| `visualizer_source` | watcher feed | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `session_prompts` | Space prompt capture | ✓ | ✓ | no | no | no | no |
+| `session_telemetry` | Space session telemetry (every installed provider) | ✓ | ✓ | no | ✓ | ✓ | ✓ |
+| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ | ✓ | no |
+
+`cursor` is telemetry-only: it ships `session_telemetry` and no `adapter.py`, so
+it is never an `AGENT_NAME` choice (`list_capability_providers` finds it anyway).
 
 `claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
 falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
@@ -317,14 +324,15 @@ from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
 creates what is missing, never rewrites an existing file (an unparseable one
 included), touches nothing outside `.xo/`, and never raises. It runs on every
 way a project comes to exist: `project_layout.scaffold_project`,
-`services/project_management.clone_project`, project sharing's auto-clone, and
-the watcher tick, which covers a folder cloned by hand into the projects root
+`services/project_management.clone_project`, project sharing's auto-clone, a
+restore from backup (`xo_projects_sync/restore.py`), and the watcher tick, which
+covers a folder cloned by hand into the projects root
 (`ensure_xo_structure_if_changed` costs one `lstat` per project while `.xo/` is
 unchanged). A `.xo/` holding `space.json` or `projects.json` belongs to a
 former projects root and is left alone. The project template therefore ships
 no `.xo/` files. The golden sample is `tests/fixtures/xo-project/`, and
 `tests/test_xo_structure.py` holds the module, the sample, the schemas and all
-four creation paths to one another: changing the structure means changing the
+five creation paths to one another: changing the structure means changing the
 module and the sample together.
 
 ### The state root: one folder per subject
@@ -343,7 +351,9 @@ subject's folder (a new data source copies `connections/<toolkit>/`:
 The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
 fails until the code and the sample agree. Records inside follow four rules:
 project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines
-start with `ts` and `type`, and data files carry a `schema` number.
+start with `ts` and `type`, and data files carry a `schema` number. The sample's
+README lists the exemptions; `tests/test_state_record_rules.py` feeds the real
+writers each agent's own time format.
 Uninstall removes the state root but keeps `secrets/`, so credentials
 (`secrets.env`, `token.json`) survive a reinstall; the Composio stores stay in
 `~/.config/composio/`.

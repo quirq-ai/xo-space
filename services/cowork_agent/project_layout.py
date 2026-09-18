@@ -453,26 +453,6 @@ def xo_dir(name: str) -> Path:
     return project_dir(name) / ".xo"
 
 
-def memory_dir(name: str) -> Path:
-    return xo_dir(name) / "memory"
-
-
-def state_dir(name: str) -> Path:
-    return xo_dir(name) / "state"
-
-
-def artifacts_dir(name: str) -> Path:
-    return xo_dir(name) / "artifacts"
-
-
-def skills_dir(name: str) -> Path:
-    return xo_dir(name) / "skills"
-
-
-def context_dir(name: str) -> Path:
-    return xo_dir(name) / "context"
-
-
 def project_metadata_path(name: str) -> Path:
     return xo_dir(name) / "project.json"
 

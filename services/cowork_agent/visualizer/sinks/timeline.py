@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from services.cowork_agent.visualizer.atomic_write import append_jsonl
+from services.timestamps import canonical_ts
 from services.cowork_agent.visualizer.ingest.events import (
     WORKITEM_ACTIONS,
     Event,
@@ -31,8 +32,10 @@ _PID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 
 def _envelope(line: dict, pid: Optional[str]) -> dict:
-    """``ts`` and ``type`` first, then ``pid``, then the event's own fields."""
-    head = {"ts": line.get("ts"), "type": line.get("type")}
+    """``ts`` and ``type`` first, then ``pid``, then the event's own fields.
+
+    ``ts`` is written in UTC ending in ``Z`` whatever form the agent used."""
+    head = {"ts": canonical_ts(line.get("ts")), "type": line.get("type")}
     if pid:
         head["pid"] = pid
     return {**head, **{k: v for k, v in line.items() if k not in head}}
