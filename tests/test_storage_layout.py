@@ -170,14 +170,26 @@ class MigrateTests(_Sandbox):
 
     def test_logs_move_into_the_logs_folder(self) -> None:
         (self.root / "commands.log").write_text("a", encoding="utf-8")
-        (self.root / "commands.log.1").write_text("b", encoding="utf-8")
         (self.root / "scheduler" / "logs").mkdir(parents=True)
         (self.root / "scheduler" / "logs" / "job1.log").write_text("c", encoding="utf-8")
         with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}):
             layout.migrate_layout()
-        for path in ("logs/commands.log", "logs/commands.log.1", "logs/scheduler/job1.log"):
+        for path in ("logs/commands.log", "logs/scheduler/job1.log"):
             self.assertTrue((self.root / path).is_file(), path)
         self.assertFalse((self.root / "scheduler" / "logs").exists())
+
+    def test_the_last_rotated_command_log_becomes_the_first_archive(self) -> None:
+        """The single `.1` generation earlier releases kept is adopted by the
+        archive rather than deleted, named for when it was rotated."""
+        rotated = self.root / "commands.log.1"
+        rotated.write_text("b", encoding="utf-8")
+        os.utime(rotated, (1767322445, 1767322445))     # 2026-01-02T02:54:05Z
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}):
+            layout.migrate_layout()
+        archived = self.root / "logs" / "archive" / "commands.20260102T025405Z.log"
+        self.assertEqual(archived.read_text(encoding="utf-8"), "b")
+        self.assertFalse((self.root / "logs" / "commands.log.1").exists())
+        self.assertEqual(layout.migrate_layout(), [])
 
     def test_file_modes_survive_the_move(self) -> None:
         secret = self.root / "secrets.env"

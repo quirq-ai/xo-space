@@ -211,7 +211,7 @@ class RunSpecTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, entry)
 
-    def test_rotation_keeps_one_generation(self) -> None:
+    def test_rotation_archives_the_full_log_under_a_timestamped_name(self) -> None:
         from utils.commands import run_sync
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -222,11 +222,43 @@ class RunSpecTests(unittest.TestCase):
                 second = run_sync([sys.executable, "-c", "print('second entry payload')"], timeout=30)
             self.assertTrue(first.ok)
             self.assertTrue(second.ok)
-            current = (state_root / "logs" / "commands.log").read_text(encoding="utf-8")
-            rotated = (state_root / "logs" / "commands.log.1").read_text(encoding="utf-8")
+            logs = state_root / "logs"
+            current = (logs / "commands.log").read_text(encoding="utf-8")
+            archives = sorted((logs / "archive").iterdir())
+            self.assertEqual(len(archives), 1, archives)
+            self.assertRegex(archives[0].name, r"^commands\.\d{8}T\d{6}Z\.log$")
+            self.assertIn("first entry payload", archives[0].read_text(encoding="utf-8"))
+            self.assertFalse((logs / "commands.log.1").exists())
         self.assertIn("second entry payload", current)
         self.assertNotIn("first entry payload", current)
-        self.assertIn("first entry payload", rotated)
+
+    def test_every_archive_is_kept_and_they_join_back_into_one_record(self) -> None:
+        """Nothing is deleted and nothing is reordered: reading the archives in
+        name order and then the live file reproduces every entry, in the order
+        it was written, byte for byte."""
+        target = self.state_root / "logs" / "commands.log"
+        entries = [f"=== entry {i:03d} ===\n{'y' * 80}\n" for i in range(40)]
+        with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
+            for entry in entries:
+                commands._write_log(target, entry, rotate=True)
+
+        archives = sorted((self.state_root / "logs" / "archive").iterdir())
+        self.assertGreater(len(archives), 5, archives)
+        joined = "".join(p.read_text(encoding="utf-8") for p in [*archives, target])
+        self.assertEqual(joined, "".join(entries))
+
+    def test_rotation_from_the_pre_folders_path_archives_inside_logs(self) -> None:
+        """A log still at the old top-level path (an older server sharing this
+        state root) must not scatter an archive/ folder across the root."""
+        legacy = self.state_root / "commands.log"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 100):
+            commands._write_log(legacy, "=== one ===\n" + "z" * 80 + "\n", rotate=True)
+            commands._write_log(legacy, "=== two ===\n", rotate=True)
+        self.assertFalse((self.state_root / "archive").exists())
+        archives = sorted((self.state_root / "logs" / "archive").iterdir())
+        self.assertEqual(len(archives), 1, archives)
+        self.assertIn("=== one ===", archives[0].read_text(encoding="utf-8"))
 
     def test_off_switch_disables_default_log_but_keeps_explicit_log_path(self) -> None:
         from utils.commands import run_sync
@@ -322,8 +354,8 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn("first entry payload", own)
         self.assertIn("[REDACTED]", own)
         self.assertNotIn("ghp_secretvalue", own)
-        self.assertFalse(job_log.with_name("job.log.1").exists())
-        self.assertTrue((self.state_root / "logs" / "commands.log.1").exists())
+        self.assertFalse(job_log.with_name("archive").exists())
+        self.assertTrue(any((self.state_root / "logs" / "archive").iterdir()))
 
     def test_concurrent_writers_rotate_without_racing(self) -> None:
         """Scheduler jobs finish on threads while requests shell out on others;
@@ -350,6 +382,11 @@ class RunSpecTests(unittest.TestCase):
                 t.join()
         self.assertEqual(errors, [])
         self.assertTrue(target.exists())
+        # Every entry survives the race: rotation moves a file aside, it never
+        # drops what another thread already appended.
+        written = [target, *sorted((self.state_root / "logs" / "archive").iterdir())]
+        kept = sum(p.read_text(encoding="utf-8").count(entry) for p in written)
+        self.assertEqual(kept, 8 * 300)
 
     @unittest.skipIf(os.name != "posix", "process groups are POSIX")
     def test_timeout_kills_the_whole_process_group(self) -> None:

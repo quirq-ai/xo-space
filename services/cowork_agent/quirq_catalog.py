@@ -272,6 +272,8 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Append-only command run history, one JSONL file per command"
         if relative_path == "logs":
             return "Safe to delete: server output, the command log, and saved command output"
+        if relative_path == "logs/archive":
+            return "Earlier command logs, one file per rotation; kept until you delete them"
         if relative_path in ("scheduler/logs", "logs/scheduler"):
             return "Full command output logs, retained when a definition is deleted"
         if (
@@ -291,8 +293,10 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Run timestamps, trigger, status, return code, duration, and output tail"
     if relative_path.startswith(("scheduler/logs/", "logs/scheduler/")):
         return "Appended command output through the command logger"
+    if relative_path.startswith("logs/archive/"):
+        return "An earlier command log, named for when it was archived"
     if relative_path.startswith("logs/commands.log"):
-        return "Every external command Quirq runs: bounded, redacted, rotated"
+        return "Every external command Quirq runs: redacted, each entry capped, archived at 5 MB"
     if relative_path == "logs/quirq.log":
         return "Server output from the installer"
     if relative_path.startswith("sharing/removed/"):

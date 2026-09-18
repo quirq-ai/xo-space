@@ -26,10 +26,12 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 from services.storage.paths import quirq_state_dir
+from utils.commands import archive_path_for
 from utils.runtime_env import logs_dir, scheduler_dir  # noqa: F401  (defined below the services layer)
 
 logger = logging.getLogger(__name__)
@@ -147,8 +149,24 @@ MOVES: list[Move] = [
     Move("the rotated command log",
          _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log.1", lambda: logs_dir() / "commands.log"),
          lambda: logs_dir() / "commands.log.1"),
+    # The one generation releases before the archive kept. It arrives here
+    # either straight from logs/ or through the move above, in the same run.
+    Move("the last rotated command log",
+         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "logs/commands.log.1", lambda: logs_dir() / "commands.log"),
+         lambda: _archived_rotation()),
     Move("saved command output", _in_state_root("scheduler", "logs"), lambda: logs_dir() / "scheduler"),
 ]
+
+
+def _archived_rotation() -> Path:
+    """The archive name for the old ``commands.log.1``: when it was rotated is
+    no longer in its name, so its modification time supplies the stamp."""
+    rotated = logs_dir() / "commands.log.1"
+    try:
+        at = datetime.fromtimestamp(rotated.stat().st_mtime, timezone.utc)
+    except OSError:
+        at = datetime.now(timezone.utc)
+    return archive_path_for(logs_dir() / "commands.log", at)
 
 
 def migrate_layout(moves: Optional[list[Move]] = None) -> list[str]:

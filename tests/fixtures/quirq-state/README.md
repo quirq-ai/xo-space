@@ -34,7 +34,7 @@ into them.
 | `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
-| `logs/` | `quirq.log`, `commands.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only |
+| `logs/` | `quirq.log`, `commands.log`, `archive/commands.<stamp>.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only; the archive is every earlier command log |
 | `.locks/` | lock sentinels | `services/storage/flock.py` | nothing |
 
 A cursor lives next to the data it advances, so a reset wipes both or neither:
@@ -83,7 +83,7 @@ Three kinds of file have no example, on purpose:
 - adapter cursor files in `projects/` (`<source>-offsets.json`), whose shape
   belongs to each adapter;
 - rotated segments (`timeline.<stamp>.jsonl`, `events.<stamp>.jsonl`,
-  `commands.log.1`), older copies of the files shown.
+  `logs/archive/commands.<stamp>.log`), older copies of the files shown.
 
 `tests/test_quirq_state_layout.py` checks that the examples follow the four
 rules, match their JSON schemas, and read back through the stores that own
