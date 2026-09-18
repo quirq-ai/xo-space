@@ -685,6 +685,7 @@ class SpaceWikiTests(unittest.TestCase):
         guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         # Work lands on development; main is the release branch.
         self.assertIn("target `development`", guide)
+        self.assertIn("publish-container.yml", guide)
         self.assertNotIn("Branch from and target **`main`**", guide)
         for invariant in (
             "modularity invariant", "Thin routers", "project folder is sacred",

@@ -272,8 +272,9 @@ quotes (route counts, test counts).
 ## Branches, commits, pull requests
 
 **Branch from `development`, target `development`.** `main` is the release
-branch: it is what the public one-liner installs and what `install.sh`
-fast-forwards a managed checkout to. `development` is
+branch: it is what the public one-liner installs, what the container image is
+built from (`.github/workflows/publish-container.yml` runs on push to `main`),
+and what `install.sh` fast-forwards a managed checkout to. `development` is
 merged into `main` by the maintainers in "Merge Dev to Main" pull requests;
 nothing lands on `main` directly.
 
