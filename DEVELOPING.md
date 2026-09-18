@@ -575,9 +575,25 @@ OAuth click, so consent is the boundary, not a pre-pinned list. `get_session` do
 (a non-empty allow re-pins a bounded allowlist; `COMPOSIO_CONNECT_DENY` subtracts). The
 Connectors tab derives "on here" from the live connection in dynamic mode (a GET never
 writes scope). The MCP proxy is unchanged — it forwards whatever `build_mcp_server_entry`
-returns, so the meta-tools reach the agent with no proxy code. Phases 2–3 (a lazy browse
-UI over `composio.toolkits.list`, custom-auth credential entry, and generalised
-categories/collectors) are separate.
+returns, so the meta-tools reach the agent with no proxy code.
+
+**Browse all + custom auth (Phase 2).** Dynamic mode also gives the *person* the same
+reach the agent has, on the Connectors tab. A "Browse all connectors" panel appears only
+when `mode==='local' && dynamic`; it searches Composio's full catalog on demand.
+`connectors/composio/catalog.py` pages over `client.list_catalog` (which calls
+`toolkits.list(search=…, cursor=…, limit=…)` on the underlying SDK client), so we never
+materialise the ~1500-toolkit list: every request carries a `limit` and `cursor`, and each
+page is cached per query for `COMPOSIO_CATALOG_TTL` seconds (default 3600). The default
+view is the curated **featured** set (`catalog.featured()` = `service.TOOLKITS`), which
+needs no catalog call at all. Routes: `GET /catalog` (search/category/cursor/limit clamped
+1..50, 409 without a key, returns `{items, next_cursor, featured}`) and
+`GET /{toolkit}/auth-fields` (managed_auth + creation fields from `client.toolkit_detail`).
+A toolkit whose OAuth is Composio-managed connects one-click through the existing popup+poll
+flow; one that needs the user's own credentials renders an inline form and posts them to
+`/connect` with `credentials`, which `service.initiate_connection` turns into a custom auth
+config (`client.create_custom_auth_config`, cached in the byo_key store) before connecting.
+Unknown-toolkit scheme/alias checks are skipped in dynamic mode. Phase 3 (generalised
+categories/collectors) is separate.
 
 ### 10.2 Workspace isolation lives in the session
 

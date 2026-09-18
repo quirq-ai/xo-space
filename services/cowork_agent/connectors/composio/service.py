@@ -213,24 +213,33 @@ def initiate_connection(
     redirect_uri: Optional[str] = None,
     alias: Optional[str] = None,
     allow_multiple: bool = False,
+    credentials: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    # A new toolkit or scheme needs a row here (`meta.schemes`) and a matching
-    # `TOOLKIT_AUTH_SCHEMES` row in xo-swarm-api's `utils/composio_client.py`; the
-    # swarm's hosted link serves OAuth and key-based schemes alike.
-    meta = toolkit_meta(toolkit_id)
     scheme = auth_scheme.upper()
-    if scheme not in meta.schemes:
-        raise ValueError(
-            f"Toolkit {meta.slug} does not support auth scheme {scheme!r}. "
-            f"Supported: {meta.schemes}"
-        )
+    known = toolkit_id.lower() in TOOLKITS
+    if known:
+        meta = toolkit_meta(toolkit_id)
+        if scheme not in meta.schemes:
+            raise ValueError(
+                f"Toolkit {meta.slug} does not support auth scheme {scheme!r}. "
+                f"Supported: {meta.schemes}"
+            )
+    elif not dynamic_connectors_enabled():
+        # Curated mode: an unknown toolkit is an error, as before.
+        toolkit_meta(toolkit_id)
+    # else: dynamic mode connecting an arbitrary catalog toolkit — the slug is the id.
+
     callback = redirect_uri or _callback_url()
     alias = normalize_alias(alias)
-    if alias:
+    if alias and known:
         assert_alias_free(user_id, toolkit_id, alias)
 
-    # user_id is never sent: xo-swarm-api resolves it from this backend's own bearer
-    # token and only ever acts as the caller, never as a user_id it was handed.
+    if credentials:
+        # Custom auth: create (and cache) a use_custom_auth config from the user's
+        # fields; the connect below picks it up via auth_config_for's cache.
+        swarm_client.create_custom_auth_config(toolkit_id, scheme, credentials)
+
+    # user_id is never sent: the SDK client acts as the key's own account.
     request = swarm_client.connect(
         toolkit_id,
         auth_scheme=scheme,
