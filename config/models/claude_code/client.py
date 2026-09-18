@@ -35,7 +35,7 @@ class ClaudeCodeClient:
         Convert optional frontend agent_type into a Claude skill name.
 
         Keeps backward compatibility with existing API clients while routing to
-        Claude-native skills under .claude/skills.
+        the Claude skill of the same name.
         """
         if not agent_type:
             return None

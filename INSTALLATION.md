@@ -8,7 +8,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Open <http://localhost:5002/space/>.
 
-Docker is not required. The command:
+The command:
 
 1. installs [uv](https://docs.astral.sh/uv/) if it is missing;
 2. clones Quirq into `./xo-space`, named after the repository;
@@ -116,8 +116,7 @@ projects. Run it the way you run the installer — from the workspace:
 ```
 
 It stops the running server first (the `cowork-api.sh` daemon included),
-brings down the local Docker compose project when the compose launcher was
-used, and then removes the managed checkout (venv, `.env`, and the
+and then removes the managed checkout (venv, `.env`, and the
 `rclone.conf` / `mcp-tokens.json` connector credentials with it), the
 `.quirq` state root (all but `secrets/`, which keeps your credentials) — `roots.env` is read first, so a root moved from the
 Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the

@@ -638,10 +638,10 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("docker", code.lower())
         self.assertIn("uv venv", code)
         self.assertIn("uv pip install", code)
-        # venv/, not uv's default .venv/ — CLAUDE.md, DEVELOPING.md and
-        # compose.local.yml all document venv/bin/python.
+        # venv/, not uv's default .venv/ — CLAUDE.md and DEVELOPING.md
+        # both document venv/bin/python.
         self.assertNotIn(".venv", code)
-        # Root resolution must stay identical to the retired Docker installer.
+        # Root resolution must stay stable across installer rewrites.
         self.assertIn("saved_root_from_file", code)
         self.assertIn("validate_separate_roots", code)
         self.assertIn("prepare_state_root", code)
@@ -685,7 +685,6 @@ class SpaceWikiTests(unittest.TestCase):
         guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         # Work lands on development; main is the release branch.
         self.assertIn("target `development`", guide)
-        self.assertIn("publish-container.yml", guide)
         self.assertNotIn("Branch from and target **`main`**", guide)
         for invariant in (
             "modularity invariant", "Thin routers", "project folder is sacred",

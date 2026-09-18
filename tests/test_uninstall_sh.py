@@ -4,7 +4,7 @@ Runs ``tests/uninstall_sh_harness.sh``, which sources ``uninstall.sh`` minus
 its final ``main "$@"`` and drives ``resolve_repo_dir``, ``resolve_roots``,
 the ``remove_path`` guards and ``remove_checkout`` against temp directories,
 plus one full ``--yes`` run of a script copy inside a fabricated managed
-install. ``lsof`` and ``docker`` are shadowed with no-op fakes and the
+install. ``lsof`` is shadowed with a no-op fake and the
 daemon tmp dir is redirected, so nothing on the real machine is inspected,
 killed, or removed.
 

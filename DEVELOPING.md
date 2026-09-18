@@ -211,7 +211,6 @@ The project venv is `venv/bin/python` (it has fastapi/uvicorn; the system
 
 ```bash
 # Run
-./quirq                                            # Docker on localhost:5003
 ./cowork-api.sh dev                                # native venv + reload
 PORT=5010 ./cowork-api.sh dev                      # choose another native port
 AGENT_NAME=hermes venv/bin/python server.py        # boot a specific backend
