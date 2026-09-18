@@ -1139,6 +1139,20 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(gmail["alias"], "work")
         self.assertFalse(body["multi_account"]["enable"])
 
+    async def test_account_count_skips_expired_and_disabled_connections(self) -> None:
+        rows = [
+            {"toolkit": "GMAIL", "connected_account_id": "ca_new", "status": "ACTIVE",
+             "created_at": "2026-06-01T00:00:00Z"},
+            {"toolkit": "GMAIL", "connected_account_id": "ca_old", "status": "EXPIRED",
+             "created_at": "2026-01-01T00:00:00Z"},
+            {"toolkit": "GMAIL", "connected_account_id": "ca_off", "status": "ACTIVE",
+             "is_disabled": True, "created_at": "2026-02-01T00:00:00Z"},
+        ]
+        with patch.object(service, "list_connections", return_value=rows):
+            response = await router_mod.list_toolkits(user_id=ACCOUNT)
+        gmail = next(t for t in json.loads(response.body)["toolkits"] if t["id"] == "gmail")
+        self.assertEqual(gmail["account_count"], 1)
+
     async def test_accounts_route_marks_the_default_and_the_pinned_ones(self) -> None:
         rows = [
             {"toolkit": "GMAIL", "connected_account_id": "ca_new", "status": "ACTIVE",

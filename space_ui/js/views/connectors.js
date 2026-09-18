@@ -375,10 +375,10 @@ function renderCard(t){
           +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +'</div>'
       +'</div>'
+      /* status and account facts share one row, so a connected card is no
+         taller than an unconnected one */
+      +'<div class="conn-card-status">'
       +'<i class="conn-state '+status.cls+'">'+esc(status.text)+'</i>'
-    +'</div>'
-    +'<div class="conn-card-body">'
-      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
       +'<div class="conn-facts">'
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
         /* which account the session is bound to; only a connection has one */
@@ -386,6 +386,10 @@ function renderCard(t){
           ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
           :'')
       +'</div>'
+      +'</div>'
+    +'</div>'
+    +'<div class="conn-card-body">'
+      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Enable it to use this account in this workspace.</p>'
         :'')
@@ -401,12 +405,6 @@ function renderCard(t){
         :(enabled
           ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
           :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
-      /* Deleting is account-wide, so it is kept visually apart from the
-         workspace-local toggle above and confirmed before it runs. */
-      +(connected
-        ?'<button class="conn-secondary is-danger" data-action="disconnect">'
-          +'Delete connection&hellip;</button>'
-        :'')
       +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
@@ -416,6 +414,14 @@ function renderCard(t){
       +(connected&&(enabled||polling)
         ?'<button class="conn-secondary" data-action="polling">'
           +(polling?'Hide polling':'Polling')+'</button>'
+        :'')
+      /* Deleting is account-wide, so it sits apart from the workspace-local
+         buttons, at the row's far end, and is confirmed before it runs. */
+      +(connected
+        ?'<button class="conn-secondary is-danger conn-delete" data-action="disconnect"'
+          +' title="Delete connection" aria-label="Delete connection">'
+          +'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6.5 4V2.75h3V4M4.5 4l.6 9.25h5.8L11.5 4M6.75 6.5v4.5M9.25 6.5v4.5"/></svg>'
+          +'</button>'
         :'')
     +'</div>'
     +(open?renderActions(t.id):'')

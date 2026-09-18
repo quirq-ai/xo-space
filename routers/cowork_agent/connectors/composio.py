@@ -116,8 +116,16 @@ def _status_map_from_rows(
 
 
 def _account_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Usable accounts per toolkit slug.
+
+    Only ACTIVE, enabled connections count: a reconnect leaves the old
+    connection behind as EXPIRED/FAILED, and counting it made a single-account
+    toolkit read "2 accounts" on its card.
+    """
     counts: dict[str, int] = {}
     for row in rows:
+        if (row.get("status") or "").upper() != "ACTIVE" or row.get("is_disabled"):
+            continue
         slug = (row.get("toolkit") or "").upper()
         if slug:
             counts[slug] = counts.get(slug, 0) + 1

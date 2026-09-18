@@ -56,9 +56,13 @@
 .conn-key-form input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .conn-key-form .conn-primary,.conn-key-form .conn-secondary{flex:none}
 
-.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:start}
+/* cards in a row share one height, so their buttons line up along the bottom;
+   while a drawer is open the neighbours keep their own height instead of
+   stretching to the drawer's */
+.conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:stretch}
+.conn-grid:has(.conn-actions,.conn-poll){align-items:start}
 
-.conn-card{display:flex;flex-direction:column;min-width:0;min-height:220px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
+.conn-card{position:relative;display:flex;flex-direction:column;min-width:0;min-height:200px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
 .conn-card:hover{border-color:#41464f}
 .conn-card.is-on,.conn-card.is-connected{border-color:rgba(168,217,79,.24)}
 
@@ -69,6 +73,9 @@
 .conn-card-id{min-width:0}
 .conn-card-id span{display:block;font:400 12px/1.4 var(--sans);color:var(--ink-3);margin-top:4px}
 .conn-card-id h3{font:600 14px/1.35 var(--sans);margin:0;overflow-wrap:anywhere}
+/* toolkit cards: the status pill and the account chip on one row */
+.conn-card-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;max-width:100%}
+.conn-card-status .conn-facts{margin-top:0;min-width:0;max-width:100%}
 .conn-state{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:500 11px/1.4 var(--sans);font-style:normal;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px;overflow-wrap:anywhere}
 .conn-state::before{content:"";width:5px;height:5px;flex:none;border-radius:50%;background:currentColor;opacity:.75}
 .conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(168,217,79,.22);background:rgba(168,217,79,.04)}
@@ -93,7 +100,9 @@
   background:rgba(200,103,76,.08);color:#e1937d;font-size:12px;line-height:1.5;overflow-wrap:anywhere
 }
 
-.conn-card-acts{display:flex;gap:7px;padding:14px 16px 16px;flex-wrap:wrap}
+.conn-card-acts{display:flex;align-items:center;gap:6px;padding:14px 16px 16px;flex-wrap:wrap}
+/* a connected card's three buttons fit one row at the grid's 270px minimum */
+.conn-card-acts .conn-secondary{padding-inline:9px;white-space:nowrap}
 .conn-primary,.conn-secondary{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;min-height:32px;
   border-radius:7px;padding:7px 10px;font:500 12px/1.4 var(--sans);text-decoration:none;
@@ -105,13 +114,20 @@
 .conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
 .conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}
 .conn-secondary.is-danger:hover{background:rgba(200,103,76,.1)}
+/* account-wide delete: icon-only, in the card's top-right corner, away from the
+   workspace-local buttons (which then fit on one row); red only on hover so it
+   does not compete with them */
+.conn-secondary.is-danger.conn-delete{position:absolute;top:14px;right:14px;width:30px;min-height:30px;height:30px;padding:0;border-color:var(--line);color:var(--ink-3)}
+.conn-card:has(.conn-delete) .conn-card-heading{padding-right:38px}
+.conn-secondary.is-danger.conn-delete:hover{border-color:rgba(200,103,76,.42);color:#e1937d}
+.conn-delete svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 /* :disabled alone means "cannot act"; only an in-flight request earns the wait
    cursor, via .is-busy. Same distinction as the Setup tab. */
 .conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
 .conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
 .conn-page button:focus-visible,.conn-page a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 
-.conn-actions{border-top:1px solid var(--line-soft);padding:13px 18px 16px;max-height:340px;overflow:auto}
+.conn-actions{border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);padding:13px 16px 16px;max-height:340px;overflow:auto}
 .conn-actions-note{margin:0 0 10px;color:var(--ink-3);font-size:12px;line-height:1.5}
 .conn-action{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:12px;color:var(--ink-2);cursor:pointer}
 .conn-action:hover{color:var(--ink)}
@@ -157,7 +173,7 @@
 /* Polling drawer: what the connections poller collects into the Inbox for this
    toolkit, and how often. Same drawer pattern as .conn-actions above; the
    buttons reuse .conn-primary / .conn-secondary. */
-.conn-poll{border-top:1px solid var(--line-soft);padding:13px 18px 16px;display:flex;flex-direction:column;gap:7px}
+.conn-poll{border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);padding:13px 16px 16px;display:flex;flex-direction:column;gap:7px}
 .conn-poll-note{margin:0 0 3px;color:var(--ink-3);font-size:12px;line-height:1.5}
 /* "Polling as <email>", above the collectors; a long address wraps */
 .conn-poll-account{color:var(--ink-2);word-break:break-all}
