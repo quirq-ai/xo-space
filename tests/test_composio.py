@@ -426,20 +426,31 @@ class MultiAccountTests(_ComposioBase):
             config = service.multi_account_config()
         self.assertEqual(config, {
             "enable": True,
-            "max_accounts_per_toolkit": service.MULTI_ACCOUNT_DEFAULT_MAX,
+            "max_accounts_per_toolkit": service.MULTI_ACCOUNT_MAX,
             "require_explicit_selection": False,
         })
 
     def test_max_outside_the_supported_range_is_clamped_not_forwarded(self) -> None:
-        # Composio rejects a max outside 2-10, and a session that cannot be
-        # created costs the user every tool, so an operator typo is clamped.
-        for raw, expected in (("99", 10), ("1", 2), ("notanumber", 5)):
+        # A session that cannot be created costs the user every tool, so an
+        # operator typo is clamped into MULTI_ACCOUNT_MIN..MULTI_ACCOUNT_MAX.
+        for raw, expected in (("99", 5), ("3", 3), ("notanumber", 5)):
             with patch.dict(os.environ, {
                 "COMPOSIO_MULTI_ACCOUNT": "true",
                 "COMPOSIO_MULTI_ACCOUNT_MAX": raw,
             }):
                 config = service.multi_account_config()
             self.assertEqual(config["max_accounts_per_toolkit"], expected, raw)
+
+    def test_a_max_of_one_is_single_account(self) -> None:
+        # Composio rejects a multi-account session capped below 2, so a limit of
+        # 1 (or less, clamped up to 1) turns the block off instead.
+        for raw in ("1", "0", "-3"):
+            with patch.dict(os.environ, {
+                "COMPOSIO_MULTI_ACCOUNT": "1",
+                "COMPOSIO_MULTI_ACCOUNT_MAX": raw,
+            }):
+                self.assertIsNone(service.multi_account_config(), raw)
+                self.assertEqual(service.max_accounts_per_toolkit(), 1, raw)
 
     def test_explicit_selection_is_passed_through(self) -> None:
         with patch.dict(os.environ, {
