@@ -117,19 +117,6 @@ async def get_catalog(
     return JSONResponse({**page, "featured": catalog.featured()})
 
 
-@router.get("/api/connectors/composio/catalog/categories")
-async def get_categories(request: Request) -> JSONResponse:
-    """All toolkit categories for the browse-panel filter chips. One bounded upstream
-    call, TTL-cached; 409 without a key. Static path, registered before /{toolkit}."""
-    _require_key()
-    from services.cowork_agent.connectors.composio import catalog
-    try:
-        cats = catalog.categories()
-    except composio_client.ComposioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    return JSONResponse({"categories": cats})
-
-
 @router.get("/api/connectors/composio/{toolkit}/auth-fields")
 async def get_auth_fields(
     toolkit: str,

@@ -594,11 +594,11 @@ flow; one that needs the user's own credentials renders an inline form and posts
 config (`client.create_custom_auth_config`, cached in the byo_key store) before connecting.
 Unknown-toolkit scheme/alias checks are skipped in dynamic mode.
 
-**Category chips + graceful degradation (Phase 3).** The browse panel filters by
-category: `catalog.categories()` makes one bounded `toolkits.retrieve_categories` call,
-TTL-cached under a reserved key in the same cache (`GET /catalog/categories`, 409 without a
-key). Chips combine with search and cursor paging (`/catalog?category=<id>&search=&cursor=`);
-the category id comes from each toolkit's `meta.categories[].id` (not `slug`). The curated
+**Graceful degradation (Phase 3).** The browse panel is search-only: `/catalog` takes a
+`search` and a `cursor` and pages ~24 at a time (a `category` filter is still accepted by the
+route and `catalog.page`, but no UI drives it — Composio's category list proved noisy and
+many categories returned nothing, so the chips were removed). Catalog items still carry
+`categories[].{id,name}` (id, not `slug`) for the card subtitle. The curated
 set (`service.TOOLKITS`) is the *featured* boundary, not a hard limit: an arbitrary toolkit
 connects for the agent and records into `space_scope`, but degrades cleanly for everything
 curated — no Inbox collectors (`services/connections/collectors.catalog` returns `[]` for an

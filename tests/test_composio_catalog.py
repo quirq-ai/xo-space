@@ -86,54 +86,6 @@ class CatalogCacheTests(_KeyBase):
         self.assertEqual(set(catalog.featured()), set(service.TOOLKITS))
 
 
-class CategoriesTests(_KeyBase):
-    def setUp(self) -> None:
-        super().setUp()
-        byo_key.save("sk_live")
-        catalog.invalidate()
-        self.addCleanup(catalog.invalidate)
-
-    def test_list_categories_maps_items(self) -> None:
-        raw = MagicMock()
-        raw.toolkits.retrieve_categories.return_value = SimpleNamespace(
-            items=[SimpleNamespace(id="crm", name="CRM"),
-                   SimpleNamespace(id="productivity", name="Productivity")])
-        with patch.object(byo_client, "_sdk", return_value=SimpleNamespace(_client=raw)):
-            out = byo_client.list_categories()
-        self.assertEqual(out, [{"id": "crm", "name": "CRM"},
-                               {"id": "productivity", "name": "Productivity"}])
-
-    def test_categories_cached(self) -> None:
-        with patch.object(catalog, "_client") as c:
-            c.list_categories.return_value = [{"id": "crm", "name": "CRM"}]
-            catalog.categories()
-            catalog.categories()
-            self.assertEqual(c.list_categories.call_count, 1)   # cached
-
-
-class CategoriesRouteAsync(unittest.IsolatedAsyncioTestCase, _KeyBase):
-    def setUp(self) -> None:
-        super().setUp()
-        byo_key.save("sk_live")
-        catalog.invalidate()
-        self.addCleanup(catalog.invalidate)
-
-    async def test_categories_route_returns_list(self) -> None:
-        from routers.cowork_agent.connectors import composio as router
-        with patch.object(catalog, "categories",
-                          return_value=[{"id": "crm", "name": "CRM"}]):
-            resp = await router.get_categories(_req())
-        self.assertEqual(json.loads(resp.body)["categories"], [{"id": "crm", "name": "CRM"}])
-
-    async def test_categories_route_409_without_key(self) -> None:
-        from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as router
-        byo_key.clear()
-        with self.assertRaises(HTTPException) as raised:
-            await router.get_categories(_req())
-        self.assertEqual(raised.exception.status_code, 409)
-
-
 class CatalogRouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     def setUp(self) -> None:
         super().setUp()

@@ -193,13 +193,3 @@
   color:var(--ink);font:400 13px/1.4 var(--sans)
 }
 .conn-browse-field input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-/* Category filter chips: server-side filter, one bounded categories call. */
-.conn-chips{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 14px}
-.conn-chips:empty{display:none}
-.conn-chip{
-  font:500 12px var(--sans);color:var(--ink-2);background:var(--bg);
-  border:1px solid var(--line);border-radius:999px;padding:5px 12px;cursor:pointer
-}
-.conn-chip:hover{color:var(--ink);border-color:var(--ink-3)}
-.conn-chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.conn-chip[aria-pressed="true"]{color:var(--bg);background:var(--accent-deep);border-color:var(--accent-deep)}

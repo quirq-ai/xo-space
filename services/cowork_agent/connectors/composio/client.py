@@ -340,19 +340,6 @@ def list_catalog(*, search: Optional[str] = None, category: Optional[str] = None
             "next_cursor": _attr(page, "next_cursor", default=None)}
 
 
-def list_categories() -> list[dict[str, Any]]:
-    """All toolkit categories (one bounded call; the caller caches). Used to build
-    the browse-panel filter chips without paging the whole catalog."""
-    byo_key.require()
-    try:
-        resp = _sdk()._client.toolkits.retrieve_categories()
-    except Exception as exc:  # noqa: BLE001
-        raise _raise(exc) from exc
-    items = _attr(resp, "items", default=resp) or []
-    return [{"id": _attr(c, "id", default=""), "name": _attr(c, "name", default="")}
-            for c in items]
-
-
 def _creation_fields(detail: Any) -> dict[str, list]:
     creation = _attr(detail, "auth_config_detail", "fields", "auth_config_creation",
                      default=None)

@@ -15,10 +15,8 @@ from typing import Any, Optional
 from services.cowork_agent.connectors.composio import client as _client
 
 _TTL = float(os.getenv("COMPOSIO_CATALOG_TTL", "3600"))
-# {(search, category, cursor, limit): (payload, expires_at)}; the category list is
-# cached under the reserved key _CATS_KEY in the same dict, so invalidate() covers both.
+# {(search, category, cursor, limit): (payload, expires_at)}
 _cache: dict[tuple, tuple[Any, float]] = {}
-_CATS_KEY = ("__categories__",)
 
 
 def invalidate() -> None:
@@ -30,18 +28,6 @@ def featured() -> list[str]:
     """The curated toolkits shown before the user searches. Cheap: no catalog call."""
     from services.cowork_agent.connectors.composio import service
     return list(service.TOOLKITS)
-
-
-def categories() -> list[dict[str, Any]]:
-    """All toolkit categories (``[{id, name}]``), TTL-cached. One upstream call feeds
-    the browse chips; it is not re-fetched per page or per search."""
-    now = time.monotonic()
-    hit = _cache.get(_CATS_KEY)
-    if hit and hit[1] > now:
-        return hit[0]
-    payload = _client.list_categories()
-    _cache[_CATS_KEY] = (payload, now + _TTL)
-    return payload
 
 
 def page(*, search: Optional[str] = None, category: Optional[str] = None,

@@ -22,7 +22,7 @@ import sharingView from './views/sharing.js?v=20260915-agents2';
 import wikiView from './views/wiki.js?v=20260916-jobs3';
 import quirqView from './views/quirq.js?v=20260915-data1';
 import {createSetupViews} from './views/setup.js?v=20260916-jobs3';
-import connectorsView from './views/connectors.js?v=20260918-dynamic3';
+import connectorsView from './views/connectors.js?v=20260918-dynamic4';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
