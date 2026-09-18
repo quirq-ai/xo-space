@@ -100,7 +100,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
 MULTI_ACCOUNT_MIN_MAX = 2
 MULTI_ACCOUNT_MAX_MAX = 10
 MULTI_ACCOUNT_DEFAULT_MAX = 5
-# On by default. COMPOSIO_MULTI_ACCOUNT=0 opts a deployment out.
 MULTI_ACCOUNT_DEFAULT_ENABLED = True
 
 ALIAS_MAX_LENGTH = 128
