@@ -47,7 +47,8 @@ const POLL_INTERVAL=2000;
 
 let root=null;
 let toolkits=[];
-let openToolkit=null;      /* id of the expanded action drawer, if any */
+let maxAccounts=1;         /* GET /toolkits max_accounts_per_toolkit; >1 means multi-account is on */
+let openToolkit=null;     /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
@@ -181,6 +182,7 @@ async function loadAll(){
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
+    maxAccounts=Number(list.data&&list.data.max_accounts_per_toolkit)||1;
     await accounts;
     renderGrid();
     askAccounts();
@@ -405,6 +407,11 @@ function renderCard(t){
         :(enabled
           ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
           :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
+      /* Another account of the same toolkit (work and personal Gmail). Only when
+         the server's multi-account mode lets it reach the agent, up to the cap. */
+      +(connected&&maxAccounts>1&&(t.account_count||1)<maxAccounts
+        ?'<button class="conn-secondary" data-action="add-account">Add account</button>'
+        :'')
       +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
@@ -709,6 +716,7 @@ function handleGridAction(event){
   if(!card)return;
   const id=card.dataset.toolkit;
   if(button.dataset.action==='connect')connect(id,button);
+  else if(button.dataset.action==='add-account')connect(id,button,{addAccount:true});
   else if(button.dataset.action==='enable')setScope(id,true,button);
   else if(button.dataset.action==='unlink')setScope(id,false,button);
   else if(button.dataset.action==='disconnect')disconnect(id,button);
@@ -718,7 +726,9 @@ function handleGridAction(event){
   else if(button.dataset.action==='poll-now')pollNow(id,button);
 }
 
-async function connect(toolkitId,button){
+/* addAccount sends allow_multiple, so Composio keeps the existing connection and
+   stores this one beside it instead of replacing it. */
+async function connect(toolkitId,button,{addAccount=false}={}){
   cardError(toolkitId,'');
   setBusy(button,true);
   /* Opened before the await: a popup opened later is not tied to the click and
@@ -728,7 +738,7 @@ async function connect(toolkitId,button){
     /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
        the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId),allow_multiple:addAccount},
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();

@@ -793,9 +793,10 @@ Gmail). Two switches, and they are independent:
   adds an account instead of replacing the existing one, and `alias` labels it.
   Aliases must be unique per user and toolkit; `service.assert_alias_free`
   checks that before the call so a collision is a 409, not an opaque 502.
-- **In the session**: `COMPOSIO_MULTI_ACCOUNT=1` puts a `multi_account` block
-  on every session, which is what lets *several* accounts of one toolkit reach
-  the agent at once. With it off, `pinned_connected_accounts` pins exactly one
+- **In the session**: a `multi_account` block goes on every session, which is
+  what lets *several* accounts of one toolkit reach the agent at once. It is on
+  by default in code (`MULTI_ACCOUNT_DEFAULT_ENABLED`); `COMPOSIO_MULTI_ACCOUNT=0`
+  turns it off. With it off, `pinned_connected_accounts` pins exactly one
   account per toolkit: the newest active one, matching what Composio would
   pick itself. Pinning two with the flag off is rejected at session creation,
   which is why the cap is enforced here rather than left to the API.
