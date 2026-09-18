@@ -295,6 +295,29 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
             self.assertEqual(await identity_mod.resolve_user(_req()), "space-42")
 
 
+class StaleGatingErrorTests(_KeyBase):
+    def test_stale_gating_errors_are_suppressed_but_real_ones_kept(self) -> None:
+        from services.connections import service as conn_service
+        from services.connections import poller
+        from services.cowork_agent.connectors.composio import space_scope
+        byo_key.save("sk_live")
+        not_on = "googlecalendar is not turned on in this workspace"
+        with patch.object(space_scope, "is_enabled", return_value=True):
+            self.assertIsNone(conn_service._live_last_error("googlecalendar", not_on))
+        with patch.object(space_scope, "is_enabled", return_value=False):
+            self.assertEqual(conn_service._live_last_error("googlecalendar", not_on), not_on)
+        # no-key error clears once a key is present
+        self.assertIsNone(conn_service._live_last_error("gmail", poller.NOT_SIGNED_IN))
+        byo_key.clear()
+        self.assertEqual(conn_service._live_last_error("gmail", poller.NOT_SIGNED_IN),
+                         poller.NOT_SIGNED_IN)
+        # a real provider/collector error is never suppressed
+        byo_key.save("sk_live")
+        with patch.object(space_scope, "is_enabled", return_value=True):
+            self.assertEqual(conn_service._live_last_error("gmail", "unread: quota exceeded"),
+                             "unread: quota exceeded")
+
+
 class ConnectionsSignedInTests(_KeyBase):
     def test_signed_in_tracks_the_composio_key_not_the_xo_token(self) -> None:
         from services.connections import service as conn_service
