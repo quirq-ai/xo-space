@@ -295,6 +295,14 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
             self.assertEqual(await identity_mod.resolve_user(_req()), "space-42")
 
 
+class ConnectionsSignedInTests(_KeyBase):
+    def test_signed_in_tracks_the_composio_key_not_the_xo_token(self) -> None:
+        from services.connections import service as conn_service
+        self.assertFalse(conn_service.signed_in())      # no key configured
+        byo_key.save("sk_live")
+        self.assertTrue(conn_service.signed_in())        # key present, no XO token needed
+
+
 class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_no_key_resolves_to_none(self) -> None:
         from services.connections import poller

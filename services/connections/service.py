@@ -13,8 +13,8 @@ account the toolkit's session is bound to as cached in ``accounts.json``
 one); :func:`refresh_account` resolves it live through the poller.
 
 Core code: names no agent and imports nothing from the adapters tree.
-``signed_in`` looks at the auth router lazily (inside the function) so
-importing this module never pulls a router in at load time. ``poll_now``
+``signed_in`` checks the Composio key lazily (inside the function) so
+importing this module never pulls the connector package in at load time. ``poll_now``
 tells the listeners registered through :func:`register_new_events_listener`
 when a poll collected something; the inbox registers one, this package
 never imports the inbox.
@@ -220,11 +220,14 @@ async def _notify_new_events(toolkit: str) -> None:
 
 
 def signed_in() -> bool:
-    """Whether this workspace holds a token for the platform (the poller
-    needs one to resolve the account id). Imported lazily so this module
-    never loads a router at import time; any failure reads as ``False``."""
+    """Whether connectors can run: a Composio API key is configured.
+
+    In bring-your-own-key mode the poller reaches Composio with the user's own key
+    (not an XO token), so "signed in" means a key is present. Imported lazily so this
+    module never loads the connector package at import time; any failure reads as
+    ``False``."""
     try:
-        from routers.auth.auth import get_auth_token
-        return bool(get_auth_token())
+        from services.cowork_agent.connectors.composio import byo_key
+        return byo_key.configured()
     except Exception:
         return False
