@@ -164,6 +164,10 @@ async def list_toolkits(
 
     multi = composio_service.multi_account_config()
     scope = space_scope.load()
+    # Dynamic mode has no per-workspace allowlist: any connected toolkit is reachable
+    # by the agent, so it reads as "on here" without a scope opt-in. Derived, not
+    # written — a GET never mutates the store.
+    dynamic = composio_service.dynamic_connectors_enabled()
 
     # With no key, the account has no connections here: every toolkit reads NEEDS_KEY.
     default_status = "NEEDS_AUTH" if key_configured else "NEEDS_KEY"
@@ -172,6 +176,7 @@ async def list_toolkits(
     for toolkit_id, meta in composio_service.TOOLKITS.items():
         connection = status_by_slug.get(meta.slug)
         entry = scope.get(toolkit_id) or {}
+        connected = bool(connection) and (connection.get("status") or "").upper() == "ACTIVE"
         toolkits.append({
             "id": toolkit_id,
             "slug": meta.slug,
@@ -187,7 +192,8 @@ async def list_toolkits(
             "alias": (connection or {}).get("alias"),
             "account_count": account_counts.get(meta.slug, 0),
             # Workspace-scoped: a toolkit can be connected on the account and off here.
-            "workspace_enabled": bool(entry.get("enabled")),
+            # In dynamic mode a live connection is reachable regardless of scope.
+            "workspace_enabled": bool(entry.get("enabled")) or (dynamic and connected),
             "pinned_account_ids": list(entry.get("connected_account_ids") or []),
         })
     return JSONResponse({

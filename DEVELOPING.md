@@ -561,6 +561,24 @@ one key is invalid under another) while the local proxy tokens are kept, so agen
 configs keep working without a restart. Pins in `space_scope.json` that pointed at the old
 project are pruned on the next session build; the user reconnects each app.
 
+### 10.1b Dynamic connectors (agent-driven)
+
+`COMPOSIO_DYNAMIC_CONNECTORS` (off by default) switches the session from the curated,
+per-workspace allowlist (§10.2) to **agent-driven** mode. In dynamic mode
+`service._session_config` omits the `toolkits` allowlist and sets `manage_connections`
+(`service.manage_connections_config()`), so the tool-router exposes `COMPOSIO_SEARCH_TOOLS`
+and `COMPOSIO_MANAGE_CONNECTIONS` to the agent: it can discover and connect any toolkit at
+runtime. **Reach is still gated by connected accounts** — a tool executes only once its
+toolkit has an ACTIVE connection for this `user_id`, and connecting requires the user's
+OAuth click, so consent is the boundary, not a pre-pinned list. `get_session` does not raise
+`NoToolkitsEnabled` in this mode. An operator can bound it with `COMPOSIO_CONNECT_ALLOW`
+(a non-empty allow re-pins a bounded allowlist; `COMPOSIO_CONNECT_DENY` subtracts). The
+Connectors tab derives "on here" from the live connection in dynamic mode (a GET never
+writes scope). The MCP proxy is unchanged — it forwards whatever `build_mcp_server_entry`
+returns, so the meta-tools reach the agent with no proxy code. Phases 2–3 (a lazy browse
+UI over `composio.toolkits.list`, custom-auth credential entry, and generalised
+categories/collectors) are separate.
+
 ### 10.2 Workspace isolation lives in the session
 
 Connections are account-wide. What keeps one workspace out of another's connectors is

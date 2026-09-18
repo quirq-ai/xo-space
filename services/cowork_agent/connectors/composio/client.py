@@ -269,12 +269,19 @@ def update_session(session_id: str, config: dict[str, Any]) -> dict[str, Any]:
     byo_key.require()
     try:
         session = _sdk().use(session_id, mcp=True)
-        session.update(
-            connected_accounts=config.get("connected_accounts") or {},
-            toolkits=config.get("toolkits"),
-            tools=config.get("tools") or {},
-            multi_account=config.get("multi_account"),
-        )
+        kwargs: dict[str, Any] = {
+            "connected_accounts": config.get("connected_accounts") or {},
+            "tools": config.get("tools") or {},
+            "multi_account": config.get("multi_account"),
+        }
+        # Patch semantics: send a key only when this config carries it, so dynamic
+        # mode (no allowlist) doesn't re-pin `toolkits`, and manage_connections is
+        # applied when present.
+        if "toolkits" in config:
+            kwargs["toolkits"] = config["toolkits"]
+        if "manage_connections" in config:
+            kwargs["manage_connections"] = config["manage_connections"]
+        session.update(**kwargs)
     except Exception as exc:  # noqa: BLE001
         raise _raise(exc) from exc
     return _session_response(session_id, session)

@@ -143,6 +143,28 @@ def multi_account_enabled() -> bool:
     return multi_account_config() is not None
 
 
+def dynamic_connectors_enabled() -> bool:
+    """Agent-driven dynamic connectors: the session carries no fixed toolkit
+    allowlist and the tool-router's manage_connections meta-tools let the agent
+    connect any toolkit at runtime. Off by default (curated per-workspace scope)."""
+    return _env_flag("COMPOSIO_DYNAMIC_CONNECTORS")
+
+
+def manage_connections_config() -> dict[str, Any]:
+    """The tool-router connection-management block for a dynamic session.
+
+    Keys are the SDK's ``composio.create`` shape (``enable`` / ``wait_for_connections``
+    / ``callback_url``), not the raw API field names — the SDK translates them. The
+    callback is this deployment's public callback so an agent-initiated OAuth returns
+    here. Connection removal is not requested, so the agent cannot delete a user's
+    account (the user does that from the Connectors tab)."""
+    cfg: dict[str, Any] = {"enable": True, "wait_for_connections": True}
+    callback = (os.getenv("COMPOSIO_CALLBACK_URL") or "").strip()
+    if callback:
+        cfg["callback_url"] = callback
+    return cfg
+
+
 def normalize_alias(alias: Optional[str]) -> Optional[str]:
     """Fold an alias to its stored form: trimmed, or None to mean "cleared"."""
     text = (alias or "").strip()
@@ -696,11 +718,48 @@ def prune_scope_to_live_accounts(user_id: str) -> bool:
     return space_scope.prune_to(live)
 
 
+def connect_policy() -> tuple[set[str], set[str]]:
+    """(allow, deny) toolkit slugs bounding what a dynamic session may reach.
+
+    From ``COMPOSIO_CONNECT_ALLOW`` / ``COMPOSIO_CONNECT_DENY`` (comma-separated,
+    lower-cased). Empty allow = unrestricted (the whole catalog); a non-empty allow
+    pins a bounded allowlist even in dynamic mode. Deny removes slugs from that set.
+    A pure deny-list over the open catalog is deferred (Phase 1)."""
+    def _parse(name: str) -> set[str]:
+        raw = (os.getenv(name) or "").strip()
+        return {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return _parse("COMPOSIO_CONNECT_ALLOW"), _parse("COMPOSIO_CONNECT_DENY")
+
+
 def _session_config(user_id: str) -> dict[str, Any]:
-    """The toolkits/tools/connected_accounts this workspace's session is built from."""
+    """The toolkits/tools/connected_accounts this workspace's session is built from.
+
+    Curated mode pins a toolkit allowlist from ``space_scope`` and raises when nothing
+    is enabled. Dynamic mode (``COMPOSIO_DYNAMIC_CONNECTORS``) omits the allowlist and
+    turns on ``manage_connections`` so the agent can connect any toolkit at runtime;
+    reach is gated by ACTIVE connected accounts (OAuth consent is the boundary). A
+    ``COMPOSIO_CONNECT_ALLOW`` policy re-pins a bounded allowlist even in dynamic mode.
+    """
     from services.cowork_agent.connectors.composio import space_scope
 
     prune_scope_to_live_accounts(user_id)
+
+    if dynamic_connectors_enabled():
+        config: dict[str, Any] = {
+            "tools": _disabled_tools_config(),
+            "manage_connections": manage_connections_config(),
+        }
+        allow, deny = connect_policy()
+        if allow:
+            config["toolkits"] = {"enable": sorted(allow - deny)}
+        pinned = space_scope.pins()
+        if pinned:
+            config["connected_accounts"] = pinned
+        multi = multi_account_config()
+        if multi:
+            config["multi_account"] = multi
+        return config
+
     enabled = space_scope.enabled_toolkits()
     if not enabled:
         raise NoToolkitsEnabled(
@@ -708,7 +767,7 @@ def _session_config(user_id: str) -> dict[str, Any]:
             "the account; enable the ones this workspace should use on the Connectors "
             "tab."
         )
-    config: dict[str, Any] = {
+    config = {
         # Checked before Composio looks up a connection, so this is the outer boundary.
         "toolkits": {"enable": enabled},
         "tools": _disabled_tools_config(),
@@ -759,6 +818,11 @@ def _update_payload(config: dict[str, Any]) -> dict[str, Any]:
     payload = dict(config)
     payload.setdefault("connected_accounts", {})
     payload.setdefault("multi_account", None)
+    if dynamic_connectors_enabled() and not connect_policy()[0]:
+        # No bounded allowlist: never re-pin one on update. manage_connections is set
+        # at create and kept by update's patch semantics, so it is not re-sent here
+        # (the update shape differs from create's and need not be touched).
+        payload.pop("toolkits", None)
     return payload
 
 
