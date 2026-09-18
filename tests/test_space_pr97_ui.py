@@ -277,7 +277,8 @@ globalThis.fetch=async(url,opts={})=>{
   calls.push({method,path,body,headers:opts.headers});
   const json=data=>({ok:true,status:200,json:async()=>data});
   if(path==='/xo-auth/session/self')return json({session_id:'s1'});
-  if(path==='/api/connectors/composio/toolkits')return json({toolkits:TOOLKITS});
+  if(path==='/api/connectors/composio/backend')return json({mode:'local',key_source:'file'});
+  if(path==='/api/connectors/composio/toolkits')return json({toolkits:TOOLKITS,key_configured:true,key_source:'file'});
   if(/^\/api\/connectors\/composio\/[^/]+\/tools$/.test(path))return json({tools:[{slug:'send',name:'Send',enabled:true}]});
   if(/^\/api\/connectors\/composio\/[^/]+\/prefs$/.test(path)){
     if(prefsGate)await prefsGate;return json({});
@@ -386,6 +387,12 @@ function cardEl(toolkit){
   return card;
 }
 const alertEl={hidden:true,innerHTML:'',className:''};
+/* the bring-your-own-key panel: its own element with click + keydown listeners
+   (bindEvents) and a nested key input (renderKeyPanel). Models the real #conn-key
+   node added to renderShell. */
+const keyEl={className:'',innerHTML:'',listeners:{},
+  addEventListener(type,fn){(this.listeners[type]=this.listeners[type]||[]).push(fn);},
+  querySelector(sel){if(sel==='#conn-key-input')return null;throw new Error('unstubbed key selector '+sel);}};
 const noMatch={hidden:true,textContent:''};
 const nativeGrid={innerHTML:''};
 const workspaceSection={hidden:false},accountSection={hidden:false};
@@ -399,6 +406,8 @@ const root={
     if(sel==='#conn-workspace-section')return workspaceSection;
     if(sel==='#conn-account-section')return accountSection;
     if(sel==='#conn-refresh')return refreshBtn;
+    if(sel==='#conn-key')return keyEl;
+    if(sel==='#conn-key-input')return null;
     if(sel==='#conn-alert')return alertEl;
     if(sel==='#conn-no-match')return noMatch;
     if(sel.startsWith('#err-')){const id=sel.slice(5);return errs[id]||(errs[id]={hidden:true,textContent:''});}
