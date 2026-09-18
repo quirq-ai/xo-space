@@ -95,11 +95,12 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-# Composio rejects a max outside this range; clamped so an operator typo cannot 400
-# every session creation.
-MULTI_ACCOUNT_MIN_MAX = 2
-MULTI_ACCOUNT_MAX_MAX = 10
-MULTI_ACCOUNT_DEFAULT_MAX = 5
+# Accounts per toolkit an agent session may hold. COMPOSIO_MULTI_ACCOUNT_MAX is
+# clamped into MIN..MAX so an operator typo cannot 400 every session creation, and
+# defaults to MAX. A limit of 1 is single-account, so multi-account is sent off
+# (Composio rejects a multi-account session capped below 2).
+MULTI_ACCOUNT_MIN = 1
+MULTI_ACCOUNT_MAX = 5
 MULTI_ACCOUNT_DEFAULT_ENABLED = True
 
 ALIAS_MAX_LENGTH = 128
@@ -117,19 +118,21 @@ def multi_account_config() -> Optional[dict[str, Any]]:
         return None
     raw = os.getenv("COMPOSIO_MULTI_ACCOUNT_MAX", "").strip()
     try:
-        max_accounts = int(raw) if raw else MULTI_ACCOUNT_DEFAULT_MAX
+        max_accounts = int(raw) if raw else MULTI_ACCOUNT_MAX
     except ValueError:
         log.warning(
             "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%r is not an integer; using %d.",
-            raw, MULTI_ACCOUNT_DEFAULT_MAX,
+            raw, MULTI_ACCOUNT_MAX,
         )
-        max_accounts = MULTI_ACCOUNT_DEFAULT_MAX
-    clamped = max(MULTI_ACCOUNT_MIN_MAX, min(MULTI_ACCOUNT_MAX_MAX, max_accounts))
+        max_accounts = MULTI_ACCOUNT_MAX
+    clamped = max(MULTI_ACCOUNT_MIN, min(MULTI_ACCOUNT_MAX, max_accounts))
     if clamped != max_accounts:
         log.warning(
             "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%d is outside %d-%d; using %d.",
-            max_accounts, MULTI_ACCOUNT_MIN_MAX, MULTI_ACCOUNT_MAX_MAX, clamped,
+            max_accounts, MULTI_ACCOUNT_MIN, MULTI_ACCOUNT_MAX, clamped,
         )
+    if clamped < 2:
+        return None
     return {
         "enable": True,
         "max_accounts_per_toolkit": clamped,
