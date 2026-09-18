@@ -58,6 +58,8 @@ let keyReplacing=false;   /* Replace pressed: show the input over a configured k
 /* Browse-all (dynamic mode): the catalog is paged in on demand, never all at once. */
 let browseCursor=null;    /* next_cursor from the last /catalog page */
 let browseQuery='';       /* current search text */
+let browseCategory='';    /* selected category id, '' = all */
+let browseCats=null;      /* [{id,name}] once fetched; null = not yet */
 let browseLoading=false;
 let browseDebounce=null;
 let browseLoaded=false;   /* has the first page been fetched for this mount */
@@ -137,6 +139,8 @@ function renderShell(){
           +'<p>Search Composio’s full catalog and connect anything you need.</p></div></div>'
         +'<input type="search" id="conn-browse-search" class="conn-browse-search" '
           +'placeholder="Search connectors…" autocomplete="off" spellcheck="false">'
+        +'<div class="conn-chips" id="conn-browse-cats" role="group" '
+          +'aria-label="Filter by category"></div>'
         +'<div class="conn-grid" id="conn-browse-grid"></div>'
         +'<div class="conn-browse-more" id="conn-browse-more" hidden>'
           +'<button class="conn-secondary" data-browse="more" type="button">Load more</button></div>'
@@ -168,6 +172,7 @@ function bindEvents(){
   });
   const browseGrid=root.querySelector('#conn-browse-grid');
   browseGrid.addEventListener('click',handleBrowseAction);
+  root.querySelector('#conn-browse-cats').addEventListener('click',handleCategoryClick);
   root.querySelector('#conn-browse-more').addEventListener('click',ev=>{
     if(ev.target.closest('button[data-browse="more"]'))browseLoadMore();
   });
@@ -293,7 +298,36 @@ function updateBrowseVisibility(){
   if(!section)return;
   const on=keyState.mode==='local'&&keyState.dynamic===true;
   section.hidden=!on;
-  if(on&&!browseLoaded){browseLoaded=true;browseSearch('');}
+  if(on&&!browseLoaded){browseLoaded=true;loadBrowseCats();browseSearch('');}
+}
+
+/* Category chips: one bounded /catalog/categories call (server-side TTL cache), then
+   an "All" chip plus one per category. Failure is silent; search still works. */
+async function loadBrowseCats(){
+  if(browseCats!==null)return;
+  const res=await apiFetch(BASE+'/catalog/categories');
+  browseCats=(res.ok&&res.data&&Array.isArray(res.data.categories))?res.data.categories:[];
+  renderCategoryChips();
+}
+
+function renderCategoryChips(){
+  const row=root.querySelector('#conn-browse-cats');
+  if(!row)return;
+  if(!browseCats||browseCats.length===0){row.innerHTML='';return;}
+  const chip=(id,name)=>'<button class="conn-chip" type="button" data-cat="'+esc(id)
+    +'" aria-pressed="'+(browseCategory===id?'true':'false')+'">'+esc(name)+'</button>';
+  row.innerHTML=chip('','All')
+    +browseCats.map(c=>chip(c.id,c.name||c.id)).join('');
+}
+
+function handleCategoryClick(event){
+  const btn=event.target.closest('button[data-cat]');
+  if(!btn)return;
+  const id=btn.dataset.cat||'';
+  if(id===browseCategory)return;
+  browseCategory=id;
+  renderCategoryChips();
+  browseSearch(browseQuery);
 }
 
 async function browseSearch(query){
@@ -314,6 +348,7 @@ async function loadBrowsePage(append){
   try{
     let path=BASE+'/catalog?limit=24';
     if(browseQuery)path+='&search='+encodeURIComponent(browseQuery);
+    if(browseCategory)path+='&category='+encodeURIComponent(browseCategory);
     if(append&&browseCursor)path+='&cursor='+encodeURIComponent(browseCursor);
     const res=await apiFetch(path);
     if(!res.ok||!res.data){
@@ -332,7 +367,8 @@ async function loadBrowsePage(append){
 function renderBrowse(items,append){
   const grid=root.querySelector('#conn-browse-grid');
   if(!append&&items.length===0){
-    grid.innerHTML='<div class="conn-empty">No connectors match &ldquo;'+esc(browseQuery)+'&rdquo;.</div>';
+    const what=browseQuery?'&ldquo;'+esc(browseQuery)+'&rdquo;':'this filter';
+    grid.innerHTML='<div class="conn-empty">No connectors match '+what+'.</div>';
     return;
   }
   const html=items.map(browseCardHTML).join('');
