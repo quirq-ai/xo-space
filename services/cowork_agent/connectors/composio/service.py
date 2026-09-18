@@ -95,10 +95,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-# Accounts per toolkit an agent session may hold. COMPOSIO_MULTI_ACCOUNT_MAX is
-# clamped into MIN..MAX so an operator typo cannot 400 every session creation, and
-# defaults to MAX. A limit of 1 is single-account, so multi-account is sent off
-# (Composio rejects a multi-account session capped below 2).
 MULTI_ACCOUNT_MIN = 1
 MULTI_ACCOUNT_MAX = 5
 MULTI_ACCOUNT_DEFAULT_ENABLED = True
