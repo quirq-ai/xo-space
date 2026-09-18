@@ -49,6 +49,7 @@ let root=null;
 let toolkits=[];
 let maxAccounts=1;         /* GET /toolkits max_accounts_per_toolkit; >1 means multi-account is on */
 let openToolkit=null;     /* id of the expanded action drawer, if any */
+let expandedCard=null;     /* id of the connected card showing its buttons, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
 let listener=null;
@@ -115,8 +116,7 @@ function renderShell(){
         +'<div class="conn-grid" id="conn-native-grid"></div>'
       +'</section>'
       +'<section class="conn-group" id="conn-account-section" aria-labelledby="conn-account-title">'
-        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3>'
-          +'<p>Connect once to your XO account, then enable per workspace.</p></div>'
+        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3></div>'
           +'<span class="conn-group-badge">Composio</span></div>'
         +'<div class="conn-key" id="conn-key"></div>'
         +'<div class="conn-alert" id="conn-alert" hidden></div>'
@@ -130,6 +130,15 @@ function renderShell(){
 
 function bindEvents(){
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
+  root.querySelector('#conn-grid').addEventListener('keydown',ev=>{
+    const head=ev.target.closest('.conn-card-head[role="button"]');
+    if(!head||ev.target!==head||(ev.key!=='Enter'&&ev.key!==' '))return;
+    ev.preventDefault();
+    const id=head.closest('[data-toolkit]').dataset.toolkit;
+    toggleCard(id);
+    /* the grid was repainted; keep keyboard focus on this card */
+    root.querySelector('.conn-card[data-toolkit="'+CSS.escape(id)+'"] .conn-card-head')?.focus();
+  });
   const keyEl=root.querySelector('#conn-key');
   keyEl.addEventListener('click',ev=>{
     const b=ev.target.closest('button[data-action]');
@@ -366,8 +375,17 @@ function renderCard(t){
   const open=openToolkit===t.id;
   const polling=openPolling===t.id;
   const acct=accountLabel(accountCache[t.id]);
-  return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
-    +'<div class="conn-card-head">'
+  /* A connected card is compact until clicked: its buttons show only when
+     expanded, and an open drawer keeps it expanded. An unconnected card always
+     shows Connect. */
+  const expanded=!connected||expandedCard===t.id||open||polling;
+  return'<article class="conn-card'+(connected&&enabled?' is-on':'')
+    +(connected?' is-expandable':'')+(connected&&expanded?' is-expanded':'')+'" data-toolkit="'+esc(t.id)+'">'
+    +'<div class="conn-card-head"'
+      +(connected?' role="button" tabindex="0" aria-expanded="'+expanded+'"':'')+'>'
+      +(connected
+        ?'<svg class="conn-card-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>'
+        :'')
       +'<div class="conn-card-heading">'+appIcon(t)
         +'<div class="conn-card-id"><h3>'+esc(t.display_name||t.id)+'</h3>'
           +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
@@ -391,15 +409,30 @@ function renderCard(t){
       +(connected&&!enabled
         ?'<p class="conn-card-note">Enable it to use this account in this workspace.</p>'
         :'')
-      +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
-        ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))
-          +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'.</p>'
-        :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
-    +'<div class="conn-card-acts">'
+    +(expanded?renderActs(t,{connected,enabled,open,polling}):'')
+    +(open?renderActions(t.id):'')
+    /* The drawer needs a connection, not "enabled here": a fresh connect opens
+       it before the workspace has turned the toolkit on, and it says so. */
+    +(polling&&connected?renderPolling(t,enabled):'')
+    +'</article>';
+}
+
+/* A non-OAuth toolkit's Connect asks for a key on the hosted page; the card's
+   subtitle already names the scheme, so the detail is a tooltip, not a note
+   that makes the card taller than its neighbours. */
+function connectHint(t){
+  const scheme=schemeOf(t.id);
+  if(String(scheme).toUpperCase()==='OAUTH2')return'';
+  return' title="Opens a page that asks for the '+esc(schemeLabel(scheme))
+    +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'."';
+}
+
+function renderActs(t,{connected,enabled,open,polling}){
+  return'<div class="conn-card-acts">'
       +(!connected
-        ?'<button class="conn-primary" data-action="connect">Connect</button>'
+        ?'<button class="conn-primary" data-action="connect"'+connectHint(t)+'>Connect</button>'
         :(enabled
           ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
           :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
@@ -426,12 +459,21 @@ function renderCard(t){
           +'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6.5 4V2.75h3V4M4.5 4l.6 9.25h5.8L11.5 4M6.75 6.5v4.5M9.25 6.5v4.5"/></svg>'
           +'</button>'
         :'')
-    +'</div>'
-    +(open?renderActions(t.id):'')
-    /* The drawer needs a connection, not "enabled here": a fresh connect opens
-       it before the workspace has turned the toolkit on, and it says so. */
-    +(polling&&connected?renderPolling(t,enabled):'')
-    +'</article>';
+    +'</div>';
+}
+
+/* Expand or collapse a connected card. Collapsing also closes its drawers, the
+   same as pressing Hide actions / Hide polling (unsaved polling edits go). */
+function toggleCard(toolkitId){
+  const expanded=expandedCard===toolkitId||openToolkit===toolkitId||openPolling===toolkitId;
+  if(expanded){
+    expandedCard=null;
+    if(openToolkit===toolkitId)openToolkit=null;
+    if(openPolling===toolkitId){openPolling=null;delete pollDraft[toolkitId];}
+  }else{
+    expandedCard=toolkitId;
+  }
+  renderGrid();
 }
 
 /* ---------- polling ---------- */
@@ -707,7 +749,12 @@ function handleGridAction(event){
     return;
   }
   const button=event.target.closest('button[data-action]');
-  if(!button)return;
+  if(!button){
+    /* a click on a connected card's head or description expands it */
+    const area=event.target.closest('.conn-card.is-expandable :is(.conn-card-head,.conn-card-body)');
+    if(area&&!event.target.closest('a'))toggleCard(area.closest('[data-toolkit]').dataset.toolkit);
+    return;
+  }
   const card=button.closest('[data-toolkit]');
   if(!card)return;
   const id=card.dataset.toolkit;

@@ -184,10 +184,13 @@ try{
   assert.equal(await page.locator('#setup-connectors .conn-card[data-toolkit]').count(),3);
   checked('First connector load is lazy and shared; slow completion preserves the later panel, toolbar and focus.');
 
+  /* connected cards are compact until clicked */
+  await page.locator('[data-toolkit="gmail"] .conn-card-head').click();
   await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();
   const interval=page.locator('#poll-gmail [data-poll="interval"]');
   await interval.selectOption('1800');
   await page.locator('#poll-gmail [data-poll="collector"][value="calendar"]').check();
+  await page.locator('[data-toolkit="slack"] .conn-card-head').click();
   await page.locator('[data-toolkit="slack"] [data-action="actions"]').click();
   const action=page.locator('[data-toolkit="slack"] input[data-action="toggle"]');
   await action.waitFor();

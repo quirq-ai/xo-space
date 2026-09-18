@@ -9,6 +9,14 @@
 .conn-hero h2{font:500 27px/1.2 var(--sans);margin:0 0 8px}
 .conn-hero h2:focus{outline:none}
 .conn-hero p{color:var(--ink-2);font-size:13px;line-height:1.5;max-width:62ch;margin:0}
+.conn-hero-actions{display:flex;gap:8px;flex:0 0 auto}
+
+.conn-refresh{
+  border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);
+  padding:9px 13px;font:500 12px var(--sans);cursor:pointer
+}
+.conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
+
 .conn-group+.conn-group{margin-top:30px}
 .conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
 .conn-group-head h3{font:500 14px var(--sans);color:var(--ink);margin:0}
@@ -20,10 +28,10 @@
 .conn-alert b{display:block;font-size:13px;margin-bottom:3px}
 .conn-alert p{margin:0;color:var(--ink-2);font-size:12px;line-height:1.5}
 .conn-alert span{color:var(--ink-3);line-height:1.3}
-.conn-alert.is-good{border-color:rgba(var(--accent-deep-rgb),.4);background:rgba(var(--accent-deep-rgb),.06)}
+.conn-alert.is-good{border-color:rgba(131,214,58,.4);background:rgba(131,214,58,.06)}
 .conn-alert.is-good span{color:var(--accent-deep)}
 .conn-alert.is-pending{border-color:rgba(226,174,91,.42);background:rgba(226,174,91,.06)}
-.conn-alert.is-pending span{color:var(--warning-text,#e2ae5b)}
+.conn-alert.is-pending span{color:#e2ae5b}
 .conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
 .conn-alert.is-error span{color:var(--err)}
 
@@ -31,7 +39,7 @@
    Reuses the card surface, the .conn-state pill and the .conn-primary/.conn-secondary
    buttons so it reads as part of the same section. */
 .conn-key{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px}
-.conn-key.is-set{border-color:rgba(var(--accent-rgb),.24)}
+.conn-key.is-set{border-color:rgba(168,217,79,.24)}
 .conn-key-head{display:flex;align-items:flex-start;gap:12px}
 .conn-key-head .conn-icon{flex:0 0 36px;color:var(--ink-2)}
 .conn-key.is-set .conn-key-head .conn-icon{color:var(--accent)}
@@ -52,13 +60,20 @@
    while a drawer is open the neighbours keep their own height instead of
    stretching to the drawer's */
 .conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:stretch}
-.conn-grid:has(.conn-actions,.conn-poll){align-items:start}
+.conn-grid:has(.conn-actions,.conn-poll,.conn-card.is-expandable.is-expanded){align-items:start}
 
 .conn-card{position:relative;display:flex;flex-direction:column;min-width:0;min-height:200px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
 .conn-card:hover{border-color:#41464f}
-.conn-card.is-on,.conn-card.is-connected{border-color:rgba(var(--accent-rgb),.24)}
+.conn-card.is-on,.conn-card.is-connected{border-color:rgba(168,217,79,.24)}
 
 .conn-card-head{display:flex;align-items:flex-start;flex-direction:column;gap:12px;padding:16px 16px 10px}
+/* a connected card is compact until clicked; the chevron says so */
+.conn-card.is-expandable :is(.conn-card-head,.conn-card-body){cursor:pointer}
+.conn-card.is-expandable .conn-card-heading{padding-right:28px}
+.conn-card-head[role="button"]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:12px}
+.conn-card-chevron{position:absolute;top:18px;right:16px;width:16px;height:16px;fill:none;stroke:var(--ink-3);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s var(--ease)}
+.conn-card.is-expandable:hover .conn-card-chevron{stroke:var(--ink-2)}
+.conn-card.is-expanded .conn-card-chevron{transform:rotate(180deg)}
 .conn-card-heading{display:flex;align-items:center;gap:11px;min-width:0}
 .conn-icon{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;border:1px solid rgba(255,255,255,.07);border-radius:10px;background:var(--bg-3);color:var(--ink-2);font:600 20px var(--sans)}
 .conn-icon svg{display:block;width:22px;height:22px}
@@ -70,9 +85,9 @@
 .conn-card-status .conn-facts{margin-top:0;min-width:0;max-width:100%}
 .conn-state{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:500 11px/1.4 var(--sans);font-style:normal;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px;overflow-wrap:anywhere}
 .conn-state::before{content:"";width:5px;height:5px;flex:none;border-radius:50%;background:currentColor;opacity:.75}
-.conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(var(--accent-rgb),.22);background:rgba(var(--accent-rgb),.04)}
-.conn-state.is-pending{color:var(--warning-text,#e2ae5b);border-color:rgba(226,174,91,.22)}
-.conn-state.is-error{color:var(--danger-text,#e1937d);border-color:rgba(200,103,76,.22)}
+.conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(168,217,79,.22);background:rgba(168,217,79,.04)}
+.conn-state.is-pending{color:#e2ae5b;border-color:rgba(226,174,91,.22)}
+.conn-state.is-error{color:#e1937d;border-color:rgba(200,103,76,.22)}
 /* Connected on the account but off in this workspace: a deliberate state, not a
    fault, so it reads as muted rather than as an error. */
 .conn-state.is-idle{color:var(--ink-2)}
@@ -89,7 +104,7 @@
 
 .conn-card-error{
   margin-top:11px;padding:9px 11px;border:1px solid rgba(200,103,76,.35);border-radius:8px;
-  background:rgba(200,103,76,.08);color:var(--danger-text,#e1937d);font-size:12px;line-height:1.5;overflow-wrap:anywhere
+  background:rgba(200,103,76,.08);color:#e1937d;font-size:12px;line-height:1.5;overflow-wrap:anywhere
 }
 
 .conn-card-acts{display:flex;align-items:center;gap:6px;padding:14px 16px 16px;flex-wrap:wrap}
@@ -100,23 +115,22 @@
   border-radius:7px;padding:7px 10px;font:500 12px/1.4 var(--sans);text-decoration:none;
   cursor:pointer;border:1px solid transparent;overflow-wrap:anywhere
 }
-.conn-primary{background:var(--accent);color:var(--accent-ink)}
-.conn-primary:hover{background:var(--accent-hover)}
+.conn-primary{background:var(--accent);color:#14100a}
+.conn-primary:hover{background:#b7e467}
 .conn-secondary{border-color:var(--line);background:transparent;color:var(--ink-2)}
 .conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
-.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:var(--danger-text,#e1937d)}
+.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}
 .conn-secondary.is-danger:hover{background:rgba(200,103,76,.1)}
-/* account-wide delete: icon-only, in the card's top-right corner, away from the
-   workspace-local buttons (which then fit on one row); red only on hover so it
-   does not compete with them */
-.conn-secondary.is-danger.conn-delete{position:absolute;top:14px;right:14px;width:30px;min-height:30px;height:30px;padding:0;border-color:var(--line);color:var(--ink-3)}
-.conn-card:has(.conn-delete) .conn-card-heading{padding-right:38px}
-.conn-secondary.is-danger.conn-delete:hover{border-color:rgba(200,103,76,.42);color:var(--danger-text,#e1937d)}
+/* account-wide delete: icon-only, at the far end of the expanded card's button
+   row, away from the workspace-local buttons; red only on hover so it does not
+   compete with them */
+.conn-secondary.is-danger.conn-delete{margin-left:auto;width:32px;min-height:32px;height:32px;padding:0;border-color:var(--line);color:var(--ink-3)}
+.conn-secondary.is-danger.conn-delete:hover{border-color:rgba(200,103,76,.42);color:#e1937d}
 .conn-delete svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 /* :disabled alone means "cannot act"; only an in-flight request earns the wait
    cursor, via .is-busy. Same distinction as the Setup tab. */
 .conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
-.conn-primary.is-busy,.conn-secondary.is-busy{cursor:wait}
+.conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
 .conn-page button:focus-visible,.conn-page a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 
 .conn-actions{border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);padding:13px 16px 16px;max-height:340px;overflow:auto}
@@ -127,10 +141,10 @@
 .conn-action-name{flex:1;font-family:var(--sans);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conn-tag{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;border-radius:999px;padding:2px 7px}
 .conn-tag.is-read{color:var(--res);border:1px solid rgba(111,147,173,.4)}
-.conn-tag.is-write{color:var(--warning-text,#e2ae5b);border:1px solid rgba(226,174,91,.4)}
+.conn-tag.is-write{color:#e2ae5b;border:1px solid rgba(226,174,91,.4)}
 
 .conn-empty{padding:22px;text-align:center;color:var(--ink-3);font-size:12px;border:1px dashed var(--line);border-radius:12px}
-.conn-empty.is-error{color:var(--danger-text,#e1937d);border-color:rgba(200,103,76,.35)}
+.conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
 
 @media (max-width:720px){
   .conn-hero{flex-wrap:wrap;gap:12px}
@@ -180,5 +194,5 @@
 /* last poll, last error, or the result of a Poll now; the error style is the
    card error's colour, not its box, so it stays one quiet line */
 .conn-poll-status{margin-top:4px;font:400 12px var(--sans);color:var(--ink-3);line-height:1.5;word-break:break-word}
-.conn-poll-status.is-error{color:var(--danger-text,#e1937d)}
+.conn-poll-status.is-error{color:#e1937d}
 .conn-poll-acts{display:flex;gap:8px;margin-top:6px}
