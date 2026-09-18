@@ -21,7 +21,7 @@ def _item(slug, name, managed=True):
         slug=slug, name=name, no_auth=False,
         composio_managed_auth_schemes=(["OAUTH2"] if managed else []),
         meta=SimpleNamespace(logo=f"https://cdn/{slug}.png", tools_count=5,
-                             categories=[SimpleNamespace(slug="crm", name="CRM")]))
+                             categories=[SimpleNamespace(id="crm", name="CRM")]))
 
 
 class ListCatalogTests(_KeyBase):
@@ -43,7 +43,7 @@ class ListCatalogTests(_KeyBase):
         self.assertEqual(out["next_cursor"], "c2")
         self.assertEqual(out["items"][0], {
             "slug": "gmail", "name": "Gmail", "logo": "https://cdn/gmail.png",
-            "categories": [{"slug": "crm", "name": "CRM"}], "no_auth": False,
+            "categories": [{"id": "crm", "name": "CRM"}], "no_auth": False,
             "managed_auth": True, "tools_count": 5})
         self.assertFalse(out["items"][1]["managed_auth"])
 
@@ -84,6 +84,54 @@ class CatalogCacheTests(_KeyBase):
 
     def test_featured_is_the_curated_set(self) -> None:
         self.assertEqual(set(catalog.featured()), set(service.TOOLKITS))
+
+
+class CategoriesTests(_KeyBase):
+    def setUp(self) -> None:
+        super().setUp()
+        byo_key.save("sk_live")
+        catalog.invalidate()
+        self.addCleanup(catalog.invalidate)
+
+    def test_list_categories_maps_items(self) -> None:
+        raw = MagicMock()
+        raw.toolkits.retrieve_categories.return_value = SimpleNamespace(
+            items=[SimpleNamespace(id="crm", name="CRM"),
+                   SimpleNamespace(id="productivity", name="Productivity")])
+        with patch.object(byo_client, "_sdk", return_value=SimpleNamespace(_client=raw)):
+            out = byo_client.list_categories()
+        self.assertEqual(out, [{"id": "crm", "name": "CRM"},
+                               {"id": "productivity", "name": "Productivity"}])
+
+    def test_categories_cached(self) -> None:
+        with patch.object(catalog, "_client") as c:
+            c.list_categories.return_value = [{"id": "crm", "name": "CRM"}]
+            catalog.categories()
+            catalog.categories()
+            self.assertEqual(c.list_categories.call_count, 1)   # cached
+
+
+class CategoriesRouteAsync(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    def setUp(self) -> None:
+        super().setUp()
+        byo_key.save("sk_live")
+        catalog.invalidate()
+        self.addCleanup(catalog.invalidate)
+
+    async def test_categories_route_returns_list(self) -> None:
+        from routers.cowork_agent.connectors import composio as router
+        with patch.object(catalog, "categories",
+                          return_value=[{"id": "crm", "name": "CRM"}]):
+            resp = await router.get_categories(_req())
+        self.assertEqual(json.loads(resp.body)["categories"], [{"id": "crm", "name": "CRM"}])
+
+    async def test_categories_route_409_without_key(self) -> None:
+        from fastapi import HTTPException
+        from routers.cowork_agent.connectors import composio as router
+        byo_key.clear()
+        with self.assertRaises(HTTPException) as raised:
+            await router.get_categories(_req())
+        self.assertEqual(raised.exception.status_code, 409)
 
 
 class CatalogRouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
