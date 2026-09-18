@@ -100,6 +100,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
 MULTI_ACCOUNT_MIN_MAX = 2
 MULTI_ACCOUNT_MAX_MAX = 10
 MULTI_ACCOUNT_DEFAULT_MAX = 5
+# On by default. COMPOSIO_MULTI_ACCOUNT=0 opts a deployment out.
+MULTI_ACCOUNT_DEFAULT_ENABLED = True
 
 ALIAS_MAX_LENGTH = 128
 
@@ -107,11 +109,12 @@ ALIAS_MAX_LENGTH = 128
 def multi_account_config() -> Optional[dict[str, Any]]:
     """The session `multi_account` block, or None when the feature is off.
 
-    Off is the Composio default: one account per toolkit per session, the most
-    recently connected one. Turning it on lets an account hold several accounts
-    for the same toolkit (work and personal Gmail) inside one session.
+    On by default: an account can hold several accounts for the same toolkit
+    (work and personal Gmail) inside one session. Off (COMPOSIO_MULTI_ACCOUNT=0)
+    is the Composio default: one account per toolkit per session, the most
+    recently connected one.
     """
-    if not _env_flag("COMPOSIO_MULTI_ACCOUNT"):
+    if not _env_flag("COMPOSIO_MULTI_ACCOUNT", MULTI_ACCOUNT_DEFAULT_ENABLED):
         return None
     raw = os.getenv("COMPOSIO_MULTI_ACCOUNT_MAX", "").strip()
     try:

@@ -412,9 +412,14 @@ class MultiAccountTests(_ComposioBase):
 
     # ---- configuration ----
 
-    def test_multi_account_is_off_unless_asked_for(self) -> None:
-        self.assertIsNone(service.multi_account_config())
-        self.assertFalse(service.multi_account_enabled())
+    def test_multi_account_is_on_by_default(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": ""}):
+            self.assertTrue(service.multi_account_enabled())
+
+    def test_multi_account_can_be_turned_off(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}):
+            self.assertIsNone(service.multi_account_config())
+            self.assertFalse(service.multi_account_enabled())
 
     def test_enabling_yields_composio_defaults(self) -> None:
         with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}):
@@ -644,7 +649,8 @@ class MultiAccountTests(_ComposioBase):
         self.assertEqual(space_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
 
     def test_a_non_multi_account_session_pins_exactly_one(self) -> None:
-        self.assertEqual(service.max_accounts_per_toolkit(), 1)
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}):
+            self.assertEqual(service.max_accounts_per_toolkit(), 1)
         with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}):
             self.assertEqual(service.max_accounts_per_toolkit(), 5)
 
@@ -726,7 +732,8 @@ class MultiAccountTests(_ComposioBase):
     def test_session_creation_omits_multi_account_when_the_flag_is_off(self) -> None:
         seen: list[dict] = []
         _enable("gmail")
-        with patch.object(swarm_client, "list_connections", return_value=[]), \
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}), \
+                patch.object(swarm_client, "list_connections", return_value=[]), \
                 patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         self.assertNotIn("multi_account", seen[0])
@@ -752,7 +759,8 @@ class MultiAccountTests(_ComposioBase):
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
-        with patch.object(swarm_client, "list_connections", return_value=[]), \
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}), \
+                patch.object(swarm_client, "list_connections", return_value=[]), \
                 patch.object(swarm_client, "update_session", side_effect=_update):
             service.sync_session(ACCOUNT)
         self.assertIsNone(seen[0]["multi_account"])
@@ -1137,7 +1145,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(gmail["account_count"], 2)
         # Newest first, so the primary shown on the card is the newer account.
         self.assertEqual(gmail["alias"], "work")
-        self.assertFalse(body["multi_account"]["enable"])
+        self.assertTrue(body["multi_account"]["enable"])
 
     async def test_account_count_skips_expired_and_disabled_connections(self) -> None:
         rows = [
