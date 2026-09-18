@@ -342,13 +342,15 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_backend_route_reports_inactive_without_a_key(self) -> None:
         from routers.cowork_agent.connectors import composio as r
         resp = await r.get_backend(_req())
-        self.assertEqual(json.loads(resp.body), {"mode": "inactive", "key_source": None})
+        self.assertEqual(json.loads(resp.body),
+                         {"mode": "inactive", "key_source": None, "dynamic": False})
 
     async def test_backend_route_reports_local_with_a_key(self) -> None:
         from routers.cowork_agent.connectors import composio as r
         byo_key.save("sk_live")
         resp = await r.get_backend(_req())
-        self.assertEqual(json.loads(resp.body), {"mode": "local", "key_source": "file"})
+        self.assertEqual(json.loads(resp.body),
+                         {"mode": "local", "key_source": "file", "dynamic": False})
 
     async def test_put_key_validates_and_saves(self) -> None:
         from routers.cowork_agent.connectors import composio as r

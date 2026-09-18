@@ -173,5 +173,35 @@ class ProxyMetaToolsTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         build.assert_called_once_with(byo_key.user_id())
 
 
+class ArbitraryToolkitDegradationTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    """Phase 3 contract: a toolkit outside the curated set connects for the agent but
+    degrades cleanly — no Inbox collectors, no read/write tags, no per-action prefs.
+    These assert existing behaviour so it cannot silently regress at 1500-toolkit scale.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        byo_key.save("sk_live")
+
+    def test_unknown_toolkit_has_no_collectors(self) -> None:
+        from services.connections import collectors
+        self.assertEqual(collectors.catalog("nosuchtoolkit"), [])
+        self.assertEqual(collectors.default_ids("nosuchtoolkit"), [])
+        self.assertIsNone(collectors.identity_spec("nosuchtoolkit"))
+
+    def test_unknown_toolkit_is_untagged(self) -> None:
+        from services.cowork_agent.connectors.composio import categories
+        self.assertIsNone(categories.classify("nosuchtoolkit", "NOSUCH_ACTION"))
+        self.assertNotIn("nosuchtoolkit", categories.classified_toolkits())
+
+    async def test_action_prefs_put_404_for_unknown_toolkit(self) -> None:
+        from fastapi import HTTPException
+        from routers.cowork_agent.connectors import composio as router
+        with self.assertRaises(HTTPException) as raised:
+            await router.put_toolkit_prefs(
+                "nosuchtoolkit", router.PrefsBody(actions={}), user_id="u")
+        self.assertEqual(raised.exception.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
