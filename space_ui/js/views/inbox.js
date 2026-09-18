@@ -615,6 +615,15 @@ function openLink(it){
     dispatchEvent(new CustomEvent('space:preview-file',{detail:{project,path:l.path}}));
     return;
   }
+  /* Sharing events open Inbox Sharing on their project, where the fetched
+     commits and Apply live. Items stored before the feeder linked there
+     still carry view "projects"; their sharing.* kind routes them. */
+  if(l.view==='sharing'||String(it.kind||'').startsWith('sharing.')){
+    const target=project||(typeof it.project_id==='string'&&PROJ_RE.test(it.project_id)?it.project_id:'');
+    switchTo('inbox/sharing');
+    if(target)dispatchEvent(new CustomEvent('space:sharing-focus',{detail:target}));
+    return;
+  }
   if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/data/list':l.view);return;}
   if(project)switchTo('projects/data/list');
 }

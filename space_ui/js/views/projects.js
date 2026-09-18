@@ -5,6 +5,8 @@ import {projectPage} from '../core/navigation.js?v=20260915-agents2';
 import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
 import {isProjectPinned,subscribeProjectPins} from '../core/project-pins.js?v=20260915-data1';
 import {API_BASE,apiFetch} from '../core/api.js';
+import {toast} from '../core/ui.js';
+import {icon} from '../core/project-ui.js?v=20260915-data1';
 import {workspaceCounts} from '../core/workspace.js?v=20260914-projectux1';
 
 /* The Sharing lens hands off here: "open this project's drawer". The
@@ -77,21 +79,117 @@ function crumbs(id,rel){
 /* Two panes: folders on the left (the thing you navigate with), files on the
    right (the thing you read). One list mixing both makes you hunt for the
    folder rows among fifty files every time you go a level deeper. */
+/* Each row is an item: the row button plus a sibling Copy path button
+   (a button cannot nest inside another). The ".." row gets none. */
+function copyPathButton(e){
+  return'<button type="button" class="fx-copy" data-copy-path="'+esc(e.relative_path)+'" aria-haspopup="menu" aria-expanded="false" '
+    +'aria-label="Copy path of '+esc(e.name)+'" title="Copy path">'+icon('copy')+'</button>';
+}
 function dirRow(id,e,up){
-  return'<button class="fx-row is-dir'+(up?' is-up':'')+'" '
+  return'<div class="fx-item"><button class="fx-row is-dir'+(up?' is-up':'')+'" '
     +'data-cd="'+esc(e.relative_path)+'" data-id="'+esc(id)+'">'
     +'<span class="fx-ico">'+(up?'&#8629;':'&#9654;')+'</span>'
     +'<span class="fx-name">'+esc(e.name)+'</span>'
-  +'</button>';
+  +'</button>'+(up?'':copyPathButton(e))+'</div>';
 }
 function fileRow(e,id){
-  return'<button class="fx-row is-file" data-file="'+esc(e.relative_path)+'" '
+  return'<div class="fx-item"><button class="fx-row is-file" data-file="'+esc(e.relative_path)+'" '
     +'data-project="'+esc(id)+'">'
     +'<span class="fx-ico">&#183;</span>'
     +'<span class="fx-name" title="'+esc(e.name)+'">'+esc(e.name)+'</span>'
     +'<span class="fx-size">'+bytes(e.size_bytes)+'</span>'
     +'<span class="fx-when">'+rel2(e.modified_at)+'</span>'
-  +'</button>';
+  +'</button>'+copyPathButton(e)+'</div>';
+}
+
+/* ── copy path ──────────────────────────────────────────────────────────────
+   One small menu for the whole page, opened by a row's copy button or by
+   right-clicking the row: the path relative to the project root, or the full
+   path on the machine running Space. The tree API never returns absolute
+   paths; the full one is the projects root Setup already reports
+   (GET /api/runtime-config → roots.applied, the host path under Docker) plus
+   the project id (its folder name) and the relative path. */
+let xoRoot=null;           /* Promise<string|null>, dropped on failure so the next open retries */
+function projectsRoot(){
+  if(!xoRoot)xoRoot=apiFetch(API_BASE+'/api/runtime-config').then(res=>{
+    const value=res.ok?res.data?.roots?.applied?.xo_projects_root:null;
+    if(typeof value==='string'&&value)return value;
+    xoRoot=null;return null;
+  });
+  return xoRoot;
+}
+function fullPath(base,id,relPath){
+  /* keep the root's own separator: C:\… and \\server\… stay Windows paths */
+  const sep=/^[A-Za-z]:\\|^\\\\/.test(base)||(base.includes('\\')&&!base.includes('/'))?'\\':'/';
+  return base.replace(/[\\/]+$/,'')+sep+[id,...(relPath?relPath.split('/'):[])].join(sep);
+}
+async function copyText(text){
+  try{await navigator.clipboard.writeText(text);return true;}
+  catch{ /* no Clipboard API outside a secure context: the legacy path still works there */
+    const area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','');
+    area.style.cssText='position:fixed;opacity:0;pointer-events:none';document.body.appendChild(area);area.select();
+    let ok=false;try{ok=document.execCommand('copy');}catch{}
+    area.remove();return ok;
+  }
+}
+let pathMenu=null,menuFor=null; /* menuFor = {id,rel,anchor} while open */
+function closePathMenu({refocus=false}={}){
+  if(!menuFor)return;
+  const anchor=menuFor.anchor;menuFor=null;pathMenu.hidden=true;
+  anchor.setAttribute('aria-expanded','false');
+  if(refocus&&anchor.isConnected)anchor.focus({preventScroll:true});
+}
+function ensurePathMenu(){
+  if(pathMenu)return pathMenu;
+  pathMenu=document.createElement('div');pathMenu.className='fx-menu';pathMenu.hidden=true;
+  pathMenu.setAttribute('role','menu');pathMenu.setAttribute('aria-label','Copy path');
+  document.body.appendChild(pathMenu);
+  pathMenu.addEventListener('click',async event=>{
+    const item=event.target.closest('[data-copy-value]');if(!item||item.disabled)return;
+    const label=item.dataset.copyLabel;
+    closePathMenu({refocus:true});
+    toast(await copyText(item.dataset.copyValue)?label+' copied':'Could not copy the path. Select it in the address bar or a terminal instead.');
+  });
+  pathMenu.addEventListener('keydown',event=>{
+    const items=[...pathMenu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    const at=items.indexOf(document.activeElement);
+    if(event.key==='Escape'){event.preventDefault();closePathMenu({refocus:true});}
+    else if(event.key==='Tab')closePathMenu();
+    else if((event.key==='ArrowDown'||event.key==='ArrowUp')&&items.length){
+      event.preventDefault();items[(at+(event.key==='ArrowDown'?1:items.length-1))%items.length].focus();
+    }
+  });
+  addEventListener('pointerdown',event=>{if(menuFor&&!pathMenu.contains(event.target)&&event.target!==menuFor.anchor&&!menuFor.anchor.contains(event.target))closePathMenu();},true);
+  addEventListener('scroll',event=>{if(menuFor&&!pathMenu.contains(event.target))closePathMenu();},true);
+  addEventListener('resize',()=>closePathMenu());
+  addEventListener('space:view',()=>closePathMenu());
+  return pathMenu;
+}
+function menuItem(label,value,note){
+  return'<button type="button" role="menuitem" class="fx-menu-item"'+(value?' data-copy-value="'+esc(value)+'" data-copy-label="'+esc(label)+'"':' disabled')+'>'
+    +'<span>Copy '+esc(label.toLowerCase())+'</span><code>'+esc(value||note)+'</code></button>';
+}
+function paintPathMenu(base){
+  const {id,rel:relPath}=menuFor;
+  pathMenu.innerHTML=menuItem('Relative path',relPath)
+    +menuItem('Full path',base?fullPath(base,id,relPath):'',base===undefined?'Loading…':'Projects folder unknown');
+}
+async function openPathMenu(id,relPath,anchor,x,y){
+  const menu=ensurePathMenu();
+  if(menuFor&&menuFor.anchor===anchor&&x===undefined){closePathMenu({refocus:true});return;}
+  closePathMenu();
+  menuFor={id,rel:relPath,anchor};anchor.setAttribute('aria-expanded','true');
+  paintPathMenu(undefined);menu.hidden=false;
+  const box=anchor.getBoundingClientRect(),size=menu.getBoundingClientRect();
+  const left=x===undefined?box.right-size.width:x,top=y===undefined?box.bottom+4:y;
+  menu.style.left=Math.max(8,Math.min(innerWidth-size.width-8,left))+'px';
+  menu.style.top=(top+size.height+8>innerHeight?Math.max(8,(y===undefined?box.top:top)-size.height-4):top)+'px';
+  menu.querySelector('[role="menuitem"]').focus({preventScroll:true});
+  const mine=menuFor,base=await projectsRoot();
+  if(menuFor!==mine)return;
+  const focusedFull=document.activeElement===menu.lastElementChild;
+  paintPathMenu(base);
+  menu.querySelector(focusedFull&&base?'[role="menuitem"]:last-child':'[role="menuitem"]').focus({preventScroll:true});
 }
 function rTree(d){
   const id=d.project_id,rel=d.relative_path||'';
@@ -418,4 +516,9 @@ function bindFiles(el,id){
   }));
   el.querySelectorAll('[data-file]').forEach(button=>button.addEventListener('click',()=>dispatchEvent(new CustomEvent('space:preview-file',{
     detail:{project:button.dataset.project,path:button.dataset.file,name:button.querySelector('.fx-name').textContent}}))));
+  el.querySelectorAll('[data-copy-path]').forEach(button=>button.addEventListener('click',()=>openPathMenu(id,button.dataset.copyPath,button)));
+  el.querySelectorAll('.fx-item').forEach(item=>item.addEventListener('contextmenu',event=>{
+    const button=item.querySelector('[data-copy-path]');if(!button)return;
+    event.preventDefault();openPathMenu(id,button.dataset.copyPath,button,event.clientX,event.clientY);
+  }));
 }

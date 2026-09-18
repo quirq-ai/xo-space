@@ -86,6 +86,14 @@
   .shl-detail-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .shl-detail-meta em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3)}
   .shl-rule{height:1px;background:var(--line-soft)}
+  /* commits fetched but not applied: what to do next, above the list */
+  .shl-callout{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--accent);
+    border-radius:8px;background:rgba(168,217,79,.08);font:400 12px/1.5 var(--sans);color:var(--ink-2)}
+  .shl-callout b{font-weight:600;color:var(--accent)}
+  /* an Inbox hand-off lands here: one brief ring so the eye finds the panel */
+  .shl-detail.is-flash{animation:shlflash 1.6s var(--ease) 1}
+  @keyframes shlflash{0%,40%{box-shadow:0 0 0 2px var(--accent)}100%{box-shadow:0 0 0 2px transparent}}
+  @media (prefers-reduced-motion:reduce){.shl-detail.is-flash{animation:none}}
   .shr-hash{font:500 12px var(--mono);color:var(--ink-3);flex:none}
   .shr-subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* unapplied commits: accent bar + tag; the rest read as history */

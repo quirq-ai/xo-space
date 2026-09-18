@@ -11,12 +11,12 @@ import {initPreview} from './core/preview.js?v=20260915-agents2';
 import {initCommandPalette} from './core/command-palette.js?v=20260916-jobs3';
 import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-footer1';
 import {createAgentViews} from './views/sessions.js?v=20260915-footer1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260916-jobs3';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';
 import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
-import projectsView from './views/projects.js?v=20260915-agents2';
+import projectsView from './views/projects.js?v=20260918-copypath1';
 import projectManageView from './views/project-manage.js?v=20260915-agents2';
 import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260915-agents2';
+import sharingView from './views/sharing.js?v=20260918-copypath1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';

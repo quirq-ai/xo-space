@@ -899,8 +899,13 @@ class ShellTests(unittest.TestCase):
         # Trends absorbing Tools and Models changed navigation.js, so every
         # importer of the vocabulary moved to the agents stamp.
         agents_stamp = "20260915-agents2"
-        for view in ("tree", "sharing", "projects", "inbox-activity", "project-manage"):
+        for view in ("tree", "inbox-activity", "project-manage"):
             self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
+        # Inbox sharing hand-off + Copy path (issues #142, #143) moved these on.
+        for view in ("sharing", "projects", "inbox"):
+            self.assertIn("./views/" + view + ".js?v=20260918-copypath1'", app)
+        for sheet in ("sharing", "projects"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
         for module in ("section-nav", "navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
         self.assertIn("./views/quirq.js?v=20260915-data1'", app)
@@ -917,7 +922,7 @@ class ShellTests(unittest.TestCase):
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
         self.assertIn("./views/connectors.js?v=20260917-byok1'", app)
         html = read("index.html")
-        for sheet in ("projects", "project-management", "inbox-activity",
+        for sheet in ("project-management", "inbox-activity",
                       "connectors", "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
         for sheet in ("base", "chrome", "graph", "preview", "navigation"):
@@ -926,7 +931,7 @@ class ShellTests(unittest.TestCase):
         # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
         # with Run now in Inbox) restamped the files it changed.
         jobs_stamp = "20260916-jobs3"
-        for module in ("views/inbox", "views/setup", "views/wiki", "core/command-palette"):
+        for module in ("views/setup", "views/wiki", "core/command-palette"):
             self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
         # its calendar landed in the shared shadcn styles
         for sheet in ("inbox", "shadcn"):

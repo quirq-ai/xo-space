@@ -236,10 +236,28 @@
      away at the panel edge, and give the eye a rule to track along */
   .fx-files .fx-row{grid-template-columns:14px minmax(0,460px) 78px 84px;
     justify-content:start;column-gap:12px}
-  .fx-files .fx-row+.fx-row{box-shadow:inset 0 1px 0 var(--line-soft)}
+  .fx-files .fx-item+.fx-item{box-shadow:inset 0 1px 0 var(--line-soft)}
   .fx-files .fx-size{text-align:right}
   .fx-dirs .fx-row{grid-template-columns:14px minmax(0,1fr) auto}
-  button.fx-row:hover{background:var(--bg-2);color:var(--ink)}
+  /* a row item = row button + Copy path button; hover lights the whole item */
+  .fx-item{display:flex;align-items:center;gap:2px;border-radius:7px}
+  .fx-item>.fx-row{flex:1 1 auto;min-width:0}
+  .fx-item:hover{background:var(--bg-2)}
+  .fx-item:hover>.fx-row{color:var(--ink)}
+  .fx-copy{flex:none;display:grid;place-items:center;width:26px;height:26px;margin-right:4px;
+    border-radius:6px;color:var(--ink-3);opacity:0}
+  .fx-copy svg{width:14px;height:14px}
+  .fx-item:hover .fx-copy,.fx-copy:focus-visible,.fx-copy[aria-expanded="true"]{opacity:1}
+  .fx-copy:hover,.fx-copy[aria-expanded="true"]{color:var(--ink);background:var(--bg-3)}
+  @media (hover:none){.fx-copy{opacity:.7}}
+  .fx-menu{position:fixed;z-index:80;display:flex;flex-direction:column;gap:2px;min-width:220px;max-width:min(520px,calc(100vw - 16px));
+    padding:5px;border:1px solid var(--line);border-radius:9px;background:var(--bg-2);box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  .fx-menu[hidden]{display:none}
+  .fx-menu-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:7px 9px;
+    border-radius:6px;text-align:left;font:500 12px var(--sans);color:var(--ink)}
+  .fx-menu-item code{max-width:100%;font:400 11.5px var(--mono);color:var(--ink-3);overflow-wrap:anywhere}
+  .fx-menu-item:hover:not(:disabled),.fx-menu-item:focus-visible{background:var(--bg-3);outline:none}
+  .fx-menu-item:disabled{cursor:default;color:var(--ink-3)}
   .fx-row.is-dir .fx-name{color:var(--ink)}
   .fx-row.is-up .fx-name{color:var(--ink-3)}
   .fx-ico{color:var(--ink-4);font-size:9px;line-height:1.5}

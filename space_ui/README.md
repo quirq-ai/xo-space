@@ -117,7 +117,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/inbox-activity.js` | Independent workspace Activity and Sharing activity pages. Workspace events, live sessions and project names come from their existing read APIs; Sharing activity reads the relay’s recent-event buffer. |
 | `js/views/sharing.js` | Inbox Sharing management: shared repositories, incoming clones, commits, Apply, members, grants and revocations. Existing Sharing links normalize to `#/inbox/sharing`. |
-| `js/views/projects.js` | Data List: searchable catalog, Pinned and Live filters and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Registers `project-list` at `#/projects/data/list`. |
+| `js/views/projects.js` | Data List: searchable catalog, Pinned and Live filters and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Each file and folder row has a **Copy path** button (also on right-click) offering the path relative to the project root or the full path, built from `roots.applied.xo_projects_root` in `GET /api/runtime-config` plus the project id. Registers `project-list` at `#/projects/data/list`. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
 | `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/data/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
@@ -446,7 +446,10 @@ visible with an error; malformed records are reported rather than shown as an em
   polled yet. Connect a toolkit on the Connectors tab and turn on polling."
 - Open follows `link`: `{project, path}` switches to Projects and opens the file
   previewer; `{view}` switches to that tab; `{project}` alone switches to
-  Projects.
+  Projects. A sharing item (`view: "sharing"`, or any `sharing.*` kind, which
+  covers items stored before the feeder linked there) opens Inbox Sharing with
+  its project selected; when commits are waiting, the detail panel says so
+  above the commit list and focus lands on **Apply**.
 
 ### The file: `~/.quirq/inbox/inbox.json`
 

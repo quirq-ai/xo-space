@@ -200,8 +200,9 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
             with self.assertRaises(store.InboxError):
                 store.validate_link({"view": route}, strict=True)
         feeders = read("services/inbox/feeders.py")
-        self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))), ["agents", "connectors", "projects"])
-        self.assertIn("the feeders themselves use `agents`, `projects` and `connectors`", text)
+        self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))),
+                         ["agents", "connectors", "projects", "sharing"])
+        self.assertIn("the feeders themselves use `agents`, `projects`, `sharing` and `connectors`", text)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_documented_view_names_resolve_in_the_registered_ui(self) -> None:
