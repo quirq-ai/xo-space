@@ -63,6 +63,13 @@ let browseCats=null;      /* [{id,name}] once fetched; null = not yet */
 let browseLoading=false;
 let browseDebounce=null;
 let browseLoaded=false;   /* has the first page been fetched for this mount */
+/* Composio returns ~40 categories, many near-duplicate; showing them all makes the
+   page scroll forever. Surface a short, high-value set (curated order first), deduped
+   by name and capped; everything else stays reachable through search. */
+const CAT_PRIORITY=['popular','productivity & project management','collaboration & communication',
+  'crm','marketing & social media','sales & customer support','ai & machine learning',
+  'analytics & data','scheduling & booking','developer tools'];
+const MAX_CATEGORY_CHIPS=10;
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -310,14 +317,30 @@ async function loadBrowseCats(){
   renderCategoryChips();
 }
 
+/* Dedupe by name, order curated names first, cap the rest. Stable sort keeps the
+   upstream order among non-curated ones. */
+function topCategories(){
+  const seen=new Set();
+  const uniq=[];
+  for(const c of browseCats||[]){
+    const name=String(c.name||c.id||'').trim();
+    const key=name.toLowerCase();
+    if(!key||seen.has(key))continue;
+    seen.add(key);
+    uniq.push({id:c.id,name,rank:CAT_PRIORITY.indexOf(key)});
+  }
+  uniq.sort((a,b)=>(a.rank<0?CAT_PRIORITY.length:a.rank)-(b.rank<0?CAT_PRIORITY.length:b.rank));
+  return uniq.slice(0,MAX_CATEGORY_CHIPS);
+}
+
 function renderCategoryChips(){
   const row=root.querySelector('#conn-browse-cats');
   if(!row)return;
-  if(!browseCats||browseCats.length===0){row.innerHTML='';return;}
+  const cats=topCategories();
+  if(cats.length===0){row.innerHTML='';return;}
   const chip=(id,name)=>'<button class="conn-chip" type="button" data-cat="'+esc(id)
     +'" aria-pressed="'+(browseCategory===id?'true':'false')+'">'+esc(name)+'</button>';
-  row.innerHTML=chip('','All')
-    +browseCats.map(c=>chip(c.id,c.name||c.id)).join('');
+  row.innerHTML=chip('','All')+cats.map(c=>chip(c.id,c.name)).join('');
 }
 
 function handleCategoryClick(event){
