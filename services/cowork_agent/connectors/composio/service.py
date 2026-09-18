@@ -99,8 +99,6 @@ MULTI_ACCOUNT_MIN = 1
 MULTI_ACCOUNT_MAX = 5
 MULTI_ACCOUNT_DEFAULT_ENABLED = True
 
-ALIAS_MAX_LENGTH = 128
-
 
 def multi_account_config() -> Optional[dict[str, Any]]:
     """The session `multi_account` block, or None when the feature is off.
@@ -149,10 +147,6 @@ def normalize_alias(alias: Optional[str]) -> Optional[str]:
     text = (alias or "").strip()
     if not text:
         return None
-    if len(text) > ALIAS_MAX_LENGTH:
-        raise ValueError(
-            f"Alias is too long ({len(text)} chars); the limit is {ALIAS_MAX_LENGTH}."
-        )
     return text
 
 
