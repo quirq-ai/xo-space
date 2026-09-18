@@ -660,6 +660,7 @@ async def lifespan(app: FastAPI):
     print(f"   Codex CLI: {CODEX_CLI_PATH} (timeout={CODEX_TIMEOUT}s)")
     print(f"   Startup warmup: {'enabled' if STARTUP_WARMUP_ENABLED else 'disabled'} ({STARTUP_WARMUP_URL})")
     print("   Skills: .agents/skills + AGENTS.md (Codex-native)")
+    print(f"   Autoroutes: {len(_autoroutes)} generated from config/autoroutes.json")
     startup_auth_session_id = os.getenv("XO_AUTH_SESSION_ID", "").strip()
     startup_poll_token = os.getenv("XO_POLL_TOKEN", "").strip()
     if XO_API_KEY:
@@ -959,6 +960,11 @@ from routers.space import router as space_router, mount_space
 from routers.xo_data import router as xo_data_router
 app.include_router(space_router)
 app.include_router(xo_data_router)
+
+# Folder-based routes generated from config/autoroutes.json. Mounted last so
+# a hand-written route always wins on a path clash.
+from routers import autoroutes
+_autoroutes = autoroutes.mount(app)
 mount_space(app)
 
 # =============================================================================

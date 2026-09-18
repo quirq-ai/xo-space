@@ -53,6 +53,7 @@ routers/                          broker routes only, NO agent branching
                                     shared ServiceError -> HTTPException mapping (http_error) and
                                     the strict request-body base (ForbidExtra)
     legacy/                       frozen URL aliases (openclaw_usage)
+  autoroutes.py                   folder-based routes generated at boot from config/autoroutes.json (§3.5)
 
 services/                         Placement rule: only what is specific to running an agent lives
                                     under cowork_agent/; anything a person uses as much as the agent
@@ -181,6 +182,44 @@ Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
 `routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
 This is why per-agent route counts differ (see §5).
+
+### 3.5 Folder-based routes (`routers/autoroutes.py`)
+
+Any package in the repo can be served without writing a route module. List
+its folder in `config/autoroutes.json` and every public module-level function
+in it gets a route at its own path, generated in memory at boot:
+
+```json
+{
+  "guard": true,
+  "folders": {
+    "services/inbox": true,
+    "services/inbox/store": false
+  }
+}
+```
+
+| Source | Route |
+|---|---|
+| `services/inbox/service.py::list_items(status="open", limit=200)` | `POST /services/inbox/service/list_items`, JSON body `{status?, limit?}` typed from the signature |
+| `services/inbox/__init__.py::refresh()` | `GET /services/inbox/refresh` (no parameters means GET) |
+
+Rules: nothing is exposed until a folder is `true`; the longest configured
+ancestor decides, so a `false` child switches a subtree off. Only functions
+defined in the module count (`__all__` is honoured, `_private` names and
+`_private.py` modules are skipped, re-exports are not duplicated). Coroutines
+are awaited, sync functions run in the threadpool, results go through
+`jsonable_encoder`, and a `ServiceError` becomes the usual `{code, message}`
+error. `*args`/`**kwargs` functions and modules that fail to import are
+skipped with a log line.
+
+`guard: true` (the default) makes every generated route answer loopback
+callers only, checked with the browser guard's `is_local_mutation`: a folder
+can run anything, so it must not be reachable from another site through the
+user's browser. `server.py` mounts the generated router last, so a
+hand-written route always wins on a path clash. The repo config ships with no
+folders on, which keeps the route table, and the parity check in §5,
+unchanged; whatever you switch on is core and identical for every agent.
 
 ---
 
