@@ -24,8 +24,8 @@ nodes.set('#shl-composer input[name="ws"]',recipient);
 nodes.set('#shl-composer input[name=ws]',recipient);
 const ctx=vm.createContext({
   console,Date,Map,Set,Promise,fixtureRoot,recipient,
-  location:{hash:'#/inbox/sharing'},document:{activeElement:null},
-  addEventListener:()=>{},INBOX_PAGES:[{id:'sharing',route:'inbox/sharing',parent:'inbox'}],setSectionActions:()=>{},
+  location:{hash:'#/work/sharing'},document:{activeElement:null},
+  addEventListener:()=>{},WORK_PAGES:[{id:'sharing',route:'work/sharing',parent:'work'}],setSectionActions:()=>{},
   toast:text=>notices.push(text),esc:value=>String(value??''),entryFor:()=>null,
   sharingStatusRes:()=>({ok:true}),parked:()=>false,
   failText:()=> 'Fixture failure',shortId:value=>value,

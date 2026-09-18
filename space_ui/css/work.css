@@ -1,0 +1,172 @@
+/* ---------------- work section ----------------
+   Layout only. Every visual element on the Work, Work and Sources pages is a
+   shadcn/ui component (css/shadcn.css, markup from js/core/shadcn.js); these
+   rules place the cards, keep the list cards edge to edge, and carry the two
+   page-specific hooks: the status dot and the day header. */
+#view-work,#view-work-live,#view-work-history{overflow-y:auto}
+.workwrap{max-width:1180px;margin:0 auto;padding:26px 26px 60px;font-family:var(--sans)}
+.work-page-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:22px}
+.work-page-head h1{margin:0;font:500 30px/1.2 var(--sans);letter-spacing:-.02em;color:var(--ink)}
+.work-page-head p{margin:0;font-size:12.5px;color:var(--muted-foreground);font-variant-numeric:tabular-nums}
+.work-error{color:var(--destructive)}
+.workwrap>[data-slot="card"],.workwrap>[data-slot="empty"],.workwrap>[data-slot="alert"]{margin-bottom:16px}
+.work-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.work-scroll{min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}
+.work-spacer{flex:1}
+.work-count{font-size:12.5px;color:var(--muted-foreground);font-variant-numeric:tabular-nums}
+.work-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px;align-items:stretch}
+.work-hero-secondary{display:flex;align-items:baseline;gap:7px;min-width:0;font-size:12.5px;color:var(--muted-foreground)}
+.work-hero-secondary b{font:600 17px/1 var(--sans);color:var(--foreground);font-variant-numeric:tabular-nums;white-space:nowrap}
+.work-hero-secondary span{min-width:0;line-height:1.35}
+
+/* Inbox: the four group cards are the page's navigation; a pressed card
+   narrows the list to its group */
+.work-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+[data-slot="card"].work-group{cursor:pointer;user-select:none;transition:border-color .16s var(--ease),background .16s var(--ease),box-shadow .16s var(--ease)}
+.work-group:hover{border-color:var(--ink-3)}
+.work-group.is-on{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 6%,var(--card))}
+.work-group:focus-visible{outline:none;border-color:var(--ring);box-shadow:var(--ring-shadow)}
+.work-group [data-slot="card-description"]{display:flex;align-items:center;gap:7px;color:var(--foreground);font-weight:500}
+.work-group [data-slot="card-description"] svg{width:14px;height:14px;color:var(--muted-foreground)}
+.work-group.is-on [data-slot="card-description"] svg{color:var(--primary)}
+.work-day svg{width:12px;height:12px;vertical-align:-2px;margin-right:6px;opacity:.8}
+.work-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:16px}
+.work-grid2>[data-slot="card"]{margin-bottom:0}
+/* list cards: bands that share one left edge. The card carries no padding of
+   its own, so the row borders run edge to edge. */
+[data-slot="card"].work-list{padding:0;gap:0;overflow:hidden}
+.work-list>[data-slot="card-header"]{padding:14px 16px;border-bottom:1px solid var(--border-soft)}
+.work-list>[data-slot="card-content"]{padding:0}
+.work-list [data-slot="item"]{border:0;border-top:1px solid var(--border-soft);border-radius:0;padding:11px 16px;gap:8px 12px}
+.work-list>[data-slot="card-content"]>[data-slot="item"]:first-child,.work-day+[data-slot="item"]{border-top:0}
+.work-list [data-slot="item"]:hover{background:rgba(22,26,32,.5)}
+.work-list [data-slot="item"].is-open{background:var(--bg-3)}
+.work-list [data-slot="item-content"]{gap:3px}
+.work-list [data-slot="item-title"]{width:auto;max-width:100%;min-width:0;flex-wrap:wrap}
+.work-list [data-slot="item-description"]{padding-left:14px;font-size:12.5px}
+.work-list [data-slot="item-actions"]{gap:10px;font-size:12px;color:var(--muted-foreground);white-space:nowrap}
+.work-day{padding:7px 16px;border-top:1px solid var(--border-soft);background:rgba(22,26,32,.45);
+  font:600 11px/1.3 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground)}
+.work-list>[data-slot="card-content"]>.work-day:first-child{border-top:0}
+/* the row's toggle is a real button wearing the title */
+.work-toggle{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;text-align:left;font:inherit;color:inherit;cursor:pointer;padding:0}
+.work-toggle:focus-visible{outline:2px solid var(--ring);outline-offset:3px;border-radius:4px}
+.work-title{min-width:0;font:500 13px/1.375 var(--sans);color:var(--foreground);overflow-wrap:anywhere}
+.work-sub{font:400 12px/1.375 var(--sans);color:var(--muted-foreground)}
+.work-muted-i{font-style:italic}
+.work-time{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* the status dot is the only saturated thing in a row */
+.work-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--ink-4);opacity:.55}
+.work-dot[data-tone="attention"],.work-dot[data-tone="progress"],.work-dot[data-tone="on"]{background:var(--accent);opacity:1}
+.work-dot[data-tone="error"]{background:var(--err);opacity:1}
+.work-dot[data-tone="pending"]{background:#e2ae5b;opacity:1;animation:ui-pulse 1.6s ease-in-out infinite}
+.work-dot[data-tone="closed"],.work-dot[data-tone="off"]{opacity:.3}
+/* an open row: detail and actions under the title, aligned with its text */
+.work-list [data-slot="item-footer"]{flex-direction:column;align-items:stretch;gap:10px;padding:2px 0 4px 14px}
+.work-detail{font-size:12.5px;line-height:1.55;color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere}
+.work-detail a{color:var(--foreground);text-decoration:underline;text-underline-offset:3px}
+.work-paths{margin:0;padding:0;list-style:none;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
+.work-acts{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.work-assign{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.work-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted-foreground)}
+/* a list card's one-line empty state */
+.work-note{padding:14px 16px;font-size:12.5px;color:var(--muted-foreground)}
+/* Live: the calendar column beside the stream */
+.work-live{display:grid;grid-template-columns:274px minmax(0,1fr);gap:16px;align-items:start}
+.work-live>[data-slot="card"]{margin-bottom:0}
+.work-live>[data-slot="card"]>[data-slot="card-content"]>[data-slot="calendar"]{border-bottom:1px solid var(--border-soft)}
+.work-cal-agenda{min-width:0}
+.work-cal-agenda>.work-day:first-child{border-top:0}
+.work-cal-agenda [data-slot="item"]{padding:9px 14px}
+.work-cal-time{flex:none;font:500 12px var(--sans);color:var(--muted-foreground);font-variant-numeric:tabular-nums}
+.work-day-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.work-day-row .ui-btn[data-variant="link"]{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;height:auto}
+.work-agenda-row [data-slot="item-description"]{padding-left:0;display:flex;align-items:baseline;flex-wrap:wrap;gap:0 8px}
+.work-agenda-row .ui-btn[data-variant="link"]{font-size:12px;height:auto}
+/* the stream card: the header holds the source toggle and Pause, a chip
+   row names what runs now (each chip narrows the stream), then the log,
+   which reads as a console and scrolls on its own */
+.work-logcard>[data-slot="card-header"]{padding:12px 16px;border-bottom:1px solid var(--border-soft)}
+.work-logcard [data-slot="card-action"]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.work-now{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border-soft)}
+.work-now-chips{display:flex;flex-wrap:wrap;gap:6px;flex:1;min-width:0}
+.work-pulse{display:flex;align-items:center;gap:8px;flex:none;width:168px}
+.work-pulse>span{font:600 10px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground)}
+.work-pulse>div{flex:1;min-width:0}
+.work-pulse [data-slot="chart"]{font-size:11px}
+.work-now-chip{gap:6px;font-weight:500;cursor:pointer;transition:border-color .16s var(--ease),background .16s var(--ease)}
+.work-now-chip:hover{border-color:var(--ink-3)}
+.work-now-chip.is-on{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 10%,transparent)}
+.work-now-chip:focus-visible{outline:none;box-shadow:var(--ring-shadow)}
+.work-log{margin:0;padding:8px 0;list-style:none;height:min(60vh,620px);overflow-y:auto;background:var(--background);font:12px/1.7 var(--mono);color:var(--ink-2);scrollbar-width:thin}
+.work-log li{display:grid;grid-template-columns:6px 62px 108px minmax(0,1fr);align-items:baseline;gap:0 10px;padding:2px 16px}
+.work-log li .work-dot{position:relative;top:-1px}
+.work-log li[data-fresh]{animation:work-fresh 1.2s var(--ease)}
+@keyframes work-fresh{from{background:color-mix(in srgb,var(--primary) 14%,transparent)}to{background:transparent}}
+.work-log time{color:var(--muted-foreground);font-variant-numeric:tabular-nums}
+.work-log-tag{cursor:pointer}
+.work-log b.work-log-tag{font:500 11.5px var(--sans);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.02em}
+.work-log b.work-log-tag:hover,.work-log [data-slot="badge"].work-log-tag:hover{color:var(--foreground)}
+.work-log [data-slot="badge"].work-log-tag{padding:0 6px;font-size:10.5px;justify-content:flex-start;max-width:100%}
+.work-log span{overflow-wrap:anywhere}
+.work-log li[data-level="error"] span{color:var(--destructive)}
+.work-log-foot{display:flex;justify-content:center;gap:8px;padding:4px;border-top:1px solid var(--border-soft);min-height:28px}
+.work-log-foot [hidden]{display:none}
+/* Activity: the timeline rows, their clickable narrowings and the chips */
+.work-tl .work-toggle{flex:1 1 auto;min-width:0}
+.work-tl-meta{display:inline-flex;align-items:center;gap:8px;margin-left:auto;font-size:12px;color:var(--muted-foreground);white-space:nowrap}
+.work-pick{cursor:pointer;transition:border-color .16s var(--ease),color .16s var(--ease)}
+.work-pick:hover{border-color:var(--ink-3);color:var(--foreground)}
+.work-pick:focus-visible{outline:none;box-shadow:var(--ring-shadow)}
+.work-chip{cursor:pointer;gap:6px}
+.work-chip span{color:var(--muted-foreground)}
+.work-chip:hover span{color:var(--foreground)}
+.work-chip:focus-visible{outline:none;box-shadow:var(--ring-shadow)}
+.work-tl-open{padding:8px 0 2px}
+.work-tl-open .work-paths,.work-tl-open .work-detail{margin-bottom:10px}
+.work-list [data-slot="timeline-separator"]{padding-left:16px}
+@media(max-width:860px){
+  .work-live{grid-template-columns:1fr}
+  .work-log{height:50vh}
+  .work-log li{grid-template-columns:6px 62px minmax(0,1fr)}
+  .work-log .work-log-tag{display:none}
+}
+@media(max-width:640px){
+  .work-tl-meta{margin-left:0;flex-basis:100%;white-space:normal;flex-wrap:wrap}
+}
+/* the item's thread: the mail on top, then the agent's and the person's turns,
+   then the reply box; reads like a mail thread, not a chat bubble stream */
+.work-thread{display:flex;flex-direction:column;gap:10px;padding:6px 0 4px}
+.work-msg{border:1px solid var(--border-soft);border-radius:var(--radius);padding:10px 12px;background:rgba(22,26,32,.35)}
+.work-msg[data-role="item"]{border-color:var(--border)}
+.work-msg[data-role="person"]{background:color-mix(in srgb,var(--primary) 7%,transparent);border-color:color-mix(in srgb,var(--primary) 30%,var(--border-soft))}
+.work-msg[data-role="system"]{background:transparent;border-style:dashed;color:var(--muted-foreground)}
+.work-msg[data-pending]{border-style:dashed}
+.work-msg-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;color:var(--muted-foreground)}
+.work-msg-head b{font:500 13px var(--sans);color:var(--foreground)}
+.work-msg-body{font:400 13px/1.55 var(--sans);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere}
+.work-msg[data-role="item"] .work-msg-body{color:var(--foreground)}
+.work-msg-body a{color:var(--primary)}
+.work-reply{display:flex;flex-direction:column;gap:8px}
+.work-reply-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.work-reply-foot span{font-size:12px;color:var(--muted-foreground)}
+.work-thread-note{font-size:12.5px;color:var(--muted-foreground)}
+
+/* the composer's three fields */
+.work-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:12px}
+/* the attention count on the Work tab */
+.tabs a .work-badge{margin-left:7px;min-width:18px;height:18px;padding:0 5px;font-size:11px;line-height:1}
+@media(max-width:900px){
+  .work-grid3,.work-groups{grid-template-columns:1fr 1fr}
+  .work-grid2{grid-template-columns:1fr}
+  .work-fields{grid-template-columns:1fr}
+  .work-pulse{display:none}
+}
+@media(max-width:560px){
+  .work-grid3{grid-template-columns:1fr}
+  .work-groups{gap:8px}
+  .work-group [data-slot="card-footer"]{display:none}
+  .workwrap{padding:22px 16px 40px}
+  .work-page-head h1{font-size:28px}
+  .work-list [data-slot="item-actions"]{flex-basis:100%;flex-wrap:wrap;justify-content:flex-start;padding-left:14px;white-space:normal;row-gap:6px}
+}

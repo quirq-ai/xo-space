@@ -12,8 +12,8 @@
    styles); css/sessions.css only lays the pieces out. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
-import {AGENT_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {icons,button,badge,card,table,sortHead,checkbox,label,toggleGroup,pagination,skeleton,alert,breadcrumb,empty,item,itemGroup,itemSeparator,spinner,switchControl,input} from '../core/shadcn.js?v=20260915-agents2';
+import {AGENT_PAGES} from '../core/navigation.js?v=20260919-work4';
+import {icons,button,badge,card,table,sortHead,checkbox,label,toggleGroup,pagination,skeleton,alert,breadcrumb,empty,item,itemGroup,itemSeparator,spinner,switchControl,input} from '../core/shadcn.js?v=20260919-work4';
 import {areaChart,barChartHorizontal,barChartStacked,donutChart,radialChart,heatmapChart} from '../core/chart.js?v=20260915-typesync1';
 
 let _open=null;
@@ -52,6 +52,17 @@ const WINS=[['today','Today'],['7d','7 days'],['30d','30 days'],['all','All']];
 const WDAYS={today:1,'7d':7,'30d':30,all:null};
 const SUBS=[['overview','Overview'],['sessions','Sessions'],['trends','Trends'],['configure','Configure']];
 let SD=null,loading=false,failed=null,win='7d',sub='overview',sel=null,sortK='started_at',sortD=-1,enabledAgents=null,page=0,query='';
+/* The Work's Inbox hands a session over after switching here (an item's
+   session): select it once the list is loaded, by id or by key. */
+let pendingSession=null;
+function openPendingSession(){
+  if(!pendingSession||!SD)return;
+  const id=pendingSession;
+  const row=(SD.sessions||[]).find(s=>s.id===id||sessionKey(s)===id||String(s.id||'').startsWith(id));
+  if(!row)return;
+  pendingSession=null;sel=sessionKey(row);sub='sessions';render();
+}
+addEventListener('space:open-session',e=>{pendingSession=String(e.detail?.id||'');openPendingSession();});
 const PAGE_SIZE=10;              /* sessions list page length */
 /* Configure page: telemetry source descriptors from /api/telemetry/sources,
    merged at render time with the collection status and usage in SD. */
@@ -129,6 +140,7 @@ async function load({quiet=false}={}){
   loading=false;
   if(res.ok){
     SD=res.data;
+    openPendingSession();
     if(enabledAgents===null)enabledAgents=new Set(sourceDefs().map(source=>source.id));
   }
   else failed=res.offline?'\x00offline':res.error;

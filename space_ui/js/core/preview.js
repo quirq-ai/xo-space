@@ -1,4 +1,4 @@
-import {isProjectRoute} from './navigation.js?v=20260915-agents2';
+import {isProjectRoute} from './navigation.js?v=20260919-work4';
 /* File previewer — a floating window that renders one file from a project.
 
    Lives in core/, not in a view, because three surfaces open it (the Tree

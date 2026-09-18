@@ -26,9 +26,9 @@ const GROUPS=[
     title:'Follow the work',
     topics:[
       {
-        id:'inbox',title:'Inbox',
-        summary:'Review incoming items, connections, jobs, activity and sharing. Mark items seen or done.',
-        docs:'/space-walk/inbox',view:'inbox'
+        id:'work',title:'Work',
+        summary:'Every event in the Space, what needs you, work items, sources and sharing.',
+        docs:'/space-walk/inbox',view:'work'
       },
       {
         id:'observability',title:'Observability',
@@ -74,14 +74,14 @@ const GROUPS=[
    the old articles. Requests received before mount/show are applied on show. */
 const TOPIC_ALIASES={
   overview:'overview',quickstart:'quickstart',
-  projects:'projects',timeline:'timeline',agents:'agents',sessions:'agents',inbox:'inbox',
+  projects:'projects',timeline:'timeline',agents:'agents',sessions:'agents',inbox:'work',feed:'work',
   observability:'observability',sharing:'sharing',setup:'setup',
   connectors:'connectors',contribute:'contribute',
   storage:'observability',installation:'setup','first-run':'quickstart',
   watcher:'observability','xo-data':'observability','quirq-data':'observability',
   flows:'observability',collaboration:'projects',spacewalk:'agents',
   'tab-files':'projects','tab-dashboard':'projects','tab-timeline':'timeline',
-  'tab-agents':'agents','tab-sessions':'agents','tab-inbox':'inbox','tab-wiki':'overview',
+  'tab-agents':'agents','tab-sessions':'agents','tab-inbox':'work','tab-work':'work','tab-wiki':'overview',
   'tab-quirq':'observability','tab-setup':'setup','tab-connectors':'connectors'
 };
 const esc=value=>String(value??'').replace(

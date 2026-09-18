@@ -4,7 +4,8 @@
 
     ~/.quirq/
     ├── projects/      one folder per project, named by pid
-    ├── inbox/         the Inbox
+    ├── inbox/         the Inbox (retired by the Work; read once by services/work)
+    ├── work/          the Work: inbox/, live/, history/, one folder per page
     ├── connections/   one folder per connection
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
@@ -41,6 +42,10 @@ def projects_dir() -> Path:
 
 def inbox_dir() -> Path:
     return quirq_state_dir() / "inbox"
+
+
+def work_dir() -> Path:
+    return quirq_state_dir() / "work"
 
 
 def connections_dir() -> Path:

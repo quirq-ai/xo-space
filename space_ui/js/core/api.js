@@ -60,6 +60,8 @@ async function doFetch(path,method,body,headers,signal){
       }catch(e){}
       return{ok:false,status:r.status,data:null,offline:false,notImplemented:r.status===501,error:message};
     }
+    /* a 204 is a success with nothing to parse: the mark routes of the Work answer it */
+    if(r.status===204)return{ok:true,status:204,data:null,offline:false,notImplemented:false,error:null};
     let data=null;
     try{data=await r.json();}
     catch(err){return{ok:false,status:r.status,data:null,offline:false,notImplemented:false,error:err.message};}

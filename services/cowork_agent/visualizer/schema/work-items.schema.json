@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-items.schema.json",
+  "title": "xo work items index (~/.quirq/work/inbox/<connection>/items.json)",
+  "description": "One summary per item folder and the cursor per collector (the newest event ts the maker read). Rebuilt from the item folders when missing. Never holds a body.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "items"],
+  "properties": {
+    "schema":     { "type": "integer", "const": 1 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "cursors":    { "type": "object", "additionalProperties": { "type": "string", "format": "date-time" } },
+    "items": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "status":     { "type": "string", "enum": ["new", "queued", "running", "done", "failed", "skipped"] },
+          "ts":         { "type": ["string", "null"], "format": "date-time" },
+          "collector":  { "type": ["string", "null"] },
+          "kind":       { "type": ["string", "null"] },
+          "title":      { "type": ["string", "null"] },
+          "outcome":    { "type": ["string", "null"], "enum": ["reply_drafted", "task_proposed", "needs_you", "fyi", "handled", null] },
+          "decided":    { "type": ["string", "null"], "enum": ["accepted", "dismissed", "tracked", null] },
+          "decided_at": { "type": ["string", "null"], "format": "date-time" },
+          "session_id": { "type": ["string", "null"] },
+          "updated_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      }
+    }
+  }
+}

@@ -9,7 +9,8 @@ into them.
 ```
 ~/.quirq/
 ├── projects/      one folder per project, named by pid, plus the Space timeline
-├── inbox/         the Inbox
+├── inbox/         the Inbox (retired by the Work; its agent posts are still read)
+├── work/          the Work: one folder per page (inbox, live, history) for the person's own state
 ├── connections/   one folder per connection
 ├── scheduler/     saved commands and their run history
 ├── sharing/       shared repositories this machine has already seen
@@ -27,6 +28,7 @@ into them.
 |---|---|---|---|
 | `projects/` | `<pid>/timeline.jsonl`, `<pid>/stats.json`, `<pid>/sessions/`, `<pid>/github/issues.json`, `<pid>/workitems/claims.json`; `timeline.jsonl` for the whole Space; `offsets.json` and `<source>-offsets.json`, where the watcher stopped reading | the watcher; the todo, workitem and claim APIs | history nothing can rebuild |
 | `inbox/` | `inbox.json` | `services/inbox/` | Inbox items and what you marked done |
+| `work/` | `inbox/inbox.json`, `live/live.json`, `history/history.json`; `inbox/<connection>/connection.json`, `items.json`, `<item>/item.json`, `session.json`, `outcome.json` | `services/work/` | what you dismissed, acknowledged and promoted (inbox); which stream groups show (live); the watermark, pins and what agents posted (history); per connection, the policy and one folder per collected item with the session that handled it |
 | `connections/` | `accounts.json`; `<toolkit>/config.json`, `state.json`, `events.jsonl` | `services/connections/` | what each connection collected |
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |

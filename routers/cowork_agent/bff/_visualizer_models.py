@@ -431,6 +431,7 @@ class TimelineEvent(_ForbidExtra):
     issue: Optional[dict] = None
     assignee: Optional[str] = None
     state_reason: Optional[str] = None
+    item_id: Optional[str] = None
 
 
 class TimelineResponse(_ForbidExtra):

@@ -1,0 +1,10 @@
+{
+  "schema": 3,
+  "updated_at": "2026-01-01T09:30:00Z",
+  "stream": {
+    "agents": {"enabled": true},
+    "jobs": {"enabled": true},
+    "pollers": {"enabled": true},
+    "watcher": {"enabled": false}
+  }
+}

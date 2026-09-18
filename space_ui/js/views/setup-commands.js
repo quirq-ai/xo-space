@@ -7,7 +7,7 @@
 import {apiFetch,API_BASE} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {calendar,wireCalendar} from '../core/shadcn.js?v=20260916-jobs3';
+import {calendar,wireCalendar} from '../core/shadcn.js?v=20260919-work4';
 import {UNITS,WEEKDAYS,dayKey,describeChoice,describeOnce,describeSchedule,durationText,isScheduled,jobToOnce,jobToSchedule,
   onceToFields,parseDay,runsPerDay,scheduleToFields,splitDuration,startForJob,statusText,upcomingRuns,utcOffset} from '../core/jobs.js?v=20260916-jobs3';
 

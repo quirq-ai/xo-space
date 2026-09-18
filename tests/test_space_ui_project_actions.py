@@ -243,20 +243,20 @@ for(const [id,route,run] of [
         self.probe(r"""
 const activityEvents=()=>emitted.filter(event=>event.type==='space:activity-project');
 for(const [completed,hash,allowed] of [
-  [true,'#/inbox/activity',true],[false,'#/inbox/activity',false],
-  [undefined,'#/inbox/activity',false],[true,'#/projects/data/list',false],
+  [true,'#/work/history',true],[false,'#/work/history',false],
+  [undefined,'#/work/history',false],[true,'#/projects/data/list',false],
 ]){
   emitted.length=0;
   await actions.openProjectActivity(async route=>{
-    assert.equal(route,'inbox/activity');location.hash=hash;return completed;
+    assert.equal(route,'work/history');location.hash=hash;return completed;
   },'alpha-project');
   assert.equal(activityEvents().length,allowed?1:0);
   if(allowed)assert.deepEqual(activityEvents()[0].detail,{project_id:'alpha-project'});
 }
-const mounted=gate();register({id:'inbox-activity',route:'inbox/activity',mount:()=>mounted.promise});
+const mounted=gate();register({id:'work-history',route:'work/history',mount:()=>mounted.promise});
 register({id:'other',route:'projects/data/list'});emitted.length=0;
 const old=actions.openProjectActivity(registry.switchTo,'alpha-project');await settle();
-await registry.switchTo('other');const latest=registry.switchTo('inbox/activity');
+await registry.switchTo('other');const latest=registry.switchTo('work/history');
 mounted.resolve();await Promise.all([old,latest]);
 assert.deepEqual(activityEvents(),[],'Same URL does not revive an older handoff');
 await actions.openProjectActivity(registry.switchTo,'beta-project');

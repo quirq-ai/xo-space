@@ -39,6 +39,13 @@ export const icons={
   folder:ico('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
   pencil:ico('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>'),
   wrench:ico('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'),
+  bell:ico('<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>'),
+  calendar:ico('<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>'),
+  checkCircle:ico('<path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/>'),
+  briefcase:ico('<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>'),
+  radio:ico('<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>'),
+  history:ico('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>'),
+  terminal:ico('<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>'),
 };
 
 /* Button: buttonVariants({variant,size}). `tag` lets a link carry the same
@@ -203,6 +210,11 @@ export function input({value='',placeholder='',type='text',id='',mono=false,disa
     +(mono?' data-mono':'')+(disabled?' disabled':'')+' autocomplete="off" spellcheck="false"'+a(attrs)+'>';
 }
 
+export function textarea({value='',placeholder='',id='',rows=3,disabled=false,attrs=''}={}){
+  return'<textarea data-slot="textarea"'+attr('id',id)+attr('placeholder',placeholder)+' rows="'+(Number(rows)||3)+'"'
+    +(disabled?' disabled':'')+' spellcheck="true"'+a(attrs)+'>'+esc(value)+'</textarea>';
+}
+
 /* Field: label above a control, description and error below. */
 export function field({label:labelHtml='',htmlFor='',control='',description='',error='',attrs=''}={}){
   return'<div data-slot="field"'+a(attrs)+'>'
@@ -212,6 +224,37 @@ export function field({label:labelHtml='',htmlFor='',control='',description='',e
     +'<div data-slot="field-error" role="alert">'+error+'</div>'
   +'</div>';
 }
+
+/* NativeSelect: a styled <select> with the chevron the React port draws.
+   options [{value,label,disabled}]; `full` stretches to the container. The
+   caller listens for `change` on the select. */
+export function nativeSelect({options=[],value='',id='',size='default',disabled=false,full=false,ariaLabel='',attrs=''}={}){
+  return'<div data-slot="native-select-wrapper"'+(full?' class="w-full"':'')+'>'
+    +'<select data-slot="native-select" data-size="'+esc(size)+'"'+attr('id',id)+attr('aria-label',ariaLabel)+(disabled?' disabled':'')+a(attrs)+'>'
+    +options.map(o=>'<option value="'+esc(o.value)+'"'+(String(o.value)===String(value)?' selected':'')+(o.disabled?' disabled':'')+'>'+esc(o.label)+'</option>').join('')
+    +'</select>'+icons.chevronDown.replace('<svg ','<svg data-slot="native-select-icon" ')+'</div>';
+}
+
+/* Timeline: a vertical rail of events (the shadcn community Timeline).
+   `timeline` wraps items; `timelineItem` is one row: the time on the left,
+   the dot on the rail, the content on the right (title, description and
+   any further HTML); `timelineSeparator` is a sticky label between groups.
+   `tone` colors the dot. Callers pass pre-built HTML and own the listeners. */
+export function timeline(inner,{attrs=''}={}){
+  return'<ol data-slot="timeline"'+a(attrs)+'>'+inner+'</ol>';
+}
+export function timelineItem({time='',tone=null,title='',description='',content='',cls='',attrs=''}={}){
+  return'<li data-slot="timeline-item"'+attr('data-tone',tone)+(cls?' class="'+cls+'"':'')+a(attrs)+'>'
+    +'<div data-slot="timeline-time">'+time+'</div>'
+    +'<div data-slot="timeline-indicator" aria-hidden="true"><span data-slot="timeline-dot"></span></div>'
+    +'<div data-slot="timeline-content">'
+      +(title?'<div data-slot="timeline-title">'+title+'</div>':'')
+      +(description?'<div data-slot="timeline-description">'+description+'</div>':'')
+      +content
+    +'</div>'
+  +'</li>';
+}
+export const timelineSeparator=(inner,attrs='')=>'<li data-slot="timeline-separator"'+a(attrs)+'><span>'+inner+'</span></li>';
 
 export function separator({orientation='horizontal',cls='',attrs=''}={}){
   return'<div role="none" data-slot="separator" data-orientation="'+orientation+'"'+(cls?' class="'+cls+'"':'')+a(attrs)+'></div>';

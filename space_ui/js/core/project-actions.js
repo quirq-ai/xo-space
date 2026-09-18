@@ -17,7 +17,7 @@ export function initProjectActions(switchTo){
 export async function openProjectActivity(switchTo,projectId){
   const id=typeof projectId==='string'?projectId.trim():'';
   if(!id)return;
-  if((await switchTo('inbox/activity'))===true&&location.hash==='#/inbox/activity'){
+  if((await switchTo('work/history'))===true&&location.hash==='#/work/history'){
     dispatchEvent(new CustomEvent('space:activity-project',{detail:{project_id:id}}));
   }
 }
