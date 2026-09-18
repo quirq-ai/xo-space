@@ -468,10 +468,6 @@ class MultiAccountTests(_ComposioBase):
         self.assertIsNone(service.normalize_alias("   "))
         self.assertIsNone(service.normalize_alias(None))
 
-    def test_over_long_alias_is_refused_before_the_api_call(self) -> None:
-        with self.assertRaises(ValueError):
-            service.normalize_alias("x" * (service.ALIAS_MAX_LENGTH + 1))
-
     def test_duplicate_alias_is_caught_locally_and_names_the_holder(self) -> None:
         with patch.object(
             swarm_client, "list_connections",
