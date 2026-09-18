@@ -1,6 +1,6 @@
 /* Project management owns one persistent controller. Navigation and catalog
    refreshes leave clone, access-review and inline sharing drafts mounted. */
-import {projectPage} from '../core/navigation.js?v=20260915-agents2';
+import {projectPage} from '../core/navigation.js?v=20260919-work4';
 import {openProjectActivity} from '../core/project-actions.js?v=20260914-details1';
 import {mountProjectManagement} from './project-management.js?v=20260915-data1';
 

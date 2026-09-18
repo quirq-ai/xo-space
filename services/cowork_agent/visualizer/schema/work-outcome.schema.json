@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-outcome.schema.json",
+  "title": "xo work item outcome (~/.quirq/work/inbox/<connection>/<id>/outcome.json)",
+  "description": "What the item's session concluded: the last fenced json block of its answer, validated by the runner. The kind decides where the item shows on the Inbox (section 17.3).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "kind", "summary"],
+  "properties": {
+    "schema":   { "type": "integer", "const": 1 },
+    "kind":     { "type": "string", "enum": ["reply_drafted", "task_proposed", "needs_you", "fyi", "handled"] },
+    "summary":  { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "draft":    { "type": ["string", "null"], "description": "a path inside the workbench" },
+    "task":     { "type": ["object", "null"], "properties": { "title": { "type": "string" }, "assignee": { "type": ["string", "null"] } } },
+    "question": { "type": ["string", "null"] },
+    "acted":    { "type": "array", "items": { "type": "string" } },
+    "at":       { "type": "string", "format": "date-time" }
+  }
+}

@@ -359,7 +359,75 @@ switchable regardless.
 - No alerts and no prompts by design: those tables are never read, so raw
   prompt text never enters the payload.
 
+## Work tab
+
+The third topbar tab is **Work** (`#/work`; the old `#/inbox/*`, `#/sharing`
+and `#/feed*` routes land on it). Three pages, one per question: **Inbox**
+(what needs me), **Live** (what is happening now) and **History** (what
+happened). The design and the loop they serve are `docs/work-and-workitems.md`.
+
+**Inbox** (`#/work`, `js/views/work.js`, `css/work.css`) reads one route,
+`GET /api/work/inbox`, and paints four groups from it: **Decisions** (the
+attention items: a work item assigned to you or to nobody, a blocked todo, an
+issue for you, a mail or mention of a kind listed in
+`sources.connections.attention`, an agent's question, a share not cloned, a
+failing source), **Calendar** (meetings from now to the end of tomorrow),
+**Completed** (jobs that ran in the last day, one row per job, work items an
+agent closed, todos an agent completed) and **Work** (the open work items,
+who owns them and who is on them). A group card narrows the list; the
+project select and the toolbar search narrow it further, client-side. Every
+row has one primary action and a way to put it away: **Dismiss** stores the
+row's `key@since` (the same condition starting again comes back), **Acknowledge**
+and **Accept** store the key. **Track** turns a mail, mention or issue into a
+work item (`POST /api/work/promote`; an issue is adopted, so GitHub keeps its
+status). The work item row opens to its record: body or issue, who is on it,
+an assignee select (you, the agents from `/api/telemetry/sources`, any login
+already seen), Close, Open project, Delete, all through the existing
+`/api/xo-projects/{id}/workitems*` routes. **+ Work item** in the section bar
+creates one. The page rereads every 30 s while shown; the tab badge is
+`GET /api/work/summary` (`badge` = decisions + completed), polled every 60 s
+while another tab is shown. A failed reread keeps the page and says why.
+
+Nothing is copied on the way: the readers under `services/work/` answer from
+the Space timeline, the GitHub issue mirrors, `connections/<toolkit>/events.jsonl`,
+the sharing relay, `scheduler/runs/` and the agents' posts, and
+`~/.quirq/work/` holds only your own state, one folder per page:
+`inbox/inbox.json` (`dismissed`, `acked`, `promoted`, and the connection kinds
+that count as decisions), `live/live.json` (which stream groups show) and
+`history/history.json` (the reader switches, `watermark`, `pinned` and the
+posts). Each is hand-editable: unknown keys survive, a bad mark is dropped on
+read, and a file that is not valid JSON is served empty and never overwritten. Agents post with `POST /api/feed`
+(`.agents/skills/xo-projects/references/work-http-api.md`); `POST /api/inbox`
+still lands in the same place.
+
+**Items and their sessions.** A connection can become a folder inside the
+Inbox (`~/.quirq/work/inbox/<connection>/`, a policy in `connection.json`,
+written today by `PUT /api/work/inbox/connections/{toolkit}`; Setup's drawer
+follows). Its listed collectors' events then become items, each a folder,
+and an item can own one agent session that handles it and leaves an outcome.
+The Inbox shows an item as a decision: arrived (**Start session**, or Track
+it as work), a drafted reply (**Open workbench**, **Send** when the policy
+allows acting), a proposed task (**Track**), a question (**Open session**,
+which lands on the Agents page), or a failed run (**Retry**); an item the
+session handled or found merely worth a glance sits under Completed until
+you **Acknowledge** it. Dismiss and Acknowledge on an item go through its
+own decide route, so the item folder records the decision. The header
+counts the sessions running. Opening an item row shows its **thread**: the
+mail on top, the agent's turns and your replies below, the outcome, and a
+reply box (⌘↩ sends). A reply resumes the item's session, or starts it when
+the item has none, and the answer lands on the thread; the page polls the
+thread every two seconds while the agent is answering.
+
+**Live** (`#/work/live`) and **History** (`#/work/history`) are built on
+sample data (`js/views/work-sample.js`) until their routes land: Live shows
+the calendar beside a live stream of the logs, History the events over a
+window with charts and a timeline, split Space and Projects, with project
+sharing inside.
+
 ## Inbox tab
+
+Retired: the Work tab above replaces these pages, which are no longer
+registered; this section stays while `services/inbox/` does.
 
 The third topbar tab contains Items, Connections, Jobs, Activity, Sharing activity
 and Sharing. **Items** tracks information arriving in the workspace. One

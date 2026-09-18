@@ -1,0 +1,20 @@
+{
+  "schema": 3,
+  "updated_at": "2026-01-01T09:30:00Z",
+  "attention": {
+    "connections": ["gmail.unread"]
+  },
+  "dismissed": {
+    "todo:sample-project:a1b2c3d4@2026-01-01T09:06:00Z": "2026-01-01T09:20:00Z"
+  },
+  "acked": {
+    "job:runs:nightly-tests-a1b2c3:2026-01-01": "2026-01-01T09:25:00Z"
+  },
+  "promoted": {
+    "connection:gmail:unread:msg-example-1": {
+      "project_id": "sample-project",
+      "workitem_id": "22222222-2222-4222-8222-222222222222",
+      "at": "2026-01-01T09:16:00Z"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-connection.schema.json",
+  "title": "xo work connection policy (~/.quirq/work/inbox/<connection>/connection.json)",
+  "description": "What a connection folder does with what its poller collects (docs/work-and-workitems.md section 17.4): which collectors become items, whether and when a session starts, what a session may do. Written by services/work/items.py and hand-editable; a value out of range falls back to its safe default on read.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema"],
+  "properties": {
+    "schema": { "type": "integer", "const": 1 },
+    "items": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "collector id -> whether its events become items" },
+    "sessions": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode":           { "type": "string", "enum": ["off", "manual", "auto"], "default": "manual" },
+        "kinds":          { "type": "array", "items": { "type": "string" }, "description": "auto: the collectors whose items start a session on arrival" },
+        "agent_type":     { "type": "string", "default": "inbox-item" },
+        "runtime":        { "type": ["string", "null"], "description": "null = the active agent" },
+        "max_concurrent": { "type": "integer", "minimum": 1, "maximum": 10, "default": 2 },
+        "max_per_hour":   { "type": "integer", "minimum": 1, "maximum": 500, "default": 20 },
+        "timeout_s":      { "type": "integer", "minimum": 30, "maximum": 3600, "default": 300 },
+        "act":            { "type": "boolean", "default": false, "description": "may a session act on the connection (send, label)?" }
+      }
+    },
+    "retention_days": { "type": "integer", "minimum": 1, "maximum": 365, "default": 30 }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-inbox.schema.json",
+  "title": "xo work inbox (~/.quirq/work/inbox/inbox.json)",
+  "description": "The decisions a person made on the Inbox page, each keyed by the fact it was about, and which connection kinds are decisions. Nothing from a log is copied here. Written by services/work/ and hand-editable: unknown keys survive a rewrite, a mark with a bad key or value is dropped on read.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema"],
+  "properties": {
+    "schema":     { "type": "integer", "const": 3 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "attention": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "connections": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Connection kinds (toolkit.type) that are decisions; the default is empty." }
+      }
+    },
+    "dismissed": {
+      "type": "object",
+      "description": "'<key>@<since>' -> when it was dismissed. The pair is what is hidden, so the same condition starting again comes back. Pruned after 30 days.",
+      "additionalProperties": { "type": "string", "format": "date-time" }
+    },
+    "acked": {
+      "type": "object",
+      "description": "'<key>' -> when a Completed row was acknowledged. Pruned after 30 days.",
+      "additionalProperties": { "type": "string", "format": "date-time" }
+    },
+    "promoted": {
+      "type": "object",
+      "description": "'<key>' -> the work item the entry became. Idempotent by key.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["project_id", "workitem_id"],
+        "additionalProperties": true,
+        "properties": {
+          "project_id":  { "type": "string" },
+          "workitem_id": { "type": "string" },
+          "at":          { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "updated_at": "2026-01-01T09:20:00Z",
+  "cursors": {"unread": "2026-01-01T09:14:00Z"},
+  "items": {
+    "unread-msg-example-1": {
+      "status": "done",
+      "ts": "2026-01-01T09:14:00Z",
+      "collector": "unread",
+      "kind": "gmail.unread",
+      "title": "Welcome to sample-project",
+      "outcome": "reply_drafted",
+      "decided": "accepted",
+      "decided_at": "2026-01-01T09:20:00Z",
+      "session_id": "5c1e4d2a-0000-4000-8000-000000000001",
+      "updated_at": "2026-01-01T09:20:00Z"
+    }
+  }
+}

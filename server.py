@@ -807,6 +807,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
 
+    # Inbox runner: makes an item folder per collected connection event and
+    # starts one session per item (docs/work-and-workitems.md section 17).
+    _inbox_runner_task = None
+    try:
+        from services.work.runner import enabled as inbox_runner_enabled, start_inbox_runner
+        if inbox_runner_enabled():
+            _inbox_runner_task = asyncio.create_task(start_inbox_runner())
+            print("   Inbox runner: background task started")
+        else:
+            print("   Inbox runner: disabled by XO_INBOX_SESSIONS")
+    except Exception as e:
+        print(f"⚠️ Inbox runner failed to start (non-fatal): {e}")
+
     # Visualizer watcher: materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
@@ -898,6 +911,13 @@ async def lifespan(app: FastAPI):
         _connections_poll_task.cancel()
         try:
             await _connections_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _inbox_runner_task:
+        _inbox_runner_task.cancel()
+        try:
+            await _inbox_runner_task
         except asyncio.CancelledError:
             pass
 

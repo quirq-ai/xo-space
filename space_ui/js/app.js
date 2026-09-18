@@ -2,26 +2,26 @@
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
 import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260915-typesync1';
-import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
+import {initProjectActions} from './core/project-actions.js?v=20260919-work4';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
-import {initSectionNav} from './core/section-nav.js?v=20260915-agents2';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260915-agents2';
-import {initPreview} from './core/preview.js?v=20260915-agents2';
-import {initCommandPalette} from './core/command-palette.js?v=20260916-jobs3';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-footer1';
-import {createAgentViews} from './views/sessions.js?v=20260915-footer1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
-import projectsView from './views/projects.js?v=20260918-copypath1';
-import projectManageView from './views/project-manage.js?v=20260915-agents2';
-import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260918-copypath1';
+import {initSectionNav} from './core/section-nav.js?v=20260919-work4';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260919-work4';
+import {initPreview} from './core/preview.js?v=20260919-work4';
+import {initCommandPalette} from './core/command-palette.js?v=20260919-work4';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260919-work4';
+import {createAgentViews} from './views/sessions.js?v=20260919-work4';
+import workView,{initWorkBadge} from './views/work.js?v=20260919-work4';
+import workLiveView from './views/work-live.js?v=20260919-work4';
+import workHistoryView from './views/work-history.js?v=20260919-work4';
+import projectsView from './views/projects.js?v=20260919-work4';
+import projectManageView from './views/project-manage.js?v=20260919-work4';
+import treeView from './views/tree.js?v=20260919-work4';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260916-jobs3';
+import wikiView from './views/wiki.js?v=20260919-work4';
 import quirqView from './views/quirq.js?v=20260915-data1';
-import {createSetupViews} from './views/setup.js?v=20260916-jobs3';
+import {createSetupViews} from './views/setup.js?v=20260919-work4';
 import connectorsView from './views/connectors.js?v=20260917-byok1';
 
 
@@ -72,12 +72,12 @@ try{
   registerView(graphView);
   registerView(timeView);
   createAgentViews().forEach(registerView);
-  createInboxViews().forEach(registerView);
-  createActivityViews().forEach(registerView);
+  registerView(workView);
+  registerView(workLiveView);
+  registerView(workHistoryView);
   registerView(projectsView);
   registerView(projectManageView);
   registerView(treeView);
-  registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
   createSetupViews(connectorsView).forEach(registerView);
@@ -85,6 +85,6 @@ try{
 }catch(err){console.error('Space registry failed to start:',err);}
 
 try{initServerWidget();}catch(err){console.error('Server widget failed to start:',err);}
-try{initInboxBadge();}catch(err){console.error('Inbox badge failed to start:',err);}
+try{initWorkBadge();}catch(err){console.error('Work badge failed to start:',err);}
 try{initPreview();}catch(err){console.error('Previewer failed to start:',err);}
 try{initCommandPalette({switchTo,refreshCurrentView});}catch(err){console.error('Command palette failed to start:',err);}

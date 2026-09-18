@@ -75,7 +75,7 @@ for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)
   }
 }
 const registry=await import(new URL('js/core/registry.js',base));
-const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
+const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,WORK_PAGES}=await import(new URL('js/core/navigation.js',base));
 const registered=[];
 for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);|(\w+)\((\w*)\)\.forEach\(registerView\);/g)){
   const result=factory?views[factory](factoryArgument?views[factoryArgument]:undefined):[argument?views[name](views[argument]):views[name]];
@@ -88,11 +88,11 @@ for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView
 registry.startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 assert.equal(history.length,1,'Initial deep links normalize in place');
 assert.equal(historyPushes,0,'Starting the registry never pushes browser history');
-const expectedTabs=['projects','agents','inbox','setup'];
-const defaults=['projects/overview','agents/overview','inbox/items','setup/workspace'];
+const expectedTabs=['projects','agents','work','setup'];
+const defaults=['projects/overview','agents/overview','work','setup/workspace'];
 assert.deepEqual(PRIMARY_TABS.map(tab=>[tab.id,tab.defaultView]),expectedTabs.map((id,i)=>[id,defaults[i]]));
 assert.deepEqual(tabs.children.map(tab=>[tab.id,tab.tagName,tab.href]),expectedTabs.map((id,i)=>['tab-'+id,'A','#/'+defaults[i]]));
-assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Inbox','Setup']);
+assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Work','Setup']);
 assert.deepEqual(PROJECT_PAGES.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['project-list','projects/data/list','List'],
   ['graph','projects/data/graph','Graph'],['tree','projects/data/tree','Tree'],
@@ -103,19 +103,23 @@ assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
 assert.deepEqual(DATA_VIEWS.map(page=>page.id),['project-list','graph','tree']);
 assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','trends','configure'].map(page=>'agents/'+page));
 assert.deepEqual(AGENT_PAGES[2].aliases,['agents/tools','agents/models']);
-assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
+assert.deepEqual(WORK_PAGES.map(page=>[page.route,page.label]),[['work','Inbox'],['work/live','Live'],['work/history','History']]);
+assert.deepEqual(WORK_PAGES[0].aliases,['inbox','inbox/items','feed'],'Items (and the old Feed route) land on the Inbox');
+assert.deepEqual(WORK_PAGES[1].aliases,['inbox/jobs','inbox/connections','feed/live'],'Jobs and Connections land on Live');
+assert.deepEqual(WORK_PAGES[2].aliases,['work/activity','feed/activity','feed/history','inbox/activity','inbox/sharing-activity','sharing','projects/sharing','inbox/sharing'],'Both activity pages, the Activity route and Sharing land on History');
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
 assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
 const setupRoutes=['workspace','intelligence','connectors','secrets','commands','server'].map(id=>'setup/'+id);
-const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
-const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
+const pages=[...PROJECT_PAGES,...AGENT_PAGES,...WORK_PAGES,...setupRoutes.map(route=>({id:route,route}))];
+const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'work',
+  'inbox/items':'work','inbox/activity':'work/history','inbox/sharing-activity':'work/history','inbox/connections':'work/live','inbox/jobs':'work/live','inbox/sharing':'work/history','work/activity':'work/history',
   'agents/tools':'agents/trends','agents/models':'agents/trends',
   setup:'setup/workspace','setup/projects':'projects/manage',dashboard:'projects/overview',list:'projects/data/list',graph:'projects/data/graph',tree:'projects/data/tree',
   'projects/data':'projects/data/list','projects/files':'projects/data/list',
   'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
   'projects/graph':'projects/data/graph','projects/tree':'projects/data/tree',
-  sharing:'inbox/sharing','projects/sharing':'inbox/sharing',time:'projects/timeline',timeline:'projects/timeline',
+  sharing:'work/history','projects/sharing':'work/history',time:'projects/timeline',timeline:'projects/timeline',
   secrets:'setup/secrets',connectors:'setup/connectors',quirq:'setup/server/details'};
 function canonical(target){return aliases[target]||pages.find(page=>page.id===target)?.route||target;}
 function assertPage(route){
@@ -153,9 +157,9 @@ const ordinary=click({});primary.listeners.click(ordinary);assert.equal(ordinary
 
 // History is per page, including pages sharing one mounted DOM section.
 await registry.switchTo('agents/overview');const start=historyPosition;
-await registry.switchTo('agents/sessions');await registry.switchTo('inbox/jobs');
+await registry.switchTo('agents/sessions');await registry.switchTo('work/live');
 assert.equal(historyPosition,start+2);const pushes=historyPushes;
-await registry.switchTo('inbox/jobs');assert.equal(historyPushes,pushes);
+await registry.switchTo('work/live');assert.equal(historyPushes,pushes);
 history.back();assertPage('agents/sessions');history.back();assertPage('agents/overview');
 history.forward();assertPage('agents/sessions');assert.equal(historyPushes,pushes);
 location.hash='#/secrets';const length=history.length,aliasPushes=historyPushes;
@@ -177,11 +181,11 @@ assert.equal(elements.has('view-setup/projects'),false,'The old Setup project ro
 assert.equal(registered.find(view=>view.id==='project-manage').parent,'projects');
 assert.equal(registered.find(view=>view.id==='project-manage').section,'project-manage');
 assert.equal(elements.has('view-agents-sessions'),false,'Agents pages share a persistent section');
-assert.equal(elements.has('view-inbox-jobs'),false,'Inbox rows, connections and jobs share a persistent section');
-assert.equal(registered.find(view=>view.id==='sharing').parent,'inbox');
-assert.equal(registered.find(view=>view.id==='inbox-activity').section,'inbox-activity');
-assert.equal(registered.filter(view=>view.id==='sharing').length,1);
-assert.equal(registered.filter(view=>view.id==='inbox-activity').length,1);
+assert.equal(elements.has('view-work'),true,'The Work page owns the section named after the tab');
+assert.equal(elements.has('view-inbox'),false,'No Inbox section is created any more');
+for(const id of ['work','work-live','work-history'])assert.equal(registered.find(view=>view.id===id).parent,'work',id+' lights the Work tab');
+assert.equal(registered.some(view=>view.id==='sharing'),false,'Sharing is a section of Activity, not a page');
+assert.equal(registered.filter(view=>view.id==='work').length,1);
 
 // Re-registering an independent view removes obsolete aliases.
 registry.registerView({id:'route-probe',route:'probe/first',aliases:['probe-old'],nav:false,section:'setup',parent:'setup',mount:async()=>{}});

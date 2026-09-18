@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-session.schema.json",
+  "title": "xo work item session (~/.quirq/work/inbox/<connection>/<id>/session.json)",
+  "description": "The session bound to an item: the Space's session id (what the chat resumes), the runtime's own id, where it ran, when it started and ended and how. Written by services/work/runner.py.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "session_id", "runtime", "project_id", "started_at"],
+  "properties": {
+    "schema":            { "type": "integer", "const": 1 },
+    "session_id":        { "type": "string" },
+    "native_session_id": { "type": ["string", "null"] },
+    "runtime":           { "type": "string" },
+    "project_id":        { "type": "string" },
+    "workbench":         { "type": "string" },
+    "agent_type":        { "type": "string" },
+    "started_at":        { "type": "string", "format": "date-time" },
+    "resumed_at":        { "type": "string", "format": "date-time" },
+    "ended_at":          { "type": ["string", "null"], "format": "date-time" },
+    "exit":              { "type": ["object", "null"], "properties": { "status": { "type": "string", "enum": ["ok", "timeout", "error", "cancelled", "orphaned"] }, "message": { "type": ["string", "null"] } } },
+    "attempt":           { "type": "integer", "minimum": 1 },
+    "manual":            { "type": "boolean" }
+  }
+}

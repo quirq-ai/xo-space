@@ -379,16 +379,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("function restoreAnchor", tree)
         self.assertIn("anchor=", tree)
 
-    def test_sharing_is_an_inbox_page_with_inline_project_entry_points(self) -> None:
-        """Inbox owns sharing management; project lists own compact entry forms.
-        Detailed relay status and management still use the existing data seam."""
+    def test_sharing_is_a_section_of_history_with_inline_project_entry_points(self) -> None:
+        """History's Projects section owns sharing management (the former
+        Sharing page is unregistered until its removal PR); project lists own
+        compact entry forms. Detailed relay status still uses the data seam."""
         app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         switcher = (
             ROOT / "space_ui" / "js" / "core" / "section-nav.js"
         ).read_text(encoding="utf-8")
-        sharing = (
-            ROOT / "space_ui" / "js" / "views" / "sharing.js"
+        activity = (
+            ROOT / "space_ui" / "js" / "views" / "work-history.js"
         ).read_text(encoding="utf-8")
         data = (
             ROOT / "space_ui" / "js" / "views" / "sharing_data.js"
@@ -396,23 +397,23 @@ class SpaceWikiTests(unittest.TestCase):
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        # Registered once as an independent Inbox page.
-        self.assertIn("import sharingView from './views/sharing.js?v=", app)
-        self.assertIn("registerView(sharingView);", app)
-        contract = view_contract("sharing")
-        self.assertIn("INBOX_PAGES.find(page=>page.id==='sharing')", contract)
+        # No Sharing page any more; every Sharing route lands on History.
+        self.assertNotIn("import sharingView from", app)
+        self.assertNotIn("registerView(sharingView);", app)
+        contract = view_contract("work-history")
+        self.assertIn("WORK_PAGES.find(page=>page.id==='work-history')", contract)
+        for fn in ("function sharingHTML", "function membersHTML", "function composerHTML"):
+            self.assertIn(fn, activity)
         # Secondary navigation belongs to the shell and shared definitions,
         # the view itself never renders a switch
         self.assertIn('id="section-nav"', index)
         self.assertIn("PROJECT_PAGES", switcher)
-        self.assertNotIn('data-files-lens="', sharing)
+        self.assertNotIn('data-files-lens="', activity)
         # one source of truth: the status snapshot, read by the data module
-        self.assertIn("from './sharing_data.js?v=", sharing)
-        self.assertNotIn("apiFetch(", sharing)
         self.assertIn("apiFetch(API_BASE+'/api/project-sharing/status'", data)
-        # "Open in List" opens that project's drawer (views never import each
+        # "Open project" opens that project's drawer (views never import each
         # other: switchTo + an event the List listens for)
-        self.assertIn("space:open-project", sharing)
+        self.assertIn("space:open-project", activity)
         self.assertIn("space:open-project", projects)
         # Lists reuse the compact form without duplicating the management pane.
         self.assertNotIn("sharing_data.js", projects)

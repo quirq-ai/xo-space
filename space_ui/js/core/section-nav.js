@@ -1,12 +1,12 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260915-agents2';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,WORK_PAGES} from './navigation.js?v=20260919-work4';
 import {toast} from './ui.js';
 
-const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
-const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
+const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,work:WORK_PAGES};
+const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...WORK_PAGES].map(page=>[page.id,page]));
 const DATA_IDS=new Set(DATA_VIEWS.map(page=>page.id));
-const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
+const UNTITLED_PAGES=new Set(['dashboard','graph','tree']);
 const pageActions=new Map();
 let refreshActions=()=>{};
 

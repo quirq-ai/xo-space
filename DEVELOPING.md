@@ -70,6 +70,9 @@ services/                         Placement rule: only what is specific to runni
                                     (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
                                     todos, sharing, issues, connections) service (the router-facing
                                     surface); routes in routers/cowork_agent/bff/inbox.py
+  work/                           the Work (a property of the Space): store (~/.quirq/work/{inbox,live,history}/,
+                                    the person's marks and agents' posts), readers (one per source log),
+                                    attention (derived on read), inbox (the page's four groups), service
   connections/                    connections polling for the Inbox (a property of the Space): store
                                     (~/.quirq/connections/<toolkit>/ config, state, events)
                                     collectors (the read-only catalog per toolkit) mcp_client
@@ -274,7 +277,7 @@ Only code that is specific to running an agent belongs under
 registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
-`services/`: the Inbox (`services/inbox/`), connections polling
+`services/`: the Work (`services/work/`), the Inbox (`services/inbox/`), connections polling
 (`services/connections/`), the swarm client (`services/swarm_api/`). The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
@@ -332,7 +335,7 @@ module and the sample together.
 What XO Space keeps on one machine, outside every project, lives in the state
 root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
-watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
+watcher stopped reading), `inbox/`, `work/`, `connections/`, `scheduler/`, `sharing/`,
 `usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
 `.locks/` (internal). `services/storage/layout.py` names each folder once, and
 its `MOVES` list is how files get there from where earlier releases kept them:
@@ -947,3 +950,94 @@ only as the literal `true`; the schema is
 
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
+
+## 12. The Work
+
+`services/work/` (routes in `routers/cowork_agent/bff/work.py`) is the
+Inbox's successor: the Work tab's Inbox page reads it, and the Live and
+History pages will (docs/work-and-workitems.md is the design; section 16
+there is the loop this package serves). A property of the Space (section 7),
+beside `services/inbox/`, which stays until `POST /api/inbox` moves here.
+
+**The rule.** Nothing from a log is copied. Six readers
+(`readers.py`: `timeline`, `issues`, `connections`, `sharing`, `jobs`,
+`posts`) each answer entries newest-first straight from that source's own
+file, in one shape (`key, ts, source, kind, title, detail, project_id, pid,
+actor, ref, tone`), and `attention.py` derives what needs a person from
+current state on every read (open work items and their claims, blocked
+todos, mirrored issues, connection events of a listed kind, agents'
+questions, pending shares, failing sources). `~/.quirq/work/` holds only
+the person's own state, one folder per page (`store.py`, schema 3, the
+`work-{inbox,live,history}.schema.json` files): `inbox/inbox.json` carries
+`dismissed[key@since]`, `acked[key]`, `promoted[key]` and the connection
+kinds that count as decisions; `live/live.json` which stream groups show;
+`history/history.json` the reader switches, the `watermark`, `pinned` and
+the `posts` agents send. In memory the three are one document
+(`store.load_document` merges, `store.modify` splits), so the readers see
+one shape. There is no ingest, no throttle, no cursor and no auto-close:
+a read has nothing to advance, and a condition that clears leaves on its
+own. `inbox.py` composes the page's four groups in one read.
+
+**Routes.** `GET /api/work/inbox` (the page), `GET /api/work/attention`,
+`GET /api/work/summary` (the badge, polled every 60 s while another tab is
+shown), `GET /api/feed` (`limit, before, since, sources, kinds, project`,
+answering `{entries, next_cursor, watermark, sources: {name: {ok, error,
+enabled}}}`; a failing reader is a line there, never a failed page),
+`POST /api/feed` (an agent's note; strict body, 201), `PUT /api/work/watermark`
+(only moves forward), `POST /api/work/dismiss` `{key, since}` and
+`DELETE /api/work/dismiss/{key}`, `POST /api/work/ack` `{key}` and
+`DELETE /api/work/ack/{key}` (204, idempotent), `POST /api/work/promote`
+`{key, project_id, title?, assignee?}` (the entry becomes a work item
+through the existing store: a GitHub issue is adopted, anything else is a
+local item with labels `["work", "<source>"]`; 201, or 200 with the same
+item when the key was promoted before) and `PATCH /api/work/pins`. Work
+item actions use the existing `/api/xo-projects/{id}/workitems*` routes.
+`WorkError` is a `ServiceError` mapped by `bff/errors.http_error`; the
+service's own codes are `invalid_value`, `invalid_key`, `invalid_project_id`,
+`invalid_link`, `entry_not_found` (404) and `scope_unavailable` (500, a
+`work.json` that is not valid JSON, which is never overwritten).
+
+**`me`.** `attention.identities()` answers the names this Space treats as
+its own (the signed-in user, the Space id, the Coder owner), compared
+case-insensitively; the GitHub login is not resolved here (it needs the
+network). Promote resolves `assignee: "me"` the same way the assign route
+does. Core names no agent: the page gets agent labels from
+`/api/telemetry/sources` and colors from the kit.
+
+**Connections as folders, a session per item** (design section 17;
+`items.py`, `runner.py`). A connection whose folder
+`~/.quirq/work/inbox/<toolkit>/` holds a `connection.json` policy turns the
+listed collectors' events into item folders (`<collector>-<key>/item.json`,
+plus `session.json`, `outcome.json` and `run.log` once a session ran) and
+keeps an index with a cursor per collector in `items.json`. The runner
+(`start_inbox_runner`, one background task beside the pollers, every 15 s,
+`XO_INBOX_SESSIONS=off` stops it) makes items, harvests orphaned runs,
+starts sessions in `auto` mode for the listed kinds under the policy's two
+caps, and sweeps decided items after `retention_days`. A session starts
+through `AgentDispatcher.stream` with `agent_id` the connection's project
+(`inbox-<toolkit>`, scaffolded on first use), `agent_type` `inbox-item`
+(the bundled skill; the Claude Code manifest maps it to `/inbox-item`) and
+a Space session id the runner minted, so the index row, the runtime's
+session id and the watcher work as for any chat, and the runner names no
+agent. The last fenced `json` block of the answer becomes `outcome.json`
+(`reply_drafted`, `task_proposed`, `needs_you`, `fyi`, `handled`); no block
+is `failed`, and Retry runs the item again. Every transition is an
+`inbox.item.*` line (`item_id`, `kind` = the toolkit, `status`) on the
+connection project's timeline and the Space timeline, never with the body.
+The item's thread (`thread.jsonl`: the agent's answers without their
+outcome block, the person's replies, system notes) is what the page shows
+when an item is opened; `POST .../reply {text}` puts the person's words on
+it and resumes the session (a follow-up answer need not restate the
+outcome; a failed follow-up leaves the item's status alone), `GET .../thread`
+answers it with `running`, `can_reply` and `can_send`.
+The person decides an item through `POST /api/work/inbox/items/{toolkit}/{id}/decide`
+(`accept`, `dismiss`, or `track`, which promotes it); `.../start` runs it
+by hand, `.../send` resumes a drafted reply's session when the policy's
+`act` allows. The routes are listed in `bff/work.py`; the schemas are
+`work-{connection,items,item,session,outcome}.schema.json`.
+
+Tests: `tests/test_work_{store,readers,items,runner,bff}.py` (the readers,
+the derivation, the groups, the items, the runner over a fake stream and
+the service run over a copy of `tests/fixtures/quirq-state/` plus
+`tests/fixtures/xo-project/`), `tests/test_space_work.py`, and the `work/`
+rows of `tests/test_quirq_state_layout.py`.

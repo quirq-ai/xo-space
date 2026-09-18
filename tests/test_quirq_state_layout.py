@@ -33,6 +33,8 @@ from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
 from services.inbox import store as inbox_store
+from services.work import items as work_items
+from services.work import store as work_store
 from services.storage import flock, layout
 from utils import commands
 from utils.commands import scheduler
@@ -74,7 +76,7 @@ class SampleTests(_Sandbox):
             layout.projects_dir(), layout.inbox_dir(), layout.sharing_dir(),
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
-            layout.connections_dir(), layout.scheduler_dir(),
+            layout.connections_dir(), layout.scheduler_dir(), layout.work_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -91,6 +93,9 @@ class StorePathTests(_Sandbox):
             "the Space timeline": project_layout.workspace_timeline_path(),
             "watcher reading positions": watcher_state.watcher_state_dir(),
             "the Inbox": inbox_store.inbox_path(),
+            "the Work, inbox": work_store.inbox_path(),
+            "the Work, live": work_store.live_path(),
+            "the Work, history": work_store.history_path(),
             "a connection": connections_store.connection_dir("gmail"),
             "saved commands": scheduler.scheduler_dir(),
             "a command's output": scheduler.log_file("job1"),
@@ -242,6 +247,14 @@ class ExampleSchemaTests(unittest.TestCase):
             "cache/activity/workspace.json": "activity.schema.json",
             f"cache/activity/projects/{EXAMPLE_PROJECT}.json": "activity.schema.json",
             "inbox/inbox.json": "inbox.schema.json",
+            "work/inbox/inbox.json": "work-inbox.schema.json",
+            "work/live/live.json": "work-live.schema.json",
+            "work/history/history.json": "work-history.schema.json",
+            "work/inbox/gmail/connection.json": "work-connection.schema.json",
+            "work/inbox/gmail/items.json": "work-items.schema.json",
+            "work/inbox/gmail/unread-msg-example-1/item.json": "work-item.schema.json",
+            "work/inbox/gmail/unread-msg-example-1/session.json": "work-session.schema.json",
+            "work/inbox/gmail/unread-msg-example-1/outcome.json": "work-outcome.schema.json",
         }
         for rel, schema_name in pairs.items():
             with self.subTest(file=rel):
@@ -279,6 +292,22 @@ class ExampleStoreTests(unittest.TestCase):
         document, ok = inbox_store.load_document()
         self.assertTrue(ok)
         self.assertEqual(len(document["items"]), 2)
+
+    def test_the_work(self) -> None:
+        document, ok = work_store.load_document()
+        self.assertTrue(ok)
+        self.assertEqual([post["id"] for post in document["posts"]], ["c0ffee02"])
+        self.assertEqual(document["sources"]["connections"]["attention"], ["gmail.unread"])
+        self.assertIn("connection:gmail:unread:msg-example-1", document["promoted"])
+        self.assertFalse(document["stream"]["watcher"]["enabled"])
+        self.assertEqual(document["watermark"], "2026-01-01T09:00:00Z")
+        # the connection folder: its policy, its index and its one item
+        self.assertEqual(work_items.list_connections(), ["gmail"])
+        self.assertEqual(work_items.read_policy("gmail")["items"], {"unread": True})
+        self.assertEqual(work_items.read_index("gmail")["cursors"], {"unread": "2026-01-01T09:14:00Z"})
+        item = work_items.read_item("gmail", "unread-msg-example-1")
+        self.assertEqual((item["status"], item["decided"]["action"]), ("done", "accepted"))
+        self.assertEqual(work_items.read_outcome("gmail", "unread-msg-example-1")["kind"], "reply_drafted")
 
     def test_a_connection(self) -> None:
         self.assertEqual(connections_store.read_config("gmail")["collectors"], ["unread"])

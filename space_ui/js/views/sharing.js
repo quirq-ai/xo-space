@@ -1,5 +1,5 @@
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {setSectionActions} from '../core/section-nav.js?v=20260915-agents2';
+import {WORK_PAGES} from '../core/navigation.js?v=20260919-work4';
+import {setSectionActions} from '../core/section-nav.js?v=20260919-work4';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -56,8 +56,8 @@ addEventListener('space:projects-changed',()=>{catalogDirty=true;});
 addEventListener('space:project-access-changed',()=>{catalogDirty=true;members.clear();});
 
 export default {
-  /* Sharing keeps its own mounted section within the Inbox navigation. */
-  ...INBOX_PAGES.find(page=>page.id==='sharing'),
+  /* Sharing keeps its own mounted section within the Work navigation. */
+  ...WORK_PAGES.find(page=>page.id==='sharing'),
   section:'sharing',
   async mount(el,ctx){
     root=el;
