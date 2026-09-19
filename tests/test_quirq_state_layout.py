@@ -24,7 +24,7 @@ from unittest.mock import patch
 from services import usage_sync
 from services.connections import store as connections_store
 from services.cowork_agent import project_layout, runtime_config, xo_cowork_state
-from routers.cowork_agent.bff._visualizer_models import TimelineEvent
+from api.xo_projects._visualizer_models import TimelineEvent
 from services.cowork_agent.connectors import token_store
 from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.registry import agent_env

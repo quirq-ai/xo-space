@@ -12,8 +12,8 @@ MANAGE_JS = ROOT / "space_ui" / "js" / "views" / "project-management.js"
 ISSUES_CSS = ROOT / "space_ui" / "css" / "project-management.css"
 INDEX_HTML = ROOT / "space_ui" / "index.html"
 APP_JS = ROOT / "space_ui" / "js" / "app.js"
-MODELS_PY = ROOT / "routers" / "cowork_agent" / "bff" / "_visualizer_models.py"
-VISUALIZER_PY = ROOT / "routers" / "cowork_agent" / "bff" / "visualizer.py"
+MODELS_PY = ROOT / "api" / "xo_projects" / "_visualizer_models.py"
+VISUALIZER_PY = ROOT / "api" / "xo_projects" / "visualizer.py"
 
 
 class IssuesPanelTests(unittest.TestCase):
@@ -129,9 +129,8 @@ class IssuesEndpointTests(unittest.TestCase):
 
     def test_route_and_response_shape_are_unchanged(self) -> None:
         visualizer = VISUALIZER_PY.read_text(encoding="utf-8")
-        self.assertIn(
-            '"/api/xo-projects/{project_id}/github/issues"', visualizer
-        )
+        # Relative to the api/xo_projects folder, which is the URL.
+        self.assertIn('"/{project_id}/github/issues"', visualizer)
         self.assertIn("response_model=GithubIssuesResponse", visualizer)
         models = MODELS_PY.read_text(encoding="utf-8")
         issue = models.split("class GithubIssue(_ForbidExtra):")[1].split("class ")[0]

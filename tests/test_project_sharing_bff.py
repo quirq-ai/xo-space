@@ -6,14 +6,17 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import project_sharing as relay_routes
-from routers.cowork_agent.bff.filters import is_valid_workspace_id
+from api.project_sharing import routes as relay_routes
+from api.xo_projects import sharing as project_routes
+from routers import autoroutes
+from api._filters import is_valid_workspace_id
 from services.cowork_agent.project_sharing import service
 
 
 def client() -> TestClient:
     app = FastAPI()
-    app.include_router(relay_routes.router)
+    autoroutes.mount_module(app, relay_routes)
+    autoroutes.mount_module(app, project_routes)
     return TestClient(app)
 
 
@@ -105,9 +108,11 @@ class RelayRoutesTests(unittest.TestCase):
         self.assertTrue(r.json()["ok"])
         ck.assert_called_once_with()
 
-    def test_router_is_registered_in_bff_aggregate(self) -> None:
-        from routers.cowork_agent.bff import bff_routers
-        self.assertIn(relay_routes.router, bff_routers)
+    def test_routes_are_mounted_from_their_folders(self) -> None:
+        _, table = autoroutes.build_router({"guard": False, "folders": {"api/project_sharing": True, "api/xo_projects": True}})
+        paths = {row["path"] for row in table}
+        self.assertIn("/api/project-sharing/status", paths)
+        self.assertIn("/api/xo-projects/{project_id}/share", paths)
 
 
 class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):

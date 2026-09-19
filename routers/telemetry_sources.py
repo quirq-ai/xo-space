@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from routers.cowork_agent.bff.errors import ForbidExtra, http_error
+from routers.errors import ForbidExtra, http_error
 from services import telemetry_sources
 from services.errors import ServiceError
 

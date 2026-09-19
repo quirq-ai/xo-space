@@ -27,7 +27,7 @@ Five modules, one router-facing surface:
                      connection's collectors, dedupes on seen keys, records
                      the outcome; ``refresh_account`` resolves the label
                      on demand.
-* :mod:`service`     what ``routers/cowork_agent/bff/connections.py``
+* :mod:`service`     what ``api/connections/routes.py``
                      imports: ``list_connections``, ``get_connection``,
                      ``configure``, ``events``, ``remove``, ``poll_now``,
                      ``refresh_account``, ``signed_in``, ``poller_enabled``,

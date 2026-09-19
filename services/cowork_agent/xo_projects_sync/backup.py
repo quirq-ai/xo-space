@@ -2,7 +2,7 @@
 Backup orchestration — single-project and all-projects.
 
 Glue layer over `tarball`, `crypto`, `github`, `manifest`, `config`.
-Endpoints in `routers/cowork_agent/xo_projects_sync.py` call the
+Endpoints in `api/xo_projects_sync/routes.py` call the
 ``backup_one`` / ``backup_all`` entry points; everything else here is
 internal.
 

@@ -136,7 +136,6 @@ from routers.auth.auth import (
 )
 from routers.auth.claude_setup_token import router as claude_setup_token_router
 from routers.auth.codex_setup import router as codex_setup_router
-from routers.cowork_agent.legacy.openclaw_usage import router as openclaw_usage_router
 from routers.status.models import router as models_router
 from routers.status.channels import router as channels_router
 from routers.status.providers import router as providers_router
@@ -660,6 +659,7 @@ async def lifespan(app: FastAPI):
     print(f"   Codex CLI: {CODEX_CLI_PATH} (timeout={CODEX_TIMEOUT}s)")
     print(f"   Startup warmup: {'enabled' if STARTUP_WARMUP_ENABLED else 'disabled'} ({STARTUP_WARMUP_URL})")
     print("   Skills: .agents/skills + AGENTS.md (Codex-native)")
+    print(f"   Routes: {len(_autoroutes)} folder-based (config/autoroutes.json)")
     startup_auth_session_id = os.getenv("XO_AUTH_SESSION_ID", "").strip()
     startup_poll_token = os.getenv("XO_POLL_TOKEN", "").strip()
     if XO_API_KEY:
@@ -936,15 +936,9 @@ add_forwarding_middleware(app)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
-app.include_router(openclaw_usage_router)
 app.include_router(models_router)
 app.include_router(channels_router)
 app.include_router(providers_router)
-
-# Cowork Agent API (migrated from bridge/): serves the xo-cowork frontend.
-from routers.cowork_agent import all_routers as cowork_agent_routers
-for _r in cowork_agent_routers:
-    app.include_router(_r)
 
 # Local layer: the command scheduler's API (jobs run by the watcher tick).
 from routers.schedules import router as schedules_router
@@ -959,6 +953,31 @@ from routers.space import router as space_router, mount_space
 from routers.xo_data import router as xo_data_router
 app.include_router(space_router)
 app.include_router(xo_data_router)
+
+# Folder-based routes from config/autoroutes.json: the whole /api surface
+# (api/) plus whatever else is switched on. Mounted after the hand-written
+# routers above, so on a path clash a hand-written route wins.
+from routers import autoroutes
+_autoroutes = autoroutes.mount(app)
+
+
+def _active_agent_routes() -> None:
+    """Mount the active agent's own routes, resolved by AGENT_NAME.
+
+    Agent-specific endpoint surfaces (e.g. hermes profile management) live at
+    ``services/cowork_agent/adapters/<AGENT_NAME>/routes.py``. They are mounted
+    only when that agent is active: no core code names a specific agent, and
+    an agent without a ``routes`` module simply contributes nothing.
+    """
+    from services.cowork_agent.adapters.loader import try_load_capability
+
+    mod = try_load_capability("routes")
+    router = getattr(mod, "router", None) if mod else None
+    if router is not None:
+        app.include_router(router)
+
+
+_active_agent_routes()
 mount_space(app)
 
 # =============================================================================

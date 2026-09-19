@@ -21,7 +21,7 @@ logged-in-but-invalid credential still reads connected.
 
 OpenAI is read from the process environment. OpenRouter is different: it is
 configured by merging an ``env`` block into the CLI's own ``settings.json`` (see
-``routers/cowork_agent/config.py`` + the manifest's
+``api/config/routes.py`` + the manifest's
 ``providers.openrouter.settings_env``), so its presence is read back from that
 settings file, not from the process env.
 """

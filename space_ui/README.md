@@ -574,7 +574,7 @@ collector the upstream rejected while the others still run. `events.jsonl`
 keeps everything the poller ever collected; the Inbox surfaces only events
 newer than its 24 hour bootstrap floor and never reads the rotated files.
 
-Routes (`routers/cowork_agent/bff/connections.py`, no session header):
+Routes (`api/connections/routes.py`, no session header):
 
 - `GET /api/connections` answers `{signed_in, poller_enabled, connections:
   [...]}`, one entry per known toolkit with `configured`, `enabled`,

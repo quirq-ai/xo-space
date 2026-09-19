@@ -17,9 +17,11 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import visualizer as project_routes
-from routers.cowork_agent.bff import workspace_visualizer as space_routes
-from routers.cowork_agent.bff._visualizer_models import TimelineEvent
+from api.xo_projects import visualizer as project_routes
+from api.xo_projects import workspace_visualizer as space_routes
+from api.workspace import routes as workspace_routes
+from routers import autoroutes
+from api.xo_projects._visualizer_models import TimelineEvent
 from services.cowork_agent import project_layout
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,8 +58,9 @@ class TimelineRouteTests(unittest.TestCase):
             json.dumps({**LINE, "project_id": PROJECT}) + "\n", encoding="utf-8",
         )
         app = FastAPI()
-        app.include_router(project_routes.router)
-        app.include_router(space_routes.router)
+        autoroutes.mount_module(app, project_routes)
+        autoroutes.mount_module(app, space_routes)
+        autoroutes.mount_module(app, workspace_routes)
         self.client = TestClient(app)
 
     def test_the_project_timeline_serves_lines_with_a_pid(self) -> None:

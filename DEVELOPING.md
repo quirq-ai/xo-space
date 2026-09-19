@@ -42,17 +42,20 @@ config/
                                     manifest.json  settings.json  capabilities.json
                                     setup.sh  agent.sh  troubleshoot.py
 
-routers/                          broker routes only, NO agent branching
+routers/                          hand-written broker routes, NO agent branching
   auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
-  cowork_agent/                   the /api/* frontend surface
-    chat.py sessions.py agents.py config.py channels.py usage.py files.py …
-    connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
-    bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
-                                    project_sharing, inbox.py, connections.py); errors.py is the
-                                    shared ServiceError -> HTTPException mapping (http_error) and
+  autoroutes.py                   folder-based routes: the loader that mounts api/ (§3.5)
+  errors.py is the                shared ServiceError -> HTTPException mapping (http_error) and
                                     the strict request-body base (ForbidExtra)
-    legacy/                       frozen URL aliases (openclaw_usage)
+
+api/                              the /api/* frontend surface; the folder IS the URL (§3.5)
+  chat/ sessions/ agents/ config/ channels/ usage/ files/ …   one folder per prefix, routes.py inside
+  connectors/<name>/              gdrive github onedrive vercel magicpath composio (+ mcp_proxy.py)
+  xo_projects/                    routes.py management.py sharing.py visualizer.py workspace_visualizer.py
+  inbox/ connections/ secrets/    the backend-for-frontend routes (inbox.py, connections.py of old)
+  usage/legacy.py                 frozen /openclaw/usage URL alias (an absolute_router)
+  _filters.py                     the BFF's hidden-name / key predicates
 
 services/                         Placement rule: only what is specific to running an agent lives
                                     under cowork_agent/; anything a person uses as much as the agent
@@ -69,7 +72,7 @@ services/                         Placement rule: only what is specific to runni
   inbox/                          the Space Inbox (a property of the Space, not of any agent): store
                                     (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
                                     todos, sharing, issues, connections) service (the router-facing
-                                    surface); routes in routers/cowork_agent/bff/inbox.py
+                                    surface); routes in api/inbox/routes.py
   connections/                    connections polling for the Inbox (a property of the Space): store
                                     (~/.quirq/connections/<toolkit>/ config, state, events)
                                     collectors (the read-only catalog per toolkit) mcp_client
@@ -77,7 +80,7 @@ services/                         Placement rule: only what is specific to runni
                                     httpx) poller (the background loop, on periodic.run_forever)
                                     service (the router-facing surface; the inbox registers a
                                     new-events listener here, never the other way round); routes in
-                                    routers/cowork_agent/bff/connections.py
+                                    api/connections/routes.py
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
@@ -92,7 +95,7 @@ services/                         Placement rule: only what is specific to runni
                                     vercel/ composio/ + shared rclone/ engine and token_store.py
     visualizer/  xo_projects_sync/  project_template/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
-                                    state in ~/.quirq/sharing/, routes in bff/project_sharing.py
+                                    state in ~/.quirq/sharing/, routes in api/xo_projects/sharing.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
 
 utils/
@@ -157,7 +160,7 @@ Capabilities in use today:
 | `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ |
 | `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ |
 
-`claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
+`claude_code` has no `chat` capability on purpose: `api/chat/routes.py`
 falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
 absent. "Capability absent ⇒ graceful default" is the whole design.
 
@@ -179,8 +182,76 @@ registry dict.
 
 Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
-`routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
+`server.py` mounts it **only when that agent is active**.
 This is why per-agent route counts differ (see §5).
+
+### 3.5 Folder-based routes: the folder is the URL (`routers/autoroutes.py`)
+
+The whole `/api/*` surface is a folder tree. `config/autoroutes.json` lists
+the packages the loader walks at boot; nothing is exposed until a folder is
+`true`, the longest configured ancestor decides, so a `false` child switches
+a subtree off, and `_private` modules and packages are never walked.
+Underscores in folder and module names become hyphens in the URL.
+
+```json
+{
+  "guard": true,
+  "folders": {
+    "api": true,
+    "services/inbox": true,
+    "services/inbox/store": false
+  }
+}
+```
+
+A module contributes in one of two ways.
+
+**Route modules** define `router: APIRouter` and declare paths relative to
+their folder; the loader mounts the router at the folder URL, so the module
+name is not a segment and several modules can share a folder:
+
+| Module | Declares | Serves |
+|---|---|---|
+| `api/files/routes.py` | `@router.post("/upload")` | `POST /api/files/upload` |
+| `api/quirq/routes.py` | `@router.get("")` | `GET /api/quirq` |
+| `api/xo_projects/sharing.py` | `@router.post("/{project_id}/share")` | `POST /api/xo-projects/{project_id}/share` |
+| `api/secrets/env.py` and `api/secrets/routes.py` | `/env`, `/{key}/reveal` | both under `/api/secrets` |
+
+Modules in a folder mount in name order, subpackages after them; `MOUNT_ORDER`
+(an int, default 0, on a module or a package's `__init__.py`) sorts first when
+two register the same path and the first must win (`api/connectors/magicpath`
+before `vercel`: both serve `GET /callback`). A module may also define
+`absolute_router` for URLs fixed by a protocol or kept for compatibility
+(`/callback`, `/.well-known/...`, `/mcp/composio-proxy`, the `/openclaw/usage`
+alias): it is mounted with no prefix at all. A handler can be registered from
+a folder other than the one it is defined in when it belongs with its
+siblings (`api/messages/routes.py` registers `get_messages` from
+`api/sessions/routes.py`).
+
+**Plain modules** (no `router`) get one generated route per public
+module-level function, `/<folder>/<module>/<function>`:
+
+| Source | Route |
+|---|---|
+| `services/inbox/service.py::list_items(status="open", limit=200)` | `POST /services/inbox/service/list_items`, JSON body `{status?, limit?}` typed from the signature |
+| `services/inbox/__init__.py::refresh()` | `GET /services/inbox/refresh` (no parameters means GET) |
+
+`__all__` is honoured, re-exports are not duplicated, `*args`/`**kwargs`
+functions and modules that fail to import are skipped with a log line.
+Coroutines are awaited, sync functions run in the threadpool, results go
+through `jsonable_encoder`, and a `ServiceError` becomes the usual
+`{code, message}` error. `guard: true` (the default) makes every *generated*
+route answer loopback callers only, checked with the browser guard's
+`is_local_mutation`: a folder can run anything, so it must not be reachable
+from another site through the user's browser. Route modules keep their own
+access rules.
+
+`server.py` mounts the loader's router after the hand-written ones in
+`routers/`, so on a path clash a hand-written route wins, then the active
+agent's own routes (§3.4). Everything the loader mounts is core and identical
+for every agent, so the parity check in §5 still holds. A test that exercises
+one module against a bare `FastAPI()` uses `autoroutes.mount_module(app,
+module)` to get the same folder prefix.
 
 ---
 
@@ -254,7 +325,7 @@ exceptions:
 
 - the `openclaw` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
-- the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
+- the legacy `/openclaw/usage` URL alias in `api/usage/legacy.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
 
 > An AST-based guard for this invariant (ignores docstrings/comments and
@@ -283,8 +354,8 @@ included) serve people as much as agents and are candidates for the same
 move; they stay where they are until someone takes that on, because moving
 them touches upstream-owned routes and tests. New code should not add to
 the backlog: put it at the top level unless it exists only to run an agent.
-Routes are unaffected by this rule; the `/api/*` surface stays under
-`routers/cowork_agent/`.
+Routes are unaffected by this rule; the `/api/*` surface lives under `api/`,
+where the folder is the URL (§3.5).
 
 What the Space packages share lives at the top level too, as small
 Space-level modules rather than inside either package: `services/storage/`
@@ -296,7 +367,7 @@ same module objects, so a patch through either path is shared),
 (`ServiceError`, the base every typed service failure subclasses) and
 `services/periodic.py` (`run_forever`, the loop under both background
 pollers). The HTTP side has one shared piece as well,
-`routers/cowork_agent/bff/errors.py` (`http_error`, `ForbidExtra`). Between
+`routers/errors.py` (`http_error`, `ForbidExtra`). Between
 the two packages the dependency points one way: `services/inbox` imports
 `services/connections` (its feeder reads the events, and `inbox.service`
 registers a new-events listener with `connections.service` so a poll that
@@ -515,12 +586,12 @@ Composio gives the active agent tools in the user's own SaaS accounts (Gmail,
 Google Workspace, Notion, Figma, Slack, Telegram) via [Composio](https://composio.dev).
 OAuth toolkits and key-based ones (Telegram takes a bot token) share one connect flow.
 It is laid out like every other connector: logic under
-`services/cowork_agent/connectors/`, HTTP surface under `routers/cowork_agent/connectors/`:
+`services/cowork_agent/connectors/`, HTTP surface under `api/connectors/`:
 
 | module | what it serves |
 |---|---|
-| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...`: backend/api-key, toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
-| `routers/cowork_agent/connectors/composio_mcp_proxy.py` | `/mcp/composio-proxy/...`: the loopback reverse proxy agents reach Composio through |
+| `api/connectors/composio/routes.py` | `/api/connectors/composio/...`: backend/api-key, toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
+| `api/connectors/composio/mcp_proxy.py` | `/mcp/composio-proxy/...`: the loopback reverse proxy agents reach Composio through |
 | `services/cowork_agent/connectors/composio/` | `service.py`, `byo_key.py`, `client.py`, `identity.py`, `mcp.py`, `action_prefs.py`, `categories.py`, `paths.py` |
 
 ### 10.1 Bring your own key
@@ -822,7 +893,7 @@ with `"*"` as the target origin, so **the listener validates `event.origin`**; t
 
 The Inbox's `connections` feeder is fed by a background poller in
 `services/connections/` (routes in
-`routers/cowork_agent/bff/connections.py`, four paths under `/api/connections`).
+`api/connections/routes.py`, four paths under `/api/connections`).
 It is core code: no agent names, no adapter imports, and the router imports
 only `service.py`.
 
@@ -902,7 +973,7 @@ the MCP client, identity and scope patched on the poller module.
 
 ## 11. The Space Inbox
 
-`services/inbox/` (routes in `routers/cowork_agent/bff/inbox.py`) keeps
+`services/inbox/` (routes in `api/inbox/routes.py`) keeps
 `~/.quirq/inbox/inbox.json`: one machine-local file of what arrived in the workspace,
 its seen/done state and the feeder cursors. Core code and a property of the
 Space (§7). The user-facing description (item shape, the feeder table,

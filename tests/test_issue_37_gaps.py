@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from routers.cowork_agent import xo_projects_sync as sync_router
+from api.xo_projects_sync import routes as sync_router
 from services.cowork_agent.adapters import loader
 from services.cowork_agent.project_layout import relative_path_suffix
 from services.cowork_agent.xo_projects_sync.tarball import extract_tarball

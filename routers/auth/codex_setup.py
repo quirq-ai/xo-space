@@ -819,7 +819,7 @@ async def codex_setup():
                                     # at startup — restart so it picks up the new
                                     # codex token without a manual step.
                                     try:
-                                        from routers.cowork_agent.channels import _run_hermes_sh
+                                        from api.channels.routes import _run_hermes_sh
                                         rc, _out = await _run_hermes_sh("restart", timeout_s=90.0)
                                         print(f"[codex-setup] hermes gateway restart rc={rc}")
                                     except Exception as e:  # noqa: BLE001

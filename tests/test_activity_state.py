@@ -11,7 +11,7 @@ from services.cowork_agent import scopes
 from services.cowork_agent.visualizer import state
 from services.cowork_agent.visualizer.sinks import activity
 from services.cowork_agent.visualizer.workspace import activity as workspace_activity
-from routers.cowork_agent.bff import workspace_visualizer
+from api.xo_projects import workspace_visualizer
 
 
 class ActivityStateTests(unittest.TestCase):

@@ -20,7 +20,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from routers import browser_guard, space
-from routers.cowork_agent.runtime_config import router as runtime_router
+from api.runtime_config import routes as runtime_routes
+from routers import autoroutes
 from services.cowork_agent import runtime_config
 from utils.commands import CommandResult, run_sync
 
@@ -79,7 +80,7 @@ class RestartRouteTests(unittest.TestCase):
     def setUp(self):
         self.app = FastAPI()
         self.app.include_router(space.router)
-        self.app.include_router(runtime_router)
+        autoroutes.mount_module(self.app, runtime_routes)
         self.client = TestClient(self.app, client=('127.0.0.1', 12345))
 
     def test_status_exposes_mode_and_stable_instance(self):
