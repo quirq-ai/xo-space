@@ -95,39 +95,38 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-# Composio rejects a max outside this range; clamped so an operator typo cannot 400
-# every session creation.
-MULTI_ACCOUNT_MIN_MAX = 2
-MULTI_ACCOUNT_MAX_MAX = 10
-MULTI_ACCOUNT_DEFAULT_MAX = 5
-
-ALIAS_MAX_LENGTH = 128
+MULTI_ACCOUNT_MIN = 1
+MULTI_ACCOUNT_MAX = 5
+MULTI_ACCOUNT_DEFAULT_ENABLED = True
 
 
 def multi_account_config() -> Optional[dict[str, Any]]:
     """The session `multi_account` block, or None when the feature is off.
 
-    Off is the Composio default: one account per toolkit per session, the most
-    recently connected one. Turning it on lets an account hold several accounts
-    for the same toolkit (work and personal Gmail) inside one session.
+    On by default: an account can hold several accounts for the same toolkit
+    (work and personal Gmail) inside one session. Off (COMPOSIO_MULTI_ACCOUNT=0)
+    is the Composio default: one account per toolkit per session, the most
+    recently connected one.
     """
-    if not _env_flag("COMPOSIO_MULTI_ACCOUNT"):
+    if not _env_flag("COMPOSIO_MULTI_ACCOUNT", MULTI_ACCOUNT_DEFAULT_ENABLED):
         return None
     raw = os.getenv("COMPOSIO_MULTI_ACCOUNT_MAX", "").strip()
     try:
-        max_accounts = int(raw) if raw else MULTI_ACCOUNT_DEFAULT_MAX
+        max_accounts = int(raw) if raw else MULTI_ACCOUNT_MAX
     except ValueError:
         log.warning(
             "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%r is not an integer; using %d.",
-            raw, MULTI_ACCOUNT_DEFAULT_MAX,
+            raw, MULTI_ACCOUNT_MAX,
         )
-        max_accounts = MULTI_ACCOUNT_DEFAULT_MAX
-    clamped = max(MULTI_ACCOUNT_MIN_MAX, min(MULTI_ACCOUNT_MAX_MAX, max_accounts))
+        max_accounts = MULTI_ACCOUNT_MAX
+    clamped = max(MULTI_ACCOUNT_MIN, min(MULTI_ACCOUNT_MAX, max_accounts))
     if clamped != max_accounts:
         log.warning(
             "composio: COMPOSIO_MULTI_ACCOUNT_MAX=%d is outside %d-%d; using %d.",
-            max_accounts, MULTI_ACCOUNT_MIN_MAX, MULTI_ACCOUNT_MAX_MAX, clamped,
+            max_accounts, MULTI_ACCOUNT_MIN, MULTI_ACCOUNT_MAX, clamped,
         )
+    if clamped < 2:
+        return None
     return {
         "enable": True,
         "max_accounts_per_toolkit": clamped,
@@ -148,10 +147,6 @@ def normalize_alias(alias: Optional[str]) -> Optional[str]:
     text = (alias or "").strip()
     if not text:
         return None
-    if len(text) > ALIAS_MAX_LENGTH:
-        raise ValueError(
-            f"Alias is too long ({len(text)} chars); the limit is {ALIAS_MAX_LENGTH}."
-        )
     return text
 
 

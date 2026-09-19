@@ -239,6 +239,7 @@ try{
   assert.equal(await search.inputValue(),'');
   await query('conversation','connectors');await visibleConnectors(['slack']);
   await query('DEV@','connectors');await visibleConnectors(['gmail']);
+  await page.locator('[data-toolkit="gmail"] .conn-card-head').click();
   await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();
   const interval=page.locator('#poll-gmail [data-poll="interval"]');
   await interval.selectOption('1800');

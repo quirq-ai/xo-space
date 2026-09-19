@@ -22,7 +22,7 @@ import sharingView from './views/sharing.js?v=20260918-copypath1';
 import wikiView from './views/wiki.js?v=20260916-jobs3';
 import quirqView from './views/quirq.js?v=20260915-data1';
 import {createSetupViews} from './views/setup.js?v=20260916-jobs3';
-import connectorsView from './views/connectors.js?v=20260917-byok1';
+import connectorsView from './views/connectors.js?v=20260918-cardexpand1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */

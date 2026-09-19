@@ -920,11 +920,13 @@ class ShellTests(unittest.TestCase):
             self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
         self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
-        self.assertIn("./views/connectors.js?v=20260917-byok1'", app)
+        self.assertIn("./views/connectors.js?v=20260918-cardexpand1'", app)
         html = read("index.html")
         for sheet in ("project-management", "inbox-activity",
-                      "connectors", "sessions", "command-palette"):
+                      "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
+        # compact connector cards that expand on click restamped connectors.css
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260918-cardexpand1">', html)
         for sheet in ("base", "chrome", "graph", "preview", "navigation"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
