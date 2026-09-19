@@ -3,11 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from routers.cowork_agent.sessions import router
-from services.cowork_agent import session_transcript as st
+from modules.sessions import session_transcript as st
+from modules.sessions.routes import router
+from tests.support import client
 
 SID = "f2d46667-4ac1-4e03-973e-c9f86832250d"
 
@@ -75,9 +73,7 @@ class BuildTranscriptTests(unittest.TestCase):
 
 class TranscriptRouteTests(unittest.TestCase):
     def setUp(self) -> None:
-        app = FastAPI()
-        app.include_router(router)
-        self.client = TestClient(app)
+        self.client = client(router)
 
     def test_returns_the_projection_and_passes_the_tools_flag(self) -> None:
         with patch.object(st, "load_all_sessions", return_value=[{"id": SID, "title": "Summarize what this project is"}]), \

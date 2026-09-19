@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "id": "jobs",
+  "tab": "inbox",
+  "route": "inbox/jobs",
+  "label": "Jobs",
+  "order": 30,
+  "read": "/api/schedules",
+  "poll_s": 15,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Jobs", "value": "jobs|count"},
+        {"label": "Running", "value": "jobs|where:running|count"}
+      ]
+    },
+    {
+      "type": "list",
+      "items": "jobs",
+      "key": "id",
+      "empty": "No saved jobs yet. Add one in Setup, under Jobs.",
+      "row": {
+        "title": "name",
+        "detail": "description",
+        "meta": ["next_run|rel", "last_run|rel", "last_result.status"],
+        "badge": {"value": "last_result.status", "map": {"null": "never run", "ok": "ok", "failed": "failed", "timed_out": "timed out", "missing_binary": "missing binary", "error": "error", "skipped": "skipped", "lost": "lost"}},
+        "tone": {"value": "last_result.status", "map": {"null": "ok", "ok": "ok", "skipped": "ok", "*": "error"}}
+      },
+      "actions": [
+        {"label": "Run now", "call": "POST /api/schedules/{id}/run", "then": "refresh"}
+      ],
+      "expand": {
+        "type": "table",
+        "read": "/api/schedules/{id}/runs?limit=20",
+        "items": "runs",
+        "empty": "No runs yet.",
+        "columns": [
+          {"label": "Finished", "value": "finished_at|rel"},
+          {"label": "Status", "value": "status"},
+          {"label": "Trigger", "value": "trigger"},
+          {"label": "Duration", "value": "duration_seconds"},
+          {"label": "Exit", "value": "returncode", "mono": true}
+        ]
+      }
+    }
+  ]
+}

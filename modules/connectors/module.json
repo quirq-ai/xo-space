@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "name": "connectors",
+  "title": "Connectors",
+  "description": "Connected accounts and tools: Composio toolkits, Google Drive, OneDrive, GitHub, Vercel, and the MCP proxy agents use.",
+  "folder": null,
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "tasks": {"mcp_gateway": {"enabled": true}},
+  "commands": true,
+  "aliases": ["/api/connectors", "/mcp", "/callback", "/.well-known"]
+}

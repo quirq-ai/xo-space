@@ -1,40 +1,18 @@
+"""Compatibility alias: the Google Drive connector moved to ``modules/connectors/gdrive``.
+
+``services.cowork_agent.connectors.gdrive`` and each of its modules
+(provider) resolve to the moved objects, so an import or a patch
+through either path reaches one module. New code imports
+``modules.connectors.gdrive``.
 """
-Google Drive connector (rclone-backed).
 
-``provider`` holds the Drive-specific descriptor and file operations; the
-generic rclone plumbing lives in the sibling ``rclone`` package.
-"""
+from __future__ import annotations
 
-from .provider import (
-    RCLONE_CONFIG_PATH,
-    RcloneSession,
-    cancel_session,
-    create_remote_session,
-    delete_remote,
-    delete_remote_folder,
-    ensure_rclone_running,
-    get_session,
-    list_drive_remotes,
-    list_remote_folders,
-    mkdir_remote_path,
-    rclone_available,
-    upload_file_to_remote,
-    validate_remote_name,
-)
+import sys
 
-__all__ = [
-    "RCLONE_CONFIG_PATH",
-    "RcloneSession",
-    "cancel_session",
-    "create_remote_session",
-    "delete_remote",
-    "delete_remote_folder",
-    "ensure_rclone_running",
-    "get_session",
-    "list_drive_remotes",
-    "list_remote_folders",
-    "mkdir_remote_path",
-    "rclone_available",
-    "upload_file_to_remote",
-    "validate_remote_name",
-]
+from modules.connectors import gdrive as _moved
+from modules.connectors.gdrive import provider
+
+for _name, _mod in (("provider", provider),):
+    sys.modules[f"{__name__}.{_name}"] = _mod
+sys.modules[__name__] = _moved

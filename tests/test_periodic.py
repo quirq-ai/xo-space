@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from services import periodic
-from services.connections import poller as connections_poller
+from modules.connections import poller as connections_poller
 from services.cowork_agent import github_poller
 
 LOG = logging.getLogger("tests.periodic")
@@ -117,7 +117,7 @@ class ConnectionsPollerLoopTests(_Loop):
         self.assertIn("connections poller: tick failed (non-fatal)", messages)
         self.assertIn(f"connections poller: {self.SUMMARY}", messages)
         warn = next(r for r in logs.records if r.levelno == logging.WARNING)
-        self.assertEqual(warn.name, "services.connections.poller")
+        self.assertEqual(warn.name, "modules.connections.poller")
         self.assertIsNotNone(warn.exc_info)
 
     def test_disabled_returns_at_once_with_its_own_log_line(self) -> None:

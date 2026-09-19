@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.project_sharing import config, git_ops
+from modules.sharing import config, git_ops
 
 
 class GitRepoDirsTests(unittest.TestCase):
@@ -84,16 +84,17 @@ class LocalRemoteHeadTests(unittest.TestCase):
 
 class StatusSnapshotTests(unittest.TestCase):
     def test_snapshot_carries_the_projects_root_for_clone_commands(self) -> None:
-        from services.cowork_agent.project_sharing import service
+        from modules.sharing import service
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "XO_SPACE_ID": "ws-a"}):
+            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "XO_SPACE_ID": "ws-a",
+                                         "QUIRQ_STATE_ROOT": str(Path(tmp) / ".quirq")}):
                 snap = service.status_snapshot()
         self.assertEqual(Path(snap["projects_root"]), Path(tmp).resolve())
         self.assertEqual(snap["own_workspace_id"], "ws-a")
 
     def test_snapshot_says_whether_xo_space_cloned_each_repo(self) -> None:
-        from services.cowork_agent.project_sharing import service, state, status
+        from modules.sharing import service, state, status
 
         status.reset()
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,7 +109,7 @@ class StatusSnapshotTests(unittest.TestCase):
     def test_project_commits_carries_the_project_path(self) -> None:
         from unittest.mock import AsyncMock
         import asyncio
-        from services.cowork_agent.project_sharing import git_ops, service
+        from modules.sharing import git_ops, service
 
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "trip-planner" / ".git").mkdir(parents=True)

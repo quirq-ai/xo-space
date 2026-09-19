@@ -139,17 +139,15 @@ class ConnectionsDocsTests(unittest.TestCase):
     def test_developing_guide_lists_the_package_and_explains_degradation(self) -> None:
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
-        self.assertIn("project_sharing, inbox.py, connections.py)", layout)
-        self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
-        # top level under services/, beside inbox/ and swarm_api/, never under cowork_agent/
-        start = layout.index("services/  ")
-        services_block = layout[start:layout.index("  cowork_agent/  ", start)]
-        self.assertIn("  connections/", services_block)
+        # a module under modules/, never a package under cowork_agent/
+        start = layout.index("modules/  ")
+        modules_block = layout[start:layout.index("services/  ", start)]
+        self.assertIn("  connections/", modules_block)
         self.assertNotIn("cowork_agent/connections", dev)
-        self.assertIn("### Placement: cowork_agent/ is for the agent, services/ is for the Space", dev)
-        for module in ("store", "collectors", "mcp_client", "poller", "service"):
-            self.assertIn(module, layout)
-        self.assertIn("bff/connections.py", layout)
+        self.assertIn("### Placement: modules/ is for the Space, cowork_agent/ is for the agent", dev)
+        self.assertIn("## 12. The Space is modules", dev)
+        for module in ("store", "collectors", "mcp_client", "poller", "service", "routes", "stream", "tasks", "commands", "events", "pages/"):
+            self.assertIn(module, modules_block)
         for line in lines_with(layout, "connections"):
             self.assertIsNone(DASHES.search(line), line)
         self.assertIn("### 10.8 Connections polling", dev)
@@ -208,7 +206,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
 
     @staticmethod
     def _catalog() -> dict[str, list[str]]:
-        from services.connections import collectors
+        from modules.connections import collectors
         from services.cowork_agent.connectors.composio.service import TOOLKITS
         return {t: [s["id"] for s in collectors.catalog(t)] for t in TOOLKITS if collectors.catalog(t)}
 
@@ -241,8 +239,8 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
                 self.assertIn(f"`{cid}`", prose)
 
     def test_developing_guide_and_readme_describe_one_session_per_poll(self) -> None:
-        from services.connections import poller
-        import services.connections as pkg
+        from modules.connections import poller
+        import modules.connections as pkg
         dev = read("DEVELOPING.md")
         sub = squash(dev[dev.index("### 10.8 Connections polling"): dev.index("## 11. The Space Inbox")])
         self.assertIn("each poll opens one MCP session (`mcp_client.McpSession`", sub)
@@ -253,8 +251,6 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("branches on those attributes, never on the message text", sub)
         self.assertNotIn("initialize, `notifications/initialized`, `tools/call`, then a best-effort DELETE of the session", sub)
         self.assertNotIn("Each collector is one `tools/call`", sub)
-        layout = squash(dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")])
-        self.assertIn("mcp_client (McpSession: one streamable-HTTP JSON-RPC session per poll over httpx)", layout)
         readme = read("space_ui/README.md")
         section = squash(readme[readme.index("### Connections polling"): readme.index("### Hand-editing")])
         self.assertIn("Each poll opens one MCP session (the handshake once), lists its tools once", section)
@@ -278,35 +274,38 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("never sent to XO", block)
         self.assertIn("COMPOSIO_BYO_API_KEY", block)
 
-    def test_placement_rule_names_the_shared_space_modules(self) -> None:
+    def test_placement_rule_names_the_kernel(self) -> None:
         import importlib
         for mod in ("services.storage.flock", "services.storage.atomic_write", "services.storage.reader",
-                    "services.storage.paths", "services.timestamps", "services.errors", "services.periodic",
-                    "routers.cowork_agent.bff.errors"):
+                    "services.storage.paths", "services.storage.document", "services.storage.eventlog",
+                    "services.storage.files", "services.timestamps", "services.errors", "services.periodic",
+                    "services.signals", "services.supervisor", "services.modules", "routers.errors"):
             importlib.import_module(mod)
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
         start = layout.index("services/  ")
         services_block = layout[start: layout.index("  cowork_agent/  ", start)]
-        for name in ("  storage/", "timestamps.py errors.py", "periodic.py", "run_forever", "ServiceError"):
+        for name in ("  modules.py", "supervisor.py  signals.py", "errors.py  timestamps.py  periodic.py",
+                     "  storage/", "run_forever", "ServiceError"):
             self.assertIn(name, services_block)
-        self.assertIn("errors.py is the", layout)   # the bff line
-        self.assertIn("(http_error)", layout)
-        self.assertIn("(ForbidExtra)", layout)
+        routers_block = layout[layout.index("routers/  "): layout.index("quirq/__main__.py")]
+        self.assertIn("errors.py", routers_block)
+        self.assertIn("ForbidExtra", routers_block)
         self.assertIn("| `services/storage/paths.py` |", dev)
         self.assertNotIn("services/cowork_agent/local_state.py", dev)
-        rule = squash(dev[dev.index("### Placement: cowork_agent/ is for the agent"):
-                          dev.index("### One executor for external commands")])
+        rule = squash(dev[dev.index("### Placement: modules/ is for the Space"):
+                          dev.index("### The canonical `.xo/`")])
         for mod in ("`services/storage/`", "`services/timestamps.py`", "`services/errors.py`",
-                    "`services/periodic.py`", "`routers/cowork_agent/bff/errors.py`"):
+                    "`services/periodic.py`", "`services/signals.py`", "`services/supervisor.py`",
+                    "`routers/errors.py`", "`modules.<other>.service`"):
             self.assertIn(mod, rule)
         self.assertIn("`services.cowork_agent.local_state` import paths still resolve to the same module objects", rule)
-        self.assertIn("`services/connections` never imports the inbox", rule)
+        self.assertIn("never imports the inbox", rule)
         for rel in ("AGENTS.md", "CLAUDE.md"):
             text = squash(read(rel))
+            self.assertIn("`modules/`", text)
             self.assertIn("`services/storage/`", text)
-            self.assertIn("`services/periodic.py`", text)
-            self.assertIn("never imports the inbox", text)
+            self.assertIn("`modules.<other>.service`", text)
             self.assertIsNone(DASHES.search(text), rel)
         import services.inbox as inbox_pkg
         self.assertIn("``update_many``", inbox_pkg.__doc__ or "")
@@ -324,7 +323,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("Primary sections", rows["`js/core/registry.js`"])
         self.assertIn("canonical routes", rows["`js/core/navigation.js`"])
         self.assertIn("native links", rows["`js/core/section-nav.js`"])
-        self.assertIn("import map", rows["`index.html`"])
+        self.assertIn("no-cache", rows["`index.html`"])
         self.assertIn("keeps unsaved edits", rows["`js/views/connectors.js`"])
         # each claim against the source it describes
         ui = read("space_ui/js/core/ui.js")
@@ -335,9 +334,8 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         for fn in ("every", "collectorLabels", "pollLine"):
             self.assertIn(f"export function {fn}(", conn)
         self.assertIn("/INPUT|TEXTAREA|SELECT/", read("space_ui/js/core/registry.js"))
-        html = read("space_ui/index.html")
-        for mod in ("api", "ui", "connections"):
-            self.assertIn(f'"./js/core/{mod}.js":"./js/core/{mod}.js?v=', html)
+        self.assertNotIn('<script type="importmap">', read("space_ui/index.html"))
+        self.assertIn('response.headers["Cache-Control"] = "no-cache"', read("routers/space.py"))
         self.assertIsNone(DASHES.search(table))
 
 

@@ -1,4 +1,11 @@
-"""``timeline.jsonl`` sink — append-only event log with rotation."""
+"""The timeline sink: renders watcher events to timeline lines and hands
+them to ``modules.timeline.service.emit``, which owns the logs.
+
+A line about a project is written once, to ``projects/<pid>/timeline.jsonl``
+(the runtime home this sink is given is keyed by the pid, so the pid is its
+folder name). The Space view is a merge at read time; nothing is copied.
+Rotation is the ``EventLog``'s (8 MB, keep 5).
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional
 
-from services.cowork_agent.visualizer.atomic_write import append_jsonl
+from modules.timeline import service as timeline_service
 from services.cowork_agent.visualizer.ingest.events import (
     WORKITEM_ACTIONS,
     Event,
@@ -21,28 +28,17 @@ from services.cowork_agent.visualizer.ingest.events import (
 logger = logging.getLogger(__name__)
 
 
-_TIMELINE_FILE = Path("timeline.jsonl")
-_ROTATE_BYTES = 8 * 1024 * 1024  # 8 MB
-_MAX_ROTATIONS_KEEP = 5
-
 # The runtime home is ``~/.quirq/projects/<pid>/``, so its folder name is the
-# pid. A project with no pid yet is keyed by its folder name and gets none.
+# pid. A project with no pid yet is keyed by its folder name and gets none:
+# its lines carry no pid, and still land in its own log under that key.
 _PID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-
-
-def _envelope(line: dict, pid: Optional[str]) -> dict:
-    """``ts`` and ``type`` first, then ``pid``, then the event's own fields."""
-    head = {"ts": line.get("ts"), "type": line.get("type")}
-    if pid:
-        head["pid"] = pid
-    return {**head, **{k: v for k, v in line.items() if k not in head}}
 
 
 def _emit_event(ev: Event) -> Optional[dict]:
     """Translate one internal event to the timeline-schema vocab.
 
     Returns ``None`` for events that don't correspond to a timeline
-    type — caller skips them.
+    type; the caller skips them.
     """
     base = {
         "ts": ev.ts,
@@ -120,71 +116,27 @@ def _emit_workitem(ev: WorkitemEvent) -> Optional[dict]:
     return line
 
 
-def _rotate_if_needed(root: Path) -> None:
-    path = root / _TIMELINE_FILE
-    if not path.is_file():
-        return
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    if size < _ROTATE_BYTES:
-        return
-
-    # Atomic rename to a timestamped rotation.
-    from datetime import datetime, timezone
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    rotated = path.with_name(f"timeline.{stamp}.jsonl")
-    try:
-        path.rename(rotated)
-    except OSError as exc:
-        logger.warning("timeline rotate failed: %s", exc)
-        return
-
-    # Prune older rotations.
-    rotations = sorted(path.parent.glob("timeline.*.jsonl"))
-    for old in rotations[:-_MAX_ROTATIONS_KEEP]:
-        try:
-            old.unlink()
-        except OSError as exc:
-            logger.warning("timeline rotation prune failed for %s: %s", old, exc)
-
-
 def apply(root: Path, events: Iterable[Event], *, project_id: Optional[str] = None) -> list[dict]:
-    """Append timeline events for this project's events.
+    """Render this project's events and write them, once each, through the
+    timeline module.
 
-    Given ``project_id`` (the project's folder name), the same lines are also
-    appended to the Space timeline, tagged with it, so the Space timeline
-    carries every event a project timeline does: the watcher's, and the todo,
-    workitem and claim events their stores write.
+    ``root`` is the project's runtime home; its folder name is the pid the
+    lines are stamped with and filed under. A home keyed by a folder name
+    (a project with no pid yet) files its lines under that name with no
+    pid stamped. ``project_id`` (the project's folder name) is stamped when
+    given. Returns the lines written, in envelope order.
     """
-    _rotate_if_needed(root)
-
     pid = root.name if _PID_RE.fullmatch(root.name) else None
     lines: list[dict] = []
     for ev in events:
         rendered = _emit_event(ev)
         if rendered is not None:
-            lines.append(_envelope(rendered, pid))
-
+            lines.append(rendered)
     if not lines:
         return []
-
-    append_jsonl(root / _TIMELINE_FILE, lines)
-    if project_id:
-        _append_to_space_timeline(lines, project_id)
-    return lines
-
-
-def _append_to_space_timeline(lines: list[dict], project_id: str) -> None:
-    """Best effort: the project's own line is already written."""
-    # Imported here so importing a sink never pulls in the workspace tier.
-    from services.cowork_agent.visualizer.workspace import timeline as space_timeline
-
-    try:
-        space_timeline.apply(lines, project_id=project_id)
-    except Exception:  # noqa: BLE001 - never fail the write the line describes
-        logger.warning("Space timeline append failed for %s", project_id, exc_info=True)
+    if pid is not None:
+        return timeline_service.emit(lines, project_id=project_id, pid=pid)
+    return timeline_service.emit(lines, project_id=project_id, key=root.name)
 
 
 def apply_quiet(

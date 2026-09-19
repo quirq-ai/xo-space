@@ -4,7 +4,7 @@
 holds right after XO Space first meets the folder, however it got there. These
 tests hold four things to it:
 
-1. the definition in ``services/xo_structure.py`` and the schemas;
+1. the definition in ``modules/projects/xo_structure.py`` and the schemas;
 2. every way a project comes to exist: scaffold, the clone API, project
    sharing's auto-clone, and a folder put into the root by hand and found by
    the watcher;
@@ -31,9 +31,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from services import xo_structure
+from modules.projects import peers_store, todos_store, workitems_store, xo_structure
 from services.cowork_agent import coder_identity, project_layout
-from services.cowork_agent.visualizer import peers_store, todos_store, workitems_store
 from services.cowork_agent.visualizer import watcher as watcher_mod
 from services.storage import atomic_write
 from utils.commands import CommandResult
@@ -94,7 +93,7 @@ class CanonicalSampleTests(unittest.TestCase):
         template = ROOT / "services" / "cowork_agent" / "project_template"
         self.assertFalse(
             (template / ".xo").exists(),
-            "the project template must not carry .xo/ files: services/xo_structure.py "
+            "the project template must not carry .xo/ files: modules/projects/xo_structure.py "
             "is the one definition, and a template copy would win on scaffold",
         )
 
@@ -190,7 +189,7 @@ class CreationPathTests(_Sandbox):
         self.assertEqual(result["pid"], document["pid"])
 
     def test_a_project_cloned_through_the_api(self) -> None:
-        from services import project_management
+        from modules.projects import project_management
 
         async def fake_git(argv, **options):
             target = Path(argv[-1])

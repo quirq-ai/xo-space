@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from services.storage import layout
+from tests.support import Sandbox, SandboxTestCase
 
 
-class _Sandbox(unittest.TestCase):
+class _Sandbox(SandboxTestCase):
+    """An empty state root: the tests lay files out where earlier releases
+    kept them and watch the migration move them."""
+
+    copy_fixtures = False
+
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name).resolve()
-        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.root)})
-        env.start()
-        self.addCleanup(env.stop)
+        super().setUp()
+        self.root = self.sandbox.state
 
     def move(self, old: str, new: str) -> layout.Move:
         return layout.Move(old, lambda: self.root / old, lambda: self.root / new)
@@ -37,11 +38,14 @@ class FolderTests(_Sandbox):
 
 
     def test_logs_are_defined_once_below_the_services_layer(self) -> None:
+        from modules.jobs import store as jobs_store
         from utils import runtime_env
-        from utils.commands import scheduler
 
         self.assertIs(layout.logs_dir, runtime_env.logs_dir)
-        self.assertEqual(scheduler.log_file("job1"), self.root / "logs" / "scheduler" / "job1.log")
+        self.assertEqual(layout.jobs_dir(), self.root / "jobs")
+        self.assertEqual(jobs_store.jobs_dir(), layout.jobs_dir())
+        # A job's own output log sits with the other logs, not with its history.
+        self.assertEqual(jobs_store.log_file("job1"), self.root / "logs" / "jobs" / "job1.log")
 
 
     def test_the_command_log_stays_at_its_old_path_until_moved(self) -> None:
@@ -171,13 +175,30 @@ class MigrateTests(_Sandbox):
     def test_logs_move_into_the_logs_folder(self) -> None:
         (self.root / "commands.log").write_text("a", encoding="utf-8")
         (self.root / "commands.log.1").write_text("b", encoding="utf-8")
+        # Two generations of saved command output, both older than logs/jobs/:
+        # scheduler/logs/ (the oldest) and logs/scheduler/ (the release before).
         (self.root / "scheduler" / "logs").mkdir(parents=True)
         (self.root / "scheduler" / "logs" / "job1.log").write_text("c", encoding="utf-8")
+        (self.root / "logs" / "scheduler").mkdir(parents=True)
+        (self.root / "logs" / "scheduler" / "job2.log").write_text("d", encoding="utf-8")
         with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}):
             layout.migrate_layout()
-        for path in ("logs/commands.log", "logs/commands.log.1", "logs/scheduler/job1.log"):
+        for path in ("logs/commands.log", "logs/commands.log.1", "logs/jobs/job1.log", "logs/jobs/job2.log"):
             self.assertTrue((self.root / path).is_file(), path)
-        self.assertFalse((self.root / "scheduler" / "logs").exists())
+        for gone in ("scheduler", "logs/scheduler"):
+            self.assertFalse((self.root / gone).exists(), gone)
+
+    def test_saved_commands_move_from_scheduler_to_jobs(self) -> None:
+        old = self.root / "scheduler"
+        (old / "runs").mkdir(parents=True)
+        (old / "jobs.json").write_text("{}", encoding="utf-8")
+        (old / "state.json").write_text("{}", encoding="utf-8")
+        (old / "runs" / "job1.jsonl").write_text("", encoding="utf-8")
+        layout.migrate_layout()
+        for path in ("jobs/jobs.json", "jobs/state.json", "jobs/runs/job1.jsonl"):
+            self.assertTrue((self.root / path).is_file(), path)
+        self.assertFalse(old.exists())
+        self.assertEqual(layout.migrate_layout(), [])
 
     def test_file_modes_survive_the_move(self) -> None:
         secret = self.root / "secrets.env"
@@ -191,9 +212,7 @@ class UsageWatermarkTests(unittest.TestCase):
     """The watermark used to live in the checkout; its store adopts it once."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        base = Path(tmp.name)
+        base = Sandbox.fresh(self).base
         self.new = base / "usage" / "stub.json"
         self.old = base / "data" / "stub" / "usage_sync_state.json"
         self.old.parent.mkdir(parents=True)

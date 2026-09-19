@@ -1,0 +1,2 @@
+{"ts": "2025-12-01T10:05:00Z", "type": "sharing.cloned", "repo": "github.com/acme/sample-project", "project": "sample-project", "detail": "cloned into sample-project"}
+{"ts": "2025-12-01T10:05:30Z", "type": "sharing.fetched", "repo": "github.com/acme/sample-project", "project": "sample-project", "detail": "3 commit(s)"}

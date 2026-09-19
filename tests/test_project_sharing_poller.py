@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.project_sharing import config, poller, state, status, watcher
+from modules.sharing import config, poller, state, status, watcher
 
 R = "github.com/acme/trip-planner"
 

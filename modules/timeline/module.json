@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "name": "timeline",
+  "title": "Timeline",
+  "description": "What happened, per project and across the Space: one log per project, written once, read merged.",
+  "folder": null,
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "stream": true,
+  "pages": {"live": {"enabled": true}}
+}

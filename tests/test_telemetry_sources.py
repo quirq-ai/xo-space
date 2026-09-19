@@ -1,5 +1,7 @@
 """Telemetry source configuration: descriptors, saving paths and the
-per-source collection switch the Agents tab's Configure page drives."""
+per-source collection switch the Agents tab's Configure page drives
+(``modules/telemetry/sources.py``; ``services.telemetry_sources`` is an
+alias of it, and the routes are the telemetry module's)."""
 
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from unittest import mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services import telemetry_sources
+from modules.telemetry import sources as telemetry_sources
 from services.cowork_agent.visualizer import session_telemetry
 
 
@@ -155,11 +157,20 @@ class BuilderSwitchTests(unittest.TestCase):
 
 class RouterTests(unittest.TestCase):
     def setUp(self) -> None:
-        from routers.telemetry_sources import router
+        from modules.telemetry.routes import router
+        from routers.errors import install_service_errors
 
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         self.client = TestClient(app)
+
+    def test_the_old_paths_are_aliases_and_the_old_router_is_empty(self) -> None:
+        from routers import telemetry_sources as old_router
+        from services import telemetry_sources as old_module
+
+        self.assertIs(old_module, telemetry_sources)
+        self.assertEqual(old_router.router.routes, [])
 
     def test_list_and_update_shape(self) -> None:
         provider = _provider("alpha", config={"vendor": "cursor", "path_env": "ALPHA_HOME", "path_default": "~/.alpha"})
@@ -168,7 +179,7 @@ class RouterTests(unittest.TestCase):
             telemetry_sources, "_load_providers", return_value=[("alpha", provider)]
         ), mock.patch.object(
             telemetry_sources.scopes, "resolve_scope", return_value=store
-        ), mock.patch("routers.telemetry_sources._rebuild_sessions_view") as rebuild, mock.patch.dict(
+        ), mock.patch("modules.telemetry.routes._rebuild_sessions_view") as rebuild, mock.patch.dict(
             os.environ, {}, clear=False
         ):
             os.environ.pop("ALPHA_HOME", None)

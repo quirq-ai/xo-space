@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "id": "list",
+  "tab": "projects",
+  "route": "projects/data/list",
+  "aliases": ["list", "projects/list"],
+  "label": "List",
+  "order": 20,
+  "read": "/api/xo-projects",
+  "poll_s": 60,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Projects", "value": "items|count"},
+        {"label": "Scaffolded", "value": "items|where:!unscaffolded|count"},
+        {"label": "Bare folders", "value": "items|where:unscaffolded|count"}
+      ]
+    },
+    {
+      "type": "list",
+      "items": "items",
+      "key": "id",
+      "empty": "No projects yet. Add one under Projects, Manage.",
+      "row": {
+        "title": "display_name",
+        "detail": "description",
+        "meta": ["id", "created_at|rel"],
+        "badge": {"value": "unscaffolded", "map": {"true": "bare folder", "false": "scaffolded"}},
+        "tone": {"value": "unscaffolded", "map": {"true": "warn", "false": "ok"}}
+      },
+      "actions": [
+        {"label": "Open", "open": "projects/data/tree"},
+        {"label": "Manage", "open": "projects/manage"}
+      ]
+    }
+  ]
+}

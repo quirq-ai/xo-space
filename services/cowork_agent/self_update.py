@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from services.errors import Conflict
 from utils.commands import CommandResult, run_sync
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,8 +27,12 @@ _REMOTE = "origin"
 _URL_USERINFO_RE = re.compile(r"//[^/@]+@")
 
 
-class UpdateError(RuntimeError):
-    """A git step failed in a way the caller should surface verbatim."""
+class UpdateError(Conflict):
+    """A git step failed in a way the caller should surface verbatim
+    (409 ``update_failed``, the message being git's own words)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("update_failed", message)
 
 
 def _git(*args: str, timeout: float = 10.0) -> CommandResult:

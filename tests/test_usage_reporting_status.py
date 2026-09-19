@@ -6,14 +6,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import services.usage_sync as usage_sync
+import modules.telemetry.usage_sync as usage_sync
+from modules.telemetry import service as telemetry_service
 
 
 class UsageReportingStatusTests(unittest.TestCase):
     """usage_reporting_status() composes 'is anything reported' for Setup.
 
     Hermetic: the sync state file is pointed at a temp path, and the auth
-    token comes from a patched routers.auth.auth.get_auth_token — no real
+    token comes from a patched routers.auth.auth.get_auth_token: no real
     ~/.quirq, .env, or network.
     """
 
@@ -65,6 +66,14 @@ class UsageReportingStatusTests(unittest.TestCase):
         # stale probe record must not resurrect "on".
         usage_sync._record_key_probe({}, "accepted", 200)
         self.assertEqual(self._status(None)["status"], "off")
+
+    def test_the_facade_and_the_old_path_answer_the_same(self) -> None:
+        import services.usage_sync as old_path
+
+        self.assertIs(old_path, usage_sync)
+        usage_sync._record_key_probe({}, "accepted", 200)
+        with mock.patch("routers.auth.auth.get_auth_token", return_value="some-key"):
+            self.assertEqual(telemetry_service.usage_reporting_status()["status"], "on")
 
     def test_probe_record_persists_alongside_the_watermark(self) -> None:
         state = {"last_synced_date": "2026-08-20"}

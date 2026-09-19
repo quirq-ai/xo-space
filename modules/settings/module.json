@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "name": "settings",
+  "title": "Settings",
+  "description": "Space-wide choices: the runtime settings and roots, secrets, onboarding, and which modules run.",
+  "folder": "settings",
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "commands": true,
+  "pages": {"modules": {"enabled": true}, "workspace": {"enabled": true}},
+  "aliases": ["/api/runtime-config", "/api/secrets", "/api/onboarding"]
+}

@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "activity",
+  "tab": "inbox",
+  "route": "inbox/sharing-activity",
+  "label": "Sharing activity",
+  "order": 40,
+  "read": "/api/project-sharing/status",
+  "poll_s": 30,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Repos", "value": "rows|count"},
+        {"label": "Shared with you", "value": "rows|where:available|count"},
+        {"label": "Relay", "value": "parked|map", "map": {"true": "parked", "false": "running"}},
+        {"label": "Last poll", "value": "last_poll_at|rel"}
+      ]
+    },
+    {
+      "type": "list",
+      "items": "rows",
+      "key": "repo",
+      "empty": "No shared projects yet. Share one from its Manage page, or have one shared with this workspace.",
+      "row": {
+        "title": "repo",
+        "detail": "last_error",
+        "meta": ["project", "last_synced|rel", "state"],
+        "badge": {"value": "state"},
+        "tone": {"value": "state", "map": {"error": "error", "clone failed": "error", "*": "ok"}}
+      },
+      "actions": [
+        {"label": "Check now", "call": "POST /api/project-sharing/check", "then": "refresh"}
+      ]
+    },
+    {
+      "type": "stream",
+      "title": "Activity",
+      "stream": "/api/sharing/stream/events",
+      "limit": 100,
+      "empty": "Nothing has happened yet.",
+      "row": {"title": "detail", "meta": ["type", "repo"]}
+    }
+  ]
+}

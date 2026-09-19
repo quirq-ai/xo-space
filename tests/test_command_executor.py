@@ -517,8 +517,8 @@ class OneExecutorTests(unittest.TestCase):
         # partly migrated: their one-shot calls use the runner; what remains is a
         # live-streamed `gh auth login --web` and rclone's stdin-streaming /
         # long-running authorize flows, which need a pipe the runner does not offer
-        "services/cowork_agent/connectors/github/cli_auth.py",
-        "services/cowork_agent/connectors/rclone/connector.py",
+        "modules/connectors/github/cli_auth.py",
+        "modules/connectors/rclone/connector.py",
     }
     DIRECT = re.compile(r"subprocess\.(run|Popen|check_output|check_call|call)\(|create_subprocess_exec\(")
     IMPORTS = re.compile(r"^\s*(import subprocess\b|from subprocess import\b)", re.MULTILINE)

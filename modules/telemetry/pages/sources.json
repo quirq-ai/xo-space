@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "id": "sources",
+  "tab": "agents",
+  "route": "agents/configure",
+  "label": "Configure",
+  "order": 40,
+  "read": "/api/telemetry/sources",
+  "poll_s": 30,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Sources", "value": "items|count"},
+        {"label": "Collecting", "value": "items|where:enabled|count"},
+        {"label": "Paused", "value": "items|where:!enabled|count"}
+      ]
+    },
+    {
+      "type": "list",
+      "title": "Sources",
+      "items": "items",
+      "key": "id",
+      "empty": "No installed runtime ships session telemetry.",
+      "row": {
+        "title": "label",
+        "detail": "collects|join:, ",
+        "meta": ["vendor", "path.effective"],
+        "badge": {"value": "enabled", "map": {"true": "collecting", "false": "paused"}},
+        "tone": {"value": "enabled", "map": {"true": "ok", "false": "warn"}}
+      },
+      "expand": {
+        "type": "toggles",
+        "write": "PUT /api/telemetry/sources/{id}",
+        "toggles": [
+          {"label": "Collect from {label}", "value": "enabled", "path": "enabled",
+           "help": "Off keeps the source listed but never reads it; the next telemetry build reflects the change."}
+        ]
+      }
+    },
+    {
+      "type": "list",
+      "title": "Data locations",
+      "items": "items|where:path.editable",
+      "key": "id",
+      "empty": "Every source is discovered automatically; there is no location to set.",
+      "row": {
+        "title": "label",
+        "detail": "path.label",
+        "meta": ["path.env", "path.effective"],
+        "badge": {"value": "path.exists", "map": {"true": "found", "false": "not found"}},
+        "tone": {"value": "path.exists", "map": {"true": "ok", "false": "warn"}}
+      },
+      "expand": {
+        "type": "form",
+        "title": "Save",
+        "fields": [
+          {"name": "path", "label": "Path", "value": "path.configured",
+           "help": "An absolute path, or one that starts with ~. Leave it empty to use the provider's default."}
+        ],
+        "submit": "PUT /api/telemetry/sources/{id}"
+      }
+    }
+  ]
+}

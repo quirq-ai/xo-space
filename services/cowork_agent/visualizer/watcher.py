@@ -64,7 +64,6 @@ from services.cowork_agent.visualizer.workspace_index import (
     list_project_ids,
     project_index_scope,
 )
-from utils.commands import scheduler
 from utils.runtime_env import watcher_tick_interval_seconds
 
 logger = logging.getLogger(__name__)
@@ -74,8 +73,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# One definition, shared with the command scheduler (which treats the tick
-# period as the floor on a job's interval): utils/runtime_env.py.
+# One definition, shared with the jobs module's tick task (which treats the
+# tick period as the floor on a job's interval): utils/runtime_env.py. The
+# jobs tick is its own supervised task (modules/jobs/tasks.py); this loop
+# no longer drives it.
 _poll_interval_seconds = watcher_tick_interval_seconds
 
 POLL_INTERVAL_S = _poll_interval_seconds()
@@ -132,9 +133,6 @@ class Watcher:
         # published in the heartbeat so a reader can tell a watcher that is
         # ticking from one whose file merely happens to be recent.
         self.tick_count = 0
-        # What the command scheduler did on the last tick (ids only), or
-        # None before the first tick; published in the heartbeat.
-        self.last_scheduler_report: Optional[dict] = None
 
     # ── One tick ────────────────────────────────────────────────────────
 
@@ -253,27 +251,10 @@ class Watcher:
         except Exception:
             logger.exception("workspace tier failed")
 
-        # 7. Scheduled commands. This loop is only the scheduler's clock:
-        # the scheduler owns the policy and the state, and its tick only
-        # launches jobs (it never waits for one), so this step costs two
-        # small reads when nothing is due.
-        self._scheduler_step()
-
-        # 8. Liveness beat — last, so duration_ms covers the real tick.
+        # 7. Liveness beat, last, so duration_ms covers the real tick.
+        # (Saved commands are ticked by the jobs module's own supervised
+        # task, not here.)
         self._write_heartbeat(tick_started)
-
-    def _scheduler_step(self) -> None:
-        """Give the command scheduler its once-per-tick call. Never raises:
-        a scheduler bug must not stop telemetry ingestion."""
-        try:
-            report = scheduler.tick()
-        except Exception:
-            logger.exception("scheduler tick failed (non-fatal)")
-            self.last_scheduler_report = {"error": "scheduler tick raised; see log"}
-            return
-        self.last_scheduler_report = report.as_dict()
-        if not report.quiet:
-            logger.info("scheduler: %s", self.last_scheduler_report)
 
     def _write_heartbeat(self, tick_started: float) -> None:
         """Persist the once-per-tick liveness beat. Never raises."""
@@ -288,7 +269,6 @@ class Watcher:
                     "duration_ms": int(
                         round((time.monotonic() - tick_started) * 1000)
                     ),
-                    "scheduler": self.last_scheduler_report,
                 },
             )
         except Exception:

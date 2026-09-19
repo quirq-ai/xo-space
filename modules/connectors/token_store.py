@@ -1,0 +1,132 @@
+"""
+token_store — the single owner of token.json.
+
+Every connector (github, vercel, ...) persists its credentials as a
+provider-keyed entry in one shared JSON file at ``~/.quirq/secrets/token.json``.
+This module is the ONLY place that knows the file's location, its on-disk
+shape, and its read/write semantics. Connectors get/set/delete by provider key
+and never touch the format — so locking or a format migration can later be
+added here once, not in every connector.
+
+Location: ``secrets/`` in the machine-local state root, never the checkout, so
+credentials survive a redeploy or a fresh clone, a repo copy never carries
+secrets, and an uninstall keeps them (it leaves ``secrets/`` alone). Earlier
+releases kept it at ``~/.config/token.json``, and before that as
+``mcp-tokens.json`` under ``~/.config/`` and ``<repo>/services/``; a file left at
+any of those is moved into place on first access (see
+``_migrate_legacy_file``). ``MCP_TOKENS_FILE`` overrides the location outright.
+"""
+
+import json
+import logging
+import os
+import shutil
+from pathlib import Path
+from typing import Any
+
+from services.storage.layout import ensure_parent_dir, secrets_dir
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_TOKEN_FILE = secrets_dir() / "token.json"
+TOKEN_FILE = Path(os.getenv("MCP_TOKENS_FILE") or _DEFAULT_TOKEN_FILE).expanduser()
+
+# Where the store used to live, newest name first. The last is the original
+# in-checkout location, `services/mcp-tokens.json` (this file sits in
+# modules/connectors/, two levels below the repo root).
+_LEGACY_TOKEN_FILES = (
+    Path.home() / ".config" / "token.json",
+    Path.home() / ".config" / "mcp-tokens.json",
+    Path(os.path.abspath(__file__)).parents[2] / "services" / "mcp-tokens.json",
+)
+
+# Owner-only: the file holds OAuth access and refresh tokens.
+_FILE_MODE = 0o600
+
+
+def _migrate_legacy_file() -> None:
+    """Move a store left under an older name/location to TOKEN_FILE, once.
+
+    No-op when the store is already in place or nothing was left behind. A
+    legacy path that TOKEN_FILE itself points at is skipped, so an override
+    aimed at an old name keeps working. A failure here is logged, never
+    raised: the caller then sees an empty store rather than a crashed
+    connector.
+    """
+    if TOKEN_FILE.exists():
+        return
+    for legacy in _LEGACY_TOKEN_FILES:
+        if legacy == TOKEN_FILE or not legacy.exists():
+            continue
+        try:
+            ensure_parent_dir(TOKEN_FILE)
+            shutil.move(str(legacy), str(TOKEN_FILE))
+            os.chmod(TOKEN_FILE, _FILE_MODE)
+            log.info("Moved credential store %s -> %s", legacy, TOKEN_FILE)
+        except OSError as exc:
+            log.warning("Could not move %s to %s: %s", legacy, TOKEN_FILE, exc)
+        return
+
+
+def read_all(*, read_only: bool = False) -> dict[str, Any]:
+    """Read token.json, normally migrating old names and tolerating bad files.
+
+    Read-only status checks inspect the same current/legacy precedence in
+    place. They raise on unreadable or corrupt data so a failed read cannot
+    masquerade as an installation with no credentials.
+    """
+    if read_only:
+        source = next((path for path in (TOKEN_FILE, *_LEGACY_TOKEN_FILES) if path.exists()), None)
+        if source is None:
+            return {}
+        data = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Credential store must contain an object")
+        return data
+    _migrate_legacy_file()
+    if not TOKEN_FILE.exists():
+        return {}
+    try:
+        return json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Could not read %s: %s", TOKEN_FILE, exc)
+        return {}
+
+
+def write_all(data: dict[str, Any]) -> None:
+    """Write the full token.json (pretty-printed, trailing newline).
+
+    Creates the config directory on first write and keeps the file owner-only.
+    """
+    _migrate_legacy_file()
+    ensure_parent_dir(TOKEN_FILE)
+    TOKEN_FILE.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(TOKEN_FILE, _FILE_MODE)
+    except OSError as exc:  # e.g. a mount that ignores chmod
+        log.warning("Could not restrict permissions on %s: %s", TOKEN_FILE, exc)
+
+
+def get_entry(provider: str, *, read_only: bool = False) -> dict[str, Any] | None:
+    """Return the stored entry for a provider key, or None if absent."""
+    entry = (read_all(read_only=True) if read_only else read_all()).get(provider)
+    if read_only and entry is not None and not isinstance(entry, dict):
+        raise ValueError("Credential entry must contain an object")
+    return entry
+
+
+def set_entry(provider: str, entry: dict[str, Any]) -> None:
+    """Insert or replace one provider's entry, preserving every other key."""
+    data = read_all()
+    data[provider] = entry
+    write_all(data)
+
+
+def delete_entry(provider: str) -> None:
+    """Remove one provider's entry if present, preserving every other key."""
+    data = read_all()
+    data.pop(provider, None)
+    write_all(data)

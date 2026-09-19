@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from services.connections import store
-from services.connections.store import ConnectionsError
+from modules.connections import store
+from modules.connections.store import ConnectionsError
 
 BAD_IDS = ["..", ".", "", "Gmail", "a/b", "a-b", "x" * 41, "g mail", None, 7, "../gmail"]
 
@@ -149,7 +149,7 @@ class ConfigTests(_Base):
         raw = {"enabled": "false", "interval_s": "300", "collectors": ["unread", "unread", "nope", 3],
                "toolkit": "someone_else", "schema": 2}
         self.write_file("gmail", "config.json", json.dumps(raw))
-        with self.assertLogs("services.connections.store", level="WARNING") as logs:
+        with self.assertLogs("modules.connections.store", level="WARNING") as logs:
             doc = store.read_config("gmail")
         self.assertEqual((doc["enabled"], doc["interval_s"], doc["collectors"], doc["toolkit"]),
                          (False, 300, ["unread"], "gmail"))
@@ -164,7 +164,7 @@ class ConfigTests(_Base):
                 self.assertEqual(store.read_config("gmail")["enabled"], expected)
         for raw in ("maybe", 2, None, [], {}, 1.0):
             with self.subTest(raw=raw), \
-                 self.assertLogs("services.connections.store", level="WARNING") as logs:
+                 self.assertLogs("modules.connections.store", level="WARNING") as logs:
                 self.write_file("gmail", "config.json", json.dumps({"enabled": raw}))
                 self.assertFalse(store.read_config("gmail")["enabled"], "an unreadable intent never polls")
                 self.assertTrue(any("enabled" in line for line in logs.output))
@@ -172,12 +172,12 @@ class ConfigTests(_Base):
     def test_a_rewrite_repairs_what_the_lenient_read_replaced(self) -> None:
         self.write_file("gmail", "config.json",
                         json.dumps({"interval_s": 5, "collectors": "unread", "note": "keep me"}))
-        with self.assertLogs("services.connections.store", level="WARNING"):
+        with self.assertLogs("modules.connections.store", level="WARNING"):
             store.write_config("gmail", enabled=False)
         on_disk = self.read_file("gmail", "config.json")
         self.assertEqual((on_disk["enabled"], on_disk["interval_s"], on_disk["collectors"], on_disk["note"]),
                          (False, 900, ["unread"], "keep me"))
-        with self.assertNoLogs("services.connections.store", level="WARNING"):
+        with self.assertNoLogs("modules.connections.store", level="WARNING"):
             self.assertEqual(store.read_config("gmail")["interval_s"], 900)
 
     def test_lenient_read_falls_back_for_bad_interval_and_collectors(self) -> None:
@@ -325,7 +325,7 @@ class EventsTests(_Base):
         self.assertEqual(len(list(folder.glob("events.*.jsonl"))), 4, "below the threshold nothing rotates")
         with patch.object(store, "_ROTATE_BYTES", 1):
             self.assertEqual(store.append_events("gmail", [ev(2, self.T[1])]), 1)
-        self.assertEqual([e["key"] for e in store.read_events("gmail")], ["k2"], "only the live file is read")
+        self.assertEqual([e["key"] for e in store.read_events("gmail")], ["k2", "k1"], "rotated segments are read too, newest first")
         stamped = sorted(p.name for p in folder.iterdir() if store._ROTATION_RE.fullmatch(p.name))
         self.assertEqual(len(stamped), 3)
         self.assertNotIn("events.20200101T000000Z.jsonl", stamped)
@@ -400,7 +400,7 @@ class AccountsTests(_Base):
         self.assertEqual(read["googlecalendar"]["checked_at"], "junk", "the reader coerces types, not values")
         store.accounts_path().write_text(json.dumps({"accounts": [1, 2]}), encoding="utf-8")
         self.assertEqual(store.read_accounts(), {})
-        with self.assertLogs("services.connections.store", level="WARNING"):
+        with self.assertLogs("modules.connections.store", level="WARNING"):
             store.accounts_path().write_text("[1, 2]", encoding="utf-8")
             self.assertEqual(store.read_accounts(), {})
 
@@ -494,7 +494,7 @@ class RemoveTests(_Base):
         odd.parents = []
         with patch.object(Path, "resolve", side_effect=[odd, root_resolved]), \
              patch.object(store.shutil, "rmtree") as rmtree, \
-             self.assertLogs("services.connections.store", level="WARNING") as logs:
+             self.assertLogs("modules.connections.store", level="WARNING") as logs:
             self.assertFalse(store.remove("gmail"))
         rmtree.assert_not_called()
         self.assertTrue(any("escaped" in line for line in logs.output), logs.output)

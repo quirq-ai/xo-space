@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "live",
+  "tab": "inbox",
+  "route": "inbox/activity",
+  "label": "Activity",
+  "order": 25,
+  "read": "/api/timeline?limit=50",
+  "blocks": [
+    {
+      "type": "stream",
+      "title": "Live",
+      "stream": "/api/timeline/stream/events",
+      "limit": 200,
+      "row": {"title": "type", "meta": ["project_id", "session_id", "ts|rel"]}
+    },
+    {
+      "type": "list",
+      "title": "Recent",
+      "items": "events",
+      "key": "ts",
+      "empty": "Nothing has happened yet.",
+      "row": {"title": "type", "meta": ["project_id", "ts|rel"]}
+    }
+  ]
+}

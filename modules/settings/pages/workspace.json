@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "id": "workspace",
+  "tab": "setup",
+  "route": "setup/workspace",
+  "label": "Workspace",
+  "order": 10,
+  "read": "/api/runtime-config",
+  "poll_s": 60,
+  "blocks": [
+    {
+      "type": "text",
+      "title": "Restart required",
+      "when": "restart_required",
+      "markdown": "Settings are read when the server starts. What is saved differs from what this server started with (the reasons are listed under Server below): restart it from Setup, Server, to apply the change."
+    },
+    {
+      "type": "detail",
+      "title": "Applied settings",
+      "items": "applied",
+      "columns": [
+        {"label": "Agent for new chats", "value": "agent_name"},
+        {"label": "Activity updates", "value": "watcher_enabled", "map": {"true": "on", "false": "off"}},
+        {"label": "Check every", "value": "watcher_interval_seconds|plural:second"},
+        {"label": "Activity sources", "value": "watcher_source_mode", "map": {"all": "all agents", "active": "chat agent only"}}
+      ]
+    },
+    {
+      "type": "form",
+      "title": "Save settings",
+      "submit": "PUT /api/runtime-config",
+      "fields": [
+        {"name": "agent_name", "label": "Agent for new chats", "type": "text", "value": "configured.agent_name", "required": true, "help": "The name of an installed agent (see Agents below)."},
+        {"name": "watcher_enabled", "label": "Update activity automatically", "type": "toggle", "value": "configured.watcher_enabled", "help": "Keep sessions and project history up to date. Scheduled jobs also need this."},
+        {"name": "watcher_interval_seconds", "label": "Check every (seconds)", "type": "number", "value": "configured.watcher_interval_seconds", "min": 0.25, "max": 60, "required": true, "help": "0.25 to 60 seconds. Default: 1."},
+        {"name": "watcher_source_mode", "label": "Activity sources", "type": "select", "value": "configured.watcher_source_mode", "options": [{"value": "all", "label": "All agents"}, {"value": "active", "label": "Chat agent only"}]}
+      ]
+    },
+    {
+      "type": "list",
+      "title": "Agents",
+      "items": "agents",
+      "key": "name",
+      "empty": "No agent manifests were found under config/agents/.",
+      "row": {
+        "title": "name",
+        "detail": "binary",
+        "meta": ["session_files|plural:session file", "home.container_path"],
+        "badge": {"value": "active", "map": {"true": "chat agent", "false": "installed"}},
+        "tone": {"value": "binary_available", "map": {"true": "ok", "false": "warn"}}
+      }
+    },
+    {
+      "type": "detail",
+      "title": "Folders",
+      "items": "roots.applied",
+      "columns": [
+        {"label": "Projects folder", "value": "xo_projects_root", "mono": true},
+        {"label": "Space data folder", "value": "quirq_state_root", "mono": true}
+      ]
+    },
+    {
+      "type": "form",
+      "title": "Save folders",
+      "submit": "PUT /api/runtime-config/roots",
+      "fields": [
+        {"name": "xo_projects_root", "label": "Projects folder", "type": "text", "value": "roots.configured.xo_projects_root", "required": true, "placeholder": "/Users/you/xo-projects", "help": "Contains your project folders. Changing this does not move them."},
+        {"name": "quirq_state_root", "label": "Space data folder", "type": "text", "value": "roots.configured.quirq_state_root", "required": true, "placeholder": "/Users/you/.quirq", "help": "Settings, credentials and activity data. Default: ~/.quirq/"}
+      ]
+    },
+    {
+      "type": "text",
+      "title": "Apply folder changes",
+      "when": "roots.change_required",
+      "text": "roots.apply_command"
+    },
+    {
+      "type": "detail",
+      "title": "Server",
+      "columns": [
+        {"label": "Restart required", "value": "restart_required", "map": {"true": "yes", "false": "no"}},
+        {"label": "Waiting to apply", "value": "restart_reasons|join:, "},
+        {"label": "Restart mode", "value": "restart_mode"},
+        {"label": "Port", "value": "network.listen_port", "mono": true},
+        {"label": "Public URL", "value": "network.public_url", "mono": true}
+      ]
+    }
+  ]
+}

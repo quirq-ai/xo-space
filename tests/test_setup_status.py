@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from fastapi import FastAPI
 
+from routers.errors import install_service_errors
 from routers.space import router
-from services import setup_status
+from modules.settings import setup_status
 from services.cowork_agent.connectors import token_store
 from services.cowork_agent.xo_projects_sync import github
 from services.swarm_api._http import SwarmResult
@@ -241,6 +242,7 @@ class SetupStatusTests(unittest.IsolatedAsyncioTestCase):
         self.owner.side_effect = github.GitHubAPIError(403, _SECRET)
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/space/setup/status")
         self.assertEqual(response.status_code, 200)

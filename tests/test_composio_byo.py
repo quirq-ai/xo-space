@@ -14,8 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from services.cowork_agent.connectors.composio import byo_key
-from services.cowork_agent.connectors.composio import client as byo_client
+from modules.connectors.composio import byo_key
+from modules.connectors.composio import client as byo_client
 
 
 def _sdk_stub(**resources) -> SimpleNamespace:
@@ -180,7 +180,7 @@ class ClientTests(_KeyBase):
 class ServiceBackendTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     def setUp(self) -> None:
         super().setUp()
-        from services.cowork_agent.connectors.composio import service
+        from modules.connectors.composio import service
         self.service = service
         byo_key.save("sk_live")
         self._sp = tempfile.TemporaryDirectory(); self.addCleanup(self._sp.cleanup)
@@ -273,14 +273,14 @@ def _req(headers=None):
 
 class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_no_session_header_needed(self) -> None:
-        from services.cowork_agent.connectors.composio import identity as identity_mod
+        from modules.connectors.composio import identity as identity_mod
         byo_key.save("sk_live")
         with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
             self.assertEqual(await identity_mod.get_composio_user(_req()), "space-42")
 
     async def test_cross_site_origin_is_403(self) -> None:
         from fastapi import HTTPException
-        from services.cowork_agent.connectors.composio import identity as identity_mod
+        from modules.connectors.composio import identity as identity_mod
         byo_key.save("sk_live")
         req = _req({"origin": "https://evil.example", "sec-fetch-site": "cross-site"})
         with self.assertRaises(HTTPException) as raised:
@@ -288,7 +288,7 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         self.assertEqual(raised.exception.status_code, 403)
 
     async def test_resolve_user_none_without_a_key(self) -> None:
-        from services.cowork_agent.connectors.composio import identity as identity_mod
+        from modules.connectors.composio import identity as identity_mod
         self.assertIsNone(await identity_mod.resolve_user(_req()))
         byo_key.save("sk_live")
         with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
@@ -297,9 +297,9 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
 class StaleGatingErrorTests(_KeyBase):
     def test_stale_gating_errors_are_suppressed_but_real_ones_kept(self) -> None:
-        from services.connections import service as conn_service
-        from services.connections import poller
-        from services.cowork_agent.connectors.composio import space_scope
+        from modules.connections import service as conn_service
+        from modules.connections import poller
+        from modules.connectors.composio import space_scope
         byo_key.save("sk_live")
         not_on = "googlecalendar is not turned on in this workspace"
         with patch.object(space_scope, "is_enabled", return_value=True):
@@ -320,7 +320,7 @@ class StaleGatingErrorTests(_KeyBase):
 
 class ConnectionsSignedInTests(_KeyBase):
     def test_signed_in_tracks_the_composio_key_not_the_xo_token(self) -> None:
-        from services.connections import service as conn_service
+        from modules.connections import service as conn_service
         self.assertFalse(conn_service.signed_in())      # no key configured
         byo_key.save("sk_live")
         self.assertTrue(conn_service.signed_in())        # key present, no XO token needed
@@ -328,11 +328,11 @@ class ConnectionsSignedInTests(_KeyBase):
 
 class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_no_key_resolves_to_none(self) -> None:
-        from services.connections import poller
+        from modules.connections import poller
         self.assertIsNone(await poller.resolve_user_id())
 
     async def test_key_resolves_to_local_user(self) -> None:
-        from services.connections import poller
+        from modules.connections import poller
         byo_key.save("sk_live")
         with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
             self.assertEqual(await poller.resolve_user_id(), "space-42")
@@ -340,19 +340,19 @@ class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
 class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_backend_route_reports_inactive_without_a_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from modules.connectors.routers import composio as r
         resp = await r.get_backend(_req())
         self.assertEqual(json.loads(resp.body), {"mode": "inactive", "key_source": None})
 
     async def test_backend_route_reports_local_with_a_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from modules.connectors.routers import composio as r
         byo_key.save("sk_live")
         resp = await r.get_backend(_req())
         self.assertEqual(json.loads(resp.body), {"mode": "local", "key_source": "file"})
 
     async def test_put_key_validates_and_saves(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
-        from services.cowork_agent.connectors.composio import client as c
+        from modules.connectors.routers import composio as r
+        from modules.connectors.composio import client as c
         from unittest.mock import AsyncMock
         with patch.object(c, "_sdk") as sdk, \
                 patch.object(r.composio_service, "install_gateways", new=AsyncMock()), \
@@ -364,8 +364,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_put_key_rejects_a_bad_key(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
-        from services.cowork_agent.connectors.composio import client as c
+        from modules.connectors.routers import composio as r
+        from modules.connectors.composio import client as c
         with patch.object(c, "_sdk") as sdk, \
                 patch.object(r.composio_service, "invalidate_session"):
             sdk.return_value.auth_configs.list.side_effect = c.ComposioError(
@@ -377,7 +377,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_put_key_409_when_env(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
+        from modules.connectors.routers import composio as r
         with patch.dict(os.environ, {byo_key.ENV_VAR: "sk_env"}):
             with self.assertRaises(HTTPException) as raised:
                 await r.put_api_key(r.ApiKeyBody(api_key="x"), _req())
@@ -385,14 +385,14 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_connect_without_a_key_is_409(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
+        from modules.connectors.routers import composio as r
         with self.assertRaises(HTTPException) as raised:
             await r.connect("gmail", r.ConnectBody(), user_id=byo_key.user_id())
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["error"], "composio_key_required")
 
     async def test_toolkits_without_a_key_are_needs_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from modules.connectors.routers import composio as r
         resp = await r.list_toolkits(user_id=byo_key.user_id())
         body = json.loads(resp.body)
         self.assertFalse(body["key_configured"])

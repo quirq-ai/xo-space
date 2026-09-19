@@ -1,18 +1,59 @@
 from __future__ import annotations
 
+import importlib
+import json
 import unittest
 
-from services.cowork_agent.project_sharing import status
+from modules.sharing import status
+from tests.support import Sandbox
 
 R = "github.com/acme/trip-planner"
 
 
 class CommitRelayStatusTests(unittest.TestCase):
+    """The snapshot lives in ``sharing/state.json`` and the transitions in
+    ``sharing/events.jsonl``, so every test gets its clean slate from an
+    empty sandbox; ``reset()`` only forgets the change detector."""
+
     def setUp(self) -> None:
+        self.sandbox = Sandbox.fresh(self)
         status.reset()
 
     def kinds(self) -> list[str]:
         return [e["kind"] for e in status.snapshot()["recent"]]
+
+    def test_a_restart_keeps_the_snapshot(self) -> None:
+        status.record_poll(ok=True, membership={R}, local={R: "trip-planner"}, members={R: 2})
+        status.record_fetch(R, "trip-planner", 2)
+        before = status.snapshot()
+        self.assertEqual(before["repos"][R]["fetched"], 2)
+        self.assertEqual(self.kinds(), ["fetched"])
+        # a process start: module state rebuilt, nothing remembered in memory
+        importlib.reload(status)
+        status.reset()
+        self.assertEqual(status.snapshot(), before)
+        self.assertEqual(status.member_repos(), {R})
+        # and the files are what it read from
+        state_file = self.sandbox.state / "sharing" / "state.json"
+        on_disk = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["schema"], 1)
+        self.assertEqual(on_disk["repos"][R]["project"], "trip-planner")
+        events_file = self.sandbox.state / "sharing" / "events.jsonl"
+        lines = [json.loads(l) for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.assertEqual([l["type"] for l in lines], ["sharing.fetched"])
+        self.assertEqual(lines[0]["project"], "trip-planner")
+
+    def test_the_old_import_path_is_the_same_module(self) -> None:
+        import services.cowork_agent.project_sharing.status as legacy
+        from services.cowork_agent import project_sharing
+
+        self.assertIs(legacy, status)
+        self.assertIs(project_sharing.status, status)
+
+    def test_nothing_is_written_until_something_is_recorded(self) -> None:
+        self.assertEqual(status.snapshot()["cadence"], "parked")
+        self.assertEqual(status.snapshot()["recent"], [])
+        self.assertFalse((self.sandbox.state / "sharing").exists())
 
     def test_parked_snapshot_carries_reason(self) -> None:
         status.set_parked("no_auth")

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.cowork_agent import runtime_config
+from modules.settings import runtime_config
 from services.cowork_agent.visualizer import watcher
 
 

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "jobs",
+  "title": "Jobs",
+  "description": "Saved commands that run on a schedule or on demand, with their run history.",
+  "folder": "jobs",
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "tasks": {"tick": {"enabled": true}},
+  "commands": true,
+  "pages": {"jobs": {"enabled": true}},
+  "aliases": ["/api/schedules"]
+}

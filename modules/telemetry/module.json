@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "telemetry",
+  "title": "Telemetry",
+  "description": "What the agents spent and did: usage, stats, session telemetry and the watcher that ingests them.",
+  "folder": "usage",
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "tasks": {"watcher": {"enabled": true}, "usage_sync": {"enabled": true}},
+  "commands": true,
+  "pages": {"sources": {"enabled": true}},
+  "aliases": ["/api/usage", "/api/xo-projects", "/api/telemetry", "/xo/sessions.json"]
+}

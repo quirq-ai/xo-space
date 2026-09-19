@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cowork_agent.project_sharing import state
+from modules.sharing import state
 
 REPO = "github.com/acme/trip-planner"
 
@@ -115,7 +115,7 @@ class CommitRelayStateTests(unittest.TestCase):
         self.assertTrue(outside.exists())
 
     def test_status_keeps_remote_membership_without_a_deleted_local_project(self) -> None:
-        from services.cowork_agent.project_sharing import service, status
+        from modules.sharing import service, status
 
         projects = Path(self._tmp.name) / "projects"
         projects.mkdir()

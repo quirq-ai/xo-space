@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "list",
+  "tab": "agents",
+  "route": "agents/sessions-list",
+  "label": "Sessions",
+  "order": 25,
+  "read": "/api/sessions?limit=50",
+  "poll_s": 30,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Sessions", "value": "|count"},
+        {"label": "With a purpose", "value": "|where:purpose|count"}
+      ]
+    },
+    {
+      "type": "list",
+      "items": "",
+      "key": "id",
+      "empty": "No sessions yet. Start one in Chat, or let a job or an inbox item start one.",
+      "row": {
+        "title": "title",
+        "detail": "directory",
+        "meta": ["backend", "purpose", "time_updated|rel"],
+        "badge": {"value": "purpose", "map": {"null": "no purpose"}}
+      },
+      "actions": [
+        {"label": "Open in Agents", "open": "agents/sessions"}
+      ],
+      "expand": {
+        "type": "list",
+        "title": "Transcript",
+        "read": "/api/sessions/{id}/transcript",
+        "items": "messages",
+        "key": "id",
+        "empty": "No transcript yet.",
+        "row": {"title": "role", "detail": "content"}
+      }
+    }
+  ]
+}

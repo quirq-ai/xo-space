@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routers.cowork_agent.bff import inbox as inbox_routes
+from routers.errors import install_service_errors
 from services.cowork_agent import quirq_catalog
 from services.inbox import service, store
 
@@ -236,6 +237,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         requests reaches the file, so no state root is needed beyond a stub."""
         app = FastAPI()
         app.include_router(inbox_routes.router)
+        install_service_errors(app)
         c = TestClient(app)
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"QUIRQ_STATE_ROOT": tmp}):
             self.assertEqual(c.post("/api/inbox", json={"body": "x"}).status_code, 422)          # missing title

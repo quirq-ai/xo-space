@@ -32,9 +32,10 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from services.connections import collectors, mcp_client, poller, store
-from services.connections import service as connections_service
-from services.connections.mcp_client import McpError
+from services import signals
+from modules.connections import collectors, mcp_client, poller, store
+from modules.connections import service as connections_service
+from modules.connections.mcp_client import McpError
 from services.inbox import service as inbox_service
 
 ENTRY = {"type": "http", "url": "https://mcp.example.test/mcp", "headers": {"Authorization": "Bearer t"}}
@@ -800,8 +801,8 @@ class EnvTests(unittest.TestCase):
     def test_module_names_no_agent_and_uses_no_dashes(self) -> None:
         import re
         # a top-level services package: what a person uses as much as the agent does is Space code
-        root = Path(__file__).resolve().parents[1] / "services" / "connections"
-        self.assertFalse((root.parent / "cowork_agent" / "connections").exists())
+        root = Path(__file__).resolve().parents[1] / "modules" / "connections"
+        self.assertFalse((root.parents[1] / "services" / "cowork_agent" / "connections").exists())
         for name in ("__init__", "store", "collectors", "mcp_client", "poller", "service"):
             src = (root / f"{name}.py").read_text(encoding="utf-8")
             with self.subTest(module=name):
@@ -838,7 +839,7 @@ class ServicePollNowTests(_Base):
     def test_a_failing_inbox_refresh_is_logged_and_the_outcome_still_returned(self) -> None:
         with patch.object(poller, "poll_connection", new=AsyncMock(return_value=self.OUTCOME)), \
              patch.object(inbox_service, "refresh", side_effect=OSError("disk")), \
-             self.assertLogs(connections_service.logger, level="WARNING"):
+             self.assertLogs(signals.logger, level="WARNING"):
             self.assertEqual(self.run_(connections_service.poll_now("gmail")), self.OUTCOME)
 
     def test_the_inbox_holds_what_poll_now_collected_despite_its_throttle(self) -> None:

@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "id": "modules",
+  "tab": "setup",
+  "route": "setup/modules",
+  "label": "Modules",
+  "order": 90,
+  "read": "/api/modules",
+  "poll_s": 30,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Modules", "value": "modules|count"},
+        {"label": "On", "value": "modules|where:enabled|count"},
+        {"label": "With warnings", "value": "modules|where:warnings|count"}
+      ]
+    },
+    {
+      "type": "text",
+      "text": "page.settings_file",
+      "title": "Overrides live in"
+    },
+    {
+      "type": "list",
+      "items": "modules",
+      "key": "name",
+      "empty": "No modules were found under modules/.",
+      "row": {
+        "title": "title",
+        "detail": "description",
+        "meta": ["folder", "warnings|join:, "],
+        "badge": {"value": "enabled", "map": {"true": "on", "false": "off"}},
+        "tone": {"value": "warnings|count", "map": {"0": "ok", "*": "warn"}}
+      },
+      "expand": {
+        "type": "toggles",
+        "write": "PUT /api/modules/{name}",
+        "toggles": [
+          {"label": "Enabled", "value": "enabled", "path": "enabled", "help": "Everything below follows this switch."},
+          {"label": "API", "value": "capabilities.api.enabled", "path": "api", "when": "capabilities.api", "help": "Its routes answer; off answers 404 module_disabled."},
+          {"label": "Stream", "value": "capabilities.stream.enabled", "path": "stream", "when": "capabilities.stream", "help": "Its server-sent events."},
+          {"label": "Listeners", "value": "capabilities.listeners.enabled", "path": "listeners", "when": "capabilities.listeners", "help": "Its handlers for other modules' signals."},
+          {"label": "Commands", "value": "capabilities.commands.enabled", "path": "commands", "when": "capabilities.commands", "help": "Its python -m quirq commands."},
+          {"label": "Tasks", "value": "capabilities.tasks.enabled", "path": "tasks", "when": "capabilities.tasks", "help": "All of its background loops."},
+          {"rows": "capabilities.tasks.items|entries", "label": "Task {key}", "value": "enabled", "path": "tasks.{key}", "help": "{description}"},
+          {"label": "Pages", "value": "capabilities.pages.enabled", "path": "pages", "when": "capabilities.pages", "help": "All of its pages in the shell."},
+          {"rows": "capabilities.pages.items|entries", "label": "Page {key}", "value": "enabled", "path": "pages.{key}", "help": "Off takes it out of navigation; a deep link says why."}
+        ]
+      }
+    }
+  ]
+}

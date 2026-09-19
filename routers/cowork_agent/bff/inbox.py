@@ -8,24 +8,25 @@
 
 Declarative over services.inbox.service (the Inbox is a property of the
 Space, so its package sits beside swarm_api rather than under
-cowork_agent; typed errors become HTTP through ``bff/errors.py``).
-Plain ``def`` handlers: the service does file I/O, so FastAPI
-runs them in its threadpool. No os/pathlib in this module (BFF rule P2).
-The id shape and the list statuses are the service's own, not a copy.
-Bodies are strict: an unknown key is a 422, and so is an ``ids`` entry
-that is not a string; an empty or oversized ``ids`` list is the service's
-400 ``invalid_value``.
+cowork_agent). The item id goes through as given: the service answers a
+malformed one with its own 404 before the file is opened, and every typed
+failure reaches the wire through the app's service error handler
+(``routers/errors.py``). Plain ``def`` handlers: the service does file I/O,
+so FastAPI runs them in its threadpool. No os/pathlib in this module (BFF
+rule P2). Bodies are strict: an unknown key is a 422, and so is an ``ids``
+entry that is not a string; an empty or oversized ``ids`` list is the
+service's 400 ``invalid_value``.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import StrictStr
 
+from routers.errors import ForbidExtra
+from services.errors import ServiceError
 from services.inbox import service
-
-from routers.cowork_agent.bff.errors import ForbidExtra, http_error
 
 router = APIRouter()
 
@@ -52,51 +53,29 @@ class UpdateManyBody(ForbidExtra):
     status: str
 
 
-def _item_id_or_404(item_id: str) -> str:
-    if not ITEM_ID_RE.fullmatch(item_id):
-        raise HTTPException(status_code=404, detail={"code": "item_not_found", "message": "Inbox item not found."})
-    return item_id
-
-
 @router.get("/api/inbox")
 def list_inbox(status: str = Query("open"), limit: int = Query(200, ge=1, le=500)) -> dict:
     if status not in LIST_STATUSES:
-        raise HTTPException(status_code=400, detail={
-            "code": "invalid_status", "message": "status must be open, done or all."})
-    try:
-        return service.list_items(status=status, limit=limit)
-    except service.InboxError as exc:
-        raise http_error(exc)
+        raise ServiceError("invalid_status", "status must be open, done or all.")
+    return service.list_items(status=status, limit=limit)
 
 
 @router.post("/api/inbox", status_code=201)
 def create_inbox_item(body: CreateItemBody) -> dict:
-    try:
-        return service.create_item(title=body.title, body=body.body, kind=body.kind, source=body.source,
-                                   project_id=body.project_id, link=body.link, url=body.url)
-    except service.InboxError as exc:
-        raise http_error(exc)
+    return service.create_item(title=body.title, body=body.body, kind=body.kind, source=body.source,
+                               project_id=body.project_id, link=body.link, url=body.url)
 
 
 @router.patch("/api/inbox")
 def update_inbox_items(body: UpdateManyBody) -> dict:
-    try:
-        return service.update_many(body.ids, body.status)
-    except service.InboxError as exc:
-        raise http_error(exc)
+    return service.update_many(body.ids, body.status)
 
 
 @router.patch("/api/inbox/{item_id}")
 def update_inbox_item(item_id: str, body: UpdateItemBody) -> dict:
-    try:
-        return service.update_item(_item_id_or_404(item_id), body.status)
-    except service.InboxError as exc:
-        raise http_error(exc)
+    return service.update_item(item_id, body.status)
 
 
 @router.delete("/api/inbox/{item_id}")
 def delete_inbox_item(item_id: str) -> dict:
-    try:
-        return {"item_id": item_id, "deleted": service.delete_item(_item_id_or_404(item_id))}
-    except service.InboxError as exc:
-        raise http_error(exc)
+    return {"item_id": item_id, "deleted": service.delete_item(item_id)}

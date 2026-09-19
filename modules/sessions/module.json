@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "sessions",
+  "title": "Sessions",
+  "description": "Every agent session the Space knows: its index row, its purpose, its transcript, and the chat that drives it.",
+  "folder": null,
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "stream": true,
+  "commands": true,
+  "pages": {"list": {"enabled": true}},
+  "aliases": ["/api/sessions", "/api/messages", "/api/chat"]
+}

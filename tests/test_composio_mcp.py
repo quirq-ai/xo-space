@@ -29,9 +29,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.cowork_agent.connectors.composio import mcp
-from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import byo_key
+from modules.connectors.composio import mcp
+from modules.connectors.composio import service as composio_service
+from modules.connectors.composio import byo_key
 
 PROXY = "http://127.0.0.1:5002/mcp/composio-proxy/u/tok-1"
 
@@ -167,7 +167,7 @@ class ManifestBlockTests(unittest.TestCase):
         with patch(
             "services.cowork_agent.registry.agent_registry.get_agent", return_value=opted_out
         ):
-            with self.assertNoLogs("services.cowork_agent.connectors.composio.mcp", "WARNING"):
+            with self.assertNoLogs("modules.connectors.composio.mcp", "WARNING"):
                 self.assertIsNone(mcp.load_target("a"))
         # A disabled agent is refused by the same name-based path as an absent block.
         with patch.object(mcp, "load_target", return_value=None):
@@ -231,7 +231,7 @@ class ManifestBlockRejectionTests(unittest.TestCase):
         with patch(
             "services.cowork_agent.registry.agent_registry.get_agent", return_value=bad
         ):
-            with self.assertLogs("services.cowork_agent.connectors.composio.mcp", "WARNING"):
+            with self.assertLogs("modules.connectors.composio.mcp", "WARNING"):
                 self.assertIsNone(mcp.load_target("a"))
 
 

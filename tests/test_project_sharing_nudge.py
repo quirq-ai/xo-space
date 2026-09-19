@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.project_sharing import config, poller, status
+from modules.sharing import config, poller, status
 
 
 class NudgeTests(unittest.TestCase):

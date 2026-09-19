@@ -1,4 +1,4 @@
-"""Tests for utils/commands/scheduler.py.
+"""Tests for modules/jobs/scheduler.py (the jobs module's store and tick).
 
 Hermetic: QUIRQ_STATE_ROOT points at a temp dir, `now` is injected, jobs are
 `sys.executable -c ...` one-liners so they are real subprocesses that finish
@@ -17,9 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from modules.jobs import scheduler
 from services.cowork_agent.local_state import quirq_state_dir
-from utils import runtime_env
-from utils.commands import scheduler
 
 PY = sys.executable
 T0 = datetime(2026, 9, 11, 10, 0, 0, tzinfo=timezone.utc)
@@ -81,11 +80,18 @@ class SchedulerTests(unittest.TestCase):
 
     # ── Task 1: validation and the store ──
 
-    def test_state_root_is_the_one_local_state_exposes(self) -> None:
-        # One definition each (utils/runtime_env.py): the state root, re-exported
-        # by local_state, and the scheduler's folder beneath it.
-        self.assertIs(scheduler.scheduler_dir, runtime_env.scheduler_dir)
-        self.assertEqual(scheduler.scheduler_dir(), quirq_state_dir() / "scheduler")
+    def test_the_jobs_folder_is_the_one_the_layout_names(self) -> None:
+        # One definition each: the state root (utils/runtime_env.py, re-exported
+        # by local_state) and the jobs folder beneath it (modules/jobs/store.py,
+        # which services.storage.layout.jobs_dir agrees with). Logs sit with
+        # the other logs, not with the history.
+        from services.storage import layout
+
+        self.assertIs(scheduler.jobs_dir, scheduler.store.jobs_dir)
+        self.assertEqual(scheduler.jobs_dir(), quirq_state_dir() / "jobs")
+        self.assertEqual(layout.jobs_dir(), scheduler.jobs_dir())
+        self.assertEqual(scheduler.runs_file("job1"), quirq_state_dir() / "jobs" / "runs" / "job1.jsonl")
+        self.assertEqual(scheduler.log_file("job1"), quirq_state_dir() / "logs" / "jobs" / "job1.log")
 
     def test_create_validates_writes_both_files_and_schedules_one_interval_out(self) -> None:
         job = scheduler.create_job(_job("Pull issues", 3600, project_id="blackhole"), now=T0)
@@ -275,12 +281,19 @@ class SchedulerTests(unittest.TestCase):
             scheduler.list_runs(b["id"])
 
     def test_corrupt_jobs_file_is_refused_not_rewritten(self) -> None:
+        # The Document rule (services/storage/document.py): a file that is not
+        # JSON is a 409 corrupt_document naming the document, never its path,
+        # and is never rewritten.
+        from services.storage.document import CorruptDocument
+
         scheduler.jobs_file().parent.mkdir(parents=True)
         scheduler.jobs_file().write_text("{not json", encoding="utf-8")
-        with self.assertRaises(scheduler.SchedulerError):
-            scheduler.list_jobs()
-        with self.assertRaises(scheduler.SchedulerError):
-            scheduler.create_job(_job(), now=T0)
+        for call in (scheduler.list_jobs, lambda: scheduler.create_job(_job(), now=T0)):
+            with self.assertRaises(CorruptDocument) as ctx:
+                call()
+            self.assertEqual((ctx.exception.status, ctx.exception.code), (409, "corrupt_document"))
+            self.assertIn("jobs.json", ctx.exception.message)
+            self.assertNotIn(str(self.root), ctx.exception.message)
         self.assertEqual(scheduler.jobs_file().read_text(encoding="utf-8"), "{not json")
 
     def test_advance_collapses_missed_slots_onto_the_jobs_grid(self) -> None:
@@ -369,7 +382,7 @@ class SchedulerTests(unittest.TestCase):
     def test_hand_added_job_is_adopted_one_interval_out(self) -> None:
         # jobs.json edited directly: no state entry yet. The tick seeds one and
         # does not run the job on the spot.
-        scheduler._write_doc(scheduler.jobs_file(), {"schema": 1, "jobs": {
+        scheduler.store.jobs_document().write({"schema": 1, "jobs": {
             "manual-000000": {"id": "manual-000000", "name": "manual", "project_id": None,
                               "command": _cmd(), "every_seconds": 60, "enabled": True,
                               "created_at": "2026-09-11T10:00:00Z", "updated_at": "2026-09-11T10:00:00Z"}}})
@@ -380,11 +393,11 @@ class SchedulerTests(unittest.TestCase):
         scheduler._running["manual-000000"].thread.join(10)
 
     def test_a_definition_the_executor_refuses_is_an_error_not_a_crash(self) -> None:
-        scheduler._write_doc(scheduler.jobs_file(), {"schema": 1, "jobs": {
+        scheduler.store.jobs_document().write({"schema": 1, "jobs": {
             "bad-000000": {"id": "bad-000000", "name": "bad", "project_id": None,
                            "command": {"argv": [], "timeout": 5}, "every_seconds": 60, "enabled": True,
                            "created_at": "2026-09-11T10:00:00Z", "updated_at": "2026-09-11T10:00:00Z"}}})
-        scheduler._write_doc(scheduler.state_file(), {"schema": 1, "jobs": {
+        scheduler.store.state_document().write({"schema": 1, "jobs": {
             "bad-000000": {"next_run": "2026-09-11T10:01:00Z", "last_run": None,
                            "running_since": None, "last_result": None}}})
         report = scheduler.tick(now=_at(60))
@@ -475,7 +488,7 @@ class SchedulerTests(unittest.TestCase):
         job = scheduler.create_job(_job("j", 60), now=T0)
         state = json.loads(scheduler.state_file().read_text(encoding="utf-8"))
         state["jobs"][job["id"]]["running_since"] = "2026-09-11T09:59:00Z"   # a previous process
-        scheduler._write_doc(scheduler.state_file(), state)
+        scheduler.store.state_document().write(state)
 
         report = scheduler.tick(now=_at(10))
         self.assertEqual(report.lost, [job["id"]])

@@ -132,7 +132,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
                 self.assertIsNotNone(good)
 
                 with patch(
-                    "services.cowork_agent.visualizer.space_index.build_space_data",
+                    "modules.projects.space_index.build_space_data",
                     side_effect=RuntimeError("scan exploded"),
                 ):
                     views.apply(force=True)
@@ -223,7 +223,8 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
             json.dumps({"schema": 1, "open_sessions": []}), encoding="utf-8"
         )
         (xo / "timeline.jsonl").write_text("{}\n", encoding="utf-8")
-        # sinks/timeline.py rotates to timeline.<stamp>.jsonl and keeps 5
+        # the timeline's EventLog (modules/timeline/store.py) rotates to
+        # timeline.<stamp>.jsonl and keeps 5
         (xo / "timeline.20260825T120000Z.jsonl").write_text("{}\n", encoding="utf-8")
         (xo / "sessions").mkdir(exist_ok=True)
         (xo / "sessions" / "sessionslist.json").write_text("{}", encoding="utf-8")
@@ -331,18 +332,37 @@ class AbandonedWorkspaceStateTests(unittest.TestCase):
 
 class XoDataRouteTests(unittest.TestCase):
     def test_routes_serve_the_files_and_never_scan_in_the_event_loop(self) -> None:
-        router = (ROOT / "routers" / "xo_data.py").read_text(encoding="utf-8")
+        # the graphs belong to the projects module; the session telemetry
+        # payload to the telemetry module. Both serve the view out of the
+        # workspace document through their service, rebuilding off the
+        # event loop, never scanning in it.
+        projects_routes = (ROOT / "modules" / "projects" / "routes.py").read_text(encoding="utf-8")
+        projects_service = (ROOT / "modules" / "projects" / "service.py").read_text(encoding="utf-8")
+        for name in ("space", "dashboard"):
+            self.assertIn(f'@router.get("/xo/{name}.json")', projects_routes)
+        self.assertNotIn('"/xo/sessions.json"', projects_routes)
+        self.assertIn("workspace_views.read", projects_service)
+        self.assertIn("asyncio.to_thread(workspace_views.build", projects_service)
+        manifest = json.loads((ROOT / "modules" / "projects" / "module.json").read_text(encoding="utf-8"))
+        self.assertIn("/xo/space.json", manifest["aliases"])
+        self.assertIn("/xo/dashboard.json", manifest["aliases"])
 
-        for name in ("space", "dashboard", "sessions"):
-            self.assertIn(f'@router.get("/{name}.json")', router)
-        self.assertIn('APIRouter(prefix="/xo"', router)
-        self.assertIn("views.read", router)
-        self.assertIn("asyncio.to_thread(views.build", router)
+        telemetry_routes = (ROOT / "modules" / "telemetry" / "routes.py").read_text(encoding="utf-8")
+        telemetry_service = (ROOT / "modules" / "telemetry" / "service.py").read_text(encoding="utf-8")
+        self.assertIn('@router.get("/xo/sessions.json")', telemetry_routes)
+        for name in ("space", "dashboard"):
+            self.assertNotIn(f'"/xo/{name}.json"', telemetry_routes)
+        self.assertIn("workspace_views.read", telemetry_service)
+        self.assertIn("asyncio.to_thread(workspace_views.build", telemetry_service)
+        manifest = json.loads((ROOT / "modules" / "telemetry" / "module.json").read_text(encoding="utf-8"))
+        self.assertIn("/xo/sessions.json", manifest["aliases"])
         # an allowlist, not a static mount of the whole state directory
-        self.assertNotIn("StaticFiles", router)
+        self.assertNotIn("StaticFiles", telemetry_routes)
+        self.assertNotIn("StaticFiles", projects_routes)
+        # the old router stays importable for the mount lists and carries no routes
+        from routers import xo_data
 
-        server = (ROOT / "server.py").read_text(encoding="utf-8")
-        self.assertIn("xo_data_router", server)
+        self.assertEqual(xo_data.router.routes, [])
 
         # the generated endpoints are gone from /space/data
         space_router = (ROOT / "routers" / "space.py").read_text(encoding="utf-8")

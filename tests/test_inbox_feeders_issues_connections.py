@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from services.connections import store as connections_store
+from modules.connections import store as connections_store
 from services.inbox import feeders, service, store
 from services.cowork_agent.project_sharing import status as sharing_status
 from services.cowork_agent.visualizer import github_mirror

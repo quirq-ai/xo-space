@@ -27,7 +27,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.project_sharing import clone, config, git_ops, poller, state, status
+from modules.sharing import clone, config, git_ops, poller, state, status
 from services.swarm_api import project_sharing as swarm_mod
 
 REPO = "github.com/acme/trip-planner"

@@ -26,7 +26,7 @@ from typing import Optional
 from services.connections import service as connections_service
 
 from . import feeders, store
-from .store import ID_RE, InboxError  # re-exported: the router catches service.InboxError and checks ids
+from .store import ID_RE, InboxError  # re-exported: tests and callers name them as service.InboxError, service.ID_RE
 
 __all__ = ["InboxError", "ID_RE", "LIST_STATUSES", "refresh", "list_items", "create_item", "update_item",
            "update_many", "delete_item"]
@@ -150,11 +150,12 @@ def create_item(title, body="", kind="note", source="api", project_id=None, link
 
 
 def update_item(item_id: str, status) -> dict:
-    """A person's status. Clears ``auto_closed`` (see ``store.set_status``)."""
-    if status not in store.STATUSES:
-        raise InboxError("invalid_status", f"status must be one of {list(store.STATUSES)}.")
+    """A person's status. Clears ``auto_closed`` (see ``store.set_status``).
+    An id that is not even id-shaped is a 404 before the file is opened."""
     if not isinstance(item_id, str) or not store.ID_RE.fullmatch(item_id):
         raise InboxError("item_not_found", "Inbox item not found.", 404)
+    if status not in store.STATUSES:
+        raise InboxError("invalid_status", f"status must be one of {list(store.STATUSES)}.")
     found: dict = {}
 
     def apply(doc: dict) -> bool:
@@ -201,9 +202,10 @@ def update_many(ids, status) -> dict:
 
 
 def delete_item(item_id: str) -> bool:
-    """Idempotent: ``False`` when the id is absent (or malformed)."""
+    """Idempotent: ``False`` when the id is absent. An id that is not even
+    id-shaped is a 404 before the file is opened."""
     if not isinstance(item_id, str) or not store.ID_RE.fullmatch(item_id):
-        return False
+        raise InboxError("item_not_found", "Inbox item not found.", 404)
     removed = False
 
     def apply(doc: dict) -> bool:

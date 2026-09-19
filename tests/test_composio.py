@@ -41,14 +41,14 @@ import httpx
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from routers.cowork_agent.connectors import composio as router_mod
-from routers.cowork_agent.connectors import composio_mcp_proxy as mcp_proxy
-from services.cowork_agent.connectors.composio import action_prefs, categories
-from services.cowork_agent.connectors.composio import identity as identity_mod
-from services.cowork_agent.connectors.composio import paths
-from services.cowork_agent.connectors.composio import byo_key, service
-from services.cowork_agent.connectors.composio import space_scope
-from services.cowork_agent.connectors.composio import client as swarm_client
+from modules.connectors.routers import composio as router_mod
+from modules.connectors.routers import composio_mcp_proxy as mcp_proxy
+from modules.connectors.composio import action_prefs, categories
+from modules.connectors.composio import identity as identity_mod
+from modules.connectors.composio import paths
+from modules.connectors.composio import byo_key, service
+from modules.connectors.composio import space_scope
+from modules.connectors.composio import client as swarm_client
 
 WORKSPACE = "ws-test"
 ACCOUNT = "user_abc123"
@@ -838,7 +838,7 @@ class RemovedEndpointTests(_ComposioBase):
     def test_the_session_self_route_is_gone(self) -> None:
         # The whole composio_session module (GET /xo-auth/session/self) was removed.
         with self.assertRaises(ImportError):
-            import routers.cowork_agent.connectors.composio_session  # noqa: F401
+            import modules.connectors.routers.composio_session  # noqa: F401
 
     def test_the_auth_router_never_mints_for_another_account(self) -> None:
         # xo-swarm-api owns authentication. routers/auth/auth.py proxies its browser
@@ -1453,14 +1453,14 @@ class GatewayReconcileLoopTests(unittest.IsolatedAsyncioTestCase, _ComposioBase)
         with patch.object(service, "install_gateways", side_effect=_sweep), \
                 patch.object(service, "_sleep", side_effect=_sleep), \
                 contextlib.redirect_stdout(io.StringIO()), \
-                self.assertLogs("services.cowork_agent.connectors.composio.service", "ERROR"):
+                self.assertLogs("modules.connectors.composio.service", "ERROR"):
             with contextlib.suppress(asyncio.CancelledError):
                 await service.gateway_reconcile_loop()
         self.assertEqual(delays, [5])   # treated as transient; tried again
 
     def test_the_interval_knob_falls_back_on_garbage(self) -> None:
         with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": "soon"}), \
-                self.assertLogs("services.cowork_agent.connectors.composio.service", "WARNING"):
+                self.assertLogs("modules.connectors.composio.service", "WARNING"):
             self.assertEqual(service.reconcile_interval(), 600.0)
         with patch.dict(os.environ, {"COMPOSIO_MCP_RECONCILE_INTERVAL": ""}):
             self.assertEqual(service.reconcile_interval(), 600.0)

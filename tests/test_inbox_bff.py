@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routers.cowork_agent.bff import inbox as inbox_routes
+from routers.errors import install_service_errors
 from services.inbox import service
 
 ITEM = {"id": "deadbeef", "ts": "2026-09-10T12:00:00Z", "source": "api", "kind": "note", "title": "t",
@@ -19,6 +20,7 @@ LISTING = {"schema": 1, "updated_at": None, "counts": {"new": 1, "seen": 0, "don
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(inbox_routes.router)
+    install_service_errors(app)
     return TestClient(app)
 
 
@@ -85,16 +87,20 @@ class InboxRoutesTests(unittest.TestCase):
                 self.assertEqual(c.delete(f"/api/inbox/{item_id}").json(), {"item_id": item_id, "deleted": True})
                 service._reset_throttle()
 
-    def test_patch_and_delete_reject_malformed_ids_before_the_service(self) -> None:
-        with patch.object(service, "update_item") as up, patch.object(service, "delete_item") as de:
+    def test_patch_and_delete_reject_malformed_ids_before_the_file(self) -> None:
+        """The router passes the id through; the service answers a malformed
+        one with its 404 before the inbox file is opened (``store.modify`` is
+        the one door to it). A bad id outranks a bad status, as it always has."""
+        with patch.object(service.store, "modify") as modify:
             for bad in ("nope", "DEADBEEF", "deadbeef1", "deadbee", "dead-bee"):
                 with self.subTest(bad=bad):
                     r = client().patch(f"/api/inbox/{bad}", json={"status": "seen"})
+                    self.assertEqual((r.status_code, r.json()["detail"]), (404, {"code": "item_not_found", "message": "Inbox item not found."}))
+                    r = client().patch(f"/api/inbox/{bad}", json={"status": "bogus"})
                     self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "item_not_found"))
                     r = client().delete(f"/api/inbox/{bad}")
                     self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "item_not_found"))
-            up.assert_not_called()
-            de.assert_not_called()
+            modify.assert_not_called()
 
     def test_patch_maps_typed_errors_and_body_shape(self) -> None:
         with patch.object(service, "update_item", side_effect=service.InboxError("item_not_found", "gone", 404)):
@@ -162,16 +168,6 @@ class InboxRoutesTests(unittest.TestCase):
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json(), {"item_id": "deadbeef", "deleted": deleted})
             de.assert_called_once_with("deadbeef")
-
-    def test_router_is_registered_right_after_project_sharing(self) -> None:
-        from routers.cowork_agent.bff import bff_routers
-        from routers.cowork_agent.bff.project_sharing import router as sharing_router
-        self.assertEqual(bff_routers.index(inbox_routes.router), bff_routers.index(sharing_router) + 1)
-        paths = {route.path for route in inbox_routes.router.routes}
-        self.assertEqual(paths, {"/api/inbox", "/api/inbox/{item_id}"})
-        methods = {(m, route.path) for route in inbox_routes.router.routes for m in route.methods}
-        self.assertEqual(methods, {("GET", "/api/inbox"), ("POST", "/api/inbox"), ("PATCH", "/api/inbox"),
-                                   ("PATCH", "/api/inbox/{item_id}"), ("DELETE", "/api/inbox/{item_id}")})
 
     def test_router_reuses_the_service_id_shape_and_list_statuses(self) -> None:
         # one definition of each, owned by the service; the router never redefines them

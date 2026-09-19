@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class TodoStatusTests(unittest.TestCase):
     def test_inbox_display_order_covers_every_backend_status_once(self):
         vocabulary = runpy.run_path(str(
-            ROOT / "services/cowork_agent/visualizer/todo_status.py"
+            ROOT / "modules/projects/todo_status.py"
         ))["TODO_STATUSES"]
         source = (ROOT / "space_ui/js/views/inbox-activity.js").read_text()
         match = re.search(r"const ST_ORDER\s*=\s*\{([^}]+)\}", source)

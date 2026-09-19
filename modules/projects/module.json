@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "name": "projects",
+  "title": "Projects",
+  "description": "Every project in the workspace: its records (.xo/), its runtime folder, its GitHub mirror, and the graphs of the workspace.",
+  "folder": null,
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "commands": true,
+  "pages": {"list": {"enabled": true}, "graph": {"enabled": true}},
+  "aliases": ["/api/xo-projects", "/api/workspace/workitems", "/xo/space.json", "/xo/dashboard.json"]
+}

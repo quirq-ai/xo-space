@@ -8,37 +8,26 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from modules.jobs import scheduler
 from services import usage_sync
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import watcher as watcher_mod
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 from services.cowork_agent.xo_projects_sync import manifest
-from utils.commands import scheduler
+from tests.support import SandboxTestCase
 
 
-class _Sandbox(unittest.TestCase):
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.base = Path(tmp.name).resolve()
-        env = patch.dict(os.environ, {
-            "XO_PROJECTS_ROOT": str(self.base / "projects"),
-            "QUIRQ_STATE_ROOT": str(self.base / "state"),
-            "QUIRQ_COMMAND_LOG": "off",
-            "XO_SCHEDULER_ENABLED": "false",
-        })
-        env.start()
-        self.addCleanup(env.stop)
-        (self.base / "projects").mkdir()
+class _Sandbox(SandboxTestCase):
+    """Empty roots: every test here writes its own files and reads them back."""
+
+    copy_fixtures = False
 
     @staticmethod
     def load(path: Path) -> dict:
@@ -65,7 +54,7 @@ class EventLineTests(_Sandbox):
 
 class SchemaStampTests(_Sandbox):
     def test_watcher_offsets_carry_schema(self) -> None:
-        path = self.base / "state" / "watcher" / "offsets.json"
+        path = self.sandbox.state / "watcher" / "offsets.json"
         store = OffsetStore(path, legacy_store_path=None)
         store.set(Path("/tmp/a.jsonl"), offset=10, inode=1)
         store.flush()
@@ -75,7 +64,7 @@ class SchemaStampTests(_Sandbox):
         self.assertEqual(OffsetStore(path, legacy_store_path=None).get(Path("/tmp/a.jsonl")), (10, 1))
 
     def test_offsets_written_with_version_still_load(self) -> None:
-        path = self.base / "offsets.json"
+        path = self.sandbox.base / "offsets.json"
         path.write_text(json.dumps({"version": 1, "offsets": {"/tmp/a.jsonl": {"offset": 3, "inode": 2}}}))
         self.assertEqual(OffsetStore(path, legacy_store_path=None).get(Path("/tmp/a.jsonl")), (3, 2))
 
@@ -97,12 +86,12 @@ class SchemaStampTests(_Sandbox):
         self.assertEqual((bookmark["cursor"], bookmark["last_reported"]), (5, "abc123"))
         self.assertEqual(sharing_state.load_cursor(repo), 5)
 
-        root = self.base / "projects"
+        root = self.sandbox.projects
         sharing_state.mark_removed(repo, root)
         self.assertEqual(self.load(sharing_state.removed_path(repo, root))["schema"], 1)
 
     def test_the_usage_watermark_carries_schema_and_z_times(self) -> None:
-        path = self.base / "usage" / "state.json"
+        path = self.sandbox.base / "usage" / "state.json"
         with patch.object(usage_sync, "SYNC_STATE_FILE", str(path)):
             usage_sync._save_sync_state({"schema": 99, "last_synced_date": "2026-09-13"})
         document = self.load(path)

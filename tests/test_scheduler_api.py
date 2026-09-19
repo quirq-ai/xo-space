@@ -1,8 +1,8 @@
-"""HTTP mapping for routers/schedules.py.
+"""HTTP mapping for modules/jobs/routes.py (the /api/schedules alias).
 
 Only the mapping is under test (status codes, error bodies); behaviour is
-covered by tests/test_scheduler.py. ``routers/schedules.py`` itself imports
-only the scheduler and FastAPI, but importing anything under ``routers``
+covered by tests/test_scheduler.py. ``modules/jobs/routes.py`` itself imports
+only the jobs service and FastAPI, but its local-mutation guard lives under ``routers``
 runs the package ``__init__`` chain, which on Windows can reach ``fcntl``; the
 module skips itself if that import fails. Run it on Linux/WSL with
 AGENT_NAME=claude_code.
@@ -19,11 +19,12 @@ from unittest.mock import patch
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from utils.commands import scheduler
+from modules.jobs import scheduler
 
 try:
     from routers import browser_guard
-    from routers.schedules import router
+    from routers.errors import install_service_errors
+    from modules.jobs.routes import router
 except ImportError as exc:  # pragma: no cover - platform gate
     raise unittest.SkipTest(f"routers package needs POSIX: {exc}") from exc
 
@@ -42,6 +43,7 @@ class SchedulerApiTests(unittest.TestCase):
         scheduler.reset_state()
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         self.client = TestClient(app, client=("127.0.0.1", 12345))
 
     def tearDown(self) -> None:
@@ -124,12 +126,19 @@ class SchedulerApiTests(unittest.TestCase):
         self.assertEqual(runs.json()["runs"][0]["trigger"], "manual")
         self.assertEqual(runs.json()["runs"][0]["status"], "ok")
 
-    def test_corrupt_store_is_500_with_the_path(self) -> None:
+    def test_corrupt_store_is_409_naming_the_document_not_the_path(self) -> None:
+        # The Document rule: a jobs file that is not JSON is refused as a
+        # 409 corrupt_document that names the document, never its path, and
+        # is never rewritten (the scheduler's own failures stay bare 500s).
         scheduler.jobs_file().parent.mkdir(parents=True)
         scheduler.jobs_file().write_text("{", encoding="utf-8")
         res = self.client.get("/api/schedules")
-        self.assertEqual(res.status_code, 500)
-        self.assertIn("jobs.json", res.json()["detail"])
+        self.assertEqual(res.status_code, 409)
+        detail = res.json()["detail"]
+        self.assertEqual(detail["code"], "corrupt_document")
+        self.assertIn("jobs.json", detail["message"])
+        self.assertNotIn(self._tmp.name, detail["message"])
+        self.assertEqual(scheduler.jobs_file().read_text(encoding="utf-8"), "{")
 
     def test_browser_mutations_require_the_same_loopback_origin(self) -> None:
         client = TestClient(self.client.app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
@@ -204,6 +213,7 @@ class SchedulerApiTests(unittest.TestCase):
     def _forwarding_app(self) -> FastAPI:
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
 
         @app.get("/probe")
         def probe(request: Request) -> dict:

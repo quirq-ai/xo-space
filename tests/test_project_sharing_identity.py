@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from services.cowork_agent.project_sharing.repo_identity import normalize_repo
-from services.cowork_agent.project_sharing.state import state_path
+from modules.sharing.repo_identity import normalize_repo
+from modules.sharing.state import state_path
 
 
 class RepoIdentityTests(unittest.TestCase):

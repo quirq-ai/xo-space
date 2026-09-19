@@ -18,8 +18,9 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import visualizer as visualizer_routes
-from services.cowork_agent.visualizer import todos_store
+from modules.projects import routes as visualizer_routes
+from modules.projects import todos_store
+from routers.errors import install_service_errors
 
 PROJECT = "demo"
 
@@ -105,6 +106,7 @@ class RouteTests(_Sandbox):
     def client(self) -> TestClient:
         app = FastAPI()
         app.include_router(visualizer_routes.router)
+        install_service_errors(app)
         return TestClient(app)
 
     def test_writes_answer_409_and_leave_the_file_alone(self) -> None:

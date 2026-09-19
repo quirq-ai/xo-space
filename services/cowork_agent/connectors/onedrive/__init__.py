@@ -1,30 +1,18 @@
+"""Compatibility alias: the OneDrive connector moved to ``modules/connectors/onedrive``.
+
+``services.cowork_agent.connectors.onedrive`` and each of its modules
+(provider) resolve to the moved objects, so an import or a patch
+through either path reaches one module. New code imports
+``modules.connectors.onedrive``.
 """
-OneDrive connector (rclone-backed).
 
-``provider`` holds the OneDrive-specific descriptor; the generic rclone
-plumbing lives in the sibling ``rclone`` package.
-"""
+from __future__ import annotations
 
-from .provider import (
-    RcloneSession,
-    cancel_session,
-    create_remote_session,
-    delete_remote,
-    ensure_rclone_running,
-    get_session,
-    list_onedrive_remotes,
-    rclone_available,
-    validate_remote_name,
-)
+import sys
 
-__all__ = [
-    "RcloneSession",
-    "cancel_session",
-    "create_remote_session",
-    "delete_remote",
-    "ensure_rclone_running",
-    "get_session",
-    "list_onedrive_remotes",
-    "rclone_available",
-    "validate_remote_name",
-]
+from modules.connectors import onedrive as _moved
+from modules.connectors.onedrive import provider
+
+for _name, _mod in (("provider", provider),):
+    sys.modules[f"{__name__}.{_name}"] = _mod
+sys.modules[__name__] = _moved

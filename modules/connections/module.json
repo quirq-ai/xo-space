@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "connections",
+  "title": "Connections",
+  "description": "What your connected accounts collected, polled on a schedule: one folder per toolkit with its config, cursors and events.",
+  "folder": "connections",
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "stream": true,
+  "tasks": {"poller": {"enabled": true, "tick_s": 30}},
+  "commands": true,
+  "pages": {"connections": {"enabled": true}}
+}

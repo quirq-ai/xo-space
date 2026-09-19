@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "connections",
+  "tab": "inbox",
+  "route": "inbox/connections",
+  "label": "Connections",
+  "order": 20,
+  "read": "/api/connections",
+  "poll_s": 30,
+  "search": true,
+  "blocks": [
+    {
+      "type": "stats",
+      "items": [
+        {"label": "Configured", "value": "connections|where:configured|count"},
+        {"label": "Polling", "value": "connections|where:enabled|count"},
+        {"label": "Events", "value": "connections|sum:events_total"},
+        {"label": "Signed in", "value": "signed_in|map", "map": {"true": "yes", "false": "no key"}}
+      ]
+    },
+    {
+      "type": "list",
+      "items": "connections",
+      "key": "toolkit",
+      "empty": "Nothing is polled yet. Turn a connection on in Setup, under Connectors.",
+      "row": {
+        "title": "display_name",
+        "detail": "last_error",
+        "meta": ["account_label", "last_ok_at|rel", "events_total|plural:event"],
+        "badge": {"value": "configured", "map": {"true": "polling", "false": "not configured"}},
+        "tone": {"value": "last_error", "map": {"null": "ok", "": "ok", "*": "error"}}
+      },
+      "actions": [
+        {"label": "Poll now", "call": "POST /api/connections/{toolkit}/poll", "then": "refresh", "when": "configured"},
+        {"label": "Set up", "open": "setup/connectors"}
+      ],
+      "expand": {
+        "type": "table",
+        "read": "/api/connections/{toolkit}/events?limit=50",
+        "items": "events",
+        "empty": "No events collected yet.",
+        "columns": [
+          {"label": "When", "value": "ts|rel"},
+          {"label": "Type", "value": "type", "mono": true},
+          {"label": "Title", "value": "title", "link": "url"}
+        ]
+      }
+    }
+  ]
+}

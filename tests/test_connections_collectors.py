@@ -10,7 +10,7 @@ import copy
 import unittest
 from datetime import datetime, timezone
 
-from services.connections import collectors
+from modules.connections import collectors
 from services.cowork_agent.connectors.composio import categories
 from services.cowork_agent.connectors.composio.service import TOOLKITS
 

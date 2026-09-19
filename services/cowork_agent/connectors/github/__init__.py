@@ -1,46 +1,18 @@
-"""
-GitHub connector.
+"""Compatibility alias: the GitHub connector moved to ``modules/connectors/github``.
 
-Two ways to acquire a token, one shared everything-else:
-
-  * ``pat``      — the user pastes a personal access token
-  * ``cli_auth`` — the `gh auth login` device flow
-  * ``common``   — storage, validation and status, shared by both
-
-Callers that only need the connected identity should import from this package
-(``from ...connectors.github import get_github_token``) and stay unaware of
-which method established it.
+``services.cowork_agent.connectors.github`` and each of its modules
+(cli_auth, common, issue_actions, issues, pat) resolve to the moved objects, so an import or a patch
+through either path reaches one module. New code imports
+``modules.connectors.github``.
 """
 
-from . import cli_auth, pat
-from .common import (
-    GITHUB_API,
-    AuthMethod,
-    GitHubStatus,
-    commit_email,
-    configure_git_identity,
-    connection_payload,
-    delete_github_token,
-    get_github_auth_method,
-    get_github_token,
-    get_status,
-    save_github_token,
-    validate_token,
-)
+from __future__ import annotations
 
-__all__ = [
-    "GITHUB_API",
-    "AuthMethod",
-    "GitHubStatus",
-    "cli_auth",
-    "commit_email",
-    "configure_git_identity",
-    "connection_payload",
-    "delete_github_token",
-    "get_github_auth_method",
-    "get_github_token",
-    "get_status",
-    "pat",
-    "save_github_token",
-    "validate_token",
-]
+import sys
+
+from modules.connectors import github as _moved
+from modules.connectors.github import cli_auth, common, issue_actions, issues, pat
+
+for _name, _mod in (("cli_auth", cli_auth), ("common", common), ("issue_actions", issue_actions), ("issues", issues), ("pat", pat)):
+    sys.modules[f"{__name__}.{_name}"] = _mod
+sys.modules[__name__] = _moved

@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import connections as routes
-from routers.cowork_agent.bff import bff_routers, connections_router, inbox_router
-from services.connections import service, store
+from modules.connections import routes
+from routers.errors import install_service_errors
+from modules.connections import service, store
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,6 +46,7 @@ EXPECTED_PATHS = {
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(routes.router)
+    install_service_errors(app)
     return TestClient(app)
 
 
@@ -54,11 +55,10 @@ def _err(code: str, status: int = 400) -> service.ConnectionsError:
 
 
 class ConnectionsRoutesTests(unittest.TestCase):
-    def test_router_exposes_exactly_five_paths_right_after_the_inbox(self) -> None:
+    def test_router_exposes_exactly_five_paths(self) -> None:
         app = FastAPI()
         app.include_router(routes.router)
         self.assertEqual(set(app.openapi()["paths"]), EXPECTED_PATHS)
-        self.assertEqual(bff_routers.index(connections_router), bff_routers.index(inbox_router) + 1)
 
     def test_list_shape(self) -> None:
         with patch.object(service, "signed_in", return_value=False) as si, \
@@ -71,12 +71,18 @@ class ConnectionsRoutesTests(unittest.TestCase):
         pe.assert_called_once()
         lc.assert_called_once_with()
 
-    def test_bad_toolkit_ids_are_404_before_any_service_call(self) -> None:
+    def test_bad_toolkit_ids_are_404_before_any_store_or_poller_call(self) -> None:
+        """The router passes the path value through; the service answers a
+        malformed or unknown id with its 404 before any path is built, so
+        nothing below it (the store, the poller) is ever reached."""
         bad = ["Gmail", "a-b", "x" * 41, "g.mail", "gmail%20x"]
-        with patch.object(service, "get_connection") as gc, patch.object(service, "configure") as cf, \
-             patch.object(service, "remove") as rm, patch.object(service, "events") as ev, \
-             patch.object(service, "poll_now", new=AsyncMock()) as pn, \
-             patch.object(service, "refresh_account", new=AsyncMock()) as ra:
+        with patch.object(service.store, "read_accounts") as ra_store, \
+             patch.object(service, "_read_config_or_none") as rc, \
+             patch.object(service.store, "write_config") as wc, \
+             patch.object(service.store, "remove") as rm, \
+             patch.object(service.store, "read_events") as ev, \
+             patch.object(service.poller, "poll_connection", new=AsyncMock()) as pn, \
+             patch.object(service.poller, "refresh_account", new=AsyncMock()) as ra:
             c = client()
             for tk in bad:
                 with self.subTest(toolkit=tk):
@@ -90,9 +96,12 @@ class ConnectionsRoutesTests(unittest.TestCase):
                     ]
                     for r in responses:
                         self.assertEqual(r.status_code, 404)
-                        self.assertEqual(r.json()["detail"]["code"], "unknown_toolkit")
-                        self.assertIn("message", r.json()["detail"])
-            for m in (gc, cf, rm, ev):
+                        self.assertEqual(r.json()["detail"], {"code": "unknown_toolkit", "message": "Unknown toolkit."})
+            # well-formed but not in the catalog: still a 404, and the id is named
+            r = c.get("/api/connections/not_a_toolkit")
+            self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "unknown_toolkit"))
+            self.assertIn("not_a_toolkit", r.json()["detail"]["message"])
+            for m in (ra_store, rc, wc, rm, ev):
                 m.assert_not_called()
             pn.assert_not_awaited()
             ra.assert_not_awaited()
@@ -195,11 +204,11 @@ class ConnectionsRoutesTests(unittest.TestCase):
             self.assertEqual(ev.call_count, 3)
 
     def test_router_is_thin_and_names_no_agent(self) -> None:
-        src = (ROOT / "routers" / "cowork_agent" / "bff" / "connections.py").read_text(encoding="utf-8")
+        src = (ROOT / "modules" / "connections" / "routes.py").read_text(encoding="utf-8")
         self.assertNotRegex(src, r"^\s*(import os|from os |import pathlib|from pathlib)", "BFF rule P2")
         self.assertNotRegex(src, r"openclaw|hermes|claude_code|codex|antigravity")
         self.assertIsNone(re.search("[\\u2013\\u2014]", src))
-        self.assertIn("from services.connections import service", src)
+        self.assertIn("from . import service", src)
         self.assertIn("POST   /api/connections/{toolkit}/account", src, "documented in the header")
 
 

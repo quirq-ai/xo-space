@@ -266,13 +266,13 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
                 "Per-connection polling: config, state, and collected events, "
                 "one folder per toolkit"
             )
-        if relative_path == "scheduler":
+        if relative_path == "jobs":
             return "Saved manual commands and schedules, execution state, results, and logs"
-        if relative_path == "scheduler/runs":
+        if relative_path == "jobs/runs":
             return "Append-only command run history, one JSONL file per command"
         if relative_path == "logs":
             return "Safe to delete: server output, the command log, and saved command output"
-        if relative_path in ("scheduler/logs", "logs/scheduler"):
+        if relative_path in ("jobs/logs", "logs/jobs"):
             return "Full command output logs, retained when a definition is deleted"
         if (
             relative_path.startswith("connections/")
@@ -283,13 +283,13 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
     name = Path(relative_path).name
     if relative_path == "inbox/inbox.json":
         return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
-    if relative_path == "scheduler/jobs.json":
+    if relative_path == "jobs/jobs.json":
         return "Saved commands: arguments, environment overrides, descriptions, timeouts, and optional intervals"
-    if relative_path == "scheduler/state.json":
+    if relative_path == "jobs/state.json":
         return "Command execution state: next run, running since, and last result"
-    if relative_path.startswith("scheduler/runs/"):
+    if relative_path.startswith("jobs/runs/"):
         return "Run timestamps, trigger, status, return code, duration, and output tail"
-    if relative_path.startswith(("scheduler/logs/", "logs/scheduler/")):
+    if relative_path.startswith(("jobs/logs/", "logs/jobs/", "logs/scheduler/")):
         return "Appended command output through the command logger"
     if relative_path.startswith("logs/commands.log"):
         return "Every external command Quirq runs: bounded, redacted, rotated"

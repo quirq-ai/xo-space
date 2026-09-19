@@ -1,22 +1,18 @@
-"""HTTP glue shared by the Space BFF routes (``inbox.py``, ``connections.py``).
+"""Compatibility alias: the HTTP error seam moved to ``routers/errors.py``.
 
-:func:`http_error` turns a :class:`services.errors.ServiceError` into the
-``HTTPException(status, {"code", "message"})`` every Space route answers
-with; :class:`ForbidExtra` is the request-body base that makes an unknown
-key a 422.
+``ForbidExtra`` is the same class. :func:`http_error` is kept for one
+release for code outside this repository that imported it; routes in this
+repository raise :class:`services.errors.ServiceError` and let the app
+handler answer.
 """
 
 from __future__ import annotations
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict
 
+from routers.errors import ForbidExtra  # noqa: F401  (re-export)
 from services.errors import ServiceError
 
 
 def http_error(exc: ServiceError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail={"code": exc.code, "message": exc.message})
-
-
-class ForbidExtra(BaseModel):
-    model_config = ConfigDict(extra="forbid")

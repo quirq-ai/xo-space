@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "graph",
+  "tab": "projects",
+  "route": "projects/data/graph",
+  "aliases": ["graph", "projects/graph", "projects/files/graph"],
+  "label": "Graph",
+  "order": 30,
+  "read": "/xo/space.json",
+  "blocks": [
+    {"type": "widget", "widget": "graph", "data": "", "height": "fill"}
+  ]
+}

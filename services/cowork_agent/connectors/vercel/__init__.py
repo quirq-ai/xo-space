@@ -1,51 +1,18 @@
-"""
-Vercel connector.
+"""Compatibility alias: the Vercel connector moved to ``modules/connectors/vercel``.
 
-Layers, innermost first:
-
-    oauth.py      the Vercel authorization server: PKCE, registration, tokens
-    api.py        the Vercel REST API: who a token belongs to
-    connector.py  connection state, persistence, and the flows the routes call
-
-Callers should import from this package rather than reaching into a module.
-Credentials are persisted by the shared ``token_store`` under the provider keys
-"vercel" and "vercel_client".
+``services.cowork_agent.connectors.vercel`` and each of its modules
+(api, connector, oauth) resolve to the moved objects, so an import or a patch
+through either path reaches one module. New code imports
+``modules.connectors.vercel``.
 """
 
-from .api import TokenCheck, whoami
-from .connector import (
-    AUTH_METHOD_OAUTH,
-    AUTH_METHOD_TOKEN,
-    Authorization,
-    Connection,
-    complete_authorization,
-    connect_with_api_token,
-    default_redirect_uri,
-    disconnect,
-    get_access_token,
-    get_status,
-    needs_auth,
-    start_authorization,
-)
-from .oauth import Identity, TokenSet, VercelOAuthError, fetch_discovery
+from __future__ import annotations
 
-__all__ = [
-    "AUTH_METHOD_OAUTH",
-    "AUTH_METHOD_TOKEN",
-    "Authorization",
-    "Connection",
-    "Identity",
-    "TokenCheck",
-    "TokenSet",
-    "VercelOAuthError",
-    "complete_authorization",
-    "connect_with_api_token",
-    "default_redirect_uri",
-    "disconnect",
-    "fetch_discovery",
-    "get_access_token",
-    "get_status",
-    "needs_auth",
-    "start_authorization",
-    "whoami",
-]
+import sys
+
+from modules.connectors import vercel as _moved
+from modules.connectors.vercel import api, connector, oauth
+
+for _name, _mod in (("api", api), ("connector", connector), ("oauth", oauth)):
+    sys.modules[f"{__name__}.{_name}"] = _mod
+sys.modules[__name__] = _moved

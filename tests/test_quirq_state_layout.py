@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services import usage_sync
-from services.connections import store as connections_store
+from modules.connections import store as connections_store
 from services.cowork_agent import project_layout, runtime_config, xo_cowork_state
 from routers.cowork_agent.bff._visualizer_models import TimelineEvent
 from services.cowork_agent.connectors import token_store
@@ -30,12 +30,13 @@ from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.visualizer import workitem_claims
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
-from services.cowork_agent.project_sharing import state as sharing_state
+from modules.sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
 from services.inbox import store as inbox_store
 from services.storage import flock, layout
 from utils import commands
-from utils.commands import scheduler
+from modules.jobs import service as jobs_service
+from modules.jobs import store as jobs_store
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "quirq-state"
@@ -74,7 +75,7 @@ class SampleTests(_Sandbox):
             layout.projects_dir(), layout.inbox_dir(), layout.sharing_dir(),
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
-            layout.connections_dir(), layout.scheduler_dir(),
+            layout.connections_dir(), layout.jobs_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -92,8 +93,8 @@ class StorePathTests(_Sandbox):
             "watcher reading positions": watcher_state.watcher_state_dir(),
             "the Inbox": inbox_store.inbox_path(),
             "a connection": connections_store.connection_dir("gmail"),
-            "saved commands": scheduler.scheduler_dir(),
-            "a command's output": scheduler.log_file("job1"),
+            "saved commands": jobs_store.jobs_dir(),
+            "a command's output": jobs_store.log_file("job1"),
             "the command log": commands._default_command_log_path(),
             "sharing bookmarks": sharing_state.relay_state_dir(),
             "runtime settings": runtime_config.runtime_config_file(),
@@ -288,13 +289,21 @@ class ExampleStoreTests(unittest.TestCase):
         self.assertEqual(connections_store.read_accounts()["gmail"]["label"], "you@example.com")
 
     def test_the_scheduler(self) -> None:
-        [job] = scheduler.list_jobs()
-        [run] = scheduler.list_runs(job["id"])
+        [job] = jobs_service.list_jobs()
+        [run] = jobs_service.list_runs(job["id"])
         self.assertEqual((run["type"], run["status"]), ("job.run", "ok"))
 
     def test_sharing(self) -> None:
         self.assertEqual(sharing_state.load_cursor("github.com/acme/sample-project"), 42)
-        self.assertTrue(sharing_state.is_removed("github.com/acme/old-experiment", Path("/home/you/xo-projects")))
+        root = Path("/home/you/xo-projects")
+        marker = sharing_state.removed_path("github.com/acme/old-experiment", root)
+        sample = self.root / "sharing" / "removed" / "288aaf6b3941bb899aefbe16df47958bd7497522cf269a073d95e354d2692adb.json"
+        self.assertTrue(sample.is_file(), "the sample marker carries the digest Linux computes for /home/you/xo-projects")
+        if marker != sample:
+            # macOS resolves /home elsewhere, so the digest differs from the Linux sample
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(sample, marker)
+        self.assertTrue(sharing_state.is_removed("github.com/acme/old-experiment", root))
 
     def test_project_history(self) -> None:
         runtime = self.root / "projects" / EXAMPLE_PID

@@ -1,19 +1,21 @@
-"""Cross-workspace commit relay client (pull-based, workspace-anchored).
+"""Compatibility alias: the commit relay moved to ``modules/sharing``.
 
-Core code: names no agent. Talks to the swarm broker for membership and the
-commit ledger, and to GitHub via git for objects. Machine-local state lives
-under ~/.quirq/sharing/ (see state.py). Entry point: poller.run_relay_poller().
+``services.cowork_agent.project_sharing.<name>`` resolves to the same module
+object as ``modules.sharing.<name>`` (clone, config, git_ops, poller,
+repo_identity, service, state, status, watcher), so an import or a patch
+through either path reaches one object. ``log_line`` is re-exported the
+same way. New code imports ``modules.sharing.service``.
 """
-from datetime import datetime
 
+from __future__ import annotations
 
-def log_line(msg: str) -> None:
-    """Timestamped print(flush=True). Relay activity must be visible in the
-    service log; module-level logging is invisible under the default config.
-    A console that cannot encode a glyph gets a lossy line, never an exception:
-    logging must not be able to break the loop."""
-    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
-    try:
-        print(line, flush=True)
-    except UnicodeEncodeError:
-        print(line.encode("ascii", "replace").decode("ascii"), flush=True)
+import sys
+
+from modules.sharing import (  # noqa: F401  (log_line is re-exported)
+    clone, config, git_ops, log_line, poller, repo_identity, service, state, status, watcher,
+)
+
+for _name, _mod in (("clone", clone), ("config", config), ("git_ops", git_ops), ("poller", poller),
+                    ("repo_identity", repo_identity), ("service", service), ("state", state),
+                    ("status", status), ("watcher", watcher)):
+    sys.modules[f"{__name__}.{_name}"] = _mod

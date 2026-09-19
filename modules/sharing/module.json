@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "sharing",
+  "title": "Sharing",
+  "description": "Projects shared with you and by you: the commit relay that keeps them in step.",
+  "folder": "sharing",
+  "depends": [],
+  "enabled": true,
+  "api": true,
+  "stream": true,
+  "tasks": {"relay": {"enabled": true}},
+  "commands": true,
+  "pages": {"activity": {"enabled": true}},
+  "aliases": ["/api/project-sharing", "/api/xo-projects"]
+}

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from services.cowork_agent.project_sharing import clone, config, git_ops, poller, state, status
+from modules.sharing import clone, config, git_ops, poller, state, status
 
 R = "github.com/acme/trip-planner"
 
@@ -49,7 +49,7 @@ class CloneFunctionTests(unittest.TestCase):
         self.assertEqual(seen["cwd"], self.root.resolve())
         self.assertTrue((self.root / "trip-planner" / ".git").is_dir())
         self.assertFalse(seen["dest"].exists())                        # renamed, not copied
-        from services.cowork_agent.project_sharing import state
+        from modules.sharing import state
         self.assertIsNotNone(state.load_cloned_at(R))                  # remembered for the UI
 
     def test_existing_folder_with_same_origin_is_already(self) -> None:

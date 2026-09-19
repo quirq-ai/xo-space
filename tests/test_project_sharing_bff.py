@@ -6,14 +6,16 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import project_sharing as relay_routes
+from modules.sharing import routes as relay_routes
+from routers.errors import install_service_errors
 from routers.cowork_agent.bff.filters import is_valid_workspace_id
-from services.cowork_agent.project_sharing import service
+from modules.sharing import service
 
 
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(relay_routes.router)
+    install_service_errors(app)
     return TestClient(app)
 
 
@@ -105,9 +107,24 @@ class RelayRoutesTests(unittest.TestCase):
         self.assertTrue(r.json()["ok"])
         ck.assert_called_once_with()
 
-    def test_router_is_registered_in_bff_aggregate(self) -> None:
+    def test_router_is_mounted_by_the_registry_and_not_by_the_bff(self) -> None:
+        """The registry mounts modules/sharing/routes.py once; the BFF
+        aggregate (mounted through the agent module) no longer carries it,
+        or every path would be served twice."""
         from routers.cowork_agent.bff import bff_routers
-        self.assertIn(relay_routes.router, bff_routers)
+        from services import modules as registry
+
+        self.assertNotIn(relay_routes.router, bff_routers)
+        registry.reset_for_tests()
+        mounted = {module.name: router for module, router in registry.routers()}
+        self.assertIs(mounted["sharing"], relay_routes.router)
+        paths = {(m, route.path) for route in relay_routes.router.routes for m in route.methods}
+        self.assertEqual(paths, {
+            ("GET", "/api/project-sharing/status"), ("POST", "/api/project-sharing/check"),
+            ("POST", "/api/xo-projects/{project_id}/apply"), ("GET", "/api/xo-projects/{project_id}/commits"),
+            ("GET", "/api/xo-projects/{project_id}/members"), ("POST", "/api/xo-projects/{project_id}/share"),
+            ("POST", "/api/xo-projects/{project_id}/revoke"),
+        })
 
 
 class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -116,7 +133,7 @@ class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
     reason when git refuses."""
 
     async def test_apply_fast_forwards_only_when_behind(self) -> None:
-        from services.cowork_agent.project_sharing import git_ops, poller
+        from modules.sharing import git_ops, poller
         with patch.object(service, "project_dir_exists", return_value=True), \
              patch.object(service, "project_dir", return_value="/tmp/p"), \
              patch.object(service.config, "watch_branch", return_value="main"), \
@@ -130,7 +147,7 @@ class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
         nudge.assert_called_once_with()
 
     async def test_apply_is_a_no_op_when_up_to_date(self) -> None:
-        from services.cowork_agent.project_sharing import git_ops
+        from modules.sharing import git_ops
         with patch.object(service, "project_dir_exists", return_value=True), \
              patch.object(service, "project_dir", return_value="/tmp/p"), \
              patch.object(service.config, "watch_branch", return_value="main"), \
@@ -142,7 +159,7 @@ class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
         ff.assert_not_awaited()
 
     async def test_apply_surfaces_gits_refusal(self) -> None:
-        from services.cowork_agent.project_sharing import git_ops
+        from modules.sharing import git_ops
         with patch.object(service, "project_dir_exists", return_value=True), \
              patch.object(service, "project_dir", return_value="/tmp/p"), \
              patch.object(service.config, "watch_branch", return_value="main"), \
@@ -154,7 +171,7 @@ class ApplyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Not possible to fast-forward", cm.exception.message)
 
     async def test_apply_refuses_when_origin_branch_is_unknown(self) -> None:
-        from services.cowork_agent.project_sharing import git_ops
+        from modules.sharing import git_ops
         with patch.object(service, "project_dir_exists", return_value=True), \
              patch.object(service, "project_dir", return_value="/tmp/p"), \
              patch.object(service.config, "watch_branch", return_value="main"), \

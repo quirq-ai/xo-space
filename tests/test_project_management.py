@@ -10,8 +10,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from fastapi import FastAPI
 
-from routers.cowork_agent.bff.project_management import router
-from services import project_management as service
+from modules.projects import project_management as service
+from modules.projects.routes import router
+from routers.errors import install_service_errors
 from services.cowork_agent.project_sharing import state
 from services.cowork_agent.xo_projects_sync import github
 from services.errors import ServiceError
@@ -376,6 +377,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_router_rejects_cross_site_and_accepts_remote_same_origin(self):
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://space.example.com") as client:
             for headers in ({"Origin": "https://evil.example"}, {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}):
                 response = await client.request("DELETE", "/api/xo-projects/demo", json={"confirm_project_id": "demo"}, headers=headers)
@@ -388,6 +390,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_router_accepts_tls_proxy_and_ip_origins_but_not_rebinding(self):
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
 
         async def delete(base_url, headers):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url) as client:
@@ -409,6 +412,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_router_strict_bodies_and_service_errors(self):
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             self.assertEqual((await client.post("/api/xo-projects", json={"project_id": "new", "repository_url": "https://host/r", "force": True})).status_code, 422)
             self.assertEqual((await client.request("DELETE", "/api/xo-projects/demo", json={"confirm_project_id": "demo", "revoke_all": True})).status_code, 422)
