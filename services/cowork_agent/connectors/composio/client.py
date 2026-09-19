@@ -81,7 +81,14 @@ def _raise(exc: Exception) -> "ComposioError":
 
 def _meta(toolkit_id: str):
     from services.cowork_agent.connectors.composio import service
-    return service.toolkit_meta(toolkit_id)
+    try:
+        return service.toolkit_meta(toolkit_id)
+    except ValueError:
+        # Dynamic mode: an arbitrary catalog toolkit not in the curated table. The id
+        # is the slug; default to managed OAuth (auth_config_for still falls back to a
+        # custom config when there is no managed auth).
+        return service.ToolkitMeta(slug=toolkit_id, display_name=toolkit_id,
+                                   schemes=("OAUTH2",))
 
 
 def auth_config_for(toolkit_id: str) -> str:
@@ -269,12 +276,19 @@ def update_session(session_id: str, config: dict[str, Any]) -> dict[str, Any]:
     byo_key.require()
     try:
         session = _sdk().use(session_id, mcp=True)
-        session.update(
-            connected_accounts=config.get("connected_accounts") or {},
-            toolkits=config.get("toolkits"),
-            tools=config.get("tools") or {},
-            multi_account=config.get("multi_account"),
-        )
+        kwargs: dict[str, Any] = {
+            "connected_accounts": config.get("connected_accounts") or {},
+            "tools": config.get("tools") or {},
+            "multi_account": config.get("multi_account"),
+        }
+        # Patch semantics: send a key only when this config carries it, so dynamic
+        # mode (no allowlist) doesn't re-pin `toolkits`, and manage_connections is
+        # applied when present.
+        if "toolkits" in config:
+            kwargs["toolkits"] = config["toolkits"]
+        if "manage_connections" in config:
+            kwargs["manage_connections"] = config["manage_connections"]
+        session.update(**kwargs)
     except Exception as exc:  # noqa: BLE001
         raise _raise(exc) from exc
     return _session_response(session_id, session)
@@ -285,3 +299,105 @@ def delete_session(session_id: str) -> None:
         _sdk().sessions.delete(session_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("composio: could not delete session %s: %s", session_id, exc)
+
+
+# ── Catalog (dynamic connectors) ─────────────────────────────────────────────
+
+
+def _catalog_item(it: Any) -> dict[str, Any]:
+    managed = _attr(it, "composio_managed_auth_schemes", default=None) or []
+    cats = _attr(it, "meta", "categories", default=None) or []
+    return {
+        "slug": _attr(it, "slug"),
+        "name": _attr(it, "name", default=""),
+        "logo": _attr(it, "meta", "logo", default=None),
+        "categories": [{"id": _attr(c, "id", default="") or _attr(c, "slug", default=""),
+                        "name": _attr(c, "name", default="")} for c in cats],
+        "no_auth": bool(_attr(it, "no_auth", default=False)),
+        "managed_auth": bool(managed),
+        "tools_count": int(_attr(it, "meta", "tools_count", default=0) or 0),
+    }
+
+
+def list_catalog(*, search: Optional[str] = None, category: Optional[str] = None,
+                 cursor: Optional[str] = None, limit: int = 25) -> dict[str, Any]:
+    """One page of the toolkit catalog. Uses the underlying client so ``search`` is
+    available (the SDK wrapper omits it). Never fetches the whole catalog."""
+    byo_key.require()
+    kwargs: dict[str, Any] = {"limit": limit}
+    if search:
+        kwargs["search"] = search
+    if category:
+        kwargs["category"] = category
+    if cursor:
+        kwargs["cursor"] = cursor
+    try:
+        page = _sdk()._client.toolkits.list(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        raise _raise(exc) from exc
+    items = _attr(page, "items", default=page) or []
+    return {"items": [_catalog_item(it) for it in items],
+            "next_cursor": _attr(page, "next_cursor", default=None)}
+
+
+def _creation_fields(detail: Any) -> dict[str, list]:
+    creation = _attr(detail, "auth_config_detail", "fields", "auth_config_creation",
+                     default=None)
+
+    def _f(items: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for f in items or []:
+            out.append({
+                "name": _attr(f, "name"),
+                "display_name": _attr(f, "display_name", default=""),
+                "description": _attr(f, "description", default=""),
+                "type": _attr(f, "type", default="string"),
+                "required": bool(_attr(f, "required", default=False)),
+                "is_secret": bool(_attr(f, "is_secret", default=False)),
+            })
+        return out
+
+    return {"required": _f(_attr(creation, "required", default=[])),
+            "optional": _f(_attr(creation, "optional", default=[]))}
+
+
+def toolkit_detail(slug: str) -> dict[str, Any]:
+    """One toolkit's detail: whether it has managed auth, its auth schemes, and the
+    fields a custom auth config needs (for the credential form)."""
+    byo_key.require()
+    try:
+        detail = _sdk()._client.toolkits.retrieve(slug)
+    except Exception as exc:  # noqa: BLE001
+        raise _raise(exc) from exc
+    managed = _attr(detail, "composio_managed_auth_schemes", default=None) or []
+    return {
+        "slug": _attr(detail, "slug", default=slug),
+        "name": _attr(detail, "name", default=slug),
+        "logo": _attr(detail, "meta", "logo", default=None),
+        "managed_auth": bool(managed),
+        "auth_schemes": list(_attr(detail, "auth_schemes", default=[]) or []),
+        "fields": _creation_fields(detail),
+    }
+
+
+def create_custom_auth_config(toolkit_id: str, scheme: str,
+                              credentials: dict[str, Any]) -> str:
+    """Create a *custom* auth config from user-entered credentials (a toolkit with no
+    Composio-managed auth), cache the id against the live key, and return it."""
+    slug = _meta(toolkit_id).slug
+    options: dict[str, Any] = {
+        "type": "use_custom_auth",
+        "auth_scheme": scheme.upper(),
+        "name": toolkit_id,
+    }
+    if credentials:
+        options["credentials"] = credentials
+    try:
+        created = _sdk().auth_configs.create(slug, options)
+    except Exception as exc:  # noqa: BLE001
+        raise _raise(exc) from exc
+    ac_id = _attr(created, "id")
+    if not ac_id:
+        raise ComposioError(f"Composio returned no auth config id for {slug}.")
+    byo_key.save_auth_config(toolkit_id, ac_id)
+    return ac_id

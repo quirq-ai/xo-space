@@ -53,8 +53,14 @@ let loading=false;
 let listener=null;
 let filter='';
 let nativeConnectors=null;
-let keyState={mode:'inactive',key_source:null};   /* GET /api/connectors/composio/backend */
+let keyState={mode:'inactive',key_source:null,dynamic:false};   /* GET .../backend */
 let keyReplacing=false;   /* Replace pressed: show the input over a configured key */
+/* Browse-all (dynamic mode): the catalog is paged in on demand, never all at once. */
+let browseCursor=null;    /* next_cursor from the last /catalog page */
+let browseQuery='';       /* current search text */
+let browseLoading=false;
+let browseDebounce=null;
+let browseLoaded=false;   /* has the first page been fetched for this mount */
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -126,6 +132,15 @@ function renderShell(){
           +'<div class="conn-empty">Loading apps&hellip;</div>'
         +'</div>'
       +'</section>'
+      +'<section class="conn-group" id="conn-browse-section" aria-labelledby="conn-browse-title" hidden>'
+        +'<div class="conn-group-head"><div><h3 id="conn-browse-title">Browse all connectors</h3>'
+          +'<p>Search Composio’s full catalog and connect anything you need.</p></div></div>'
+        +'<input type="search" id="conn-browse-search" class="conn-browse-search" '
+          +'placeholder="Search connectors…" autocomplete="off" spellcheck="false">'
+        +'<div class="conn-grid" id="conn-browse-grid"></div>'
+        +'<div class="conn-browse-more" id="conn-browse-more" hidden>'
+          +'<button class="conn-secondary" data-browse="more" type="button">Load more</button></div>'
+      +'</section>'
       +'<div class="conn-empty" id="conn-no-match" role="status" hidden></div>'
     +'</div>';
 }
@@ -144,6 +159,17 @@ function bindEvents(){
   });
   keyEl.addEventListener('keydown',ev=>{
     if(ev.key==='Enter'&&ev.target.id==='conn-key-input'){ev.preventDefault();saveKey();}
+  });
+  const search=root.querySelector('#conn-browse-search');
+  search.addEventListener('input',ev=>{
+    const q=ev.target.value;
+    clearTimeout(browseDebounce);
+    browseDebounce=setTimeout(()=>browseSearch(q),250);
+  });
+  const browseGrid=root.querySelector('#conn-browse-grid');
+  browseGrid.addEventListener('click',handleBrowseAction);
+  root.querySelector('#conn-browse-more').addEventListener('click',ev=>{
+    if(ev.target.closest('button[data-browse="more"]'))browseLoadMore();
   });
   if(!listener){
     listener=onAuthMessage;
@@ -166,8 +192,9 @@ async function loadAll(){
     /* Which mode are we in? A key (env or local file) activates connectors; without
        one they are inactive and the key panel is the only call to action. */
     const backend=await apiFetch(BASE+'/backend');
-    keyState=(backend.ok&&backend.data)||{mode:'inactive',key_source:null};
+    keyState=(backend.ok&&backend.data)||{mode:'inactive',key_source:null,dynamic:false};
     renderKeyPanel();
+    updateBrowseVisibility();
 
     /* the account labels ride alongside the listing; awaited before the
        paint so the cards come up labelled, never awaited past a failure */
@@ -255,6 +282,143 @@ async function removeKey(){
   if(!res.ok){setAlert('error','Could not remove the key',esc(res.error||'Try again.'));return;}
   toast('Composio API key removed');
   await refreshAll();
+}
+
+/* ---------- browse all (dynamic mode) ---------- */
+
+/* Show the catalog browser only in dynamic mode with a key; load its first page
+   once. The catalog is paged on demand, never the whole ~1500-toolkit list. */
+function updateBrowseVisibility(){
+  const section=root.querySelector('#conn-browse-section');
+  if(!section)return;
+  const on=keyState.mode==='local'&&keyState.dynamic===true;
+  section.hidden=!on;
+  if(on&&!browseLoaded){browseLoaded=true;browseSearch('');}
+}
+
+async function browseSearch(query){
+  browseQuery=String(query||'').trim();
+  browseCursor=null;
+  await loadBrowsePage(false);
+}
+
+async function browseLoadMore(){
+  if(browseCursor)await loadBrowsePage(true);
+}
+
+async function loadBrowsePage(append){
+  if(browseLoading)return;
+  browseLoading=true;
+  const grid=root.querySelector('#conn-browse-grid');
+  if(!append)grid.innerHTML='<div class="conn-empty">Searching&hellip;</div>';
+  try{
+    let path=BASE+'/catalog?limit=24';
+    if(browseQuery)path+='&search='+encodeURIComponent(browseQuery);
+    if(append&&browseCursor)path+='&cursor='+encodeURIComponent(browseCursor);
+    const res=await apiFetch(path);
+    if(!res.ok||!res.data){
+      grid.innerHTML='<div class="conn-empty is-error">'+esc(res.error||'Could not load the catalog.')+'</div>';
+      return;
+    }
+    browseCursor=res.data.next_cursor||null;
+    renderBrowse(res.data.items||[],append);
+  }finally{
+    browseLoading=false;
+    const more=root.querySelector('#conn-browse-more');
+    if(more)more.hidden=!browseCursor;
+  }
+}
+
+function renderBrowse(items,append){
+  const grid=root.querySelector('#conn-browse-grid');
+  if(!append&&items.length===0){
+    grid.innerHTML=browseQuery
+      ? '<div class="conn-empty">No connectors match &ldquo;'+esc(browseQuery)+'&rdquo;.</div>'
+      : '<div class="conn-empty">Start typing to search Composio&rsquo;s catalog.</div>';
+    return;
+  }
+  const html=items.map(browseCardHTML).join('');
+  if(append)grid.insertAdjacentHTML('beforeend',html);
+  else grid.innerHTML=html;
+}
+
+function browseCardHTML(t){
+  const logo=t.logo
+    ? '<img class="conn-icon" src="'+esc(t.logo)+'" alt="" loading="lazy" width="36" height="36">'
+    : '<span class="conn-icon" aria-hidden="true">'+esc((t.name||t.slug||'?').slice(0,1).toUpperCase())+'</span>';
+  const tag=t.managed_auth?'':'<span class="conn-fact">API key</span>';
+  return '<article class="conn-card" data-browse-slug="'+esc(t.slug)+'">'
+    +'<div class="conn-card-head"><div class="conn-card-heading">'+logo
+      +'<div class="conn-card-id"><h3>'+esc(t.name||t.slug)+'</h3>'
+      +'<span>'+esc((t.categories&&t.categories[0]&&t.categories[0].name)||'')+'</span></div></div></div>'
+    +'<div class="conn-card-body"><div class="conn-facts">'
+      +'<span class="conn-fact">'+(Number(t.tools_count)||0)+' tools</span>'+tag+'</div>'
+      +'<div class="conn-card-error" id="berr-'+esc(t.slug)+'" hidden></div>'
+      +'<div class="conn-browse-form" id="bform-'+esc(t.slug)+'"></div></div>'
+    +'<div class="conn-card-acts">'
+      +'<button class="conn-primary" data-browse="connect" type="button">Connect</button></div>'
+    +'</article>';
+}
+
+function handleBrowseAction(event){
+  const card=event.target.closest('[data-browse-slug]');
+  if(!card)return;
+  const slug=card.dataset.browseSlug;
+  const btn=event.target.closest('button[data-browse]');
+  if(btn&&btn.dataset.browse==='connect')connectCatalog(slug);
+  else if(btn&&btn.dataset.browse==='connect-custom')submitCustomAuth(slug);
+}
+
+function browseError(slug,msg){
+  const el=root.querySelector('#berr-'+CSS.escape(slug));
+  if(!el)return;
+  if(!msg){el.hidden=true;el.textContent='';return;}
+  el.textContent=msg;el.hidden=false;
+}
+
+async function connectCatalog(slug){
+  browseError(slug,'');
+  const res=await apiFetch(BASE+'/'+encodeURIComponent(slug)+'/auth-fields');
+  if(!res.ok||!res.data){browseError(slug,res.error||'Could not read this connector.');return;}
+  if(res.data.managed_auth){
+    connect(slug);   /* one-click: same popup+poll flow as a featured card */
+    return;
+  }
+  renderCustomAuthForm(slug,res.data);
+}
+
+function renderCustomAuthForm(slug,detail){
+  const scheme=(detail.auth_schemes&&detail.auth_schemes[0])||'API_KEY';
+  const fields=(detail.fields&&detail.fields.required)||[];
+  const form=root.querySelector('#bform-'+CSS.escape(slug));
+  if(!form)return;
+  form.dataset.scheme=scheme;
+  form.innerHTML=fields.map(f=>
+    '<label class="conn-browse-field">'+esc(f.display_name||f.name)
+    +'<input data-field="'+esc(f.name)+'" type="'+(f.is_secret?'password':'text')+'" '
+    +'autocomplete="off"'+(f.required?' required':'')+'></label>').join('')
+    +'<button class="conn-primary" data-browse="connect-custom" type="button">Save &amp; connect</button>';
+}
+
+async function submitCustomAuth(slug){
+  browseError(slug,'');
+  const form=root.querySelector('#bform-'+CSS.escape(slug));
+  if(!form)return;
+  const scheme=form.dataset.scheme||'API_KEY';
+  const credentials={};
+  form.querySelectorAll('input[data-field]').forEach(i=>{credentials[i.dataset.field]=i.value.trim();});
+  const res=await apiFetch(BASE+'/'+encodeURIComponent(slug)+'/connect',{
+    method:'POST',body:{auth_scheme:scheme,credentials},
+  });
+  if(!res.ok){browseError(slug,connectErrorText(res,slug));return;}
+  if(res.data&&res.data.auth_url){
+    const popup=window.open(res.data.auth_url,'_blank','noopener,width=560,height=760');
+    if(!popup)browseError(slug,'Allow the popup to finish authorizing.');
+    await pollUntilConnected(slug,res.data.connection_request_id,popup);
+  }else{
+    toast(labelFor(slug)+' connected');
+    await refreshAll();
+  }
 }
 
 /* The /toolkits route is the only source of the toolkit list, so when it fails

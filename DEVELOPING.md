@@ -560,6 +560,52 @@ one key is invalid under another) while the local proxy tokens are kept, so agen
 configs keep working without a restart. Pins in `space_scope.json` that pointed at the old
 project are pruned on the next session build; the user reconnects each app.
 
+### 10.1b Dynamic connectors (agent-driven)
+
+`COMPOSIO_DYNAMIC_CONNECTORS` (off by default) switches the session from the curated,
+per-workspace allowlist (§10.2) to **agent-driven** mode. In dynamic mode
+`service._session_config` omits the `toolkits` allowlist and sets `manage_connections`
+(`service.manage_connections_config()`), so the tool-router exposes `COMPOSIO_SEARCH_TOOLS`
+and `COMPOSIO_MANAGE_CONNECTIONS` to the agent: it can discover and connect any toolkit at
+runtime. **Reach is still gated by connected accounts** — a tool executes only once its
+toolkit has an ACTIVE connection for this `user_id`, and connecting requires the user's
+OAuth click, so consent is the boundary, not a pre-pinned list. `get_session` does not raise
+`NoToolkitsEnabled` in this mode. An operator can bound it with `COMPOSIO_CONNECT_ALLOW`
+(a non-empty allow re-pins a bounded allowlist; `COMPOSIO_CONNECT_DENY` subtracts). The
+Connectors tab derives "on here" from the live connection in dynamic mode (a GET never
+writes scope). The MCP proxy is unchanged — it forwards whatever `build_mcp_server_entry`
+returns, so the meta-tools reach the agent with no proxy code.
+
+**Browse all + custom auth (Phase 2).** Dynamic mode also gives the *person* the same
+reach the agent has, on the Connectors tab. A "Browse all connectors" panel appears only
+when `mode==='local' && dynamic`; it searches Composio's full catalog on demand.
+`connectors/composio/catalog.py` pages over `client.list_catalog` (which calls
+`toolkits.list(search=…, cursor=…, limit=…)` on the underlying SDK client), so we never
+materialise the ~1500-toolkit list: every request carries a `limit` and `cursor`, and each
+page is cached per query for `COMPOSIO_CATALOG_TTL` seconds (default 3600). The default
+view is the curated **featured** set (`catalog.featured()` = `service.TOOLKITS`), which
+needs no catalog call at all. Routes: `GET /catalog` (search/category/cursor/limit clamped
+1..50, 409 without a key, returns `{items, next_cursor, featured}`) and
+`GET /{toolkit}/auth-fields` (managed_auth + creation fields from `client.toolkit_detail`).
+A toolkit whose OAuth is Composio-managed connects one-click through the existing popup+poll
+flow; one that needs the user's own credentials renders an inline form and posts them to
+`/connect` with `credentials`, which `service.initiate_connection` turns into a custom auth
+config (`client.create_custom_auth_config`, cached in the byo_key store) before connecting.
+Unknown-toolkit scheme/alias checks are skipped in dynamic mode.
+
+**Graceful degradation (Phase 3).** The browse panel is search-only: `/catalog` takes a
+`search` and a `cursor` and pages ~24 at a time (a `category` filter is still accepted by the
+route and `catalog.page`, but no UI drives it — Composio's category list proved noisy and
+many categories returned nothing, so the chips were removed). Catalog items still carry
+`categories[].{id,name}` (id, not `slug`) for the card subtitle. The curated
+set (`service.TOOLKITS`) is the *featured* boundary, not a hard limit: an arbitrary toolkit
+connects for the agent and records into `space_scope`, but degrades cleanly for everything
+curated — no Inbox collectors (`services/connections/collectors.catalog` returns `[]` for an
+unknown toolkit), no read/write tags (`categories.classify` returns `None`, so the tool
+carries no `category`), and no per-action prefs (`PUT /{toolkit}/prefs` answers 404 unless
+the toolkit is in `classified_toolkits()`). `tests/test_composio_dynamic.py`
+`ArbitraryToolkitDegradationTests` locks this contract.
+
 ### 10.2 Workspace isolation lives in the session
 
 Connections are account-wide. What keeps one workspace out of another's connectors is

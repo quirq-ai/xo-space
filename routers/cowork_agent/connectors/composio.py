@@ -45,6 +45,7 @@ async def get_backend(request: Request) -> JSONResponse:
     return JSONResponse({
         "mode": "local" if byo_key.configured() else "inactive",
         "key_source": byo_key.source(),
+        "dynamic": composio_service.dynamic_connectors_enabled(),
     })
 
 
@@ -94,6 +95,48 @@ async def delete_api_key(request: Request) -> JSONResponse:
     return JSONResponse({"key_configured": False, "key_source": None})
 
 
+@router.get("/api/connectors/composio/catalog")
+async def get_catalog(
+    request: Request,
+    search: str = Query(default=""),
+    category: str = Query(default=""),
+    cursor: str = Query(default=""),
+    limit: int = Query(default=25),
+) -> JSONResponse:
+    """One page of the toolkit catalog for the browse UI, plus the featured set.
+
+    Paginated and TTL-cached; never lists the whole catalog. 409 without a key."""
+    _require_key()
+    from services.cowork_agent.connectors.composio import catalog
+    limit = max(1, min(50, limit))
+    try:
+        page = catalog.page(search=search or None, category=category or None,
+                            cursor=cursor or None, limit=limit)
+    except composio_client.ComposioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return JSONResponse({**page, "featured": catalog.featured()})
+
+
+@router.get("/api/connectors/composio/{toolkit}/auth-fields")
+async def get_auth_fields(
+    toolkit: str,
+    user_id: str = Depends(get_composio_user),
+) -> JSONResponse:
+    """Whether a toolkit uses managed auth (one-click) or needs custom credentials,
+    and the fields to collect for the latter."""
+    _require_key()
+    try:
+        detail = composio_client.toolkit_detail(toolkit)
+    except composio_client.ComposioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return JSONResponse({
+        "toolkit": toolkit,
+        "managed_auth": detail["managed_auth"],
+        "auth_schemes": detail["auth_schemes"],
+        "fields": detail["fields"],
+    })
+
+
 def _status_map_from_rows(
     rows: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -139,6 +182,9 @@ class ConnectBody(BaseModel):
     # second account rather than a replacement of the existing one.
     alias: Optional[str] = None
     allow_multiple: bool = False
+    # Custom-auth toolkits (no Composio-managed auth): the user's own credential
+    # fields, from GET /{toolkit}/auth-fields. Absent for managed-auth (one-click).
+    credentials: Optional[dict[str, Any]] = None
 
 
 class DisconnectBody(BaseModel):
@@ -172,6 +218,10 @@ async def list_toolkits(
 
     multi = composio_service.multi_account_config()
     scope = space_scope.load()
+    # Dynamic mode has no per-workspace allowlist: any connected toolkit is reachable
+    # by the agent, so it reads as "on here" without a scope opt-in. Derived, not
+    # written — a GET never mutates the store.
+    dynamic = composio_service.dynamic_connectors_enabled()
 
     # With no key, the account has no connections here: every toolkit reads NEEDS_KEY.
     default_status = "NEEDS_AUTH" if key_configured else "NEEDS_KEY"
@@ -180,6 +230,7 @@ async def list_toolkits(
     for toolkit_id, meta in composio_service.TOOLKITS.items():
         connection = status_by_slug.get(meta.slug)
         entry = scope.get(toolkit_id) or {}
+        connected = bool(connection) and (connection.get("status") or "").upper() == "ACTIVE"
         toolkits.append({
             "id": toolkit_id,
             "slug": meta.slug,
@@ -195,7 +246,8 @@ async def list_toolkits(
             "alias": (connection or {}).get("alias"),
             "account_count": account_counts.get(meta.slug, 0),
             # Workspace-scoped: a toolkit can be connected on the account and off here.
-            "workspace_enabled": bool(entry.get("enabled")),
+            # In dynamic mode a live connection is reachable regardless of scope.
+            "workspace_enabled": bool(entry.get("enabled")) or (dynamic and connected),
             "pinned_account_ids": list(entry.get("connected_account_ids") or []),
         })
     return JSONResponse({
@@ -228,6 +280,7 @@ async def connect(
             redirect_uri=body.redirect_uri,
             alias=body.alias,
             allow_multiple=body.allow_multiple,
+            credentials=body.credentials,
         )
     except composio_service.AliasInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
