@@ -251,20 +251,21 @@ class ReadFileAtCommitTests(RepoFixture):
 
 class FileHistoryRouteTests(unittest.TestCase):
     def test_history_route_is_registered_with_the_response_model(self) -> None:
-        from routers.cowork_agent.bff.xo_projects import (
+        from api.xo_projects.routes import (
             FileHistoryResponse,
             router,
         )
 
+        # Paths are relative to the api/xo_projects folder, which is the URL.
         routes = {r.path: r for r in router.routes}
-        self.assertIn("/api/xo-projects/{project_id}/file-history", routes)
-        route = routes["/api/xo-projects/{project_id}/file-history"]
+        self.assertIn("/{project_id}/file-history", routes)
+        route = routes["/{project_id}/file-history"]
         self.assertIs(route.response_model, FileHistoryResponse)
 
     def test_file_route_serves_versions_and_the_diff_route_is_gone(self) -> None:
         import inspect
 
-        from routers.cowork_agent.bff.xo_projects import project_file, router
+        from api.xo_projects.routes import project_file, router
 
         params = inspect.signature(project_file).parameters
         self.assertIn("commit", params)

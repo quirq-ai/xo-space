@@ -40,7 +40,7 @@ _CODE_EXT = {
 }
 _DOC_EXT = {".md", ".txt", ".rst", ".pdf", ".docx"}
 
-# Mirrors routers/cowork_agent/bff/filters.is_hidden_name — duplicated
+# Mirrors api/_filters.is_hidden_name — duplicated
 # because services must not import from routers (dependency direction).
 _TEMP_SUFFIXES = (".tmp", ".swp", ".swo", ".bak", ".orig")
 _TEMP_PREFIXES = ("~$",)

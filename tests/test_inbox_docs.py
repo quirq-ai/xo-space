@@ -13,7 +13,8 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import inbox as inbox_routes
+from api.inbox import routes as inbox_routes
+from routers import autoroutes
 from services.cowork_agent import quirq_catalog
 from services.inbox import service, store
 
@@ -112,7 +113,7 @@ class InboxDocsTests(unittest.TestCase):
         self.assertIn("  inbox/", services_block)
         self.assertNotIn("cowork_agent/inbox", dev)
         self.assertIn("~/.quirq/inbox/inbox.json", dev)
-        self.assertIn("bff/inbox.py", dev)
+        self.assertIn("api/inbox/routes.py", dev)
 
 
 class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
@@ -235,7 +236,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         """422 is pydantic's (shape), 400 is the service's (value): none of these
         requests reaches the file, so no state root is needed beyond a stub."""
         app = FastAPI()
-        app.include_router(inbox_routes.router)
+        autoroutes.mount_module(app, inbox_routes)
         c = TestClient(app)
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"QUIRQ_STATE_ROOT": tmp}):
             self.assertEqual(c.post("/api/inbox", json={"body": "x"}).status_code, 422)          # missing title

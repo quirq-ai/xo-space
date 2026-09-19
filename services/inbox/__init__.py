@@ -10,7 +10,7 @@ Three modules, one router-facing surface:
                   per-project todos, the sharing relay, each project's
                   GitHub issue mirror and the per-toolkit ``events.jsonl``
                   of polled connections into items.
-* :mod:`service`  what ``routers/cowork_agent/bff/inbox.py`` imports:
+* :mod:`service`  what ``api/inbox/routes.py`` imports:
                   ``refresh``, ``list_items``, ``create_item``,
                   ``update_item``, ``update_many`` (the batch
                   ``PATCH /api/inbox``), ``delete_item`` and ``InboxError``.

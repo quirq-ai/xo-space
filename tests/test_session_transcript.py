@@ -6,7 +6,8 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.sessions import router
+from api.sessions import routes
+from routers import autoroutes
 from services.cowork_agent import session_transcript as st
 
 SID = "f2d46667-4ac1-4e03-973e-c9f86832250d"
@@ -76,7 +77,7 @@ class BuildTranscriptTests(unittest.TestCase):
 class TranscriptRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         app = FastAPI()
-        app.include_router(router)
+        autoroutes.mount_module(app, routes)
         self.client = TestClient(app)
 
     def test_returns_the_projection_and_passes_the_tools_flag(self) -> None:

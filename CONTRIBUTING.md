@@ -49,7 +49,7 @@ Welcome, in rough order of how much they help:
 - **Docs and wiki corrections** where a page says something the code no
   longer does.
 - **Connectors** (Google Drive, OneDrive, GitHub, and Vercel live in
-  `routers/cowork_agent/connectors/` + `services/cowork_agent/connectors/`).
+  `api/connectors/` + `services/cowork_agent/connectors/`).
 
 Things we will push back on, so you don't spend time on them first:
 

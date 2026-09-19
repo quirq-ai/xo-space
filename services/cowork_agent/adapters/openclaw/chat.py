@@ -8,7 +8,7 @@ live-streams from the gateway (existing session). The chat router resolves
 these via ``load_capability('chat', agent=<backend>)`` so it names no backend.
 
 This is a faithful relocation of the openclaw branch that previously lived in
-routers/cowork_agent/chat.py — behavior is unchanged.
+api/chat/routes.py — behavior is unchanged.
 """
 from __future__ import annotations
 

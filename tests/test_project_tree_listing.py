@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from routers.cowork_agent.bff.xo_projects import project_tree
+from api.xo_projects.routes import project_tree
 from services.cowork_agent import project_layout
 
 

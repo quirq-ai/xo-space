@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from routers.cowork_agent.bff.filters import preview_value
+from api._filters import preview_value
 from services.cowork_agent.registry import agent_env
 
 

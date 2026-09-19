@@ -28,6 +28,6 @@ own default), and ``~/.config/composio/{sessions,action_prefs}.json`` (see
 locations are moved into place on first access.
 
 These are all agent-agnostic; their HTTP surfaces live in the matching
-``routers/cowork_agent/connectors/`` modules — for Composio, both
+``api/connectors/`` route modules — for Composio, both
 ``composio.py`` and ``composio_mcp_proxy.py``.
 """

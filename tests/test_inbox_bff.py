@@ -8,7 +8,8 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import inbox as inbox_routes
+from api.inbox import routes as inbox_routes
+from routers import autoroutes
 from services.inbox import service
 
 ITEM = {"id": "deadbeef", "ts": "2026-09-10T12:00:00Z", "source": "api", "kind": "note", "title": "t",
@@ -18,7 +19,7 @@ LISTING = {"schema": 1, "updated_at": None, "counts": {"new": 1, "seen": 0, "don
 
 def client() -> TestClient:
     app = FastAPI()
-    app.include_router(inbox_routes.router)
+    autoroutes.mount_module(app, inbox_routes)
     return TestClient(app)
 
 
@@ -163,13 +164,11 @@ class InboxRoutesTests(unittest.TestCase):
             self.assertEqual(r.json(), {"item_id": "deadbeef", "deleted": deleted})
             de.assert_called_once_with("deadbeef")
 
-    def test_router_is_registered_right_after_project_sharing(self) -> None:
-        from routers.cowork_agent.bff import bff_routers
-        from routers.cowork_agent.bff.project_sharing import router as sharing_router
-        self.assertEqual(bff_routers.index(inbox_routes.router), bff_routers.index(sharing_router) + 1)
-        paths = {route.path for route in inbox_routes.router.routes}
-        self.assertEqual(paths, {"/api/inbox", "/api/inbox/{item_id}"})
-        methods = {(m, route.path) for route in inbox_routes.router.routes for m in route.methods}
+    def test_router_is_mounted_at_its_folder(self) -> None:
+        # api/inbox is the URL: the loader adds the folder prefix, the module
+        # declares only what comes after it.
+        _, table = autoroutes.build_router({"guard": False, "folders": {"api/inbox": True}})
+        methods = {(row["method"], row["path"]) for row in table}
         self.assertEqual(methods, {("GET", "/api/inbox"), ("POST", "/api/inbox"), ("PATCH", "/api/inbox"),
                                    ("PATCH", "/api/inbox/{item_id}"), ("DELETE", "/api/inbox/{item_id}")})
 

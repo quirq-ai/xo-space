@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.cowork_agent.bff import connections as routes
-from routers.cowork_agent.bff import bff_routers, connections_router, inbox_router
+from api.connections import routes
+from routers import autoroutes
 from services.connections import service, store
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +45,7 @@ EXPECTED_PATHS = {
 
 def client() -> TestClient:
     app = FastAPI()
-    app.include_router(routes.router)
+    autoroutes.mount_module(app, routes)
     return TestClient(app)
 
 
@@ -54,11 +54,13 @@ def _err(code: str, status: int = 400) -> service.ConnectionsError:
 
 
 class ConnectionsRoutesTests(unittest.TestCase):
-    def test_router_exposes_exactly_five_paths_right_after_the_inbox(self) -> None:
+    def test_router_exposes_exactly_five_paths_from_its_folder(self) -> None:
         app = FastAPI()
-        app.include_router(routes.router)
+        autoroutes.mount_module(app, routes)
         self.assertEqual(set(app.openapi()["paths"]), EXPECTED_PATHS)
-        self.assertEqual(bff_routers.index(connections_router), bff_routers.index(inbox_router) + 1)
+        # The loader mounts api/connections at its folder URL.
+        _, table = autoroutes.build_router({"guard": False, "folders": {"api/connections": True}})
+        self.assertEqual({row["path"] for row in table}, EXPECTED_PATHS)
 
     def test_list_shape(self) -> None:
         with patch.object(service, "signed_in", return_value=False) as si, \
@@ -195,7 +197,7 @@ class ConnectionsRoutesTests(unittest.TestCase):
             self.assertEqual(ev.call_count, 3)
 
     def test_router_is_thin_and_names_no_agent(self) -> None:
-        src = (ROOT / "routers" / "cowork_agent" / "bff" / "connections.py").read_text(encoding="utf-8")
+        src = (ROOT / "api" / "connections" / "routes.py").read_text(encoding="utf-8")
         self.assertNotRegex(src, r"^\s*(import os|from os |import pathlib|from pathlib)", "BFF rule P2")
         self.assertNotRegex(src, r"openclaw|hermes|claude_code|codex|antigravity")
         self.assertIsNone(re.search("[\\u2013\\u2014]", src))

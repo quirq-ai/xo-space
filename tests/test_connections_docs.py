@@ -139,7 +139,7 @@ class ConnectionsDocsTests(unittest.TestCase):
     def test_developing_guide_lists_the_package_and_explains_degradation(self) -> None:
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
-        self.assertIn("project_sharing, inbox.py, connections.py)", layout)
+        self.assertIn("inbox/ connections/ secrets/", layout)
         self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
         # top level under services/, beside inbox/ and swarm_api/, never under cowork_agent/
         start = layout.index("services/  ")
@@ -149,7 +149,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("### Placement: cowork_agent/ is for the agent, services/ is for the Space", dev)
         for module in ("store", "collectors", "mcp_client", "poller", "service"):
             self.assertIn(module, layout)
-        self.assertIn("bff/connections.py", layout)
+        self.assertIn("api/connections/routes.py", layout)
         for line in lines_with(layout, "connections"):
             self.assertIsNone(DASHES.search(line), line)
         self.assertIn("### 10.8 Connections polling", dev)
@@ -234,7 +234,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertEqual(len(tree), 1)
         self.assertEqual(tree[0].split("#", 1)[1].strip(), ", ".join(cat))
         prose = squash(readme[readme.index("Collectors are read-only tools from the catalog"):
-                              readme.index("Routes (`routers/cowork_agent/bff/connections.py`")])
+                              readme.index("Routes (`api/connections/routes.py`")])
         for toolkit, ids in cat.items():
             self.assertIn(f"`{toolkit}`", prose)
             for cid in ids:
@@ -282,7 +282,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         import importlib
         for mod in ("services.storage.flock", "services.storage.atomic_write", "services.storage.reader",
                     "services.storage.paths", "services.timestamps", "services.errors", "services.periodic",
-                    "routers.cowork_agent.bff.errors"):
+                    "routers.errors"):
             importlib.import_module(mod)
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
@@ -298,7 +298,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         rule = squash(dev[dev.index("### Placement: cowork_agent/ is for the agent"):
                           dev.index("### One executor for external commands")])
         for mod in ("`services/storage/`", "`services/timestamps.py`", "`services/errors.py`",
-                    "`services/periodic.py`", "`routers/cowork_agent/bff/errors.py`"):
+                    "`services/periodic.py`", "`routers/errors.py`"):
             self.assertIn(mod, rule)
         self.assertIn("`services.cowork_agent.local_state` import paths still resolve to the same module objects", rule)
         self.assertIn("`services/connections` never imports the inbox", rule)

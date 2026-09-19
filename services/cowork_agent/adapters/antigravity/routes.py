@@ -2,7 +2,7 @@
 Connect Antigravity — agent-owned OAuth login flow (the ``routes`` capability).
 
 Mounted **only when ``AGENT_NAME=antigravity``** (via ``_active_agent_routes`` in
-``routers/cowork_agent/__init__.py``), so the agent literal stays inside the
+``server.py``), so the agent literal stays inside the
 adapter tree and the modularity invariant holds — this is why the flow lives here
 rather than in ``routers/auth/`` like ``claude_setup_token.py``.
 

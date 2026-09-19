@@ -1,7 +1,7 @@
 """The Space foundation under ``services/inbox`` and ``services/connections``:
 the file primitives in ``services/storage`` (and the aliases at their former
 paths), ``services/timestamps``, ``services/errors`` with its BFF glue in
-``routers/cowork_agent/bff/errors.py``, and the new-events listener registry
+``routers/errors.py``, and the new-events listener registry
 that replaced the connections -> inbox import."""
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from routers.cowork_agent.bff import errors as bff_errors
+from routers import errors as bff_errors
 from services import errors, timestamps
 from services.connections import collectors, poller
 from services.connections import service as connections_service
@@ -168,14 +168,14 @@ class ServiceErrorTests(unittest.TestCase):
             Body(status="seen", extra=1)
 
     def test_the_two_routers_use_the_shared_glue(self) -> None:
-        for rel in ("routers/cowork_agent/bff/inbox.py", "routers/cowork_agent/bff/connections.py"):
+        for rel in ("api/inbox/routes.py", "api/connections/routes.py"):
             with self.subTest(file=rel):
                 src = read(rel)
-                self.assertIn("from routers.cowork_agent.bff.errors import ForbidExtra, http_error", src)
+                self.assertIn("from routers.errors import ForbidExtra, http_error", src)
                 self.assertNotIn("_ForbidExtra", src)
                 self.assertNotIn("def _http(", src)
                 self.assertNotIn("ConfigDict", src)
-        glue = read("routers/cowork_agent/bff/errors.py")
+        glue = read("routers/errors.py")
         self.assertIsNone(DASHES.search(glue))
         self.assertNotRegex(glue, AGENT_NAMES)
         self.assertNotRegex(glue, r"^\s*(import os|from os |import pathlib|from pathlib)", "BFF rule P2")

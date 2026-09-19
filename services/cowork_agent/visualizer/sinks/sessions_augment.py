@@ -197,7 +197,7 @@ def _apply_locked(
     # routes never serialise it: ``reader.merge_session_record``
     # treats it as a watcher-only field, and the Pydantic models on
     # the wire pick named fields rather than spreading the dict —
-    # see ``routers/cowork_agent/bff/visualizer.py::_row_to_list_item``.
+    # see ``api/xo_projects/visualizer.py::_row_to_list_item``.
     write_json_atomic(augment_path, {
         "schema": 2,
         "updated_at": _now_iso(),

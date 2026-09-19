@@ -3,7 +3,7 @@
 A service package (``services/inbox``, ``services/connections``) never
 imports FastAPI: it raises a :class:`ServiceError` subclass and the BFF
 route turns it into ``HTTPException(status, {"code", "message"})`` through
-``routers.cowork_agent.bff.errors.http_error``.
+``routers.errors.http_error``.
 """
 
 from __future__ import annotations

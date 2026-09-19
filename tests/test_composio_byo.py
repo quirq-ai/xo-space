@@ -340,18 +340,18 @@ class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
 class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_backend_route_reports_inactive_without_a_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         resp = await r.get_backend(_req())
         self.assertEqual(json.loads(resp.body), {"mode": "inactive", "key_source": None})
 
     async def test_backend_route_reports_local_with_a_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         byo_key.save("sk_live")
         resp = await r.get_backend(_req())
         self.assertEqual(json.loads(resp.body), {"mode": "local", "key_source": "file"})
 
     async def test_put_key_validates_and_saves(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         from services.cowork_agent.connectors.composio import client as c
         from unittest.mock import AsyncMock
         with patch.object(c, "_sdk") as sdk, \
@@ -364,7 +364,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_put_key_rejects_a_bad_key(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         from services.cowork_agent.connectors.composio import client as c
         with patch.object(c, "_sdk") as sdk, \
                 patch.object(r.composio_service, "invalidate_session"):
@@ -377,7 +377,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_put_key_409_when_env(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         with patch.dict(os.environ, {byo_key.ENV_VAR: "sk_env"}):
             with self.assertRaises(HTTPException) as raised:
                 await r.put_api_key(r.ApiKeyBody(api_key="x"), _req())
@@ -385,14 +385,14 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
 
     async def test_connect_without_a_key_is_409(self) -> None:
         from fastapi import HTTPException
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         with self.assertRaises(HTTPException) as raised:
             await r.connect("gmail", r.ConnectBody(), user_id=byo_key.user_id())
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["error"], "composio_key_required")
 
     async def test_toolkits_without_a_key_are_needs_key(self) -> None:
-        from routers.cowork_agent.connectors import composio as r
+        from api.connectors.composio import routes as r
         resp = await r.list_toolkits(user_id=byo_key.user_id())
         body = json.loads(resp.body)
         self.assertFalse(body["key_configured"])

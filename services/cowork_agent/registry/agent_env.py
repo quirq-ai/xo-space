@@ -7,7 +7,7 @@ code writes ``~/.openclaw/.env``, ``~/.hermes/.env``, etc. depending purely on
 
 Two access patterns live on top of this file:
 
-* ``routers/cowork_agent/secrets.py`` — whole-file read/write (the
+* ``api/secrets/env.py`` — whole-file read/write (the
   Settings → Env Vars UI). Uses ``load_env_entries`` / ``save_env_entries``,
   which operate on a ``[{key, value}, ...]`` view and do NOT preserve comments
   or blank lines (the UI has no representation for them).

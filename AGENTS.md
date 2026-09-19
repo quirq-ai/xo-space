@@ -15,7 +15,7 @@
   What those packages share is Space-level too: `services/storage/` (file primitives; the old
   `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` paths still
   import), `services/timestamps.py`, `services/errors.py` (`ServiceError`), `services/periodic.py`
-  (`run_forever`) and `routers/cowork_agent/bff/errors.py`. `services/connections` never imports
+  (`run_forever`) and `routers/errors.py`. `services/connections` never imports
   the inbox; the inbox registers a new-events listener with it.
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.

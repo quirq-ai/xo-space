@@ -41,8 +41,8 @@ import httpx
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from routers.cowork_agent.connectors import composio as router_mod
-from routers.cowork_agent.connectors import composio_mcp_proxy as mcp_proxy
+from api.connectors.composio import routes as router_mod
+from api.connectors.composio import mcp_proxy
 from services.cowork_agent.connectors.composio import action_prefs, categories
 from services.cowork_agent.connectors.composio import identity as identity_mod
 from services.cowork_agent.connectors.composio import paths
@@ -838,7 +838,7 @@ class RemovedEndpointTests(_ComposioBase):
     def test_the_session_self_route_is_gone(self) -> None:
         # The whole composio_session module (GET /xo-auth/session/self) was removed.
         with self.assertRaises(ImportError):
-            import routers.cowork_agent.connectors.composio_session  # noqa: F401
+            import api.connectors.composio.session  # noqa: F401
 
     def test_the_auth_router_never_mints_for_another_account(self) -> None:
         # xo-swarm-api owns authentication. routers/auth/auth.py proxies its browser
@@ -878,7 +878,7 @@ class RemovedEndpointTests(_ComposioBase):
         # path with its own failure modes to document and a button to explain.
         self.assertFalse(hasattr(router_mod, "refresh_gateway"))
         registered = {route.path for route in router_mod.router.routes}
-        self.assertNotIn("/api/connectors/composio/refresh-gateway", registered)
+        self.assertNotIn("/refresh-gateway", registered)
         self.assertFalse(hasattr(service, "install_gateways_at_startup"))
 
 

@@ -1,4 +1,6 @@
 {
   "guard": true,
-  "folders": {}
+  "folders": {
+    "api": true
+  }
 }

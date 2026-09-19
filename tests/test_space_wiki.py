@@ -450,7 +450,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
         bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
+            ROOT / "api" / "xo_projects" / "routes.py"
         ).read_text(encoding="utf-8")
         layout = (
             ROOT / "services" / "cowork_agent" / "project_layout.py"
@@ -517,13 +517,13 @@ class SpaceWikiTests(unittest.TestCase):
         """The preview endpoint addresses files by project id + relative path,
         never by absolute host path, and refuses anything it cannot show."""
         bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
+            ROOT / "api" / "xo_projects" / "routes.py"
         ).read_text(encoding="utf-8")
         layout = (
             ROOT / "services" / "cowork_agent" / "project_layout.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('"/api/xo-projects/{project_id}/file"', bff)
+        self.assertIn('"/{project_id}/file"', bff)  # relative to api/xo_projects, the URL
         self.assertIn("PREVIEW_MAX_BYTES", bff)
         self.assertIn("PREVIEW_SUFFIXES", bff)
         self.assertIn("preview_unsupported", bff)
@@ -577,7 +577,7 @@ class SpaceWikiTests(unittest.TestCase):
         .xo/project.json has none — excluding AGENTS.md, whose opening line
         is identical in every scaffolded project."""
         bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
+            ROOT / "api" / "xo_projects" / "routes.py"
         ).read_text(encoding="utf-8")
 
         self.assertIn("_DESC_FILES", bff)

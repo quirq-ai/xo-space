@@ -1506,7 +1506,7 @@ async def hermes_profile_insights(profile: str, days: int = 30):
 
 # ── Hermes channel provisioning ──────────────────────────────────────────────
 #
-# The agent-agnostic ``/api/channels/add`` (in routers/cowork_agent/channels.py)
+# The agent-agnostic ``/api/channels/add`` (in api/channels/routes.py)
 # writes the *active* agent's env + provisioning chain. These hermes-pinned
 # routes always target the hermes manifest regardless of ``AGENT_NAME`` — every
 # token lands in ``~/.hermes/.env`` and the CLI follow-up uses hermes's own
@@ -1776,7 +1776,7 @@ async def hermes_restart():
 
 # ── Hermes config + provider keys ────────────────────────────────────────────
 #
-# The agent-agnostic /api/config/* routes (routers/cowork_agent/config.py)
+# The agent-agnostic /api/config/* routes (api/config/routes.py)
 # already target the active agent. These hermes-scoped variants live here so
 # they mount only when hermes is active — at which point get_active_agent() is
 # hermes, so the shared agent_env helper writes ~/.hermes/.env. No core code
