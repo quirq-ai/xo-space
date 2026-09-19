@@ -29,10 +29,12 @@ def main() -> None:
         from fastapi import FastAPI, Request
         from fastapi.responses import Response
         import uvicorn
-        from routers.schedules import router
+        from modules.jobs.routes import router
 
         app = FastAPI()
         app.include_router(router)
+        from routers.errors import install_service_errors
+        install_service_errors(app)
 
         @app.get("/__fixture__/runtime")
         def runtime():

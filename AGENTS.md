@@ -8,15 +8,24 @@
 
 ## Architecture conventions
 
-- Put endpoint modules in `routers/` via `APIRouter`.
-- Placement: only code specific to running an agent lives under `services/cowork_agent/`; what a person
-  uses as much as the agent does (Inbox, connections polling, the swarm client) is a top-level package
-  under `services/`. Judge by the consumer, not the dependency (DEVELOPING.md section 7).
-  What those packages share is Space-level too: `services/storage/` (file primitives; the old
-  `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` paths still
-  import), `services/timestamps.py`, `services/errors.py` (`ServiceError`), `services/periodic.py`
-  (`run_forever`) and `routers/cowork_agent/bff/errors.py`. `services/connections` never imports
-  the inbox; the inbox registers a new-events listener with it.
+- A module's routes live in `modules/<name>/routes.py` (`APIRouter` under `/api/<name>`); the agent-side
+  surface stays under `routers/`, mounted through `modules/agent`.
+- Placement: anything a person uses as much as the agent does is a module, a folder under `modules/`
+  with a `module.json` (connections, jobs, sharing, timeline, projects, settings, sessions, telemetry, connectors); only code specific to running
+  an agent lives under `services/cowork_agent/` (the agent side is one module, `modules/agent/`).
+  Judge by the consumer, not the dependency (DEVELOPING.md sections 7 and 12). The kernel they share
+  is at the top of `services/`: `services/storage/` (`Document`, `EventLog`, `File`, the state root;
+  the old `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` paths
+  still import), `services/timestamps.py`, `services/errors.py` (`ServiceError` with its own HTTP
+  status; `routers/errors.py` installs the one handler, routers carry no try/except),
+  `services/periodic.py`, `services/signals.py`, `services/supervisor.py`, `services/modules.py`.
+  A module reaches another only through `modules.<other>.service`; the retired inbox reaches
+  connections through the alias `services/connections/__init__.py`.
+- A module's contract: `module.json` declares `api`, `stream`, `tasks`, `listeners`, `commands`,
+  `pages` and their defaults; `routes.py`, `stream.py`, `tasks.py`, `listeners.py`, `commands.py`,
+  `pages/*.json` implement them; `store.py` declares `FILES`; `events.py` declares `TYPES` and
+  `SIGNALS`; `service.py` is the only surface others call. `tests/test_modules.py` enforces it.
+  Switches live in `~/.quirq/settings/modules.json` and apply live (`PUT /api/modules/{name}`).
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
 - Every external command runs through `utils/commands.py` (`run` / `run_spec` over an

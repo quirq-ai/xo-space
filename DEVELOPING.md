@@ -34,76 +34,67 @@ through the dispatcher; Plane B never touches `/ask_question`.
 ## 2. Repository layout
 
 ```
-server.py                         FastAPI app: lifespan, CORS, router mounts, /ask_question (Plane A)
+server.py                         FastAPI app: env and roots, middleware, the one ServiceError handler,
+                                    every module's routes mounted behind its gate, the supervisor started
+                                    and stopped in the lifespan, /ask_question (Plane A)
 
-config/
-  models/<name>/                  Plane-A model clients: claude_code/client.py, codex/client.py
-  agents/<name>/                  per-agent declarative config (Plane B):
-                                    manifest.json  settings.json  capabilities.json
-                                    setup.sh  agent.sh  troubleshoot.py
+modules/                          THE SPACE: one folder per module, discovered by module.json (section 12)
+  ui.json                         the tabs, in order
+  agent/                          the agent side as one module: routes.py re-exports the broker routers under
+                                    routers/, tasks.py lists the boot loops (watcher, usage sync, GitHub
+                                    poller, MCP gateway, ...); nothing under services/cowork_agent moves
+  connections/                    polled connections: store collectors mcp_client poller service routes
+                                    stream tasks commands events pages/  (the reference module)
+  jobs/                           saved commands and their run history (was utils/commands/scheduler.py)
+  sharing/                        the commit relay (was services/cowork_agent/project_sharing/)
+  timeline/                       the event logs: one per project plus the Space log, written once
+  settings/                       runtime settings, roots, secrets, onboarding; the Modules page
+  projects/                       the project records (.xo/), the list, tree and file reads, the graphs
+  sessions/                       the session index with a purpose per session, the chat routes
+  telemetry/                      usage, stats, telemetry sources; the watcher and usage sync as tasks
+  connectors/                     Composio, Google Drive, OneDrive, GitHub, Vercel and the MCP proxy
 
-routers/                          broker routes only, NO agent branching
-  auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
-  status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
-  cowork_agent/                   the /api/* frontend surface
-    chat.py sessions.py agents.py config.py channels.py usage.py files.py …
-    connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
-    bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
-                                    project_sharing, inbox.py, connections.py); errors.py is the
-                                    shared ServiceError -> HTTPException mapping (http_error) and
-                                    the strict request-body base (ForbidExtra)
-    legacy/                       frozen URL aliases (openclaw_usage)
+services/                         THE KERNEL and the agent side
+  modules.py                      the registry: reads every module.json, imports the contract files,
+                                    holds the effective switches, builds the gate and GET /api/ui
+  supervisor.py  signals.py       one asyncio.Task per declared loop; the in-process signal bus
+  errors.py  timestamps.py  periodic.py     ServiceError (code, message, status, log); one time parser;
+                                    run_forever, the loop under every poller
+  schema/                         module.schema.json  page.schema.json  modules-settings.schema.json
+  storage/                        layout (folders, MOVES)  document (Document)  eventlog (EventLog)
+                                    files (File)  flock  atomic_write  reader  paths
+  inbox/                          the retired Inbox; kept until the Work (PR #157) replaces it
+  swarm_api/                      THE ONE CLIENT for xo-swarm-api
+  connections/, cowork_agent/project_sharing/   aliases: the old import paths resolve to the modules
+  cowork_agent/                   what it takes to run an agent (unchanged in shape)
+    adapters/                     THE AGENT EXTENSION SURFACE (Plane B): base.py loader.py <name>/
+    engine/  registry/            dispatcher messages sessions_io; agent_registry adapter_registry
+    connectors/                   one package per external service (gdrive onedrive github vercel composio)
+    visualizer/                   the watcher, ingest/, sources/, sinks/, the record stores, workspace views
+    helpers.py project_layout.py scopes.py skill_installer.py ...
 
-services/                         Placement rule: only what is specific to running an agent lives
-                                    under cowork_agent/; anything a person uses as much as the agent
-                                    does (the Inbox, connections, the swarm client) is a top-level package.
-  usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
-  storage/                        Space-level file primitives: flock (locked), atomic_write, reader
-                                    (read_json, read_jsonl_tail_reverse), paths (quirq_state_dir).
-                                    Moved out of the agent tree; the old cowork_agent/visualizer/
-                                    {flock,atomic_write,reader} and cowork_agent/local_state import
-                                    paths alias these modules in sys.modules
-  timestamps.py errors.py         parse_ts, now_iso, iso (one time parser for every Space package);
-  periodic.py                       ServiceError, the base of every typed service failure;
-                                    run_forever, the loop under the GitHub and connections pollers
-  inbox/                          the Space Inbox (a property of the Space, not of any agent): store
-                                    (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
-                                    todos, sharing, issues, connections) service (the router-facing
-                                    surface); routes in routers/cowork_agent/bff/inbox.py
-  connections/                    connections polling for the Inbox (a property of the Space): store
-                                    (~/.quirq/connections/<toolkit>/ config, state, events)
-                                    collectors (the read-only catalog per toolkit) mcp_client
-                                    (McpSession: one streamable-HTTP JSON-RPC session per poll over
-                                    httpx) poller (the background loop, on periodic.run_forever)
-                                    service (the router-facing surface; the inbox registers a
-                                    new-events listener here, never the other way round); routes in
-                                    routers/cowork_agent/bff/connections.py
-  swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
-                                    timeouts, SwarmResult) + one module per feature: auth usage
-                                    project_sharing chat. Nothing else builds a swarm URL.
-  cowork_agent/                   what it takes to run an agent (see the placement rule above)
-    adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
-      base.py loader.py cli_status.py usage_common.py   contract + shared helpers
-      <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
-                                    routes.py paths.py models.py *_status.py store/state_db …
-    engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
-    registry/                     agent framework: agent_registry adapter_registry settings agent_env
-    connectors/                   one package per external service: gdrive/ onedrive/ github/
-                                    vercel/ composio/ + shared rclone/ engine and token_store.py
-    visualizer/  xo_projects_sync/  project_template/   subsystems
-    project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
-                                    state in ~/.quirq/sharing/, routes in bff/project_sharing.py
-    helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
+routers/                          the agent-side and legacy HTTP surface, mounted through modules/agent
+  errors.py                       install_service_errors (the one handler) and ForbidExtra
+  kernel.py                       GET/PUT /api/modules, GET /api/ui, the widget file route
+  streams.py                      how a module's STREAMS become server-sent events
+  space.py                        the static mount (Cache-Control: no-cache) and the process controls
+  auth/  status/  legacy/         identity and setup; status by dynamic dispatch; frozen aliases
+  cowork_agent/                   the /api/* surface: chat sessions agents config files fts secrets ...
+    connectors/  bff/             connector flows; visualizer, secrets, xo_projects, inbox routes
 
-utils/
-  commands.py                     THE ONE EXECUTOR for external commands: run/run_spec over an argv list,
-                                    CommandSpec.from_json, safe_arg; never a shell (see §7)
-  local_port.py                   deterministic local port selection
+quirq/__main__.py                 python -m quirq <module> <command>
+config/agents/<name>/             per-agent declarative config; config/models/<name>/ the Plane-A clients
+utils/                            commands/ (THE ONE EXECUTOR for external commands) local_port runtime_env
+space_ui/                         the shell: index.html, js/shell.js, js/core/, css/, and the legacy views
+scripts/                          check_route_parity.py new_module.py write_layout_docs.py write_route_docs.py
+tests/                            support.py (Sandbox, client, fake_stream), test_modules.py (the module
+                                    contract), fixtures/quirq-state (the sample state root), test_<module>_*.py
 ```
 
-The **only** two trees an agent author touches are `config/agents/<name>/` and
-`services/cowork_agent/adapters/<name>/`. (`config/models/<name>/` is the
-Plane-A equivalent.) Everything else is framework.
+The two trees an agent author touches are `config/agents/<name>/` and
+`services/cowork_agent/adapters/<name>/` (plus `config/models/<name>/` for
+Plane A). The one tree a Space feature touches is `modules/<name>/`.
+Everything else is framework.
 
 ---
 
@@ -266,42 +257,42 @@ exceptions:
 
 ## 7. Conventions
 
-### Placement: cowork_agent/ is for the agent, services/ is for the Space
+### Placement: modules/ is for the Space, cowork_agent/ is for the agent
 
-Only code that is specific to running an agent belongs under
-`services/cowork_agent/`: the adapters and their loader, the engine and
-registry, session and chat plumbing, skill installation, the watcher that
-tails an agent's native store. Anything a person uses as much as the agent
-does is a property of the Space and lives as a top-level package under
-`services/`: the Inbox (`services/inbox/`), connections polling
-(`services/connections/`), the swarm client (`services/swarm_api/`). The
-test is the consumer, not the dependency: connections polling talks to
-Composio, which the agent also uses, but a person configures and reads it
-from the Connectors and Inbox tabs, so it is Space code. By the same test
-the connectors themselves (`services/cowork_agent/connectors/`, Composio
-included) serve people as much as agents and are candidates for the same
-move; they stay where they are until someone takes that on, because moving
-them touches upstream-owned routes and tests. New code should not add to
-the backlog: put it at the top level unless it exists only to run an agent.
-Routes are unaffected by this rule; the `/api/*` surface stays under
-`routers/cowork_agent/`.
+Anything a person uses as much as the agent does is a property of the Space
+and is a module: a folder under `modules/` with a `module.json` (section
+12). Connections, jobs, sharing, the timeline and settings live there. Only
+code specific to running an agent belongs under `services/cowork_agent/`:
+the adapters and their loader, the engine and registry, session and chat
+plumbing, skill installation, the watcher that tails an agent's native
+store. The test is the consumer, not the dependency: connections polling
+talks to Composio, which the agent also uses, but a person configures and
+reads it from the Connectors and Inbox tabs, so it is a module. The agent
+side itself is one module, `modules/agent/`, whose contract files re-export
+the broker routers and list the boot loops; nothing under
+`services/cowork_agent/` moved.
 
-What the Space packages share lives at the top level too, as small
-Space-level modules rather than inside either package: `services/storage/`
-(the locked, atomic file primitives and the state root, moved out of the
-agent tree; the old `services.cowork_agent.visualizer.{flock,atomic_write,reader}`
-and `services.cowork_agent.local_state` import paths still resolve to the
-same module objects, so a patch through either path is shared),
-`services/timestamps.py` (`parse_ts`, `now_iso`, `iso`), `services/errors.py`
-(`ServiceError`, the base every typed service failure subclasses) and
-`services/periodic.py` (`run_forever`, the loop under both background
-pollers). The HTTP side has one shared piece as well,
-`routers/cowork_agent/bff/errors.py` (`http_error`, `ForbidExtra`). Between
-the two packages the dependency points one way: `services/inbox` imports
-`services/connections` (its feeder reads the events, and `inbox.service`
-registers a new-events listener with `connections.service` so a poll that
-collected something ingests at once); `services/connections` never imports
-the inbox.
+What modules share is the kernel, at the top of `services/`:
+`services/storage/` (the state root and its folders, `Document`, `EventLog`,
+`File`, the lock and the atomic writers; the old
+`services.cowork_agent.visualizer.{flock,atomic_write,reader}` and
+`services.cowork_agent.local_state` import paths still resolve to the same
+module objects), `services/timestamps.py` (`parse_ts`, `now_iso`, `iso`),
+`services/errors.py` (`ServiceError`, the base every typed service failure
+subclasses, carrying its own HTTP status), `services/periodic.py`
+(`run_forever`), `services/signals.py` (the in-process bus) and
+`services/supervisor.py`. The HTTP side has one shared piece,
+`routers/errors.py`: the one handler that turns a `ServiceError` into
+`{"detail": {"code", "message"}}`, and `ForbidExtra`, the strict body base.
+Routers carry no `try/except` and no mapping helpers.
+
+A module reaches another only through `modules.<other>.service` (and its
+`events.TYPES`); `services/connections/__init__.py` and
+`services/cowork_agent/project_sharing/__init__.py` alias the old import
+paths to the modules for one release. The retired Inbox
+(`services/inbox/`) reads connections through that alias and registers a
+listener with `register_new_events_listener`; connections raises the
+`connections.new_events` signal and never imports the inbox.
 
 ### The canonical `.xo/`: one definition, every project
 
@@ -406,9 +397,9 @@ single-flight and `XO_SCHEDULER_MAX_CONCURRENT` (409 when busy). GETs and run_no
 harvest completed runs without launching jobs, so manual results stay visible
 with the watcher disabled. A timeout is required for every saved command.
 
-Files live under `<quirq state>/scheduler/`: `jobs.json` definitions, `state.json`
+Files live under `<quirq state>/jobs/`: `jobs.json` definitions, `state.json`
 execution state, append-only `runs/<id>.jsonl` history (one line per run, starting with `ts` and
-`type`) and `<quirq state>/logs/scheduler/<id>.log` full
+`type`) and `<quirq state>/logs/jobs/<id>.log` full
 output. Deleting a definition keeps its history and logs. The UI shows the latest
 20 records, each with status, return code, duration and up to 2000 output characters.
 These saved jobs and results are user data; deleting the state root loses them.
@@ -946,3 +937,159 @@ only as the literal `true`; the schema is
 
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
+
+---
+
+## 12. The Space is modules
+
+Every folder under `modules/` with a `module.json` is a module. The
+manifest says what the folder exposes and whether each part is on by
+default; fixed file names implement each part; `services/modules.py` (the
+registry) discovers both and checks that they agree, the way the capability
+loader discovers an agent. Nothing is registered by hand: `server.py`
+mounts `registry.routers()` and starts `registry.tasks()`, and the shell
+renders `GET /api/ui`. The map with diagrams is `docs/architecture.md`.
+
+### 12.1 The contract
+
+```
+modules/<name>/
+  module.json         the manifest (services/schema/module.schema.json)
+  __init__.py         a docstring
+  store.py            FILES = [File(...)]: every file the module writes; Document and EventLog handles
+  events.py           TYPES = (...): event types it emits; SIGNALS = (...): signals it raises
+  service.py          the only surface routes, tasks, streams, commands and other modules call
+  routes.py           router                  kind "api"        /api/<name>/... (or the manifest's aliases)
+  stream.py           STREAMS = {name: fn}    kind "stream"     GET /api/<name>/stream/<name>, server-sent events
+  tasks.py            TASKS = [Task(...)]     kind "tasks"      background loops, one switch each
+  listeners.py        LISTENERS = {...}       kind "listeners"  react to another module's signal
+  commands.py         COMMANDS = {...}        kind "commands"   python -m quirq <name> <command>
+  pages/<page>.json   page specs              kind "pages"      rendered by the shell, one switch each
+  ui/<widget>.js      custom widgets a page spec names (the escape hatch)
+  schema/             <file>.schema.json, the on-disk contracts
+```
+
+`tests/test_modules.py` holds every module to it: the manifest validates
+and names its folder; a declared kind has its file and an undeclared kind
+has none; `service.py` never imports FastAPI or `routers`; a module imports
+another only as `modules.<other>.service` or `.events`; routes stay under
+`/api/<name>` or the manifest's `aliases`; listeners name signals some
+module declares; event types are unique; every `File` has an example in
+`tests/fixtures/quirq-state/` and every sample file under the module's
+folder matches a `File`. Tests and the fixture slice stay outside the
+folder on purpose (`unittest discover -s tests` is the gate; the sample
+root is one assembled Space), owned through `FILES` both ways.
+
+```json
+{
+  "schema": 1, "name": "connections", "title": "Connections", "folder": "connections",
+  "enabled": true, "api": true, "stream": true, "listeners": false, "commands": true,
+  "tasks": {"poller": {"enabled": true, "tick_s": 30}},
+  "pages": {"connections": {"enabled": true}}
+}
+```
+
+A capability key is `true`, `false`, or an object with `enabled` and that
+capability's own settings; `tasks` and `pages` are keyed by item. `folder`
+names the state-root folder the module owns (`null` for a module that only
+writes into shared tiers such as `projects/`). `aliases` lists route paths
+outside `/api/<name>` the module keeps serving (`/api/schedules` for jobs).
+
+### 12.2 Switches, live
+
+`~/.quirq/settings/modules.json` holds the person's overrides
+(`{"modules": {"sharing": {"enabled": false}, "connections": {"tasks":
+{"poller": {"tick_s": 300}}}}}`); the effective state is the manifest with
+the overrides on top, kept in memory and re-read when the file changes.
+`GET /api/modules` describes every module; `PUT /api/modules/{name}`
+(localhost and same-origin only) merges a partial switch object, validated
+against the manifest (an unknown task or page is a 400), and applies it at
+once: the api and stream gates answer 404 `module_disabled`, the supervisor
+cancels or spawns the task, `signals.notify` skips the module's listeners,
+the CLI answers "off in Setup", the page leaves `GET /api/ui`. The Setup
+tab's Modules page (`modules/settings/pages/modules.json`) is a spec over
+those two routes. The one rule: **a switch gates what a module exposes,
+never what it stores or what another module reads through its service.**
+The env flags the loops honoured (`XO_CONNECTIONS_POLL_ENABLED`,
+`QUIRQ_WATCHER_ENABLED`, `XO_SCHEDULER_ENABLED`, ...) keep working for one
+release as a second gate beside the switch.
+
+### 12.3 Storage: Document, EventLog, File
+
+`services/storage/document.py`: `Document(path, schema=N, empty=fn,
+normalize=fn, name=..., private=False)`. `read()` answers `(document, ok)`:
+absent is empty, a file that is not JSON is served empty with `ok` false and
+never rewritten, a newer `schema` raises `UnsupportedSchema` (409).
+`modify(fn)` is the locked read-modify-write: `fn` edits in place and
+returns whether anything changed; only then is the file written, with
+`schema` and `updated_at` stamped; a corrupt file raises `CorruptDocument`
+(409 whose wire message names the document, never the path; the path goes
+to the log). Unknown keys survive.
+
+`services/storage/eventlog.py`: `EventLog(path, rotate_bytes, keep)`.
+`append(lines)` puts `ts` and `type` first, orders by `ts`, rotates past
+the threshold (`<stem>.<stamp>.jsonl`, the oldest beyond `keep` removed);
+`tail(limit, before, types)` reads newest first across the live file and
+the rotations; `follow(since, types)` is the async generator streams are
+built on; `follow_many` merges several logs, tagging each line.
+
+`services/storage/files.py`: `File(pattern, role, schema=, log=, rotate=,
+note=)`, the row of a module's file table. `role` is `record` (what
+happened; nothing rebuilds it), `fact` (a copy of state that lives elsewhere),
+`decision` (what a person chose), `cache` (delete freely) or `secret`.
+`scripts/write_layout_docs.py` renders every module's table into the sample
+root's README; `tests/test_modules.py` fails when that block is stale.
+
+### 12.4 Events, streams, signals, commands
+
+Every event line is `{ts, type}` first, then `pid`, `project_id`,
+`session_id`, `runtime` when known, then the type's own keys. `type` must
+be declared: the timeline schema's enum for the legacy types, a module's
+`events.TYPES` for its own. `modules/timeline/service.py` owns the logs:
+`emit(lines, project_id=)` validates and writes each line once (the project
+log when it has a pid, else the Space log `projects/timeline.jsonl`);
+`read(...)` merges every log newest first; the first merged read in a
+process compacts the old copies out of the Space log. The route model
+`TimelineEvent` types the envelope and allows the rest.
+
+A module's `stream.py` exposes async generators; `routers/streams.py`
+mounts each as `GET /api/<name>/stream/<stream>` (`id` = ts, `event` =
+type, `data` = the line; `Last-Event-ID` resumes; the stream ends when the
+switch flips). `services/signals.py` is the bus: a module declares
+`SIGNALS`, raises `await signals.notify("connections.new_events",
+toolkit=...)`, and every enabled `LISTENERS` entry runs (a failing listener
+is logged and skipped). `commands.py` functions take the argument list and
+return an exit code or a JSON-able value; `python -m quirq <module>
+<command>` runs one, and the jobs module can run one on a schedule in
+process (`{"module": ..., "command": ..., "args": [...]}`).
+
+### 12.5 Pages: the shell renders specs
+
+`space_ui/js/shell.js` fetches `GET /api/ui` (the tabs from
+`modules/ui.json` and every enabled page spec of every enabled module) and
+registers one view per spec beside the legacy views (a spec page wins a
+route both name); `js/core/spec-view.js` reads the page's one route, polls
+it while shown, and hands the blocks to `js/core/render.js`, which draws
+them with the kit (`stats`, `list`, `table`, `cards`, `detail`, `form`,
+`toggles`, `timeline`, `calendar`, `chart`, `stream`, `text`, `widget`).
+Expressions (`js/core/expr.js`) are paths into the payload with pipes
+(`rel`, `date`, `count`, `sum:`, `where:`, `map`, `plural:`, `join:`);
+actions (`js/core/actions.js`) are `call` (a method and path template),
+`open`, `link` and `confirm`; a `widget` block loads
+`modules/<name>/ui/<widget>.js` (served by `routers/kernel.py`) exporting
+`mount`, `update`, `destroy`, for what the vocabulary cannot draw. Every
+value is escaped once on its way into the DOM. The spec schema is
+`services/schema/page.schema.json`; `space_ui/README.md` documents the
+vocabulary for page authors.
+
+### 12.6 Adding a module
+
+`venv/bin/python scripts/new_module.py <name> --api --task --page` writes
+the manifest, the contract files asked for, a page spec with one list
+block, a schema, a fixture slice and a test file. Nothing outside those
+paths changes: the registry discovers the folder, the routes mount behind
+the gate, the task is supervised, the page appears in `/api/ui`, the files
+join the layout. Deleting a module is removing its folder; the ownership
+test names the fixture files left behind. After adding or changing routes
+or files run `scripts/write_route_docs.py` and `scripts/write_layout_docs.py`;
+the tests pin both outputs.

@@ -211,9 +211,7 @@ capability modules you need (`usage.py`, `models.py`, `sessions.py`,
 - One file per view under `space_ui/js/views/`; views never import each
   other — cross-view jumps go through `ctx.switchTo()`. All backend calls go
   through `js/core/api.js`.
-- Bump the `?v=` cache stamp of every module you touch in `js/app.js` (and
-  the `app.js` stamp in `index.html` if a view stamp moves; CSS stamps live in
-  `index.html`). Otherwise browsers keep the old file.
+- No cache stamps: `routers/space.py` serves `/space` with `Cache-Control: no-cache`, so browsers revalidate every file on load; import modules and link stylesheets by plain path.
 - Update `js/views/wiki.js` when the offline overview or its navigation changes.
   Maintain detailed UI guides in `xo-docs`, published at
   <https://docs.quirq.ai/docs/space>; Wiki opens those guides in a new tab.

@@ -79,5 +79,4 @@ rclone.conf
 # unrelated directories that happen to share the name (e.g. plugin/skills/quirq/).
 /.quirq/
 /xo-projects/
-/quirq/
 .xo/
