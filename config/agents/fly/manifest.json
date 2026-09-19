@@ -1,0 +1,26 @@
+{
+  "name": "fly",
+  "binary": "node",
+  "home_dir": "~/.quirq/fly-runtime",
+  "env_file": "~/.quirq/fly-runtime/.env",
+  "config_file": "~/.quirq/fly-runtime/runtime.json",
+  "agents_dir": "~/.quirq/flies",
+  "workspace_dir": "~/xo-projects",
+  "cwd": "~",
+  "cli_timeout_seconds": 30,
+  "api": { "session_header": "" },
+  "model_prefix": "fly",
+  "model_capabilities": {
+    "function_calling": false,
+    "vision": false,
+    "reasoning": false,
+    "json_output": true,
+    "max_context": 0,
+    "max_output": 0
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": [],
+    "secrets": []
+  }
+}
