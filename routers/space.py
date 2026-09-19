@@ -48,9 +48,9 @@ async def space_server_status():
 @router.get("/setup/status")
 async def space_setup_status():
     """Workspace metadata and verified account status, without credential values."""
-    from services.setup_status import snapshot
+    from modules.settings import service as settings
 
-    return await snapshot()
+    return await settings.setup_status()
 
 
 @router.post("/server/stop")
@@ -131,11 +131,8 @@ async def space_update_apply(request: Request):
 
     try:
         return await asyncio.to_thread(apply_update)
-    except UpdateError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "update_failed", "message": str(exc)},
-        )
+    except UpdateError:
+        raise  # a Conflict: the app's service error handler answers 409 update_failed
     except Exception as exc:
         print(f"⚠️ update apply failed ({exc})")
         raise HTTPException(
@@ -149,7 +146,7 @@ SPACE_CACHE_TTL = float(os.getenv("SPACE_CACHE_TTL", "30"))
 
 # The graph, dashboard and session-telemetry payloads used to be generated
 # here and served from /space/data/. They are files in the workspace .xo
-# directory now, served by routers/xo_data.py at /xo/*.json — one location on
+# directory now, served by routers/xo_data.py at /xo/*.json: one location on
 # disk, one URL that mirrors it. Only session_prompts stays: it is a
 # per-session lookup, not a workspace file.
 
@@ -228,9 +225,31 @@ async def session_prompts_data(agent: str, sid: str):
     return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that answers every file with "Cache-Control: no-cache".
+
+    no-cache does not mean "do not store": the browser keeps its copy but
+    revalidates it on every load, sending If-None-Match against the ETag
+    StaticFiles already computes, and gets a 304 (no body) while the file is
+    unchanged and the new bytes as soon as it changes. That makes the ?v=
+    cache stamps the UI used to carry on its imports and stylesheet links
+    unnecessary: a plain path is always fresh after a deploy. The header is
+    set after the parent has decided between 200 and 304 so both carry it
+    (starlette copies Cache-Control onto its 304 only when it is already
+    present, which it is not at that point)."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def mount_space(app):
-    """Mount the Space folder at /space (index.html served at /space/)."""
+    """Mount the Space folder at /space (index.html served at /space/).
+
+    Every file, index.html included, goes out with Cache-Control: no-cache
+    (see NoCacheStaticFiles), so the UI needs no cache stamps."""
     if SPACE_DIR.exists():
-        app.mount("/space", StaticFiles(directory=str(SPACE_DIR), html=True), name="space")
+        app.mount("/space", NoCacheStaticFiles(directory=str(SPACE_DIR), html=True), name="space")
     else:
         print(f"⚠️ Space folder not found at {SPACE_DIR}; /space not mounted (set SPACE_DIR to change)")

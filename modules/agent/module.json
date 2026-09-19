@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "agent",
+  "title": "Agent",
+  "description": "The agent side: chat, sessions, files, connectors, auth and the broker routes, plus the GitHub issue poller and the one-shot boot steps.",
+  "folder": null,
+  "enabled": true,
+  "api": true,
+  "tasks": {
+    "github_poller": {"enabled": true},
+    "startup_skills": {"enabled": true},
+    "xo_status": {"enabled": true}
+  },
+  "aliases": ["/"]
+}

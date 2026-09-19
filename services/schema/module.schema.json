@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/module.schema.json",
+  "title": "module.json: what a folder under modules/ exposes and what is on by default",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name", "title"],
+  "definitions": {
+    "switch": {
+      "description": "true, false, or an object with enabled and the capability's own settings",
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "object", "properties": {"enabled": {"type": "boolean"}}, "additionalProperties": true}
+      ]
+    },
+    "items": {
+      "description": "one switch per item (a task or a page), keyed by its name",
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "object", "additionalProperties": {"$ref": "#/definitions/switch"}}
+      ]
+    }
+  },
+  "properties": {
+    "schema": {"const": 1},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$", "description": "the folder name and the route namespace /api/<name>"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    "description": {"type": "string", "maxLength": 400},
+    "folder": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9_-]{0,39}$", "description": "the state-root folder this module owns, or null when it only writes into shared tiers"},
+    "depends": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "enabled": {"type": "boolean", "default": true},
+    "api": {"$ref": "#/definitions/switch"},
+    "stream": {"$ref": "#/definitions/switch"},
+    "tasks": {"$ref": "#/definitions/items"},
+    "listeners": {"$ref": "#/definitions/switch"},
+    "commands": {"$ref": "#/definitions/switch"},
+    "pages": {"$ref": "#/definitions/items"},
+    "aliases": {"type": "array", "items": {"type": "string", "pattern": "^/"}, "description": "route paths outside /api/<name> this module keeps serving"}
+  }
+}

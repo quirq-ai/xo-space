@@ -1,0 +1,477 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/page.schema.json",
+  "title": "A page spec: modules/<name>/pages/<page>.json, rendered by the shell",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "tab",
+    "route",
+    "label",
+    "blocks"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,39}$"
+    },
+    "tab": {
+      "type": "string",
+      "description": "a tab id from modules/ui.json"
+    },
+    "route": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9/-]*$",
+      "description": "the hash route, #/<route>"
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "read": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "the one GET that answers the whole page"
+    },
+    "poll_s": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 3600
+    },
+    "search": {
+      "type": "boolean",
+      "description": "offer the shell's page search over rendered rows"
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/block"
+      }
+    }
+  },
+  "definitions": {
+    "expr": {
+      "type": "string",
+      "description": "a path into the payload, with optional pipes: rel date count sum: where: map plural: join:"
+    },
+    "map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "call": {
+          "type": "string",
+          "pattern": "^(GET|POST|PUT|PATCH|DELETE) /",
+          "description": "method and path template; {field} fills from the row, {page.x} from the page payload"
+        },
+        "body": {
+          "type": "object"
+        },
+        "then": {
+          "type": "string",
+          "pattern": "^(refresh|toast|open:.+)$"
+        },
+        "open": {
+          "type": "string",
+          "description": "a page route to switch to"
+        },
+        "link": {
+          "type": "string",
+          "description": "an http(s) URL template; opens in a new tab"
+        },
+        "confirm": {
+          "type": "string"
+        },
+        "when": {
+          "$ref": "#/definitions/expr"
+        },
+        "tone": {
+          "type": "string",
+          "enum": [
+            "default",
+            "primary",
+            "danger"
+          ]
+        }
+      }
+    },
+    "column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "value"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/definitions/expr"
+        },
+        "link": {
+          "$ref": "#/definitions/expr"
+        },
+        "map": {
+          "$ref": "#/definitions/map"
+        },
+        "mono": {
+          "type": "boolean"
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "label"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "password",
+            "number",
+            "select",
+            "toggle",
+            "textarea"
+          ]
+        },
+        "value": {
+          "$ref": "#/definitions/expr"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "value",
+              "label"
+            ],
+            "properties": {
+              "value": {},
+              "label": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "options_from": {
+          "$ref": "#/definitions/expr"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "help": {
+          "type": "string"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "stats",
+            "list",
+            "table",
+            "cards",
+            "detail",
+            "form",
+            "toggles",
+            "timeline",
+            "calendar",
+            "chart",
+            "stream",
+            "text",
+            "widget"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "when": {
+          "$ref": "#/definitions/expr"
+        },
+        "read": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "a block that reads its own route instead of the page payload"
+        },
+        "items": {
+          "description": "for list, table, cards, detail: an expression naming the rows; for stats: the figures themselves",
+          "oneOf": [
+            {
+              "$ref": "#/definitions/expr"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "label",
+                  "value"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/definitions/expr"
+                  },
+                  "map": {
+                    "$ref": "#/definitions/map"
+                  },
+                  "open": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "empty": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "row": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "$ref": "#/definitions/expr"
+            },
+            "detail": {
+              "$ref": "#/definitions/expr"
+            },
+            "meta": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/expr"
+              }
+            },
+            "badge": {
+              "type": "object",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "$ref": "#/definitions/expr"
+                },
+                "map": {
+                  "$ref": "#/definitions/map"
+                }
+              }
+            },
+            "tone": {
+              "type": "object",
+              "required": [
+                "value"
+              ],
+              "properties": {
+                "value": {
+                  "$ref": "#/definitions/expr"
+                },
+                "map": {
+                  "$ref": "#/definitions/map"
+                }
+              }
+            },
+            "link": {
+              "$ref": "#/definitions/expr"
+            },
+            "open": {
+              "type": "string"
+            }
+          }
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/column"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/field"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/action"
+          }
+        },
+        "expand": {
+          "$ref": "#/definitions/block"
+        },
+        "submit": {
+          "type": "string",
+          "pattern": "^(POST|PUT|PATCH) /"
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "param",
+              "options"
+            ],
+            "properties": {
+              "param": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "value",
+                    "label"
+                  ]
+                }
+              },
+              "default": {}
+            }
+          }
+        },
+        "stream": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "a stream route for a stream block"
+        },
+        "since": {
+          "$ref": "#/definitions/expr"
+        },
+        "text": {
+          "$ref": "#/definitions/expr"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "widget": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "data": {
+          "$ref": "#/definitions/expr"
+        },
+        "height": {
+          "type": "string"
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "x": {
+          "$ref": "#/definitions/expr"
+        },
+        "y": {
+          "$ref": "#/definitions/expr"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "write": {
+          "type": "string",
+          "pattern": "^(PUT|PATCH|POST) /",
+          "description": "for toggles: where a change is written"
+        },
+        "toggles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "value"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/definitions/expr"
+              },
+              "path": {
+                "type": "string"
+              },
+              "help": {
+                "type": "string"
+              },
+              "rows": {
+                "$ref": "#/definitions/expr",
+                "description": "an expression naming items (an array, or an object through |entries): one switch per item, whose label, path and help are templates filled from the item ({key}) and whose value is evaluated against it"
+              },
+              "when": {
+                "$ref": "#/definitions/expr",
+                "description": "show the switch only while this is truthy"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

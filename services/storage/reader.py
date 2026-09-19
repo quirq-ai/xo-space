@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # into ``sessions-augment.json``, ``merge_session_record`` will refuse to
 # stitch and the route will 500. That's the intended fail-closed behaviour.
 _ADAPTER_FIELDS: frozenset[str] = frozenset({
-    "sessionId", "nativeSessionId", "directory", "backend", "updatedAt", "usage",
+    "sessionId", "nativeSessionId", "directory", "backend", "updatedAt", "usage", "purpose",
 })
 
 # Fields the watcher writes to ``sessions-augment.json``. Disjoint from

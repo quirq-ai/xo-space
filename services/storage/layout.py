@@ -3,21 +3,24 @@
 ::
 
     ~/.quirq/
-    ├── projects/      one folder per project, named by pid
+    ├── projects/      one folder per project, named by pid, plus the Space timeline
     ├── inbox/         the Inbox
-    ├── connections/   one folder per connection
-    ├── scheduler/     saved commands and their run history
-    ├── sharing/       shared repos this machine has already seen
+    ├── connections/   one folder per connection            (modules/connections)
+    ├── jobs/          saved commands and their run history  (modules/jobs; was scheduler/)
+    ├── sharing/       shared repos this machine has already seen (modules/sharing)
     ├── usage/         how far usage has been reported to XO
-    ├── settings/      Space-wide choices
+    ├── settings/      Space-wide choices, and modules.json: the module switches
     ├── secrets/       credentials
     ├── cache/         safe to delete: rebuilt automatically
     ├── logs/          safe to delete
     └── .locks/        internal
 
 Each folder is named here once, and every store asks for it through these
-functions. :func:`migrate_layout` moves files from where earlier releases
-kept them; it runs once at server start, before anything reads or writes.
+functions. A module's ``store.py`` declares the files it writes inside its
+folder (``FILES``, see ``services/storage/files.py``); the registry unions
+those tables and the layout test holds them to the sample state root.
+:func:`migrate_layout` moves files from where earlier releases kept them;
+it runs once at server start, before anything reads or writes.
 """
 
 from __future__ import annotations
@@ -45,6 +48,11 @@ def inbox_dir() -> Path:
 
 def connections_dir() -> Path:
     return quirq_state_dir() / "connections"
+
+
+def jobs_dir() -> Path:
+    """Saved commands and their run history (``modules/jobs``); was ``scheduler/``."""
+    return quirq_state_dir() / "jobs"
 
 
 def sharing_dir() -> Path:
@@ -148,6 +156,9 @@ MOVES: list[Move] = [
          _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log.1", lambda: logs_dir() / "commands.log"),
          lambda: logs_dir() / "commands.log.1"),
     Move("saved command output", _in_state_root("scheduler", "logs"), lambda: logs_dir() / "scheduler"),
+    # The scheduler became the jobs module: its folder and its log folder follow the name.
+    Move("saved commands", _in_state_root("scheduler"), jobs_dir),
+    Move("saved command output", lambda: logs_dir() / "scheduler", lambda: logs_dir() / "jobs"),
 ]
 
 

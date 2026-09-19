@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from services.errors import ServiceError
 from utils.runtime_env import logs_dir, quirq_state_dir
 
 log = logging.getLogger(__name__)
@@ -591,8 +592,13 @@ async def run_chain(
 SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "`", "$(", "\n")
 
 
-class CommandSpecError(ValueError):
-    """A command spec that must not run: malformed, or trying to reach a shell."""
+class CommandSpecError(ServiceError, ValueError):
+    """A command spec that must not run: malformed, or trying to reach a shell.
+    A ``ValueError`` for every caller that validates specs; on the request
+    path (``/api/schedules``) a 400 whose ``detail`` is the bare message."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(None, message, 400)
 
 
 def safe_arg(value: Any, *, allow_option: bool = False) -> str:

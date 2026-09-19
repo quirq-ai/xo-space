@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/modules-settings.schema.json",
+  "title": "settings/modules.json: the person's switches, overrides over each module.json",
+  "type": "object",
+  "required": ["schema", "modules"],
+  "properties": {
+    "schema": {"const": 1},
+    "updated_at": {"type": ["string", "null"]},
+    "modules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "api": {"$ref": "#/definitions/switch"},
+          "stream": {"$ref": "#/definitions/switch"},
+          "tasks": {"$ref": "#/definitions/items"},
+          "listeners": {"$ref": "#/definitions/switch"},
+          "commands": {"$ref": "#/definitions/switch"},
+          "pages": {"$ref": "#/definitions/items"}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "switch": {
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "object", "properties": {"enabled": {"type": "boolean"}}, "additionalProperties": true}
+      ]
+    },
+    "items": {
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "object", "additionalProperties": {"$ref": "#/definitions/switch"}}
+      ]
+    }
+  }
+}

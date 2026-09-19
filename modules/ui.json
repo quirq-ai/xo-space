@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "tabs": [
+    {"id": "projects", "label": "Projects", "default": "projects/overview"},
+    {"id": "agents", "label": "Agents", "default": "agents/overview", "aliases": ["sessions"]},
+    {"id": "inbox", "label": "Inbox", "default": "inbox/items"},
+    {"id": "setup", "label": "Setup", "default": "setup/workspace"}
+  ]
+}

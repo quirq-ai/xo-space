@@ -132,19 +132,7 @@ from routers.auth.auth import (
     consume_auth_flow,
     get_auth_token,
     get_auth_state,
-    router as auth_router,
 )
-from routers.auth.claude_setup_token import router as claude_setup_token_router
-from routers.auth.codex_setup import router as codex_setup_router
-from routers.cowork_agent.legacy.openclaw_usage import router as openclaw_usage_router
-from routers.status.models import router as models_router
-from routers.status.channels import router as channels_router
-from routers.status.providers import router as providers_router
-try:
-    from services.usage_sync import start_usage_sync_scheduler
-except Exception as _usage_import_err:
-    start_usage_sync_scheduler = None
-    print(f"⚠️ Usage sync module failed to load (non-fatal): {_usage_import_err}")
 
 
 # =============================================================================
@@ -710,57 +698,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Skill install failed (non-fatal): {exc}")
 
-    # Install the active agent's declared boot-time skills: catalog names listed
-    # under "startup_skills" in config/agents/<AGENT_NAME>/settings.json. Agents
-    # that declare none install nothing. Backgrounded because these shell out to
-    # the network (npx/git); boot must not wait on them.
-    _startup_skills_task = None
+    # Write ~/xo-projects/.xo/xo.json (static defaults) before the agent
+    # module's xo_status task seeds the live status. Non-fatal.
     try:
-        from services.cowork_agent.skill_catalog import install_startup_skills
-        _startup_skills_task = asyncio.create_task(install_startup_skills())
-        print("   Startup skills: background install scheduled")
-    except Exception as exc:
-        print(f"⚠️ Startup skill install failed to schedule (non-fatal): {exc}")
-
-    # Point every agent that supports it at this workspace's Composio MCP proxy, and
-    # keep it that way: one sweep now, retries with backoff while XO is unreachable,
-    # then a periodic reconcile (COMPOSIO_MCP_RECONCILE_INTERVAL). This is the only
-    # install path; there is no manual endpoint. Backgrounded because resolving the
-    # workspace-scoped principal costs one XO round trip; boot must not wait on it.
-    # Installs nothing when the backend holds no XO credential or has no workspace
-    # identity. Non-fatal.
-    _mcp_gateway_task = None
-    try:
-        from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
-        _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
-        print("   Composio MCP: background gateway install + reconcile scheduled")
-    except Exception as exc:
-        print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
-
-    # Write ~/xo-projects/.xo/xo.json (static defaults) and seed live status
-    # in the background. The dispatcher inside seed_agent_status() picks the
-    # right adapter for the current AGENT_NAME (no-op for agents without a
-    # status source). Non-fatal on every failure path.
-    _xo_status_task = None
-    try:
-        from services.xo_manifest import write_static_manifest, seed_agent_status
+        from services.xo_manifest import write_static_manifest
         await write_static_manifest()
-        _xo_status_task = asyncio.create_task(seed_agent_status())
-        print("   xo.json: status seed scheduled (background)")
     except Exception as exc:
         print(f"⚠️ xo.json: setup failed (non-fatal): {exc}")
-
-    # Start daily usage sync background task
-    _sync_task = None
-    _warmup_task = None
-    _watcher_task = None
-    _relay_task = None
-    if start_usage_sync_scheduler:
-        try:
-            _sync_task = asyncio.create_task(start_usage_sync_scheduler())
-            print("   Usage sync: background task started")
-        except Exception as e:
-            print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
 
     # One-time tier migration (docs/syncplan.md §9, T21).
     try:
@@ -771,69 +715,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Tier migration skipped (non-fatal): {e}")
 
-    # GitHub issue poller: refreshes the runtime issue mirror for every
-    # project with a github.com remote (docs/workitems-plan.md §6).
-    _github_poll_task = None
+    # Every background loop is a task some module declares (modules/*/tasks.py):
+    # the watcher, usage sync, the GitHub poller, the relay, the MCP gateway,
+    # the connections poller, the scheduler tick. The supervisor starts the
+    # ones whose switch is on, reports one that dies, and stops them all on
+    # shutdown; PUT /api/modules/{name} stops or starts one live.
+    from services import modules as module_registry
+    from services.supervisor import supervisor
     try:
-        from services.cowork_agent.github_poller import (
-            poll_interval_seconds,
-            poller_enabled,
-            start_github_poller,
-        )
-        if poller_enabled():
-            _github_poll_task = asyncio.create_task(start_github_poller())
-            print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
-        else:
-            print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
+        _started = await supervisor.start(module_registry.tasks())
+        print(f"   Tasks: {len(_started)} started ({', '.join(_started) or 'none'})")
     except Exception as e:
-        print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
-
-    # Connections poller: runs each due connection's collectors over the
-    # Composio MCP upstream and appends to ~/.quirq/connections/<toolkit>/
-    # events.jsonl, which the Inbox's connections feeder reads.
-    _connections_poll_task = None
-    try:
-        from services.connections.poller import (
-            poller_enabled as connections_poller_enabled,
-            start_connections_poller,
-            tick_seconds as connections_tick_seconds,
-        )
-        if connections_poller_enabled():
-            _connections_poll_task = asyncio.create_task(start_connections_poller())
-            print(f"   Connections poller: background task started ({connections_tick_seconds():.0f}s tick)")
-        else:
-            print("   Connections poller: disabled by XO_CONNECTIONS_POLL_ENABLED")
-    except Exception as e:
-        print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
-
-    # Visualizer watcher: materialises portable project metadata from the
-    # active runtime's native session store. Non-fatal: BFF endpoints keep
-    # serving whatever is already on disk.
-    _watcher_enabled = (
-        os.getenv("QUIRQ_WATCHER_ENABLED", "true").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
-    if _watcher_enabled:
-        try:
-            from services.cowork_agent.visualizer.watcher import start_watcher
-            _watcher_task = asyncio.create_task(start_watcher())
-            _watcher_task.add_done_callback(_report_watcher_task_exit)
-            print("   Watcher: background task started")
-        except Exception as e:
-            print(f"⚠️ Watcher failed to start (non-fatal): {e}")
-    else:
-        print("   Watcher: disabled by runtime configuration")
-
-    # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
-    # in a single tick, see services/cowork_agent/project_sharing/poller.py).
-    # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_SPACE_ID or no
-    # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
-    try:
-        from services.cowork_agent.project_sharing.poller import run_relay_poller
-        _relay_task = asyncio.create_task(run_relay_poller())
-        print("   Relay: background task started")
-    except Exception as e:
-        print(f"⚠️ Relay failed to start (non-fatal): {e}")
+        print(f"⚠️ Tasks failed to start (non-fatal): {e}")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
@@ -843,7 +736,6 @@ async def lifespan(app: FastAPI):
     # behind outlives this server, unlike the asyncio tasks cancelled below.
     _session_telemetry_daemons("stop")
 
-    # Cleanup background task
     if _warmup_task and not _warmup_task.done():
         _warmup_task.cancel()
         try:
@@ -851,61 +743,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    if _sync_task:
-        _sync_task.cancel()
-        try:
-            await _sync_task
-        except asyncio.CancelledError:
-            pass
-
-    if _watcher_task:
-        _watcher_task.cancel()
-        try:
-            await _watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    if _relay_task and not _relay_task.done():
-        _relay_task.cancel()
-        try:
-            await _relay_task
-        except asyncio.CancelledError:
-            pass
-
-    if _startup_skills_task and not _startup_skills_task.done():
-        _startup_skills_task.cancel()
-        try:
-            await _startup_skills_task
-        except asyncio.CancelledError:
-            pass
-
-    if _xo_status_task and not _xo_status_task.done():
-        _xo_status_task.cancel()
-        try:
-            await _xo_status_task
-        except asyncio.CancelledError:
-            pass
-
-    if _github_poll_task:
-        _github_poll_task.cancel()
-        try:
-            await _github_poll_task
-        except asyncio.CancelledError:
-            pass
-
-    if _connections_poll_task:
-        _connections_poll_task.cancel()
-        try:
-            await _connections_poll_task
-        except asyncio.CancelledError:
-            pass
-
-    if _mcp_gateway_task and not _mcp_gateway_task.done():
-        _mcp_gateway_task.cancel()
-        try:
-            await _mcp_gateway_task
-        except asyncio.CancelledError:
-            pass
+    await supervisor.stop()
     print("👋 Shutting down XO Space API Server...")
 
 
@@ -915,6 +753,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# The one seam between a service failure and its HTTP answer (routers/errors.py).
+from routers.errors import install_service_errors
+install_service_errors(app)
 
 _CORS_ORIGINS = [
     o.strip()
@@ -933,32 +775,25 @@ app.add_middleware(
 # after the TCP peer is recorded: the browser guard needs the real peer.
 from routers.browser_guard import add_forwarding_middleware
 add_forwarding_middleware(app)
-app.include_router(auth_router)
-app.include_router(claude_setup_token_router)
-app.include_router(codex_setup_router)
-app.include_router(openclaw_usage_router)
-app.include_router(models_router)
-app.include_router(channels_router)
-app.include_router(providers_router)
 
-# Cowork Agent API (migrated from bridge/): serves the xo-cowork frontend.
-from routers.cowork_agent import all_routers as cowork_agent_routers
-for _r in cowork_agent_routers:
-    app.include_router(_r)
+# Every route the server serves belongs to a module under modules/ (the
+# agent side is the `agent` module). The registry discovers them; each is
+# mounted behind its api gate so a module switched off in Setup answers 404
+# module_disabled without a restart. See services/modules.py.
+from fastapi import Depends
+from services import modules as module_registry
+for _module, _router in module_registry.routers():
+    app.include_router(_router, dependencies=[Depends(module_registry.gate(_module.name, "api"))])
+for _module, _stream_name, _generator in module_registry.streams():
+    from routers.streams import mount_stream
+    mount_stream(app, _module, _stream_name, _generator)
 
-# Local layer: the command scheduler's API (jobs run by the watcher tick).
-from routers.schedules import router as schedules_router
-app.include_router(schedules_router)
-
-# Space: telemetry source configuration (the Agents tab's Configure page).
-from routers.telemetry_sources import router as telemetry_sources_router
-app.include_router(telemetry_sources_router)
-
-# Space: local workspace knowledge graph (static UI + server control widget).
+# The kernel's own routes: the switches, the shell's page list, the static
+# mount with the process controls.
+from routers.kernel import router as kernel_router
 from routers.space import router as space_router, mount_space
-from routers.xo_data import router as xo_data_router
+app.include_router(kernel_router)
 app.include_router(space_router)
-app.include_router(xo_data_router)
 mount_space(app)
 
 # =============================================================================
