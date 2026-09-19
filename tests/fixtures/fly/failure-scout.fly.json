@@ -1,0 +1,196 @@
+{
+  "format": "xo-fly",
+  "schemaVersion": 1,
+  "fly": {
+    "id": "fly-109836ad-f767-462e-a198-64f1b0024a3a",
+    "name": "Failure Scout",
+    "revision": 2
+  },
+  "taskFamily": "report-scout-v1",
+  "policy": {
+    "schemaVersion": 1,
+    "family": "linear-file-ranker-v1",
+    "featureVersion": "report-scout-features-v1",
+    "seed": 17,
+    "weights": [
+      2.6090241078690736e-16,
+      -0.0002709038266135286,
+      0.0002709038266130344,
+      -1.8985971108556527,
+      -1.8985971108556527,
+      3.501856054591249,
+      -0.4464972940699879,
+      0,
+      0,
+      -1.465396764642987,
+      3.501856054591249,
+      -2.036459289948254,
+      -2.5257573810222315e-16,
+      0.12064225683661445,
+      -0.21095523453951706,
+      0,
+      0,
+      4.440892098500668e-17,
+      5.5511151231256434e-17
+    ],
+    "trainedEpochs": 60
+  },
+  "contracts": {
+    "runtime": "report-scout-runtime-v1",
+    "observations": "file-metadata-v1",
+    "actions": "inspect-file-v1",
+    "features": "report-scout-features-v1",
+    "featureNames": [
+      "bias",
+      "json",
+      "csv",
+      "filename_query_overlap",
+      "path_query_overlap",
+      "measurement_name",
+      "summary_name",
+      "raw_name",
+      "draft_name",
+      "archive_path",
+      "output_path",
+      "reference_path",
+      "depth",
+      "log_size",
+      "requested_field_name_overlap",
+      "backup_name",
+      "dated_name",
+      "budget_remaining",
+      "useful_read_fraction"
+    ],
+    "task": "extract-fields-v1",
+    "skills": {
+      "list": "relative-file-list-v1",
+      "json": "json-records-v1",
+      "csv": "csv-records-v1",
+      "report": "cited-record-report-v1"
+    },
+    "inference": "greedy-score; ties use sorted relative path; no weight updates"
+  },
+  "task": {
+    "fields": [
+      "run",
+      "job",
+      "status",
+      "error_code",
+      "message",
+      "observed_at",
+      "attempts"
+    ],
+    "query": "workspace job failures",
+    "maxReads": 4
+  },
+  "requestedCapabilities": [
+    "workspace.list",
+    "workspace.read-json-csv",
+    "report.produce"
+  ],
+  "training": {
+    "epochs": 60,
+    "examples": 36,
+    "humanExamples": 3,
+    "seed": 17,
+    "learningRate": 0.05,
+    "datasetId": "space-failures-synthetic-v1",
+    "datasetDigest": "6608b36452817bd1f8b9b740beccb8beceb2f15935ed11584507e7d004ef3d8c",
+    "splitDigest": "63294faccafe8f8f593972a0877c52ec48feceb7fc265fa57fa616938bed970f",
+    "trainingWorkspaceIds": [
+      "space-failures-train-01",
+      "space-failures-train-02",
+      "space-failures-train-03",
+      "space-failures-train-04",
+      "space-failures-train-05",
+      "space-failures-train-06",
+      "space-failures-train-07",
+      "space-failures-train-08",
+      "space-failures-train-09",
+      "space-failures-train-10",
+      "space-failures-train-11",
+      "space-failures-train-12"
+    ],
+    "startedAt": "2026-09-19T00:23:30.132Z",
+    "completedAt": "2026-09-19T00:23:30.457Z",
+    "policyHash": "f4c9c6ee837c85a2fee4696405af535907bea7de7d70bb034617535e584be95a",
+    "source": "teacher-and-human-demonstrations",
+    "trainerVersion": "report-scout-cross-entropy-v1",
+    "codeVersion": "report-scout-runtime-v1",
+    "lineage": [
+      {
+        "datasetDigest": "6608b36452817bd1f8b9b740beccb8beceb2f15935ed11584507e7d004ef3d8c",
+        "policyHash": "f4c9c6ee837c85a2fee4696405af535907bea7de7d70bb034617535e584be95a",
+        "epochs": 60,
+        "seed": 17,
+        "learningRate": 0.05,
+        "workspaceDigests": [
+          "7c6569d10e0f079aea16055936b8b94e5c4eb112fe9222e1e09a337db04a51dd",
+          "08315df32167fc039efe78a861d2540db77ae1ddaf57d13148c660d3970807c3",
+          "5c716949abd2b59a894e99bab356e5827eb203849108cc90ae89a9a7a544f177",
+          "c819f1aa3834fa451476788ad3801de93ed42ba543690470b3a81ad49fa3384a",
+          "7299dff0dfbc7d8e9d9d9987e900c37eb8898417a585d56e2fb9d1fccddff475",
+          "9666739440c086eec6dd2b17e8d0fc8c65165ad4943024f260f0946fe579b0f7",
+          "e8a4501147a651fc72324279ebd23b99d5e07aaf41b0dfe5371ee12f9148c565",
+          "0cf4bc29d676303bfb9cb9e6ecabf7a750357081bbe6f351ab09f0311bc7ff4b",
+          "b2eab10aec637fd2dbdc65bb5301a6d941db5a7e7fea04d257553b0361c45c9b",
+          "2915401cb798268ce6e05defe328d16444e537b7d17374a3f35f02df3caf4496",
+          "8d2338dfe14d30331303b0f68ab9461ced52f6a427332cd9697579aa5dcfd43d",
+          "a9e6ccf61b091be74708540f0a75f843a1ec088b12c6aa30ad37bf0d01269409"
+        ]
+      }
+    ],
+    "unknownPriorTraining": false
+  },
+  "evaluation": {
+    "datasetDigest": "6608b36452817bd1f8b9b740beccb8beceb2f15935ed11584507e7d004ef3d8c",
+    "testWorkspaceIds": [
+      "space-failures-test-01",
+      "space-failures-test-02",
+      "space-failures-test-03",
+      "space-failures-test-04",
+      "space-failures-test-05",
+      "space-failures-test-06"
+    ],
+    "policyHash": "f4c9c6ee837c85a2fee4696405af535907bea7de7d70bb034617535e584be95a",
+    "completedAt": "2026-09-19T00:23:53.406Z",
+    "learned": {
+      "summary": {
+        "count": 6,
+        "coverage": 1,
+        "precision": 0.75,
+        "meanReads": 4,
+        "completeRate": 0,
+        "allRelevantFoundRate": 1,
+        "meanErrors": 0
+      }
+    },
+    "filename": {
+      "summary": {
+        "count": 6,
+        "coverage": 0,
+        "precision": 0,
+        "meanReads": 4,
+        "completeRate": 0,
+        "allRelevantFoundRate": 0,
+        "meanErrors": 0
+      }
+    },
+    "random": {
+      "summary": {
+        "count": 6,
+        "coverage": 0.4444444444444444,
+        "precision": 0.3333333333333333,
+        "meanReads": 4,
+        "completeRate": 0,
+        "allRelevantFoundRate": 0,
+        "meanErrors": 0
+      }
+    }
+  },
+  "scope": "A learned file-choice policy. Parsing, extraction and report generation require the preinstalled compatible host skills. No language model, runtime code, or credentials are included.",
+  "integrity": {
+    "algorithm": "SHA-256",
+    "digest": "4faafcae61f947a9876a99dddffd01af5d846c7b49b615c6a6ed4c105b17ea06"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source": "solar-claude/src/fly/tasks/core.js",
+  "sourceSha256": "153031d7eeaed094ad6b6a790a597406afa40155fa38cc4a63981f52d8d68c4f",
+  "runtime": "report-scout-runtime-v1",
+  "featureVersion": "report-scout-features-v1",
+  "vendored": "2026-09-19",
+  "note": "Byte-for-byte browser core. Update only alongside parity fixtures and contract review."
+}

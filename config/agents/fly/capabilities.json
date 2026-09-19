@@ -1,0 +1,7 @@
+{
+  "models": { "enabled": true, "oauth": {}, "api_keys": { "enabled": false } },
+  "data": { "enabled": false },
+  "channels": { "enabled": false },
+  "secrets": { "enabled": false },
+  "remote_control": { "enabled": false }
+}

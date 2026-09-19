@@ -1,0 +1,219 @@
+{
+  "artifactDigest": "4faafcae61f947a9876a99dddffd01af5d846c7b49b615c6a6ed4c105b17ea06",
+  "trace": [
+    {
+      "step": 1,
+      "action": "inspect_file",
+      "candidateId": "results/test-01/telemetry-2.json",
+      "path": "results/test-01/telemetry-2.json",
+      "features": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0.4,
+        0.4891464610482364,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "score": 7.062452938340387,
+      "probability": 0.4953459052924704,
+      "matchedRows": 1,
+      "error": null
+    },
+    {
+      "step": 2,
+      "action": "inspect_file",
+      "candidateId": "results/test-01/telemetry-3.csv",
+      "path": "results/test-01/telemetry-3.csv",
+      "features": [
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0.4,
+        0.4555811561458426,
+        0,
+        0,
+        0,
+        0.75,
+        1
+      ],
+      "score": 7.058945351858779,
+      "probability": 0.9781184487931313,
+      "matchedRows": 1,
+      "error": null
+    },
+    {
+      "step": 3,
+      "action": "inspect_file",
+      "candidateId": "results/test-01/workspace-job-failures-telemetry-1.csv",
+      "path": "results/test-01/workspace-job-failures-telemetry-1.csv",
+      "features": [
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0.4,
+        0.4536258720442431,
+        0.1111111111111111,
+        0,
+        0,
+        0.5,
+        1
+      ],
+      "score": 3.2380757697563096,
+      "probability": 0.979333855955305,
+      "matchedRows": 1,
+      "error": null
+    },
+    {
+      "step": 4,
+      "action": "inspect_file",
+      "candidateId": "archive/test-01/document-index-7.json",
+      "path": "archive/test-01/document-index-7.json",
+      "features": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0.4,
+        0.44745702944367916,
+        0,
+        0,
+        0,
+        0.25,
+        1
+      ],
+      "score": -1.4116854426001075,
+      "probability": 0.45321646564012985,
+      "matchedRows": 0,
+      "error": null
+    }
+  ],
+  "report": {
+    "schemaVersion": 1,
+    "taskFamily": "report-scout-v1",
+    "workspaceId": "space-failures-test-01",
+    "title": "Test · nightly workspace sync · extracted records",
+    "status": "partial",
+    "reason": "Read budget reached; uninspected files may contain more records.",
+    "scope": {
+      "eligibleFiles": 12,
+      "inspectedFiles": 4,
+      "inspectedPaths": [
+        "results/test-01/telemetry-2.json",
+        "results/test-01/telemetry-3.csv",
+        "results/test-01/workspace-job-failures-telemetry-1.csv",
+        "archive/test-01/document-index-7.json"
+      ],
+      "unreadPaths": [
+        "archive/test-01/workspace-job-failures-reference-4.json",
+        "archive/test-01/workspace-job-failures-summary-1.json",
+        "docs/test-01/document-index-8.json",
+        "docs/test-01/workspace-job-failures-reference-5.json",
+        "docs/test-01/workspace-job-failures-summary-2.json",
+        "templates/test-01/document-index-9.json",
+        "templates/test-01/workspace-job-failures-reference-6.json",
+        "templates/test-01/workspace-job-failures-summary-3.json"
+      ]
+    },
+    "fields": [
+      "run",
+      "job",
+      "status",
+      "error_code",
+      "message",
+      "observed_at",
+      "attempts"
+    ],
+    "missingFields": [],
+    "records": [
+      {
+        "values": {
+          "run": "space-failures-test-01-run-2",
+          "job": "search-index",
+          "status": "failed",
+          "error_code": "AUTH_EXPIRED",
+          "message": "Workspace-sync credential was rejected as expired; index refresh could not fetch source changes. Synthetic incident test-01.",
+          "observed_at": "2026-08-20T02:02:00Z",
+          "attempts": 3
+        },
+        "source": {
+          "path": "results/test-01/telemetry-2.json",
+          "location": "$.records[0]",
+          "contentHash": "d15c8cc1feb336fa851ca7332161c9621e877d6880005c831072f793052201fb"
+        }
+      },
+      {
+        "values": {
+          "run": "space-failures-test-01-run-3",
+          "job": "daily-report",
+          "status": "blocked",
+          "error_code": "TOKEN_REFRESH_FAILED",
+          "message": "Workspace-sync credential refresh failed; report source fetch was skipped. No report was produced. Synthetic incident test-01.",
+          "observed_at": "2026-08-20T02:04:00Z",
+          "attempts": 1
+        },
+        "source": {
+          "path": "results/test-01/telemetry-3.csv",
+          "location": "row 2",
+          "contentHash": "a26cbae9e6e284f020fed0b4a3d40c9b6a2cc17fd67b055e1106bd5387b245d6"
+        }
+      },
+      {
+        "values": {
+          "run": "space-failures-test-01-run-1",
+          "job": "connector-sync",
+          "status": "failed",
+          "error_code": "AUTH_EXPIRED",
+          "message": "Workspace-sync credential was rejected as expired; connector import stopped before fetching pages. Synthetic incident test-01.",
+          "observed_at": "2026-08-20T02:00:00Z",
+          "attempts": 2
+        },
+        "source": {
+          "path": "results/test-01/workspace-job-failures-telemetry-1.csv",
+          "location": "row 2",
+          "contentHash": "50d30829087418e924f99ab5932a7c24762809ce4606de796cf00d2d619c0f95"
+        }
+      }
+    ],
+    "errors": [],
+    "note": "Records contain all requested fields. Values are copied from cited files; no unseen content or generated facts are included."
+  }
+}
