@@ -922,6 +922,12 @@ _CORS_ORIGINS = [
     if o.strip()
 ]
 
+# Every POST/PUT/PATCH/DELETE, on every route, is refused when a browser sent it
+# from another site; the CORS allow list names the other sites trusted to write.
+# Added before CORS so it runs inside it and a refusal still carries CORS headers.
+from routers.browser_guard import add_browser_write_guard, add_forwarding_middleware
+add_browser_write_guard(app, _CORS_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
@@ -931,7 +937,6 @@ app.add_middleware(
 )
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
-from routers.browser_guard import add_forwarding_middleware
 add_forwarding_middleware(app)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
@@ -1259,7 +1264,10 @@ async def ask_question_streaming(data: AskQuestionRequest):
 # =============================================================================
 
 if __name__ == "__main__":
-    host = os.getenv("HOST", "0.0.0.0")
+    # Loopback unless HOST says otherwise: the API has no login, so listening on
+    # every interface would expose the user's files to the whole network. The
+    # Docker image sets HOST=0.0.0.0 inside the container instead.
+    host = os.getenv("HOST", "127.0.0.1")
     requested_port = int(os.getenv("PORT", "5002"))
     try:
         port = resolve_server_port(
