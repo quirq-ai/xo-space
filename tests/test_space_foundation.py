@@ -20,9 +20,10 @@ from pydantic import ValidationError
 
 from routers.cowork_agent.bff import errors as bff_errors
 from services import errors, timestamps
-from services.connections import collectors, poller
-from services.connections import service as connections_service
-from services.connections import store as connections_store
+from services import signals
+from modules.connections import collectors, poller
+from modules.connections import service as connections_service
+from modules.connections import store as connections_store
 from services.inbox import service as inbox_service
 from services.inbox import store as inbox_store
 from services.storage import atomic_write, flock, paths, reader
@@ -82,7 +83,7 @@ class StorageMoveTests(unittest.TestCase):
             self.assertTrue(fn.__module__.startswith("services.storage."), fn)
 
     def test_inbox_and_connections_import_storage_not_the_former_paths(self) -> None:
-        for rel in ("services/inbox/store.py", "services/inbox/feeders.py", "services/connections/store.py"):
+        for rel in ("services/inbox/store.py", "services/inbox/feeders.py", "modules/connections/store.py"):
             with self.subTest(file=rel):
                 src = read(rel)
                 self.assertIn("from services.storage.", src)
@@ -146,7 +147,7 @@ class ServiceErrorTests(unittest.TestCase):
         self.assertIs(inbox_service.InboxError, inbox_store.InboxError)
         self.assertIs(connections_service.ConnectionsError, connections_store.ConnectionsError)
         self.assertEqual(inbox_store.InboxError.__module__, "services.inbox.store")
-        self.assertEqual(connections_store.ConnectionsError.__module__, "services.connections.store")
+        self.assertEqual(connections_store.ConnectionsError.__module__, "modules.connections.store")
         exc = inbox_store.InboxError("item_not_found", "Inbox item not found.", 404)
         self.assertEqual((exc.code, exc.message, exc.status, str(exc)),
                          ("item_not_found", "Inbox item not found.", 404, "Inbox item not found."))
@@ -168,14 +169,15 @@ class ServiceErrorTests(unittest.TestCase):
             Body(status="seen", extra=1)
 
     def test_the_two_routers_use_the_shared_glue(self) -> None:
-        for rel in ("routers/cowork_agent/bff/inbox.py", "routers/cowork_agent/bff/connections.py"):
+        for rel in ("routers/cowork_agent/bff/inbox.py", "modules/connections/routes.py"):
             with self.subTest(file=rel):
                 src = read(rel)
-                self.assertIn("from routers.cowork_agent.bff.errors import ForbidExtra, http_error", src)
+                self.assertIn("from routers.errors import ForbidExtra", src)
+                self.assertNotIn("http_error", src, "errors reach the wire through the app handler")
                 self.assertNotIn("_ForbidExtra", src)
                 self.assertNotIn("def _http(", src)
                 self.assertNotIn("ConfigDict", src)
-        glue = read("routers/cowork_agent/bff/errors.py")
+        glue = read("routers/errors.py")
         self.assertIsNone(DASHES.search(glue))
         self.assertNotRegex(glue, AGENT_NAMES)
         self.assertNotRegex(glue, r"^\s*(import os|from os |import pathlib|from pathlib)", "BFF rule P2")
@@ -185,46 +187,54 @@ class ServiceErrorTests(unittest.TestCase):
 
 
 class NewEventsListenerTests(unittest.TestCase):
-    """``connections.service.poll_now`` tells registered listeners when a poll
-    collected something; the inbox registers one at import. The registry is
-    restored after every test."""
+    """``connections.service.poll_now`` raises the ``connections.new_events``
+    signal when a poll collected something; the inbox registers a listener
+    at import through ``register_new_events_listener`` (``services.signals``
+    underneath). The runtime listeners are restored after every test."""
 
     OUTCOME = {"toolkit": "gmail", "polled": True, "new_events": 2, "error": None, "skipped": None}
+    SIGNAL = "connections.new_events"
 
     def setUp(self) -> None:
-        self._saved = list(connections_service._new_events_listeners)
+        self._saved = {k: list(v) for k, v in signals._extra.items()}
         self.loop = asyncio.new_event_loop()
 
     def tearDown(self) -> None:
-        connections_service._new_events_listeners[:] = self._saved
+        signals._extra.clear()
+        signals._extra.update({k: list(v) for k, v in self._saved.items()})
         self.loop.close()
 
     def run_(self, coro):
         return self.loop.run_until_complete(coro)
 
+    def _only(self, *fns) -> None:
+        signals._extra[self.SIGNAL] = [("test", fn) for fn in fns]
+
     def test_registration_is_by_identity_and_idempotent(self) -> None:
         async def fn(toolkit: str) -> None:
             pass
 
-        connections_service._new_events_listeners[:] = []
+        signals._extra[self.SIGNAL] = []
         connections_service.register_new_events_listener(fn)
         connections_service.register_new_events_listener(fn)
-        self.assertEqual(connections_service._new_events_listeners, [fn])
+        self.assertEqual([f for _m, f in signals._extra[self.SIGNAL]], [fn])
         self.assertIn("register_new_events_listener", connections_service.__all__)
 
     def test_the_inbox_registers_its_ingest_once_at_import(self) -> None:
-        self.assertEqual(self._saved.count(inbox_service._ingest_after_poll), 1)
+        registered = [f for _m, f in self._saved.get(self.SIGNAL, [])]
+        self.assertEqual(registered.count(inbox_service._ingest_after_poll), 1)
         importlib.import_module("services.inbox.service")
         importlib.import_module("services.inbox")
-        self.assertEqual(connections_service._new_events_listeners.count(inbox_service._ingest_after_poll), 1)
+        registered = [f for _m, f in signals._extra.get(self.SIGNAL, [])]
+        self.assertEqual(registered.count(inbox_service._ingest_after_poll), 1)
 
     def test_poll_now_awaits_every_listener_with_the_toolkit_only_when_something_arrived(self) -> None:
         first, second = AsyncMock(), AsyncMock()
-        connections_service._new_events_listeners[:] = [first, second]
+        self._only(first, second)
         with patch.object(poller, "poll_connection", new=AsyncMock(return_value=self.OUTCOME)):
             self.assertEqual(self.run_(connections_service.poll_now("gmail")), self.OUTCOME)
-        first.assert_awaited_once_with("gmail")
-        second.assert_awaited_once_with("gmail")
+        first.assert_awaited_once_with(toolkit="gmail")
+        second.assert_awaited_once_with(toolkit="gmail")
         for outcome in ({**self.OUTCOME, "new_events": 0},
                         {**self.OUTCOME, "polled": False, "new_events": 0, "skipped": "busy"}):
             first.reset_mock()
@@ -239,28 +249,28 @@ class NewEventsListenerTests(unittest.TestCase):
             raise OSError("disk")
 
         after = AsyncMock()
-        connections_service._new_events_listeners[:] = [broken, after]
+        self._only(broken, after)
         with patch.object(poller, "poll_connection", new=AsyncMock(return_value=self.OUTCOME)), \
-             self.assertLogs(connections_service.logger, level="WARNING") as logs:
+             self.assertLogs(signals.logger, level="WARNING") as logs:
             self.assertEqual(self.run_(connections_service.poll_now("gmail")), self.OUTCOME)
         self.assertEqual(len(logs.records), 1)
         message = logs.records[0].getMessage()
         self.assertIn("broken", message)
-        self.assertIn("gmail", message)
+        self.assertIn(self.SIGNAL, message)
         self.assertIsNotNone(logs.records[0].exc_info)
-        after.assert_awaited_once_with("gmail")
+        after.assert_awaited_once_with(toolkit="gmail")
 
     def test_cancellation_inside_a_listener_propagates(self) -> None:
         async def cancelled(toolkit: str) -> None:
             raise asyncio.CancelledError
 
-        connections_service._new_events_listeners[:] = [cancelled]
+        self._only(cancelled)
         with patch.object(poller, "poll_connection", new=AsyncMock(return_value=self.OUTCOME)):
             with self.assertRaises(asyncio.CancelledError):
                 self.run_(connections_service.poll_now("gmail"))
 
     def test_connections_never_imports_the_inbox(self) -> None:
-        for path in sorted((ROOT / "services" / "connections").glob("*.py")):
+        for path in sorted((ROOT / "modules" / "connections").glob("*.py")):
             with self.subTest(file=path.name):
                 self.assertNotIn("services.inbox", path.read_text(encoding="utf-8"))
         src = read("services/inbox/service.py")

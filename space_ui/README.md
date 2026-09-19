@@ -10,7 +10,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 | Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
-| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Jobs, Server |
+| Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Jobs, Server, Modules |
 
 Space starts at Projects Overview. **Data** contains the existing List, Graph
 and Tree views at `#/projects/data/list`, `#/projects/data/graph` and
@@ -92,18 +92,24 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 
 | Path | What it is |
 |------|------------|
-| `index.html` | Thin shell: markup + stylesheet links + an import map + the `js/app.js` entry. The import map is where `core/api.js`, `core/ui.js` and `core/connections.js` get their cache stamp: views import those three bare, the map rewrites every such import to one `?v=` URL (one module instance, fetched fresh after a bump); every other core module keeps the stamp on its import line. |
-| `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). |
+| `index.html` | Thin shell: markup + stylesheet links + the `js/shell.js` entry. No cache stamps and no import map: the `/space` mount sends `Cache-Control: no-cache` on every file, so the browser revalidates each stylesheet and module on load (304 while unchanged) and every import is a plain path. |
+| `css/` | The original stylesheet split at its section banners, loaded in original order (cascade unchanged). `css/shell.css` holds the `.spec-*` layout of the pages the shell renders from specs. |
 | `fonts/inter/` | Inter variable font (upright and italic) with its SIL OFL license. `css/base.css` loads it as `--sans`; `--mono` stays the system monospace and is only for code, commands, logs and IDs. |
-| `js/app.js` | Entry point. Registers views; **adding a view = one new file in `js/views/` + one import line here.** |
-| `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, per-view refresh and failure isolation. Primary sections are configured independently of their pages. |
+| `js/shell.js` | Entry point. Fetches `GET /api/ui`, registers the hand-written views, then one spec view per page the kernel answers with, and starts the registry with the tabs `/api/ui` named; falls back to `PRIMARY_TABS` and the legacy views when the server is down and retries when the footer pill sees it up. **Adding a hand-written view = one new file in `js/views/` + one import line here; a module's page needs no line at all** (see The shell and page specs). |
+| `js/core/spec-view.js` | `specView(page)`: the registry view for one `/api/ui` page: one read (`spec.read`), a poll every `poll_s` while shown, page search over rendered rows, the kit's alert on a failed read, "off in Setup" with a link to `#/setup/modules` on a 404 `module_disabled`. |
+| `js/core/render.js` | The block renderer: `stats` `list` `table` `cards` `detail` `form` `toggles` `timeline` `calendar` `chart` `stream` `text` `widget` over the kit; `when`, `empty`, `expand` (a nested block under a row, its own read filled from the row), row search. Every value reaching innerHTML is escaped exactly once here; text blocks go through `markdown.js`. |
+| `js/core/expr.js` | Expressions: a dotted path (the row first, then the payload; `page.x` always the payload) with pipes `rel` `date` `count` `sum:` `where:` `map` `plural:` `join:` `entries`; `fill()` for `{field}` templates; `pathObject()` for a toggle's dotted path. Pure, so the tests run it under node. |
+| `js/core/actions.js` | `call` (method and path template, body, `confirm`, `then: refresh, toast, open:<route>`), `open`, `link` (http and https only, new tab, noopener); buttons disabled while in flight, failures as a toast with `failText`. |
+| `js/core/stream.js` | A stream block: reads `GET /api/<module>/stream/<name>` (server-sent events, every event type, `Last-Event-ID` resume), prepends lines, keeps `limit` (default 200), closes on hide. |
+| `js/core/widgets.js` | A widget block: imports `/space/modules/<module>/ui/<widget>.js` on first show; the module exports `mount(el, ctx)`, `update(data)`, `destroy()`; an unknown widget renders an alert naming it. |
+| `js/core/registry.js` | View registry: primary section links, `1..n` hotkeys (ignored while editing), canonical hash routes and aliases, history, lazy mounts, per-view refresh and failure isolation. Primary sections are configured independently of their pages; `setNavigation` re-applies them, `unregisterView` retires a page, and every change announces the page list as a `space:pages` event. |
 | `js/core/navigation.js` | Primary sections and their page definitions, canonical routes, labels and stable view IDs. |
 | `js/core/project-actions.js` | The Add handoff opens Manage’s clone form only after current navigation completes. The legacy Setup-project event opens Manage without opening Add. |
 | `js/core/project-share.js` | Reusable inline Space ID form for Manage project cards, with draft retention, pending-state protection, and the existing share endpoint. |
 | `js/core/timeline-summary.js` | Counts mapped files or loaded commits in the selected project lanes and date window; playback and trace dimming do not alter those totals. |
 | `js/core/project-pins.js` | Browser-local project pins shared by Manage actions and Data filtering, with storage-event synchronization and an in-memory fallback. |
 | `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
-| `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
+| `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. Lists the active tab's pages from the registry's page list merged over the `navigation.js` tables, ordered by order then label; a view with `secondary:false` is never listed, one with `sectionNav:false` (Setup) hides the bar. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
 | `js/core/toolbar.js` | Shared toolbar: Cmd+K trigger in the navbar search slot, active-filter page search, and the `/` shortcut that opens the palette. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
@@ -140,9 +146,9 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
-The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`/`toolbar`, mount/show/hide)
-is documented in the header comment of `js/core/registry.js`; repo-wide working
-rules are in the root `AGENTS.md`.
+The view contract (`id`/`label`/`order`/`nav`/`parent`/`section`/`toolbar`, mount/show/hide,
+plus the optional `secondary` and `sectionNav` flags) is documented in the header
+comment of `js/core/registry.js`; repo-wide working rules are in the root `AGENTS.md`.
 
 `toolbar` is an object or function returning `{graph: true}` for the map
 controls, `{search: {placeholder, getValue, setValue}}` for page search, or
@@ -151,6 +157,95 @@ can supply an accessible `label`. Views own query state and filtering, and
 call `ctx.refreshToolbar()` when a subview or load changes the available
 controls. The registry ignores refreshes from inactive views and waits for
 mount to finish before showing the latest requested view.
+
+## The shell and page specs
+
+A module's page is a JSON file, not a view: `modules/<module>/pages/<page>.json`
+(validated by `services/schema/page.schema.json`). The kernel answers
+`GET /api/ui` with the tabs (`modules/ui.json`) and every page whose module
+and page switch are on, spec inline. `js/shell.js` fetches it at boot,
+registers the hand-written views first, then `specView(page)` for each page
+**after** them, so a spec page wins a route the `navigation.js` tables also
+name (Inbox Connections, Jobs, Activity and Sharing activity are spec pages
+today; the hand-written versions of those routes are retired once `/api/ui`
+answers). The registry starts with the tabs `/api/ui` named. A page's view id
+is `<module>/<id>`, its parent is the spec's `tab`, its section is its own.
+
+**One read.** `read` is the one GET that answers the whole page; the view
+re-reads it every `poll_s` while shown and on Refresh. A failed read renders
+the kit's alert with `failText`; a 404 whose code is `module_disabled` says
+the page is off in Setup and links to `#/setup/modules`. `search: true` gives
+the page the shell's search field over its rendered rows.
+
+**Blocks** (`js/core/render.js`): `stats` (figures, each `{label, value, map?,
+open?}`), `list`, `table`, `cards` and `timeline` (rows from `items`, keyed by
+`key`, each drawn from `row: {title, detail, meta, badge, tone, link, open}`,
+with `actions` and an optional `expand` block rendered under a row on
+Details), `detail` (one object as label and value pairs), `form` (`fields`
+and `submit`), `toggles` (one switch per entry, see below), `calendar` (rows
+marked on their `x` date, a day's rows beside it), `chart` (`kind` area, bar,
+stacked, donut or sparkline over `items`, `x` and `series`), `stream`,
+`text` (`text` expression or `markdown`, both through `markdown.js`) and
+`widget`. `when` hides a block or an action whose expression is falsy;
+`empty` is the text the kit's empty state shows when there are no rows. A
+spec cannot carry markup: every value that reaches the DOM is escaped once
+by the renderer, and a link only ever opens an http(s) URL.
+
+**Expressions** (`js/core/expr.js`): a dotted path into the row when a row
+is given, else the page payload (`page.x` is always the payload), then pipes
+separated by `|`: `rel` (relative time), `date`, `count`, `sum:<field>`,
+`where:<field>` (rows whose field is truthy, `where:!field` the others),
+`map` (through the block's or item's `map`: `*` the default, `null` for a
+missing value, `true` and `false` for booleans; a `map` next to a value
+applies whether or not the expression says `|map`), `plural:<word>`,
+`join:<sep>`, `entries` (an object as `[{key, ...value}]`). A missing path is
+null, never an error.
+
+**Actions** (`js/core/actions.js`): `call` is `"METHOD /path"` where
+`{field}` fills from the row and `{page.x}` from the payload (URI-encoded),
+`body` is sent as JSON (its strings are templates too), `confirm` asks
+first, `then` is `refresh`, `toast` or `open:<route>`; `open` switches to a
+route; `link` opens an http(s) URL in a new tab. Buttons are disabled while
+a call is in flight; a failure is a toast.
+
+**Toggles**: `{"type": "toggles", "write": "PUT /api/...", "toggles": [...]}`
+draws one switch per entry (`label`, `value`, `path`, `help`, `when`); a
+flip writes an object built from the dotted `path` (`tasks.poller.enabled`
+false becomes `{"tasks": {"poller": {"enabled": false}}}`) to `write` and
+then refreshes the page. An entry with `rows` (an expression naming items,
+an object through `|entries`) draws one switch per item, its `label`, `path`
+and `help` filled as templates from the item (`{key}`) and its `value`
+evaluated against it. The Modules page (`modules/settings/pages/modules.json`,
+`#/setup/modules`) is built from it: a list of modules whose expanded row is a
+toggles block writing `PUT /api/modules/{name}`, one switch for `enabled`,
+one per capability and one per task and page. A write to `/api/modules`
+makes the shell re-read `/api/ui`, so a page whose module switched off leaves
+navigation at once; its route keeps answering with "off in Setup".
+
+**Streams** (`js/core/stream.js`): `{"type": "stream", "stream":
+"/api/<module>/stream/<name>", "limit": 200, "row": {...}}` subscribes while
+the page is shown, prepends each event as a row, keeps `limit` lines and
+closes on hide. Events are read through `fetch` in the SSE wire format
+(every event type, `Last-Event-ID` on reconnect) rather than `EventSource`,
+which delivers only the types it is told to listen for.
+
+**Widgets** (`js/core/widgets.js`): `{"type": "widget", "widget": "graph",
+"data": "graph"}` imports `/space/modules/<module>/ui/graph.js` on the
+block's first show. The file exports `mount(el, ctx)`, `update(data)` and
+`destroy()`; `ctx` is `{apiFetch, kit, switchTo, refresh, page, data}`. The
+widget draws; the page reads, polls and navigates. An unknown widget renders
+an alert naming it.
+
+**The fallback.** When `/api/ui` is unreachable, the shell boots on
+`PRIMARY_TABS` (`js/core/navigation.js`) and the hand-written views alone,
+and fetches `/api/ui` again the moment the footer's server pill sees the
+server up, registering the spec pages then without a reload.
+
+**Secondary navigation** (`js/core/section-nav.js`) lists the active tab's
+pages from the registry (spec and hand-written views whose parent is the
+tab), merged over the `navigation.js` tables and ordered by order then label.
+Setup keeps its own section list and hides the bar (`sectionNav: false`);
+its Modules page shows it.
 
 ## How it's served
 
@@ -313,10 +408,10 @@ and a copyable full-log path. The drawer updates while a job runs and also
 offers Refresh. A concurrent run or a full shared execution limit returns 409.
 Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
-Definitions and every result stay under `<quirq state>/scheduler/`, and the full output of every run under `<quirq state>/logs/scheduler/<id>.log`:
+Definitions and every result stay under `<quirq state>/jobs/`, and the full output of every run under `<quirq state>/logs/jobs/<id>.log`:
 
 ```text
-scheduler/
+jobs/
 ├── jobs.json          # saved commands, intervals and descriptions
 ├── state.json         # next run, running since, last result
 └── runs/<id>.jsonl    # append-only history: one line per run, starting with ts and type ("job.run"), 2000-character output tails

@@ -141,7 +141,7 @@ class DashboardUiTests(unittest.TestCase):
     def test_dashboard_is_the_default_projects_lens_and_shares_the_graph_canvas(
         self,
     ) -> None:
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         atlas = (
             ROOT / "space_ui" / "js" / "views" / "atlas.js"
         ).read_text(encoding="utf-8")
@@ -171,13 +171,15 @@ class DashboardUiTests(unittest.TestCase):
         self.assertIn("const activeSection=v.section||v.id", registry)
 
     def test_dashboard_route_is_registered_before_the_static_mount(self) -> None:
-        router = (ROOT / "routers" / "xo_data.py").read_text(encoding="utf-8")
-        self.assertIn('@router.get("/dashboard.json")', router)
+        router = (ROOT / "modules" / "projects" / "routes.py").read_text(encoding="utf-8")
+        self.assertIn('"/xo/dashboard.json"', router)
         # The route serves the view out of the workspace document rather than
         # calling the builder itself; the builder is reached only through the
-        # document's rebuild path.
-        self.assertIn("views.read", router)
-        self.assertIn('APIRouter(prefix="/xo"', router)
+        # document's rebuild path (the projects module's service).
+        service = (ROOT / "modules" / "projects" / "service.py").read_text(encoding="utf-8")
+        self.assertIn("workspace_views.read", service)
+        # the module mounts full paths (no prefix), behind its api gate
+        self.assertIn('"/xo/space.json"', router)
         document = (
             ROOT / "services" / "cowork_agent" / "visualizer" / "workspace"
             / "views.py"

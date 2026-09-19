@@ -6,13 +6,13 @@
    project `.xo` data. */
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
-import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260916-jobs3';
-import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
-import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
-import {mountSetupSearch} from './setup-search.js?v=20260916-jobs3';
-import {renderSetupShell} from './setup-shell.js?v=20260916-jobs3';
-import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
+import {pollServer} from '../core/server-widget.js';
+import {mountCommands} from './setup-commands.js';
+import {setupSteps} from '../core/setup-state.js';
+import {mountIdentity} from './setup-identity.js';
+import {mountSetupSearch} from './setup-search.js';
+import {renderSetupShell} from './setup-shell.js';
+import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -50,10 +50,14 @@ const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:
    the URL never rebuilds forms. Connectors mount only on their first visit. */
 export function createSetupViews(controller){
   connectorController=controller;
-  return SETUP_SECTIONS.map(section=>({
+  return SETUP_SECTIONS.map((section,index)=>({
     id:section.route,
     route:section.route,aliases:section.aliases,
     label:section.label,
+    /* Setup draws its own section list (setup-shell.js), so the shell's
+       secondary navigation stays hidden here; order places these sections
+       ahead of the spec pages under Setup (the Modules page) in that list. */
+    order:(index+1)*10,sectionNav:false,
     nav:false,parent:'setup',section:'setup',
     toolbar:setupToolbar,mount:mountSetup,
     show(){

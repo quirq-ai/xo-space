@@ -12,9 +12,9 @@
    styles); css/sessions.css only lays the pieces out. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
-import {AGENT_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {icons,button,badge,card,table,sortHead,checkbox,label,toggleGroup,pagination,skeleton,alert,breadcrumb,empty,item,itemGroup,itemSeparator,spinner,switchControl,input} from '../core/shadcn.js?v=20260915-agents2';
-import {areaChart,barChartHorizontal,barChartStacked,donutChart,radialChart,heatmapChart} from '../core/chart.js?v=20260915-typesync1';
+import {AGENT_PAGES} from '../core/navigation.js';
+import {icons,button,badge,card,table,sortHead,checkbox,label,toggleGroup,pagination,skeleton,alert,breadcrumb,empty,item,itemGroup,itemSeparator,spinner,switchControl,input} from '../core/shadcn.js';
+import {areaChart,barChartHorizontal,barChartStacked,donutChart,radialChart,heatmapChart} from '../core/chart.js';
 
 let _open=null;
 let _toolbar=()=>null;

@@ -310,14 +310,12 @@ class PreviewWindowUITests(unittest.TestCase):
             self.assertNotIn(gone, css)
         self.assertIn("#preview-version", css)
 
-    def test_cache_stamps_were_bumped_for_this_change(self) -> None:
+    def test_preview_stylesheet_and_module_are_linked_by_plain_path(self) -> None:
+        # the /space mount sends Cache-Control: no-cache, so no stamps
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
-        for stale in ("20260816-preview1", "20260825-rename1",
-                      "20260827-float1", "20260827-explore1",
-                      "20260827-richdiff1", "20260827-redline1"):
-            self.assertNotIn(f"css/preview.css?v={stale}", index)
-            self.assertNotIn(f"core/preview.js?v={stale}", app)
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
+        self.assertIn('<link rel="stylesheet" href="css/preview.css">', index)
+        self.assertIn("import {initPreview} from './core/preview.js';", app)
 
 
 if __name__ == "__main__":

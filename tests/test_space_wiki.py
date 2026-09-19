@@ -112,13 +112,12 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_wiki_view_is_registered_and_styled(self) -> None:
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("import wikiView from './views/wiki.js?v=", app)
+        self.assertIn("import wikiView from './views/wiki.js';", app)
         self.assertIn("registerView(wikiView);", app)
-        self.assertIn('href="css/wiki.css?v=', index)
-        self.assertRegex(index, r"css/wiki\.css\?v=\d{8}-[a-z0-9]+")
+        self.assertIn('<link rel="stylesheet" href="css/wiki.css">', index)
         # Wiki remains a local route, reached through the header resource
         # link without consuming a primary tab or numbered shortcut.
         contract = view_contract("wiki")
@@ -135,7 +134,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("Every project has a purpose", dashboard_builder)
 
     def test_secrets_view_is_registered_and_never_reveals_saved_values(self) -> None:
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         secrets = (
             ROOT / "space_ui" / "js" / "views" / "setup.js"
@@ -143,9 +142,9 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "setup-shell.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import {createSetupViews} from './views/setup.js?v=", app)
+        self.assertIn("import {createSetupViews} from './views/setup.js';", app)
         self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
-        self.assertIn('href="css/setup.css?v=', index)
+        self.assertIn('href="css/setup.css"', index)
         self.assertIn("export function createSetupViews(", secrets)
         self.assertIn("type=\"password\"", secrets)
         self.assertIn("method:'PATCH'", secrets)
@@ -161,7 +160,7 @@ class SpaceWikiTests(unittest.TestCase):
     def test_sessions_tab_is_renamed_agents_end_to_end(self) -> None:
         """Agents has canonical pages backed by one telemetry controller.
         The legacy help topic and sessions data/module names remain valid."""
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         contract = view_contract("sessions")
         # The route factory shares the physical #view-agents section.
@@ -198,15 +197,15 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8"))
 
     def test_connectors_view_is_registered_and_identity_aware(self) -> None:
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         view = (
             ROOT / "space_ui" / "js" / "views" / "connectors.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import connectorsView from './views/connectors.js?v=", app)
+        self.assertIn("import connectorsView from './views/connectors.js';", app)
         self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
-        self.assertIn('href="css/connectors.css?v=', index)
+        self.assertIn('href="css/connectors.css"', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 
         # BYO key: connectors run on the user's own Composio key, with no XO session.
@@ -236,7 +235,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("refresh-gateway", wiki)
 
     def test_quirq_view_registered_and_six_degrees_removed(self) -> None:
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         quirq = (
             ROOT / "space_ui" / "js" / "views" / "quirq.js"
@@ -246,7 +245,7 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("registerView(quirqView);", app)
-        self.assertIn('href="css/quirq.css?v=', index)
+        self.assertIn('href="css/quirq.css"', index)
         self.assertIn("route:'setup/server/details'", quirq)
         self.assertIn("aliases:['quirq']", quirq)
         self.assertIn("/api/quirq", quirq)
@@ -326,7 +325,7 @@ class SpaceWikiTests(unittest.TestCase):
     def test_tree_remains_a_data_mode_within_projects(self) -> None:
         """Data groups the existing List, Graph and Tree renderers; Tree
         keeps its own route and remains a child of Projects."""
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
@@ -334,7 +333,7 @@ class SpaceWikiTests(unittest.TestCase):
         tree = (ROOT / "space_ui" / "js" / "views" / "tree.js").read_text(
             encoding="utf-8"
         )
-        self.assertIn("import treeView from './views/tree.js?v=", app)
+        self.assertIn("import treeView from './views/tree.js';", app)
         self.assertIn("registerView(treeView);", app)
         contract = view_contract("tree")
         self.assertIn("projectPage('tree')", contract)
@@ -382,7 +381,7 @@ class SpaceWikiTests(unittest.TestCase):
     def test_sharing_is_an_inbox_page_with_inline_project_entry_points(self) -> None:
         """Inbox owns sharing management; project lists own compact entry forms.
         Detailed relay status and management still use the existing data seam."""
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         switcher = (
             ROOT / "space_ui" / "js" / "core" / "section-nav.js"
@@ -397,7 +396,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
         # Registered once as an independent Inbox page.
-        self.assertIn("import sharingView from './views/sharing.js?v=", app)
+        self.assertIn("import sharingView from './views/sharing.js';", app)
         self.assertIn("registerView(sharingView);", app)
         contract = view_contract("sharing")
         self.assertIn("INBOX_PAGES.find(page=>page.id==='sharing')", contract)
@@ -407,7 +406,7 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("PROJECT_PAGES", switcher)
         self.assertNotIn('data-files-lens="', sharing)
         # one source of truth: the status snapshot, read by the data module
-        self.assertIn("from './sharing_data.js?v=", sharing)
+        self.assertIn("from './sharing_data.js';", sharing)
         self.assertNotIn("apiFetch(", sharing)
         self.assertIn("apiFetch(API_BASE+'/api/project-sharing/status'", data)
         # "Open in List" opens that project's drawer (views never import each
@@ -423,7 +422,7 @@ class SpaceWikiTests(unittest.TestCase):
         the Projects tab: a nav-less child that reports the Projects tab, its
         pill added to the shared switch and the lens list (issue: Timeline
         should not need top-level navigation)."""
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
         atlas = (
             ROOT / "space_ui" / "js" / "views" / "atlas.js"
@@ -432,7 +431,7 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "core" / "section-nav.js"
         ).read_text(encoding="utf-8")
 
-        # still registered by app.js, exactly like the other atlas lenses
+        # still registered by shell.js, exactly like the other atlas lenses
         self.assertIn("registerView(timeView);", app)
         # the timeView export is a nav-less child of Projects now
         time_export = atlas.split("export const timeView=", 1)[1].split(";", 1)[0]
@@ -449,9 +448,7 @@ class SpaceWikiTests(unittest.TestCase):
         projects = (
             ROOT / "space_ui" / "js" / "views" / "projects.js"
         ).read_text(encoding="utf-8")
-        bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
-        ).read_text(encoding="utf-8")
+        bff = "\n".join((ROOT / "modules" / "projects" / name).read_text(encoding="utf-8") for name in ("routes.py", "service.py"))
         layout = (
             ROOT / "services" / "cowork_agent" / "project_layout.py"
         ).read_text(encoding="utf-8")
@@ -489,12 +486,12 @@ class SpaceWikiTests(unittest.TestCase):
         preview = (
             ROOT / "space_ui" / "js" / "core" / "preview.js"
         ).read_text(encoding="utf-8")
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("initPreview", app)
         self.assertIn('id="preview"', index)
-        self.assertIn('href="css/preview.css?v=', index)
+        self.assertIn('href="css/preview.css"', index)
         # markdown through the escape-first renderer, never raw
         self.assertIn("mdToHtml", preview)
         # HTML only ever inside a sandbox that withholds the origin: scripts
@@ -516,9 +513,7 @@ class SpaceWikiTests(unittest.TestCase):
     def test_file_preview_endpoint_is_bounded_and_scoped(self) -> None:
         """The preview endpoint addresses files by project id + relative path,
         never by absolute host path, and refuses anything it cannot show."""
-        bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
-        ).read_text(encoding="utf-8")
+        bff = "\n".join((ROOT / "modules" / "projects" / name).read_text(encoding="utf-8") for name in ("routes.py", "service.py"))
         layout = (
             ROOT / "services" / "cowork_agent" / "project_layout.py"
         ).read_text(encoding="utf-8")
@@ -576,38 +571,28 @@ class SpaceWikiTests(unittest.TestCase):
         list endpoint fills `description` from the project's own docs when
         .xo/project.json has none — excluding AGENTS.md, whose opening line
         is identical in every scaffolded project."""
-        bff = (
-            ROOT / "routers" / "cowork_agent" / "bff" / "xo_projects.py"
-        ).read_text(encoding="utf-8")
+        bff = "\n".join((ROOT / "modules" / "projects" / name).read_text(encoding="utf-8") for name in ("routes.py", "service.py"))
 
         self.assertIn("_DESC_FILES", bff)
         self.assertIn('"README.md"', bff)
         self.assertNotIn('"AGENTS.md"', bff)
-        self.assertIn("_described(name)", bff)
+        self.assertIn("described(", bff)
         self.assertIn("_DESC_MAX", bff)
 
-    def test_cache_bust_chain_is_intact(self) -> None:
-        """index.html's app.js stamp must be at least as new as every view stamp.
-
-        Starlette's StaticFiles mount (routers/space.py) sends no Cache-Control,
-        so browsers apply heuristic freshness to these module URLs. app.js is
-        versioned only by the script tag in index.html: a browser holding the
-        cached app.js keeps importing the OLD per-view URLs, which silently
-        defeats every per-view bump. Pinning literals here instead just turns
-        unrelated tests red on the next legitimate bump.
+    def test_shell_and_views_are_loaded_by_plain_path(self) -> None:
+        """No cache-bust chain to keep in step: the Space mount
+        (routers/space.py) sends Cache-Control: no-cache, so a browser
+        revalidates shell.js and every module it imports on each load and a
+        changed file is fetched fresh. Every import and link is a plain path.
         """
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
 
-        view_stamps = re.findall(r"\?v=(\d{8})-[a-z0-9]+", app)
-        self.assertTrue(view_stamps, "app.js carries no ?v= stamps")
-        shell = re.search(r"js/app\.js\?v=(\d{8})-[a-z0-9]+", index)
-        self.assertIsNotNone(shell, "index.html does not version js/app.js")
-        self.assertGreaterEqual(
-            shell.group(1),
-            max(view_stamps),
-            "bump the app.js stamp in index.html whenever a view stamp moves",
-        )
+        self.assertNotIn("?v=", app)
+        self.assertNotIn("?v=", index)
+        self.assertIn('<script type="module" src="js/shell.js"></script>', index)
+        for spec in re.findall(r"from '(\./[^']+)'", app):
+            self.assertTrue(spec.endswith(".js"), spec)
 
     def test_installation_guide_documents_one_command_setup(self) -> None:
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")

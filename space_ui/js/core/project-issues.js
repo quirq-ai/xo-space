@@ -2,7 +2,7 @@
    only an explicit issue Refresh asks the server to poll GitHub immediately. */
 import {API_BASE,apiFetch,failText} from './api.js';
 import {esc,rel} from './ui.js';
-import {icon,copyButton} from './project-ui.js?v=20260915-data1';
+import {icon,copyButton} from './project-ui.js';
 
 const STATES=[['open','Open'],['closed','Closed'],['all','All']];
 const EMPTY={

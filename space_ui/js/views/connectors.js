@@ -36,7 +36,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
 import {accountLabel,accountLine} from '../core/connections.js';
-import {mountNativeConnectors} from './native-connectors.js?v=20260914-connectors2';
+import {mountNativeConnectors} from './native-connectors.js';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);

@@ -20,8 +20,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from routers import browser_guard, space
-from routers.cowork_agent.runtime_config import router as runtime_router
-from services.cowork_agent import runtime_config
+from modules.settings.routes import router as runtime_router
+from modules.settings import runtime_config
 from utils.commands import CommandResult, run_sync
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -254,7 +254,7 @@ class NativeRestartIntegrationTests(unittest.TestCase):
                 'import sys\nfrom pathlib import Path\n'
                 f'sys.path.insert(0, {str(ROOT)!r})\n'
                 'from fastapi import FastAPI\nimport uvicorn\n'
-                'from routers.space import router\nfrom services.cowork_agent import runtime_config\n'
+                'from routers.space import router\nfrom modules.settings import runtime_config\n'
                 f'runtime_config.REPO_ROOT = Path({tmp!r})\n'
                 f'runtime_config.NATIVE_PID_FILE = Path({str(root / "xo-space.pid")!r})\n'
                 'app = FastAPI()\napp.include_router(router)\n'

@@ -23,19 +23,16 @@ def read(rel: str) -> str:
 
 
 class CommandPaletteCompositionTests(unittest.TestCase):
-    def test_wired_into_the_shell_with_a_cache_buster(self) -> None:
-        app = read("js/app.js")
-        self.assertRegex(
-            app,
-            r"import \{initCommandPalette\} from './core/command-palette\.js\?v=\d{8}-[a-z0-9]+';",
-        )
+    def test_wired_into_the_shell(self) -> None:
+        app = read("js/shell.js")
+        self.assertIn("import {initCommandPalette} from './core/command-palette.js';", app)
         # started in its own bulkhead, handed the same switchTo the shell uses
         self.assertIn("initCommandPalette({switchTo,refreshCurrentView});", app)
 
-    def test_stylesheet_linked_and_shell_stamp_advanced(self) -> None:
+    def test_stylesheet_linked_and_shell_entry_loaded(self) -> None:
         index = read("index.html")
-        self.assertRegex(index, r'href="css/command-palette\.css\?v=\d{8}-[a-z0-9]+"')
-        self.assertRegex(index, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
+        self.assertIn('<link rel="stylesheet" href="css/command-palette.css">', index)
+        self.assertIn('<script type="module" src="js/shell.js"></script>', index)
 
     def test_navbar_trigger_opens_the_palette(self) -> None:
         index = read("index.html")
@@ -112,13 +109,12 @@ class CommandPaletteCompositionTests(unittest.TestCase):
         self.assertIn("Refresh this page", src)
         self.assertIn("New project", src)
 
-    def test_imports_core_helpers_bare_for_the_import_map(self) -> None:
+    def test_imports_core_helpers_bare(self) -> None:
         src = read("js/core/command-palette.js")
-        # api.js and ui.js are import-map stamped; importing them bare keeps
-        # one shared instance (the same rule every other module follows)
+        # importing api.js and ui.js bare keeps one shared instance (the same
+        # rule every other module follows)
         self.assertIn("import {API_BASE,apiFetch} from './api.js';", src)
         self.assertIn("import {toast} from './ui.js';", src)
-        self.assertNotRegex(src, r"from '\./(api|ui)\.js\?v=")
 
     def test_navigation_routes_cover_the_primary_destinations(self) -> None:
         src = read("js/core/command-palette.js")

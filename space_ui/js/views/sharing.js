@@ -1,5 +1,5 @@
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {setSectionActions} from '../core/section-nav.js?v=20260915-agents2';
+import {INBOX_PAGES} from '../core/navigation.js';
+import {setSectionActions} from '../core/section-nav.js';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -21,12 +21,12 @@ import {setSectionActions} from '../core/section-nav.js?v=20260915-agents2';
    calls); this file only paints and handles events. One delegated click /
    submit / input listener on the section: the pane re-renders from state,
    so nothing is bound per element. */
-import {openProjectAdd} from '../core/project-actions.js?v=20260914-details1';
+import {openProjectAdd} from '../core/project-actions.js';
 import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
   cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260914-inboxshare1';
+  checkNow,failText} from './sharing_data.js';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
 

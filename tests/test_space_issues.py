@@ -11,9 +11,9 @@ ISSUES_JS = ROOT / "space_ui" / "js" / "core" / "project-issues.js"
 MANAGE_JS = ROOT / "space_ui" / "js" / "views" / "project-management.js"
 ISSUES_CSS = ROOT / "space_ui" / "css" / "project-management.css"
 INDEX_HTML = ROOT / "space_ui" / "index.html"
-APP_JS = ROOT / "space_ui" / "js" / "app.js"
+APP_JS = ROOT / "space_ui" / "js" / "shell.js"
 MODELS_PY = ROOT / "routers" / "cowork_agent" / "bff" / "_visualizer_models.py"
-VISUALIZER_PY = ROOT / "routers" / "cowork_agent" / "bff" / "visualizer.py"
+VISUALIZER_PY = ROOT / "modules" / "projects" / "routes.py"
 
 
 class IssuesPanelTests(unittest.TestCase):
@@ -94,8 +94,7 @@ class IssuesPanelTests(unittest.TestCase):
         an issue Space watched close. "None" must not read as "this repo has
         no closed issues"."""
         self.assertIn("watches it close", self.issues)
-        poller = (ROOT / "services" / "cowork_agent" / "connectors" / "github"
-                  / "issues.py").read_text(encoding="utf-8")
+        poller = (ROOT / "modules" / "connectors" / "github" / "issues.py").read_text(encoding="utf-8")
         self.assertIn("states: [OPEN]", poller)
 
     def test_each_project_component_owns_its_controls_and_read_lifecycle(self) -> None:
@@ -115,13 +114,14 @@ class IssuesPanelTests(unittest.TestCase):
 
 
 class IssuesDocsTests(unittest.TestCase):
-    def test_cache_stamps_were_bumped_for_this_change(self) -> None:
-        """A stale stamp ships the new markup against the old stylesheet."""
+    def test_projects_stylesheet_and_view_are_linked_by_plain_path(self) -> None:
+        """The /space mount sends Cache-Control: no-cache, so the markup and
+        its stylesheet are always fetched together fresh, no stamp needed."""
         index = INDEX_HTML.read_text(encoding="utf-8")
         app = APP_JS.read_text(encoding="utf-8")
-        self.assertNotIn("css/projects.css?v=20260824-treecam1", index)
-        self.assertNotIn("views/projects.js?v=20260910-sharingpane1", app)
-        self.assertNotIn("js/app.js?v=20260911-sharingfix1", index)
+        self.assertIn('<link rel="stylesheet" href="css/projects.css">', index)
+        self.assertIn("import projectsView from './views/projects.js';", app)
+        self.assertIn('<script type="module" src="js/shell.js"></script>', index)
 
 
 class IssuesEndpointTests(unittest.TestCase):

@@ -26,7 +26,16 @@
    render-everything views need no HTML edit at all.
    startRegistry({tabs,defaultView}) receives explicit primary navigation;
    each tab has {id,label,defaultView,aliases?}. Page labels and physical DOM
-   sections are independent of that top-level navigation.
+   sections are independent of that top-level navigation. setNavigation(tabs)
+   re-applies the primary navigation later (the shell does when /api/ui
+   arrives after a fallback boot); unregisterView(id) retires a view (a spec
+   page whose module switched off); both, and every registration after the
+   start, announce the page list as a 'space:pages' event whose detail
+   {views:[{id,route,label,order,parent,section,secondary,sectionNav}]} the
+   secondary navigation renders from. Two optional flags a view may carry:
+   secondary:false keeps it out of the secondary navigation lists, and
+   sectionNav:false hides the shell's secondary navigation while it is
+   active (a page that draws its own, like Setup).
    ctx = {switchTo, refreshToolbar}. Views never import each other; cross-view jumps go
    through ctx.switchTo(id or route). */
 
@@ -37,17 +46,80 @@ let current=null;
 let activation=0;
 const byTab=new Map();
 const refreshing=new Map();
+let navigation=[];
+let started=false;
+let defaultRoute=null;
+/* Sections the registry created itself (a view index.html carries no markup
+   for); those are removed again when the view is unregistered. */
+const createdSections=new Set();
+
+function rebuildRoutes(){
+  byRoute.clear();
+  for(const view of views){
+    byRoute.set(view.route||view.id,view);
+    for(const alias of view.aliases||[])byRoute.set(alias,view);
+  }
+}
+
+function ensureSection(v){
+  const stage=document.getElementById('stage');
+  const sectionId=v.section||v.id;
+  if(stage&&!document.getElementById('view-'+sectionId)){
+    const s=document.createElement('section');
+    s.className='view';s.id='view-'+sectionId;
+    stage.appendChild(s);
+    createdSections.add(sectionId);
+  }
+}
+
+/* The page list, as data: what the secondary navigation and the command
+   palette may list without importing the views. */
+export function listViews(){
+  return views.map(v=>({id:v.id,route:v.route||v.id,aliases:[...(v.aliases||[])],label:v.label,
+    order:v.order||0,parent:v.parent||null,section:v.section||v.id,
+    secondary:v.secondary!==false,sectionNav:v.sectionNav!==false,spec:!!v.spec}));
+}
+function announcePages(){
+  if(!started)return;
+  dispatchEvent(new CustomEvent('space:pages',{detail:{views:listViews()}}));
+}
 
 export function registerView(v){
   if(byId.has(v.id))views=views.map(w=>w.id===v.id?v:w); /* idempotent re-register */
   else views.push(v);
   byId.set(v.id,v);
   /* Re-registration replaces its route contract, including removed aliases. */
-  byRoute.clear();
-  for(const view of views){
-    byRoute.set(view.route||view.id,view);
-    for(const alias of view.aliases||[])byRoute.set(alias,view);
+  rebuildRoutes();
+  if(started){ensureSection(v);announcePages();}
+}
+
+/* Retire a view: its routes stop resolving, its section goes when the
+   registry created it, and a person looking at it lands on their tab's
+   default page (or the app default). Returns false for an unknown id. */
+export function unregisterView(id){
+  const v=byId.get(id);
+  if(!v)return false;
+  views=views.filter(w=>w!==v);
+  byId.delete(id);
+  rebuildRoutes();
+  if(current===id&&v.hide){try{v.hide();}catch(err){console.error('view "'+id+'" hide failed:',err);}}
+  if(typeof v.destroy==='function'){try{v.destroy();}catch(err){console.error('view "'+id+'" destroy failed:',err);}}
+  const sectionId=v.section||v.id;
+  if(createdSections.has(sectionId)&&!views.some(w=>(w.section||w.id)===sectionId)){
+    document.getElementById('view-'+sectionId)?.remove();
+    createdSections.delete(sectionId);
   }
+  announcePages();
+  if(current===id){
+    current=null;
+    /* The same route when another view still answers it (a hand-written
+       page a spec replaced, or the reverse), else the tab's default page. */
+    const route=v.route||v.id;
+    const tab=byTab.get(v.parent||v.id);
+    const target=resolveView(route)?route:tab&&resolveView(tab.defaultView)?tab.defaultView:defaultRoute;
+    if(target)switchTo(target,{replace:true});
+  }
+  return true;
 }
 
 const resolveView=id=>{
@@ -153,36 +225,50 @@ export function refreshCurrentView(){
   return promise;
 }
 
-export function startRegistry({defaultView,tabs:tabDefinitions}){
-  views.sort((a,b)=>(a.order||0)-(b.order||0));
+/* Build the tab bar and the tab lookup for one navigation list. Called by
+   startRegistry and again by setNavigation; listeners are attached once. */
+function applyNavigation(tabDefinitions){
   const navViews=views.filter(v=>v.nav!==false);
-  const navigation=tabDefinitions||navViews.map(v=>({id:v.id,label:v.label,defaultView:v.id}));
+  navigation=tabDefinitions||navViews.map(v=>({id:v.id,label:v.label,defaultView:v.id}));
   byTab.clear();
   for(const tab of navigation){
     byTab.set(tab.id,tab);
     for(const alias of tab.aliases||[])byTab.set(alias,tab);
   }
-  const stage=document.getElementById('stage');
-  for(const v of views){
-    const sectionId=v.section||v.id;
-    if(stage&&!document.getElementById('view-'+sectionId)){
-      const s=document.createElement('section');
-      s.className='view';s.id='view-'+sectionId;
-      stage.appendChild(s);
-    }
-  }
+  for(const v of views)ensureSection(v);
   const tabs=document.querySelector('.tabs');
   if(tabs)tabs.replaceChildren(...navigation.map(tab=>{
     const b=document.createElement('a');
     b.id='tab-'+tab.id;
-    b.href=viewHash(resolveView(tab.defaultView));
+    const target=resolveView(tab.defaultView);
+    b.href=target?viewHash(target):'#/'+tab.defaultView;
     b.textContent=tab.label;
+    if(current){
+      const active=byId.get(current);
+      if(active&&(active.parent||active.id)===tab.id){b.classList.add('is-on');b.setAttribute('aria-current','page');}
+    }
     b.addEventListener('click',event=>{
       if(event.button||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
       event.preventDefault();switchTo(tab.defaultView);
     });
     return b;
   }));
+}
+
+/* Re-apply the primary navigation after the start (the shell does when
+   /api/ui arrives late, or the page list changes). Keeps the current view. */
+export function setNavigation(tabDefinitions){
+  applyNavigation(tabDefinitions);
+  announcePages();
+}
+
+export function startRegistry({defaultView,tabs:tabDefinitions}){
+  views.sort((a,b)=>(a.order||0)-(b.order||0));
+  defaultRoute=defaultView;
+  applyNavigation(tabDefinitions);
+  if(started)return;
+  started=true;
+  announcePages();
   addEventListener('keydown',e=>{
     /* a digit typed into a field, a textarea or a select menu is input, not
        a tab switch */

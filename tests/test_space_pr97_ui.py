@@ -18,7 +18,6 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("XO_SPACE_ROOT") or Path(__file__).resolve().parents[1])
 UI = ROOT / "space_ui"
-STAMP = "20260914-accounts1"
 DASHES = re.compile("[\\u2013\\u2014]")
 
 
@@ -631,7 +630,6 @@ class ConnectorsViewTests(unittest.TestCase):
 
     def test_api_js_is_imported_bare_like_every_other_view(self) -> None:
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", self.view)
-        self.assertNotIn("core/api.js?v=", self.view)
         self.assertIn("import {esc,toast} from '../core/ui.js';", self.view)
         self.assertIn("import {pollLine} from '../core/connections.js';", self.view)
         self.assertNotIn("const esc=", self.view)
@@ -882,91 +880,55 @@ class SharingViewTests(unittest.TestCase):
         self.assertIn("[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')", pane)
         self.assertNotIn("' · '+rel(k.date)", pane)
         self.assertNotIn("const dtfmt=", pane)  # was unused
-        self.assertIn("from './sharing_data.js?v=20260914-inboxshare1';", pane)
+        self.assertIn("from './sharing_data.js';", pane)
 
 
 class ShellTests(unittest.TestCase):
-    CORE_MAPPED = ("api.js", "ui.js", "connections.js")
+    CORE_BARE = ("api.js", "ui.js", "connections.js")
 
     def test_number_hotkeys_ignore_a_focused_select(self) -> None:
         registry = read("js/core/registry.js")
         self.assertIn("if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||''))return;", registry)
 
-    def test_stamps_moved_together(self) -> None:
-        app = read("js/app.js")
-        # The shared routing vocabulary, all participating views and shell
-        # imports advance together; unchanged controllers retain their URLs.
-        # Trends absorbing Tools and Models changed navigation.js, so every
-        # importer of the vocabulary moved to the agents stamp.
-        agents_stamp = "20260915-agents2"
-        for view in ("tree", "inbox-activity", "project-manage"):
-            self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
-        # Inbox sharing hand-off + Copy path (issues #142, #143) moved these on.
-        for view in ("sharing", "projects", "inbox"):
-            self.assertIn("./views/" + view + ".js?v=20260918-copypath1'", app)
-        for sheet in ("sharing", "projects"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
-        for module in ("section-nav", "navigation", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
-        self.assertIn("./views/quirq.js?v=20260915-data1'", app)
-        # The typography pass (Inter, readable small text) restamped every file
-        # it changed on top of development.
-        type_stamp = "20260915-typesync1"
-        self.assertIn("./core/registry.js?v=" + type_stamp + "'", app)
-        # Restoring the footer (and dropping the graph's duplicate counts line)
-        # moved these again; toolbar.js is back to development's copy.
-        footer_stamp = "20260915-footer1"
-        for module in ("views/sessions", "views/atlas"):
-            self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
-        self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
-        self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
-        self.assertIn("./views/connectors.js?v=20260917-byok1'", app)
+    def test_shell_imports_and_links_are_plain_paths(self) -> None:
+        """The /space mount sends Cache-Control: no-cache, so every view and
+        core module shell.js imports, and every stylesheet index.html links,
+        is reached by its plain path: nothing to bump when a file changes."""
+        app = read("js/shell.js")
+        for view in ("tree", "inbox-activity", "project-manage", "sharing", "projects",
+                     "inbox", "quirq", "sessions", "atlas", "setup", "wiki", "connectors"):
+            self.assertIn("from './views/" + view + ".js';", app)
+        for module in ("section-nav", "navigation", "preview", "registry",
+                       "toolbar", "project-actions", "command-palette"):
+            self.assertIn("from './core/" + module + ".js';", app)
         html = read("index.html")
-        for sheet in ("project-management", "inbox-activity",
-                      "connectors", "sessions", "command-palette"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
-        for sheet in ("base", "chrome", "graph", "preview", "navigation"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
-        self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
-        # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
-        # with Run now in Inbox) restamped the files it changed.
-        jobs_stamp = "20260916-jobs3"
-        for module in ("views/setup", "views/wiki", "core/command-palette"):
-            self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
-        # its calendar landed in the shared shadcn styles
-        for sheet in ("inbox", "shadcn"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
-        # the radio focus fix restamped the Setup styles once more
-        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">', html)
-        # Later view changes legitimately advance the shell and Wiki stamps;
-        # test_space_wiki checks that the cache-bust chain stays intact.
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
+        for sheet in ("sharing", "projects", "project-management", "inbox-activity",
+                      "connectors", "sessions", "command-palette", "base", "chrome",
+                      "graph", "preview", "navigation", "project-share", "inbox",
+                      "shadcn", "setup"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css">', html)
+        self.assertIn('<script type="module" src="js/shell.js"></script>', html)
 
-    def test_import_map_stamps_the_bare_core_modules(self) -> None:
-        """core/api.js and core/ui.js gained exports and are imported bare
-        everywhere; StaticFiles sends no Cache-Control, so the stamp that
-        makes a browser fetch them fresh (and every importer share one
-        instance) is the import map in index.html, ahead of app.js."""
+    def test_bare_core_modules_need_no_import_map(self) -> None:
+        """core/api.js, core/ui.js and core/connections.js are imported bare
+        everywhere, so every importer shares one module instance. With the
+        /space mount sending Cache-Control: no-cache the bare specifier is
+        also always fresh, so index.html carries no import map."""
         html = read("index.html")
-        m = re.search(r'<script type="importmap">\s*(\{.*?\})\s*</script>', html, re.S)
-        self.assertIsNotNone(m, "index.html carries no import map")
-        self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
-        imports = json.loads(m.group(1))["imports"]
-        for name in self.CORE_MAPPED:
-            stamp = "20260914-files2" if name == "api.js" else STAMP
-            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + stamp, name)
-        # one instance means every importer uses the bare specifier
+        self.assertNotIn("importmap", html)
         for path in sorted((UI / "js").rglob("*.js")):
             src = path.read_text(encoding="utf-8")
-            for name in self.CORE_MAPPED:
-                self.assertNotRegex(src, r"core/" + re.escape(name) + r"\?v=", str(path))
-                self.assertNotRegex(src, r"from '\./" + re.escape(name) + r"\?v=", str(path))
+            for spec in re.findall(r"from '([^']+)'", src):
+                tail = spec.rsplit("/", 1)[-1]
+                for name in self.CORE_BARE:
+                    if tail.startswith(name):
+                        self.assertEqual(tail, name, f"{path}: {spec}")
 
     def test_touched_files_carry_no_dashes(self) -> None:
         for rel in ("js/core/ui.js", "js/core/api.js", "js/core/connections.js", "js/core/registry.js",
                     "js/views/inbox.js", "js/views/connectors.js",
                     "js/views/sharing.js", "js/views/sharing_data.js", "js/views/wiki.js",
-                    "js/app.js", "index.html"):
+                    "js/shell.js", "index.html"):
             self.assertIsNone(DASHES.search(read(rel)), rel)
         self.assertIsNone(DASHES.search(Path(__file__).read_text(encoding="utf-8")))
 

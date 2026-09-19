@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
@@ -44,7 +43,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         pane = read("js/views/sharing.js")
         self.assertNotIn("apiFetch(", pane)
         self.assertNotIn("fetch(", pane)
-        self.assertIn("from './sharing_data.js?v=", pane)
+        self.assertIn("from './sharing_data.js';", pane)
 
     def test_relay_status_is_the_only_source_of_shared(self) -> None:
         mod = read("js/views/sharing_data.js")
@@ -127,15 +126,14 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         self.assertIn("!!composer||!!confirmRevoke||sharePending", pane)
         self.assertIn("if(editing()){", pane)
 
-    def test_stylesheet_and_module_are_cache_busted(self) -> None:
+    def test_stylesheet_and_module_are_linked_by_plain_path(self) -> None:
+        # the /space mount sends Cache-Control: no-cache, so no stamps
         html = read("index.html")
-        self.assertIn('href="css/sharing.css?v=', html)
-        app = read("js/app.js")
-        m = re.search(r"from '\./views/sharing\.js\?v=([\w-]+)'", app)
-        self.assertIsNotNone(m, "app.js must import sharing.js with ?v=")
+        self.assertIn('<link rel="stylesheet" href="css/sharing.css">', html)
+        app = read("js/shell.js")
+        self.assertIn("import sharingView from './views/sharing.js';", app)
         pane = read("js/views/sharing.js")
-        m2 = re.search(r"from '\./sharing_data\.js\?v=([\w-]+)'", pane)
-        self.assertIsNotNone(m2, "sharing.js must import sharing_data.js with ?v=")
+        self.assertIn("from './sharing_data.js';", pane)
 
 
 if __name__ == "__main__":

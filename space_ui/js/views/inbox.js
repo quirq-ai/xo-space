@@ -15,9 +15,9 @@ import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
-import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
-import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
+import {openCommandResults} from '../core/command-results.js';
+import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js';
+import {INBOX_PAGES} from '../core/navigation.js';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;

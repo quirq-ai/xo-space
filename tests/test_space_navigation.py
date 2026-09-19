@@ -62,9 +62,9 @@ globalThis.document={activeElement:null,getElementById:id=>elements.get(id),
   createElement:tag=>new Element(tag),querySelector:s=>s==='.tabs'?tabs:null,
   querySelectorAll:s=>s.startsWith('.tabs ')?tabs.children||[]:[]};
 
-// Use the real view metadata and app registrations. Only rendering lifecycle
+// Use the real view metadata and shell registrations. Only rendering lifecycle
 // is stubbed; the browser harness covers native secondary links and content.
-const app=await readFile(new URL('js/app.js',base),'utf8');
+const app=await readFile(new URL('js/shell.js',base),'utf8');
 const views={};
 for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)';/g)){
   const imported=await import(new URL('js/'+module.slice(2),base));
@@ -78,6 +78,10 @@ const registry=await import(new URL('js/core/registry.js',base));
 const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
 const registered=[];
 for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);|(\w+)\((\w*)\)\.forEach\(registerView\);/g)){
+  // Only the hand-written registrations: the shell also registers the spec
+  // pages /api/ui answers with (registerView(specView(page))), which need a
+  // server and are covered by tests/test_space_shell.py.
+  if(!(factory?views[factory]:views[name]))continue;
   const result=factory?views[factory](factoryArgument?views[factoryArgument]:undefined):[argument?views[name](views[argument]):views[name]];
   assert.ok(Array.isArray(result),'view factory returns an array');
   for(const view of result){

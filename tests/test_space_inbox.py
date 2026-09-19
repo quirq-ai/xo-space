@@ -14,35 +14,31 @@ def read(rel: str) -> str:
 
 class SpaceInboxCompositionTests(unittest.TestCase):
     """The Inbox tab is composed into the shell through explicit seams: one
-    import and one registerView in app.js, one badge starter after the
+    import and one registerView in shell.js, one badge starter after the
     registry, one stylesheet link, and a view module that talks to exactly
     three route families (the inbox rows, connections, and scheduled jobs).
     These assertions pin those seams so a refactor cannot silently
     drop the tab, its badge, or its stylesheet."""
 
-    def test_view_is_imported_and_registered_with_a_cache_buster(self) -> None:
-        app = read("js/app.js")
-        self.assertRegex(
-            app,
-            r"import \{createInboxViews,initInboxBadge\} from './views/inbox\.js\?v=\d{8}-[a-z0-9]+';",
-        )
+    def test_view_is_imported_and_registered(self) -> None:
+        app = read("js/shell.js")
+        self.assertIn("import {createInboxViews,initInboxBadge} from './views/inbox.js';", app)
         self.assertIn("createInboxViews().forEach(registerView);", app)
         # Inbox sits between Agents and the Setup route family in the primary nav.
         self.assertLess(app.index("createAgentViews().forEach(registerView);"), app.index("createInboxViews().forEach(registerView);"))
         self.assertLess(app.index("createInboxViews().forEach(registerView);"), app.index("createSetupViews(connectorsView).forEach(registerView);"))
 
     def test_badge_starts_after_the_registry_in_its_own_bulkhead(self) -> None:
-        app = read("js/app.js")
+        app = read("js/shell.js")
         self.assertIn("try{initInboxBadge();}catch(err)", app)
         # the badge paints onto #tab-inbox, which only exists once
         # startRegistry has built the tab buttons
         self.assertLess(app.index("startRegistry("), app.index("initInboxBadge();"))
 
-    def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
+    def test_stylesheet_is_linked(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
-        self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css">', html)
+        self.assertLess(html.index('css/sharing.css"'), html.index('css/inbox.css"'))
         # the registry creates #view-inbox itself; no section markup needed
         self.assertNotIn('id="view-inbox"', html)
 

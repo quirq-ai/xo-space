@@ -28,7 +28,7 @@ class SpaceSessionsUiTests(unittest.TestCase):
         css = (
             ROOT / "space_ui" / "css" / "sessions.css"
         ).read_text(encoding="utf-8")
-        app = (ROOT / "space_ui" / "js" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "space_ui" / "js" / "shell.js").read_text(encoding="utf-8")
         index = (ROOT / "space_ui" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("sess-sources", view)
@@ -39,8 +39,8 @@ class SpaceSessionsUiTests(unittest.TestCase):
         self.assertIn("cost is unavailable", view)
         self.assertIn(".sess-pager", css)
         self.assertIn(".sess-prompt", css)
-        self.assertIn("sessions.js?v=", app)
-        self.assertRegex(index, r"sessions\.css\?v=\d{8}-[a-z0-9]+")
+        self.assertIn("from './views/sessions.js';", app)
+        self.assertIn('<link rel="stylesheet" href="css/sessions.css">', index)
 
     def test_telemetry_only_providers_are_discovered(self) -> None:
         providers = list_capability_providers("session_telemetry")

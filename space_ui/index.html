@@ -4,26 +4,27 @@
 <link rel="preload" href="fonts/inter/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
 <style>html{color-scheme:dark}</style>
 </head><body>
-<link rel="stylesheet" href="css/base.css?v=20260915-footer1">
-<link rel="stylesheet" href="css/stage.css?v=20260813-wikisetup1">
-<link rel="stylesheet" href="css/graph.css?v=20260915-footer1">
-<link rel="stylesheet" href="css/sessions.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/timeline.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/chrome.css?v=20260915-footer1">
-<link rel="stylesheet" href="css/projects.css?v=20260918-copypath1">
-<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">
-<link rel="stylesheet" href="css/sharing.css?v=20260918-copypath1">
-<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">
-<link rel="stylesheet" href="css/inbox-activity.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/wiki.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/quirq.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">
-<link rel="stylesheet" href="css/project-management.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/preview.css?v=20260915-footer1">
-<link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/navigation.css?v=20260915-footer1">
-<link rel="stylesheet" href="css/command-palette.css?v=20260915-typesync1">
-<link rel="stylesheet" href="css/shadcn.css?v=20260916-jobs3">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/stage.css">
+<link rel="stylesheet" href="css/graph.css">
+<link rel="stylesheet" href="css/sessions.css">
+<link rel="stylesheet" href="css/timeline.css">
+<link rel="stylesheet" href="css/chrome.css">
+<link rel="stylesheet" href="css/projects.css">
+<link rel="stylesheet" href="css/project-share.css">
+<link rel="stylesheet" href="css/sharing.css">
+<link rel="stylesheet" href="css/inbox.css">
+<link rel="stylesheet" href="css/inbox-activity.css">
+<link rel="stylesheet" href="css/wiki.css">
+<link rel="stylesheet" href="css/quirq.css">
+<link rel="stylesheet" href="css/setup.css">
+<link rel="stylesheet" href="css/project-management.css">
+<link rel="stylesheet" href="css/preview.css">
+<link rel="stylesheet" href="css/connectors.css">
+<link rel="stylesheet" href="css/navigation.css">
+<link rel="stylesheet" href="css/command-palette.css">
+<link rel="stylesheet" href="css/shadcn.css">
+<link rel="stylesheet" href="css/shell.css">
 
 
 <div class="topbar" data-toolbar="none">
@@ -173,23 +174,12 @@
   <div class="meta" id="fmeta"></div>
 </footer>
 
-<!-- Cache stamps for the core modules that many files import bare. The
-     StaticFiles mount sends no Cache-Control, so a browser may hold a
-     heuristically fresh copy of core/api.js or core/ui.js that lacks an
-     export a fresh view asks for, and one module link error blanks the
-     whole shell. The map rewrites the bare specifier in EVERY importer,
-     cached ones included, to one stamped URL: one module instance, fetched
-     fresh. Bump a stamp here when its file changes. A core module with a
-     single importer keeps its stamp on that import instead (app.js,
-     views/connectors.js). -->
-<script type="importmap">
-{"imports":{
-  "./js/core/api.js":"./js/core/api.js?v=20260914-files2",
-  "./js/core/ui.js":"./js/core/ui.js?v=20260914-accounts1",
-  "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
-}}
-</script>
-<script type="module" src="js/app.js?v=20260918-copypath1"></script>
+<!-- No cache stamps and no import map: the /space mount (routers/space.py)
+     sends Cache-Control: no-cache on every file, so a browser revalidates
+     each stylesheet and module on load (304 while unchanged, fresh bytes
+     the moment a file changes). Plain paths are always current, and the
+     bare specifiers every module imports with resolve to the real files. -->
+<script type="module" src="js/shell.js"></script>
 
 
 </body></html>

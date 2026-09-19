@@ -6,10 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
-# Shared core modules and connector styles retain the account-chip stamp.
-# Inbox imports and styles advanced for the Jobs and command-results UI.
-STAMP = "20260914-accounts1"
-RESULTS_STAMP = "20260914-results1"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -345,34 +341,28 @@ class ConnectedAccountTests(unittest.TestCase):
         self.assertNotRegex(accounts, DASHES)
 
 
-class CacheBusterTests(unittest.TestCase):
-    """Changed views and styles advance their stamps; index.html's app.js
-    stamp makes a browser re-import the per-view URLs. The core modules every
-    view imports bare (api.js, ui.js, connections.js) are stamped once, in
-    index.html's import map, so every importer shares one fresh instance."""
+class ShellWiringTests(unittest.TestCase):
+    """The shell imports the Inbox and Connectors views and links their
+    stylesheets by plain path: the /space mount sends Cache-Control:
+    no-cache, so no stamp is needed. The core modules every view imports
+    bare (api.js, ui.js, connections.js) resolve to the real files, and
+    every importer shares one instance without an import map."""
 
     def test_app_js_imports(self) -> None:
-        app = read("js/app.js")
-        self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';", app
-        )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260917-byok1';", app)
-        # both views import core/api.js bare: the stamp is the import map's
+        app = read("js/shell.js")
+        self.assertIn("import {createInboxViews,initInboxBadge} from './views/inbox.js';", app)
+        self.assertIn("import connectorsView from './views/connectors.js';", app)
+        # both views import core/api.js bare
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
-        html = read("index.html")
-        for name in ("api.js", "ui.js", "connections.js"):
-            stamp = "20260914-files2" if name == "api.js" else STAMP
-            self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + stamp + '"', html)
+        self.assertNotIn('<script type="importmap">', read("index.html"))
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css">', html)
         # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">', html)
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
-        # the import map is read before app.js is, or it rewrites nothing
-        self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css">', html)
+        self.assertIn('<script type="module" src="js/shell.js"></script>', html)
 
 
 class HygieneTests(unittest.TestCase):

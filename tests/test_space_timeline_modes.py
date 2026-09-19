@@ -215,7 +215,7 @@ class TimelineModeWiringTests(unittest.TestCase):
         self.assertIn('id="tmode"', index)
         self.assertIn('data-tmode="file"', index)
         self.assertIn('data-tmode="project"', index)
-        self.assertIn("css/timeline.css?v=", index)
+        self.assertIn('<link rel="stylesheet" href="css/timeline.css">', index)
 
     def test_atlas_renders_git_history_and_remembers_the_mode(self) -> None:
         atlas = (
@@ -229,7 +229,7 @@ class TimelineModeWiringTests(unittest.TestCase):
 
     def test_builder_emits_git_history(self) -> None:
         source = (
-            ROOT / "services" / "cowork_agent" / "visualizer" / "space_index.py"
+            ROOT / "modules" / "projects" / "space_index.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"gitHistory": git_history', source)
 

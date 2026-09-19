@@ -23,7 +23,9 @@ let go=()=>{};
 export default {
   id:'quirq',route:'setup/server/details',aliases:['quirq'],
   label:'Quirq',
-  order:8,nav:false,parent:'setup',
+  /* A detail page of Setup's Server section: not listed in the secondary
+     navigation, and it hides that navigation like the rest of Setup. */
+  order:8,nav:false,parent:'setup',secondary:false,sectionNav:false,
   async mount(el,ctx){
     root=el;
     go=ctx.switchTo;

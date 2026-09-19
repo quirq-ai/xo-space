@@ -6,12 +6,12 @@
    forbids). Cross-view jumps go through ctx.switchTo (`go`). All graph
    content comes from the workspace's .xo/space.json, served at /xo/space.json;
    nothing is embedded here. */
-import {projectPage} from '../core/navigation.js?v=20260915-agents2';
+import {projectPage} from '../core/navigation.js';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
-import {createProjectRootPicker} from '../core/project-root.js?v=20260914-files2';
-import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
-import {timelineSummary} from '../core/timeline-summary.js?v=20260915-timeline1';
+import {createProjectRootPicker} from '../core/project-root.js';
+import {dataViewControls} from '../core/data-views.js';
+import {timelineSummary} from '../core/timeline-summary.js';
 
 let go=()=>{};   /* ctx.switchTo, captured on first mount */
 let refreshToolbar=()=>{};

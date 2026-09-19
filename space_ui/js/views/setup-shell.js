@@ -1,5 +1,5 @@
 /* Setup layout only. Section IDs and labels are shared with navigation. */
-import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260916-jobs3';
+import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js';
 
 export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
@@ -18,6 +18,7 @@ export function renderSetupShell(root){
           </a>`).join('')}
         <p>Manage</p>
         ${SETUP_MANAGE.map(({id,route,label,description})=>`<a href="#/${route}" data-setup-go="${id}" aria-controls="setup-panel-${id}"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>${label}</b><small${id==='secrets'?' id="setup-step-secrets"':''}>${description}</small></span></a>`).join('')}
+        <a href="#/setup/modules" data-setup-page="modules"><span class="setup-nav-icon" aria-hidden="true">›</span><span><b>Modules</b><small>Which modules run</small></span></a>
       </nav>
       <div class="setup-content">
         <section id="setup-search-results" aria-label="Setup search results" hidden></section>

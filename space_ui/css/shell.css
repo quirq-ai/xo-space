@@ -1,0 +1,97 @@
+  /* ---------------- spec pages ----------------
+     Pages the shell renders from modules/<m>/pages/*.json (js/core/render.js
+     over the shadcn kit). The same centred column as the Inbox and Files
+     surfaces; everything inside is kit markup plus the .spec-* layout here. */
+  .view.spec-view{overflow-y:auto}
+  .spec-page{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
+  .spec-head{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+  .spec-head h1{margin:0;font:600 20px/1.2 var(--sans);letter-spacing:-.01em;color:var(--ink)}
+  .spec-alert{margin-bottom:16px}
+  .spec-alert a,.spec-view [data-slot="alert"] a{color:var(--accent)}
+  .spec-blocks{display:flex;flex-direction:column;gap:22px}
+  .spec-block[hidden]{display:none}
+  .spec-block-title{margin:0 0 10px;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  .spec-nomatch{margin:8px 0 0;font-size:12.5px;color:var(--ink-3)}
+  .spec-none{color:var(--ink-4)}
+  .spec-mono,.spec-mono a{font-family:var(--mono);font-size:12px}
+
+  /* stats */
+  .spec-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .spec-stats [data-slot="card"][data-open]{cursor:pointer}
+  .spec-stats [data-slot="card"][data-open]:hover{border-color:var(--ink-3)}
+
+  /* rows: list, cards, table, timeline */
+  .spec-row-title{font-weight:500;color:var(--ink)}
+  .spec-row-title a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line)}
+  .spec-row-title a:hover{text-decoration-color:var(--accent)}
+  .spec-row-title [data-slot="badge"]{margin-left:8px;vertical-align:middle}
+  .spec-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--ink-3)}
+  .spec-meta span{white-space:nowrap}
+  .spec-detail-text{font-size:12.5px;color:var(--ink-2);overflow-wrap:anywhere}
+  .spec-row-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+  .spec-actions-col{width:1%;white-space:nowrap;text-align:right}
+  .spec-view [data-slot="item"][data-tone="error"],.spec-view [data-slot="card"][data-tone="error"]{border-left:2px solid var(--err)}
+  .spec-view [data-slot="item"][data-tone="warn"],.spec-view [data-slot="card"][data-tone="warn"]{border-left:2px solid #e2ae5b}
+  .spec-view [data-slot="item"][data-open],.spec-view [data-slot="card"][data-open]{cursor:pointer}
+  .spec-view [data-slot="item"][data-open]:hover{border-color:var(--ink-3)}
+  .spec-view [data-slot="item-group"]>[data-slot="item"]{margin-bottom:8px}
+  .spec-view [data-slot="item-actions"]{display:flex;flex-wrap:wrap;gap:6px}
+  .spec-expand{margin:-4px 0 12px;padding:10px 14px 14px 22px;border-left:2px solid var(--line)}
+  .spec-expand[hidden]{display:none}
+  .spec-view tr[data-expand-row] td{padding:0 0 8px}
+  .spec-view tr[data-expand-row] .spec-expand{margin:0}
+  .spec-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+  .spec-cards [data-slot="card-footer"]{gap:6px;flex-wrap:wrap}
+
+  /* detail */
+  .spec-detail{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 18px;margin:0;font-size:13px}
+  .spec-detail dt{color:var(--ink-3)}
+  .spec-detail dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+
+  /* form */
+  .spec-form{display:flex;flex-direction:column;gap:12px;max-width:520px}
+  .spec-form textarea[data-slot="textarea"],.spec-form select[data-slot="native-select"]{
+    width:100%;min-height:36px;padding:7px 10px;border:1px solid var(--input);border-radius:var(--radius);
+    background:transparent;color:var(--ink);font:13px var(--sans)}
+  .spec-form textarea[data-slot="textarea"]{min-height:88px;resize:vertical}
+  .spec-form-actions{display:flex;justify-content:flex-end}
+
+  /* toggles */
+  .spec-toggles{display:flex;flex-direction:column}
+  .spec-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+  .spec-toggle:last-child{border-bottom:0}
+  .spec-toggle-text{min-width:0;cursor:pointer}
+  .spec-toggle b{display:block;font-size:13px;font-weight:500;color:var(--ink)}
+  .spec-toggle small{display:block;margin-top:2px;font-size:12px;color:var(--ink-3)}
+
+  /* timeline */
+  .spec-timeline{list-style:none;margin:0;padding:0 0 0 14px;border-left:1px solid var(--line)}
+  .spec-timeline li{position:relative;padding:0 0 14px 14px}
+  .spec-timeline li::before{content:"";position:absolute;left:-18px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .spec-timeline li:last-child{padding-bottom:0}
+
+  /* stream */
+  .spec-stream{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+  .spec-stream-line{padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px}
+  .spec-stream-line:last-child{border-bottom:0}
+  .spec-stream-status:empty{display:none}
+
+  /* text (markdown.js output) */
+  .spec-text{font-size:13.5px;line-height:1.55;color:var(--ink-2)}
+  .spec-text p{margin:0 0 8px}
+  .spec-text p:last-child{margin-bottom:0}
+  .spec-text code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .spec-text a{color:var(--accent)}
+
+  /* calendar */
+  .spec-calendar{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:start}
+
+  /* chart and widget */
+  .spec-chart{min-height:44px}
+  .spec-widget{min-height:120px}
+
+  @media (max-width:720px){
+    .spec-page{padding:60px 16px 40px}
+    .spec-calendar{grid-template-columns:1fr}
+    .spec-expand{padding-left:12px}
+  }

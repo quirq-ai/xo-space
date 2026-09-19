@@ -14,8 +14,11 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.schedules import router
-from utils.commands import CommandResult, scheduler
+from routers.errors import install_service_errors
+
+from modules.jobs import scheduler
+from modules.jobs.routes import router
+from utils.commands import CommandResult
 
 
 class SpaceCommandsTests(unittest.TestCase):
@@ -30,6 +33,7 @@ class SpaceCommandsTests(unittest.TestCase):
         self.addCleanup(scheduler.reset_state)
         app = FastAPI()
         app.include_router(router)
+        install_service_errors(app)
         self.client = TestClient(app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
         self.remote = TestClient(app, client=("192.0.2.10", 12345))
         self.payload = {"name": "Check checkout", "description": "A saved local command",
@@ -152,7 +156,7 @@ class SpaceCommandsTests(unittest.TestCase):
         scheduler._running[job['id']].thread.join(5)
         # A real filesystem failure: the history directory is occupied by a
         # file. GET reports it and must retain the completed executor result.
-        blocked = scheduler.scheduler_dir() / 'runs'
+        blocked = scheduler.jobs_dir() / 'runs'
         blocked.write_text('not a directory')
         report = scheduler.tick()
         self.assertEqual(report.started, [])
@@ -213,7 +217,7 @@ class SpaceCommandsTests(unittest.TestCase):
         started = '2026-09-11T10:00:05Z'
         state = json.loads(scheduler.state_file().read_text())
         state['jobs'][job['id']]['running_since'] = started
-        scheduler._write_doc(scheduler.state_file(), state)
+        scheduler.store.state_document().write(state)
         with patch.dict(os.environ, {'XO_SCHEDULER_ENABLED': '0'}), \
                 patch.object(scheduler, 'run_spec_sync') as executor:
             view = self.client.get(f"/api/schedules/{job['id']}").json()
@@ -279,6 +283,6 @@ class SpaceCommandsTests(unittest.TestCase):
         self.assertIn('esc(run.output_tail', results)
         self.assertIn('openCommandResults', card)
         self.assertIn('No jobs yet', card)
-        self.assertIn("from '../core/jobs.js?v=", card)
+        self.assertIn("from '../core/jobs.js';", card)
         for action in ('run', 'runs', 'edit', 'delete'):
             self.assertIn(f'data-command-action="{action}"', card)

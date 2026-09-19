@@ -1,9 +1,9 @@
 /* Shared UI helpers: the toast, the escape and relative-time helpers every
    view was carrying its own copy of, and the pill strip the filter rows
    share. Everything but toast() is a pure string builder: callers own the
-   DOM and decide where the markup lands. Imported bare everywhere: the
-   cache stamp for this file lives in index.html's import map. Bump it
-   there when this changes. */
+   DOM and decide where the markup lands. Imported bare everywhere; no cache
+   stamp is needed because the /space mount sends Cache-Control: no-cache,
+   so a browser revalidates this file on every load. */
 
 let toastT=null;
 export function toast(msg){

@@ -6,6 +6,16 @@ import {API_BASE,apiFetch} from './api.js';
 import {setSlottedInterval} from './store.js';
 
 let updateServer=()=>{};
+const stateListeners=new Set();
+
+/* Subscribe to the pill's own reading of the server: fn(true) when the
+   server comes (back) up, fn(false) when it goes away, called only on a
+   change. The shell retries /api/ui on the next "up". Returns an
+   unsubscribe function. */
+export function onServerState(fn){
+  stateListeners.add(fn);
+  return()=>stateListeners.delete(fn);
+}
 
 /* Setup uses the same probe while restarting, so the pill and the reload
    decision reflect the same response. */
@@ -30,6 +40,9 @@ export function initServerWidget(){
     srvBtn.hidden=on; /* button exists only to show the start command */
     srvBtn.textContent='Start…';
     if(on)srvPop.classList.remove('is-open');
+    for(const fn of stateListeners){
+      try{fn(on);}catch(err){console.error('Server state listener failed:',err);}
+    }
   }
   srvBtn.addEventListener('click',()=>{
     srvPop.classList.toggle('is-open');
