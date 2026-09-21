@@ -191,8 +191,12 @@ spring stiffness makes the original explicit-Euler sim diverge (positions hit
 
 Two setup steps keep one section visible at a time. `core/setup-sections.js` owns section IDs, labels and compatibility aliases; `setup-shell.js` renders the layout and `setup.js` owns behavior, styled by `setup.css`. Legacy agent/activity section events resolve to Intelligence, and project management lives under Projects → Manage:
 
-1. **Workspace** shows the Space ID, configured workspace name/owner, verified XO user ID and GitHub account, then the projects and Space data folders. Applied paths and connection diagnostics are expandable.
+1. **Workspace** includes **Branding** for a custom display name and uploaded logo, followed by the Space ID, configured workspace name/owner, verified XO user ID and GitHub account, then the projects and Space data folders. Applied paths and connection diagnostics are expandable.
 2. **Intelligence layer** combines agent connection with activity collection. Choose the chat agent, review installation and credential checks, and select which agents contribute sessions and project history. Agent and activity settings retain independent forms, saves and drafts; other agents and detailed paths are collapsed.
+
+Branding previews changes before saving and updates the header and browser title immediately after a successful save. Names are 1–80 characters; logos accept PNG, JPEG or WebP up to 2 MiB and 4096 × 4096 pixels. Remove the logo or reset to the default Space name and XO mark, then save to apply. `GET`/`PUT /space/branding` persist the display settings together in `settings/branding.json` under the configured state root; `GET /space/branding/logo` serves the validated image. Branding does not change the workspace ID or account identity. Image validation uses the Pillow dependency in `requirements.txt`.
+
+The default storage path is `~/.quirq/settings/branding.json`, outside the application repository. Both the custom name and uploaded image bytes live in that one runtime file; saving never rewrites source files or bundled assets, so code updates preserve branding. If `QUIRQ_STATE_ROOT` points inside the checkout, Git ignores the branding file and its atomic-write temporary file. With no saved customization, the UI shows **Space** and the bundled **XO** logo; a missing uploaded image also falls back to the XO logo in the header and preview.
 
 **Next** moves between steps without saving. All forms stay mounted, so section
 and app navigation preserve drafts. Saving a credential also keeps unfinished

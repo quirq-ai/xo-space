@@ -45,8 +45,13 @@ async function doFetch(path,method,body,headers,signal){
     if(signal)opts.signal=signal;
     const h={...(headers||{})};
     if(body!==undefined){
-      h['Content-Type']='application/json';
-      opts.body=JSON.stringify(body);
+      if(body instanceof FormData){
+        // The browser supplies the multipart boundary for uploaded files.
+        opts.body=body;
+      }else{
+        h['Content-Type']='application/json';
+        opts.body=JSON.stringify(body);
+      }
     }
     if(Object.keys(h).length)opts.headers=h;
     const r=await fetch(withPageQuery(path),opts);

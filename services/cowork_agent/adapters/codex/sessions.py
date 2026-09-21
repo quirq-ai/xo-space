@@ -63,9 +63,11 @@ def enrich_project_session(meta: dict, key: str, default_agent: str):
     """Return ``(time_created, title, effective_agent)`` by reading the rollout.
 
     ``time_created`` = the ``session_meta`` line's ``timestamp``; ``title`` =
-    first ``event_msg/user_message.message`` (raw prompt), preamble-stripped and
-    80-char truncated. Either override may be None (caller keeps its defaults,
-    sessions_io.py:114-117)."""
+    the first typed prompt, 80-char truncated. The prompt is read from both
+    rollout shapes for the same reason ``_convert`` does — newer codex builds
+    write the turn only as a ``response_item``, and reading just the legacy
+    event leaves every codex session titled "Untitled Session". Either override
+    may be None (caller keeps its defaults, sessions_io.py:114-117)."""
     time_created = None
     title = None
     native = (meta or {}).get("nativeSessionId") or ""
@@ -77,12 +79,20 @@ def enrich_project_session(meta: dict, key: str, default_agent: str):
                 payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
                 if top == "session_meta" and time_created is None:
                     time_created = payload.get("timestamp") or obj.get("timestamp")
-                elif top == "event_msg" and payload.get("type") == "user_message":
-                    raw = payload.get("message")
-                    text = strip_workspace_preamble(raw if isinstance(raw, str) else "").strip()
-                    if text and not text.startswith("<environment_context>"):
-                        title = text[:80]
-                        break
+                    continue
+                if top == "event_msg" and payload.get("type") == "user_message":
+                    text = _unlabelled_user_text(payload.get("message"))
+                elif (
+                    top == "response_item"
+                    and payload.get("type") == "message"
+                    and payload.get("role") == "user"
+                ):
+                    text = _response_item_user_text(payload)
+                else:
+                    continue
+                if text:
+                    title = text[:80]
+                    break
     return time_created, title, default_agent
 
 
@@ -156,6 +166,72 @@ def _text_from_output(output) -> str:
     return ""
 
 
+# Codex sends a user turn's injected context as its own ``role: "user"``
+# message (plugin recommendations, AGENTS.md, environment context), so the
+# transcript has to tell that message from the one the person typed. It labels
+# every block for us: ``internal_chat_message_metadata_passthrough
+# .content_item_kinds`` runs parallel to ``content``, reading ``["user.text"]``
+# on a typed turn and e.g. ``["plugins.recommendations",
+# "agents_md.instructions", "environments.environment_context"]`` on an
+# injected one. This is codex's equivalent of the ``isMeta`` flag claude_code
+# reads (engine/messages.py:271).
+#
+# Selecting on the label keeps the transcript honest: blocks are chosen, never
+# rewritten, so no prompt can be truncated or mangled, and a context kind codex
+# adds later is excluded without a code change.
+_USER_KIND_PREFIX = "user."
+
+
+def _labelled_user_blocks(payload: dict) -> list | None:
+    """Blocks codex attributes to the person, or None when it did not label.
+
+    None (labels absent, malformed, or not parallel to ``content``) means "do
+    not trust these labels" and sends the caller to the unlabelled path, rather
+    than silently treating a mismatch as "the person typed nothing".
+    """
+    meta = payload.get("internal_chat_message_metadata_passthrough")
+    if not isinstance(meta, dict):
+        return None
+    kinds = meta.get("content_item_kinds")
+    content = payload.get("content")
+    if not isinstance(kinds, list) or not isinstance(content, list):
+        return None
+    if len(kinds) != len(content):
+        return None
+    return [
+        block for kind, block in zip(kinds, content)
+        if isinstance(kind, str) and kind.startswith(_USER_KIND_PREFIX)
+    ]
+
+
+def _user_text(raw) -> str:
+    """A user turn's text, less the frontend's own workspace preamble.
+
+    The preamble is xo-coworker's, not codex's (helpers.py:82), so trimming it
+    here is us undoing our own addition.
+    """
+    return strip_workspace_preamble(_text_from_output(raw)).strip()
+
+
+def _unlabelled_user_text(raw) -> str:
+    """``_user_text`` for rollouts predating ``content_item_kinds``.
+
+    Those builds also sent injected context as a whole separate message, so
+    dropping the message on its opening tag is enough — still no text is cut
+    out of a turn the person typed.
+    """
+    text = _user_text(raw)
+    return "" if text.startswith("<environment_context>") else text
+
+
+def _response_item_user_text(payload: dict) -> str:
+    """The person's text from a ``response_item`` user message ("" if none)."""
+    blocks = _labelled_user_blocks(payload)
+    if blocks is None:
+        return _unlabelled_user_text(payload.get("content"))
+    return _user_text(blocks)
+
+
 def _tool_input(payload: dict) -> dict:
     """Best-effort tool ``input`` dict for the chip. function_call.arguments is a
     JSON string; custom_tool_call.input is a shell command string."""
@@ -178,12 +254,17 @@ def _convert(session_id: str, path: Path) -> list[dict]:
     """Convert a codex rollout ``.jsonl`` into xo-cowork MessageResponse dicts
     (same shape engine/messages.convert_native_claude_messages produces).
 
-    Walks rollout lines in order; one codex turn → one user bubble (from
-    event_msg/user_message) then one assistant message whose parts are the
-    turn's tool chips (function_call/custom_tool_call paired to *_output by
-    call_id) followed by the final assistant text (response_item output_text).
-    reasoning is encrypted and skipped; agent_message is a dup of the assistant
-    output_text and skipped; usage is the summed token_count for the turn."""
+    Walks rollout lines in order; one codex turn → one user bubble then one
+    assistant message whose parts are the turn's tool chips
+    (function_call/custom_tool_call paired to *_output by call_id) followed by
+    the final assistant text (response_item output_text). reasoning is
+    encrypted and skipped; agent_message is a dup of the assistant output_text
+    and skipped; usage is the summed token_count for the turn.
+
+    A user turn is read from BOTH shapes codex has used: the ``response_item``
+    ``message`` with ``role: "user"`` (the only record newer builds write) and
+    the legacy ``event_msg``/``user_message`` event. Builds that emit both get
+    the pair collapsed by ``_emit_user`` so the turn renders once."""
     messages: list[dict] = []
     counter = [0]
     current_model: list[str | None] = [None]   # latest turn_context.model
@@ -220,6 +301,27 @@ def _convert(session_id: str, path: Path) -> list[dict]:
         a_usage[0] = None
         tools_by_call.clear()
 
+    def _emit_user(text: str, ts: str) -> None:
+        """Emit one user bubble, closing the assistant turn that preceded it.
+
+        Skips a turn already emitted from the other rollout shape: same text,
+        with no assistant content recorded in between.
+        """
+        if messages and not a_parts and messages[-1]["data"].get("role") == "user":
+            if messages[-1]["parts"][0]["data"].get("text") == text:
+                return
+        _flush_assistant()
+        counter[0] += 1
+        mid = f"{session_id}_m{counter[0]}"
+        messages.append({
+            "id": mid, "session_id": session_id, "time_created": ts,
+            "data": {"role": "user"},
+            "parts": [{
+                "id": f"{mid}_p0", "message_id": mid, "session_id": session_id,
+                "time_created": ts, "data": {"type": "text", "text": text},
+            }],
+        })
+
     for obj in _iter_rollout(path):
         top = obj.get("type")
         payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
@@ -234,22 +336,11 @@ def _convert(session_id: str, path: Path) -> list[dict]:
         if top == "event_msg":
             ptype = payload.get("type")
             if ptype == "user_message":
-                # New user turn → close the previous assistant turn, emit the bubble.
-                _flush_assistant()
-                raw = payload.get("message")
-                text = strip_workspace_preamble(raw if isinstance(raw, str) else "").strip()
-                if not text or text.startswith("<environment_context>"):
-                    continue
-                counter[0] += 1
-                mid = f"{session_id}_m{counter[0]}"
-                messages.append({
-                    "id": mid, "session_id": session_id, "time_created": ts,
-                    "data": {"role": "user"},
-                    "parts": [{
-                        "id": f"{mid}_p0", "message_id": mid, "session_id": session_id,
-                        "time_created": ts, "data": {"type": "text", "text": text},
-                    }],
-                })
+                # Legacy shape — absent on newer codex builds, which record the
+                # turn only as a response_item (handled below).
+                text = _unlabelled_user_text(payload.get("message"))
+                if text:
+                    _emit_user(text, ts)
             elif ptype == "token_count":
                 info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
                 a_usage[0] = _add_usage(a_usage[0], info.get("last_token_usage"))
@@ -259,12 +350,20 @@ def _convert(session_id: str, path: Path) -> list[dict]:
 
         if top == "response_item":
             ptype = payload.get("type")
+
+            # Resolved before a_ts so a user line never stamps the assistant
+            # message that follows it with the user's timestamp.
+            if ptype == "message" and payload.get("role") != "assistant":
+                if payload.get("role") == "user":
+                    text = _response_item_user_text(payload)
+                    if text:
+                        _emit_user(text, ts)
+                continue                         # developer turns stay hidden
+
             if a_ts[0] is None:
                 a_ts[0] = ts
 
             if ptype == "message":
-                if payload.get("role") != "assistant":
-                    continue                     # user/developer handled via event_msg
                 for block in payload.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "output_text":
                         text = block.get("text") or ""

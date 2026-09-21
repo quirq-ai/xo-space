@@ -22,7 +22,8 @@ import sharingView from './views/sharing.js?v=20260921-refresh1';
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';
 import quirqView from './views/quirq.js?v=20260921-refresh1';
-import {createSetupViews} from './views/setup.js?v=20260921-refresh1';
+import {createSetupViews} from './views/setup.js?v=20260922-refresh2';
+import {loadBranding} from './core/branding.js?v=20260921-branding1';
 import connectorsView from './views/connectors.js?v=20260921-refresh1';
 
 
@@ -54,6 +55,7 @@ function initTopbarInset(){
   else addEventListener('resize',update);
 }
 try{initTopbarInset();}catch(err){console.error('Topbar measurement failed:',err);}
+loadBranding();
 
 /* Before startRegistry: its first switchTo announces the active view, and a
    listener registered afterwards would miss it on a deep link. */

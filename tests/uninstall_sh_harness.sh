@@ -4,8 +4,8 @@
 # one full --yes run against a fabricated managed install.
 #
 # Sources everything except the final `main "$@"`, against temp directories.
-# lsof and docker are shadowed with no-op fakes so nothing on the real
-# machine is inspected, killed, or brought down. No network, no venv.
+# lsof is shadowed with a no-op fake so nothing on the real
+# machine is inspected or killed. No network, no venv.
 # Run directly (bash tests/uninstall_sh_harness.sh) or via
 # tests/test_uninstall_sh.py. UNINSTALL_SH=<path> points it elsewhere.
 set -u
@@ -25,7 +25,6 @@ tr -d '\r' < "$SRC" | sed '$d' > "$W/lib.sh"
 # ---- fakes: never touch the real machine ---------------------------------
 mkdir -p "$W/bin"
 printf '#!/bin/sh\nexit 1\n' > "$W/bin/lsof";   chmod +x "$W/bin/lsof"
-printf '#!/bin/sh\nexit 1\n' > "$W/bin/docker"; chmod +x "$W/bin/docker"
 export PATH="$W/bin:$PATH"
 
 # ---- a fabricated managed install ----------------------------------------

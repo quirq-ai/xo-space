@@ -171,9 +171,9 @@ port_is_in_use() {
         return
     fi
 
-    # The Python server performs the same bind check before native startup.
-    # Docker will still return an actionable bind error when neither probe is
-    # available on the host.
+    # The Python server performs the same bind check before native startup
+    # and returns an actionable bind error when neither probe is available
+    # on the host.
     return 1
 }
 

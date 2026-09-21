@@ -137,6 +137,7 @@ node tests/space_ui_preview/manage-refresh-races.mjs /tmp/space-manage-refresh-r
 node tests/space_ui_preview/manage-details.mjs /tmp/space-manage-details
 node tests/space_ui_preview/native-connectors.mjs /tmp/space-native-connectors
 node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
+node tests/space_ui_preview/setup-branding.mjs /tmp/space-setup-branding
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
 node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
 node tests/space_ui_preview/command-results-races.mjs
@@ -171,6 +172,13 @@ restoration and preserving a newer user selection.
 The Setup Connectors check covers lazy loading, legacy links, shared navigation,
 retained search and polling drafts, authorization during section changes, and
 desktop/mobile layouts. Connector requests use browser fixtures. The identity check covers verified, unavailable and unconfigured accounts, independent error states and refresh races.
+
+The Branding check covers workspace name and logo previews, multipart saves,
+reload persistence, logo removal, restoring defaults, retained drafts after a
+failed save, duplicate submission protection, image/name validation, and
+drafts across navigation/status refresh, stale reads after save, and saved long names
+at 1440px, 1024px, 768px, 390px and 320px. Branding writes and logo responses are intercepted
+in the browser; the preview server only supplies the default read response.
 
 The Commands/restart script intercepts mutations with browser fixtures; it never executes a
 command or restarts a process. It checks that all three restart buttons wait for

@@ -42,6 +42,26 @@
 .setup-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line-soft)}
 .setup-card-head h2,.setup-card-head h3{font:500 15px var(--sans)}
 .setup-card-head h3>span{font:400 12px var(--sans);margin-left:5px;color:var(--ink-3)}
+.setup-branding form{padding:20px}
+.setup-branding-intro{margin-bottom:20px;font-size:13px;line-height:1.5;color:var(--ink-2)}
+.setup-branding-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.8fr);gap:26px;align-items:start}
+.setup-branding-controls{min-width:0}
+.setup-branding label{display:block;margin:0 0 8px;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-branding label:not(:first-child){margin-top:22px}
+.setup-branding input{width:100%;min-width:0;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:400 13px var(--sans)}
+.setup-branding input[type=file]{font-size:12px;padding:8px}
+.setup-branding input::file-selector-button{margin-right:10px;padding:6px 9px;border:1px solid var(--line);border-radius:5px;background:var(--bg-3);color:var(--ink-2);font:500 12px var(--sans);cursor:pointer}
+.setup-branding small{display:block;margin-top:7px;font-size:12px;line-height:1.5;color:var(--ink-3);overflow-wrap:anywhere}
+#branding-remove-logo{margin-top:10px;padding:7px 10px}
+.setup-branding-preview{min-width:0;padding:18px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.setup-branding-preview>span{font:500 11px var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+.setup-branding-preview>div{display:flex;align-items:center;gap:12px;min-height:70px;padding:16px 0}
+.setup-branding-preview [data-branding-preview-logo]{display:flex;align-items:center;justify-content:center;flex:none;width:40px}
+.setup-branding-preview img{width:40px;height:40px;object-fit:contain}
+.setup-branding-preview b{min-width:0;font:600 18px/1.4 var(--sans);overflow-wrap:anywhere}
+.setup-branding-preview>small{margin:0}
+@media(max-width:900px){.setup-branding-fields{grid-template-columns:minmax(0,1fr);gap:20px}}
+@media(max-width:650px){.setup-branding form{padding:16px}}
 .setup-agent-label{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:8px}.setup-agent-label label{margin:0}
 .setup-agent-label i,.setup-card-head i{font:500 11px var(--sans);font-style:normal;color:var(--ink-3)}
 .setup-agent-label i.is-good,.setup-card-head i.is-good{color:var(--accent)}.setup-agent-label i.is-pending,.setup-card-head i.is-pending{color:#e2ae5b}

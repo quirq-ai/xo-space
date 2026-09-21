@@ -211,7 +211,6 @@ The project venv is `venv/bin/python` (it has fastapi/uvicorn; the system
 
 ```bash
 # Run
-./quirq                                            # Docker on localhost:5003
 ./cowork-api.sh dev                                # native venv + reload
 PORT=5010 ./cowork-api.sh dev                      # choose another native port
 AGENT_NAME=hermes venv/bin/python server.py        # boot a specific backend
@@ -947,3 +946,9 @@ only as the literal `true`; the schema is
 
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
+
+## 12. Releases
+
+Versions are annotated SemVer tags on `main`, cut by hand every time `main`
+moves. The runbook, the numbering rules and the hotfix flow are in
+[RELEASING.md](RELEASING.md).

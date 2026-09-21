@@ -21,6 +21,9 @@ anyio>=4.2.0
 gunicorn>=21.2.0
 python-multipart>=0.0.20
 
+# Decode uploaded workspace logos before persisting or serving them.
+Pillow>=11.3.0
+
 # Session telemetry (Argus) — daemon started at boot by
 # scripts/install_shared_deps.sh; the Space Sessions tab reads its DB.
 # Pinned: bump deliberately (an unpinned latest makes installs

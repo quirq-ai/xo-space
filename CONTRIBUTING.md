@@ -191,7 +191,8 @@ config/agents/<name>/          per-runtime manifest, capabilities, settings, set
 space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the offline overview
 install.sh · cowork-api.sh · quirq   the three ways to run it
 tests/                         xo-space's own unittest suite
-plugin/ · .agents/             the Claude Code / Codex plugin bundles (kept in sync by a script)
+plugin/ · plugins/quirq/       Claude Code / Codex bundles (shared discovery checked by scripts/check_plugin_sync.sh)
+.agents/plugins/marketplace.json  Codex repository marketplace
 ```
 
 DEVELOPING.md §2 has the full map; the README's "Project structure" section

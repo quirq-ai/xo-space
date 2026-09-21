@@ -903,8 +903,9 @@ class ShellTests(unittest.TestCase):
         for view in ("tree", "inbox-activity"):
             self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
         # Global refresh removes per-view controls and advances their cache stamps.
-        for view in ("sharing", "projects", "inbox", "project-manage", "quirq", "connectors", "setup", "atlas"):
+        for view in ("sharing", "projects", "inbox", "project-manage", "quirq", "connectors", "atlas"):
             self.assertIn("./views/" + view + ".js?v=20260921-refresh1'", app)
+        self.assertIn("./views/setup.js?v=20260922-refresh2'", app)
         for sheet in ("sharing",):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
         for module in ("navigation", "preview"):
@@ -938,8 +939,10 @@ class ShellTests(unittest.TestCase):
         for sheet in ("shadcn",):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
         # Global refresh also advances changed shared and per-view styles.
-        for sheet in ("base", "chrome", "graph", "projects", "inbox", "quirq", "setup", "connectors"):
+        for sheet in ("chrome", "graph", "projects", "inbox", "quirq", "connectors"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260921-refresh1">', html)
+        for sheet in ("base", "setup"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260922-refresh2">', html)
         self.assertIn("./core/command-palette.js?v=20260921-refresh1'", app)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
@@ -956,7 +959,7 @@ class ShellTests(unittest.TestCase):
         self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
         imports = json.loads(m.group(1))["imports"]
         for name in self.CORE_MAPPED:
-            stamp = "20260914-files2" if name == "api.js" else STAMP
+            stamp = "20260921-branding1" if name == "api.js" else STAMP
             self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + stamp, name)
         # one instance means every importer uses the bare specifier
         for path in sorted((UI / "js").rglob("*.js")):

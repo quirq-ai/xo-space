@@ -362,7 +362,7 @@ class CacheBusterTests(unittest.TestCase):
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
         html = read("index.html")
         for name in ("api.js", "ui.js", "connections.js"):
-            stamp = "20260914-files2" if name == "api.js" else STAMP
+            stamp = "20260921-branding1" if name == "api.js" else STAMP
             self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + stamp + '"', html)
 
     def test_index_html_links(self) -> None:

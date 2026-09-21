@@ -6,6 +6,8 @@ the local control plane for AI coding agents.
 The plugin never manages the server's lifecycle on its own: discovery is
 read-only, and installing or starting Quirq only happens after you say yes.
 
+For Codex, use the [XO Space Codex plugin](../plugins/quirq/README.md).
+
 ## Install
 
 ```

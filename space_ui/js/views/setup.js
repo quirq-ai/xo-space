@@ -10,8 +10,9 @@ import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260921-refresh1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
-import {mountSetupSearch} from './setup-search.js?v=20260916-jobs3';
-import {renderSetupShell} from './setup-shell.js?v=20260921-refresh1';
+import {mountBranding} from './setup-branding.js?v=20260921-branding2';
+import {mountSetupSearch} from './setup-search.js?v=20260921-branding1';
+import {renderSetupShell} from './setup-shell.js?v=20260922-refresh2';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
@@ -32,6 +33,8 @@ let editingKey=null;
 let loading=false;
 let commands=null;
 let identity=null;
+let branding=null;
+let brandingDraft=false;
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -75,6 +78,8 @@ function mountSetup(el,ctx){
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
     identity.refresh();
+    branding=mountBranding(root.querySelector('#setup-branding'),dirty=>{brandingDraft=dirty;renderJourney();});
+    branding.refresh();
     /* Connector links must not wait for unrelated settings/status reads. */
     loadAll().catch(err=>{
       console.error('Setup status failed to load:',err);
@@ -335,7 +340,7 @@ function renderRuntime(){
 function renderJourney(){
   const steps=setupSteps(runtimeUnavailable?null:runtimeData);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty={workspace:formDrafts.workspace,intelligence:formDrafts.agent||formDrafts.activity,secrets:credentialDraft};
+  const dirty={workspace:formDrafts.workspace||brandingDraft,intelligence:formDrafts.agent||formDrafts.activity,secrets:credentialDraft};
   const secretsStep=root.querySelector('#setup-step-secrets');
   secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
   secretsStep.className=credentialDraft?'is-pending':'';

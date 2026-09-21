@@ -3,7 +3,7 @@
    existing private controller loaders only inside intercepted fixture modules. */
 export async function installRefreshProbes(context){
   const probes={
-    'setup.js':'export const __refreshProbe=()=>{identity?.refresh();return loadAll();}; export const __refreshIdle=()=>!loading&&!refreshQueued;',
+    'setup.js':'export const __refreshProbe=()=>{identity?.refresh();branding?.refresh();return loadAll();}; export const __refreshIdle=()=>!loading&&!refreshQueued;',
     'connectors.js':'export const __refreshProbe=refreshAll;',
     'inbox.js':'export const __refreshProbe=loadJobs;',
   };
