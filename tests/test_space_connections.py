@@ -353,16 +353,15 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
-        self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';", app
-        )
+        self.assertIn("import workView,{initWorkBadge} from './views/work.js?v=20260919-work4';", app)
+        self.assertNotIn("./views/inbox.js", app)
         self.assertIn("import connectorsView from './views/connectors.js?v=20260917-byok1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
         html = read("index.html")
         for name in ("api.js", "ui.js", "connections.js"):
-            stamp = "20260914-files2" if name == "api.js" else STAMP
+            stamp = "20260919-work4" if name == "api.js" else STAMP
             self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + stamp + '"', html)
 
     def test_index_html_links(self) -> None:

@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-item.schema.json",
+  "title": "xo work item (~/.quirq/work/inbox/<connection>/<id>/item.json)",
+  "description": "One collected event as an Inbox item: the fact as the poller wrote it, the item's status, the session bound to it and how the person decided it. Written by services/work/items.py and the runner, never by the agent.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "id", "connection", "collector", "key", "ts", "title", "status"],
+  "properties": {
+    "schema":     { "type": "integer", "const": 1 },
+    "id":         { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$" },
+    "connection": { "type": "string" },
+    "collector":  { "type": "string" },
+    "key":        { "type": "string", "description": "the producer's own id (the event key)" },
+    "ts":         { "type": "string", "format": "date-time" },
+    "kind":       { "type": "string" },
+    "title":      { "type": "string" },
+    "body":       { "type": "string", "maxLength": 4000 },
+    "url":        { "type": ["string", "null"] },
+    "status":     { "type": "string", "enum": ["new", "queued", "running", "done", "failed", "skipped"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "decided":    { "type": ["object", "null"], "properties": { "action": { "type": "string", "enum": ["accepted", "dismissed", "tracked"] }, "at": { "type": "string", "format": "date-time" } } },
+    "session_id": { "type": ["string", "null"] },
+    "outcome":    { "type": ["string", "null"] }
+  }
+}

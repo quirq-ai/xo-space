@@ -125,7 +125,7 @@ class CommandPaletteCompositionTests(unittest.TestCase):
         routes = set(re.findall(r"\['([a-z][a-z0-9/-]*)',", src))
         for route in ("projects/overview", "projects/data/list", "projects/data/graph",
                       "projects/data/tree", "projects/timeline", "projects/manage",
-                      "agents/overview", "inbox/items", "inbox/jobs", "sharing",
+                      "agents/overview", "work", "work/live", "work/history",
                       "setup/workspace", "setup/connectors", "setup/secrets",
                       "setup/server", "setup/server/details", "wiki"):
             self.assertIn(route, routes, route)

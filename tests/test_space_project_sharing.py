@@ -130,9 +130,11 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
     def test_stylesheet_and_module_are_cache_busted(self) -> None:
         html = read("index.html")
         self.assertIn('href="css/sharing.css?v=', html)
+        # The Sharing page is unregistered since the Feed redesign (its
+        # management moved into Activity's Projects section); the module and
+        # its data seam stay stamped until the removal PR deletes them.
         app = read("js/app.js")
-        m = re.search(r"from '\./views/sharing\.js\?v=([\w-]+)'", app)
-        self.assertIsNotNone(m, "app.js must import sharing.js with ?v=")
+        self.assertNotIn("./views/sharing.js", app)
         pane = read("js/views/sharing.js")
         m2 = re.search(r"from '\./sharing_data\.js\?v=([\w-]+)'", pane)
         self.assertIsNotNone(m2, "sharing.js must import sharing_data.js with ?v=")
