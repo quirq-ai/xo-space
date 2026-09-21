@@ -39,9 +39,11 @@
     background:linear-gradient(180deg,#0d0f13,#0b0c0f);position:relative;z-index:60;
   }
   .topbar-right{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0;flex-wrap:nowrap}
-  .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
-  .brand .mark{align-self:center;display:flex;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
-  .brand b{font:600 18px var(--sans);letter-spacing:-.01em;color:var(--ink)}
+  .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap;min-width:0;max-width:240px}
+  .brand .mark{align-self:center;display:flex;flex-shrink:0;filter:drop-shadow(0 0 9px rgba(131,214,58,.35))}
+  .brand .mark.has-custom-logo{filter:none}
+  .brand .mark img{display:block;width:34px;height:30px;object-fit:contain}
+  .brand b{font:600 18px var(--sans);letter-spacing:-.01em;color:var(--ink);overflow:hidden;text-overflow:ellipsis}
   .brand span{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
   .tabs{display:flex;gap:2px;justify-self:center;width:max-content;max-width:100%;background:var(--bg-2);border:1px solid var(--line);border-radius:10px;padding:3px}
   .tabs :is(button,a){

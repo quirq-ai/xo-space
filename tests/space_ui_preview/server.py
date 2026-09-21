@@ -38,6 +38,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/xo-projects/activity": fixtures.activity,
             "/api/xo-projects/timeline": fixtures.timeline,
             "/api/project-sharing/status": fixtures.sharing,
+            "/space/branding": lambda: {"name": "Space", "logo_url": None},
             "/space/setup/status": lambda: {
                 "checked_at": fixtures.stamp(),
                 "space": {"status": "configured", "id": fixtures.WORKSPACE_ID,
@@ -50,6 +51,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/connections": lambda: {"signed_in": False, "poller_enabled": True, "connections": []},
             "/xo/sessions.json": lambda: {"meta": {"sources": [{"id": "demo", "label": "Fictional telemetry", "available": False}]}, "sessions": []},
             "/api/secrets": lambda: {"items": []},
+            "/api/schedules": lambda: {"jobs": []},
             "/api/runtime-config": lambda: {
                 "configured": {"agent_name": "demo", "watcher_enabled": False, "watcher_source_mode": "all", "watcher_interval_seconds": 30},
                 "applied": {"agent_name": "demo", "watcher_enabled": False, "watcher_source_mode": "all", "watcher_interval_seconds": 30},

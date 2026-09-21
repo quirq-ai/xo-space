@@ -3,6 +3,7 @@ import {esc} from '../core/ui.js';
 /* Search setting names, never form values or credentials. Results navigate to
    the existing controls without rebuilding forms or changing their drafts. */
 const SETTINGS=[
+  ['workspace','Branding','Workspace name and logo','branding brading customize rename space upload image','#branding-name'],
   ['workspace','Workspace identity','Space ID, owner and account connections','space user name xo github status','#setup-workspace-title'],
   ['workspace','Projects folder','Workspace · Folders','root directory path projects','#xo-root-input'],
   ['workspace','Space data folder','Workspace · Folders','quirq settings storage directory credentials','#quirq-root-input'],
