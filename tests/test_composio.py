@@ -31,6 +31,7 @@ import os
 import secrets
 import stat
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -771,6 +772,28 @@ class MultiAccountTests(_ComposioBase):
             service.sync_session(ACCOUNT)
         self.assertIsNone(service._SESSION_ID)
 
+    def test_a_session_replaced_on_read_is_queued_for_deletion(self) -> None:
+        # Composio sessions never expire, and a failed update does not prove the old
+        # one is gone. It is queued for the sweep rather than deleted here, because
+        # this is the agent's tool-call path.
+        _enable("gmail")
+        service._SESSIONS_LOADED = True
+        service._SESSION_ID = "sess_old"
+        with patch.object(swarm_client, "list_connections", return_value=[]), \
+                patch.object(
+                    swarm_client, "update_session",
+                    side_effect=swarm_client.SwarmComposioError("timed out"),
+                ), \
+                patch.object(
+                    swarm_client, "create_session",
+                    return_value={"session_id": "sess_new", "mcp": {"url": "https://mcp.example/s"}},
+                ), \
+                patch.object(swarm_client, "delete_session") as delete:
+            service.get_session(ACCOUNT)
+        self.assertEqual(service._SESSION_ID, "sess_new")
+        self.assertEqual(service._ORPHANED_SESSION_IDS, ["sess_old"])
+        delete.assert_not_called()
+
     def test_disabling_the_last_toolkit_drops_the_session(self) -> None:
         # Leaving a live session behind would keep it reaching whatever it was last
         # configured with, which is exactly what turning everything off must prevent.
@@ -905,6 +928,20 @@ class McpProxyTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
             await mcp_proxy._proxy(_make_request(), "POST", token)
         build.assert_called_once_with(byo_key.user_id())
 
+    async def test_the_session_build_runs_off_the_event_loop(self) -> None:
+        # The SDK blocks. On the loop thread, one slow Composio answer froze every
+        # other request on the server for its whole duration (#163).
+        token = service.proxy_token()
+        ran_on: list[int] = []
+
+        def _build(_user_id):
+            ran_on.append(threading.get_ident())
+            return {}
+
+        with patch.object(service, "build_mcp_server_entry", side_effect=_build):
+            await mcp_proxy._proxy(_make_request(), "POST", token)
+        self.assertNotEqual(ran_on, [threading.get_ident()])
+
     async def test_session_build_failure_is_a_502(self) -> None:
         token = service.proxy_token()
         with patch.object(
@@ -1008,6 +1045,18 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         with patch.object(service, "list_connections", return_value=[]):
             await router_mod.list_toolkits(user_id=ACCOUNT)
         self.kick.assert_called_once_with()
+
+    async def test_composio_calls_run_off_the_event_loop(self) -> None:
+        # One handler stands in for the rest: they all reach Composio the same way.
+        ran_on: list[int] = []
+
+        def _list(_user_id):
+            ran_on.append(threading.get_ident())
+            return []
+
+        with patch.object(service, "list_connections", side_effect=_list):
+            await router_mod.list_toolkits(user_id=ACCOUNT)
+        self.assertNotEqual(ran_on, [threading.get_ident()])
 
     async def test_toolkits_default_to_needs_auth(self) -> None:
         with patch.object(service, "list_connections", return_value=[]):

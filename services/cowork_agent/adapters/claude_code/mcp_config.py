@@ -6,7 +6,7 @@ We materialize a Composio MCP URL into a JSON file and pass
 session-level meta-tools (SEARCH_TOOLS, MULTI_EXECUTE_TOOL,
 MANAGE_CONNECTIONS, GET_TOOL_SCHEMAS, REMOTE_WORKBENCH, REMOTE_BASH_TOOL).
 
-The URL written into the file is xo-cowork-api's loopback MCP proxy
+The URL written into the file is xo-space's loopback MCP proxy
 (`composio_service._composio_proxy_url()` →
 `http://127.0.0.1:<PORT>/mcp/composio-proxy/u/<token>`). The proxy resolves that
 opaque token to this workspace's Composio account and injects the credential

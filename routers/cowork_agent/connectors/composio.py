@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -18,6 +19,11 @@ from services.cowork_agent.connectors.composio.identity import get_composio_user
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# The Composio SDK blocks. Every service call that reaches it runs on a worker thread,
+# so one slow answer from Composio cannot freeze the server for every other request.
+# The handlers stay `async def`: kick_gateway_sweep() needs the running loop.
+_blocking = asyncio.to_thread
 
 
 def _require_key() -> None:
@@ -62,13 +68,13 @@ async def put_api_key(body: ApiKeyBody, request: Request) -> JSONResponse:
         raise HTTPException(status_code=422, detail="Provide a Composio API key.")
     byo_key.save(key)
     try:
-        composio_client._sdk().auth_configs.list(limit=1)
+        await _blocking(lambda: composio_client._sdk().auth_configs.list(limit=1))
     except composio_client.ComposioError as exc:
         byo_key.clear()
         if getattr(exc, "authoritative", False):
             raise HTTPException(status_code=422, detail="Composio rejected this API key.")
         raise HTTPException(status_code=502, detail=str(exc))
-    composio_service.invalidate_session()
+    await _blocking(composio_service.invalidate_session)
     # Install the agent MCP gateway now, synchronously, so the agent can reach
     # Composio without a restart. kick_gateway_sweep() alone is fire-and-forget and
     # rate-limited, which left a gap right after the first key save; install_gateways
@@ -90,7 +96,7 @@ async def delete_api_key(request: Request) -> JSONResponse:
                    "unset it there.",
         )
     byo_key.clear()
-    composio_service.invalidate_session()
+    await _blocking(composio_service.invalidate_session)
     return JSONResponse({"key_configured": False, "key_source": None})
 
 
@@ -162,7 +168,7 @@ async def list_toolkits(
         composio_service.kick_gateway_sweep()
         # One fetch feeds both the primary-account map and the per-toolkit counts.
         rows = composio_service.newest_first(
-            composio_service.list_connections(user_id)
+            await _blocking(composio_service.list_connections, user_id)
         )
     else:
         rows = []
@@ -221,7 +227,8 @@ async def connect(
             "reaches the agent's session.", toolkit,
         )
     try:
-        result = composio_service.initiate_connection(
+        result = await _blocking(
+            composio_service.initiate_connection,
             user_id=user_id,
             toolkit_id=toolkit,
             auth_scheme=body.auth_scheme,
@@ -233,7 +240,7 @@ async def connect(
         raise HTTPException(status_code=409, detail=str(exc))
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse(result)
 
 
@@ -244,7 +251,7 @@ async def connect_status(
     user_id: str = Depends(get_composio_user),
 ) -> JSONResponse:
     _require_key()
-    result = composio_service.check_connection(connection_request_id)
+    result = await _blocking(composio_service.check_connection, connection_request_id)
     if (result.get("status") or "").upper() == "ACTIVE":
         # The workspace that ran the OAuth flow gets the connection without a second
         # step. Every *other* workspace starts with it off and opts in: connections are
@@ -262,7 +269,7 @@ async def connect_status(
                     "composio: could not enable %s in this workspace after connect: %s",
                     toolkit, exc,
                 )
-        composio_service.sync_session(user_id)
+        await _blocking(composio_service.sync_session, user_id)
     return JSONResponse(result)
 
 
@@ -287,18 +294,18 @@ async def disconnect(
     """
     _require_key()
     try:
-        ok = composio_service.disconnect(body.connected_account_id)
+        ok = await _blocking(composio_service.disconnect, body.connected_account_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=502, detail="Composio disconnect failed.")
     space_scope.unlink_account(toolkit, body.connected_account_id)
-    rows = composio_service.list_connections(user_id)
+    rows = await _blocking(composio_service.list_connections, user_id)
     still_connected = any(
         r.get("connected_account_id") == body.connected_account_id and r.get("status") == "ACTIVE"
         for r in rows
     )
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse({"status": "needs_auth" if not still_connected else "connected"})
 
 
@@ -316,7 +323,7 @@ async def unlink_account(
     """
     _require_key()
     try:
-        accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
+        accounts = await _blocking(composio_service.list_toolkit_accounts, user_id, toolkit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     if not any(
@@ -327,7 +334,7 @@ async def unlink_account(
             detail="No such connected account for this user and toolkit.",
         )
     entry = space_scope.unlink_account(toolkit, connected_account_id)
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse({
         "toolkit": toolkit,
         "workspace_enabled": bool(entry.get("enabled")),
@@ -376,7 +383,9 @@ async def put_toolkit_scope(
     if body.connected_account_ids is not None:
         owned = {
             row.get("connected_account_id")
-            for row in composio_service.list_toolkit_accounts(user_id, toolkit)
+            for row in await _blocking(
+                composio_service.list_toolkit_accounts, user_id, toolkit,
+            )
         }
         unknown = [cid for cid in body.connected_account_ids if cid not in owned]
         if unknown:
@@ -394,7 +403,7 @@ async def put_toolkit_scope(
         connected_account_ids=body.connected_account_ids,
         max_accounts=composio_service.max_accounts_per_toolkit(),
     )
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse({
         "toolkit": toolkit,
         "workspace_enabled": bool(entry.get("enabled")),
@@ -418,7 +427,7 @@ async def list_toolkit_accounts(
     """
     _require_key()
     try:
-        accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
+        accounts = await _blocking(composio_service.list_toolkit_accounts, user_id, toolkit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -461,7 +470,7 @@ async def put_account_alias(
     """
     _require_key()
     try:
-        accounts = composio_service.list_toolkit_accounts(user_id, toolkit)
+        accounts = await _blocking(composio_service.list_toolkit_accounts, user_id, toolkit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     if not any(
@@ -475,10 +484,11 @@ async def put_account_alias(
     try:
         alias = composio_service.normalize_alias(body.alias)
         if alias:
-            composio_service.assert_alias_free(
+            await _blocking(
+                composio_service.assert_alias_free,
                 user_id, toolkit, alias, except_account_id=connected_account_id,
             )
-        stored = composio_service.set_alias(connected_account_id, alias)
+        stored = await _blocking(composio_service.set_alias, connected_account_id, alias)
     except composio_service.AliasInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
@@ -487,7 +497,7 @@ async def put_account_alias(
         raise HTTPException(status_code=502, detail=str(exc))
 
     # The alias is resolved inside the session, so the session must see it.
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse({
         "connected_account_id": connected_account_id,
         "alias": stored,
@@ -501,7 +511,9 @@ async def list_toolkit_tools(
 ) -> JSONResponse:
     _require_key()
     try:
-        tools = composio_service.list_tools(user_id, toolkit, include_disabled=True)
+        tools = await _blocking(
+            composio_service.list_tools, user_id, toolkit, include_disabled=True,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return JSONResponse({"tools": tools})
@@ -538,7 +550,7 @@ async def put_toolkit_prefs(
             detail=f"Per-action prefs are not configurable for toolkit '{toolkit}' yet.",
         )
     updated = composio_action_prefs.bulk_set(toolkit, body.actions)
-    composio_service.sync_session(user_id)
+    await _blocking(composio_service.sync_session, user_id)
     return JSONResponse({"actions": updated})
 
 
