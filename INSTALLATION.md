@@ -1,5 +1,21 @@
 # Install and run Quirq
 
+## From Codex
+
+Add the marketplace with `codex plugin marketplace add quirq-ai/xo-space`, then
+open **Plugins → Quirq → XO Space** and click **Install**. In a new Codex task,
+say **“Open XO Space”** or **“Install XO Space in ~/work.”** The plugin handles
+first setup and opens the local UI; fresh installs use the Codex backend.
+
+The default workspace is `~/xo-workspace`, separate from Codex's plugin cache.
+Keep the server's task/terminal running; ask Codex to open Space to start it again.
+Existing installs retain their backend and configuration. A working authenticated
+Codex CLI is required for agent chat (`CODEX_CLI_PATH` supports a bundled CLI).
+See the [Codex plugin guide](plugins/quirq/README.md) for supported environments,
+branch selection, updates, removal and troubleshooting.
+
+## From a terminal
+
 Pick a directory to keep Quirq in, then run:
 
 ```bash
