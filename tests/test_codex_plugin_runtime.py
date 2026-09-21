@@ -117,7 +117,9 @@ if sys.argv[1] == 'venv':
         shutil.copytree(self.source, repo)
         python = repo / "venv" / "bin" / "python"
         python.parent.mkdir(parents=True)
-        python.symlink_to(sys.executable)
+        # A symlink outside a venv loses its pyvenv.cfg on Linux and falls back
+        # to system site-packages. Invoke the actual test interpreter instead.
+        self._executable(python, f'#!/bin/bash\nexec {shlex.quote(sys.executable)} "$@"\n')
         (repo / ".env").write_text(config)
         return repo
 
