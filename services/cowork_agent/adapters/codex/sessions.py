@@ -81,13 +81,13 @@ def enrich_project_session(meta: dict, key: str, default_agent: str):
                     time_created = payload.get("timestamp") or obj.get("timestamp")
                     continue
                 if top == "event_msg" and payload.get("type") == "user_message":
-                    text = _user_text(payload.get("message"))
+                    text = _unlabelled_user_text(payload.get("message"))
                 elif (
                     top == "response_item"
                     and payload.get("type") == "message"
                     and payload.get("role") == "user"
                 ):
-                    text = _user_text(payload.get("content"))
+                    text = _response_item_user_text(payload)
                 else:
                     continue
                 if text:
@@ -166,37 +166,70 @@ def _text_from_output(output) -> str:
     return ""
 
 
-# Wrapper blocks codex prepends to a user turn (workspace/instruction context).
-# They are part of the prompt sent to the model but nothing the person typed, so
-# they must never render as a user bubble.
-_INJECTED_BLOCKS = ("environment_context", "user_instructions")
+# Codex sends a user turn's injected context as its own ``role: "user"``
+# message (plugin recommendations, AGENTS.md, environment context), so the
+# transcript has to tell that message from the one the person typed. It labels
+# every block for us: ``internal_chat_message_metadata_passthrough
+# .content_item_kinds`` runs parallel to ``content``, reading ``["user.text"]``
+# on a typed turn and e.g. ``["plugins.recommendations",
+# "agents_md.instructions", "environments.environment_context"]`` on an
+# injected one. This is codex's equivalent of the ``isMeta`` flag claude_code
+# reads (engine/messages.py:271).
+#
+# Selecting on the label keeps the transcript honest: blocks are chosen, never
+# rewritten, so no prompt can be truncated or mangled, and a context kind codex
+# adds later is excluded without a code change.
+_USER_KIND_PREFIX = "user."
 
 
-def _strip_injected_blocks(text: str) -> str:
-    """Drop leading ``<tag>…</tag>`` context blocks, leaving what was typed.
+def _labelled_user_blocks(payload: dict) -> list | None:
+    """Blocks codex attributes to the person, or None when it did not label.
 
-    Matched against a fixed tag list rather than "starts with ``<``" so a real
-    prompt like ``<div> renders blank`` still reaches the transcript. An
-    unterminated block means the whole message is injected context.
+    None (labels absent, malformed, or not parallel to ``content``) means "do
+    not trust these labels" and sends the caller to the unlabelled path, rather
+    than silently treating a mismatch as "the person typed nothing".
     """
-    out = text.strip()
-    stripped = True
-    while stripped:
-        stripped = False
-        for tag in _INJECTED_BLOCKS:
-            if not out.startswith(f"<{tag}>"):
-                continue
-            end = out.find(f"</{tag}>")
-            if end < 0:
-                return ""
-            out = out[end + len(tag) + 3:].strip()
-            stripped = True
-    return out
+    meta = payload.get("internal_chat_message_metadata_passthrough")
+    if not isinstance(meta, dict):
+        return None
+    kinds = meta.get("content_item_kinds")
+    content = payload.get("content")
+    if not isinstance(kinds, list) or not isinstance(content, list):
+        return None
+    if len(kinds) != len(content):
+        return None
+    return [
+        block for kind, block in zip(kinds, content)
+        if isinstance(kind, str) and kind.startswith(_USER_KIND_PREFIX)
+    ]
 
 
 def _user_text(raw) -> str:
-    """The typed prompt from a user turn, or "" when it is pure context."""
-    return _strip_injected_blocks(strip_workspace_preamble(_text_from_output(raw)))
+    """A user turn's text, less the frontend's own workspace preamble.
+
+    The preamble is xo-coworker's, not codex's (helpers.py:82), so trimming it
+    here is us undoing our own addition.
+    """
+    return strip_workspace_preamble(_text_from_output(raw)).strip()
+
+
+def _unlabelled_user_text(raw) -> str:
+    """``_user_text`` for rollouts predating ``content_item_kinds``.
+
+    Those builds also sent injected context as a whole separate message, so
+    dropping the message on its opening tag is enough — still no text is cut
+    out of a turn the person typed.
+    """
+    text = _user_text(raw)
+    return "" if text.startswith("<environment_context>") else text
+
+
+def _response_item_user_text(payload: dict) -> str:
+    """The person's text from a ``response_item`` user message ("" if none)."""
+    blocks = _labelled_user_blocks(payload)
+    if blocks is None:
+        return _unlabelled_user_text(payload.get("content"))
+    return _user_text(blocks)
 
 
 def _tool_input(payload: dict) -> dict:
@@ -305,7 +338,7 @@ def _convert(session_id: str, path: Path) -> list[dict]:
             if ptype == "user_message":
                 # Legacy shape — absent on newer codex builds, which record the
                 # turn only as a response_item (handled below).
-                text = _user_text(payload.get("message"))
+                text = _unlabelled_user_text(payload.get("message"))
                 if text:
                     _emit_user(text, ts)
             elif ptype == "token_count":
@@ -322,7 +355,7 @@ def _convert(session_id: str, path: Path) -> list[dict]:
             # message that follows it with the user's timestamp.
             if ptype == "message" and payload.get("role") != "assistant":
                 if payload.get("role") == "user":
-                    text = _user_text(payload.get("content"))
+                    text = _response_item_user_text(payload)
                     if text:
                         _emit_user(text, ts)
                 continue                         # developer turns stay hidden
