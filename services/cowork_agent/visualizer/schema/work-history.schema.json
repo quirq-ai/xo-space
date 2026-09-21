@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-history.schema.json",
+  "title": "xo work history (~/.quirq/work/history/history.json)",
+  "description": "The feed's own state: which readers run, how far the person has seen, what is pinned, and the posts agents sent through POST /api/feed. Nothing from a log is copied here. Written by services/work/ and hand-editable.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema"],
+  "properties": {
+    "schema":     { "type": "integer", "const": 3 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "sources": {
+      "type": "object",
+      "description": "Which readers run. Absent means all.",
+      "additionalProperties": { "type": "object", "additionalProperties": true, "properties": { "enabled": { "type": "boolean", "default": true } } }
+    },
+    "watermark":  { "type": ["string", "null"], "format": "date-time", "description": "Seen up to and including this ts. Only ever moves forward." },
+    "pinned": { "type": "array", "items": { "type": "string" } },
+    "posts": {
+      "type": "array",
+      "description": "What agents POST /api/feed. Newest first; 500 items or 30 days.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "ts", "title"],
+        "properties": {
+          "id":         { "type": "string", "pattern": "^[0-9a-f]{8}$" },
+          "ts":         { "type": "string", "format": "date-time" },
+          "source":     { "type": "string", "pattern": "^[a-z0-9_:-]{1,40}$" },
+          "kind":       { "type": "string", "pattern": "^[a-z0-9_.:-]{1,60}$" },
+          "title":      { "type": "string", "minLength": 1, "maxLength": 300 },
+          "body":       { "type": "string", "maxLength": 4000 },
+          "project_id": { "type": ["string", "null"] },
+          "pid":        { "type": ["string", "null"] },
+          "link":       { "type": ["object", "null"] },
+          "url":        { "type": ["string", "null"] },
+          "ref":        { "type": ["object", "null"] }
+        }
+      }
+    }
+  }
+}

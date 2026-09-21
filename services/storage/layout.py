@@ -4,7 +4,8 @@
 
     ~/.quirq/
     ├── projects/      one folder per project, named by pid
-    ├── inbox/         the Inbox
+    ├── inbox/         the Inbox: the feeders' ledger and the per-section session policies
+    ├── work/          the Work: inbox/, live/, history/, one folder per page (the person's marks)
     ├── connections/   one folder per connection
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
@@ -41,6 +42,10 @@ def projects_dir() -> Path:
 
 def inbox_dir() -> Path:
     return quirq_state_dir() / "inbox"
+
+
+def work_dir() -> Path:
+    return quirq_state_dir() / "work"
 
 
 def connections_dir() -> Path:
@@ -112,7 +117,6 @@ def _unless_overridden(variable: str, old_name: str, new: Callable[[], Path]) ->
 #: per agent) is adopted by its own store instead, so this module never
 #: imports above the storage layer.
 MOVES: list[Move] = [
-    Move("the Inbox", _in_state_root("inbox.json"), lambda: inbox_dir() / "inbox.json"),
     Move("sharing bookmarks", _in_state_root("project_sharing"), sharing_dir),
     # workspace/ taken apart: the Space timeline is history nothing rebuilds,
     # so it joins the per-project timelines; the views are rebuilt, so cache/.

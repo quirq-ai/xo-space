@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/workitem-fact.schema.json",
+  "title": "xo work item fact (~/.quirq/projects/<pid>/workitems/<workitem-id>/fact.json)",
+  "description": "The fact an Inbox work item was made from, as ingested (docs/work-and-workitems.md section 18): the title, the body, the producer timestamp, the url and in-Space link, the section and entity it groups under, and the work item source block. Written by services/inbox/facts.py; the body never enters workitems.json.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "title",
+    "kind",
+    "ts",
+    "section",
+    "source",
+    "workitem_id",
+    "project_id"
+  ],
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "kind": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.:-]{1,60}$"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000
+    },
+    "link": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "project_id": {
+      "type": "string",
+      "description": "the project the work item lives in"
+    },
+    "section": {
+      "type": "string",
+      "enum": [
+        "connections",
+        "projects",
+        "issues",
+        "agents"
+      ]
+    },
+    "entity": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local",
+            "github",
+            "connection",
+            "sharing",
+            "post"
+          ]
+        }
+      }
+    },
+    "workitem_id": {
+      "type": "string"
+    },
+    "ingested_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

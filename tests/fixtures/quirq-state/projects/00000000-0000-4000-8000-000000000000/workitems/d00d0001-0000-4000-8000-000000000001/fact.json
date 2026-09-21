@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "title": "Welcome to sample-project",
+  "body": "someone@example.com",
+  "kind": "gmail.unread",
+  "ts": "2026-01-01T09:14:00Z",
+  "url": "https://mail.google.com/mail/u/0/#inbox/msg-example-1",
+  "link": {
+    "view": "connectors"
+  },
+  "project_id": "sample-project",
+  "section": "connections",
+  "entity": "gmail",
+  "source": {
+    "kind": "connection",
+    "key": "connection:gmail:unread:msg-example-1",
+    "connection": {
+      "toolkit": "gmail",
+      "type": "unread",
+      "event": "msg-example-1"
+    }
+  },
+  "workitem_id": "d00d0001-0000-4000-8000-000000000001",
+  "ingested_at": "2026-01-01T09:15:00Z"
+}

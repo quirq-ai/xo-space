@@ -1,5 +1,6 @@
-/* Connectors inside guided Setup. Every connector/session response and write
-   is fictional browser memory; no provider, local settings or jobs are changed. */
+/* Setup > Connections: the polled-apps list above the embedded Connectors
+   controller. Every connector/session response and write is fictional browser
+   memory; no provider, local settings or jobs are changed. */
 import assert from 'node:assert/strict';
 import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
@@ -11,7 +12,7 @@ const endpoint=new URL(origin);
 assert.equal(endpoint.hostname,'127.0.0.1');
 assert.notEqual(endpoint.port,'5002');
 assert.notEqual(endpoint.port,'5112','Use the read-only fixture, preserving the interactive Commands server');
-const output=resolve(process.argv[2]||'/tmp/space-setup-connectors');
+const output=resolve(process.argv[2]||'/tmp/space-setup-connections');
 await mkdir(output,{recursive:true});
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE
   ?pathToFileURL(resolve(process.env.PLAYWRIGHT_MODULE)).href:'playwright');
@@ -123,11 +124,11 @@ try{
   assert.deepEqual(await page.locator('.tabs a').evaluateAll(nodes=>nodes.map(node=>node.id)),
     ['tab-projects','tab-agents','tab-inbox','tab-setup']);
   assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
-    ['workspace','intelligence','projects','connectors','secrets','commands','server']);
+    ['workspace','intelligence','projects','connections','secrets','commands','server']);
   for(const id of ['intelligence','projects','secrets','commands','server','workspace'])await choose(id);
   assert.deepEqual(report.requests,[],'Ordinary Setup never mints a session, lists toolkits or resolves connector accounts');
   assert.deepEqual(report.writes,[]);
-  checked('Four primary tabs; Connectors is under Manage; ordinary Setup navigation makes no connector/session requests or writes.');
+  checked('Four primary tabs; Connections is under Manage; ordinary Setup navigation makes no connector/session requests or writes.');
 
   const setupSearch=page.locator('#view-search');
   for(const id of ['workspace','intelligence','projects','secrets','commands','server']){
@@ -165,21 +166,21 @@ try{
   assert.equal(await credentialNode.evaluate(node=>node.isConnected),true);
   checked('All Setup sections keep search; results navigate and focus without losing folder/secret drafts or indexing private form values.');
   const listing=holdList=gate();
-  await choose('connectors');await listing.arrived.promise;
-  const host=await page.locator('#setup-connectors').elementHandle();
+  await choose('connections');await listing.arrived.promise;
+  const host=await page.locator('#setup-connections').elementHandle();
   await choose('workspace');
   listing.release.resolve();
-  await page.locator('#setup-connectors .conn-card').first().waitFor({state:'attached'});
+  await page.locator('#setup-connections .conn-card').first().waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/setup/workspace');
   assert.equal(await panel('workspace').isVisible(),true,'A delayed connector mount cannot reclaim the current panel');
   assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'search');
   assert.equal(await folderNode.evaluate(node=>node===document.activeElement),false);
   assert.equal(await page.locator('#setup-workspace-title').evaluate(node=>node===document.activeElement),true,
     'A delayed mount cannot steal panel heading focus');
-  await choose('connectors');
+  await choose('connections');
   assert.equal(count('/xo-auth/session/self'),1);assert.equal(count('/api/connectors/composio/toolkits'),1);
   assert.equal(await page.locator('#view-connectors').count(),0);
-  assert.equal(await page.locator('#setup-connectors .conn-card[data-toolkit]').count(),3);
+  assert.equal(await page.locator('#setup-connections .conn-card[data-toolkit]').count(),3);
   checked('First connector load is lazy and shared; slow completion preserves the later panel, toolbar and focus.');
 
   await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();
@@ -196,9 +197,9 @@ try{
   assert.equal(await page.locator('#secret-value').inputValue(),'fictional-unsaved-value');
   await choose('workspace');
   assert.equal(await page.locator('#xo-root-input').inputValue(),'/demo/unsaved-connectors-test');
-  await choose('connectors');assert.equal(await search.inputValue(),'gmail');
+  await choose('connections');assert.equal(await search.inputValue(),'gmail');
   await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
-  await page.locator('#tab-setup').click();await panel('workspace').waitFor();await choose('connectors');
+  await page.locator('#tab-setup').click();await panel('workspace').waitFor();await choose('connections');
   assert.equal(await search.inputValue(),'gmail');
   for(const handle of [host,folderNode,credentialNode,pollNode,actionNode])
     assert.equal(await handle.evaluate(node=>node.isConnected),true,'Setup and connector controls retain their DOM nodes');
@@ -223,19 +224,20 @@ try{
   await page.locator('#poll-telegram [data-poll="interval"]').waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/projects/data/list','Completing authorization cannot navigate away from the current tab');
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();
-  await choose('connectors');await page.locator('#poll-telegram').waitFor();
+  await choose('connections');await page.locator('#poll-telegram').waitFor();
   assert.match(await page.locator('[data-toolkit="telegram"]').textContent(),/Off in this workspace/);
+  assert.match(await page.locator('#conn-polled-section').textContent(),/Polled apps/);
   checked('Authorization completes while Setup is hidden and retains its polling follow-up without stealing navigation.');
 
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
-    await choose('connectors');
-    const bounds=await page.locator('#setup-nav,#setup-panel-connectors,.conn-card,.conn-card button,.conn-poll select').evaluateAll(nodes=>
+    await choose('connections');
+    const bounds=await page.locator('#setup-nav,#setup-panel-connections,.conn-card,.conn-card button,.conn-poll select').evaluateAll(nodes=>
       nodes.filter(node=>node.getClientRects().length).map(node=>{
         const rect=node.getBoundingClientRect();return{tag:node.tagName,cls:node.className,left:rect.left,right:rect.right};
       }));
     assert.ok(bounds.every(rect=>rect.left>=-1&&rect.right<=width+1),width+'px connector controls fit: '+JSON.stringify(bounds));
-    await shot('setup-connectors-'+width+'.png');
+    await shot('setup-connections-'+width+'.png');
   }
   checked('Connectors navigation, cards and polling controls fit at 1440px, 390px and 320px.');
 
@@ -244,7 +246,7 @@ try{
   const runtime=holdRuntime=gate();
   await direct.goto(origin+'/space/#/connectors',{waitUntil:'domcontentloaded'});
   await runtime.arrived.promise;
-  await direct.locator('#setup-panel-connectors .conn-card').first().waitFor({timeout:5000});
+  await direct.locator('#setup-panel-connections .conn-card').first().waitFor({timeout:5000});
   assert.equal(await direct.locator('#tab-setup.is-on').count(),1);
   assert.equal(await direct.locator('#view-setup.is-active').count(),1);
   assert.equal(await direct.locator('#tab-connectors,#view-connectors').count(),0);
@@ -260,25 +262,27 @@ try{
   await direct.locator('#tab-setup').click();
   await direct.locator('#setup-panel-workspace').waitFor();
   await direct.locator('#setup-nav [data-setup-go="connectors"]').click();
-  await direct.waitForURL('**/#/setup/connectors');
+  await direct.waitForURL('**/#/setup/connections');
   assert.equal(count('/api/connectors/composio/toolkits'),before+1,'Direct alias and Setup share one mounted controller');
   await direct.close();
   checked('The legacy deep link loads Connectors while initial Setup status is pending; completing that read preserves subsequent navigation and one shared mount.');
 
   await page.setViewportSize({width:1440,height:1000});
   const beforeLinks=count('/api/connectors/composio/toolkits');
-  await page.locator('#tab-inbox').click();
-  await page.locator('#section-nav [data-section-page="inbox-connections"]').click();
-  await page.waitForURL('**/#/inbox/connections');
-  await page.locator('[data-act="conn-config"]').first().click();
-  await page.waitForURL('**/#/setup/connectors');await panel('connectors').waitFor();
+  await choose('connections');
+  await page.locator('#setup-connections .conn-polled-row[data-toolkit="gmail"] [data-act="conn-config"]').click();
+  await page.locator('#poll-gmail [data-poll="interval"]').waitFor({state:'attached'});
+  assert.equal(new URL(page.url()).hash,'#/setup/connections','Configure opens the drawer in place');
+  assert.equal(await page.locator('#poll-telegram').count(),0,'One polling drawer at a time');
+  await page.goto(origin+'/space/#/inbox/connections',{waitUntil:'domcontentloaded'});
+  await page.waitForURL('**/#/setup/connections');await panel('connections').waitFor();
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
   await page.locator('#wiki-link').click();
-  await page.locator('[data-open-tab="setup/connectors"]').click();
-  await page.waitForURL('**/#/setup/connectors');await panel('connectors').waitFor();
+  await page.locator('[data-open-tab="setup/connections"]').click();
+  await page.waitForURL('**/#/setup/connections');await panel('connections').waitFor();
   assert.equal(await page.locator('#tab-setup.is-on').count(),1);
-  assert.equal(count('/api/connectors/composio/toolkits'),beforeLinks,'Existing Inbox and Wiki links reuse the mounted connector panel');
-  checked('Inbox Configure and the Wiki Connectors link still open the nested Setup panel.');
+  assert.equal(count('/api/connectors/composio/toolkits'),beforeLinks,'The old Work route and the Wiki link reuse the mounted controller');
+  checked('Configure on a polled app opens its Polling drawer in place; the old Work Connections route and the Wiki Connectors link open Setup Connections.');
   assert.deepEqual(report.errors,[]);
   assert.deepEqual(report.writes.map(write=>write.path),[
     '/api/connectors/composio/slack/prefs','/api/connections/gmail','/api/connections/gmail/poll',

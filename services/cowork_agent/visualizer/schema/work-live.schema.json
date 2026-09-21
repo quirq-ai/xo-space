@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/work-live.schema.json",
+  "title": "xo work live (~/.quirq/work/live/live.json)",
+  "description": "The Live page's own choices: which groups of the stream show. The stream itself is a tail over the logs and stores nothing. Written by services/work/ and hand-editable.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema"],
+  "properties": {
+    "schema":     { "type": "integer", "const": 3 },
+    "updated_at": { "type": ["string", "null"], "format": "date-time" },
+    "stream": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "agents":  { "type": "object", "additionalProperties": true, "properties": { "enabled": { "type": "boolean", "default": true } } },
+        "jobs":    { "type": "object", "additionalProperties": true, "properties": { "enabled": { "type": "boolean", "default": true } } },
+        "pollers": { "type": "object", "additionalProperties": true, "properties": { "enabled": { "type": "boolean", "default": true } } },
+        "watcher": { "type": "object", "additionalProperties": true, "properties": { "enabled": { "type": "boolean", "default": true } } }
+      }
+    }
+  }
+}

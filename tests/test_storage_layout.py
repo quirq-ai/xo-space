@@ -105,16 +105,15 @@ class MigrateTests(_Sandbox):
         self.assertEqual(len(moved), 1)
         self.assertTrue((self.root / "usage" / "a.json").is_file())
 
-    def test_the_real_moves_put_the_inbox_and_sharing_into_their_folders(self) -> None:
-        (self.root / "inbox.json").write_text("{}", encoding="utf-8")
+    def test_the_real_moves_put_sharing_into_its_folder(self) -> None:
         (self.root / "project_sharing" / "removed").mkdir(parents=True)
         (self.root / "project_sharing" / "repo-1234abcd.json").write_text("{}", encoding="utf-8")
         layout.migrate_layout()
-        self.assertTrue((self.root / "inbox" / "inbox.json").is_file())
         self.assertTrue((self.root / "sharing" / "repo-1234abcd.json").is_file())
         self.assertTrue((self.root / "sharing" / "removed").is_dir())
-        self.assertFalse((self.root / "inbox.json").exists())
         self.assertFalse((self.root / "project_sharing").exists())
+        # the Inbox file of the first design is not moved any more: nothing reads it (docs section 18)
+        self.assertNotIn("the Inbox", [move.what for move in layout.MOVES])
 
     def test_the_old_watcher_and_workspace_folders_are_taken_apart(self) -> None:
         watcher = self.root / "watcher"

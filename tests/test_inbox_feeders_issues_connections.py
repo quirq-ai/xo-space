@@ -1,5 +1,5 @@
-"""The two disk-reading inbox feeders (issues, connections) and the item
-``url`` field.
+"""The two disk-reading inbox feeders (issues, connections), the facts they
+shape, and the work items the service makes of them.
 
 Hermetic: XO_PROJECTS_ROOT and QUIRQ_STATE_ROOT point into a temp dir, so
 the issue mirrors live under <tmp>/.quirq/projects/<pid>/github/ and the
@@ -19,9 +19,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.connections import store as connections_store
-from services.inbox import feeders, service, store
+from services.cowork_agent import project_layout
 from services.cowork_agent.project_sharing import status as sharing_status
+from services.cowork_agent.scopes import VisualizerScope
 from services.cowork_agent.visualizer import github_mirror
+from services.inbox import facts, feeders, ledger, service
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
@@ -40,6 +42,14 @@ def row(number: int, title: str = "t", *, state: str = "open", updated_at: str |
             "url": f"https://github.com/o/r/issues/{number}", "updated_at": updated_at or ago(hours=1), **extra}
 
 
+def numbers(res: feeders.FeedResult) -> list[int]:
+    return [it["source"]["github"]["number"] for it in res.items]
+
+
+def keys(res: feeders.FeedResult) -> list[str]:
+    return [it["source"]["key"] for it in res.items]
+
+
 class _Base(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -47,23 +57,28 @@ class _Base(unittest.TestCase):
         self.projects = self.root / "projects"
         self.projects.mkdir()
         self._env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.projects),
-                                            "QUIRQ_STATE_ROOT": str(self.root / ".quirq")})
+                                            "QUIRQ_STATE_ROOT": str(self.root / ".quirq"),
+                                            "XO_SCHEDULER_ENABLED": "false", "QUIRQ_COMMAND_LOG": "off"})
         self._env.start()
+        self._repo = patch.object(feeders, "_project_repo", return_value="o/r")
+        self._repo.start()
         service._reset_throttle()
         sharing_status.reset()
 
     def tearDown(self) -> None:
         service._reset_throttle()
         sharing_status.reset()
+        self._repo.stop()
         self._env.stop()
         self._tmp.cleanup()
 
     def doc(self, **top) -> dict:
-        return store.normalize_document({"schema": 1, "items": [], **top})
+        return ledger.normalize_document({"schema": 1, **top})
 
     # issues fixtures
     def project(self, pid: str) -> None:
-        (self.projects / pid).mkdir(parents=True, exist_ok=True)
+        if project_layout.load_project(pid) is None:
+            project_layout.scaffold_project(pid)
 
     def mirror(self, pid: str, rows: list[dict] | None = None, *, raw: str | None = None) -> Path:
         self.project(pid)
@@ -93,17 +108,18 @@ class _Base(unittest.TestCase):
         return {"ts": ts, "type": type_, "key": key, "title": f"mail {key}", "body": "snippet",
                 "url": f"https://mail.google.com/mail/u/0/#all/{key}", "toolkit": toolkit, **extra}
 
-    def inbox(self) -> dict:
-        return json.loads((self.root / ".quirq" / "inbox" / "inbox.json").read_text(encoding="utf-8"))
+    def ledger(self) -> dict:
+        return ledger.load_document()[0]
 
-    def write_inbox(self, doc: dict) -> None:
-        path = self.root / ".quirq" / "inbox" / "inbox.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(doc), encoding="utf-8")
+    def write_ledger(self, **top) -> None:
+        def apply(doc: dict) -> bool:
+            doc.update(ledger.normalize_document({"schema": 1, **top}))
+            return True
+        ledger.modify(apply)
 
 
 class IssuesFeederTests(_Base):
-    def test_bootstrap_window_is_seven_days_and_items_carry_the_row(self) -> None:
+    def test_bootstrap_window_is_seven_days_and_facts_carry_the_row(self) -> None:
         self.mirror("proj", [
             row(1, "Login  breaks\non mobile", labels=["bug", "ui"],
                 assignees=[{"login": "alice", "avatar_url": None}, {"login": ""}, "junk"]),
@@ -111,10 +127,11 @@ class IssuesFeederTests(_Base):
             row(3, "closed recently", state="closed", updated_at=ago(minutes=5)),
         ])
         res = feeders.issues(self.doc())
-        self.assertEqual([it["key"] for it in res.items], ["issue:proj:1"])
+        self.assertEqual(numbers(res), [1])
         it = res.items[0]
-        self.assertEqual(it["kind"], "issue.open")
-        self.assertEqual(it["source"], "issues")
+        self.assertEqual((it["kind"], it["section"], it["entity"]), ("issue.open", "issues", "o/r"))
+        self.assertEqual(it["source"], {"kind": "github", "github": {"repo": "o/r", "number": 1, "node_id": "I_1",
+                                                                    "url": "https://github.com/o/r/issues/1"}})
         self.assertEqual(it["title"], "Issue #1 in proj: Login breaks on mobile")
         self.assertEqual(it["body"], "labels: bug, ui\nassignees: alice")
         self.assertEqual(it["url"], "https://github.com/o/r/issues/1")
@@ -123,23 +140,20 @@ class IssuesFeederTests(_Base):
         self.assertEqual(it["ts"], ago(hours=1))
         # the cursor is the newest updated_at across every readable row, kept or not
         self.assertEqual(res.cursor, ago(minutes=5))
-        # every row in a watched state is watched, inside the window or not
-        self.assertEqual(res.watched, feeders.Watched("issue:", frozenset({"issue:proj:1", "issue:proj:2"})))
 
     def test_cursor_advances_and_states_config_is_honoured(self) -> None:
         self.mirror("proj", [row(1, updated_at=ago(hours=1)), row(4, updated_at=ago(minutes=10)),
                              row(5, "done", state="closed", updated_at=ago(minutes=1))])
         res = feeders.issues(self.doc(cursors={"issues": ago(minutes=30)}))
-        self.assertEqual([it["key"] for it in res.items], ["issue:proj:4"])
+        self.assertEqual(numbers(res), [4])
         self.assertEqual(res.cursor, ago(minutes=1))
         res = feeders.issues(self.doc(sources={"issues": {"states": ["closed"]}}))
-        self.assertEqual([(it["key"], it["kind"]) for it in res.items], [("issue:proj:5", "issue.closed")])
-        self.assertEqual(res.watched.keys, frozenset({"issue:proj:5"}))
+        self.assertEqual([(n, it["kind"]) for n, it in zip(numbers(res), res.items)], [(5, "issue.closed")])
 
     def test_title_is_truncated_and_bad_rows_or_urls_are_skipped(self) -> None:
         self.mirror("proj", [
             row(1, "x" * 500),
-            row(2, url="javascript:alert(1)"),
+            row(2, url="javascript:alert(1)"),          # an issue without an https url cannot be adopted
             {**row(3), "number": "3"},                 # number must be an int
             {**row(4), "number": True},                # bool is not a number
             {**row(5), "title": None},
@@ -147,84 +161,34 @@ class IssuesFeederTests(_Base):
             "junk",
         ])
         res = feeders.issues(self.doc())
-        by_key = {it["key"]: it for it in res.items}
-        self.assertEqual(set(by_key), {"issue:proj:1", "issue:proj:2"})
-        self.assertEqual(len(by_key["issue:proj:1"]["title"]), len("Issue #1 in proj: ") + 120)
-        self.assertIsNone(by_key["issue:proj:2"]["url"])
-        # row 6 is open: watched even though its updated_at cannot be emitted or pin the cursor
-        self.assertEqual(res.watched.keys, frozenset({"issue:proj:1", "issue:proj:2", "issue:proj:6"}))
-
-    def test_unparsable_updated_at_keeps_an_open_issue_watched(self) -> None:
-        self.mirror("proj", [row(6, updated_at=ago(hours=1))])
-        service.refresh(force=True)
-        self.assertEqual({it["key"]: it["status"] for it in self.inbox()["items"]}, {"issue:proj:6": "new"})
-        # the row is still open but its timestamp broke: no item, no cursor, still watched
-        self.mirror("proj", [row(6, updated_at="not a date")])
-        res = feeders.issues(self.doc())
-        self.assertEqual((res.items, res.cursor), ([], None))
-        self.assertEqual(res.watched, feeders.Watched("issue:", frozenset({"issue:proj:6"})))
-        service.refresh(force=True)
-        self.assertEqual({it["key"]: it["status"] for it in self.inbox()["items"]}, {"issue:proj:6": "new"},
-                         "an open issue with a broken updated_at must not be closed")
+        self.assertEqual(numbers(res), [1])
+        self.assertEqual(len(res.items[0]["title"]), len("Issue #1 in proj: ") + 120)
 
     def test_future_updated_at_never_pins_the_cursor(self) -> None:
         self.mirror("proj", [row(1, updated_at=ago(hours=1)), row(2, updated_at=iso(NOW + timedelta(days=30)))])
         res = feeders.issues(self.doc())
-        self.assertEqual({it["key"] for it in res.items}, {"issue:proj:1", "issue:proj:2"})
+        self.assertEqual(set(numbers(res)), {1, 2})
         self.assertEqual(res.cursor, ago(hours=1))
 
-    def test_auto_close_only_when_every_mirror_is_readable(self) -> None:
-        self.project("nofile")                                  # no mirror file at all: readable-empty
-        self.mirror("good", [row(1)])
-        bad = self.mirror("bad", raw="not json")
-        res = feeders.issues(self.doc())
-        self.assertEqual([it["key"] for it in res.items], ["issue:good:1"])
-        self.assertIsNone(res.watched, "a mirror that exists but cannot be read must not close real issues")
-        bad.unlink()
-        res = feeders.issues(self.doc())
-        self.assertEqual(res.watched, feeders.Watched("issue:", frozenset({"issue:good:1"})))
-        # the mirror's own schema check counts as unreadable too
-        self.mirror("bad", raw=json.dumps({"schema": 2, "issues": {}}))
-        self.assertIsNone(feeders.issues(self.doc()).watched)
+    def test_a_project_without_a_github_remote_adopts_nothing(self) -> None:
+        self.mirror("proj", [row(1)])
+        with patch.object(feeders, "_project_repo", return_value=None):
+            res = feeders.issues(self.doc())
+        self.assertEqual(res.items, [])
+        self.assertEqual(res.cursor, ago(hours=1), "the cursor still advances past what was read")
 
-    def test_refresh_closes_issues_that_left_the_watched_states(self) -> None:
-        self.mirror("proj", [row(1), row(2)])
-        service.refresh(force=True)
-        keys = {it["key"]: it["status"] for it in self.inbox()["items"]}
-        self.assertEqual(keys, {"issue:proj:1": "new", "issue:proj:2": "new"})
-        self.assertEqual(self.inbox()["cursors"]["issues"], ago(hours=1))
-        # #2 closes, and at the same time another project's mirror is broken: nothing closes this run
-        self.mirror("proj", [row(1), row(2, state="closed", updated_at=ago(minutes=1))])
-        broken = self.mirror("other", raw="{")
-        service.refresh(force=True)
-        self.assertEqual({it["key"]: it["status"] for it in self.inbox()["items"]},
-                         {"issue:proj:1": "new", "issue:proj:2": "new"})
-        broken.unlink()
-        service.refresh(force=True)
-        self.assertEqual({it["key"]: it["status"] for it in self.inbox()["items"]},
-                         {"issue:proj:1": "new", "issue:proj:2": "done"})
-
-    def test_a_reopened_issue_resurfaces_but_a_persons_done_sticks(self) -> None:
-        self.mirror("proj", [row(1, updated_at=ago(hours=2)), row(2, updated_at=ago(hours=2))])
-        service.refresh(force=True)
-        first = {it["key"]: it for it in self.inbox()["items"]}
-        self.assertEqual({k: v["status"] for k, v in first.items()}, {"issue:proj:1": "new", "issue:proj:2": "new"})
-        # a person is done with #2; #1 gets closed on GitHub
-        service.update_item(first["issue:proj:2"]["id"], "done")
-        self.mirror("proj", [row(1, state="closed", updated_at=ago(hours=1)), row(2, updated_at=ago(hours=2))])
-        service.refresh(force=True)
-        items = {it["key"]: it for it in self.inbox()["items"]}
-        self.assertEqual((items["issue:proj:1"]["status"], items["issue:proj:1"]["auto_closed"]), ("done", True))
-        self.assertEqual(items["issue:proj:2"]["status"], "done")
-        self.assertNotIn("auto_closed", items["issue:proj:2"])
-        # both reopened on GitHub (a reopen bumps updated_at past the cursor)
-        self.mirror("proj", [row(1, updated_at=ago(minutes=10)), row(2, updated_at=ago(minutes=10))])
-        self.assertTrue(service.refresh(force=True))
-        items = {it["key"]: it for it in self.inbox()["items"]}
-        self.assertEqual((items["issue:proj:1"]["id"], items["issue:proj:1"]["status"]),
-                         (first["issue:proj:1"]["id"], "new"), "the feeder's own close is undone by the reopen")
-        self.assertNotIn("auto_closed", items["issue:proj:1"])
-        self.assertEqual(items["issue:proj:2"]["status"], "done", "a person's Done is never undone by the feeder")
+    def test_refresh_adopts_the_issue_in_its_project_once(self) -> None:
+        self.mirror("proj", [row(1, "Flaky test")])
+        self.assertEqual(service.refresh(force=True), 1)
+        [record] = VisualizerScope("proj").list_workitems()
+        self.assertEqual((record["title"], record["source"]["github"]["node_id"], record["labels"]),
+                         ("Issue #1 in proj: Flaky test", "I_1", ["inbox", "issues"]))
+        fact = facts.read_fact("proj", record["id"])
+        self.assertEqual((fact["section"], fact["entity"], fact["body"]), ("issues", "o/r", ""))
+        self.assertEqual(self.ledger()["cursors"]["issues"], ago(hours=1))
+        self.mirror("proj", [row(1, "Flaky test", updated_at=ago(minutes=1))])
+        self.assertEqual(service.refresh(force=True), 0, "the same issue is one work item")
+        self.assertEqual(len(VisualizerScope("proj").list_workitems()), 1)
 
     def test_disabled_source_reads_no_mirror(self) -> None:
         self.mirror("proj", [row(1)])
@@ -234,7 +198,7 @@ class IssuesFeederTests(_Base):
             rm.assert_called()
             mp.reset_mock()
             rm.reset_mock()
-            self.write_inbox({"schema": 1, "items": [], "sources": {"issues": {"enabled": False}}})
+            self.write_ledger(sources={"issues": {"enabled": False}})
             service.refresh(force=True)
             mp.assert_not_called()
             rm.assert_not_called()
@@ -247,23 +211,21 @@ class ConnectionsFeederTests(_Base):
                                               url="https://www.notion.so/p1")])
         self.connection("figma", [self.event("f1", ago(minutes=1), toolkit="figma")], configured=False)
         res = feeders.connections(self.doc())
-        self.assertEqual([it["key"] for it in res.items],
-                         ["connection:notion:recent_pages:p1", "connection:gmail:unread:m1"])
+        self.assertEqual(keys(res), ["connection:notion:recent_pages:p1", "connection:gmail:unread:m1"])
         gm = res.items[1]
-        self.assertEqual((gm["kind"], gm["source"], gm["link"]), ("gmail.unread", "connections", {"view": "connectors"}))
+        self.assertEqual((gm["kind"], gm["section"], gm["entity"], gm["link"]), ("gmail.unread", "connections", "gmail", {"view": "connectors"}))
+        self.assertEqual(gm["source"]["connection"], {"toolkit": "gmail", "type": "unread", "event": "m1"})
         self.assertEqual((gm["title"], gm["body"], gm["ts"]), ("mail m1", "snippet", ago(hours=1)))
         self.assertEqual(gm["url"], "https://mail.google.com/mail/u/0/#all/m1")
         self.assertIsNone(gm["project_id"])
         self.assertEqual(res.items[0]["kind"], "notion.recent_pages")
         self.assertEqual(res.cursor, ago(hours=1), "the newest ts across every configured toolkit")
-        self.assertIsNone(res.watched)
 
     def test_one_cursor_covers_every_toolkit(self) -> None:
         self.connection("gmail", [self.event("m1", ago(hours=1)), self.event("m2", ago(minutes=5))])
         self.connection("notion", [self.event("p1", ago(minutes=30), toolkit="notion", type_="recent_pages")])
         res = feeders.connections(self.doc(cursors={"connections": ago(minutes=45)}))
-        self.assertEqual([it["key"] for it in res.items],
-                         ["connection:notion:recent_pages:p1", "connection:gmail:unread:m2"])
+        self.assertEqual(keys(res), ["connection:notion:recent_pages:p1", "connection:gmail:unread:m2"])
         self.assertEqual(res.cursor, ago(minutes=5))
 
     def test_a_future_ts_is_emitted_but_never_pins_the_cursor(self) -> None:
@@ -272,13 +234,12 @@ class ConnectionsFeederTests(_Base):
         self.connection("googlecalendar", [self.event("ev1", iso(NOW + timedelta(days=3)),
                                                       toolkit="googlecalendar", type_="upcoming")])
         res = feeders.connections(self.doc())
-        self.assertEqual({it["key"] for it in res.items},
-                         {"connection:gmail:unread:m1", "connection:googlecalendar:upcoming:ev1"})
+        self.assertEqual(set(keys(res)), {"connection:gmail:unread:m1", "connection:googlecalendar:upcoming:ev1"})
         self.assertEqual(res.cursor, ago(hours=1), "an event three days ahead must not become the floor")
         # mail arriving after that poll still surfaces on the next run
         self.connection("gmail", [self.event("m1", ago(hours=1)), self.event("m2", ago(minutes=5))])
         res = feeders.connections(self.doc(cursors={"connections": res.cursor}))
-        self.assertIn("connection:gmail:unread:m2", [it["key"] for it in res.items])
+        self.assertIn("connection:gmail:unread:m2", keys(res))
         self.assertEqual(res.cursor, ago(minutes=5))
         # clock skew within the slack still pins the cursor
         skew = iso(NOW + timedelta(minutes=2))
@@ -296,24 +257,24 @@ class ConnectionsFeederTests(_Base):
             "junk",
         ])
         res = feeders.connections(self.doc())
-        by_key = {it["key"]: it for it in res.items}
-        self.assertEqual(set(by_key), {"connection:gmail:unread:k2", "connection:gmail:Unread Mail:k3",
+        by_key = {it["source"]["key"]: it for it in res.items}
+        self.assertEqual(set(by_key), {"connection:gmail:unread:k2", "connection:gmail:Unread-Mail:k3",
                                        "connection:gmail:unread:k4"})
         k2 = by_key["connection:gmail:unread:k2"]
         self.assertEqual((k2["title"], k2["body"], k2["url"]), ("gmail unread: k2", "", None))
-        k3 = by_key["connection:gmail:Unread Mail:k3"]
+        k3 = by_key["connection:gmail:Unread-Mail:k3"]
         self.assertEqual((k3["title"], k3["kind"]), ("gmail Unread Mail: k3", "gmail.unread-mail"))
         k4 = by_key["connection:gmail:unread:k4"]
-        self.assertEqual((len(k4["title"]), len(k4["body"])), (store.TITLE_MAX, store.BODY_MAX))
+        self.assertEqual((len(k4["title"]), len(k4["body"])), (facts.TITLE_MAX, facts.BODY_MAX))
 
-    def test_refresh_ingests_and_a_disabled_source_reads_nothing(self) -> None:
+    def test_refresh_makes_work_items_and_a_disabled_source_reads_nothing(self) -> None:
         self.connection("gmail", [self.event("m1", ago(hours=1))])
-        service.refresh(force=True)
-        items = {it["key"]: it for it in self.inbox()["items"]}
-        self.assertEqual(set(items), {"connection:gmail:unread:m1"})
-        self.assertEqual(items["connection:gmail:unread:m1"]["url"], "https://mail.google.com/mail/u/0/#all/m1")
-        self.assertEqual(self.inbox()["cursors"]["connections"], ago(hours=1))
-        self.write_inbox({"schema": 1, "items": [], "sources": {"connections": {"enabled": False}}})
+        self.assertEqual(service.refresh(force=True), 1)
+        [record] = VisualizerScope("inbox-connections").list_workitems()
+        self.assertEqual(record["source"]["key"], "connection:gmail:unread:m1")
+        self.assertEqual(facts.read_fact("inbox-connections", record["id"])["url"], "https://mail.google.com/mail/u/0/#all/m1")
+        self.assertEqual(self.ledger()["cursors"]["connections"], ago(hours=1))
+        self.write_ledger(sources={"connections": {"enabled": False}})
         with patch.object(connections_store, "list_configured") as lc:
             service.refresh(force=True)
         lc.assert_not_called()
@@ -331,64 +292,51 @@ class ConnectionsFeederTests(_Base):
         with patch.object(connections_store, "read_events", side_effect=flaky), \
              self.assertLogs(feeders.logger, level="WARNING"):
             res = feeders.connections(self.doc())
-        self.assertEqual([it["key"] for it in res.items], ["connection:notion:recent_pages:p1"])
+        self.assertEqual(keys(res), ["connection:notion:recent_pages:p1"])
 
 
-class InboxUrlFieldTests(_Base):
-    def test_build_item_validates_url_strictly(self) -> None:
-        self.assertEqual(store.build_item(title="t", url="https://example.com/x")["url"], "https://example.com/x")
-        self.assertEqual(store.build_item(title="t", url="http://example.com")["url"], "http://example.com")
-        self.assertIsNone(store.build_item(title="t")["url"])
+class FactShapeTests(_Base):
+    def test_build_fact_validates_url_strictly(self) -> None:
+        source = {"kind": "post", "post": {"agent": "a", "kind": "note"}}
+        ok = dict(title="t", kind="note", section="agents", source=source)
+        self.assertEqual(facts.build_fact(**ok, url="https://example.com/x")["url"], "https://example.com/x")
+        self.assertEqual(facts.build_fact(**ok, url="http://example.com")["url"], "http://example.com")
+        self.assertIsNone(facts.build_fact(**ok)["url"])
         for bad in ("ftp://x", "javascript:alert(1)", "example.com", "", 7, "https://" + "x" * 2000):
             with self.subTest(url=bad):
-                with self.assertRaises(store.InboxError) as cm:
-                    store.build_item(title="t", url=bad)
+                with self.assertRaises(ledger.InboxError) as cm:
+                    facts.build_fact(**ok, url=bad)
                 self.assertEqual(cm.exception.code, "invalid_value")
 
-    def test_create_item_takes_an_optional_url_and_defaults_it_to_none(self) -> None:
-        created = service.create_item("hello")
-        self.assertIsNone(created["url"])
-        created = service.create_item("hello", url="https://example.test/issues/1")
-        self.assertEqual(created["url"], "https://example.test/issues/1")
-        with self.assertRaises(service.InboxError) as cm:
-            service.create_item("hello", url="javascript:alert(1)")
+    def test_create_post_takes_an_optional_url_and_defaults_it_to_none(self) -> None:
+        created = service.create_post("hello")
+        self.assertIsNone(created["fact"]["url"])
+        created = service.create_post("hello", url="https://example.test/issues/1")
+        self.assertEqual(created["fact"]["url"], "https://example.test/issues/1")
+        with self.assertRaises(ledger.InboxError) as cm:
+            service.create_post("hello", url="javascript:alert(1)")
         self.assertEqual(cm.exception.code, "invalid_value")
 
-    def test_normalize_is_lenient_and_upsert_refreshes_url(self) -> None:
-        doc = store.normalize_document({"items": [
-            {"id": "00000001", "ts": iso(NOW), "title": "a", "url": "javascript:x"},
-            {"id": "00000002", "ts": iso(NOW), "title": "b", "url": "https://ok/1"},
-            {"id": "00000003", "ts": iso(NOW), "title": "c"},
-        ]})
-        urls = {it["id"]: it["url"] for it in doc["items"]}
-        self.assertEqual(urls, {"00000001": None, "00000002": "https://ok/1", "00000003": None})
-        first = store.build_item(title="a", key="k", url="https://ok/1")
-        doc = store.normalize_document({"items": []})
-        self.assertTrue(store.upsert_many(doc, [first]))
-        self.assertFalse(store.upsert_many(doc, [store.build_item(title="a", key="k", url="https://ok/1")]))
-        self.assertTrue(store.upsert_many(doc, [store.build_item(title="a", key="k", url="https://ok/2")]))
-        self.assertEqual(doc["items"][0]["url"], "https://ok/2")
-
-    def test_defaults_feeder_names_and_schema(self) -> None:
-        self.assertEqual(feeders.FEEDER_NAMES, ("timeline", "todos", "sharing", "issues", "connections"))
-        self.assertEqual(store.DEFAULT_SOURCES["issues"], {"enabled": True, "states": ["open"]})
-        self.assertEqual(store.DEFAULT_SOURCES["connections"], {"enabled": True})
-        self.assertEqual(store.source_config({}, "issues")["states"], ["open"])
-        schema = json.loads((ROOT / "services" / "cowork_agent" / "visualizer" / "schema" / "inbox.schema.json")
-                            .read_text(encoding="utf-8"))
-        self.assertIn("issues", schema["properties"]["sources"]["properties"])
-        self.assertIn("connections", schema["properties"]["sources"]["properties"])
-        self.assertIn("issues", schema["properties"]["cursors"]["properties"])
-        self.assertIn("connections", schema["properties"]["cursors"]["properties"])
-        url = schema["definitions"]["item"]["properties"]["url"]
-        self.assertEqual((url["type"], url["maxLength"], url["pattern"]), (["string", "null"], 2000, "^https?://"))
-        flag = schema["definitions"]["item"]["properties"]["auto_closed"]
-        self.assertEqual((flag["type"], flag["const"]), ("boolean", True))
-        self.assertNotIn("auto_closed", schema["definitions"]["item"]["required"])
+    def test_defaults_feeder_names_and_schemas(self) -> None:
+        self.assertEqual(feeders.FEEDER_NAMES, ("sharing", "issues", "connections"), "the workspace stream is Activity's: no timeline or todos feeder")
+        self.assertEqual(ledger.DEFAULT_SOURCES["issues"], {"enabled": True, "states": ["open"]})
+        self.assertEqual(ledger.DEFAULT_SOURCES["connections"], {"enabled": True})
+        self.assertEqual(ledger.source_config({}, "issues")["states"], ["open"])
+        schemas = ROOT / "services" / "cowork_agent" / "visualizer" / "schema"
+        led = json.loads((schemas / "inbox-ledger.schema.json").read_text(encoding="utf-8"))
+        self.assertIn("issues", led["properties"]["sources"]["properties"])
+        self.assertIn("connections", led["properties"]["sources"]["properties"])
+        fact = json.loads((schemas / "workitem-fact.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(fact["properties"]["url"]["type"], ["string", "null"])
+        self.assertEqual(fact["properties"]["section"]["enum"], ["connections", "projects", "issues", "agents"])
+        for gone in ("inbox.schema.json", "work-item.schema.json", "work-items.schema.json", "work-policy.schema.json",
+                     "work-session.schema.json", "work-outcome.schema.json"):
+            self.assertFalse((schemas / gone).exists(), gone)
 
     def test_no_dashes_or_agent_names_or_router_imports_in_the_feeders(self) -> None:
-        for rel in ("services/inbox/feeders.py", "services/inbox/store.py",
-                    "services/cowork_agent/visualizer/schema/inbox.schema.json"):
+        for rel in ("services/inbox/feeders.py", "services/inbox/ledger.py", "services/inbox/facts.py",
+                    "services/cowork_agent/visualizer/schema/inbox-ledger.schema.json",
+                    "services/cowork_agent/visualizer/schema/workitem-fact.schema.json"):
             with self.subTest(file=rel):
                 text = (ROOT / rel).read_text(encoding="utf-8")
                 self.assertIsNone(re.search("[\\u2013\\u2014]", text))

@@ -248,7 +248,7 @@ try {
     }
     await page.keyboard.press('5');
     assert.equal(new URL(page.url()).hash, '#/setup/workspace', 'Only four primary tabs consume number keys');
-    report.checks.push('Number keys 1–4 select Projects, Agents, Inbox and Setup');
+    report.checks.push('Number keys 1 to 4 select Projects, Agents, Work and Setup');
 
     for(const width of [375, 320]) {
       await page.setViewportSize({width, height: 900});

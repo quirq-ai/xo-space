@@ -1,49 +1,39 @@
-/* Inbox tab: what arrived in the workspace, and whether anyone has dealt
-   with it. Sessions starting, todos going blocked, repos shared with this
-   workspace, GitHub issues from the mirror, items collected from polled
-   connections, and anything an agent POSTs land as rows here (data: GET
-   /api/inbox, a small service over ~/.quirq/inbox/inbox.json). Three
-   statuses: new (unseen), seen (expanded once), done. Every field of a row
-   is untrusted (agents write timeline content, anyone can POST), so every
-   string is escaped before it reaches innerHTML. Independent of the other
-   tabs: own fetch, own poll, own failure card. The escape, the relative
-   time, the pill strip and the failure wording come from core; the
-   connections wording comes from core/connections.js, shared with the
-   Connectors section so one payload never reads two ways. */
+/* Work tab: the Inbox page and Jobs share one mounted controller. The Inbox
+   is the workspace's work items joined with their sessions: what a feeder
+   ingested (a mail, a calendar event, a GitHub issue, a share) or an agent
+   posted, and whether a session dealt with it (data: GET /api/inbox, one
+   list of rows plus the sections summary; the item page is
+   views/work-item.js). Tabs are the answer's sections, a tab groups its rows
+   by entity, the state pills filter on the server. Every field of a row is
+   untrusted (agents write titles, anyone can POST), so every string is
+   escaped before it reaches innerHTML. Independent of the other tabs: own
+   fetch, own poll, own failure card. The escape, the relative time, the pill
+   strip and the failure wording come from core. Open lands on the item's own
+   page through the hash (#/inbox/item?p=<project>&id=<item>), so a reload
+   keeps the item; the polled apps and the connectors live in Setup. */
 import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {esc,pills,rel,toast} from '../core/ui.js';
-import {collectorLabels,every,pollLine} from '../core/connections.js';
-import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
 import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260921-work2';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
   return isFinite(t)?new Date(t).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 };
-/* The API validates links on write, but a hand-edited inbox.json reaches
-   the page as-is until the next normalising write; never hand the previewer
-   a path the file API would refuse anyway. */
-const PROJ_RE=/^[A-Za-z0-9_:.\-]{1,200}$/;
-const safePath=p=>typeof p==='string'&&p.length>0&&p.length<=500
-  &&!p.startsWith('/')&&!p.includes('\\')&&!p.split('/').includes('..');
-/* An item's url is checked here, before it ever reaches an href: a
-   hand-edited events.jsonl or a hostile provider payload could carry a
-   javascript: value. Only http(s) survives, and it is escaped on the way in. */
-const safeUrl=u=>typeof u==='string'&&/^https?:\/\//i.test(u)?u:'';
 
 /* ── tab badge ─────────────────────────────────────────────────────────────
-   Unseen count on the Inbox tab button, appended beside the label the
+   The rows a person still has to look at (waiting plus new, summed over
+   every section) on the Work tab button, appended beside the label the
    registry painted there (the label itself is never rewritten here).
    Started by app.js after the registry built the buttons; the view feeds it
-   the counts it already has so a mutation never costs a second request, and
-   its own 60 s poll rests while Items is on screen, where the page's
-   30 s read already carries the counts. Never throws: a failed fetch leaves
-   the tab exactly as it is. */
+   the sections summary it already has so a read never costs a second
+   request, and its own 60 s poll rests while the Inbox page is on screen,
+   where its 30 s read already carries the counts. Never throws: a failed
+   fetch leaves the tab exactly as it is. */
 let lastBadge=null;
-let shown=false;            /* one of the Inbox pages is on screen */
+let shown=false;            /* one of the Work pages is on screen */
 function paintBadge(n){
   const b=document.getElementById('tab-inbox');
   if(!b)return;
@@ -56,14 +46,19 @@ function paintBadge(n){
     badge.textContent=String(n);
   }else if(badge)badge.remove();
 }
-export async function refreshInboxBadge(counts){
+/* waiting plus new over a sections list; every number coerced, never trusted */
+export const needsYou=sections=>(Array.isArray(sections)?sections:[]).reduce((n,s)=>{
+  const c=s&&s.counts&&typeof s.counts==='object'?s.counts:{};
+  return n+Math.max(0,Number(c.waiting)||0)+Math.max(0,Number(c.new)||0);
+},0);
+export async function refreshInboxBadge(sections){
   try{
-    if(!counts){
-      const res=await apiFetch(API_BASE+'/api/inbox?status=open&limit=1');
+    if(!sections){
+      const res=await apiFetch(API_BASE+'/api/inbox?state=open&limit=1');
       if(!res.ok||!res.data)return;
-      counts=res.data.counts||{};
+      sections=res.data.sections;
     }
-    paintBadge(counts.new);
+    paintBadge(needsYou(sections));
   }catch(err){console.error('Inbox badge:',err);}
 }
 function startBadgePoll(){setSlottedInterval('inbox-badge',()=>refreshInboxBadge(),60000);}
@@ -73,58 +68,34 @@ export function initInboxBadge(){
 }
 
 /* ── view ─────────────────────────────────────────────────────────────── */
-const FILTERS=[['open','Open'],['done','Done'],['all','All']];
+const STATES=[['open','Open'],['active','Active'],['waiting','Waiting'],['closed','Closed'],['all','All']];
+/* The tabs are the answer's sections; this is only the order the page
+   shows them in (a section the answer adds later lands after these). */
+const TAB_ORDER=['projects','agents','connections','issues'];
+const ROW_STATES=['new','running','waiting','failed','closed'];
+const OUTCOME_LABEL={reply_drafted:'reply drafted',task_proposed:'task proposed',needs_you:'asks you',fyi:'fyi',handled:'handled'};
+const EMPTY={
+  open:['Nothing in the inbox.','Issues, polled apps, project shares and what agents post land here.'],
+  active:['Nothing running.','No session is working on a row of this tab right now.'],
+  waiting:['Nothing waiting for you.','Rows land here when a session drafted a reply, proposed a task or asked you something.'],
+  closed:['Nothing closed yet.','Archived rows and handled items land here.'],
+  all:['Nothing in the inbox.','Issues, polled apps, project shares and what agents post land here.'],
+};
 let root=null;
 let switchTo=()=>{};        /* ctx.switchTo, captured on mount */
 let inboxPage='items',inboxMount=null;
-let filter='open';
+let section=TAB_ORDER[0];   /* the tab; the first answer confirms or corrects it */
+let state='open';
+let query='';
 let data=null;              /* last good payload */
-let dataFilter='';          /* the filter that payload belongs to */
+let dataKey='';             /* the tab and state that payload belongs to */
 let failed=null;            /* last failed response, shown above the rows */
-let loadingRows=false;      /* a filter change shows skeletons until it lands */
+let loadingRows=false;      /* a tab or state change shows skeletons until it lands */
 let token=0;                /* race guard: only the newest load may paint */
 let lastLoad=0;
-let marking=false;          /* "Mark all seen" in flight */
-const expanded=new Set();   /* ids with the body open */
-const busy=new Set();       /* ids with a write in flight */
-
-/* ── source filter ────────────────────────────────────────────────────────
-   Client-side over the loaded page (limit 200): picking a source never
-   fetches. One row per pill, naming the feeder sources it covers, so adding
-   a feeder is one entry here. "agents" is the catch-all for anything not
-   written by a named feeder, so a row from a feeder added later still lands
-   somewhere. */
-const SOURCES=[
-  {id:'all',label:'All',sources:[]},
-  {id:'issues',label:'Issues',sources:['issues']},
-  {id:'connections',label:'Connections',sources:['connections']},
-  {id:'workspace',label:'Workspace',sources:['timeline','todos']},
-  {id:'sharing',label:'Sharing',sources:['sharing']},
-  {id:'agents',label:'Agents',sources:[]},
-];
-const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);
-let srcFilter='all';
-let query='';
-function sourceOf(it){
-  const s=typeof it.source==='string'?it.source:'';
-  const row=SOURCES.find(r=>r.sources.includes(s));
-  return row?row.id:'agents';
-}
-const matchesSource=it=>srcFilter==='all'||sourceOf(it)===srcFilter;
-
-/* ── connections section ──────────────────────────────────────────────────
-   What the connections poller is watching (GET /api/connections), on its
-   own page. Its own fetch, token and failure line: a slow or failed
-   read here never delays or hides the inbox rows. Same API_BASE as every
-   other call on this page; they are not part of the /api/inbox family. */
-let conns=null;             /* last good GET /api/connections payload */
-let connsFailed=null;       /* last failed response, one muted line */
-let connsOpen=null;         /* open by default; retain an explicit collapse */
-let connsToken=0;
-const connBusy=new Set();   /* toolkits with a Poll now in flight */
 
 /* Jobs have their own read and DOM boundary. A jobs poll must never rebuild
-   an expanded Inbox body or change the item-search scope. */
+   the Inbox rows or change the item-search scope. */
 let jobs=null;
 const jobRunBusy=new Set(); /* job ids with a Run now request in flight */
 let jobsFailed=null;
@@ -148,7 +119,7 @@ export function createInboxViews(){
 }
 
 const inboxController={
-  id:'inbox',label:'Inbox',order:5,
+  id:'inbox',label:'Work',order:5,
   toolbar:{search:{
     placeholder:'Search loaded inbox items…',
     getValue:()=>query,
@@ -161,26 +132,22 @@ const inboxController={
   async mount(el,ctx){
     root=el;
     switchTo=ctx.switchTo;
-    el.innerHTML='<div class="inb"><header class="inb-page-head"><h1>Items</h1><div class="inb-page-actions"></div></header>'
-      +'<section class="inb-items-page">'+head()+sources()+body()+'</section>'
-      +'<section class="inb-connections-page" hidden>'+connsHTML()+'</section>'
+    el.innerHTML='<div class="inb"><header class="inb-page-head"><h1>Inbox</h1><div class="inb-page-actions"></div></header>'
+      +'<section class="inb-items-page">'+tabsHTML()+head()+body()+'</section>'
       +'<section class="inb-jobs-page" hidden>'+jobsHTML()+'</section></div>';
     el.addEventListener('click',onClick);
-    painted=paintKey();connsPainted=connsPaintKey();jobsPainted=jobsPaintKey();
+    painted=paintKey();jobsPainted=jobsPaintKey();
   },
   show(){showInboxPage('items');},
   hide:hideInbox,
 };
 
 function showInboxPage(page){
-  if(!root||!['items','connections','jobs'].includes(page))return;
+  if(!root||!['items','jobs'].includes(page))return;
   inboxPage=page;shown=true;
-  root.querySelector('.inb-page-head h1').textContent=INBOX_PAGES.find(item=>item.route==='inbox/'+page)?.label||'Items';
-  root.querySelector('.inb-page-actions').innerHTML=page==='connections'
-    ?'<button class="inb-btn" type="button" data-act="conns-refresh">Refresh</button><button class="inb-btn" type="button" data-act="conn-config">Open Setup</button>':'';
-  for(const key of ['items','connections','jobs'])root.querySelector('.inb-'+key+'-page').hidden=key!==page;
+  root.querySelector('.inb-page-head h1').textContent=INBOX_PAGES.find(item=>item.route==='inbox/'+page)?.label||'Inbox';
+  for(const key of ['items','jobs'])root.querySelector('.inb-'+key+'-page').hidden=key!==page;
   clearSlottedInterval('inbox-poll');
-  clearSlottedInterval('inbox-conns-poll');
   clearSlottedInterval('inbox-jobs-poll');
   if(page==='items'){
     clearSlottedInterval('inbox-badge');
@@ -188,18 +155,12 @@ function showInboxPage(page){
     setSlottedInterval('inbox-poll',load,30000);
   }else{
     startBadgePoll();
-    if(page==='connections'){
-      loadConns();
-      setSlottedInterval('inbox-conns-poll',loadConns,30000);
-    }else{
-      loadJobs();scheduleJobsPoll();
-    }
+    loadJobs();scheduleJobsPoll();
   }
 }
 function hideInbox(){
   shown=false;
   clearSlottedInterval('inbox-poll');
-  clearSlottedInterval('inbox-conns-poll');
   clearSlottedInterval('inbox-jobs-poll');
   jobsToken++;jobsLoading=false;jobsRefreshQueued=false;
   /* An outstanding read stays tracked so reentry can queue a fresh request. */
@@ -207,20 +168,30 @@ function hideInbox(){
 }
 
 const skeleton=()=>'<div class="inb-rows">'+'<div class="inb-skel"></div>'.repeat(4)+'</div>';
-const counts=()=>Object.assign({new:0,seen:0,done:0},data&&data.counts);
-const itemById=id=>data&&(data.items||[]).find(it=>it.id===id);
+const readKey=()=>section+'|'+state;
+/* the answer's sections in the page's order, unknown ones last */
+function tabs(){
+  const list=(data&&Array.isArray(data.sections)?data.sections:[]).filter(s=>s&&typeof s.id==='string');
+  const rank=id=>{const i=TAB_ORDER.indexOf(id);return i<0?TAB_ORDER.length:i;};
+  return list.slice().sort((a,b)=>rank(a.id)-rank(b.id));
+}
+const activeSection=()=>tabs().find(s=>s.id===section)||null;
+const counts=()=>Object.assign({new:0,running:0,waiting:0,failed:0,closed:0},activeSection()&&activeSection().counts);
+const rowsOfTab=()=>(data&&Array.isArray(data.rows)?data.rows:[]).filter(r=>r&&typeof r==='object'&&typeof r.id==='string'&&(!r.section||r.section===section));
+const rowById=(id,kind)=>rowsOfTab().find(r=>r.id===id&&(kind==='session')===(r.kind==='session'));
 
 async function load(){
-  const mine=++token;
-  const res=await apiFetch(API_BASE+'/api/inbox?status='+encodeURIComponent(filter)+'&limit=200');
-  if(mine!==token)return; /* a newer load (filter change, refresh) owns the screen */
+  const mine=++token,key=readKey();
+  const res=await apiFetch(API_BASE+'/api/inbox?section='+encodeURIComponent(section)+'&state='+encodeURIComponent(state)+'&limit=200');
+  if(mine!==token)return; /* a newer load (tab or state change, refresh) owns the screen */
   lastLoad=Date.now();
   loadingRows=false;
   if(res.ok&&res.data){
-    data=res.data;dataFilter=filter;failed=null;
-    const ids=new Set((data.items||[]).map(it=>it.id));
-    for(const id of [...expanded])if(!ids.has(id))expanded.delete(id);
-    refreshInboxBadge(data.counts); /* counts cover the whole file, not the filter */
+    data=res.data;dataKey=key;failed=null;
+    refreshInboxBadge(data.sections); /* the summary covers every section, not the tab */
+    /* the answer names the tabs: a tab it does not carry is not a tab */
+    const first=tabs()[0];
+    if(first&&!tabs().some(s=>s.id===section)){section=first.id;loadingRows=true;render();load();return;}
   }else failed=res;
   if(paintKey()===painted){settle();return;} /* nothing new: leave focus and scroll alone */
   render();
@@ -229,17 +200,16 @@ async function load(){
 /* ── painting ─────────────────────────────────────────────────────────────
    What the last paint was made from: the payload and every local flag the
    paint reads. A poll whose fresh read keys the same leaves the DOM alone,
-   so keyboard focus and the scroll inside an expanded body survive the
-   30 s tick; anything else repaints with focus put back on the control
-   that had it. */
+   so keyboard focus and the scroll position survive the 30 s tick;
+   anything else repaints with focus put back on the control that had it. */
 let painted='';
-const paintKey=()=>JSON.stringify([data,filter,srcFilter,query,failed&&failText(failed),loadingRows,marking,[...expanded]]);
+const paintKey=()=>JSON.stringify([data,section,state,query,failed&&failText(failed),loadingRows]);
 /* the focused control as a selector over the data-* it carries, so the same
    one can be found again once the rows are rebuilt */
 function focusSelector(){
   const a=document.activeElement;
   if(!a||!root||!root.contains(a))return'';
-  const keys=['act','id','toolkit','filter','src','job'].filter(k=>a.dataset[k]!==undefined);
+  const keys=['act','id','kind','state','section','job'].filter(k=>a.dataset[k]!==undefined);
   return keys.map(k=>'[data-'+k+'="'+CSS.escape(a.dataset[k])+'"]').join('');
 }
 function render(){
@@ -247,154 +217,106 @@ function render(){
   const box=root.querySelector('.inb-items-page');
   if(!box)return;
   const sel=focusSelector();
-  box.innerHTML=head()+sources()+body();
+  box.innerHTML=tabsHTML()+head()+body();
   painted=paintKey();
   if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
 }
-/* the parts that move without a repaint: buttons a write disabled, the
-   Refresh button, and the relative times, which an unchanged read still ages */
+/* the parts that move without a repaint: the Refresh button, and the
+   relative times, which an unchanged read still ages */
 function settle(){
-  syncBusy();
   const r=root.querySelector('button[data-act="refresh"]');
   if(r)r.disabled=false;
   root.querySelectorAll('[data-ts]').forEach(el=>{el.textContent=rel(el.dataset.ts);});
 }
 function summary(c){
-  return c.new+' new · '+(c.new+c.seen)+' open · '+c.done+' done';
+  const parts=ROW_STATES.filter(k=>c[k]>0).map(k=>c[k]+' '+k);
+  return parts.length?parts.join(' · '):'nothing here';
+}
+/* the tabs: one per section the answer carries, the waiting plus new count beside the label */
+function tabsHTML(){
+  const list=tabs();
+  if(!list.length)return'';
+  return'<div class="inb-tabs" role="tablist" aria-label="Inbox sections">'+list.map(s=>{
+    const n=needsYou([s]),on=s.id===section;
+    return'<button type="button" role="tab" data-section="'+esc(s.id)+'" aria-selected="'+(on?'true':'false')+'"'+(on?' class="is-on"':'')+'>'
+      +esc(s.label||s.id)+(n>0?'<b>'+n+'</b>':'')+'</button>';
+  }).join('')+'</div>';
 }
 function head(){
-  const c=counts();
-  const narrowed=query.trim()||srcFilter!=='all';
   return'<div class="inb-head">'
-    +'<span class="inb-sum">'+(data?esc(summary(c)):'loading…')+'</span>'
+    +'<span class="inb-sum">'+(data?esc(summary(counts())):'loading…')+'</span>'
     +'<span class="inb-spacer"></span>'
-    +pills(FILTERS,filter,'filter','Filter inbox','inb-filter')
-    +(c.new>0?'<button class="inb-btn" type="button" data-act="mark-all"'
-      +(marking?' disabled':'')+' title="'+(narrowed
-        ?'Mark every new item in the loaded status page as seen, including items hidden by search or source filters'
-        :'Mark every new item on this page as seen')+'">'+(narrowed?'Mark all loaded seen':'Mark all seen')+'</button>':'')
+    +pills(STATES,state,'state','Filter by state','inb-filter')
     +'<button class="inb-btn" type="button" data-act="refresh" title="Re-read the inbox">'
       +'&#8635; Refresh</button>'
   +'</div>';
 }
-/* the source pills, a second strip under the header */
-function sources(){
-  return pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src');
-}
+/* the search terms against what a row shows */
+const rowText=r=>[r.title,r.entity,r.state,r.kind,r.project_id,r.runtime,r.outcome&&r.outcome.kind,r.claim&&r.claim.runtime]
+  .map(value=>String(value??'')).join(' ').toLowerCase();
 function body(){
   if(!data&&failed)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
   if(!data||loadingRows)return skeleton();
-  /* a failed load for a newly picked filter: the last good read belongs to
-     another filter, so it must not be shown under this pill */
-  if(failed&&dataFilter!==filter)return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
-  const all=data.items||[];
-  const sourceItems=all.filter(matchesSource);
+  /* a failed load for a newly picked tab or state: the last good read
+     belongs to another one, so it must not be shown under this pill */
+  if(failed&&dataKey!==readKey())return'<div class="inb-fail">'+esc(failText(failed))+'</div>';
+  const all=rowsOfTab();
   const terms=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const items=terms.length?sourceItems.filter(it=>{
-    const sourceLabel=SOURCES.find(source=>source.id===sourceOf(it))?.label;
-    const text=[it.title,it.body,it.kind,it.source,sourceLabel,it.project_id]
-      .map(value=>String(value??'')).join(' ').toLowerCase();
-    return terms.every(term=>text.includes(term));
-  }):sourceItems;
+  const rows=terms.length?all.filter(r=>{const text=rowText(r);return terms.every(term=>text.includes(term));}):all;
   const stale=failed?'<div class="inb-fail">'+esc(failText(failed))+' · showing the last good read</div>':'';
-  const scope=terms.length||srcFilter!=='all'?'<p class="inb-note" role="status">'
-    +items.length+' matching of '+all.length+' loaded items in this status page.'
-    +(srcFilter!=='all'?' '+sourceItems.length+' in the selected source.':'')
-    +(counts().new>0?' Mark all loaded seen includes items hidden by search or source filters.':'')+'</p>':'';
-  if(!all.length)return stale+scope+'<div class="inb-empty"><b>Nothing in the inbox.</b>'
-    +'<p>Sessions, todos and shares arriving in the workspace land here.</p></div>';
-  if(!sourceItems.length)return stale+scope+'<div class="inb-empty"><b>Nothing from this source on this page.</b>'
-    +'<p>The source pills filter the loaded page only. Pick All to see every row.</p></div>';
-  if(!items.length)return stale+scope+'<div class="inb-empty"><b>No loaded inbox items match this search.</b>'
-    +'<p>Try another term or clear the search. Status and source filters still apply.</p></div>';
-  return stale+scope+'<div class="inb-rows">'+items.map(rowHTML).join('')+'</div>';
-}
-const hasLink=it=>!!it.link&&typeof it.link==='object'&&!!(it.link.view||it.link.project);
-function rowHTML(it){
-  const open=expanded.has(it.id);
-  const id=esc(it.id);
-  const done=it.status==='done';
-  const off=busy.has(it.id)?' disabled':'';
-  const url=safeUrl(it.url);
-  return'<div class="inb-row is-'+esc(it.status)+(open?' is-open':'')+'" id="inb-row-'+id+'">'
-    /* a real button: keyboard-reachable, and it says what it does */
-    +'<button class="inb-row-head" type="button" data-act="toggle" data-id="'+id+'" '
-      +'aria-expanded="'+(open?'true':'false')+'" aria-controls="inb-body-'+id+'">'
-      +'<i class="inb-dot" aria-hidden="true"></i>'
-      +'<span class="inb-kind">'+esc(it.kind)+'</span>'
-      +'<span class="inb-title">'+esc(it.title)+'</span>'
-      +(it.project_id?'<span class="inb-proj">'+esc(it.project_id)+'</span>':'')
-      +'<span class="inb-when" data-ts="'+esc(it.ts)+'" title="'+esc(dtfmt(it.ts))+'">'+esc(rel(it.ts))+'</span>'
-    +'</button>'
-    +(open?'<div class="inb-body" id="inb-body-'+id+'">'
-      +(it.body?'<pre class="inb-text">'+esc(it.body)+'</pre>':'<div class="inb-note">no details</div>')
-      +'<div class="inb-actions">'
-        +(hasLink(it)?'<button class="inb-btn" type="button" data-act="open" data-id="'+id+'">Open</button>':'')
-        /* a real link, and only for an http(s) url: safeUrl ran above */
-        +(url?'<a class="inb-btn" href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">Open link</a>':'')
-        +'<button class="inb-btn" type="button" data-act="'+(done?'reopen':'done')+'" data-id="'+id+'"'+off+'>'
-          +(done?'Reopen':'Done')+'</button>'
-        +'<button class="inb-btn is-danger" type="button" data-act="delete" data-id="'+id+'"'+off+'>Delete</button>'
-      +'</div>'
-    +'</div>':'')
-  +'</div>';
-}
-
-/* ── connections section rendering ─────────────────────────────────────── */
-const polled=()=>((conns&&conns.connections)||[]).filter(c=>c&&typeof c==='object'&&(c.configured||c.connected_here));
-const connsIsOpen=()=>connsOpen!==false;
-let connsPainted='';
-const connsPaintKey=()=>JSON.stringify([conns,connsFailed&&failText(connsFailed),connsOpen,[...connBusy]]);
-function renderConns(){
-  const box=root?.querySelector('.inb-connections-page');
-  if(!box)return;
-  const key=connsPaintKey();if(key===connsPainted)return;
-  const sel=box.contains(document.activeElement)?focusSelector():'';
-  box.innerHTML=connsHTML();connsPainted=key;
-  if(sel)box.querySelector(sel)?.focus({preventScroll:true});
-}
-function connsHTML(){
-  if(!conns){
-    if(connsFailed)return'<div class="inb-conns"><div class="inb-conn-meta">Connections: '+esc(failText(connsFailed))+'</div></div>';
-    return'<div class="inb-conns"><div class="inb-conn-meta">Loading connections…</div></div>';
+  const scope=terms.length?'<p class="inb-note" role="status">'+rows.length+' matching of '+all.length+' loaded items in this tab.</p>':'';
+  const entities=activeSection()&&Array.isArray(activeSection().entities)?activeSection().entities:[];
+  if(!all.length&&!entities.length){
+    const [title,hint]=EMPTY[state]||EMPTY.open;
+    return stale+'<div class="inb-empty"><b>'+esc(title)+'</b><p>'+esc(hint)+'</p></div>';
   }
-  const rows=polled();
-  if(!rows.length)return'<div class="inb-conns"><div class="inb-conn-meta">'
-    +'No updates yet. Open Setup → Connectors to connect an app and turn on polling.</div></div>';
-  const errors=rows.filter(c=>c.last_error).length;
-  const open=connsIsOpen();
-  return'<div class="inb-conns'+(open?' is-open':'')+'">'
-    +'<button class="inb-conns-head" type="button" data-act="conns-toggle" aria-expanded="'+(open?'true':'false')+'">'
-      +'<i aria-hidden="true">'+(open?'&#9662;':'&#9656;')+'</i>'
-      +'<span>Polled apps</span><b>'+rows.length+'</b>'
-      +(errors?'<em>'+errors+' with errors</em>':'')
-      +(conns.poller_enabled===false?'<em>poller off</em>':'')
-      +(conns.signed_in===false?'<em>not signed in</em>':'')
-    +'</button>'
-    +(open?rows.map(connRowHTML).join(''):'')
-  +'</div>';
+  if(!rows.length&&terms.length)return stale+scope+'<div class="inb-empty"><b>No loaded inbox items match this search.</b>'
+    +'<p>Try another term or clear the search. The tab and the state pill still apply.</p></div>';
+  return stale+scope+groupsHTML(rows,entities,terms.length>0);
 }
-function connRowHTML(c){
-  const tk=esc(c.toolkit);
-  const off=connBusy.has(c.toolkit)?' disabled':'';
-  const line=pollLine(c);
-  const when=line.error
-    ?'<span class="inb-conn-meta is-error" title="'+esc(line.error)+'">'+esc(line.error)+'</span>'
-    :'<span class="inb-conn-meta">'+esc(line.text)+'</span>';
-  /* the account the session is bound to (an email, once the server has
-     resolved it) sits inside the name cell so the row's grid keeps its
-     four columns */
-  const acct=accountLabel(c);
-  return'<div class="inb-conn-row" data-toolkit="'+tk+'">'
-    +'<b>'+esc(c.display_name||c.toolkit)
-      +(acct?'<span class="inb-conn-acct">'+esc(acct)+'</span>':'')+'</b>'
-    +'<span class="inb-conn-meta">'+esc(collectorLabels(c))+' · '+esc(every(c.interval_s))
-      +(c.enabled?'':' · polling off')+'</span>'
-    +when
-    +'<span class="inb-conn-acts">'
-      +'<button class="inb-btn" type="button" data-act="conn-poll" data-toolkit="'+tk+'"'+off+'>Poll now</button>'
-      +'<button class="inb-btn" type="button" data-act="conn-config" data-toolkit="'+tk+'">Configure</button>'
-    +'</span>'
+/* the tab's entity groups: the answer's entities in its order (a project,
+   an agent, a toolkit, a repo, even with no rows), then any entity only the
+   rows name; a search hides the groups it emptied */
+function groupsHTML(rows,entities,searching){
+  const byEntity=new Map();
+  for(const r of rows){const key=String(r.entity??'');if(!byEntity.has(key))byEntity.set(key,[]);byEntity.get(key).push(r);}
+  const groups=entities.filter(e=>e&&typeof e.id==='string').map(e=>({id:e.id,label:e.label||e.id,counts:e.counts,rows:byEntity.get(e.id)||[]}));
+  const named=new Set(groups.map(g=>g.id));
+  for(const [key,list] of byEntity)if(!named.has(key))groups.push({id:key,label:key||'no entity',counts:null,rows:list});
+  return groups.filter(g=>g.rows.length||!searching).map(g=>{
+    const c=g.counts&&typeof g.counts==='object'?Object.assign({new:0,running:0,waiting:0,failed:0,closed:0},g.counts):null;
+    return'<section class="inb-group" aria-label="'+esc(g.label)+'">'
+      +'<h2 class="inb-group-head"><span class="inb-group-name">'+esc(g.label)+'</span>'
+        +'<span class="inb-group-counts">'+esc(c?summary(c):g.rows.length+' loaded')+'</span></h2>'
+      +(g.rows.length?'<div class="inb-rows">'+g.rows.map(rowHTML).join('')+'</div>':'')
+    +'</section>';
+  }).join('');
+}
+/* one row, a button that opens the item page: dot · state · title · chips · when.
+   A work item row shows its entity, its outcome kind and the runtime of the
+   session that holds it now; a session row (a runtime session no work item
+   owns) shows its runtime and time. */
+function rowHTML(it){
+  const isSession=it.kind==='session';
+  const st=ROW_STATES.includes(it.state)?it.state:(isSession?'closed':'new');
+  const live=!isSession&&it.claim&&typeof it.claim==='object'&&it.claim.live?it.claim:null;
+  const runtime=isSession?it.runtime:(live?live.runtime:'');
+  const outcome=!isSession&&it.outcome&&typeof it.outcome==='object'&&it.outcome.kind?(OUTCOME_LABEL[it.outcome.kind]||it.outcome.kind):'';
+  const ts=it.updated_at||it.started_at||it.created_at||'';
+  return'<div class="inb-row is-'+esc(st)+(isSession?' is-session':'')+'">'
+    /* a real button: keyboard-reachable, and it says what it does */
+    +'<button class="inb-row-head" type="button" data-act="open" data-id="'+esc(it.id)+'" data-kind="'+(isSession?'session':'workitem')+'" title="Open">'
+      +'<i class="inb-dot" aria-hidden="true"></i>'
+      +'<span class="inb-state">'+esc(st)+'</span>'
+      +'<span class="inb-title">'+esc(it.title||it.id)+'</span>'
+      +'<span class="inb-meta">'
+        +(isSession?'<span class="inb-chip">session</span>':'')
+        +(it.entity?'<span class="inb-chip is-entity">'+esc(it.entity)+'</span>':'')
+        +(outcome?'<span class="inb-chip is-outcome">'+esc(outcome)+'</span>':'')
+        +(runtime?'<span class="inb-chip is-runtime">'+esc(runtime)+'</span>':'')
+      +'</span>'
+      +'<span class="inb-when" data-ts="'+esc(ts)+'" title="'+esc(dtfmt(ts))+'">'+esc(rel(ts))+'</span>'
+    +'</button>'
   +'</div>';
 }
 
@@ -495,23 +417,13 @@ async function runJob(id){
 
 /* one delegated listener: rows are rebuilt on every paint, the listener is not */
 function onClick(e){
-  const b=e.target.closest('button[data-act],button[data-filter],button[data-src]');
+  const b=e.target.closest('button[data-act],button[data-state],button[data-section]');
   if(!b||b.disabled)return;
-  if(b.dataset.filter){setFilter(b.dataset.filter);return;}
-  if(b.dataset.src){setSource(b.dataset.src);return;}
-  const id=b.dataset.id;
+  if(b.dataset.state){setState(b.dataset.state);return;}
+  if(b.dataset.section){setSection(b.dataset.section);return;}
   switch(b.dataset.act){
     case'refresh':b.disabled=true;load();break;
-    case'mark-all':markAllSeen();break;
-    case'toggle':toggle(id);break;
-    case'open':{const it=itemById(id);if(it)openLink(it);break;}
-    case'done':setStatus(id,'done');break;
-    case'reopen':setStatus(id,'seen');break;
-    case'delete':remove(id);break;
-    case'conns-toggle':connsOpen=!connsIsOpen();renderConns();break;
-    case'conns-refresh':loadConns();break;
-    case'conn-poll':pollConn(b.dataset.toolkit);break;
-    case'conn-config':switchTo('setup/connectors');break;
+    case'open':openRow(b.dataset.id,b.dataset.kind);break;
     case'jobs-refresh':loadJobs();break;
     case'jobs-setup':
       Promise.resolve(switchTo('setup/commands')).then(()=>{
@@ -526,132 +438,29 @@ function onClick(e){
     }
   }
 }
-function setFilter(k){
-  if(k===filter||!FILTERS.some(([f])=>f===k))return;
-  filter=k;
+/* a state pill or a tab fetches: the rows and the entity groups are the server's */
+function setState(k){
+  if(k===state||!STATES.some(([s])=>s===k))return;
+  state=k;
   loadingRows=true;
   render();
   load();
 }
-/* a source pill only repaints: the page is already here */
-function setSource(k){
-  if(k===srcFilter||!SOURCES.some(s=>s.id===k))return;
-  srcFilter=k;
+function setSection(k){
+  if(k===section||!tabs().some(s=>s.id===k))return;
+  section=k;
+  loadingRows=true;
   render();
+  load();
 }
-/* Expanding a new item is the act of seeing it: one PATCH, only while it is
-   still new, and the local copy flips first so a collapse and re-expand
-   before the re-read cannot fire a second one. A failed PATCH flips it back
-   and repaints, so the row reads as new again and the next expand retries. */
-async function toggle(id){
-  const it=itemById(id);
+/* Open: the item's own page, its transcript and the chat that continues it.
+   The selection travels in the hash, so a reload or a Back keeps the item;
+   a session row (no work item of its own) opens the transcript alone. */
+function openRow(id,kind){
+  const it=rowById(id,kind);
   if(!it)return;
-  if(expanded.has(id))expanded.delete(id);else expanded.add(id);
-  render();
-  const row=document.getElementById('inb-row-'+id);
-  if(row)row.querySelector('.inb-row-head').focus({preventScroll:true});
-  if(!expanded.has(id)||it.status!=='new'||busy.has(id))return;
-  it.status='seen';
-  const ok=await setStatus(id,'seen');
-  /* on failure `it` may be stale if a poll landed meanwhile; reverting a
-     stale copy is harmless and the repaint shows whatever is current */
-  if(!ok&&it.status==='seen'){it.status='new';render();}
-}
-/* resolves true once the write landed and the list was re-read */
-async function setStatus(id,status){
-  if(busy.has(id))return false;
-  busy.add(id);syncBusy();
-  const res=await apiFetch(API_BASE+'/api/inbox/'+encodeURIComponent(id),{method:'PATCH',body:{status}});
-  busy.delete(id);
-  if(!res.ok){toast('update failed: '+failText(res));syncBusy();return false;}
-  await load();
-  return true;
-}
-async function remove(id){
-  if(busy.has(id))return;
-  busy.add(id);syncBusy();
-  const res=await apiFetch(API_BASE+'/api/inbox/'+encodeURIComponent(id),{method:'DELETE'});
-  busy.delete(id);
-  if(!res.ok){toast('delete failed: '+failText(res));syncBusy();return;}
-  expanded.delete(id);
-  await load();
-}
-/* a paint mid-flight must not re-enable a pressed button */
-function syncBusy(){
-  root.querySelectorAll('button[data-act][data-id]').forEach(b=>{
-    if(b.dataset.act!=='toggle'&&b.dataset.act!=='open')b.disabled=busy.has(b.dataset.id);
-  });
-}
-/* Every new item on this page in one PATCH /api/inbox {ids, status}: the
-   file is rewritten once for the whole batch, and the reply says how many
-   actually changed and which ids were gone by then. A failed request
-   changes nothing here and says why in the same words as every other
-   failed write. */
-async function markAllSeen(){
-  if(marking||!data||dataFilter!==filter)return;
-  const ids=(data.items||[]).filter(it=>it.status==='new').map(it=>it.id);
-  if(!ids.length){toast('no new items in this list');return;}
-  marking=true;render();
-  const res=await apiFetch(API_BASE+'/api/inbox',{method:'PATCH',body:{ids,status:'seen'}});
-  marking=false;
-  if(!res.ok)toast('mark all seen failed: '+failText(res));
-  else{
-    const missing=res.data&&Array.isArray(res.data.missing)?res.data.missing.length:0;
-    if(missing)toast(missing+' of '+ids.length+' were already gone');
-  }
-  await load();
-}
-/* Open: a file link previews it in the Data tab; a view link jumps there;
-   a bare project link lands on the Data list. switchTo is not awaited: its
-   tab and event side effects are synchronous, and the previewer closes on
-   any non-Data view, so the switch must happen before the preview event.
-   Unknown view ids are ignored by the registry itself. */
-function openLink(it){
-  const l=it.link;
-  if(!l||typeof l!=='object')return;
-  const project=typeof l.project==='string'&&PROJ_RE.test(l.project)?l.project:'';
-  if(project&&safePath(l.path)){
-    switchTo('projects/data/list');
-    dispatchEvent(new CustomEvent('space:preview-file',{detail:{project,path:l.path}}));
-    return;
-  }
-  /* Sharing events open Inbox Sharing on their project, where the fetched
-     commits and Apply live. Items stored before the feeder linked there
-     still carry view "projects"; their sharing.* kind routes them. */
-  if(l.view==='sharing'||String(it.kind||'').startsWith('sharing.')){
-    const target=project||(typeof it.project_id==='string'&&PROJ_RE.test(it.project_id)?it.project_id:'');
-    switchTo('inbox/sharing');
-    if(target)dispatchEvent(new CustomEvent('space:sharing-focus',{detail:target}));
-    return;
-  }
-  if(typeof l.view==='string'&&l.view){switchTo(l.view==='projects'?'projects/data/list':l.view);return;}
-  if(project)switchTo('projects/data/list');
-}
-
-/* ── connections section data ──────────────────────────────────────────── */
-async function loadConns(){
-  const mine=++connsToken;
-  const res=await apiFetch(API_BASE+'/api/connections');
-  if(mine!==connsToken)return; /* a newer read owns the section */
-  if(res.ok&&res.data){conns=res.data;connsFailed=null;}
-  else connsFailed=res;
-  renderConns();
-}
-/* Poll now: one POST, then both the section (new poll state) and the rows
-   (what it collected) are re-read. The button stays disabled until then. */
-async function pollConn(toolkit){
-  if(typeof toolkit!=='string'||!toolkit||connBusy.has(toolkit))return;
-  connBusy.add(toolkit);renderConns();
-  const res=await apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'});
-  connBusy.delete(toolkit);
-  if(!res.ok)toast('poll failed: '+failText(res));
-  else{
-    const r=res.data||{};
-    if(r.skipped)toast('poll skipped: '+String(r.skipped));
-    else if(r.error)toast('poll failed: '+String(r.error));
-    else toast((Number(r.new_events)||0)+' new from '+toolkit);
-  }
-  await Promise.all([loadConns(),load()]);
+  if(it.kind==='session')switchTo('inbox/item?s='+encodeURIComponent(it.id));
+  else switchTo('inbox/item?p='+encodeURIComponent(it.project_id||'')+'&id='+encodeURIComponent(it.id));
 }
 
 export default inboxController;

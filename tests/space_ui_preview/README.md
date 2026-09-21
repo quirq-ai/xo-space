@@ -13,6 +13,11 @@ python3 tests/space_ui_preview/server.py --port 5100
 ```
 
 Open `http://127.0.0.1:5100/space/` to inspect it manually. Stop with Ctrl-C.
+The Work tab's Inbox (`#/inbox/items`) shows a few fictional work items across
+the four sections (one running, one waiting, one failed, one closed, two
+session rows); each opens on the item page with its fact, transcript and
+outcome (`GET /api/inbox`, `GET /api/inbox/{project_id}/{workitem_id}`,
+`GET /api/sessions/{session_id}/transcript`); the fixture accepts no writes.
 
 With Node.js and Playwright (including its Chromium browser) installed, run:
 
@@ -51,7 +56,7 @@ node tests/space_ui_preview/projects-experience.mjs /tmp/space-projects-experien
 The section check covers canonical `projects/data/{list,graph,tree}` URLs and legacy
 `projects/files` aliases, section defaults
 versus List, Back/Forward, native links, toolbar ownership, List and Setup state
-across map changes, Inbox Activity and Sharing activity ordering, and Sharing
+across map changes, Work Activity ordering, and Sharing
 legacy aliases resolving to Inbox. It captures all Projects pages
 and representative Agents, Inbox and Setup pages at 1440px, 390px and 320px,
 including content clearance below secondary navigation. The Projects check
@@ -98,9 +103,9 @@ These checks cover page-specific controls, query restoration, clear and keyboard
 behavior, responsive headers, and filtering without graph navigation. The toolbar
 check supplies synthetic Connector/account and Quirq responses and blocks external
 requests and service writes. The Sessions/Inbox check supplies synthetic telemetry
-and Inbox responses, including
-an in-memory bulk action, to verify source filters, pagination, loaded counts,
-and hiding search on session charts/detail. No real Inbox data is modified.
+and Inbox responses (the sections summary and the rows of one tab and state) to
+verify tabs, state pills, loaded counts, pagination, and hiding search on session
+charts/detail. No real Inbox data is read or modified.
 
 This is a browser regression check of the frontend and its API contracts.
 The fixture server is deliberately not a substitute for backend tests.
@@ -113,7 +118,7 @@ save/poll races, validation conflicts, and desktop/mobile layouts:
 ```sh
 node tests/space_ui_preview/setup-state.mjs
 node tests/space_ui_preview/setup-journey.mjs /tmp/space-setup-journey
-node tests/space_ui_preview/setup-connectors.mjs /tmp/space-setup-connectors
+node tests/space_ui_preview/setup-connections.mjs /tmp/space-setup-connections
 node tests/space_ui_preview/setup-projects.mjs /tmp/space-setup-projects
 node tests/space_ui_preview/manage-refresh-races.mjs /tmp/space-manage-refresh-races
 node tests/space_ui_preview/manage-details.mjs /tmp/space-manage-details
@@ -169,7 +174,7 @@ a changed server instance before reloading.
 The Inbox Jobs check uses synthetic schedule definitions and histories to verify
 the section order, interval/disabled status, empty/error recovery, refresh races,
 and results access at desktop and mobile widths. It never runs a command or
-creates service Inbox items.
+creates work items.
 
 The results check covers completion ordering, automatic output updates,
 close/reopen races, escaped output, and restoring keyboard focus.

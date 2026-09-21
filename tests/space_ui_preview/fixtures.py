@@ -210,3 +210,161 @@ def sharing():
                       {"project": pid, "shared": True, "available": True, "members": 3,
                        "last_fetch_at": stamp(1), "last_error": None, "clone": None, "auto_cloned_at": None}
                       for pid in ("aurora-console", "atlas-handbook", "retrieval-lab")}}
+
+
+# ---------------------------------------------------------------- the Inbox
+# Work items joined with their sessions (fictional): one list of rows, each
+# under the section its source kind names, plus the sections summary. The
+# shapes follow the Inbox contract (GET /api/inbox, the detail route and the
+# session transcript); every id, session and person below is invented.
+INBOX_SESSIONS = {
+    "fictional-session-1": {"native": "fictional-native-1", "runtime": "demo", "title": "Invoice question from a fictional customer",
+                            "messages": [
+                                {"id": "m1", "role": "user", "content": "Handle Inbox item a1b2c3d4: an unread mail from a fictional customer about the June invoice."},
+                                {"id": "m2", "role": "assistant", "content": "Read it. The customer is right about the seat count; I drafted a reply in reply.md that offers a corrected invoice.\n\n```json\n{\"outcome\": \"reply_drafted\", \"summary\": \"A seat-count correction; a two-line reply with the credit note is drafted.\", \"draft\": \"reply.md\"}\n```"},
+                                {"id": "m3", "role": "user", "content": "Keep it to two lines and mention the credit note."},
+                                {"id": "m4", "role": "assistant", "content": "Done: reply.md is two lines now and names the credit note."},
+                            ]},
+    "fictional-session-2": {"native": "fictional-native-2", "runtime": "demo", "title": "New commits fetched: fictional-workspace/aurora-console",
+                            "messages": [
+                                {"id": "m1", "role": "user", "content": "Handle Inbox item c3d4e5f6: two commits arrived on the shared aurora-console repo."},
+                                {"id": "m2", "role": "assistant", "content": "Reading the two commits now. The first one touches the release checklist; checking whether the local copy diverged."},
+                            ]},
+    "fictional-session-3": {"native": "fictional-native-3", "runtime": "demo", "title": "Fix the flaky restart test",
+                            "messages": [
+                                {"id": "m1", "role": "user", "content": "The restart test fails one run in five. Find out why."},
+                                {"id": "m2", "role": "assistant", "content": "Reproduced it: the server pid file is read before the process wrote it. Adding a wait with a timeout."},
+                            ]},
+    "fictional-session-4": {"native": "fictional-native-4", "runtime": "demo", "title": "Issue #12 in orbit-api: Flaky restart test",
+                            "messages": [
+                                {"id": "m1", "role": "user", "content": "Handle Inbox item e5f6a7b8: GitHub issue #12 in orbit-api."},
+                            ]},
+    "fictional-session-5": {"native": "fictional-native-5", "runtime": "demo", "title": "Draft the launch announcement",
+                            "messages": [
+                                {"id": "m1", "role": "user", "content": "Draft the launch announcement for Launch Studio."},
+                                {"id": "m2", "role": "assistant", "content": "Drafted copy/announcement.md with the three headline features and a short quote."},
+                            ]},
+}
+
+
+def _workitem(item_id, project_id, title, section, entity, state, source, fact, **extra):
+    status = "closed" if state == "closed" else "open"
+    row = {"kind": "workitem", "id": item_id, "project_id": project_id, "pid": "pid-" + project_id,
+           "title": title, "section": section, "entity": entity, "state": state, "status": status,
+           "state_reason": "completed" if status == "closed" else None, "assignee": None,
+           "source": source, "fact": fact, "claim": None, "session": None, "outcome": None, "sessions": [],
+           "created_at": stamp(60), "updated_at": stamp(30)}
+    row.update(extra)
+    return row
+
+
+def _session_row(session_id, project_id, title, section, entity, live):
+    return {"kind": "session", "id": session_id, "project_id": project_id, "pid": "pid-" + project_id, "title": title,
+            "section": section, "entity": entity, "state": "running" if live else "closed", "runtime": "demo",
+            "native_id": INBOX_SESSIONS[session_id]["native"], "started_at": stamp(50), "updated_at": stamp(2 if live else 200),
+            "live": live}
+
+
+def inbox_rows():
+    ended = {"session_id": "fictional-session-1", "native_session_id": "fictional-native-1", "runtime": "demo",
+             "attempt": 1, "started_at": stamp(44), "ended_at": stamp(30), "exit": {"status": "ok", "message": None}}
+    running = {"session_id": "fictional-session-2", "native_session_id": "fictional-native-2", "runtime": "demo",
+               "attempt": 1, "started_at": stamp(3), "ended_at": None, "exit": None}
+    failed = {"session_id": "fictional-session-4", "native_session_id": "fictional-native-4", "runtime": "demo",
+              "attempt": 1, "started_at": stamp(20), "ended_at": stamp(19), "exit": {"status": "error", "message": "the runtime exited before an answer"}}
+    return [
+        _workitem("a1b2c3d4-0000-4000-8000-000000000001", "inbox-connections", "Invoice question from a fictional customer",
+                  "connections", "gmail", "waiting", {"kind": "connection", "key": "connection:gmail:unread:18c2a9f1",
+                  "connection": {"toolkit": "gmail", "type": "unread", "event": "18c2a9f1"}},
+                  {"ts": stamp(45), "kind": "gmail.unread", "url": "https://mail.example.invalid/msg/1", "link": {"view": "connectors"}, "toolkit": "gmail"},
+                  session=ended, outcome={"kind": "reply_drafted", "summary": "A seat-count correction; a two-line reply with the credit note is drafted.",
+                  "draft": "reply.md", "task": None, "question": None, "acted": [], "at": stamp(30)},
+                  sessions=[{"id": "fictional-session-1", "native_id": "fictional-native-1", "runtime": "demo", "title": "Invoice question", "updated_at": stamp(30), "live": False}]),
+        _workitem("b2c3d4e5-0000-4000-8000-000000000002", "inbox-connections", "Review meeting at 15:00 with the fictional platform team",
+                  "connections", "googlecalendar", "new", {"kind": "connection", "key": "connection:googlecalendar:upcoming:ev-7",
+                  "connection": {"toolkit": "googlecalendar", "type": "upcoming", "event": "ev-7"}},
+                  {"ts": stamp(12), "kind": "googlecalendar.upcoming", "url": "https://calendar.example.invalid/ev-7", "link": {"view": "connectors"}, "toolkit": "googlecalendar"}),
+        _workitem("c3d4e5f6-0000-4000-8000-000000000003", "aurora-console", "New commits fetched: fictional-workspace/aurora-console",
+                  "projects", "aurora-console", "running", {"kind": "sharing", "key": "sharing:fetched:fictional-workspace/aurora-console:" + stamp(5),
+                  "sharing": {"repo": "fictional-workspace/aurora-console", "event": "fetched"}},
+                  {"ts": stamp(5), "kind": "sharing.fetched", "url": None, "link": {"view": "sharing", "project": "aurora-console"}},
+                  claim={"session_id": "fictional-session-2", "runtime": "demo", "started_at": stamp(3), "live": True}, session=running,
+                  sessions=[{"id": "fictional-session-2", "native_id": "fictional-native-2", "runtime": "demo", "title": "New commits fetched", "updated_at": stamp(1), "live": True}]),
+        _session_row("fictional-session-3", "aurora-console", "Fix the flaky restart test", "projects", "aurora-console", True),
+        _workitem("e5f6a7b8-0000-4000-8000-000000000005", "orbit-api", "Issue #12 in orbit-api: Flaky restart test",
+                  "issues", "fictional-workspace/orbit-api", "failed", {"kind": "github", "key": None,
+                  "github": {"repo": "fictional-workspace/orbit-api", "number": 12, "node_id": "I_fictional12"}},
+                  {"ts": stamp(25), "kind": "issue.open", "url": "https://github.com/fictional-workspace/orbit-api/issues/12", "link": {"view": "projects", "project": "orbit-api"}},
+                  session=failed,
+                  sessions=[{"id": "fictional-session-4", "native_id": "fictional-native-4", "runtime": "demo", "title": "Issue #12", "updated_at": stamp(19), "live": False}]),
+        _workitem("f6a7b8c9-0000-4000-8000-000000000006", "inbox-agents", "The release checklist is ready for review",
+                  "agents", "demo", "closed", {"kind": "post", "key": None, "post": {"agent": "demo", "kind": "note"}},
+                  {"ts": stamp(300), "kind": "note", "url": None, "link": {"project": "launch-studio", "path": "copy/release-notes.md"}},
+                  outcome={"kind": "handled", "summary": "Filed under the launch notes; nothing to decide.", "draft": None, "task": None, "question": None, "acted": [], "at": stamp(280)},
+                  updated_at=stamp(280)),
+        _session_row("fictional-session-5", "launch-studio", "Draft the launch announcement", "agents", "demo", False),
+    ]
+
+
+_INBOX_STATES = {"open": {"new", "running", "waiting", "failed"}, "active": {"running"}, "waiting": {"waiting"},
+                 "closed": {"closed"}, "all": {"new", "running", "waiting", "failed", "closed"}}
+_INBOX_ENTITIES = {
+    "projects": [(pid, name) for pid, name, *_ in PROJECTS[:4]],
+    "agents": [("demo", "demo")],
+    "connections": [("gmail", "gmail"), ("googlecalendar", "googlecalendar")],
+    "issues": [("fictional-workspace/orbit-api", "fictional-workspace/orbit-api")],
+}
+
+
+def _counts(rows):
+    counts = {"new": 0, "running": 0, "waiting": 0, "failed": 0, "closed": 0}
+    for row in rows:
+        counts[row["state"]] += 1
+    return counts
+
+
+def inbox(section=None, state="open"):
+    """GET /api/inbox: the rows of one section (or every section) in one state, plus the summary."""
+    rows = inbox_rows()
+    wanted = _INBOX_STATES.get(state, _INBOX_STATES["open"])
+    sections = []
+    for sid, label in (("connections", "Connections"), ("projects", "Projects"), ("issues", "Issues"), ("agents", "Agents")):
+        mine = [row for row in rows if row["section"] == sid]
+        entities = [{"id": eid, "label": elabel, "counts": _counts([row for row in mine if row["entity"] == eid])}
+                    for eid, elabel in _INBOX_ENTITIES[sid]]
+        sections.append({"id": sid, "label": label, "counts": _counts(mine), "entities": entities})
+    listed = [row for row in rows if (not section or row["section"] == section) and row["state"] in wanted]
+    return {"schema": 1, "generated_at": stamp(), "runner": {"enabled": True}, "sections": sections,
+            "rows": listed, "count": len(listed)}
+
+
+def inbox_item(project_id, workitem_id):
+    """GET /api/inbox/{project_id}/{workitem_id}: the row with its sidecars, or None."""
+    row = next((row for row in inbox_rows() if row["kind"] == "workitem" and row["id"] == workitem_id and row["project_id"] == project_id), None)
+    if row is None:
+        return None
+    bodies = {"gmail.unread": "Hi, the June invoice shows 12 seats but we have 10.\n\nCould you reissue it?",
+              "googlecalendar.upcoming": "15:00 to 15:30, fictional platform team. Agenda: the rollout schedule.",
+              "sharing.fetched": "2 commits on main: Clarify the project review checklist; Record the first milestone.",
+              "issue.open": "labels: bug · assignees: you\n\nThe restart test fails one run in five on the shared runner.",
+              "note": "The checklist in copy/release-notes.md is complete; every item has an owner."}
+    fact = dict(row["fact"], title=row["title"], body=bodies.get(row["fact"]["kind"], ""), key=row["source"].get("key"),
+                section=row["section"], entity=row["entity"])
+    session = row["session"]
+    running = row["state"] == "running"
+    return dict(row, fact=fact, running=running, can_reply=True, can_send=bool(row["outcome"] and row["outcome"]["kind"] == "reply_drafted"),
+                transcript={"session_id": session["session_id"], "native_session_id": session["native_session_id"]} if session else None,
+                policy={"schema": 1, "sessions": {"mode": "auto" if row["section"] == "connections" else "manual", "kinds": [],
+                        "agent_type": "inbox-item", "runtime": None, "max_concurrent": 2, "max_per_hour": 20, "timeout_s": 300, "act": True},
+                        "retention_days": 30},
+                workitem={"id": row["id"], "title": row["title"], "status": row["status"], "state_reason": row["state_reason"],
+                          "assignee": None, "labels": ["inbox", row["section"]], "runtime": "inbox", "source": row["source"],
+                          "links": {"session_ids": [s["id"] for s in row["sessions"]]}})
+
+
+def transcript(session_id):
+    """GET /api/sessions/{session_id}/transcript: {title, messages:[{id, role, content}]}, or None."""
+    session = INBOX_SESSIONS.get(session_id)
+    if session is None:
+        return None
+    return {"title": session["title"], "messages": [dict(message) for message in session["messages"]]}

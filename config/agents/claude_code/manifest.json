@@ -36,7 +36,8 @@
     "code-writer": "/code-writer",
     "reviewer": "/reviewer",
     "debugger": "/debugger",
-    "agno-agentic-backend": "/agno-agentic-backend"
+    "agno-agentic-backend": "/agno-agentic-backend",
+    "inbox-item": "/inbox-item"
   },
   "flags": {
     "dangerously_skip_permissions": true,

@@ -210,7 +210,11 @@ def load_all_sessions() -> list[dict]:
 
             sessions.append({
                 "id": session_id,
-                "project_id": None,
+                # The project the row was found under, so a caller can group
+                # sessions by project without re-scanning the indexes.
+                "project_id": agent_name,
+                "backend": backend or None,
+                "native_session_id": meta.get("nativeSessionId") or None,
                 "parent_id": None,
                 "slug": None,
                 "agent": effective_agent,

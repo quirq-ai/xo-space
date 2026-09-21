@@ -58,8 +58,8 @@ await context.route('**/*',async route=>{
 const groups={projects:[['dashboard','overview','Overview'],['project-list','data/list','List'],['graph','data/graph','Graph'],
   ['tree','data/tree','Tree'],['time','timeline','Timeline'],['project-manage','manage','Manage']],
   agents:['overview','sessions','tools','models','trends'].map(slug=>['agents-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
-  inbox:[...['items','connections','jobs','activity'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
-    ['inbox-sharing-activity','sharing-activity','Sharing activity'],['sharing','sharing','Sharing']]};
+  inbox:[['inbox-items','items','Inbox'],...['jobs','activity'].map(slug=>['inbox-'+slug,slug,slug[0].toUpperCase()+slug.slice(1)]),
+    ['sharing','sharing','Sharing']]};
 const defaults={projects:'projects/overview',agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace'};
 const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.inbox,setup:defaults.setup,'setup/projects':'projects/manage',
   dashboard:'projects/overview',list:'projects/data/list',graph:'projects/data/graph',tree:'projects/data/tree',sharing:'inbox/sharing','projects/sharing':'inbox/sharing',
@@ -67,7 +67,7 @@ const aliases={projects:defaults.projects,agents:defaults.agents,inbox:defaults.
   'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
   'projects/graph':'projects/data/graph','projects/tree':'projects/data/tree',
   time:'projects/timeline',timeline:'projects/timeline',sessions:'agents/overview',
-  connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
+  connectors:'setup/connections','setup/connectors':'setup/connections','inbox/connections':'setup/connections',secrets:'setup/secrets',quirq:'setup/server/details'};
 const checked=text=>{report.checks.push(text);console.log(text);};
 async function expectRoute(route){
   await page.waitForURL('**/#/'+route);

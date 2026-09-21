@@ -190,3 +190,27 @@
 .conn-poll-status{margin-top:4px;font:400 12px var(--sans);color:var(--ink-3);line-height:1.5;word-break:break-word}
 .conn-poll-status.is-error{color:#e1937d}
 .conn-poll-acts{display:flex;gap:8px;margin-top:6px}
+
+/* Polled apps: the list above the connector groups on Setup > Connections. One
+   row per app the poller watches: name and account, collectors and cadence,
+   the last poll or its error, Poll now and Configure. */
+.conn-polled{border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2)}
+.conn-polled-state{margin:0;padding:9px 14px;font:400 12px/1.5 var(--sans);color:var(--ink-3)}
+.conn-polled-summary{margin:0;padding:9px 14px;font:600 11px/1 var(--sans);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-3)}
+.conn-polled-row{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) minmax(0,1fr) auto;
+  align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line-soft);font-size:12.5px}
+.conn-polled-row b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conn-polled-acct{display:inline-block;margin-left:8px;max-width:200px;vertical-align:bottom;
+  font:400 12px var(--sans);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
+.conn-polled-meta{font:400 12px var(--sans);color:var(--ink-3);min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.conn-polled-meta.is-error{color:#e1937d}
+.conn-polled-acts{display:flex;gap:6px;justify-content:flex-end}
+.conn-connectors-host{margin-top:30px}
+@media (max-width:800px){
+  .conn-polled-row{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+  .conn-polled-row b{grid-column:1}
+  .conn-polled-acts{grid-column:2;grid-row:1}
+  .conn-polled-row .conn-polled-meta{grid-column:1 / -1}
+}

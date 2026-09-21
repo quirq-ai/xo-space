@@ -26,7 +26,8 @@ http://${HOST:-localhost}:${PORT:-5002}
 Read this file top to bottom on first contact: the four parts below are all here in full, including todo discipline, which every session needs. Three reference files hold detail you only reach for situationally:
 
 - **`references/todos-http-api.md`**: the todo HTTP endpoint schemas. Every runtime needs this, including runtimes with a native todo tool of their own; read it the first time you record a todo in a session (Part 3).
-- **`references/inbox-http-api.md`**: the Space Inbox endpoints. Read it when you have something a person should look at (a question, a finding, a request, a result) and want it to land in the workspace Inbox instead of a transcript.
+- **`references/work-http-api.md`**: the Work endpoints (`POST /api/feed`) and the loop an agent is part of: claim a work item, record todos, ask the person, close it. Read it when you have something a person should look at (a question, a finding, a request, a result) and want it to land in the Space's Inbox instead of a transcript.
+- **`references/inbox-http-api.md`**: the Inbox over work items: post a fact, list the rows by section and state, read one item, reply, archive.
 - **`references/backup-restore.md`**: the GitHub-backed backup/restore/sync API. Read it when the user asks to back up, save, snapshot, sync, push, restore, pull, download, recover, or migrate projects.
 
 Keeping these out of the main file means a routine session doesn't drag endpoint schemas or the entire backup API into context.
@@ -136,7 +137,7 @@ So: use the native tool if it helps you think, but a step is not recorded until 
 
 The todo list is the **live** view of in-flight work. Past, finished work belongs in `PROGRESS.md` at session close, not as `completed`-but-still-listed todos; see AGENTS.md §6.
 
-A `blocked` todo surfaces in the Space Inbox tab by itself. Anything else a person should look at (a question, a finding, a request) goes there through `POST /api/inbox`: see **`references/inbox-http-api.md`**.
+A `blocked` todo surfaces in the Space's Inbox (the Work tab) by itself. Anything else a person should look at (a question, a finding, a request) goes there through `POST /api/feed` (or the older `POST /api/inbox`): see **`references/work-http-api.md`**.
 
 ---
 

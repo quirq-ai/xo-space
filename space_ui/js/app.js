@@ -1,29 +1,30 @@
 /* Entry point. Adding a view = create js/views/<name>.js exporting the view
    contract (see core/registry.js), then import + register it here: no
    bundler, so no file globbing; this import list is the one manual step. */
-import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260915-typesync1';
+import {registerView,startRegistry,switchTo,refreshCurrentView} from './core/registry.js?v=20260921-work3';
 import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
-import {initSectionNav} from './core/section-nav.js?v=20260915-agents2';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260915-agents2';
-import {initPreview} from './core/preview.js?v=20260915-agents2';
-import {initCommandPalette} from './core/command-palette.js?v=20260916-jobs3';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260915-footer1';
-import {createAgentViews} from './views/sessions.js?v=20260915-footer1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
-import projectsView from './views/projects.js?v=20260918-copypath1';
-import projectManageView from './views/project-manage.js?v=20260915-agents2';
-import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260918-copypath1';
+import {initSectionNav} from './core/section-nav.js?v=20260921-work2';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260921-work2';
+import {initPreview} from './core/preview.js?v=20260921-work2';
+import {initCommandPalette} from './core/command-palette.js?v=20260921-work2';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260921-work2';
+import {createAgentViews} from './views/sessions.js?v=20260921-work2';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260921-work3';
+import {createActivityViews} from './views/inbox-activity.js?v=20260921-work2';
+import workItemView from './views/work-item.js?v=20260921-work3';
+import projectsView from './views/projects.js?v=20260921-work2';
+import projectManageView from './views/project-manage.js?v=20260921-work2';
+import treeView from './views/tree.js?v=20260921-work2';
+import sharingView from './views/sharing.js?v=20260921-work2';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260916-jobs3';
+import wikiView from './views/wiki.js?v=20260921-work3';
 import quirqView from './views/quirq.js?v=20260915-data1';
-import {createSetupViews} from './views/setup.js?v=20260921-branding2';
+import {createSetupViews} from './views/setup.js?v=20260922-work4';
 import {loadBranding} from './core/branding.js?v=20260921-branding1';
-import connectorsView from './views/connectors.js?v=20260917-byok1';
+import connectionsView from './views/connections.js?v=20260921-work2';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
@@ -75,6 +76,7 @@ try{
   registerView(timeView);
   createAgentViews().forEach(registerView);
   createInboxViews().forEach(registerView);
+  registerView(workItemView);
   createActivityViews().forEach(registerView);
   registerView(projectsView);
   registerView(projectManageView);
@@ -82,7 +84,7 @@ try{
   registerView(sharingView);
   registerView(wikiView);
   registerView(quirqView);
-  createSetupViews(connectorsView).forEach(registerView);
+  createSetupViews(connectionsView).forEach(registerView);
   startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
 }catch(err){console.error('Space registry failed to start:',err);}
 

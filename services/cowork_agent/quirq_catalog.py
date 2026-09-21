@@ -241,7 +241,9 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         if relative_path == "projects":
             return "Per-project history keyed by project.json:pid, the Space timeline, and the watcher's reading positions"
         if relative_path == "inbox":
-            return "The Space Inbox"
+            return "The Space Inbox: the feeders' ledger and the per-section session policies"
+        if relative_path == "inbox/policy":
+            return "Per-section session policies for the Inbox"
         if relative_path == "sharing":
             return "Shared repositories this machine has seen: bookmarks and removal markers"
         if relative_path == "usage":
@@ -281,8 +283,10 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Polled connection: what to collect, how often, and what arrived"
         return "Directory"
     name = Path(relative_path).name
-    if relative_path == "inbox/inbox.json":
-        return "The Space Inbox: items, their seen/done state, and feeder cursors; hand-editable"
+    if relative_path == "inbox/ledger.json":
+        return "The Inbox feeders' ledger: the cursors per feeder and the source switches; hand-editable"
+    if relative_path.startswith("inbox/policy/"):
+        return "One Inbox section's session policy: mode, kinds, caps, act, retention"
     if relative_path == "scheduler/jobs.json":
         return "Saved commands: arguments, environment overrides, descriptions, timeouts, and optional intervals"
     if relative_path == "scheduler/state.json":

@@ -3,7 +3,7 @@
 export const PAGE_ROUTES={dashboard:'projects/overview',projects:'projects/data/list',
   graph:'projects/data/graph',tree:'projects/data/tree',sharing:'inbox/sharing',time:'projects/timeline',manage:'projects/manage',
   agents:'agents/overview',inbox:'inbox/items',setup:'setup/workspace',
-  connectors:'setup/connectors',secrets:'setup/secrets',quirq:'setup/server/details'};
+  connectors:'setup/connections',secrets:'setup/secrets',quirq:'setup/server/details'};
 export const routeFor=id=>'#/'+(PAGE_ROUTES[id]||id);
 export const projectPageId=id=>id==='projects'?'project-list':id==='manage'?'project-manage':id;
 export const projectPageSelector=id=>['project-list','graph','tree'].includes(projectPageId(id))

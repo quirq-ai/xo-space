@@ -17,6 +17,7 @@
   },
   "oneOf": [
     { "$ref": "#/definitions/project_created" },
+    { "$ref": "#/definitions/inbox_item" },
     { "$ref": "#/definitions/session_started" },
     { "$ref": "#/definitions/session_closed" },
     { "$ref": "#/definitions/todo_added" },
@@ -40,6 +41,7 @@
   ],
   "definitions": {
     "project_created":    { "properties": { "type": { "const": "project.created" } } },
+    "inbox_item":         { "description": "An Inbox work item's session life (docs/work-and-workitems.md section 18): kind is the section, title the work item's title, status the session status or the outcome kind, workitem_id the work item. Written by services/work/items.py to the project's timeline and the Space timeline.", "properties": { "type": { "enum": ["inbox.item.started", "inbox.item.finished", "inbox.item.failed"] }, "workitem_id": { "type": "string" }, "kind": { "type": "string" }, "title": { "type": "string" }, "status": { "type": "string" }, "session_id": { "type": "string" } }, "required": ["workitem_id"] },
     "session_started":    { "properties": { "type": { "const": "session.started" }, "session_id": { "type": "string" } }, "required": ["session_id"] },
     "session_closed":     { "properties": { "type": { "const": "session.closed" }, "session_id": { "type": "string" }, "outcome": { "type": "string" } }, "required": ["session_id"] },
     "todo_added":         { "properties": { "type": { "const": "todo.added" }, "session_id": { "type": "string" }, "todo": { "type": "object" } } },

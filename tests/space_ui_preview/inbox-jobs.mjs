@@ -35,10 +35,30 @@ const seeded=[job('manual','Manual command',null),job('half-minute','Check relea
   {...job('hourly','Build reference catalog',3600),running:true,running_since:'2026-09-14T10:00:00Z'},
   job('daily','Daily workspace summary',86400)];
 let jobs=structuredClone(seeded);
-const inbox=[{id:'release',title:'Release handoff',kind:'note',source:'agent',status:'seen',
-  ts:'2026-09-14T10:00:00Z',body:Array.from({length:45},(_,i)=>`Fictional handoff detail ${i+1}`).join('\n')},
-  {id:'new-issue',title:'Improve the guide',kind:'issue',source:'issues',status:'new',
-    ts:'2026-09-14T10:00:00Z',body:'Review the fictional navigation guide.'}];
+/* the Inbox over work items and sessions: the sections summary plus the rows
+   of the tab and state asked for (the shapes of GET /api/inbox) */
+const inboxRows=[
+  {kind:'workitem',id:'release',project_id:'inbox-agents',pid:'pid-agents',title:'Release handoff',section:'agents',entity:'demo',state:'new',status:'open',
+    source:{kind:'post',key:null,post:{agent:'demo',kind:'note'}},fact:{ts:'2026-09-14T10:00:00Z',kind:'note',url:null,link:null},
+    claim:null,session:null,outcome:null,sessions:[],created_at:'2026-09-14T10:00:00Z',updated_at:'2026-09-14T10:00:00Z'},
+  {kind:'workitem',id:'new-issue',project_id:'aurora-console',pid:'pid-aurora',title:'Improve the guide',section:'issues',entity:'fictional-workspace/aurora-console',state:'waiting',status:'open',
+    source:{kind:'github',key:null,github:{repo:'fictional-workspace/aurora-console',number:7}},fact:{ts:'2026-09-14T10:00:00Z',kind:'issue.open',url:'https://github.com/fictional-workspace/aurora-console/issues/7',link:{view:'projects',project:'aurora-console'}},
+    claim:null,session:{session_id:'fictional-session-7',runtime:'demo',attempt:1,exit:{status:'ok',message:null}},
+    outcome:{kind:'task_proposed',summary:'A task for the guide.',draft:null,task:{title:'Rewrite the guide'},question:null,acted:[],at:'2026-09-14T10:05:00Z'},
+    sessions:[],created_at:'2026-09-14T10:00:00Z',updated_at:'2026-09-14T10:05:00Z'},
+];
+const INBOX_STATES={open:['new','running','waiting','failed'],active:['running'],waiting:['waiting'],closed:['closed'],all:['new','running','waiting','failed','closed']};
+function inboxAnswer(section,state){
+  const wanted=INBOX_STATES[state]||INBOX_STATES.open;
+  const count=rows=>({new:0,running:0,waiting:0,failed:0,closed:0,...Object.fromEntries(['new','running','waiting','failed','closed'].map(k=>[k,rows.filter(r=>r.state===k).length]))});
+  const sections=[['connections','Connections'],['projects','Projects'],['issues','Issues'],['agents','Agents']].map(([id,label])=>{
+    const mine=inboxRows.filter(r=>r.section===id);
+    const entities=[...new Set(mine.map(r=>r.entity))].map(e=>({id:e,label:e,counts:count(mine.filter(r=>r.entity===e))}));
+    return{id,label,counts:count(mine),entities};
+  });
+  const rows=inboxRows.filter(r=>(!section||r.section===section)&&wanted.includes(r.state));
+  return{schema:1,generated_at:'2026-09-14T10:00:00Z',runner:{enabled:true},sections,rows,count:rows.length};
+}
 const send=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url());
@@ -61,7 +81,7 @@ await context.route('**/*',async route=>{
     toolkit:'calendar',display_name:'Calendar',configured:true,connected_here:true,enabled:true,
     interval_s:900,collectors:['events'],last_poll_at:'2026-09-14T10:00:00Z',last_error:null,
   }]});
-  if(url.pathname==='/api/inbox')return send(route,{items:inbox,counts:{new:1,seen:1,done:0},total:2});
+  if(url.pathname==='/api/inbox')return send(route,inboxAnswer(url.searchParams.get('section'),url.searchParams.get('state')||'open'));
   await route.continue();
 });
 const rows=page.locator('.inb-job-row');
@@ -73,24 +93,17 @@ async function expectCount(count){await page.waitForFunction(count=>document.que
 try{
   await page.goto(origin+'/space/#/inbox/'+(captureOnly?'jobs':'items'),{waitUntil:'domcontentloaded'});
   if(!captureOnly){
+  await page.locator('.inb-tabs [data-section="agents"]').click();
   await page.locator('.inb-row').first().waitFor();
   assert.equal(reads.filter(read=>read.path==='/api/schedules').length,0,'Items loads independently of Jobs');
   const countSummary=await page.locator('.inb-sum').textContent();
   await page.locator('#view-search').fill('handoff');
   assert.equal(await page.locator('.inb-row').count(),1);
   assert.equal(await page.locator('.inb-sum').textContent(),countSummary);
-  assert.equal(await page.locator('[data-act="mark-all"]').textContent(),'Mark all loaded seen');
-  await page.locator('[data-act="toggle"][data-id="release"]').click();
-  await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop=100);
-  const savedScroll=await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop);
-  await page.locator('[data-act="toggle"][data-id="release"]').evaluate(el=>window.retainedInboxHead=el);
-  await inboxPage('connections').click();
-  await page.locator('.inb-conn-row').waitFor();
-  assert.equal(await page.locator('[data-act="conns-toggle"]').getAttribute('aria-expanded'),'true');
-  assert.equal(await page.locator('.inb-items-page').isVisible(),false);
+  await page.locator('[data-act="open"][data-id="release"]').evaluate(el=>window.retainedInboxHead=el);
   await inboxPage('jobs').click();await initial.arrived.promise;
   assert.match(await page.locator('.inb-jobs').textContent(),/Loading jobs/);
-  assert.equal(await page.locator('.inb-connections-page').isVisible(),false);
+  assert.equal(await page.locator('.inb-items-page').isVisible(),false);
   assert.equal(await page.locator('#view-search').isVisible(),false,'Item search is absent from Jobs');
   initial.release.resolve();await expectCount(5);await settled();
   assert.match(await item('manual').textContent(),/One time[\s\S]*Runs when you click Run now/,'Manual jobs are listed');
@@ -101,15 +114,14 @@ try{
   assert.equal(await item('hourly').locator('[data-act="job-run"]').isDisabled(),true,'A running job cannot be started again');
   assert.match(await item('daily').textContent(),/Every day at \d\d:\d\d/);
   assert.match(await item('half-minute').textContent(),/Next due/);
-  assert.equal(await page.evaluate(()=>document.querySelector('[data-act="toggle"][data-id="release"]')===window.retainedInboxHead),true);
+  assert.equal(await page.evaluate(()=>document.querySelector('[data-act="open"][data-id="release"]')===window.retainedInboxHead),true);
   jobs.find(job=>job.id==='hourly').running=false;
   const beforePoll=Date.now();
   await page.waitForFunction(()=>!document.querySelector('[data-job-id="hourly"] .is-running'),null,{timeout:7000});
   assert.ok(Date.now()-beforePoll>=2000,'Running scheduled jobs refresh on the 3s poll');
-  assert.equal(await page.evaluate(()=>document.querySelector('[data-act="toggle"][data-id="release"]')===window.retainedInboxHead),true,'Jobs polling does not rebuild Inbox items');
+  assert.equal(await page.evaluate(()=>document.querySelector('[data-act="open"][data-id="release"]')===window.retainedInboxHead),true,'Jobs polling does not rebuild Inbox items');
   await inboxPage('items').click();
   await page.locator('.inb-items-page').waitFor();
-  assert.equal(await page.locator('#inb-body-release .inb-text').evaluate(el=>el.scrollTop),savedScroll,'Item scroll survives time spent on Jobs');
   assert.equal(await page.locator('#view-search').inputValue(),'handoff');
   assert.equal(await page.locator('.inb-row').count(),1);
   assert.equal(await page.locator('.inb-sum').textContent(),countSummary);
@@ -189,8 +201,8 @@ try{
   assert.match(await page.locator('.inb-jobs-state.is-error').textContent(),/Could not load jobs/);
   assert.doesNotMatch(await page.locator('.inb-jobs').textContent(),/showing the last good read/);
   assert.equal(await rows.count(),0);
-  await inboxPage('items').click();await page.locator('.inb-row').first().waitFor();
-  assert.equal(await page.locator('.inb-row').count(),2,'Items remains available when Jobs fails');
+  await inboxPage('items').click();await page.locator('.inb-tabs [data-section="agents"]').click();await page.locator('.inb-row').first().waitFor();
+  assert.equal(await page.locator('.inb-row').count(),1,'Items remains available when Jobs fails');
   await inboxPage('jobs').click();await settled();
   failure=null;await refresh();await settled();await expectCount(5);
   assert.ok(reads.some(read=>read.path==='/api/schedules/half-minute/runs'));

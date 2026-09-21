@@ -10,7 +10,7 @@ const SETTINGS=[
   ['intelligence','Intelligence layer','Choose the agent for new chats','agent & access runtime cli install authentication','#runtime-agent'],
   ['intelligence','Activity sources','Choose which agent activity appears in Space','watcher sessions history automatic telemetry','#runtime-source-mode'],
   ['intelligence','Activity interval','Intelligence layer · Advanced','activity watcher polling seconds frequency','#runtime-interval'],
-  ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],
+  ['connections','Connections','Polled apps, account apps and integrations','connections connectors polling magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth permissions','#setup-connections-title'],
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
   ['commands','Jobs','Schedule commands, or save them to run when you choose','jobs commands scheduled manual interval timeout automation results output logs','#setup-commands-title'],
   ['server','Restart server','Apply saved changes','restart apply runtime','#setup-server-title'],

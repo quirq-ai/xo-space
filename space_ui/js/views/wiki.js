@@ -26,8 +26,8 @@ const GROUPS=[
     title:'Follow the work',
     topics:[
       {
-        id:'inbox',title:'Inbox',
-        summary:'Review incoming items, connections, jobs, activity and sharing. Mark items seen or done.',
+        id:'inbox',title:'Work',
+        summary:'Review the inbox, jobs, activity and sharing. Open an inbox item to read its session, reply, or archive it.',
         docs:'/space-walk/inbox',view:'inbox'
       },
       {
@@ -59,7 +59,7 @@ const GROUPS=[
       {
         id:'connectors',title:'Connectors',
         summary:'Connect services, choose the account enabled here, and control actions and polling.',
-        docs:'/space-walk/connectors',view:'setup/connectors'
+        docs:'/space-walk/connectors',view:'setup/connections'
       },
       {
         id:'contribute',title:'Contribute',

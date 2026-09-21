@@ -94,6 +94,7 @@ from services.cowork_agent.visualizer.workitems_store import (
     VALID_STATE_REASONS as _WORKITEM_STATE_REASONS,
     VALID_STATUSES as _WORKITEM_STATUSES,
     is_adopted as _is_adopted,
+    source_kind as _source_kind,
 )
 
 router = APIRouter()
@@ -539,20 +540,24 @@ def _coerce_workitem_choice(
 
 
 def _make_workitem_source(d: dict, *, workitem_id: str) -> WorkitemSource:
-    """Shape ``source`` for the wire."""
-    if not _is_adopted(d):
-        return WorkitemSource(kind="local")
-    ref = (d.get("source") or {}).get("github")
+    """Shape ``source`` for the wire: the kind, the dedup key, and the block
+    the kind names when the stored reference is well formed."""
+    kind = _source_kind(d)
+    stored = d.get("source") if isinstance(d.get("source"), dict) else {}
+    key = stored.get("key") if isinstance(stored.get("key"), str) and stored.get("key") else None
+    if kind == "local":
+        return WorkitemSource(kind="local", key=key)
+    ref = stored.get(kind)
     if isinstance(ref, dict):
         try:
-            return WorkitemSource(kind="github", github=ref)
+            return WorkitemSource(kind=kind, key=key, **{kind: ref})
         except ValidationError:
             pass
     logger.warning(
-        "workitem %s is adopted but its source.github reference is not "
-        "usable; serving the adoption without it.", workitem_id or "<no id>",
+        "workitem %s has source.kind %s but its source.%s reference is not "
+        "usable; serving the kind without it.", workitem_id or "<no id>", kind, kind,
     )
-    return WorkitemSource(kind="github")
+    return WorkitemSource(kind=kind, key=key)
 
 
 def _require_workitem(
@@ -1293,7 +1298,7 @@ async def project_workitem_assign(
         workitem_id=workitem_id,
         # The workitem's own kind, as stored — not "where the write went",
         # which is now always the same place.
-        kind="github" if _is_adopted(updated) else "local",
+        kind=_source_kind(updated),
         assignee=stored,
         assignees=[stored] if stored else [],
         # Nothing is outstanding: the file is the record and it is written.

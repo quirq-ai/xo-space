@@ -9,7 +9,8 @@ into them.
 ```
 ~/.quirq/
 ├── projects/      one folder per project, named by pid, plus the Space timeline
-├── inbox/         the Inbox
+├── inbox/         the Inbox's ledger (where the feeders stopped reading) and the session policy per section
+├── work/          the Work: one folder per page (inbox, live, history) for the person's own state
 ├── connections/   one folder per connection
 ├── scheduler/     saved commands and their run history
 ├── sharing/       shared repositories this machine has already seen
@@ -25,8 +26,9 @@ into them.
 
 | Folder | Files | Written by | Delete it and you lose |
 |---|---|---|---|
-| `projects/` | `<pid>/timeline.jsonl`, `<pid>/stats.json`, `<pid>/sessions/`, `<pid>/github/issues.json`, `<pid>/workitems/claims.json`; `timeline.jsonl` for the whole Space; `offsets.json` and `<source>-offsets.json`, where the watcher stopped reading | the watcher; the todo, workitem and claim APIs | history nothing can rebuild |
-| `inbox/` | `inbox.json` | `services/inbox/` | Inbox items and what you marked done |
+| `projects/` | `<pid>/timeline.jsonl`, `<pid>/stats.json`, `<pid>/sessions/`, `<pid>/github/issues.json`, `<pid>/workitems/claims.json`, `<pid>/workitems/<workitem-id>/fact.json`, `session.json`, `outcome.json`; `timeline.jsonl` for the whole Space; `offsets.json` and `<source>-offsets.json`, where the watcher stopped reading | the watcher; the todo, workitem and claim APIs; the Inbox (the fact as ingested and the runner's session and outcome, one folder per work item) | history nothing can rebuild |
+| `inbox/` | `ledger.json`, `policy/<section>.json` | `services/inbox/` (the ledger), `services/work/` (the policies) | where the feeders stopped reading and which sources are on; each section's session policy |
+| `work/` | `inbox/inbox.json`, `live/live.json`, `history/history.json` | `services/work/` | what you dismissed, acknowledged and promoted (inbox); which stream groups show (live); the watermark, pins and what agents posted (history) |
 | `connections/` | `accounts.json`; `<toolkit>/config.json`, `state.json`, `events.jsonl` | `services/connections/` | what each connection collected |
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |

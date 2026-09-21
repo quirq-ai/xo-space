@@ -1,19 +1,26 @@
+"""``routers/cowork_agent/bff/inbox.py``: the wire over ``services.inbox.service``
+(docs/work-and-workitems.md section 18). The service is patched for the
+shape tests; one pass runs the real service over a temp state root."""
 from __future__ import annotations
 
-import os
-import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from routers.cowork_agent.bff import bff_routers, inbox_router, project_sharing_router
 from routers.cowork_agent.bff import inbox as inbox_routes
 from services.inbox import service
+from services.work.store import WorkError
 
-ITEM = {"id": "deadbeef", "ts": "2026-09-10T12:00:00Z", "source": "api", "kind": "note", "title": "t",
-        "body": "", "project_id": None, "link": None, "status": "new", "key": None}
-LISTING = {"schema": 1, "updated_at": None, "counts": {"new": 1, "seen": 0, "done": 0}, "items": [ITEM]}
+from tests.inbox_harness import SampleRoot
+
+ROW = {"kind": "workitem", "key": "workitem:inbox-connections:aaaa", "id": "aaaa", "project_id": "inbox-connections",
+       "title": "t", "section": "connections", "entity": "gmail", "state": "new"}
+LISTING = {"schema": 1, "sections": [{"id": "connections", "label": "Connections", "counts": {"new": 1}, "entities": []}],
+           "rows": [ROW], "count": 1, "runner": {"enabled": True}}
+ITEM = "/api/inbox/inbox-connections/aaaa"
 
 
 def client() -> TestClient:
@@ -23,163 +30,129 @@ def client() -> TestClient:
 
 
 class InboxRoutesTests(unittest.TestCase):
-    def test_list_validates_status_in_the_handler_and_limit_by_query(self) -> None:
-        with patch.object(service, "list_items", return_value=LISTING) as li:
-            r = client().get("/api/inbox?status=bogus")
-            self.assertEqual(r.status_code, 400)
-            self.assertEqual(r.json()["detail"]["code"], "invalid_status")
-            self.assertEqual(client().get("/api/inbox?limit=0").status_code, 422)
-            self.assertEqual(client().get("/api/inbox?limit=501").status_code, 422)
-            li.assert_not_called()
+    def test_the_router_is_mounted_with_every_route_and_nothing_else(self) -> None:
+        self.assertIn(inbox_router, bff_routers)
+        self.assertLess(bff_routers.index(project_sharing_router), bff_routers.index(inbox_router))
+        methods = {(m, route.path) for route in inbox_routes.router.routes for m in route.methods}
+        self.assertEqual(methods, {
+            ("GET", "/api/inbox"), ("GET", "/api/inbox/sections"), ("PUT", "/api/inbox/sections/{section}"),
+            ("POST", "/api/inbox"), ("GET", "/api/inbox/{project_id}/{workitem_id}"),
+            ("POST", "/api/inbox/{project_id}/{workitem_id}/reply"), ("POST", "/api/inbox/{project_id}/{workitem_id}/start"),
+            ("POST", "/api/inbox/{project_id}/{workitem_id}/send"), ("POST", "/api/inbox/{project_id}/{workitem_id}/archive"),
+            ("POST", "/api/inbox/{project_id}/{workitem_id}/reopen"),
+        })
+        # the rows API of the first design is gone
+        self.assertEqual(client().patch("/api/inbox", json={"ids": ["a"], "status": "seen"}).status_code, 405)
+        self.assertEqual(client().delete("/api/inbox/deadbeef").status_code, 404)
+
+    def test_list_passes_the_filters_and_maps_errors(self) -> None:
+        with patch.object(service, "list_rows", return_value=LISTING) as lr:
             r = client().get("/api/inbox")
             self.assertEqual(r.status_code, 200)
-            self.assertEqual(r.json()["counts"]["new"], 1)
-            li.assert_called_with(status="open", limit=200)
-            for status in ("open", "done", "all"):
-                self.assertEqual(client().get(f"/api/inbox?status={status}&limit=500").status_code, 200)
-            li.assert_called_with(status="all", limit=500)
+            self.assertEqual(r.json()["rows"][0]["id"], "aaaa")
+            lr.assert_called_once_with(section=None, entity=None, state="open", limit=100)
+            client().get("/api/inbox?section=projects&entity=xo-space&state=closed&limit=500")
+            lr.assert_called_with(section="projects", entity="xo-space", state="closed", limit=500)
+            self.assertEqual(client().get("/api/inbox?limit=0").status_code, 422)
+            self.assertEqual(client().get("/api/inbox?limit=501").status_code, 422)
+        with patch.object(service, "list_rows", side_effect=WorkError("invalid_value", "state must be one of", 400)):
+            r = client().get("/api/inbox?state=bogus")
+            self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
+        with patch.object(service, "list_rows", side_effect=WorkError("invalid_section", "no", 404)):
+            self.assertEqual(client().get("/api/inbox?section=mail").status_code, 404)
+
+    def test_sections_and_policy(self) -> None:
+        with patch.object(service, "sections", return_value={"sections": [{"id": "connections"}], "runner": {"enabled": True}}):
+            self.assertEqual(client().get("/api/inbox/sections").json()["sections"][0]["id"], "connections")
+        with patch.object(service, "set_policy", return_value={"schema": 1}) as put:
+            r = client().put("/api/inbox/sections/issues", json={"sessions": {"mode": "auto", "kinds": ["issue.open"], "runtime": None}})
+            self.assertEqual(r.status_code, 200)
+            put.assert_called_once_with("issues", {"sessions": {"mode": "auto", "kinds": ["issue.open"], "runtime": None}})
+            self.assertEqual(client().put("/api/inbox/sections/issues", json={"items": {"unread": True}}).status_code, 422)
+            self.assertEqual(client().put("/api/inbox/sections/issues", json={"sessions": {"act": 1}}).status_code, 422)
+            self.assertEqual(client().put("/api/inbox/sections/issues", json={"odd": 1}).status_code, 422)
+        with patch.object(service, "set_policy", side_effect=WorkError("invalid_section", "no", 404)):
+            self.assertEqual(client().put("/api/inbox/sections/gmail", json={}).status_code, 404)
 
     def test_create_returns_201_and_maps_validation_codes(self) -> None:
-        with patch.object(service, "create_item", return_value=ITEM) as ci:
+        with patch.object(service, "create_post", return_value=ROW) as cp:
             r = client().post("/api/inbox", json={"title": "t", "link": {"view": "projects"}})
-        self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.json()["id"], "deadbeef")
-        ci.assert_called_once_with(title="t", body="", kind="note", source="api", project_id=None,
-                                   link={"view": "projects"}, url=None)
-        with patch.object(service, "create_item", return_value=ITEM) as ci:
-            r = client().post("/api/inbox", json={"title": "t", "url": "https://example.test/x"})
-        self.assertEqual(r.status_code, 201)
-        ci.assert_called_once_with(title="t", body="", kind="note", source="api", project_id=None,
-                                   link=None, url="https://example.test/x")
+            self.assertEqual((r.status_code, r.json()["id"]), (201, "aaaa"))
+            cp.assert_called_once_with(title="t", body="", kind="note", source="api", project_id=None,
+                                       link={"view": "projects"}, url=None)
+        self.assertEqual(client().post("/api/inbox", json={"body": "x"}).status_code, 422)
+        self.assertEqual(client().post("/api/inbox", json={"title": "t", "zzz": 1}).status_code, 422)
         for code in ("invalid_value", "invalid_project_id", "invalid_link"):
             with self.subTest(code=code):
-                with patch.object(service, "create_item", side_effect=service.InboxError(code, "bad")):
+                with patch.object(service, "create_post", side_effect=service.InboxError(code, "bad")):
                     r = client().post("/api/inbox", json={"title": "t"})
-                self.assertEqual(r.status_code, 400)
-                self.assertEqual(r.json()["detail"], {"code": code, "message": "bad"})
-        with patch.object(service, "create_item", return_value=ITEM) as ci:
-            self.assertEqual(client().post("/api/inbox", json={"title": "t", "extra": 1}).status_code, 422)
-            self.assertEqual(client().post("/api/inbox", json={"title": 7}).status_code, 422)
-            self.assertEqual(client().post("/api/inbox", json={}).status_code, 422)
-            ci.assert_not_called()
-
-    def test_create_and_list_through_the_real_service(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "QUIRQ_STATE_ROOT": tmp + "/.quirq"}):
-                service._reset_throttle()
-                c = client()
-                r = c.post("/api/inbox", json={"title": "t", "link": {"path": "../x"}})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_link"))
-                r = c.post("/api/inbox", json={"title": "t", "project_id": "a/b"})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_project_id"))
-                r = c.post("/api/inbox", json={"title": "   "})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
-                r = c.post("/api/inbox", json={"title": "hello", "body": "b", "kind": "note", "project_id": "p"})
-                self.assertEqual(r.status_code, 201)
-                item_id = r.json()["id"]
-                listing = c.get("/api/inbox").json()
-                self.assertEqual(listing["counts"], {"new": 1, "seen": 0, "done": 0})
-                self.assertEqual(listing["items"][0]["id"], item_id)
-                self.assertEqual(c.patch(f"/api/inbox/{item_id}", json={"status": "done"}).json()["status"], "done")
-                self.assertEqual(c.get("/api/inbox").json()["items"], [])
-                self.assertEqual(c.delete(f"/api/inbox/{item_id}").json(), {"item_id": item_id, "deleted": True})
-                service._reset_throttle()
-
-    def test_patch_and_delete_reject_malformed_ids_before_the_service(self) -> None:
-        with patch.object(service, "update_item") as up, patch.object(service, "delete_item") as de:
-            for bad in ("nope", "DEADBEEF", "deadbeef1", "deadbee", "dead-bee"):
-                with self.subTest(bad=bad):
-                    r = client().patch(f"/api/inbox/{bad}", json={"status": "seen"})
-                    self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "item_not_found"))
-                    r = client().delete(f"/api/inbox/{bad}")
-                    self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "item_not_found"))
-            up.assert_not_called()
-            de.assert_not_called()
-
-    def test_patch_maps_typed_errors_and_body_shape(self) -> None:
-        with patch.object(service, "update_item", side_effect=service.InboxError("item_not_found", "gone", 404)):
-            r = client().patch("/api/inbox/deadbeef", json={"status": "seen"})
-        self.assertEqual((r.status_code, r.json()["detail"]["code"]), (404, "item_not_found"))
-        with patch.object(service, "update_item", side_effect=service.InboxError("invalid_status", "bad")):
-            r = client().patch("/api/inbox/deadbeef", json={"status": "archived"})
-        self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_status"))
-        with patch.object(service, "update_item", return_value={**ITEM, "status": "seen"}) as up:
-            self.assertEqual(client().patch("/api/inbox/deadbeef", json={"status": "seen"}).json()["status"], "seen")
-            up.assert_called_once_with("deadbeef", "seen")
-            self.assertEqual(client().patch("/api/inbox/deadbeef", json={}).status_code, 422)
-            self.assertEqual(client().patch("/api/inbox/deadbeef", json={"status": "seen", "x": 1}).status_code, 422)
-
-    def test_patch_batch_maps_the_service_and_rejects_loose_bodies(self) -> None:
-        with patch.object(service, "update_many", return_value={"updated": 2, "missing": ["ffffffff"]}) as um:
-            r = client().patch("/api/inbox", json={"ids": ["deadbeef", "cafebabe", "ffffffff"], "status": "seen"})
-            self.assertEqual((r.status_code, r.json()), (200, {"updated": 2, "missing": ["ffffffff"]}))
-            um.assert_called_once_with(["deadbeef", "cafebabe", "ffffffff"], "seen")
-        for code in ("invalid_value", "invalid_status"):
-            with self.subTest(code=code):
-                with patch.object(service, "update_many", side_effect=service.InboxError(code, "bad")):
-                    r = client().patch("/api/inbox", json={"ids": ["deadbeef"], "status": "seen"})
                 self.assertEqual((r.status_code, r.json()["detail"]), (400, {"code": code, "message": "bad"}))
-        with patch.object(service, "update_many") as um:
-            for body in ({"ids": ["deadbeef"], "status": "seen", "x": 1},   # unknown key
-                         {"ids": "deadbeef", "status": "seen"},             # not a list
-                         {"ids": [7], "status": "seen"},                     # not strings
-                         {"ids": [None], "status": "seen"},
-                         {"ids": ["deadbeef"]},                              # no status
-                         {"status": "seen"},                                 # no ids
-                         {"ids": ["deadbeef"], "status": 3}):
-                with self.subTest(body=body):
-                    self.assertEqual(client().patch("/api/inbox", json=body).status_code, 422)
-            um.assert_not_called()
 
-    def test_patch_batch_through_the_real_service(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {"XO_PROJECTS_ROOT": tmp, "QUIRQ_STATE_ROOT": tmp + "/.quirq"}):
-                service._reset_throttle()
-                c = client()
-                a = c.post("/api/inbox", json={"title": "a"}).json()["id"]
-                b = c.post("/api/inbox", json={"title": "b"}).json()["id"]
-                r = c.patch("/api/inbox", json={"ids": [a, "ffffffff", b, "nope"], "status": "seen"})
-                self.assertEqual((r.status_code, r.json()), (200, {"updated": 2, "missing": ["ffffffff", "nope"]}))
-                r = c.patch("/api/inbox", json={"ids": [a, b], "status": "seen"})
-                self.assertEqual((r.status_code, r.json()), (200, {"updated": 0, "missing": []}), "idempotent")
-                self.assertEqual(c.get("/api/inbox").json()["counts"], {"new": 0, "seen": 2, "done": 0})
-                r = c.patch("/api/inbox", json={"ids": [], "status": "seen"})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
-                r = c.patch("/api/inbox", json={"ids": ["deadbeef"] * 501, "status": "seen"})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_value"))
-                r = c.patch("/api/inbox", json={"ids": [a], "status": "archived"})
-                self.assertEqual((r.status_code, r.json()["detail"]["code"]), (400, "invalid_status"))
-                self.assertEqual(c.patch("/api/inbox", json={"ids": [a], "status": "done", "x": 1}).status_code, 422)
-                # the single-item route is unchanged
-                self.assertEqual(c.patch(f"/api/inbox/{a}", json={"status": "done"}).json()["status"], "done")
-                self.assertEqual(c.get("/api/inbox?status=done").json()["items"][0]["id"], a)
-                service._reset_throttle()
+    def test_detail_and_the_actions(self) -> None:
+        with patch.object(service, "item_detail", return_value={"row": ROW, "running": False}):
+            self.assertEqual(client().get(ITEM).json()["row"]["id"], "aaaa")
+        with patch.object(service, "item_detail", side_effect=WorkError("workitem_not_found", "No such work item.", 404)):
+            self.assertEqual(client().get("/api/inbox/inbox-connections/nope").status_code, 404)
+        with patch.object(service, "reply", new=AsyncMock(return_value={"session_id": "s1"})) as reply:
+            r = client().post(ITEM + "/reply", json={"text": "Keep it short."})
+            self.assertEqual((r.status_code, r.json()["session_id"]), (202, "s1"))
+            reply.assert_awaited_once_with("inbox-connections", "aaaa", "Keep it short.")
+            self.assertEqual(client().post(ITEM + "/reply", json={}).status_code, 422)
+            self.assertEqual(client().post(ITEM + "/reply", json={"text": "x", "to": "y"}).status_code, 422)
+        with patch.object(service, "reply", new=AsyncMock(side_effect=WorkError("session_running", "wait", 409))):
+            self.assertEqual(client().post(ITEM + "/reply", json={"text": "x"}).status_code, 409)
+        with patch.object(service, "start", new=AsyncMock(return_value={"session_id": "s1", "attempt": 1})) as start:
+            self.assertEqual(client().post(ITEM + "/start").status_code, 202)
+            start.assert_awaited_once_with("inbox-connections", "aaaa", retry=False)
+            client().post(ITEM + "/start?retry=true")
+            start.assert_awaited_with("inbox-connections", "aaaa", retry=True)
+        with patch.object(service, "send", new=AsyncMock(return_value={"session_id": "s1"})) as send:
+            self.assertEqual(client().post(ITEM + "/send").status_code, 202)
+            send.assert_awaited_once_with("inbox-connections", "aaaa")
+        with patch.object(service, "send", new=AsyncMock(side_effect=WorkError("act_not_allowed", "no", 409))):
+            self.assertEqual(client().post(ITEM + "/send").status_code, 409)
+        with patch.object(service, "archive", return_value={**ROW, "state": "closed"}) as archive:
+            self.assertEqual(client().post(ITEM + "/archive").json()["state"], "closed")
+            archive.assert_called_once_with("inbox-connections", "aaaa", reason=None)
+            client().post(ITEM + "/archive", json={"reason": "not_planned"})
+            archive.assert_called_with("inbox-connections", "aaaa", reason="not_planned")
+            self.assertEqual(client().post(ITEM + "/archive", json={"why": "x"}).status_code, 422)
+        with patch.object(service, "reopen", return_value=ROW) as reopen:
+            self.assertEqual(client().post(ITEM + "/reopen").json()["state"], "new")
+            reopen.assert_called_once_with("inbox-connections", "aaaa")
 
-    def test_delete_is_idempotent_in_shape(self) -> None:
-        for deleted in (True, False):
-            with patch.object(service, "delete_item", return_value=deleted) as de:
-                r = client().delete("/api/inbox/deadbeef")
-            self.assertEqual(r.status_code, 200)
-            self.assertEqual(r.json(), {"item_id": "deadbeef", "deleted": deleted})
-            de.assert_called_once_with("deadbeef")
 
-    def test_router_is_registered_right_after_project_sharing(self) -> None:
-        from routers.cowork_agent.bff import bff_routers
-        from routers.cowork_agent.bff.project_sharing import router as sharing_router
-        self.assertEqual(bff_routers.index(inbox_routes.router), bff_routers.index(sharing_router) + 1)
-        paths = {route.path for route in inbox_routes.router.routes}
-        self.assertEqual(paths, {"/api/inbox", "/api/inbox/{item_id}"})
-        methods = {(m, route.path) for route in inbox_routes.router.routes for m in route.methods}
-        self.assertEqual(methods, {("GET", "/api/inbox"), ("POST", "/api/inbox"), ("PATCH", "/api/inbox"),
-                                   ("PATCH", "/api/inbox/{item_id}"), ("DELETE", "/api/inbox/{item_id}")})
-
-    def test_router_reuses_the_service_id_shape_and_list_statuses(self) -> None:
-        # one definition of each, owned by the service; the router never redefines them
-        self.assertIs(inbox_routes.ITEM_ID_RE, service.ID_RE)
-        self.assertIs(inbox_routes.LIST_STATUSES, service.LIST_STATUSES)
-        self.assertEqual(service.LIST_STATUSES, ("open", "done", "all"))
-        self.assertIsNotNone(service.ID_RE.fullmatch("deadbeef"))
-        self.assertIsNone(service.ID_RE.fullmatch("DEADBEEF"))
+class RealServiceTests(SampleRoot):
+    def test_post_list_detail_archive_and_reopen_through_the_real_service(self) -> None:
+        c = client()
+        r = c.post("/api/inbox", json={"title": "Which license?", "body": "MIT or Apache", "kind": "question", "source": "claude_code"})
+        self.assertEqual(r.status_code, 201)
+        row = r.json()
+        self.assertEqual((row["project_id"], row["section"], row["entity"], row["state"]), ("inbox-agents", "agents", "claude_code", "new"))
+        listing = c.get("/api/inbox?section=agents").json()
+        self.assertEqual([x["id"] for x in listing["rows"] if x["kind"] == "workitem"], [row["id"]])
+        agents = next(s for s in listing["sections"] if s["id"] == "agents")
+        self.assertEqual(agents["counts"]["new"], 1)
+        self.assertIn("claude_code", [e["id"] for e in agents["entities"]])
+        self.assertEqual(c.get("/api/inbox?section=agents&entity=nobody").json()["count"], 0)
+        detail = c.get(f"/api/inbox/{row['project_id']}/{row['id']}").json()
+        self.assertEqual(detail["fact"]["body"], "MIT or Apache")
+        self.assertIsNone(detail["session"])
+        self.assertEqual(detail["workitem"]["title"], "Which license?")
+        self.assertTrue(detail["can_reply"])
+        self.assertFalse(detail["can_send"])
+        self.assertEqual(c.get(f"/api/inbox/{row['project_id']}/00000000-0000-4000-8000-000000000009").status_code, 404)
+        self.assertEqual(c.get(f"/api/inbox/no-such-project/{row['id']}").status_code, 404)
+        closed = c.post(f"/api/inbox/{row['project_id']}/{row['id']}/archive", json={"reason": "not_planned"}).json()
+        self.assertEqual((closed["state"], closed["status"], closed["state_reason"]), ("closed", "closed", "not_planned"))
+        self.assertEqual(c.get("/api/inbox?section=agents&entity=claude_code").json()["count"], 0, "closed rows leave the open list")
+        self.assertEqual(c.get("/api/inbox?section=agents&entity=claude_code&state=closed").json()["count"], 1)
+        reopened = c.post(f"/api/inbox/{row['project_id']}/{row['id']}/reopen").json()
+        self.assertEqual((reopened["state"], reopened["state_reason"]), ("new", "reopened"))
+        policy = c.put("/api/inbox/sections/agents", json={"sessions": {"mode": "auto", "max_concurrent": 1}}).json()
+        self.assertEqual((policy["sessions"]["mode"], policy["sessions"]["max_concurrent"]), ("auto", 1))
+        sections = c.get("/api/inbox/sections").json()
+        self.assertEqual(next(s for s in sections["sections"] if s["id"] == "agents")["policy"]["sessions"]["mode"], "auto")
 
 
 if __name__ == "__main__":

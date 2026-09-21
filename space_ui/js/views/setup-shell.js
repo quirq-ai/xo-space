@@ -1,5 +1,5 @@
 /* Setup layout only. Section IDs and labels are shared with navigation. */
-import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260916-jobs3';
+import {SETUP_STEPS,SETUP_MANAGE} from '../core/setup-sections.js?v=20260922-work4';
 
 export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
@@ -72,8 +72,8 @@ export function renderSetupShell(root){
           <footer class="setup-step-footer"><a class="setup-secondary" href="#/projects/manage">Manage projects →</a></footer>
         </section>
 
-        <section class="setup-panel" id="setup-panel-connectors" aria-labelledby="setup-connectors-title" hidden>
-          <div id="setup-connectors"></div>
+        <section class="setup-panel" id="setup-panel-connections" aria-labelledby="setup-connections-title" hidden>
+          <div id="setup-connections"></div>
         </section>
 
         <section class="setup-panel" id="setup-panel-secrets" aria-labelledby="setup-secrets-title" hidden>

@@ -7,7 +7,7 @@ export const SETUP_STEPS=Object.freeze([
 ]);
 
 export const SETUP_MANAGE=Object.freeze([
-  section({id:'connectors',label:'Connectors',description:'Apps, access and polling',aliases:Object.freeze(['connectors'])}),
+  section({id:'connections',label:'Connections',description:'Polled apps, account apps and integrations',aliases:Object.freeze(['connectors','setup/connectors','inbox/connections'])}),
   section({id:'secrets',label:'Secrets',description:'Environment values',aliases:Object.freeze(['secrets'])}),
   section({id:'commands',label:'Jobs',description:'Scheduled and manual commands'}),
   section({id:'server',label:'Server',description:'Updates and restart'}),

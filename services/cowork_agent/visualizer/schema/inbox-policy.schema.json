@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/inbox-policy.schema.json",
+  "title": "xo inbox section policy (~/.quirq/inbox/policy/<section>.json)",
+  "description": "What a section of the Inbox does with its work items (docs/work-and-workitems.md section 18): whether and when a session starts, what a session may do, how long the sidecars of closed items stay. Written by services/work/items.py and hand-editable; a value out of range falls back to its default on read. Missing altogether, the defaults apply: connections start a session for every new item (mode auto), the other sections wait for a person (manual); every section drafts only.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "sessions": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "manual",
+            "auto"
+          ]
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "auto: only facts of these kinds start a session; empty means every kind"
+        },
+        "agent_type": {
+          "type": "string",
+          "default": "inbox-item"
+        },
+        "runtime": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "null = the active agent"
+        },
+        "max_concurrent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2
+        },
+        "max_per_hour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 20
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600,
+          "default": 300
+        },
+        "act": {
+          "type": "boolean",
+          "default": false,
+          "description": "may a session act on the source (send, label)?"
+        }
+      }
+    },
+    "retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365,
+      "default": 30,
+      "description": "the sidecars of a work item closed longer ago than this are removed; the work item stays"
+    }
+  }
+}

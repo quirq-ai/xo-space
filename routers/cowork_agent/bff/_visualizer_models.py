@@ -11,6 +11,7 @@ from services.cowork_agent.visualizer.peers_store import (
 )
 from services.cowork_agent.visualizer.todo_status import TodoStatus
 from services.cowork_agent.visualizer.workitems_store import (
+    VALID_SOURCE_KINDS as _WORKITEM_SOURCE_KINDS,
     VALID_STATE_REASONS as _WORKITEM_STATE_REASONS,
     VALID_STATUSES as _WORKITEM_STATUSES,
 )
@@ -459,15 +460,42 @@ class GithubRef(_ForbidExtra):
     url: str
 
 
+class ConnectionRef(_ForbidExtra):
+    """``source.connection``: the polled app's event this workitem was made from."""
+
+    toolkit: Optional[str] = None
+    type: Optional[str] = None
+    event: Optional[str] = None
+
+
+class SharingRef(_ForbidExtra):
+    """``source.sharing``: the relay transition this workitem was made from."""
+
+    repo: Optional[str] = None
+    event: Optional[str] = None
+
+
+class PostRef(_ForbidExtra):
+    """``source.post``: who posted this workitem through the Inbox API."""
+
+    agent: Optional[str] = None
+    kind: Optional[str] = None
+
+
 class WorkitemSource(_ForbidExtra):
     """
-    ``local`` or ``github``. ``github`` is populated only for an adopted item,
-    and only when the stored reference is well formed — see
-    ``_make_workitem_model``.
+    ``local``, ``github``, or one of the fed kinds (``connection``,
+    ``sharing``, ``post``). The block named by ``kind`` is populated only when
+    the stored reference is well formed: see ``_make_workitem_model``.
+    ``key`` is a fed item's dedup identity.
     """
 
-    kind: Literal["local", "github"]
+    kind: Literal[*sorted(_WORKITEM_SOURCE_KINDS)]
+    key: Optional[str] = None
     github: Optional[GithubRef] = None
+    connection: Optional[ConnectionRef] = None
+    sharing: Optional[SharingRef] = None
+    post: Optional[PostRef] = None
 
 
 class WorkitemLinks(_ForbidExtra):
@@ -698,7 +726,7 @@ class WorkitemAssignment(_ForbidExtra):
 
     project_id: str
     workitem_id: str
-    kind: Literal["local", "github"]
+    kind: Literal[*sorted(_WORKITEM_SOURCE_KINDS)]
     assignee: Optional[str] = None
     assignees: list[str] = []
     pending: bool = False

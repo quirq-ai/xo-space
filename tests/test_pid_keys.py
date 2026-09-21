@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 from services.cowork_agent.visualizer.ingest.events import TaskCreated
 from services.cowork_agent.visualizer.sinks import timeline
-from services.inbox import feeders, store
 
 PID = "7deb4a22-0789-497d-9399-a2272579fa06"
 SCHEMAS = Path(__file__).resolve().parents[1] / "services" / "cowork_agent" / "visualizer" / "schema"
@@ -86,30 +85,6 @@ class TimelineTests(_Sandbox):
         schema = json.loads((SCHEMAS / "timeline.schema.json").read_text(encoding="utf-8"))
         for line in self.read_lines(root):
             jsonschema.Draft7Validator(schema).validate(line)
-
-
-class InboxTests(_Sandbox):
-    def test_an_item_for_a_project_carries_its_pid(self) -> None:
-        self.project()
-        item = store.build_item(title="t", project_id="demo")
-        self.assertEqual(item["pid"], PID)
-        self.assertEqual(list(item).index("pid"), list(item).index("project_id") + 1)
-
-    def test_an_item_without_a_project_or_identity_has_no_pid(self) -> None:
-        self.assertIsNone(store.build_item(title="t")["pid"])
-        (self.base / "projects" / "bare").mkdir(parents=True)
-        self.assertIsNone(store.build_item(title="t", project_id="bare")["pid"])
-
-    def test_the_timeline_feeder_takes_the_pid_from_the_line(self) -> None:
-        item = feeders._timeline_item({
-            "ts": "2026-09-14T10:00:02.798Z", "type": "session.started", "pid": PID,
-            "session_id": "s1", "runtime": "claude_code", "project_id": "demo",
-        })
-        self.assertEqual((item["project_id"], item["pid"]), ("demo", PID))
-
-    def test_a_hand_edited_invalid_pid_reads_as_none(self) -> None:
-        raw = {"id": "deadbeef", "ts": "2026-09-14T10:00:00Z", "title": "t", "pid": "../escape"}
-        self.assertIsNone(store._normalize_item(raw, "2026-09-14T10:00:00Z")["pid"])
 
 
 if __name__ == "__main__":

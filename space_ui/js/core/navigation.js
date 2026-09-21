@@ -27,19 +27,24 @@ export const AGENT_PAGES=Object.freeze(pages('agents',[
   ['agents-trends','trends','Trends',['agents/tools','agents/models']],
   ['agents-configure','configure','Configure'],
 ]).map(page=>Object.freeze({...page,section:'agents'})));
+/* The Work tab keeps the `inbox` route family: stored Inbox links, the badge
+   and the API all name it, so only the labels moved. Connections (the polled
+   apps and the connectors) is a Setup section, `setup/connections`, whose
+   aliases catch the former `inbox/connections` and `setup/connectors` links. */
 export const INBOX_PAGES=Object.freeze(pages('inbox',[
-  ['inbox-items','items','Items'],
-  ['inbox-connections','connections','Connections'],
+  ['inbox-items','items','Inbox'],
   ['inbox-jobs','jobs','Jobs'],
   ['inbox-activity','activity','Activity'],
-  ['inbox-sharing-activity','sharing-activity','Sharing activity'],
   ['sharing','sharing','Sharing',['sharing','projects/sharing']],
-]).map(page=>Object.freeze({...page,section:['inbox-items','inbox-connections','inbox-jobs'].includes(page.id)?'inbox':page.id})));
+]).map(page=>Object.freeze({...page,section:['inbox-items','inbox-jobs'].includes(page.id)?'inbox':page.id})));
+/* One Inbox item as a conversation (views/work-item.js). A Work page with no
+   link of its own: the Inbox row's Open hands it the selection. */
+export const INBOX_ITEM_PAGE=Object.freeze({id:'inbox-item',route:'inbox/item',label:'Item',aliases:Object.freeze([]),parent:'inbox',nav:false,section:'inbox-item'});
 
 export const PRIMARY_TABS=Object.freeze([
   {id:'projects',label:'Projects',defaultView:'projects/overview'},
   {id:'agents',label:'Agents',defaultView:'agents/overview',aliases:['sessions']},
-  {id:'inbox',label:'Inbox',defaultView:'inbox/items'},
+  {id:'inbox',label:'Work',defaultView:'inbox/items'},
   {id:'setup',label:'Setup',defaultView:'setup/workspace'},
 ].map(tab=>Object.freeze(tab)));
 

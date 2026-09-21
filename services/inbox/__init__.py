@@ -1,19 +1,29 @@
-"""Space inbox: one human-readable ``~/.quirq/inbox/inbox.json`` holding
-information that arrived in the workspace, its seen/done state, and the
-feeder cursors.
+"""Space inbox: what arrived in the workspace, as work items with a session
+each (docs/work-and-workitems.md section 18).
 
-Three modules, one router-facing surface:
+Since 2026-09-21 the Inbox keeps no rows of its own. A fact that arrives
+(a mail, a calendar event, a GitHub issue, a share event, an agent's post)
+becomes a work item in a project at ingestion, the watcher's session data
+and the runner's sidecars are joined to it on read, and the tabs of the
+Inbox are facets over that one list.
 
-* :mod:`store`    the file (normalisation, validation, retention, locked
-                  read-modify-write, keyed upserts).
-* :mod:`feeders`  best-effort readers that turn the workspace timeline,
-                  per-project todos, the sharing relay, each project's
-                  GitHub issue mirror and the per-toolkit ``events.jsonl``
-                  of polled connections into items.
+Four modules, one router-facing surface:
+
+* :mod:`ledger`   ``~/.quirq/inbox/ledger.json``: the feeders' cursors and
+                  switches, and ``InboxError``.
+* :mod:`facts`    a fact and the work item it becomes: validation, the
+                  target project, the dedup by source key, and the
+                  ``fact.json`` sidecar under the project's runtime root.
+* :mod:`feeders`  best-effort readers that turn the sharing relay, each
+                  project's GitHub issue mirror and the per-toolkit
+                  ``events.jsonl`` of polled connections into facts (the
+                  workspace stream of sessions, todos and files is the
+                  Activity page's, never the Inbox's).
 * :mod:`service`  what ``routers/cowork_agent/bff/inbox.py`` imports:
-                  ``refresh``, ``list_items``, ``create_item``,
-                  ``update_item``, ``update_many`` (the batch
-                  ``PATCH /api/inbox``), ``delete_item`` and ``InboxError``.
+                  ``refresh``, ``create_post``, the rows and sections of
+                  the Inbox, the policies, one item's detail, and the
+                  actions on it (reply, start, send, archive, reopen), the
+                  last of which it hands to ``services.work``.
 
 Built on the shared Space modules: ``services.storage`` (the locked,
 atomic file primitives and the state root), ``services.timestamps``

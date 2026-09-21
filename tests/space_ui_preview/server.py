@@ -47,7 +47,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "github": {"status": "connected", "username": "demo-developer", "source": "connector"},
             },
             "/space/server/status": lambda: {"running": True},
-            "/api/inbox": lambda: {"items": [], "counts": {"new": 3, "seen": 1, "done": 2, "open": 4}, "total": 0},
+            "/api/inbox": lambda: fixtures.inbox(query.get("section", [None])[0], query.get("state", ["open"])[0]),
             "/api/connections": lambda: {"signed_in": False, "poller_enabled": True, "connections": []},
             "/xo/sessions.json": lambda: {"meta": {"sources": [{"id": "demo", "label": "Fictional telemetry", "available": False}]}, "sessions": []},
             "/api/secrets": lambda: {"items": []},
@@ -58,6 +58,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "agents": [], "restart_required": False, "restart_supported": False},
             "/space/update/status": lambda: {"supported": False, "message": "Fictional review server; updates are unavailable."},
             "/xo-auth/session/self": lambda: {"session_id": "fictional-review-session"},
+            "/api/connectors/composio/backend": lambda: {"mode": "inactive", "key_source": None},
             "/api/connectors/composio/toolkits": lambda: {"toolkits": []},
         }.get(path)
         if route:
@@ -82,6 +83,22 @@ class Handler(SimpleHTTPRequestHandler):
                 "github/issues": lambda: {"project_id": pid, "state": "empty", "repo": f"fictional-workspace/{pid}", "issues": [], "tracked": 0, "fetched_at": fixtures.stamp(20)},
             }[operation]()
             self.json_response(payload)
+            return
+        match = re.fullmatch(r"/api/inbox/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)", path)
+        if match:
+            item = fixtures.inbox_item(*match.groups())
+            if item is None:
+                self.json_response({"detail": {"code": "workitem_not_found", "message": "No fictional work item " + match[2]}}, 404)
+            else:
+                self.json_response(item)
+            return
+        match = re.fullmatch(r"/api/sessions/([A-Za-z0-9._-]+)/transcript", path)
+        if match:
+            transcript = fixtures.transcript(match[1])
+            if transcript is None:
+                self.json_response({"detail": "Session not found"}, 404)
+            else:
+                self.json_response(transcript)
             return
         if path == "/favicon.ico":
             self.send_response(204)
