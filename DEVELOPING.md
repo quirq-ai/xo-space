@@ -627,8 +627,7 @@ the blocking half (reading or minting the token, then the file writes) runs in a
 thread. The periodic pass is what repairs the cases the button existed for: a config file
 that appeared after boot, an agent that rewrote its config and dropped the entry, and a
 pod whose token store was lost (the sweep mints a fresh token and rewrites every config).
-The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped routes exist only
-to 401 a stale config with a useful message.
+The unscoped routes exist only to 401 a stale config with a useful message.
 
 **The install is declarative.** Each agent describes its own gateway shape as an
 `"mcp"` block in `config/agents/<name>/manifest.json`, and `composio/mcp.py` is the

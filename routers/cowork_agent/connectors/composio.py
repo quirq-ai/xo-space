@@ -342,21 +342,9 @@ class ScopeBody(BaseModel):
     connected_account_ids: Optional[list[str]] = None
 
 
-@router.get("/api/connectors/composio/{toolkit}/scope")
-async def get_toolkit_scope(
-    toolkit: str,
-    user_id: str = Depends(get_composio_user),
-) -> JSONResponse:
-    _require_key()
-    entry = space_scope.load().get(toolkit) or {}
-    return JSONResponse({
-        "toolkit": toolkit,
-        "workspace_enabled": bool(entry.get("enabled")),
-        "pinned_account_ids": list(entry.get("connected_account_ids") or []),
-        "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
-    })
-
-
+# There is no GET counterpart to this route: `GET /toolkits` already carries
+# `workspace_enabled`, `pinned_account_ids` and `max_accounts_per_toolkit` for every
+# toolkit in one round trip, which is how the UI reads the scope.
 @router.put("/api/connectors/composio/{toolkit}/scope")
 async def put_toolkit_scope(
     toolkit: str,
@@ -511,18 +499,9 @@ class PrefsBody(BaseModel):
     actions: dict[str, bool]
 
 
-@router.get("/api/connectors/composio/{toolkit}/prefs")
-async def get_toolkit_prefs(
-    toolkit: str,
-    user_id: str = Depends(get_composio_user),
-) -> JSONResponse:
-    _require_key()
-    from services.cowork_agent.connectors.composio import action_prefs as composio_action_prefs
-    return JSONResponse(
-        {"actions": composio_action_prefs.get_toolkit_prefs(toolkit)}
-    )
-
-
+# There is no GET counterpart to this route: `GET /{toolkit}/tools` already returns an
+# `enabled` flag per action (it reads the same prefs store), which is how the UI paints
+# the action drawer.
 @router.put("/api/connectors/composio/{toolkit}/prefs")
 async def put_toolkit_prefs(
     toolkit: str,

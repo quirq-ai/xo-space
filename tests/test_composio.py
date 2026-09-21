@@ -1130,12 +1130,16 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(raised.exception.status_code, 404)
 
     async def test_prefs_round_trip_through_the_router(self) -> None:
+        # There is no GET /prefs to read back through: the write is confirmed by its own
+        # response and by the store, which is what /tools reads to flag each action.
         body = router_mod.PrefsBody(actions={"GMAIL_SEND_EMAIL": False})
         with patch.object(service, "sync_session"):
-            await router_mod.put_toolkit_prefs("gmail", body, user_id=ACCOUNT)
-            response = await router_mod.get_toolkit_prefs("gmail", user_id=ACCOUNT)
+            response = await router_mod.put_toolkit_prefs("gmail", body, user_id=ACCOUNT)
         self.assertEqual(
             json.loads(response.body)["actions"], {"GMAIL_SEND_EMAIL": False}
+        )
+        self.assertEqual(
+            action_prefs.disabled_slugs("gmail"), frozenset({"GMAIL_SEND_EMAIL"})
         )
 
     async def test_toolkits_report_the_account_count_and_multi_account_state(self) -> None:
@@ -1633,12 +1637,19 @@ class SpaceScopeTests(_ComposioBase):
 
 
 class SpaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
-    async def test_scope_route_reports_this_workspace_s_choice(self) -> None:
+    async def test_toolkits_route_reports_this_workspace_s_choice(self) -> None:
+        # /toolkits is the only reader of the scope now that GET /{toolkit}/scope is
+        # retired, so it is what has to carry the enabled flag and the pins.
         _enable("gmail", "ca_1")
-        response = await router_mod.get_toolkit_scope("gmail", user_id=ACCOUNT)
-        body = json.loads(response.body)
-        self.assertTrue(body["workspace_enabled"])
-        self.assertEqual(body["pinned_account_ids"], ["ca_1"])
+        rows = [{"toolkit": "GMAIL", "connected_account_id": "ca_1",
+                 "status": "ACTIVE", "alias": None, "created_at": None}]
+        with patch.object(service, "list_connections", return_value=rows), \
+                patch.object(service, "kick_gateway_sweep"):
+            response = await router_mod.list_toolkits(user_id=ACCOUNT)
+        gmail = next(t for t in json.loads(response.body)["toolkits"]
+                     if t["id"] == "gmail")
+        self.assertTrue(gmail["workspace_enabled"])
+        self.assertEqual(gmail["pinned_account_ids"], ["ca_1"])
 
     async def test_pinning_an_account_the_user_does_not_hold_is_a_422(self) -> None:
         # Caught here rather than at session creation, where one bad id fails every
