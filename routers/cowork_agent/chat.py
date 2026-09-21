@@ -100,7 +100,25 @@ def _session_id_from_sse(chunk: str) -> str | None:
     return None
 
 
-_KEEPALIVE_INTERVAL = 20  # seconds of silence before emitting an SSE keepalive comment
+# Seconds of silence before emitting a keepalive. Kept well under the ~30s at
+# which an idle stream is cut in front of us, so two keepalives fall inside
+# every window.
+_KEEPALIVE_INTERVAL = 12
+
+# A bare ``event: heartbeat`` frame is ~30 bytes, and a proxy that buffers will
+# hold that rather than flush it — the browser then sees an idle connection and
+# an intermediary drops it mid-turn. Measured against the deployed workspace
+# proxy: a turn whose tool ran for 72s survived 77s and three heartbeats when
+# curled directly at the API, and died at 30.3s through the proxy, four times
+# across two backends. Real output always got through; only the tiny heartbeats
+# did not, which is the signature of a buffer that never fills.
+#
+# The leading ``:`` line is an SSE comment — ignored by native EventSource (per
+# spec) and by our own parser (sse.ts) — so the padding is invisible to clients
+# while being large enough to push a proxy buffer past its flush threshold.
+# ``X-Accel-Buffering: no`` is already set on the response but is only honoured
+# by nginx, not by every hop in front of this service.
+_HEARTBEAT = ":" + " " * 2048 + "\n\nevent: heartbeat\ndata: {}\n\n"
 
 _SENTINEL = object()  # marks end-of-stream in the keepalive queue
 
@@ -176,7 +194,7 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_INTERVAL)
             except asyncio.TimeoutError:
-                yield "event: heartbeat\ndata: {}\n\n"
+                yield _HEARTBEAT
                 continue
 
             if item is _SENTINEL:
@@ -327,11 +345,19 @@ async def chat_stream(stream_id: str):
         if recent:
             done_event = recent.get("done_event")
             async def reconnect_done():
+                # Keepalive while waiting, for the same reason the dispatcher
+                # path has one: a reconnect into a still-running turn is a
+                # guaranteed-silent stream, and waiting 300s without a byte is
+                # exactly what gets cut in front of us.
                 if done_event and not done_event.is_set():
-                    try:
-                        await asyncio.wait_for(done_event.wait(), timeout=300)
-                    except asyncio.TimeoutError:
-                        pass
+                    deadline = time.time() + 300
+                    while not done_event.is_set() and time.time() < deadline:
+                        try:
+                            await asyncio.wait_for(
+                                done_event.wait(), timeout=_KEEPALIVE_INTERVAL
+                            )
+                        except asyncio.TimeoutError:
+                            yield _HEARTBEAT
                 sid = recent["session_id"]
                 if sid:
                     yield f"id: 1\nevent: session-created\ndata: {json.dumps({'session_id': sid})}\n\n"
