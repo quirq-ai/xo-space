@@ -946,3 +946,9 @@ only as the literal `true`; the schema is
 
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
+
+## 12. Releases
+
+Versions are annotated SemVer tags on `main`, cut by hand every time `main`
+moves. The runbook, the numbering rules and the hotfix flow are in
+[RELEASING.md](RELEASING.md).
