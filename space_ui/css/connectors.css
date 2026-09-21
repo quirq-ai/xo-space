@@ -56,24 +56,34 @@
 .conn-key-form input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .conn-key-form .conn-primary,.conn-key-form .conn-secondary{flex:none}
 
-/* cards in a row share one height, so their buttons line up along the bottom;
-   while a drawer is open the neighbours keep their own height instead of
-   stretching to the drawer's */
+/* The grid is a directory of tiles, all one height per row. Nothing in it is
+   actionable but the tile itself: every control lives in the popup below. */
 .conn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:12px;align-items:stretch}
-.conn-grid:has(.conn-actions,.conn-poll,.conn-card.is-expandable.is-expanded){align-items:start}
 
-.conn-card{position:relative;display:flex;flex-direction:column;min-width:0;min-height:200px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
+.conn-tile{
+  display:flex;flex-direction:column;gap:11px;min-width:0;min-height:158px;
+  padding:16px;text-align:left;font:inherit;color:inherit;cursor:pointer;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:12px;
+  transition:border-color .16s var(--ease),background .16s var(--ease)
+}
+.conn-tile[hidden]{display:none}
+.conn-tile:hover{border-color:#41464f;background:var(--bg-3)}
+.conn-tile.is-on{border-color:rgba(168,217,79,.24)}
+.conn-tile:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* the tile's name is a span, not a heading: a button may hold phrasing
+   content only, and .conn-card-id span is the scheme line's rule */
+.conn-card-id .conn-tile-name{display:block;margin-top:0;font:600 14px/1.35 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.conn-tile-desc{display:block;color:var(--ink-2);font:400 13px/1.5 var(--sans);overflow-wrap:anywhere}
+/* workspace integrations put their one live fact (the account, the number of
+   configured remotes) here; account apps have none and leave it empty */
+.conn-tile-detail{display:block;color:var(--ink-3);font:400 12px/1.5 var(--sans);overflow-wrap:anywhere}
+.conn-tile-detail:empty{display:none}
+
+.conn-card{position:relative;display:flex;flex-direction:column;min-width:0;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
 .conn-card:hover{border-color:#41464f}
 .conn-card.is-on,.conn-card.is-connected{border-color:rgba(168,217,79,.24)}
 
 .conn-card-head{display:flex;align-items:flex-start;flex-direction:column;gap:12px;padding:16px 16px 10px}
-/* a connected card is compact until clicked; the chevron says so */
-.conn-card.is-expandable :is(.conn-card-head,.conn-card-body){cursor:pointer}
-.conn-card.is-expandable .conn-card-heading{padding-right:28px}
-.conn-card-head[role="button"]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:12px}
-.conn-card-chevron{position:absolute;top:18px;right:16px;width:16px;height:16px;fill:none;stroke:var(--ink-3);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s var(--ease)}
-.conn-card.is-expandable:hover .conn-card-chevron{stroke:var(--ink-2)}
-.conn-card.is-expanded .conn-card-chevron{transform:rotate(180deg)}
 .conn-card-heading{display:flex;align-items:center;gap:11px;min-width:0}
 .conn-icon{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;border:1px solid rgba(255,255,255,.07);border-radius:10px;background:var(--bg-3);color:var(--ink-2);font:600 20px var(--sans)}
 .conn-icon svg{display:block;width:22px;height:22px}
@@ -108,7 +118,7 @@
 }
 
 .conn-card-acts{display:flex;align-items:center;gap:6px;padding:14px 16px 16px;flex-wrap:wrap}
-/* a connected card's three buttons fit one row at the grid's 270px minimum */
+/* a connected card's buttons fit one row at the popup's narrowest */
 .conn-card-acts .conn-secondary{padding-inline:9px;white-space:nowrap}
 .conn-primary,.conn-secondary{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;min-height:32px;
@@ -146,19 +156,69 @@
 .conn-empty{padding:22px;text-align:center;color:var(--ink-3);font-size:12px;border:1px dashed var(--line);border-radius:12px}
 .conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
 
+/* ---------------- connector popup ----------------
+   One overlay for both grids: pressing a tile opens that connector here with
+   its controls, its drawers and its errors. Modelled on the command palette
+   (dimmed backdrop, centred panel, same tokens) so the two read as one shell.
+   body already carries overflow:hidden, so nothing behind this scrolls. */
+.conn-modal{position:fixed;inset:0;z-index:70;display:flex;align-items:flex-start;justify-content:center;
+  padding:8vh 16px 16px}
+.conn-modal[hidden]{display:none}
+.conn-modal-backdrop{position:absolute;inset:0;background:rgba(6,7,9,.6);backdrop-filter:blur(2px);
+  animation:conn-modal-fade .12s var(--ease)}
+.conn-modal-panel{position:relative;display:flex;flex-direction:column;width:100%;max-width:520px;
+  max-height:min(84vh,760px);overflow:hidden;background:var(--bg-2);border:1px solid var(--line);
+  border-radius:14px;box-shadow:0 24px 60px -12px rgba(0,0,0,.7),0 0 0 1px rgba(0,0,0,.3);
+  animation:conn-modal-pop .14s var(--ease)}
+@keyframes conn-modal-fade{from{opacity:0}to{opacity:1}}
+@keyframes conn-modal-pop{from{transform:translateY(-6px) scale(.985);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.conn-modal-backdrop,.conn-modal-panel{animation:none}}
+
+.conn-modal-close{position:absolute;top:12px;right:12px;z-index:1;display:grid;place-items:center;
+  width:28px;height:28px;padding:0;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg-3);color:var(--ink-3);cursor:pointer}
+.conn-modal-close:hover{border-color:var(--ink-4);color:var(--ink)}
+.conn-modal-close svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+
+/* The panel is the only thing that scrolls, so its scrollbar is part of the
+   popup's surface rather than the platform's: thin, no stepper buttons, a
+   thumb inset from the rounded edge, and no scroll chaining to the page
+   behind. scrollbar-gutter keeps the card from shifting sideways when a
+   drawer opens and the bar appears. */
+.conn-modal-body{
+  min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent
+}
+.conn-modal-body::-webkit-scrollbar{width:10px}
+.conn-modal-body::-webkit-scrollbar-button{display:none}
+.conn-modal-body::-webkit-scrollbar-track{background:transparent}
+.conn-modal-body::-webkit-scrollbar-thumb{
+  background:var(--line);background-clip:content-box;border:3px solid transparent;border-radius:999px
+}
+.conn-modal-body::-webkit-scrollbar-thumb:hover{background:#41464f;background-clip:content-box}
+/* the card is the panel's whole contents here: it keeps its own padding and
+   its drawers, and gives up the border and the grid height it had as a card */
+.conn-modal-body .conn-card{border:0;border-radius:0;background:transparent;overflow:visible}
+.conn-modal-body .conn-card-heading{padding-right:34px}
+/* the panel scrolls, so the Actions list no longer needs its own scroller */
+.conn-modal-body .conn-actions{max-height:none;overflow:visible}
+
 @media (max-width:720px){
   .conn-hero{flex-wrap:wrap;gap:12px}
   .conn-hero h2{font-size:24px}
   .conn-grid{grid-template-columns:1fr}
+  .conn-modal{padding:4vh 10px 10px}
 }
 
 /* Native cards keep their form elements mounted while status refreshes, so
-   in-progress credentials and browser authorization survive navigation. */
-.native-conn-card[data-native-connector="github"] .conn-icon{color:#d7d4ce;font-size:14px}
-.native-conn-card[data-native-connector="magicpath"] .conn-icon{color:#bc9dec}
-.native-conn-card[data-native-connector="vercel"] .conn-icon{color:#e9e4d9}
-.native-conn-card[data-native-connector="gdrive"] .conn-icon{color:#8ac89e}
-.native-conn-card[data-native-connector="onedrive"] .conn-icon{color:#80b3e4}
+   in-progress credentials and browser authorization survive filtering and
+   opening or closing the popup. The artwork is keyed off either host: the
+   tile in the grid, and the card the popup holds. */
+[data-native-connector="github"] .conn-icon,[data-native-tile="github"] .conn-icon{color:#d7d4ce;font-size:14px}
+[data-native-connector="magicpath"] .conn-icon,[data-native-tile="magicpath"] .conn-icon{color:#bc9dec}
+[data-native-connector="vercel"] .conn-icon,[data-native-tile="vercel"] .conn-icon{color:#e9e4d9}
+[data-native-connector="gdrive"] .conn-icon,[data-native-tile="gdrive"] .conn-icon{color:#8ac89e}
+[data-native-connector="onedrive"] .conn-icon,[data-native-tile="onedrive"] .conn-icon{color:#80b3e4}
 .conn-native-status{margin:8px 0 0;color:var(--ink-3);font:400 12px/1.5 var(--sans);overflow-wrap:anywhere}
 .conn-native-form{padding:14px 16px 16px;border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);min-width:0}
 .conn-native-field{display:block;margin:0 0 12px;color:var(--ink-2);font:500 12px/1.5 var(--sans)}

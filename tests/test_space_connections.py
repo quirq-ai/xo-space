@@ -211,7 +211,7 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         self.assertIn("function renderActions(toolkitId){", self.view)
 
     def test_polling_button_only_on_cards_connected_and_enabled_here(self) -> None:
-        card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
+        card = slice_between(self.view, "function renderDetail(t){", "/* ---------- polling")
         self.assertIn("const polling=openPolling===t.id;", card)
         self.assertIn(
             "+(connected&&(enabled||polling)\n        ?'<button class=\"conn-secondary\" data-action=\"polling\">'",
@@ -285,12 +285,13 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         poll = slice_between(self.view, "async function pollNow(", "/* Turning a toolkit on or off")
         self.assertIn("'Polled just now: '+(Number(r.new_events)||0)+' new'", poll)
         self.assertIn("await loadPolling(toolkitId);", poll)
-        self.assertIn("if(openPolling===toolkitId)renderGrid();", poll)
+        # the drawer lives in the popup, so only the popup repaints
+        self.assertIn("if(openPolling===toolkitId)paintModal();", poll)
 
     def test_drawer_auto_opens_after_a_successful_connect(self) -> None:
         active = slice_between(self.view, "if(status==='ACTIVE'){", "if(status==='FAILED'){")
         self.assertIn("openPolling=toolkitId;", active)
-        # set before loadAll(): it re-renders the grid
+        # set before loadAll(): it repaints the popup
         self.assertLess(active.index("openPolling=toolkitId;"), active.index("await loadAll();"))
         self.assertIn("await loadPolling(toolkitId);", active)
         self.assertIn("Nothing is persisted until Save.", active)
@@ -356,7 +357,7 @@ class CacheBusterTests(unittest.TestCase):
         self.assertIn(
             "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260918-cardexpand1';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260921-cardpopup1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
@@ -369,7 +370,7 @@ class CacheBusterTests(unittest.TestCase):
         html = read("index.html")
         self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
         # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260918-cardexpand1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260921-cardpopup2">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

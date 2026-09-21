@@ -108,8 +108,8 @@ async function rows(count){
   await page.waitForFunction(count=>[...document.querySelectorAll('.prj-row')].filter(row=>row.getClientRects().length).length===count,count);
 }
 async function visibleConnectors(ids){
-  await page.waitForFunction(ids=>JSON.stringify([...document.querySelectorAll('.conn-card[data-toolkit]')]
-    .filter(card=>!card.hidden).map(card=>card.dataset.toolkit))===JSON.stringify(ids),ids);
+  await page.waitForFunction(ids=>JSON.stringify([...document.querySelectorAll('.conn-tile[data-toolkit]')]
+    .filter(tile=>!tile.hidden).map(tile=>tile.dataset.toolkit))===JSON.stringify(ids),ids);
 }
 async function layout(id,width){
   await page.waitForFunction(()=>Math.abs(document.getElementById('stage').getBoundingClientRect().y
@@ -239,8 +239,8 @@ try{
   assert.equal(await search.inputValue(),'');
   await query('conversation','connectors');await visibleConnectors(['slack']);
   await query('DEV@','connectors');await visibleConnectors(['gmail']);
-  await page.locator('[data-toolkit="gmail"] .conn-card-head').click();
-  await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();
+  await page.locator('.conn-tile[data-toolkit="gmail"]').click();
+  await page.locator('#conn-modal [data-action="polling"]').click();
   const interval=page.locator('#poll-gmail [data-poll="interval"]');
   await interval.selectOption('1800');
   const form=await interval.elementHandle();

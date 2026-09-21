@@ -67,7 +67,7 @@ page-search field; they still show the Cmd+K trigger.
 | Tree | Folder and file names, keeping the ancestors of matches visible. |
 | Timeline | Project names; the selected timeline mode and date range still apply. |
 | Setup | Setting names and topics. Choose a result to open its section; searches never read field values or credentials, and all unfinished forms stay mounted. |
-| Setup → Connectors | Workspace integrations and account apps by name, identifier, description, and connected account label. Filtering preserves open controls and unsaved edits. |
+| Setup → Connectors | Workspace integrations and account apps by name, identifier, description, and connected account label. Filtering hides tiles only, so an open popup, its controls and its unsaved edits are preserved. |
 | Inbox → Items | Title, body, kind, source, and project in the loaded status page, intersected with the source filter. The matching count shows this scope. |
 | Inbox → Activity | Loaded workspace event labels, details, project names/IDs, runtime and session ID, intersected with the project selector. Load older adds more events to this search. |
 | Inbox → Sharing activity | Loaded relay event labels, details and repository names, intersected with the repository selector. |
@@ -135,8 +135,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/setup-commands.js` | Setup Jobs card: scheduled/manual kind choice, plain-language schedule and time-limit form, Run now, live results and history drawer over `/api/schedules`. |
 | `js/core/jobs.js` | Job vocabulary shared by Setup and Inbox Jobs, with no DOM or network: schedule presets ↔ `every_seconds`/`first_run_at`, upcoming runs and runs per day for the editor's preview, schedule and status wording, duration units. |
 | `js/core/command-results.js` | Shared job results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
-| `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
-| `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
+| `js/views/connectors.js` | The persistent Connectors controller inside Setup. The grid is tiles; pressing one opens that connector in a popup, and every control lives there: Composio connect / disconnect, turn on/off here, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). One popup at a time. Tiles hold no form, so only the popup's paint takes the polling snapshot: the drawer keeps unsaved edits across the repaints Refresh, the Actions drawer, a landing account label and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide polling, closing the popup, opening another connector, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
+| `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. The grid holds tiles; each card is built once and MOVED into the shared popup on open and out again on close, never re-rendered, so credential fields, device codes and pending authorization stay intact across filtering, refresh, navigation and reopening. Status reads run independently of XO sign-in. |
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
@@ -212,10 +212,15 @@ Opening the Setup tab starts at Workspace. Legacy `#/setup`, `#/connectors` and 
 
 The topbar search stays visible throughout Setup. Search setting names such as
 “folders”, “secrets” or “restart”, then choose a result to open its control.
-Inside Connectors, the same input filters the app cards instead.
+Inside Connectors, the same input filters the app tiles instead.
 
 Connectors groups **Workspace integrations** (GitHub, MagicPath, Vercel,
-Google Drive and OneDrive) above **Account apps** from Composio. GitHub supports
+Google Drive and OneDrive) above **Account apps** from Composio. Both are
+directories of tiles: a tile names the app, how it signs in, where it stands
+and (when connected) the account it is bound to. Pressing a tile opens that
+connector in a popup, and every control lives there. One popup is open at a
+time; closing it (the close button, the backdrop or Escape) closes its
+drawers and discards polling edits that were never saved. GitHub supports
 a personal access token or device sign-in; Vercel supports an API token or
 browser sign-in with a pasted redirect URL when needed. Disconnect an existing
 Vercel connection before starting another browser sign-in. MagicPath has an
