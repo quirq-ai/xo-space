@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "xo/inbox-ledger.schema.json",
+  "title": "xo inbox ledger (~/.quirq/inbox/ledger.json)",
+  "description": "The feeders' bookkeeping (docs/work-and-workitems.md section 18): one cursor per feeder (the newest producer timestamp read, as the producer wrote it) and the per-source switches. Written by services/inbox/ledger.py and hand-editable: unknown keys survive a rewrite, a bad value falls back to its default.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "cursors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "description": "Per feeder: sharing, issues, connections. Only ever moves forward."
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "sharing": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        "issues": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "open"
+              ],
+              "description": "the issue states that become work items"
+            }
+          }
+        },
+        "connections": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

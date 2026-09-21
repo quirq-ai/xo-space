@@ -68,13 +68,16 @@ class CoreHelpersTests(unittest.TestCase):
         self.assertNotIn("document.", conn)
         self.assertNotIn("apiFetch", conn)
         self.assertIn("import {rel} from './ui.js';", conn)
-        # both views import from core, never from each other
-        inbox = read("js/views/inbox.js")
+        # the Setup section and the connector cards both read core; the
+        # section composes the cards, and nothing imports the inbox view
+        section = read("js/views/connections.js")
         connectors = read("js/views/connectors.js")
-        self.assertIn("from '../core/connections.js';", inbox)
+        self.assertIn("from '../core/connections.js';", section)
         self.assertIn("from '../core/connections.js';", connectors)
-        self.assertNotIn("./connectors.js", inbox)
+        self.assertNotIn("./inbox.js", section)
         self.assertNotIn("./inbox.js", connectors)
+        self.assertNotIn("./connections.js", connectors)
+        self.assertNotIn("core/connections.js", read("js/views/inbox.js"))
 
     def test_sharing_data_re_exports_the_core_helpers(self) -> None:
         data = read("js/views/sharing_data.js")
@@ -152,52 +155,47 @@ class InboxViewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.src = read("js/views/inbox.js")
 
-    def test_mark_all_seen_is_one_bulk_patch(self) -> None:
-        body = slice_between(self.src, "async function markAllSeen(){", "/* Open:")
-        self.assertIn("it.status==='new').map(it=>it.id)", body)
-        self.assertIn("apiFetch(API_BASE+'/api/inbox',{method:'PATCH',body:{ids,status:'seen'}})", body)
-        self.assertNotIn("for(const id of ids)", body)
-        self.assertNotIn("'/api/inbox/'+encodeURIComponent(id)", body)
-        self.assertIn("toast('mark all seen failed: '+failText(res))", body)
-        self.assertIn("res.data.missing", body)
-        self.assertIn("await load();", body)
+    def test_the_list_page_only_reads(self) -> None:
+        # the Inbox rows are work items joined with their sessions (2026-09-21):
+        # every write (reply, start, send, archive, reopen) is the item page's,
+        # the list reads one route and the jobs page beside it
+        self.assertIn("apiFetch(API_BASE+'/api/inbox?section='+encodeURIComponent(section)+'&state='+encodeURIComponent(state)+'&limit=200')", self.src)
+        for gone in ("markAllSeen", "method:'PATCH'", "method:'DELETE'", "'/api/inbox/'+encodeURIComponent(id)"):
+            self.assertNotIn(gone, self.src, gone)
 
     def test_every_call_carries_api_base(self) -> None:
-        # no bare apiFetch('/api/...') left; the connections calls join the family
+        # no bare apiFetch('/api/...') left here or in the Setup Connections
+        # section, where the connections calls now live
         self.assertNotRegex(self.src, r"apiFetch\('/")
-        self.assertIn("apiFetch(API_BASE+'/api/connections')", self.src)
-        self.assertIn("apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'})", self.src)
-        for m in re.finditer(r"apiFetch\(API_BASE\+'/api/connections[^\n]*", self.src):
+        section = read("js/views/connections.js")
+        self.assertNotRegex(section, r"apiFetch\('/")
+        self.assertIn("apiFetch(API_BASE+'/api/connections')", section)
+        self.assertIn("apiFetch(API_BASE+'/api/connections/'+encodeURIComponent(toolkit)+'/poll',{method:'POST'})", section)
+        for m in re.finditer(r"apiFetch\(API_BASE\+'/api/connections[^\n]*", section):
             self.assertNotIn("headers", m.group(0))
 
     def test_shared_helpers_replace_the_private_copies(self) -> None:
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", self.src)
         self.assertIn("import {esc,pills,rel,toast} from '../core/ui.js';", self.src)
-        self.assertIn("import {collectorLabels,every,pollLine} from '../core/connections.js';", self.src)
+        self.assertIn("import {accountLabel,collectorLabels,every,pollLine} from '../core/connections.js';", read("js/views/connections.js"))
         for private in ("const esc=", "function rel(", "function failText(", "function every(", "function collectorLabels("):
             self.assertNotIn(private, self.src)
-        self.assertIn("pills(FILTERS,filter,'filter','Filter inbox','inb-filter')", self.src)
-        self.assertIn("pills(SOURCE_PILLS,srcFilter,'src','Filter by source','inb-src')", self.src)
+        self.assertIn("pills(STATES,state,'state','Filter by state','inb-filter')", self.src)
 
-    def test_source_table_drives_pills_and_mapping(self) -> None:
-        table = slice_between(self.src, "const SOURCES=[", "];")
-        for row in ("{id:'all',label:'All',sources:[]}",
-                    "{id:'issues',label:'Issues',sources:['issues']}",
-                    "{id:'connections',label:'Connections',sources:['connections']}",
-                    "{id:'workspace',label:'Workspace',sources:['timeline','todos']}",
-                    "{id:'sharing',label:'Sharing',sources:['sharing']}",
-                    "{id:'agents',label:'Agents',sources:[]}"):
-            self.assertIn(row, table)
-        self.assertIn("const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);", self.src)
-        body = slice_between(self.src, "function sourceOf(it){", "}")
-        self.assertIn("SOURCES.find(r=>r.sources.includes(s))", body)
-        self.assertIn("return row?row.id:'agents';", body)
-        self.assertNotIn("s==='issues'||s==='connections'", self.src)
+    def test_tabs_are_the_answers_sections(self) -> None:
+        # no source table on the client: the tabs are the sections the answer
+        # carries, the page only orders them, and a row's section is the server's
+        self.assertIn("const TAB_ORDER=['projects','agents','connections','issues'];", self.src)
+        tabs = slice_between(self.src, "function tabs(){", "const activeSection=")
+        self.assertIn("data.sections", tabs)
+        self.assertIn("sort((a,b)=>rank(a.id)-rank(b.id))", tabs)
+        for gone in ("SOURCES=", "SOURCE_PILLS", "sourceOf(", "sectionOf(", "work-sections"):
+            self.assertNotIn(gone, self.src, gone)
 
     def test_poll_skips_an_unchanged_repaint_and_restores_focus(self) -> None:
         load = slice_between(self.src, "async function load(){", "/* ── painting")
         self.assertIn("if(paintKey()===painted){settle();return;}", load)
-        self.assertIn("const paintKey=()=>JSON.stringify([data,filter,srcFilter", self.src)
+        self.assertIn("const paintKey=()=>JSON.stringify([data,section,state,query", self.src)
         render = slice_between(self.src, "function render(){", "function settle(){")
         self.assertIn("const sel=focusSelector();", render)
         self.assertIn("painted=paintKey();", render)
@@ -205,10 +203,9 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn("CSS.escape(a.dataset[k])", self.src)
         # an unchanged read still ages the relative times and re-enables Refresh
         settle = slice_between(self.src, "function settle(){", "function summary(")
-        self.assertIn("syncBusy();", settle)
         self.assertIn("button[data-act=\"refresh\"]", settle)
         self.assertIn("[data-ts]", settle)
-        self.assertIn('data-ts="\'+esc(it.ts)+\'"', self.src)
+        self.assertIn('data-ts="\'+esc(ts)+\'"', self.src)
 
     def test_badge_poll_rests_while_the_view_is_shown(self) -> None:
         show = slice_between(self.src, "function showInboxPage(page){", "function hideInbox(")
@@ -231,12 +228,18 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn("else if(badge)badge.remove();", paint)
 
     def test_every_untrusted_field_is_escaped_and_links_stay_safe(self) -> None:
-        for field in ("it.id", "it.status", "it.kind", "it.title", "it.project_id", "it.body", "it.ts",
-                      "line.error", "line.text", "c.toolkit", "c.display_name||c.toolkit",
-                      "collectorLabels(c)", "every(c.interval_s)", "failText(failed)", "failText(connsFailed)"):
+        for field in ("it.id", "st", "it.title||it.id", "it.entity", "outcome", "runtime", "ts",
+                      "failText(failed)"):
             self.assertIn("esc(" + field + ")", self.src, field)
-        self.assertIn("const safeUrl=u=>typeof u==='string'&&/^https?:\\/\\//i.test(u)?u:'';", self.src)
-        self.assertIn('target="_blank" rel="noopener noreferrer"', self.src)
+        section = read("js/views/connections.js")
+        for field in ("line.error", "line.text", "c.toolkit", "c.display_name||c.toolkit",
+                      "collectorLabels(c)", "every(c.interval_s)", "failText(connsFailed)"):
+            self.assertIn("esc(" + field + ")", section, field)
+        # the fact's url is a link on the item page only, and only when http(s)
+        item = read("js/views/work-item.js")
+        self.assertIn("const safeUrl=u=>typeof u==='string'&&/^https?:\\/\\//i.test(u)?u:'';", item)
+        self.assertIn('target="_blank" rel="noopener noreferrer"', item)
+        self.assertNotIn("href=", self.src.replace("href=\"#/setup", ""))
 
 
 # Drives views/connectors.js through its own delegated click listener over
@@ -397,7 +400,7 @@ const noMatch={hidden:true,textContent:''};
 const nativeGrid={innerHTML:''};
 const workspaceSection={hidden:false},accountSection={hidden:false};
 const refreshBtn={listeners:[],addEventListener(type,fn){this.listeners.push(fn);}};
-const refresh=()=>refreshBtn.listeners.forEach(fn=>fn());
+const refresh=()=>view.refresh(); /* the Connections page's Refresh calls this */
 const root={
   innerHTML:'',
   querySelector(sel){
@@ -763,14 +766,16 @@ class AccountLabelTests(unittest.TestCase):
             self.assertEqual(out[key], "", key)
         self.assertEqual(out["line"], "as dev@example.com")
 
-    def test_inbox_row_names_the_account_beside_the_toolkit(self) -> None:
-        self.assertIn("import {accountLabel} from '../core/connections.js';", self.inbox)
-        row = slice_between(self.inbox, "function connRowHTML(c){", "/* one delegated listener")
+    def test_polled_row_names_the_account_beside_the_toolkit(self) -> None:
+        # the polled-apps rows live in Setup Connections (views/connections.js)
+        section = read("js/views/connections.js")
+        self.assertIn("import {accountLabel,collectorLabels,every,pollLine} from '../core/connections.js';", section)
+        row = slice_between(section, "function rowHTML(c){", "function polledHTML(){")
         self.assertIn("const acct=accountLabel(c);", row)
-        self.assertIn("'<b>'+esc(c.display_name||c.toolkit)\n      +(acct?'<span class=\"inb-conn-acct\">'+esc(acct)+'</span>':'')+'</b>'", row)
-        css = read("css/inbox.css")
-        self.assertIn(".inb-conn-acct{", css)
-        rule = css[css.index(".inb-conn-acct{"):]
+        self.assertIn("'<b>'+esc(c.display_name||c.toolkit)\n      +(acct?'<span class=\"conn-polled-acct\">'+esc(acct)+'</span>':'')+'</b>'", row)
+        css = read("css/connectors.css")
+        self.assertIn(".conn-polled-acct{", css)
+        rule = css[css.index(".conn-polled-acct{"):]
         rule = rule[: rule.index("}")]
         for prop in ("color:var(--ink-3)", "text-overflow:ellipsis", "max-width:"):
             self.assertIn(prop, rule)
@@ -894,50 +899,67 @@ class ShellTests(unittest.TestCase):
 
     def test_stamps_moved_together(self) -> None:
         app = read("js/app.js")
+        html = read("index.html")
         # The shared routing vocabulary, all participating views and shell
         # imports advance together; unchanged controllers retain their URLs.
-        # Trends absorbing Tools and Models changed navigation.js, so every
-        # importer of the vocabulary moved to the agents stamp.
-        agents_stamp = "20260915-agents2"
-        for view in ("tree", "inbox-activity", "project-manage"):
-            self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
-        # Inbox sharing hand-off + Copy path (issues #142, #143) moved these on.
-        for view in ("sharing", "projects", "inbox"):
-            self.assertIn("./views/" + view + ".js?v=20260918-copypath1'", app)
+        # The Work tab (Inbox renamed, Connectors folded into Setup Connections,
+        # Sharing activity removed) changed navigation.js, so every importer
+        # of the vocabulary and every view it touched moved to the work stamp.
+        work_stamp = "20260921-work2"
+        for view in ("tree", "inbox-activity", "project-manage", "sharing", "projects",
+                     "sessions", "atlas", "connections"):
+            self.assertIn("./views/" + view + ".js?v=" + work_stamp + "'", app)
+        # Setup met the branding settings (#168) on development the same day;
+        # the merged setup.js, its shell, search and sections moved together.
+        work4 = "20260922-work4"
+        self.assertIn("./views/setup.js?v=" + work4 + "'", app)
+        setup = read("js/views/setup.js")
+        for module in ("./setup-search.js", "./setup-shell.js", "../core/setup-sections.js"):
+            self.assertIn("from '" + module + "?v=" + work4 + "'", setup)
+        self.assertIn("from '../core/setup-sections.js?v=" + work4 + "'", read("js/views/setup-shell.js"))
+        # The Inbox over work items and sessions (2026-09-21, later the same
+        # day) rewrote the Inbox and item pages, the registry (hash queries)
+        # and the Wiki's Work entry, and restamped their sheets.
+        work3 = "20260921-work3"
+        for view in ("inbox", "work-item", "wiki"):
+            self.assertIn("./views/" + view + ".js?v=" + work3 + "'", app)
+        self.assertIn("./core/registry.js?v=" + work3 + "'", app)
+        self.assertIn("from '../core/item-links.js?v=" + work3 + "'", read("js/views/work-item.js"))
+        for sheet in ("inbox", "work-item"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + work3 + '">', html)
+        self.assertIn('src="js/app.js?v=' + work4 + '"', html)
+        # connectors.js has one importer now, the Setup Connections section
+        self.assertNotIn("./views/connectors.js", app)
+        self.assertIn("import connectorsView from './connectors.js?v=" + work_stamp + "'", read("js/views/connections.js"))
+        for module in ("section-nav", "navigation", "preview", "command-palette"):
+            self.assertIn("./core/" + module + ".js?v=" + work_stamp + "'", app)
+        for sheet in ("inbox-activity", "connectors"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + work_stamp + '">', html)
+        # Inbox sharing hand-off + Copy path (issues #142, #143) restamped these sheets.
         for sheet in ("sharing", "projects"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
-        for module in ("section-nav", "navigation", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', html)
         self.assertIn("./views/quirq.js?v=20260915-data1'", app)
         # The typography pass (Inter, readable small text) restamped every file
         # it changed on top of development.
         type_stamp = "20260915-typesync1"
-        self.assertIn("./core/registry.js?v=" + type_stamp + "'", app)
         # Restoring the footer (and dropping the graph's duplicate counts line)
-        # moved these again; toolbar.js is back to development's copy.
+        # moved the base sheets; toolbar.js is back to development's copy.
         footer_stamp = "20260915-footer1"
-        for module in ("views/sessions", "views/atlas"):
-            self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
         self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
-        self.assertIn("./views/connectors.js?v=20260917-byok1'", app)
-        html = read("index.html")
-        for sheet in ("project-management", "inbox-activity",
-                      "connectors", "sessions", "command-palette"):
+        for sheet in ("project-management", "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
-        for sheet in ("base", "chrome", "graph", "preview", "navigation"):
+        for sheet in ("chrome", "graph", "preview", "navigation"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
+        # Workspace branding (#168) restamped base.css and core/api.js.
+        self.assertIn('<link rel="stylesheet" href="css/base.css?v=20260921-branding1">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
         # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
-        # with Run now in Inbox) restamped the files it changed.
+        # with Run now under Work) restamped the shared shadcn and inbox styles.
         jobs_stamp = "20260916-jobs3"
-        for module in ("views/setup", "views/wiki", "core/command-palette"):
-            self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
-        # its calendar landed in the shared shadcn styles
-        for sheet in ("inbox", "shadcn"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
+        self.assertIn('<link rel="stylesheet" href="css/shadcn.css?v=' + jobs_stamp + '">', html)
         # the radio focus fix restamped the Setup styles once more
-        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">', html)
+        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260921-branding1">', html)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
@@ -953,7 +975,7 @@ class ShellTests(unittest.TestCase):
         self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
         imports = json.loads(m.group(1))["imports"]
         for name in self.CORE_MAPPED:
-            stamp = "20260914-files2" if name == "api.js" else STAMP
+            stamp = "20260921-branding1" if name == "api.js" else STAMP
             self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + stamp, name)
         # one instance means every importer uses the bare specifier
         for path in sorted((UI / "js").rglob("*.js")):

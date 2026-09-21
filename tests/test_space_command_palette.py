@@ -125,10 +125,14 @@ class CommandPaletteCompositionTests(unittest.TestCase):
         routes = set(re.findall(r"\['([a-z][a-z0-9/-]*)',", src))
         for route in ("projects/overview", "projects/data/list", "projects/data/graph",
                       "projects/data/tree", "projects/timeline", "projects/manage",
-                      "agents/overview", "inbox/items", "inbox/jobs", "sharing",
-                      "setup/workspace", "setup/connectors", "setup/secrets",
+                      "agents/overview", "inbox/items", "inbox/jobs",
+                      "inbox/activity", "sharing", "setup/workspace", "setup/connections", "setup/secrets",
                       "setup/server", "setup/server/details", "wiki"):
             self.assertIn(route, routes, route)
+        # Connectors became Setup Connections; Sharing activity is gone.
+        for route in ("setup/connectors", "inbox/connections", "inbox/sharing-activity"):
+            self.assertNotIn(route, routes, route)
+        self.assertIn("['inbox/items','Inbox','Work',", src)
 
     def test_new_files_carry_no_dashes(self) -> None:
         for rel in ("js/core/command-palette.js", "css/command-palette.css"):

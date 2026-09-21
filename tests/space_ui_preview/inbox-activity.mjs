@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Separate workspace and relay activity over intercepted fictional reads. */
+/* The Work tab's Activity page over intercepted fictional reads. */
 import assert from 'node:assert/strict';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -17,7 +17,6 @@ const holds=new Map(),allHolds=[];
 function hold(path){const value={arrived:gate(),release:gate()};holds.set(path,value);allHolds.push(value);return value;}
 const catalogHold=hold('/api/xo-projects'),liveHold=hold('/api/xo-projects/activity');
 const timestamp='2026-09-14T09:00:00Z',cursor='2026-09-13T09:00:00Z';
-const repo='github.com/fictional/aurora-console',otherRepo='github.com/fictional/orbit-api';
 const malicious='<img src=x onerror="window.activityInjected=true">';
 const events=[
   {id:'file',project_id:'aurora-console',type:'file.edited',ts:timestamp,path:'src/app.ts',runtime:'codex',payload:{authorization:'fixture-secret-not-rendered'}},
@@ -26,13 +25,7 @@ const events=[
   {id:'escaped',project_id:'orbit-api',type:'file.created',ts:'invalid',path:malicious},null,
 ];
 const older={id:'older',project_id:'aurora-console',type:'project.created',ts:'2026-09-12T09:00:00Z',title:'Earlier workspace milestone'};
-const recent=[
-  {at:timestamp,repo,kind:'fetched',detail:'2 commits fetched'},
-  {at:'2026-09-14T08:00:00Z',repo:otherRepo,kind:'cloned',detail:'Project is ready'},
-  {at:'2026-09-14T07:00:00Z',repo,kind:'error',detail:'Fictional remote is unavailable'},
-  {at:'invalid',repo,kind:'revoked',detail:malicious},null,
-];
-let workspaceFailure=false,sharingFailure=false,liveFailure=false,todosFailure=false,sharingEmpty=false;
+let workspaceFailure=false,liveFailure=false,todosFailure=false;
 const json=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url()),path=url.pathname;
@@ -66,8 +59,6 @@ await context.route('**/*',async route=>{
     return json(route,{events:project?rows.filter(event=>event?.project_id===project):rows,
       next_cursor:project||url.searchParams.has('before')?null:cursor});
   }
-  if(path==='/api/project-sharing/status')return json(route,sharingFailure?{recent:{unexpected:'fixture-secret-not-rendered'}}:
-    {cadence:'active',own_workspace_id:'fixture-local-space',last_poll_ok:true,repos:{[repo]:{project:'aurora-console',shared:true},[otherRepo]:{project:'orbit-api',shared:true}},recent:sharingEmpty?[]:recent});
   return route.continue();
 });
 page.on('pageerror',error=>report.errors.push(error.message));
@@ -80,7 +71,7 @@ const checked=text=>{report.checks.push(text);console.log(text);};
 async function go(kind){
   await page.evaluate(kind=>{location.hash='#/inbox/'+kind;},kind);
   await view(kind).waitFor({state:'visible'});
-  await page.waitForFunction(kind=>document.querySelector('#view-search')?.placeholder===(kind==='activity'?'Search activity…':'Search sharing activity…'),kind);
+  await page.waitForFunction(()=>document.querySelector('#view-search')?.placeholder==='Search activity…');
   await page.waitForFunction(()=>!document.querySelector('#section-refresh').disabled);
 }
 async function refresh(){await page.locator('#section-refresh').click();await page.waitForFunction(()=>!document.querySelector('#section-refresh').disabled);}
@@ -117,23 +108,13 @@ try{
   assert.ok(report.requests.includes('/api/xo-projects/orbit-api/todos'));
   checked('Load older follows the server cursor and deduplicates events; project selection requests that project history and intersects loaded-event search.');
 
-  await go('sharing-activity');await rowCount('sharing-activity',4);
-  assert.equal(await query().inputValue(),'');assert.match(await view('sharing-activity').textContent(),/Latest 50 events.*cleared when the server restarts/);
-  assert.equal(await view('sharing-activity').locator('[data-activity-more]').isVisible(),false);
-  assert.equal(await view('sharing-activity').locator('img,script').count(),0);
-  await query().fill('failed');await rowCount('sharing-activity',1);
-  await select('sharing-activity').selectOption(repo);await rowCount('sharing-activity',1);
-  assert.equal(await rows('sharing-activity').locator('a').getAttribute('href'),'#/inbox/sharing');
+  await page.evaluate(()=>{location.hash='#/inbox/items';});await page.locator('#view-inbox').waitFor({state:'visible'});
+  assert.equal(await page.locator('#view-inbox-sharing-activity').count(),0,'Sharing activity is no longer a page');
   await go('activity');assert.equal(await query().inputValue(),'Orbit');assert.equal(await select('activity').inputValue(),'orbit-api');
   await rowCount('activity',2);
-  await go('sharing-activity');assert.equal(await query().inputValue(),'failed');assert.equal(await select('sharing-activity').inputValue(),repo);
-  checked('Sharing activity is a separate recent-event feed with repository filtering, a management link, and independent retained search/filter state.');
+  checked('Activity keeps its search and project selection while other Work pages are shown; Sharing activity is gone.');
 
-  sharingFailure=true;await refresh();await rowCount('sharing-activity',1);
-  assert.match(await view('sharing-activity').locator('[data-activity-warning]').textContent(),/Previously loaded events/);
-  assert.doesNotMatch(await view('sharing-activity').textContent(),/fixture-secret/);
-  sharingFailure=false;await refresh();
-  await go('activity');workspaceFailure=true;liveFailure=true;todosFailure=true;await refresh();await rowCount('activity',2);
+  workspaceFailure=true;liveFailure=true;todosFailure=true;await refresh();await rowCount('activity',2);
   assert.match(await view('activity').locator('[data-activity-warning]').textContent(),/Previously loaded events.*Open sessions are unavailable/);
   assert.doesNotMatch(await view('activity').textContent(),/fixture-secret/);
   assert.match(await view('activity').locator('[data-activity-warning]').textContent(),/todos/);
@@ -151,7 +132,7 @@ try{
   assert.doesNotMatch(await todoRows.textContent(),/orbit-api/);
   checked('A late history reply for an older project selection cannot replace the current project feed or selected todos.');
 
-  for(const kind of ['activity','sharing-activity']){
+  for(const kind of ['activity']){
     await go(kind);await query().fill('');await select(kind).selectOption('');
     for(const width of [1440,390,320]){
       await page.setViewportSize({width,height:1000});
@@ -164,10 +145,8 @@ try{
       const name=kind+'-'+width+'.png';await page.screenshot({path:resolve(output,name),animations:'disabled'});report.screenshots.push(name);
     }
   }
-  await go('sharing-activity');sharingEmpty=true;await refresh();
-  assert.match(await view('sharing-activity').locator('[data-activity-empty]').textContent(),/No sharing events have been recorded since this server started/);
   assert.equal(await page.evaluate(()=>window.activityDocument),'same-document');
-  checked('Both activity pages fit desktop and phone layouts; an empty relay history explains its server-restart retention.');
+  checked('The Activity page fits desktop and phone layouts.');
   assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
 }catch(error){report.failure=error.stack;await page.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});throw error;}
 finally{allHolds.forEach(hold=>hold.release.resolve());await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));await browser.close();}

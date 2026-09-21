@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "reply_drafted",
+  "summary": "A welcome mail from someone@example.com; a short thank-you reply is drafted.",
+  "draft": "reply.md",
+  "task": null,
+  "question": null,
+  "acted": [],
+  "at": "2026-01-01T09:16:40Z"
+}

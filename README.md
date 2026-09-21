@@ -137,11 +137,11 @@ Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes g
 
 **Managing projects.** **Projects → Manage** (`#/projects/manage`) contains cloning, inline sharing and guarded local removal. Each card groups View activity, Share, Pin, Copy GitHub URL and Remove in its header. Expand a card to view its metadata and GitHub Issues and copy recorded values. To share, enter the destination Space ID in the card without leaving Manage. Individual access must be revoked before a shared project can be deleted locally. The old `#/setup/projects` address opens Manage.
 
-**Inbox and activity.** Inbox contains **Items | Connections | Jobs | Activity | Sharing activity | Sharing**. Activity shows project events; select a project for its todos and current sessions. Sharing activity shows the relay's recent events, while Sharing manages repository access and synchronization.
+**Work and activity.** Work contains **Inbox | Jobs | Activity | Sharing**. Inbox tracks what arrived in the workspace. Activity shows project events; select a project for its todos and current sessions. Sharing manages repository access and synchronization.
 
-**Setup.** Workspace and Intelligence layer guide initial configuration. Workspace shows the Space ID, workspace owner, XO account and verified GitHub identity. Connectors, Secrets, Commands and Server provide app connections, environment keys, saved commands/results and server controls. Direct URLs are `#/setup/workspace`, `#/setup/intelligence`, `#/setup/connectors`, `#/setup/secrets`, `#/setup/commands` and `#/setup/server`. Opening Setup starts at Workspace; existing `#/setup`, `#/connectors` and `#/secrets` links remain compatible.
+**Setup.** Workspace and Intelligence layer guide initial configuration. Workspace shows the Space ID, workspace owner, XO account and verified GitHub identity. Connections, Secrets, Commands and Server provide the polled apps and connectors, environment keys, saved commands/results and server controls. Direct URLs are `#/setup/workspace`, `#/setup/intelligence`, `#/setup/connections`, `#/setup/secrets`, `#/setup/commands` and `#/setup/server`. Opening Setup starts at Workspace; existing `#/setup`, `#/connectors` and `#/secrets` links remain compatible, as do `#/setup/connectors` and `#/inbox/connections`.
 
-Search Setup to find a setting and jump to its control. Connectors includes GitHub, MagicPath, Vercel, Google Drive and OneDrive alongside account apps, with connection status and the existing sign-in and management actions.
+Search Setup to find a setting and jump to its control. Setup → Connections includes GitHub, MagicPath, Vercel, Google Drive and OneDrive alongside account apps, with connection status and the existing sign-in and management actions.
 
 ### XO Managed Cloud
 

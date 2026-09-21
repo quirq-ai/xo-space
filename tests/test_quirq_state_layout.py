@@ -32,7 +32,9 @@ from services.cowork_agent.visualizer import workitem_claims
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
-from services.inbox import store as inbox_store
+from services.inbox import ledger as inbox_ledger
+from services.work import items as work_items
+from services.work import store as work_store
 from services.storage import flock, layout
 from utils import commands
 from utils.commands import scheduler
@@ -74,7 +76,7 @@ class SampleTests(_Sandbox):
             layout.projects_dir(), layout.inbox_dir(), layout.sharing_dir(),
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
-            layout.connections_dir(), layout.scheduler_dir(),
+            layout.connections_dir(), layout.scheduler_dir(), layout.work_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -90,7 +92,11 @@ class StorePathTests(_Sandbox):
             "project history": project_layout.runtime_dir(PID),
             "the Space timeline": project_layout.workspace_timeline_path(),
             "watcher reading positions": watcher_state.watcher_state_dir(),
-            "the Inbox": inbox_store.inbox_path(),
+            "the Inbox ledger": inbox_ledger.ledger_path(),
+            "an Inbox policy": work_items.policy_path("connections"),
+            "the Work, inbox": work_store.inbox_path(),
+            "the Work, live": work_store.live_path(),
+            "the Work, history": work_store.history_path(),
             "a connection": connections_store.connection_dir("gmail"),
             "saved commands": scheduler.scheduler_dir(),
             "a command's output": scheduler.log_file("job1"),
@@ -120,7 +126,7 @@ class StorePathTests(_Sandbox):
 class MigrationTests(_Sandbox):
     def test_an_install_from_before_the_folders_ends_up_inside_them(self) -> None:
         files = (
-            "inbox.json", "roots.env", "runtime.env", "state.json", "secrets.env",
+            "roots.env", "runtime.env", "state.json", "secrets.env",
             "commands.log", "commands.log.1",
             "project_sharing/github.com__acme__app-1234abcd.json",
             "watcher/offsets.json", "watcher/sample-offsets.json", "watcher/heartbeat.json",
@@ -151,6 +157,7 @@ EXAMPLE_PROJECT = "sample-project"
 EXAMPLE_PID = "00000000-0000-4000-8000-000000000000"
 EXAMPLE_SESSION = "11111111-1111-4111-8111-111111111111"
 EXAMPLE_WORKITEM = "22222222-2222-4222-8222-222222222222"
+EXAMPLE_FED_WORKITEM = "d00d0001-0000-4000-8000-000000000001"
 SCHEMAS = ROOT / "services" / "cowork_agent" / "visualizer" / "schema"
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 #: Keyed by name, so a ``schema`` key would read as an entry.
@@ -198,9 +205,6 @@ class ExampleRuleTests(unittest.TestCase):
                     self.assertEqual(line["pid"], EXAMPLE_PID)
                     if path.parent.name == "projects":
                         self.assertEqual(line["project_id"], EXAMPLE_PROJECT)
-        for item in _documents(FIXTURE / "inbox" / "inbox.json")[0]["items"]:
-            if item.get("project_id"):
-                self.assertEqual(item["pid"], EXAMPLE_PID)
 
     def test_rule_2_times_end_in_z(self) -> None:
         for path in _examples(".json") + _examples(".jsonl"):
@@ -241,7 +245,14 @@ class ExampleSchemaTests(unittest.TestCase):
             "cache/sessions/sessions-augment.json": "sessions-augment.schema.json",
             "cache/activity/workspace.json": "activity.schema.json",
             f"cache/activity/projects/{EXAMPLE_PROJECT}.json": "activity.schema.json",
-            "inbox/inbox.json": "inbox.schema.json",
+            "inbox/ledger.json": "inbox-ledger.schema.json",
+            "inbox/policy/connections.json": "inbox-policy.schema.json",
+            "work/inbox/inbox.json": "work-inbox.schema.json",
+            "work/live/live.json": "work-live.schema.json",
+            "work/history/history.json": "work-history.schema.json",
+            f"projects/{EXAMPLE_PID}/workitems/{EXAMPLE_FED_WORKITEM}/fact.json": "workitem-fact.schema.json",
+            f"projects/{EXAMPLE_PID}/workitems/{EXAMPLE_FED_WORKITEM}/session.json": "workitem-session.schema.json",
+            f"projects/{EXAMPLE_PID}/workitems/{EXAMPLE_FED_WORKITEM}/outcome.json": "workitem-outcome.schema.json",
         }
         for rel, schema_name in pairs.items():
             with self.subTest(file=rel):
@@ -276,9 +287,27 @@ class ExampleStoreTests(unittest.TestCase):
         self.assertEqual(layout.migrate_layout(), [])
 
     def test_the_inbox(self) -> None:
-        document, ok = inbox_store.load_document()
+        document, ok = inbox_ledger.load_document()
         self.assertTrue(ok)
-        self.assertEqual(len(document["items"]), 2)
+        self.assertEqual(document["cursors"]["connections"], "2026-01-01T09:14:00Z")
+        self.assertEqual(document["sources"]["issues"]["states"], ["open"])
+
+    def test_the_work(self) -> None:
+        document, ok = work_store.load_document()
+        self.assertTrue(ok)
+        self.assertEqual([post["id"] for post in document["posts"]], ["c0ffee02"])
+        self.assertEqual(document["sources"]["connections"]["attention"], ["gmail.unread"])
+        self.assertIn("connection:gmail:unread:msg-example-1", document["promoted"])
+        self.assertFalse(document["stream"]["watcher"]["enabled"])
+        self.assertEqual(document["watermark"], "2026-01-01T09:00:00Z")
+        # the policies and one fed work item's sidecars beside the sample project's claims
+        self.assertEqual(work_items.read_policy("connections")["sessions"]["mode"], "manual")
+        self.assertEqual(work_items.read_policy("issues")["sessions"]["mode"], "manual", "a section without a policy file runs on the defaults")
+        sidecars = self.root / "projects" / EXAMPLE_PID / "workitems" / EXAMPLE_FED_WORKITEM
+        fact = json.loads((sidecars / "fact.json").read_text(encoding="utf-8"))
+        self.assertEqual((fact["section"], fact["entity"], fact["source"]["key"]), ("connections", "gmail", "connection:gmail:unread:msg-example-1"))
+        self.assertEqual(json.loads((sidecars / "session.json").read_text(encoding="utf-8"))["exit"]["status"], "ok")
+        self.assertEqual(json.loads((sidecars / "outcome.json").read_text(encoding="utf-8"))["kind"], "reply_drafted")
 
     def test_a_connection(self) -> None:
         self.assertEqual(connections_store.read_config("gmail")["collectors"], ["unread"])

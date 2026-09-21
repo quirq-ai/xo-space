@@ -28,7 +28,11 @@
    each tab has {id,label,defaultView,aliases?}. Page labels and physical DOM
    sections are independent of that top-level navigation.
    ctx = {switchTo, refreshToolbar}. Views never import each other; cross-view jumps go
-   through ctx.switchTo(id or route). */
+   through ctx.switchTo(id or route).
+   A route may carry a query (#/inbox/item?p=xo-space&id=...): the view is
+   matched on the path before the '?', the query stays in the URL for the
+   view to read on show, and the same view shown again with another query
+   is a show(), not a rewrite, so a reload or Back keeps the selection. */
 
 let views=[];
 const byId=new Map();
@@ -50,11 +54,18 @@ export function registerView(v){
   }
 }
 
-const resolveView=id=>{
-  const target=byTab.get(id)?.defaultView||id;
-  return byId.get(target)||byRoute.get(target);
+/* a target split into its route and its query ('' when none) */
+const splitTarget=target=>{
+  const s=String(target??''),at=s.indexOf('?');
+  return at<0?[s,'']:[s.slice(0,at),s.slice(at)];
+};
+const resolveView=target=>{
+  const [id]=splitTarget(target);
+  const route=byTab.get(id)?.defaultView||id;
+  return byId.get(route)||byRoute.get(route);
 };
 const viewHash=v=>'#/'+(v.route||v.id);
+const currentHash=()=>location.hash.replace(/^#\//,'');
 
 const ctx={switchTo};
 function refreshToolbar(v){
@@ -66,7 +77,7 @@ function refreshToolbar(v){
 export async function switchTo(target,{replace=false}={}){
   const v=resolveView(target);
   if(!v)return false;
-  const id=v.id;
+  const id=v.id,query=splitTarget(target)[1];
   const request=++activation;
   const prev=current&&current!==id?byId.get(current):null;
   current=id;
@@ -99,7 +110,7 @@ export async function switchTo(target,{replace=false}={}){
       inline:'nearest',
     });
   });
-  const hash=viewHash(v);
+  const hash=viewHash(v)+query; /* the canonical route, the caller's query */
   if(location.hash!==hash)history[replace?'replaceState':'pushState'](null,'',hash);
   /* Announce the section and page before awaiting work. Shared navigation,
      toolbar and preview context must follow the URL even during a slow load. */
@@ -192,11 +203,15 @@ export function startRegistry({defaultView,tabs:tabDefinitions}){
     if(i<navigation.length)switchTo(navigation[i].defaultView);
   });
   addEventListener('hashchange',()=>{
-    const id=location.hash.replace(/^#\//,'');
-    const view=resolveView(id);
-    if(view&&(view.id!==current||location.hash!==viewHash(view)))switchTo(id,{replace:true});
+    /* The registry's own pushes fire no hashchange, so every one is the
+       person navigating: another view, an alias to normalise in place, or
+       the same view under another selection (Back between two items, the
+       query edited away). Show it; switchTo rewrites nothing when the path
+       is already the view's canonical route. */
+    const target=currentHash();
+    if(resolveView(target))switchTo(target,{replace:true});
   });
-  const initial=location.hash.replace(/^#\//,'');
+  const initial=currentHash();
   switchTo(resolveView(initial)?initial:defaultView,{replace:true});
 }
 

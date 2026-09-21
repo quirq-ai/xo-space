@@ -76,13 +76,13 @@ for(const [,names,module] of app.matchAll(/import (.+?) from '(\.\/views\/[^']+)
 }
 const registry=await import(new URL('js/core/registry.js',base));
 const {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES}=await import(new URL('js/core/navigation.js',base));
-const registered=[];
+const registered=[],shows={};
 for(const [,name,argument,factory,factoryArgument] of app.matchAll(/registerView\((\w+)(?:\((\w+)\))?\);|(\w+)\((\w*)\)\.forEach\(registerView\);/g)){
   const result=factory?views[factory](factoryArgument?views[factoryArgument]:undefined):[argument?views[name](views[argument]):views[name]];
   assert.ok(Array.isArray(result),'view factory returns an array');
   for(const view of result){
     assert.ok(view,'registered view '+(name||factory));registered.push(view);
-    registry.registerView({...view,mount:async()=>{},show:()=>{},hide:()=>{}});
+    registry.registerView({...view,mount:async()=>{},show:()=>{shows[view.id]=(shows[view.id]||0)+1;},hide:()=>{}});
   }
 }
 registry.startRegistry({tabs:PRIMARY_TABS,defaultView:'projects'});
@@ -92,7 +92,7 @@ const expectedTabs=['projects','agents','inbox','setup'];
 const defaults=['projects/overview','agents/overview','inbox/items','setup/workspace'];
 assert.deepEqual(PRIMARY_TABS.map(tab=>[tab.id,tab.defaultView]),expectedTabs.map((id,i)=>[id,defaults[i]]));
 assert.deepEqual(tabs.children.map(tab=>[tab.id,tab.tagName,tab.href]),expectedTabs.map((id,i)=>['tab-'+id,'A','#/'+defaults[i]]));
-assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Inbox','Setup']);
+assert.deepEqual(tabs.children.map(tab=>tab.textContent),['Projects','Agents','Work','Setup']);
 assert.deepEqual(PROJECT_PAGES.map(page=>[page.id,page.route,page.label]),[
   ['dashboard','projects/overview','Overview'],['project-list','projects/data/list','List'],
   ['graph','projects/data/graph','Graph'],['tree','projects/data/tree','Tree'],
@@ -103,11 +103,13 @@ assert.deepEqual(PROJECT_SECTIONS.map(page=>[page.id,page.route,page.label]),[
 assert.deepEqual(DATA_VIEWS.map(page=>page.id),['project-list','graph','tree']);
 assert.deepEqual(AGENT_PAGES.map(page=>page.route),['overview','sessions','trends','configure'].map(page=>'agents/'+page));
 assert.deepEqual(AGENT_PAGES[2].aliases,['agents/tools','agents/models']);
-assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','connections','jobs','activity','sharing-activity','sharing'].map(page=>'inbox/'+page));
+assert.deepEqual(INBOX_PAGES.map(page=>page.route),['items','jobs','activity','sharing'].map(page=>'inbox/'+page));
+assert.deepEqual(INBOX_PAGES.map(page=>page.label),['Inbox','Jobs','Activity','Sharing']);
+assert.equal(INBOX_PAGES.some(page=>page.route==='inbox/connections'),false,'Connections is a Setup section');
 assert.equal(registered.some(view=>view.id==='projects'),false,'List cannot own the Projects section identity');
 assert.equal(registered.find(view=>view.id==='project-list').section,'projects');
 assert.equal(elements.has('tab-project-list'),false,'List has no primary tab');
-const setupRoutes=['workspace','intelligence','connectors','secrets','commands','server'].map(id=>'setup/'+id);
+const setupRoutes=['workspace','intelligence','connections','secrets','commands','server'].map(id=>'setup/'+id);
 const pages=[...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,...setupRoutes.map(route=>({id:route,route}))];
 const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'agents/overview',inbox:'inbox/items',
   'agents/tools':'agents/trends','agents/models':'agents/trends',
@@ -116,10 +118,10 @@ const aliases={projects:'projects/overview',agents:'agents/overview',sessions:'a
   'projects/files/list':'projects/data/list','projects/files/graph':'projects/data/graph','projects/files/tree':'projects/data/tree','projects/list':'projects/data/list',
   'projects/graph':'projects/data/graph','projects/tree':'projects/data/tree',
   sharing:'inbox/sharing','projects/sharing':'inbox/sharing',time:'projects/timeline',timeline:'projects/timeline',
-  secrets:'setup/secrets',connectors:'setup/connectors',quirq:'setup/server/details'};
+  secrets:'setup/secrets',connectors:'setup/connections','setup/connectors':'setup/connections','inbox/connections':'setup/connections',quirq:'setup/server/details'};
 function canonical(target){return aliases[target]||pages.find(page=>page.id===target)?.route||target;}
-function assertPage(route){
-  assert.equal(location.hash,'#/'+route);
+function assertPage(route,query=''){
+  assert.equal(location.hash,'#/'+route+query);
   const view=registered.find(view=>(view.route||view.id)===route);
   assert.ok(view,'registered canonical route '+route);
   const parent=view.parent||view.id;
@@ -130,9 +132,11 @@ function assertPage(route){
   assert.ok(elements.get('view-'+section).classList.contains('is-active'));
   assert.equal([...elements].filter(([id,element])=>id.startsWith('view-')&&element.classList.contains('is-active')).length,1);
 }
-const initial=process.argv[1].replace(/^#\//,'');
+// A query on the deep link (the item page's selection) is matched around and kept.
+const [initial,initialQuery='']=process.argv[1].replace(/^#\//,'').split(/(?=\?)/);
 const initialRoute=canonical(initial);
-assertPage(registered.some(view=>(view.route||view.id)===initialRoute)?initialRoute:'projects/overview');
+const known=registered.some(view=>(view.route||view.id)===initialRoute);
+assertPage(known?initialRoute:'projects/overview',known?initialQuery:'');
 for(const page of pages){await registry.switchTo(page.route);assertPage(page.route);}
 for(const [alias,route] of Object.entries(aliases)){await registry.switchTo(alias);assertPage(route);}
 await registry.switchTo('wiki');assertPage('wiki');
@@ -183,6 +187,27 @@ assert.equal(registered.find(view=>view.id==='inbox-activity').section,'inbox-ac
 assert.equal(registered.filter(view=>view.id==='sharing').length,1);
 assert.equal(registered.filter(view=>view.id==='inbox-activity').length,1);
 
+// The item page carries its selection as a hash query: matched on the path,
+// kept in the URL, one history entry per item, re-shown on Back, never
+// normalised away, and dropped again on the next plain route.
+await registry.switchTo('inbox/items');
+const itemPushes=historyPushes,itemReplaces=historyReplaces;
+await registry.switchTo('inbox/item?p=demo&id=one');assertPage('inbox/item','?p=demo&id=one');
+assert.equal(historyPushes,itemPushes+1);
+const itemShows=shows['inbox-item'];
+await registry.switchTo('inbox/item?p=demo&id=two');assertPage('inbox/item','?p=demo&id=two');
+assert.equal(historyPushes,itemPushes+2,'another item is another entry');
+assert.equal(shows['inbox-item'],itemShows+1,'the same view shows again for another query');
+await registry.switchTo('inbox/item?p=demo&id=two');
+assert.equal(historyPushes,itemPushes+2,'the same item again is not pushed twice');
+history.back();assertPage('inbox/item','?p=demo&id=one');
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(shows['inbox-item'],itemShows+3,'Back to the other item re-reads the selection');
+assert.equal(historyReplaces,itemReplaces,'a canonical path with a query is never rewritten');
+await registry.switchTo('inbox/items');assertPage('inbox/items');
+assert.equal(await registry.switchTo('no-such-view?p=x'),false,'an unknown path with a query resolves nothing');
+assertPage('inbox/items');
+
 // Re-registering an independent view removes obsolete aliases.
 registry.registerView({id:'route-probe',route:'probe/first',aliases:['probe-old'],nav:false,section:'setup',parent:'setup',mount:async()=>{}});
 await registry.switchTo('probe-old');assert.equal(location.hash,'#/probe/first');
@@ -197,7 +222,7 @@ await registry.switchTo('probe-new');assert.equal(location.hash,'#/probe/second'
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SpaceNavigationTests(unittest.TestCase):
     def test_default_deep_links_and_numbered_navigation(self) -> None:
-        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/data", "#/projects/data/list", "#/projects/data/graph", "#/projects/data/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/agents/configure", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing-activity", "#/inbox/sharing", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
+        for route in ("", "#/projects", "#/projects/overview", "#/projects/files", "#/projects/files/list", "#/projects/files/graph", "#/projects/files/tree", "#/projects/data", "#/projects/data/list", "#/projects/data/graph", "#/projects/data/tree", "#/projects/manage", "#/projects/list", "#/projects/graph", "#/projects/tree", "#/dashboard", "#/list", "#/graph", "#/tree", "#/sharing", "#/time", "#/timeline", "#/agents", "#/agents/overview", "#/agents/sessions", "#/agents/tools", "#/agents/models", "#/agents/trends", "#/agents/configure", "#/inbox", "#/inbox/items", "#/inbox/connections", "#/inbox/jobs", "#/inbox/activity", "#/inbox/sharing", "#/inbox/item", "#/inbox/item?p=demo&id=one", "#/inbox/item?s=session-1", "#/projects/sharing", "#/wiki", "#/setup", "#/setup/workspace", "#/setup/intelligence", "#/setup/connections", "#/setup/projects", "#/setup/connectors", "#/setup/secrets", "#/setup/commands", "#/setup/server", "#/setup/server/details", "#/quirq", "#/secrets", "#/connectors", "#/sessions", "#/unknown"):
             with self.subTest(route=route):
                 result = subprocess.run(
                     ["node", "--input-type=module", "-e", PROBE, "--", route],

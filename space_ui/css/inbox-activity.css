@@ -1,5 +1,5 @@
-/* Workspace and sharing activity use the same compact, read-only feed. */
-#view-inbox-activity,#view-inbox-sharing-activity{overflow-y:auto}
+/* The workspace activity feed: compact and read-only. */
+#view-inbox-activity{overflow-y:auto}
 .iac{max-width:1180px;margin:0 auto;padding:26px 26px 50px;font-family:var(--sans)}
 .iac [hidden]{display:none!important}
 .iac-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:20px}

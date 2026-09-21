@@ -49,7 +49,22 @@ VALID_STATE_REASONS: frozenset[str] = frozenset(
     {"completed", "not_planned", "reopened"}
 )
 
-VALID_SOURCE_KINDS: frozenset[str] = frozenset({"local", "github"})
+#: ``local`` (made here), ``github`` (an adopted issue), and the kinds the
+#: Inbox feeds create at ingestion (docs/work-and-workitems.md section 18):
+#: ``connection`` (a polled app's event), ``sharing`` (a relay transition),
+#: ``post`` (an agent's or a person's note through the Inbox API).
+VALID_SOURCE_KINDS: frozenset[str] = frozenset({"local", "github", "connection", "sharing", "post"})
+
+#: The block each fed kind carries beside ``kind`` and ``key``.
+_SOURCE_BLOCKS: dict[str, tuple[str, ...]] = {
+    "connection": ("toolkit", "type", "event"),
+    "sharing": ("repo", "event"),
+    "post": ("agent", "kind"),
+}
+
+#: ``source.key``: the dedup identity of a fed work item, one line, no
+#: whitespace (``connection:gmail:unread:18c2a9f1``).
+_SOURCE_KEY_RE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,400}$")
 
 #: The fields GitHub is authoritative for. Never stored for an adopted item
 #: (§5.3) — see the module docstring.
@@ -250,13 +265,38 @@ def _validate_github_ref(value: object) -> dict:
     return {"repo": repo, "number": number, "node_id": value["node_id"], "url": url}
 
 
+def _validate_source_block(kind: str, value: object) -> dict:
+    """The ``connection`` / ``sharing`` / ``post`` block: short strings only."""
+    fields = _SOURCE_BLOCKS[kind]
+    if not isinstance(value, dict):
+        raise WorkitemsStoreError("invalid_source", f"source.{kind} must be an object.")
+    unknown = sorted(set(value) - set(fields))
+    if unknown:
+        raise WorkitemsStoreError(
+            "invalid_source", f"source.{kind} carries unknown key(s) {unknown}."
+        )
+    out: dict = {}
+    for field in fields:
+        raw = value.get(field)
+        if raw is None:
+            out[field] = None
+            continue
+        if not isinstance(raw, str) or not raw.strip() or len(raw) > 200 \
+                or any(ch.isspace() and ch != " " for ch in raw) or any(ord(ch) < 32 for ch in raw):
+            raise WorkitemsStoreError(
+                "invalid_source", f"source.{kind}.{field} must be a short one-line string."
+            )
+        out[field] = raw.strip()
+    return out
+
+
 def _validate_source(value: object) -> dict:
     """Validate and normalise the ``source`` block."""
     if value is None:
         return {"kind": "local"}
     if not isinstance(value, dict):
         raise WorkitemsStoreError("invalid_source", "source must be an object.")
-    unknown = sorted(set(value) - {"kind", "github"})
+    unknown = sorted(set(value) - ({"kind", "key", "github"} | set(_SOURCE_BLOCKS)))
     if unknown:
         raise WorkitemsStoreError(
             "invalid_source", f"source carries unknown key(s) {unknown}."
@@ -266,19 +306,48 @@ def _validate_source(value: object) -> dict:
         raise WorkitemsStoreError(
             "invalid_source", f"source.kind must be one of {sorted(VALID_SOURCE_KINDS)}."
         )
+    for block in ("github", *_SOURCE_BLOCKS):
+        if block != kind and value.get(block) is not None:
+            raise WorkitemsStoreError(
+                "invalid_source",
+                f"source.{block} is only valid when source.kind == '{block}'.",
+            )
+    out: dict = {"kind": kind}
+    key = value.get("key")
+    if key is not None:
+        if not isinstance(key, str) or not _SOURCE_KEY_RE.match(key):
+            raise WorkitemsStoreError(
+                "invalid_source", "source.key must be one line of at most 400 chars, without whitespace."
+            )
+        out["key"] = key
     if kind == "github":
         if "github" not in value:
             raise WorkitemsStoreError(
                 "invalid_source",
                 "source.github is required when source.kind == 'github'.",
             )
-        return {"kind": "github", "github": _validate_github_ref(value["github"])}
-    if value.get("github") is not None:
-        raise WorkitemsStoreError(
-            "invalid_source",
-            "source.github is only valid when source.kind == 'github'.",
-        )
-    return {"kind": "local"}
+        out["github"] = _validate_github_ref(value["github"])
+    elif kind in _SOURCE_BLOCKS:
+        if kind not in value:
+            raise WorkitemsStoreError(
+                "invalid_source", f"source.{kind} is required when source.kind == '{kind}'."
+            )
+        out[kind] = _validate_source_block(kind, value[kind])
+    return out
+
+
+def source_kind(item: object) -> str:
+    """The record's ``source.kind``; a record without one is ``local``."""
+    source = item.get("source") if isinstance(item, dict) else None
+    kind = source.get("kind") if isinstance(source, dict) else None
+    return kind if kind in VALID_SOURCE_KINDS else "local"
+
+
+def source_key(item: object) -> Optional[str]:
+    """The record's ``source.key`` (the dedup identity of a fed item), if any."""
+    source = item.get("source") if isinstance(item, dict) else None
+    key = source.get("key") if isinstance(source, dict) else None
+    return key if isinstance(key, str) and key else None
 
 
 def _refuse_github_owned(supplied: dict[str, Any]) -> None:
@@ -553,10 +622,8 @@ def list_workitems(
             continue
         if status is not None and record.get("status") != status:
             continue
-        if kind is not None:
-            record_kind = "github" if is_adopted(record) else "local"
-            if record_kind != kind:
-                continue
+        if kind is not None and source_kind(record) != kind:
+            continue
         if assignee is not None and record.get("assignee") != assignee:
             continue
         out.append(record)

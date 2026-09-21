@@ -24,7 +24,7 @@ from services.connections import collectors, poller
 from services.connections import service as connections_service
 from services.connections import store as connections_store
 from services.inbox import service as inbox_service
-from services.inbox import store as inbox_store
+from services.inbox import ledger as inbox_ledger
 from services.storage import atomic_write, flock, paths, reader
 from utils import runtime_env
 
@@ -82,10 +82,13 @@ class StorageMoveTests(unittest.TestCase):
             self.assertTrue(fn.__module__.startswith("services.storage."), fn)
 
     def test_inbox_and_connections_import_storage_not_the_former_paths(self) -> None:
-        for rel in ("services/inbox/store.py", "services/inbox/feeders.py", "services/connections/store.py"):
+        for rel in ("services/inbox/ledger.py", "services/inbox/facts.py", "services/inbox/feeders.py", "services/connections/store.py"):
             with self.subTest(file=rel):
                 src = read(rel)
-                self.assertIn("from services.storage.", src)
+                # a module that touches the file primitives takes them from services.storage;
+                # the feeders stopped reading files themselves when the timeline and todos feeders went
+                if any(name in src for name in ("read_json(", "locked(", "write_json_atomic(", "append_jsonl(")):
+                    self.assertIn("from services.storage.", src)
                 for former in ("cowork_agent.visualizer.reader", "cowork_agent.visualizer.flock",
                                "cowork_agent.visualizer.atomic_write", "cowork_agent.local_state"):
                     self.assertNotIn(former, src)
@@ -116,9 +119,8 @@ class TimestampsTests(unittest.TestCase):
         self.assertEqual(timestamps.TS_FORMAT, "%Y-%m-%dT%H:%M:%SZ")
 
     def test_the_packages_share_the_helpers_rather_than_copying_them(self) -> None:
-        self.assertIs(inbox_store.parse_ts, timestamps.parse_ts)
-        self.assertIs(inbox_store.now_iso, timestamps.now_iso)
-        self.assertIs(inbox_store._EPOCH, timestamps.EPOCH)
+        self.assertIs(inbox_ledger.parse_ts, timestamps.parse_ts)
+        self.assertIs(inbox_ledger.now_iso, timestamps.now_iso)
         self.assertIs(connections_store.parse_ts, timestamps.parse_ts)
         self.assertIs(connections_store.now_iso, timestamps.now_iso)
         self.assertIs(connections_store._EPOCH, timestamps.EPOCH)
@@ -140,14 +142,14 @@ class ServiceErrorTests(unittest.TestCase):
         self.assertEqual(errors.ServiceError("c", "m", 404).status, 404)
 
     def test_inbox_and_connections_errors_are_service_errors_at_their_old_homes(self) -> None:
-        self.assertTrue(issubclass(inbox_store.InboxError, errors.ServiceError))
+        self.assertTrue(issubclass(inbox_ledger.InboxError, errors.ServiceError))
         self.assertTrue(issubclass(connections_store.ConnectionsError, errors.ServiceError))
-        self.assertFalse(issubclass(connections_store.ConnectionsError, inbox_store.InboxError))
-        self.assertIs(inbox_service.InboxError, inbox_store.InboxError)
+        self.assertFalse(issubclass(connections_store.ConnectionsError, inbox_ledger.InboxError))
+        self.assertIs(inbox_service.InboxError, inbox_ledger.InboxError)
         self.assertIs(connections_service.ConnectionsError, connections_store.ConnectionsError)
-        self.assertEqual(inbox_store.InboxError.__module__, "services.inbox.store")
+        self.assertEqual(inbox_ledger.InboxError.__module__, "services.inbox.ledger")
         self.assertEqual(connections_store.ConnectionsError.__module__, "services.connections.store")
-        exc = inbox_store.InboxError("item_not_found", "Inbox item not found.", 404)
+        exc = inbox_ledger.InboxError("item_not_found", "Inbox item not found.", 404)
         self.assertEqual((exc.code, exc.message, exc.status, str(exc)),
                          ("item_not_found", "Inbox item not found.", 404, "Inbox item not found."))
         self.assertEqual(connections_store.ConnectionsError("invalid_value", "bad").status, 400)
@@ -156,7 +158,7 @@ class ServiceErrorTests(unittest.TestCase):
         exc = bff_errors.http_error(connections_store.ConnectionsError("unknown_toolkit", "Unknown toolkit.", 404))
         self.assertIsInstance(exc, HTTPException)
         self.assertEqual((exc.status_code, exc.detail), (404, {"code": "unknown_toolkit", "message": "Unknown toolkit."}))
-        exc = bff_errors.http_error(inbox_store.InboxError("invalid_value", "bad"))
+        exc = bff_errors.http_error(inbox_ledger.InboxError("invalid_value", "bad"))
         self.assertEqual((exc.status_code, exc.detail), (400, {"code": "invalid_value", "message": "bad"}))
 
     def test_forbid_extra_rejects_unknown_keys(self) -> None:

@@ -94,7 +94,7 @@ await context.route('**/*',async route=>{
   // Non-Projects shell and Setup reads are equally fictional.
   const ancillary={
     '/space/server/status':{running:true},
-    '/api/inbox':{items:[],counts:{new:0,seen:0,done:0,open:0},total:0},
+    '/api/inbox':{schema:1,generated_at:'2026-09-14T10:00:00Z',runner:{enabled:true},sections:[],rows:[],count:0},
     '/api/connections':{signed_in:false,poller_enabled:false,connections:[]},
     '/api/schedules':{jobs:[],items:[],scheduler_enabled:false},
     '/api/secrets':{items:[]},

@@ -1,8 +1,8 @@
 /* Projects catalog and on-demand file browsing.
    Catalog, file index and activity feeds load independently. Row and drawer
    nodes survive filtering/sorting; explicit refresh owns data invalidation. */
-import {projectPage} from '../core/navigation.js?v=20260915-agents2';
-import {dataViewControls} from '../core/data-views.js?v=20260915-agents2';
+import {projectPage} from '../core/navigation.js?v=20260921-work2';
+import {dataViewControls} from '../core/data-views.js?v=20260921-work2';
 import {isProjectPinned,subscribeProjectPins} from '../core/project-pins.js?v=20260915-data1';
 import {API_BASE,apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';

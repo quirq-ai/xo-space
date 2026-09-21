@@ -1,5 +1,5 @@
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {setSectionActions} from '../core/section-nav.js?v=20260915-agents2';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260921-work2';
+import {setSectionActions} from '../core/section-nav.js?v=20260921-work2';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -563,7 +563,7 @@ async function onClick(e){
       render();
       return;
     case'apply':return doApply(id);
-    case'connect':return go('setup/connectors');
+    case'connect':return go('inbox/connections');
     case'restore':
       return openProjectAdd(go);
     case'list':

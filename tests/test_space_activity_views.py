@@ -32,19 +32,19 @@ let handler=path=>path==='/api/xo-projects'?success({items:[{id:'alpha',display_
  :path==='/api/xo-projects/activity'?success({open_sessions:[]})
  :/^\/api\/xo-projects\/[^/]+\/activity$/.test(path)?success({project_id:path.split('/')[3],open_sessions:[]})
  :/^\/api\/xo-projects\/[^/]+\/todos$/.test(path)?success({project_id:path.split('/')[3],sessions:{}})
- :path==='/api/project-sharing/status'?success({recent:[],repos:{}}):success({events:[],next_cursor:null});
+ :success({events:[],next_cursor:null});
 const request=(path,options)=>{calls.push({path,options});return handler(path,options);};
 const esc=value=>String(value??'').replace(/[&<>"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
 const ctx=vm.createContext({
   console,AbortController,Date,Map,Set,Promise,API_BASE:'',apiFetch:request,esc,rel:()=> 'recently',
-  INBOX_PAGES:[{id:'inbox-activity',route:'inbox/activity',parent:'inbox'},{id:'inbox-sharing-activity',route:'inbox/sharing-activity',parent:'inbox'}],
+  INBOX_PAGES:[{id:'inbox-activity',route:'inbox/activity',parent:'inbox'}],
   addEventListener:(type,handler)=>{if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(handler);},
   document:{createElement:()=>new Element()},location:{hash:'#/inbox/activity'},
   setTimeout:(fn,ms)=>{const id=++sequence;timeouts.set(id,{fn,ms});return id;},clearTimeout:id=>timeouts.delete(id),
   setInterval:(fn,ms)=>{const id=++sequence;intervals.set(id,{fn,ms});return id;},clearInterval:id=>intervals.delete(id),
 });
 const source=fs.readFileSync('space_ui/js/views/inbox-activity.js','utf8').replace(/^import[^\n]*\n/gm,'').replace(/export function /g,'function ');
-vm.runInContext(source+'\nglobalThis.api={createActivityViews,buildWorkspaceEvents,buildSharingEvents,filterActivityEvents,buildProjectTodos};',ctx);
+vm.runInContext(source+'\nglobalThis.api={createActivityViews,buildWorkspaceEvents,filterActivityEvents,buildProjectTodos};',ctx);
 const {api}=ctx;
 const emit=(type,detail)=>{for(const fn of listeners.get(type)||[])fn({detail});};
 const settle=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
@@ -79,19 +79,6 @@ const names=new Map([['alpha','Alpha Research']]);
 assert.equal(api.filterActivityEvents(events,{query:'research BLOCKED',names}).length,1,'Search requires every term across names and event metadata');
 assert.equal(api.filterActivityEvents(events,{query:'research parser',names}).length,0);
 assert.equal(api.filterActivityEvents(events,{project:'beta'}).length,2);
-""")
-
-    def test_sharing_transform_uses_only_recorded_transitions(self):
-        self.probe(r"""
-const events=api.buildSharingEvents({recent:[
- {at:'2026-09-14T10:00:00Z',repo:'github.com/team/alpha',kind:'fetched',detail:'2 commit(s)'},
- {at:'2026-09-14T11:00:00Z',repo:'github.com/team/incoming',kind:'clone_failed',detail:'no_access'},
-],repos:{'github.com/team/alpha':{project:'alpha',fetched:500,last_fetch_at:'2026-09-14T12:00:00Z'}}});
-assert.equal(events.length,2,'Current repo state cannot manufacture extra events');
-assert.equal(events[0].label,'Clone failed');assert.equal(events[0].projectId,'');
-assert.equal(events[1].projectId,'alpha');
-assert.equal(api.filterActivityEvents(events,{project:'github.com/team/incoming'}).length,1);
-assert.equal(api.buildSharingEvents({recent:[],repos:{}}).length,0,'A fresh process has no retained history');
 """)
 
     def test_auxiliary_timeouts_do_not_hide_feed_and_are_cancelled(self):
@@ -149,19 +136,21 @@ assert.equal(root.querySelector('[data-activity-more]').hidden,true,'Loaded olde
 view.hide();
 """)
 
-    def test_empty_error_and_independent_page_state_are_distinct(self):
+    def test_empty_and_error_states_are_distinct_on_the_one_activity_page(self):
         self.probe(r"""
 const defaults=handler;let failed=true;
 handler=path=>path.includes('/timeline')?(failed?{ok:false}:success({events:[]})):defaults(path);
-const [workspace,sharing]=api.createActivityViews(),a=mount(workspace),b=mount(sharing);
-workspace.show();await workspace.refresh();assert.equal(a.querySelector('[data-activity-summary]').textContent,'Activity unavailable');
+const views=api.createActivityViews();
+assert.equal(views.length,1,'Sharing activity is gone: Activity is the only feed');
+const [view]=views,a=mount(view);
+view.show();await view.refresh();assert.equal(a.querySelector('[data-activity-summary]').textContent,'Activity unavailable');
 assert.ok(!a.querySelector('[data-activity-empty]').textContent.includes('No project events'));
-failed=false;await workspace.refresh();assert.match(a.querySelector('[data-activity-empty]').textContent,/No project events/);
-workspace.toolbar.search.setValue('workspace draft');workspace.hide();sharing.show();await sharing.refresh();
-assert.equal(sharing.toolbar.search.getValue(),'');sharing.toolbar.search.setValue('repo search');
-assert.equal(workspace.toolbar.search.getValue(),'workspace draft');
-assert.equal(sharing.section,'inbox-sharing-activity');assert.equal(workspace.section,'inbox-activity');
-sharing.hide();assert.equal(intervals.size,0);
+failed=false;await view.refresh();assert.match(a.querySelector('[data-activity-empty]').textContent,/No project events/);
+view.toolbar.search.setValue('workspace draft');view.hide();view.show();await view.refresh();
+assert.equal(view.toolbar.search.getValue(),'workspace draft','A hidden page keeps its search');
+assert.equal(view.section,'inbox-activity');assert.equal(view.route,'inbox/activity');
+assert.ok(!calls.some(call=>call.path.includes('project-sharing')),'The activity page never reads the sharing relay');
+view.hide();assert.equal(intervals.size,0);
 """)
 
     def test_cold_show_does_not_block_project_handoff_on_global_reads(self):

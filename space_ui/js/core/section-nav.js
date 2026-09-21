@@ -1,10 +1,11 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
-import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260915-agents2';
+import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES,INBOX_ITEM_PAGE} from './navigation.js?v=20260921-work2';
 import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
-const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
+/* the item page keeps the Work links on screen without a link of its own */
+const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES,INBOX_ITEM_PAGE].map(page=>[page.id,page]));
 const DATA_IDS=new Set(DATA_VIEWS.map(page=>page.id));
 const UNTITLED_PAGES=new Set(['dashboard','graph','tree','sharing']);
 const pageActions=new Map();

@@ -30,6 +30,7 @@ GLOBAL_SKILLS_DIR = Path.home() / ".agents" / "skills"
 # `SKILL.md`. Add a name here to bundle a new skill with every installed agent.
 BUNDLED_SKILLS = (
     "xo-projects",
+    "inbox-item",   # the session an Inbox item runs (docs/work-and-workitems.md section 17)
 )
 
 

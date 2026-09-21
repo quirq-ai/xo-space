@@ -1,8 +1,8 @@
-/* Read-only activity streams. Workspace history and the relay's volatile
-   recent events have different retention, so each owns a separate page. */
+/* The read-only workspace activity stream: project events, open sessions and
+   a selected project's todos, from their existing read APIs. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,rel} from '../core/ui.js';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260921-work2';
 
 const LIMIT=200;
 const text=value=>typeof value==='string'?value.trim():'';
@@ -18,8 +18,6 @@ const WORKSPACE_LABELS={
   'workitem.claimed':'Work started','workitem.released':'Work released','workitem.closed':'Work item closed',
   'workitem.reopened':'Work item reopened','workitem.deleted':'Work item deleted',
 };
-const SHARING_LABELS={shared_with_you:'Shared with this Space',fetched:'Commits fetched',revoked:'Sharing access removed',
-  cloned:'Project cloned',clone_failed:'Clone failed',error:'Sync failed'};
 const newestFirst=rows=>rows.sort((a,b)=>(b.ms??-Infinity)-(a.ms??-Infinity)||b.order-a.order);
 /* Status vocabulary lives in visualizer/todo_status.py; order is a UI choice. */
 const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
@@ -58,17 +56,6 @@ export function buildWorkspaceEvents(payload,projectId=''){
   }));
 }
 
-export function buildSharingEvents(payload){
-  return newestFirst((Array.isArray(payload?.recent)?payload.recent:[]).flatMap((event,order)=>{
-    if(!event||!text(event.kind)||!text(event.repo))return[];
-    const repo=text(event.repo),kind=text(event.kind),ts=text(event.at);
-    const row={projectId:text(payload.repos?.[repo]?.project),filterId:repo,subject:repo,kind,ts,ms:stamp(ts),order,
-      label:SHARING_LABELS[kind]||human(kind),detail:text(event.detail),runtime:'',sessionId:'',
-      tone:kind==='error'||kind==='clone_failed'?'error':''};
-    row.key=JSON.stringify([repo,ts,kind,row.detail]);return[row];
-  }));
-}
-
 export function filterActivityEvents(events,{query='',project='',names=new Map()}={}){
   const words=text(query).toLowerCase().split(/\s+/).filter(Boolean);
   return events.filter(event=>(!project||event.filterId===project)&&words.every(word=>
@@ -77,17 +64,17 @@ export function filterActivityEvents(events,{query='',project='',names=new Map()
 }
 
 export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=30000}={}){
-  return [activityView('inbox-activity',false),activityView('inbox-sharing-activity',true)];
+  return [activityView('inbox-activity')];
 
-  function activityView(id,sharing){
+  function activityView(id){
     let root=null,go=()=>{},refreshToolbar=()=>{},active=false,poll=null,generation=0,pending=null;
-    let query='',project='',events=[],names=new Map(),snapshot=null,sessions=null,nextCursor=null;
+    let query='',project='',events=[],names=new Map(),sessions=null,nextCursor=null;
     let hasSnapshot=false,loadedOlder=false,loading=false,loadingMore=false,lastLoaded=null;
     let feedError='',catalogError='',liveError='',todosError='',invalidRows=false;
     let todos=null,liveLoading=false,todosLoading=false;
     const reads=new Set(),rowNodes=new Map();
     const $=selector=>root.querySelector(selector);
-    const title=sharing?'Sharing activity':'Activity';
+    const title='Activity';
 
     function read(path){
       return new Promise(resolve=>{
@@ -109,33 +96,33 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     async function refresh({older=false}={}){
       if(!root||!active)return;
       if(pending)return pending;
-      if(older&&(!nextCursor||sharing))return;
+      if(older&&!nextCursor)return;
       const revision=++generation,selected=project,before=older?nextCursor:'';
-      if(!older&&!sharing){liveLoading=true;todosLoading=Boolean(selected);}
+      if(!older){liveLoading=true;todosLoading=Boolean(selected);}
       loading=!older;loadingMore=older;feedError='';render();
-      const work=read(sharing?'/api/project-sharing/status':timelinePath(before)).then(result=>{
+      const work=read(timelinePath(before)).then(result=>{
         if(!current(revision))return;
         loading=false;loadingMore=false;
-        const payload=result.data,list=sharing?payload?.recent:payload?.events;
+        const payload=result.data,list=payload?.events;
         if(!result.ok||!Array.isArray(list)){
           feedError=hasSnapshot?'Could not refresh activity. Previously loaded events are shown.':'Could not load activity. Try Refresh.';
           render();return;
         }
-        const rows=sharing?buildSharingEvents(payload):buildWorkspaceEvents(payload,selected);
+        const rows=buildWorkspaceEvents(payload,selected);
         invalidRows=rows.length!==list.length;
-        if(older||(!sharing&&loadedOlder)){
+        if(older||loadedOlder){
           const merged=new Map(events.map(row=>[row.key,row]));
           for(const row of rows)merged.set(row.key,row);
           events=newestFirst([...merged.values()]);
         }else events=rows;
-        if(!sharing&&(older||!loadedOlder)){
+        if(older||!loadedOlder){
           const cursor=text(payload.next_cursor);
           nextCursor=rows.length&&stamp(cursor)!==null&&cursor!==before?cursor:null;
         }
         if(older)loadedOlder=true;
-        snapshot=payload;hasSnapshot=true;lastLoaded=new Date().toISOString();render();
+        hasSnapshot=true;lastLoaded=new Date().toISOString();render();
       });
-      const extra=older||sharing?[]:[
+      const extra=older?[]:[
         read('/api/xo-projects').then(result=>{
           if(!current(revision))return;
           if(result.ok&&Array.isArray(result.data?.items)&&result.data.items.every(item=>text(item?.id))){
@@ -169,20 +156,16 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     }
 
     function renderFilter(){
-      const options=new Map(sharing?[]:names);
-      for(const row of events)if(row.filterId)options.set(row.filterId,sharing?row.subject:names.get(row.projectId)||row.projectId);
-      if(sharing&&snapshot?.repos&&typeof snapshot.repos==='object'&&!Array.isArray(snapshot.repos)){
-        for(const repo of Object.keys(snapshot.repos))options.set(repo,repo);
-      }
+      const options=new Map(names);
+      for(const row of events)if(row.filterId)options.set(row.filterId,names.get(row.projectId)||row.projectId);
       if(project&&!options.has(project))options.set(project,project);
-      const markup='<option value="">'+(sharing?'All repositories':'All projects')+'</option>'
+      const markup='<option value="">All projects</option>'
         +[...options].sort((a,b)=>a[1].localeCompare(b[1])).map(([value,label])=>'<option value="'+esc(value)+'">'+esc(label)+'</option>').join('');
       const select=$('[data-activity-project-filter]');
       if(select.dataset.options!==markup){select.innerHTML=markup;select.dataset.options=markup;}
       select.value=project;
     }
     function renderLive(){
-      if(sharing)return;
       const details=$('[data-activity-live]'),summary=$('[data-activity-live-summary]');
       const rows=(sessions||[]).filter(session=>!project||session.project_id===project);
       summary.textContent=(liveError||sessions===null)?'Open sessions unavailable':rows.length+' open '+(rows.length===1?'session':'sessions');
@@ -199,7 +182,6 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       }).join(''):'<p class="iac-note">'+(sessions===null?(liveLoading?'Checking this selection…':'Try Refresh to check again.'):'No open sessions are reported for this selection.')+'</p>';
     }
     function renderTodos(){
-      if(sharing)return;
       const details=$('[data-activity-todos]'),summary=$('[data-activity-todos-summary]');
       details.hidden=!project;$('[data-activity-todo-scope]').hidden=Boolean(project);
       if(!project)return;
@@ -214,8 +196,8 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           +(todos.length>shown.length?'<p class="iac-note">Showing '+shown.length+' of '+todos.length+' todos · '+(todos.length-shown.length)+' more</p>':'');
     }
     function rowHTML(row){
-      const subject=sharing?row.subject:names.get(row.projectId)||row.subject||'Workspace';
-      const projectLink=sharing?'<a href="#/inbox/sharing">'+esc(subject)+'</a>':row.projectId
+      const subject=names.get(row.projectId)||row.subject||'Workspace';
+      const projectLink=row.projectId
         ?'<button type="button" data-activity-project="'+esc(row.projectId)+'">'+esc(subject)+'</button>':'<span>'+esc(subject)+'</span>';
       return'<span class="iac-dot'+(row.tone?' is-'+row.tone:'')+'" aria-hidden="true"></span><div class="iac-event-body"><div class="iac-event-title"><b>'+esc(row.label)+'</b>'+projectLink+'</div>'
         +(row.detail?'<p class="iac-event-detail">'+esc(row.detail)+'</p>':'')
@@ -241,18 +223,16 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       const rows=filterActivityEvents(events,{query,project,names});renderRows(rows);
       $('[data-activity-summary]').textContent=(loading&&hasSnapshot?'Refreshing… · ':'')+(hasSnapshot?rows.length+' of '+events.length+' loaded events':feedError?'Activity unavailable':'Loading activity…');
       const warnings=[feedError,catalogError,liveError,todosError,invalidRows?'Some activity records could not be read.':''];
-      if(sharing&&snapshot?.cadence==='parked')warnings.push('Sharing is paused. Open Sharing for its connection status.');
       const warning=$('[data-activity-warning]');warning.textContent=warnings.filter(Boolean).join(' ');warning.hidden=!warning.textContent;
       const empty=$('[data-activity-empty]');empty.hidden=rows.length>0;
       empty.textContent=!hasSnapshot?(loading?'Loading activity…':'Activity is unavailable.')
-        :query||project?'No loaded events match this selection.':sharing?'No sharing events have been recorded since this server started.':'No project events have been recorded yet.';
-      const more=$('[data-activity-more]');more.hidden=sharing||!nextCursor;more.disabled=loading||loadingMore||!!pending;
+        :query||project?'No loaded events match this selection.':'No project events have been recorded yet.';
+      const more=$('[data-activity-more]');more.hidden=!nextCursor;more.disabled=loading||loadingMore||!!pending;
       more.textContent=loadingMore?'Loading…':'Load older events';
       $('[data-activity-updated]').textContent=lastLoaded?'Updated '+dateLabel(lastLoaded):'';
     }
     function selectProject(value,{handoff=false}={}){
       project=value;
-      if(sharing){render();return;}
       if(handoff){query='';refreshToolbar();}
       ++generation;cancelReads();events=[];hasSnapshot=false;loadedOlder=false;nextCursor=null;lastLoaded=null;
       feedError='';liveError='';todosError='';invalidRows=false;sessions=null;todos=null;
@@ -260,29 +240,29 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       return refresh();
     }
     function openPendingProject(){
-      if(sharing||pendingProject===null)return false;
+      if(pendingProject===null)return false;
       const selected=pendingProject;pendingProject=null;
       selectProject(selected,{handoff:true});return true;
     }
     return{
       ...INBOX_PAGES.find(page=>page.id===id),section:id,
-      toolbar:{search:{placeholder:sharing?'Search sharing activity…':'Search activity…',label:'Search loaded '+title.toLowerCase(),
+      toolbar:{search:{placeholder:'Search activity…',label:'Search loaded '+title.toLowerCase(),
         getValue:()=>query,setValue:value=>{query=String(value??'');render();}}},
       mount(el,ctx){
         root=el;go=ctx.switchTo;refreshToolbar=ctx.refreshToolbar||(()=>{});
         root.innerHTML='<div class="iac"><header class="iac-head"><h1>'+title+'</h1><p data-activity-summary role="status"></p></header>'
-          +'<div class="iac-controls"><label for="'+id+'-project">'+(sharing?'Repository':'Project')+'</label><select id="'+id+'-project" data-activity-project-filter><option value="">All</option></select>'
-          +'<span class="iac-retention">'+(sharing?'Latest 50 events · cleared when the server restarts':'Recent workspace events · search covers loaded events')+'</span></div>'
+          +'<div class="iac-controls"><label for="'+id+'-project">Project</label><select id="'+id+'-project" data-activity-project-filter><option value="">All</option></select>'
+          +'<span class="iac-retention">Recent workspace events · search covers loaded events</span></div>'
           +'<p class="iac-warning" data-activity-warning role="status" hidden></p>'
-          +(sharing?'':'<details class="iac-live" data-activity-live><summary data-activity-live-summary>Checking open sessions…</summary><div data-activity-live-rows></div></details>'
-            +'<p class="iac-todo-scope" data-activity-todo-scope>Select a project to see its todos and current sessions.</p>'
-            +'<details class="iac-live iac-todos" data-activity-todos hidden><summary data-activity-todos-summary>Project todos</summary><div data-activity-todo-rows></div></details>')
+          +'<details class="iac-live" data-activity-live><summary data-activity-live-summary>Checking open sessions…</summary><div data-activity-live-rows></div></details>'
+          +'<p class="iac-todo-scope" data-activity-todo-scope>Select a project to see its todos and current sessions.</p>'
+          +'<details class="iac-live iac-todos" data-activity-todos hidden><summary data-activity-todos-summary>Project todos</summary><div data-activity-todo-rows></div></details>'
           +'<p class="iac-empty" data-activity-empty>Loading activity…</p><ol class="iac-events" data-activity-rows></ol>'
           +'<footer class="iac-footer"><button type="button" class="inb-btn" data-activity-more hidden>Load older events</button><span data-activity-updated></span></footer></div>';
         $('[data-activity-project-filter]').addEventListener('change',event=>{
           selectProject(event.target.value);
         });
-        if(!sharing)addEventListener('space:activity-project',()=>{
+        addEventListener('space:activity-project',()=>{
           if(active&&location.hash==='#/inbox/activity')openPendingProject();
         });
         $('[data-activity-more]').addEventListener('click',()=>refresh({older:true}));

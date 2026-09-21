@@ -23,17 +23,30 @@ const sessions=Array.from({length:24},(_,i)=>({
   duration_sec:60,total_tokens:100+i,cost:0,cost_known:false,
   turns:2,subagents:[],tools:[],
 }));
-const inbox=[
-  {id:'issue-a',status:'new',source:'issues',kind:'issue',title:'Release coordination',
-    body:'Prepare the lantern handoff.',project_id:'aurora-console'},
-  {id:'connection-b',status:'new',source:'connections',kind:'calendar',title:'Review meeting',
-    body:'Discuss the rollout schedule.',project_id:'harbor-infra'},
-  {id:'todo-c',status:'seen',source:'todos',kind:'todo',title:'Update the runbook',
-    body:'Document the recovery steps.',project_id:'harbor-infra'},
-  {id:'agent-d',status:'done',source:'demo-agent',kind:'note',title:'Previous release',
-    body:'The earlier handoff is finished.',project_id:'aurora-console'},
-].map(item=>({...item,ts:'2026-09-14T10:00:00Z'}));
-const writes=[];
+/* the Inbox over work items and sessions: the sections summary plus the rows
+   of the tab and state asked for (the shapes of GET /api/inbox) */
+const inboxRows=[
+  {kind:'workitem',id:'release',project_id:'inbox-agents',pid:'pid-agents',title:'Release handoff',section:'agents',entity:'demo',state:'new',status:'open',
+    source:{kind:'post',key:null,post:{agent:'demo',kind:'note'}},fact:{ts:'2026-09-14T10:00:00Z',kind:'note',url:null,link:null},
+    claim:null,session:null,outcome:null,sessions:[],created_at:'2026-09-14T10:00:00Z',updated_at:'2026-09-14T10:00:00Z'},
+  {kind:'workitem',id:'new-issue',project_id:'aurora-console',pid:'pid-aurora',title:'Improve the guide',section:'issues',entity:'fictional-workspace/aurora-console',state:'waiting',status:'open',
+    source:{kind:'github',key:null,github:{repo:'fictional-workspace/aurora-console',number:7}},fact:{ts:'2026-09-14T10:00:00Z',kind:'issue.open',url:'https://github.com/fictional-workspace/aurora-console/issues/7',link:{view:'projects',project:'aurora-console'}},
+    claim:null,session:{session_id:'fictional-session-7',runtime:'demo',attempt:1,exit:{status:'ok',message:null}},
+    outcome:{kind:'task_proposed',summary:'A task for the guide.',draft:null,task:{title:'Rewrite the guide'},question:null,acted:[],at:'2026-09-14T10:05:00Z'},
+    sessions:[],created_at:'2026-09-14T10:00:00Z',updated_at:'2026-09-14T10:05:00Z'},
+];
+const INBOX_STATES={open:['new','running','waiting','failed'],active:['running'],waiting:['waiting'],closed:['closed'],all:['new','running','waiting','failed','closed']};
+function inboxAnswer(section,state){
+  const wanted=INBOX_STATES[state]||INBOX_STATES.open;
+  const count=rows=>({new:0,running:0,waiting:0,failed:0,closed:0,...Object.fromEntries(['new','running','waiting','failed','closed'].map(k=>[k,rows.filter(r=>r.state===k).length]))});
+  const sections=[['connections','Connections'],['projects','Projects'],['issues','Issues'],['agents','Agents']].map(([id,label])=>{
+    const mine=inboxRows.filter(r=>r.section===id);
+    const entities=[...new Set(mine.map(r=>r.entity))].map(e=>({id:e,label:e,counts:count(mine.filter(r=>r.entity===e))}));
+    return{id,label,counts:count(mine),entities};
+  });
+  const rows=inboxRows.filter(r=>(!section||r.section===section)&&wanted.includes(r.state));
+  return{schema:1,generated_at:'2026-09-14T10:00:00Z',runner:{enabled:true},sections,rows,count:rows.length};
+}
 let inboxReads=0;
 const json=(route,data)=>route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/xo/sessions.json',route=>json(route,{
@@ -51,21 +64,9 @@ await context.route('**/api/connections',route=>json(route,{connections:[]}));
 await context.route('**/api/inbox**',async route=>{
   const request=route.request();
   const url=new URL(request.url());
-  if(request.method()==='PATCH'){
-    const payload=request.postDataJSON();
-    writes.push(payload);
-    for(const item of inbox)if(payload.ids.includes(item.id))item.status=payload.status;
-    await json(route,{changed:payload.ids.length,missing:[]});
-    return;
-  }
-  assert.equal(request.method(),'GET','Only the explicit mock bulk action may write');
+  assert.equal(request.method(),'GET','The Inbox page only reads');
   inboxReads++;
-  const status=url.searchParams.get('status')||'open';
-  const filtered=inbox.filter(item=>status==='all'||(status==='open'?item.status!=='done':item.status===status));
-  const counts={new:0,seen:0,done:0};
-  for(const item of inbox)counts[item.status]++;
-  counts.open=counts.new+counts.seen;
-  await json(route,{items:filtered.slice(0,Number(url.searchParams.get('limit'))||200),counts,total:filtered.length});
+  await json(route,inboxAnswer(url.searchParams.get('section'),url.searchParams.get('state')||'open'));
 });
 
 const search=page.locator('#view-search');
@@ -129,40 +130,32 @@ try{
   assert.match(await page.locator('.sess-pager').textContent(),/Page 1 of 3/);
 
   await page.locator('#tab-inbox').click();
+  await page.locator('.inb-tabs [data-section="issues"]').click();
   await page.locator('.inb-row').first().waitFor();
   await waitSearch(true);
   assert.equal(await search.getAttribute('placeholder'),'Search loaded inbox items…');
   assert.equal(await search.inputValue(),'');
   const summary=await page.locator('.inb-sum').textContent();
   const readsBefore=inboxReads;
-  await setQuery('LANTERN');
-  assert.equal(await page.locator('.inb-row').count(),1,'The body is searchable before expansion');
-  assert.match(await page.locator('.inb-note[role="status"]').textContent(),/1 matching of 3 loaded items/);
-  assert.equal(await page.locator('.inb-sum').textContent(),summary,'Global counts remain unchanged');
-  await page.locator('[data-src="workspace"]').click();
+  await setQuery('GUIDE');
+  assert.equal(await page.locator('.inb-row').count(),1,'The title is searchable');
+  assert.match(await page.locator('.inb-note[role="status"]').textContent(),/1 matching of 1 loaded items/);
+  assert.equal(await page.locator('.inb-sum').textContent(),summary,'The tab counts remain unchanged');
+  await setQuery('nothing-like-this');
   assert.equal(await page.locator('.inb-row').count(),0);
   assert.match(await page.locator('.inb-empty').textContent(),/No loaded inbox items match/);
-  await page.locator('[data-src="issues"]').click();
-  assert.equal(await page.locator('.inb-row').count(),1);
-  await setQuery('issues aurora-console');
-  assert.equal(await page.locator('.inb-row').count(),1,'Source and project terms combine');
-  assert.equal(inboxReads,readsBefore,'Local search/source filtering does not request a new page');
-  const bulk=page.locator('[data-act="mark-all"]');
-  assert.equal(await bulk.textContent(),'Mark all loaded seen');
-  assert.match(await page.locator('.inb-note[role="status"]').textContent(),/includes items hidden/);
-  const patched=page.waitForResponse(response=>response.request().method()==='PATCH');
-  await bulk.click();
-  await patched;
-  assert.deepEqual(writes,[{ids:['issue-a','connection-b'],status:'seen'}],
-    'Bulk action keeps the explicitly disclosed full loaded-page scope');
-  await page.locator('[data-filter="done"]').click();
-  await page.waitForFunction(()=>document.querySelector('.inb-note[role="status"]')?.textContent.includes('0 matching of 1 loaded items'));
-  assert.equal(await search.inputValue(),'issues aurora-console','Status filters preserve the query');
+  await setQuery('waiting aurora-console');
+  assert.equal(await page.locator('.inb-row').count(),1,'State and project terms combine');
+  assert.equal(inboxReads,readsBefore,'Local search does not request a new page');
+  await page.locator('[data-state="closed"]').click();
+  await page.waitForFunction(()=>document.querySelector('.inb-empty')?.textContent.includes('Nothing closed yet'));
+  assert.equal(await search.inputValue(),'waiting aurora-console','State pills preserve the query');
   await setQuery('');
-  await page.locator('[data-src="all"]').click();
+  await page.locator('[data-state="open"]').click();
+  await page.locator('.inb-row').first().waitFor();
   assert.equal(await page.locator('.inb-row').count(),1);
   await setQuery('Previous');
-  await inboxPage('connections').click();
+  await inboxPage('jobs').click();
   await waitSearch(false);
   await inboxPage('items').click();
   await waitSearch(true);
@@ -195,7 +188,7 @@ try{
     await page.screenshot({path:'/tmp/space-search-sessions-'+width+'.png'});
   }
   assert.deepEqual(errors,[]);
-  console.log('Sessions/Inbox local search: loaded counts, combined filters, pagination, scope visibility, query persistence and bulk scope passed; Sessions subviews fit and remain reachable at 320/390px.');
+  console.log('Sessions/Inbox local search: loaded counts, combined filters, pagination, scope visibility and query persistence passed; Sessions subviews fit and remain reachable at 320/390px.');
 }finally{
   await browser.close();
 }

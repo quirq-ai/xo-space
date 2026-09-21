@@ -14,12 +14,19 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {pathToFileURL} from 'node:url';
 const navigation=await import(pathToFileURL(process.cwd()+'/space_ui/js/core/navigation.js'));
-function module(name,extra={}){
+function module(name,extra={},cores=[]){
   const context={console,Date,Set,Map,AGENT_PAGES:navigation.AGENT_PAGES,INBOX_PAGES:navigation.INBOX_PAGES,...extra};
   vm.createContext(context);
+  /* a core module the view imports runs in the same context, so the probe
+     exercises the one shared implementation rather than a stub */
+  for(const core of cores){
+    const src=fs.readFileSync('space_ui/js/core/'+core+'.js','utf8').replace(/^import .*?;\n/gm,'')
+      .replace(/^export (const|function) /gm,'$1 ');
+    vm.runInContext(src,context);
+  }
   const source=fs.readFileSync('space_ui/js/views/'+name+'.js','utf8')
     .replace(/^import .*?;\n/gm,'').replaceAll('export async function','async function')
-    .replaceAll('export function','function').replace(/export default (\w+);/,'globalThis.legacy=$1;');
+    .replaceAll('export function','function').replace(/^export const /gm,'const ').replace(/export default (\w+);/,'globalThis.legacy=$1;');
   vm.runInContext(source,context);
   return{context,evaluate:source=>vm.runInContext(source,context)};
 }
@@ -37,7 +44,7 @@ class Element{
 }
 function inbox(){
   const nodes=new Map();
-  for(const selector of ['.inb-items-page','.inb-connections-page','.inb-jobs-page','.inb-page-head h1','.inb-page-actions','.inb-jobs'])nodes.set(selector,new Element());
+  for(const selector of ['.inb-items-page','.inb-jobs-page','.inb-page-head h1','.inb-page-actions','.inb-jobs'])nodes.set(selector,new Element());
   const root=new Element();root.querySelector=selector=>nodes.get(selector)||null;
   const requests=[],intervals=new Map(),opened=[],events=[],results=[];
   const mod=module('inbox',{
@@ -53,7 +60,7 @@ function inbox(){
     describeSchedule:job=>job.every_seconds==null?'Manual':'Every minute',
     describeOnce:()=>'Runs when you click Run now',
     isScheduled:job=>job?.every_seconds!=null,statusText:status=>String(status),
-  });
+  },[]);
   const views=Array.from(mod.evaluate('createInboxViews()'));
   const page=name=>views.find(view=>view.route==='inbox/'+name);
   const mount=()=>Promise.all(views.map(view=>view.mount(root,{switchTo:route=>opened.push(route)})));
@@ -104,39 +111,35 @@ assert.equal(views[1].toolbar().search.getValue(),'retained query');
         self.run_probe(r"""
 const app=inbox();await app.mount();
 assert.equal(app.requests.length,0,'mounting a Jobs deep link must not wait for Items');
-assert.equal(app.page('connections').toolbar(),null,'toolbar belongs to the requested route before show runs');
-assert.equal(app.page('jobs').toolbar(),null);
+assert.equal(app.page('jobs').toolbar(),null,'toolbar belongs to the requested route before show runs');
+assert.equal(app.page('connections'),undefined,'Connections is a Setup section, not a Work page');
 app.page('items').show();
-assert.deepEqual(app.requests.map(request=>request.path),['/api/inbox?status=open&limit=200']);
-app.requests[0].resolve({ok:true,data:{counts:{new:0,seen:1,done:0},items:[
-  {id:'one',title:'Retained item',body:'Long details',status:'seen',source:'timeline',kind:'activity',ts:''},
-]}});await settle();
+assert.deepEqual(app.requests.map(request=>request.path),['/api/inbox?section=projects&state=open&limit=200']);
+app.requests[0].resolve({ok:true,data:{sections:[{id:'projects',label:'Projects',counts:{new:1,running:0,waiting:0,failed:0,closed:0},entities:[{id:'xo-space',label:'xo-space',counts:{new:1}}]}],
+  rows:[{kind:'workitem',id:'one',project_id:'xo-space',title:'Retained item',section:'projects',entity:'xo-space',state:'new',status:'open',updated_at:''}],count:1}});await settle();
 const search=app.page('items').toolbar().search;
-search.setValue('retained');app.evaluate("expanded.add('one');render()");
+search.setValue('retained');
 const items=app.nodes.get('.inb-items-page'),before=items.innerHTML,paints=items.paints;
-app.page('items').hide();app.page('connections').show();
-assert.equal(app.page('connections').toolbar(),null);
-assert.equal(app.nodes.get('.inb-page-head h1').textContent,'Connections');
+app.page('items').hide();app.page('jobs').show();
+assert.equal(app.page('jobs').toolbar(),null);
+assert.equal(app.nodes.get('.inb-page-head h1').textContent,'Jobs');
 assert.equal(items.hidden,true);
-assert.equal(app.nodes.get('.inb-connections-page').hidden,false);
+assert.equal(app.nodes.get('.inb-jobs-page').hidden,false);
 assert.equal(app.intervals.has('inbox-poll'),false);
-assert.equal(app.intervals.has('inbox-conns-poll'),true);
 assert.equal(app.intervals.has('inbox-badge'),true);
-app.requests[1].resolve({ok:true,data:{connections:[{toolkit:'sample',configured:true,display_name:'Sample app'}]}});await settle();
-assert.match(app.nodes.get('.inb-connections-page').innerHTML,/Sample app/);
-assert.equal(items.innerHTML,before);assert.equal(items.paints,paints,'connection response must not rebuild item details');
-app.page('connections').hide();app.page('items').show();
+assert.equal(app.requests[1].path,'/api/schedules');
+app.requests[1].resolve({ok:true,data:{jobs:[{id:'sample',name:'Sample job',every_seconds:60,enabled:true}]}});await settle();
+assert.equal(app.evaluate('jobs[0].name'),'Sample job');
+assert.equal(items.innerHTML,before);assert.equal(items.paints,paints,'a jobs response must not rebuild item details');
+app.page('jobs').hide();app.page('items').show();
 assert.equal(search.getValue(),'retained');
-assert.equal(app.evaluate("expanded.has('one')"),true);
 assert.equal(items.innerHTML,before);
-assert.equal(app.intervals.has('inbox-conns-poll'),false);
+assert.equal(app.intervals.has('inbox-jobs-poll'),false);
 assert.equal(app.intervals.has('inbox-poll'),true);
 assert.equal(app.intervals.has('inbox-badge'),false);
-app.evaluate("openLink({link:{view:'projects',project:'sample',path:'README.md'}})");
-assert.deepEqual(app.opened,['projects/data/list']);
-assert.equal(app.events[0].type,'space:preview-file');
-app.evaluate("openLink({link:{view:'projects',project:'sample'}});openLink({link:{view:'agents'}})");
-assert.deepEqual(app.opened,['projects/data/list','projects/data/list','agents']);
+app.evaluate("openRow('one','workitem')");
+assert.deepEqual(app.opened,['inbox/item?p=xo-space&id=one'],'Open lands on the item page through the hash');
+assert.equal(app.events.length,0,'no hand-over event any more');
 """)
 
     def test_jobs_reentry_discards_old_read_and_keeps_results_available(self) -> None:
@@ -145,7 +148,7 @@ const app=inbox();await app.mount();
 app.page('jobs').show();
 assert.equal(app.requests[0].path,'/api/schedules');
 app.page('jobs').hide();app.page('items').show();
-app.requests[1].resolve({ok:true,data:{items:[],counts:{new:0,seen:0,done:0}}});await settle();
+app.requests[1].resolve({ok:true,data:{sections:[{id:'projects',label:'Projects',counts:{},entities:[]}],rows:[],count:0}});await settle();
 const items=app.nodes.get('.inb-items-page'),paints=items.paints;
 app.page('items').hide();app.page('jobs').show();
 assert.equal(app.requests.length,2,'reentry queues a fresh read behind the outstanding one');

@@ -1,0 +1,54 @@
+/* Work > Inbox > item: the fact, the transcript and the outcome on the left,
+   the chat and the actions on the right (the transcript alone for a session
+   no work item owns). Shares the Inbox's buttons and failure/empty cards
+   (.inb-btn, .inb-fail, .inb-empty from inbox.css); its own .wi-* vocabulary
+   for the rest. */
+#view-inbox-item{overflow-y:auto}
+.wi{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
+.wi-head{display:flex;align-items:baseline;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+.wi-head h1{font:500 22px/1.25 var(--sans);margin:0;flex:1;min-width:0;overflow-wrap:anywhere}
+.wi-head-acts{display:flex;gap:6px}
+.wi-back{font:500 12px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);text-decoration:none}
+.wi-back::before{content:"\2190\00a0"}
+.wi-back:hover{color:var(--ink)}
+.wi-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,360px);gap:22px;align-items:start}
+.wi-body.is-session{grid-template-columns:minmax(0,1fr)}
+.wi-thread{min-width:0}
+.wi-msg,.wi-turn,.wi-outcome{border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);padding:12px 14px;margin:0 0 10px}
+.wi-msg.is-item{border-color:var(--line)}
+.wi-msg-head,.wi-turn-head,.wi-outcome-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:12.5px}
+.wi-msg-head b,.wi-turn-head b{font-weight:600;color:var(--ink)}
+.wi-when{color:var(--ink-4);font-size:11.5px;margin-left:auto;white-space:nowrap}
+.wi-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.wi-chip{font:500 11px var(--sans);letter-spacing:.04em;color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:2px 8px;white-space:nowrap}
+.wi-chip.is-muted{opacity:.7}
+.wi-chip.is-outcome{color:var(--accent);border-color:rgba(168,217,79,.4)}
+.wi-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:400 13px/1.55 var(--sans);color:var(--ink-2)}
+.wi-note{margin:6px 0 0;font-size:12px;color:var(--ink-3);line-height:1.5}
+.wi-note code{font-size:11.5px}
+.wi-question{margin:6px 0 0;font-size:13px;color:var(--ink)}
+.wi-acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.wi-turns{list-style:none;margin:0;padding:0}
+.wi-turn.is-person{background:var(--bg-3);margin-left:24px}
+.wi-turn.is-assistant .wi-turn-head b{color:var(--accent)}
+.wi-turn.is-system{border-style:dashed}
+.wi-turn.is-system .wi-text{color:var(--ink-3);font-size:12px}
+.wi-typing{display:flex;align-items:center;gap:8px;margin:2px 0 10px;font-size:12px;color:var(--ink-3)}
+.wi-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:wi-pulse 1.2s ease-in-out infinite}
+@keyframes wi-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.wi-outcome p{margin:4px 0 0;font-size:13px;line-height:1.5;color:var(--ink-2)}
+.wi-chat{position:sticky;top:calc(var(--section-nav-inset,0px) + 16px);border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.wi-chat-status{font-size:12px;color:var(--ink-3);display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.wi-status{margin:0;line-height:1.5}
+.wi-input{width:100%;box-sizing:border-box;resize:vertical;min-height:96px;border:1px solid var(--line);border-radius:10px;background:var(--bg-1,transparent);color:var(--ink);font:400 13px/1.5 var(--sans);padding:9px 11px}
+.wi-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.wi-input:disabled{opacity:.6}
+.wi-chat-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.wi-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line-soft)}
+.wi-hint{font-size:11.5px;color:var(--ink-4)}
+@media (max-width:900px){
+  .wi{padding:60px 16px 40px}
+  .wi-body{grid-template-columns:minmax(0,1fr)}
+  .wi-chat{position:static}
+  .wi-turn.is-person{margin-left:0}
+}

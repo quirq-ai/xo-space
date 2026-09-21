@@ -66,10 +66,17 @@ services/                         Placement rule: only what is specific to runni
   timestamps.py errors.py         parse_ts, now_iso, iso (one time parser for every Space package);
   periodic.py                       ServiceError, the base of every typed service failure;
                                     run_forever, the loop under the GitHub and connections pollers
-  inbox/                          the Space Inbox (a property of the Space, not of any agent): store
-                                    (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
-                                    todos, sharing, issues, connections) service (the router-facing
-                                    surface); routes in routers/cowork_agent/bff/inbox.py
+  inbox/                          the Space Inbox (a property of the Space, not of any agent): ledger
+                                    (~/.quirq/inbox/ledger.json, the feeders' cursors) facts (a fact and
+                                    the work item it becomes) feeders (sharing, issues, connections)
+                                    service (the router-facing surface); routes in
+                                    routers/cowork_agent/bff/inbox.py
+  work/                           the Work (a property of the Space): store (~/.quirq/work/{inbox,live,history}/,
+                                    the person's marks and agents' posts), readers (one per source log),
+                                    attention (derived on read), inbox (the page's four groups), items
+                                    (the policies and the session sidecars), inbox_view (the join over
+                                    work items, claims and sessions), runner (one session per work item),
+                                    service
   connections/                    connections polling for the Inbox (a property of the Space): store
                                     (~/.quirq/connections/<toolkit>/ config, state, events)
                                     collectors (the read-only catalog per toolkit) mcp_client
@@ -273,7 +280,7 @@ Only code that is specific to running an agent belongs under
 registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
-`services/`: the Inbox (`services/inbox/`), connections polling
+`services/`: the Work (`services/work/`), the Inbox (`services/inbox/`), connections polling
 (`services/connections/`), the swarm client (`services/swarm_api/`). The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
@@ -331,7 +338,7 @@ module and the sample together.
 What XO Space keeps on one machine, outside every project, lives in the state
 root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
-watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
+watcher stopped reading), `inbox/`, `work/`, `connections/`, `scheduler/`, `sharing/`,
 `usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
 `.locks/` (internal). `services/storage/layout.py` names each folder once, and
 its `MOVES` list is how files get there from where earlier releases kept them:
@@ -902,52 +909,178 @@ the MCP client, identity and scope patched on the poller module.
 
 ## 11. The Space Inbox
 
-`services/inbox/` (routes in `routers/cowork_agent/bff/inbox.py`) keeps
-`~/.quirq/inbox/inbox.json`: one machine-local file of what arrived in the workspace,
-its seen/done state and the feeder cursors. Core code and a property of the
-Space (§7). The user-facing description (item shape, the feeder table,
-hand-editing) is `space_ui/README.md` "Inbox tab"; what follows is the
-engineering contract.
+`services/inbox/` (routes in `routers/cowork_agent/bff/inbox.py`) is
+ingestion: it turns what arrives in the workspace into work items in the
+existing store (`<project>/.xo/workitems.json`), and the Inbox is a read over
+those work items joined with the watcher's session data (section 12). Core
+code and a property of the Space (§7). The design is
+docs/work-and-workitems.md section 18; what follows is the engineering
+contract.
 
-**Routes.** `GET /api/inbox?status=open|done|all&limit=N`, `POST /api/inbox`,
-`PATCH /api/inbox` (`{ids, status}`: 1 to 500 ids in one locked write, answering
-`{updated, missing}`; `updated` counts items whose status changed and `missing`
-lists malformed or absent ids in request order, so the call is idempotent),
-`PATCH /api/inbox/{item_id}` (`{status}`) and `DELETE /api/inbox/{item_id}`
-(idempotent). Bodies are strict (`ForbidExtra`): an unknown key, a missing
-`title`, or `ids` that is not a list of strings is a 422 from pydantic, and so
-is `limit` outside 1..500. The service's own 400s are `invalid_value` (an empty
-or overlong title, body, kind, source or url; an empty or oversized `ids`),
-`invalid_project_id`, `invalid_link` and `invalid_status`; a malformed or
-absent item id is 404 `item_not_found`. `InboxError` is a `ServiceError`,
-mapped by `bff/errors.http_error`.
+**Feeders, the ledger, the policies.** `feeders.py` keeps the three feeders
+(`sharing`, `issues`, `connections`). Their cursors and the source switches
+live in `~/.quirq/inbox/ledger.json` (`ledger.py`: normalisation, one locked
+read-modify-write per change); the session policy per section in
+`~/.quirq/inbox/policy/<section>.json` (owned by `services/work/items.py`).
+The sections are `connections`, `projects`, `issues` and `agents`, chosen by
+the work item's source kind: `connection`, `sharing`, `github`, and `post` or
+`local`.
 
-**Ingest.** `service.refresh()` runs the enabled feeders (all their I/O outside
-the lock) and applies the results in one `store.modify` read-modify-write.
-Every `GET /api/inbox` calls it first. The throttle (`INGEST_MIN_INTERVAL_S`,
-5 s per process) is stamped as soon as a run reaches the feeders, whether or
-not a feeder or the write then fails, so a persistently failing feeder is
-retried once per interval rather than on every read. A forced refresh ignores
-the throttle: `services.connections.service.poll_now` awaits the listener
-`inbox.service` registered with `register_new_events_listener` whenever a poll
-collected something, so the Inbox tab's reload right after "Poll now" sees the
-new events.
+**Facts.** `facts.py` takes each fact a feeder found: the target project is
+the fact's own when it names one that exists (issues, shares), else
+`inbox-<section>`, scaffolded from the template on first use; dedup is by
+`source.key` within that project (a scan of its work items; an issue is
+adopted through `adopt_workitem`, with node-id dedup); the work item is
+created with `runtime="inbox"`, the title, labels `["inbox", "<section>"]`,
+the `source` and `assignee=None`; then `fact.json` (title, body, url, link,
+ts, kind, key, section, entity) is written beside the claims file, at
+`~/.quirq/projects/<pid>/workitems/<workitem-id>/fact.json`. Bodies never
+enter `workitems.json`, a project file the relay may share.
 
-**Auto-close and `auto_closed`.** The `todos` and `issues` feeders report the
-keys they still watch; `store.close_missing` sets every item under that key
-prefix they no longer report to `done` and flags it `"auto_closed": true`.
-When the key is reported again (an issue reopened, a todo blocked again)
-`store.upsert_many` puts the item back to `new`, drops the flag and takes the
-reported `ts`, so it sorts to the top like a new item. A status a person sets
-(single or batch PATCH, `store.set_status`) always drops the flag, so a
-person's own `done` is never undone by a feeder. The flag survives a hand edit
-only as the literal `true`; the schema is
-`services/cowork_agent/visualizer/schema/inbox.schema.json`.
+**Ingest.** Every `GET /api/inbox` runs the feeders first (all their I/O
+outside any lock), throttled to once per 5 s per process; the throttle is
+stamped as soon as a run reaches the feeders, whether or not a feeder then
+fails, so a persistently failing feeder is retried once per interval rather
+than on every read. A forced run ignores the throttle:
+`services.connections.service.poll_now` awaits the new-events listener the
+Inbox registered with `register_new_events_listener`, so a "Poll now" that
+collected something shows its work items at once. `POST /api/inbox` creates a
+`post` work item the same way (section `agents`).
 
-Tests: `tests/test_inbox_{store,bff,docs}.py`,
+**Routes.** `bff/inbox.py` is declarative over `service.py` (`refresh`,
+`create_post`, `list_rows`, `sections`, `set_policy`, `item_detail`,
+`reply`, `start`, `send`, `archive`, `reopen`), which hands the rows and
+the actions to `services/work/service.py` (section 12). One line per
+route, exactly as the router's docstring lists them:
+
+```
+GET    /api/inbox?section=&entity=&state=&limit=      the rows, newest first, plus the sections summary
+GET    /api/inbox/sections                             one row per section: label, counts, entities, policy; runner {enabled}
+PUT    /api/inbox/sections/{section}                   the policy (strict body: sessions{...}, retention_days)
+POST   /api/inbox                                      201: {title, body?, kind?, source?, project_id?, link?, url?} -> a post work item row
+GET    /api/inbox/{project_id}/{workitem_id}           the row, fact, session, outcome, claim, workitem (projected record),
+                                                       transcript {session_id, native_session_id}, policy, running, can_reply, can_send
+POST   /api/inbox/{project_id}/{workitem_id}/reply     {text} -> 202 {session_id}
+POST   /api/inbox/{project_id}/{workitem_id}/start     ?retry=true -> 202 {session_id}
+POST   /api/inbox/{project_id}/{workitem_id}/send      202
+POST   /api/inbox/{project_id}/{workitem_id}/archive   {reason?: completed | not_planned} -> the row
+POST   /api/inbox/{project_id}/{workitem_id}/reopen    the row
+```
+
+`state` is `open` (new, running, waiting, failed: the default), `active`
+(running), `waiting`, `closed` or `all`. Without `section` every work item
+appears once, under the section of its source kind, plus the sessions no work
+item owns (section `projects`); with `section=projects` every project is an
+entity even with no rows, with `section=agents` every agent from the agents
+capability is. Bodies are strict (`ForbidExtra`): an unknown key or a missing
+`title` is a 422 from pydantic; the service's own 400s on a post are
+`invalid_value` (an empty or overlong title, body, kind, source or url),
+`invalid_project_id` and `invalid_link`; an unknown project or work item is a
+404. `InboxError` is a `ServiceError`, mapped by `bff/errors.http_error`.
+The rows API of the old file (`PATCH /api/inbox`, `PATCH /api/inbox/{id}`,
+`DELETE /api/inbox/{id}`), `~/.quirq/inbox/inbox.json`, its `seen`/`done`
+states and `auto_closed` are gone; a fact is a work item, and its state is
+the work item's (section 12).
+
+Tests: `tests/test_inbox_{bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. The Work
+
+`services/work/` (routes in `routers/cowork_agent/bff/work.py`) is the Work
+tab's read model and, since 2026-09-21, the Inbox's runner and read side too
+(docs/work-and-workitems.md, sections 16 and 18). A property of the Space
+(section 7), beside `services/inbox/` (ingestion, section 11).
+
+**The rule.** Nothing from a log is copied. Six readers (`readers.py`:
+`timeline`, `issues`, `connections`, `sharing`, `jobs`, `posts`) each answer
+entries newest-first straight from that source's own file, in one shape
+(`key, ts, source, kind, title, detail, project_id, pid, actor, ref, tone`),
+and `attention.py` derives what needs a person from current state on every
+read. `~/.quirq/work/` holds only the person's own state, one folder per page
+(`store.py`, schema 3, the `work-{inbox,live,history}.schema.json` files):
+`inbox/inbox.json` carries `dismissed[key@since]`, `acked[key]`,
+`promoted[key]` and the connection kinds that count as decisions;
+`live/live.json` which stream groups show; `history/history.json` the reader
+switches, the `watermark`, `pinned` and the `posts` agents send. In memory
+the three are one document (`store.load_document` merges, `store.modify`
+splits). `inbox.py` composes the Work page's four groups in one read.
+
+**Routes that stay.** `GET /api/work/inbox` (the composed page),
+`GET /api/work/attention`, `GET /api/work/summary` (the badge),
+`GET /api/feed` (`limit, before, since, sources, kinds, project`; a failing
+reader is a line in `sources`, never a failed page), `POST /api/feed` (an
+agent's note; strict body, 201), the marks (`PUT /api/work/watermark`,
+`POST /api/work/dismiss` and `DELETE /api/work/dismiss/{key}`,
+`POST /api/work/ack` and `DELETE /api/work/ack/{key}`, `PATCH /api/work/pins`)
+and `POST /api/work/promote` (`{key, project_id, title?, assignee?}`: the
+entry becomes a work item through the existing store; 201, or 200 with the
+same item when the key was promoted before). `WorkError` is a `ServiceError`
+mapped by `bff/errors.http_error`. `attention.identities()` answers the names
+this Space treats as its own; core names no agent, the page gets agent labels
+from `/api/telemetry/sources`.
+
+**Policies and sidecars** (`items.py`). The policy per section,
+`~/.quirq/inbox/policy/<section>.json`: `sessions.mode` (`auto`, `manual` or
+`off`), `kinds` (empty for every kind), `agent_type`, `runtime`,
+`max_concurrent`, `max_per_hour`, `timeout_s`, `act`, and `retention_days`;
+`connections` defaults to `auto`, the other sections to `manual`. The
+sidecars of one work item, under
+`~/.quirq/projects/<pid>/workitems/<workitem-id>/`: `fact.json` (written at
+ingestion, section 11), `session.json` (`session_id`, `native_session_id`,
+`runtime`, `project_id`, `agent_type`, `attempt`, `started_at`, `ended_at`,
+`exit`, `manual`) and `outcome.json` (`kind`, `summary`, `draft`, `task`,
+`question`, `acted`, `at`). After `retention_days` the sidecars of closed
+items are swept; the record never is.
+
+**The runner** (`runner.py`; `start_inbox_runner`, one background task
+beside the pollers, every 15 s after a 5 s startup delay,
+`XO_INBOX_SESSIONS=off` stops it). A tick refreshes the feeders (throttled),
+starts sessions for the open items of each `auto` section that have none yet
+(oldest first, under the two caps), marks a sidecar that says running with no
+task behind it as failed (a server restart), and sweeps once an hour. A
+session is a Space session id the runner minted, the claim
+(`claim_workitem`), the id appended to `links.session_ids`, the workbench
+`items/<workitem-id>/` in the work item's project, `session.json`, and
+`AgentDispatcher(runtime).stream(...)` with `agent_type` `inbox-item` (the
+bundled skill, mapped in each agent's manifest) and `is_new_session=True`, so
+the index row, the runtime's session id and the watcher work as for any chat
+and the runner names no agent. The answer's last fenced `json` block is the
+outcome: `handled` and `fyi` close the item (`state_reason: completed`);
+`needs_you`, `reply_drafted` and `task_proposed` leave it open; a failure
+(timeout, error, cancelled, orphaned) records its exit, releases the claim
+and leaves the item open. Reply resumes the same session with the person's
+text (`is_new_session=False`, claimed for the turn, or a first session with
+the text added to the prompt); Send resumes it with the instruction to send
+the draft, only when the policy allows `act` and a reply is drafted; Archive
+closes the item (`completed` or `not_planned`) and releases the claim; Reopen
+sets it open. Every transition is an `inbox.item.started|finished|failed`
+line, with `workitem_id`, on the project's timeline and the Space timeline,
+never with the body.
+
+**The read model** (`service.py`) answers the Inbox routes of section 11:
+one row per work item (the record projected, its `fact`, `session`,
+`outcome`, its `claim` with `live`, and its `sessions` from the watcher's
+index) plus one row per session no work item owns (Projects and Agents
+only), each under the section of its source kind and its entity (a toolkit,
+a project, a repo, an agent); the state in order `closed`, `running`,
+`failed`, `waiting`, `new`; and the `sections` summary (label, counts per
+state, entities, policy) the page's tabs are built from. Nothing is copied:
+the record, the sidecars, the claims and the index are read on every call.
+The item page (`#/inbox/item?p=<project_id>&id=<workitem_id>`) reads
+`GET /api/inbox/{project_id}/{workitem_id}` and the session's transcript
+(`GET /api/sessions/{session_id}/transcript`). Gone with the folders:
+`~/.quirq/work/inbox/<section>/`, `items.json`, `thread.jsonl`, `run.log`,
+and the whole `/api/work/inbox/sections` and `/api/work/inbox/items/...`
+family.
+
+Tests: `tests/test_work_{store,readers,items,runner,bff}.py` (the readers,
+the derivation, the groups, the sidecars, the runner over a fake stream and
+the service run over a copy of `tests/fixtures/quirq-state/` plus
+`tests/fixtures/xo-project/`), `tests/test_space_work_item.py`, and the
+`work/` rows of `tests/test_quirq_state_layout.py`.
+
+## 13. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand every time `main`
 moves. The runbook, the numbering rules and the hotfix flow are in

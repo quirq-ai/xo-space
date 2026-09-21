@@ -851,10 +851,12 @@ class ServicePollNowTests(_Base):
         self.assertFalse(inbox_service.refresh(), "the throttle window is now armed")
         out = self.run_(connections_service.poll_now("gmail"))
         self.assertEqual((out["polled"], out["new_events"], out["error"]), (True, 1, None))
-        inbox_path = self.root / ".quirq" / "inbox" / "inbox.json"
-        self.assertTrue(inbox_path.is_file(), "the forced refresh wrote the inbox inside the throttle window")
-        keys = {it["key"] for it in json.loads(inbox_path.read_text(encoding="utf-8"))["items"]}
+        # the forced refresh ran inside the throttle window: the event is a work item already
+        from services.cowork_agent.scopes import VisualizerScope
+        keys = {(r.get("source") or {}).get("key") for r in VisualizerScope("inbox-connections").list_workitems()}
         self.assertIn("connection:gmail:unread:m9", keys)
+        ledger = json.loads((self.root / ".quirq" / "inbox" / "ledger.json").read_text(encoding="utf-8"))
+        self.assertEqual(ledger["cursors"]["connections"], fresh)
 
 
 if __name__ == "__main__":

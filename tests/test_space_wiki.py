@@ -94,15 +94,15 @@ class SpaceWikiTests(unittest.TestCase):
 
           // Follow real rendered local-action targets through ctx.switchTo.
           // Setup actions select their section directly, including after a reload.
-          for(const target of ['sharing','setup/workspace','setup/connectors','project-manage']){
+          for(const target of ['sharing','setup/workspace','setup/connections','project-manage']){
             assert.ok(overview.includes('data-open-tab="'+target+'"'));
             const button={owner:root,dataset:{openTab:target}};
             clicks.get('click')({target:{closest:()=>button}});
           }
-          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors','project-manage']);
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connections','project-manage']);
           clicks.get('click')({target:{closest:()=>null}});
           clicks.get('click')({target:{closest:()=>({dataset:{openTab:'secrets'}})}});
-          assert.deepEqual(opened,['sharing','setup/workspace','setup/connectors','project-manage']);
+          assert.deepEqual(opened,['sharing','setup/workspace','setup/connections','project-manage']);
         """
         result = subprocess.run(
             [shutil.which("node"), "--input-type=module", "-e", script,
@@ -144,7 +144,7 @@ class SpaceWikiTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("import {createSetupViews} from './views/setup.js?v=", app)
-        self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
+        self.assertIn("createSetupViews(connectionsView).forEach(registerView);", app)
         self.assertIn('href="css/setup.css?v=', index)
         self.assertIn("export function createSetupViews(", secrets)
         self.assertIn("type=\"password\"", secrets)
@@ -191,7 +191,7 @@ class SpaceWikiTests(unittest.TestCase):
         feeders = (ROOT / "services" / "inbox" / "feeders.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('link={"view": "agents"}', feeders)
+        # the timeline feeder that linked sessions to Agents was retired on 2026-09-21 (the workspace stream is Activity's)
         # kept: the telemetry data file is still sessions.json
         self.assertIn("/xo/sessions.json", (
             ROOT / "space_ui" / "js" / "views" / "sessions.js"
@@ -204,8 +204,14 @@ class SpaceWikiTests(unittest.TestCase):
             ROOT / "space_ui" / "js" / "views" / "connectors.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("import connectorsView from './views/connectors.js?v=", app)
-        self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
+        connections = (
+            ROOT / "space_ui" / "js" / "views" / "connections.js"
+        ).read_text(encoding="utf-8")
+        # Connectors is embedded by Setup > Connections (views/connections.js).
+        self.assertIn("import connectorsView from './connectors.js?v=", connections)
+        self.assertIn("import connectionsView from './views/connections.js?v=", app)
+        self.assertIn("createSetupViews(connectionsView).forEach(registerView);", app)
+        self.assertNotIn("connectorsView", app)
         self.assertIn('href="css/connectors.css?v=', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 

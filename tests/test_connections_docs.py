@@ -22,6 +22,13 @@ def squash(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def subsection(text: str, heading: str) -> str:
+    """From ``heading`` to the next heading of any level, or the end."""
+    start = text.index(heading)
+    nxt = re.compile(r"(?m)^#{2,3} ").search(text, start + len(heading))
+    return text[start:nxt.start()] if nxt else text[start:]
+
+
 def lines_with(text: str, needle: str) -> list[str]:
     found = [line for line in text.splitlines() if needle in line]
     assert found, f"no line contains {needle!r}"
@@ -76,35 +83,13 @@ class ConnectionsDocsTests(unittest.TestCase):
             self.assertIsNone(DASHES.search(d(rel, is_dir=is_dir)))
 
     # ------------------------------------------------------------- README
-    def test_readme_documents_feeders_url_and_connections_polling(self) -> None:
+    def test_readme_documents_connections_polling(self) -> None:
         readme = read("space_ui/README.md")
-        section = readme[readme.index("## Inbox tab"): readme.index("## Data format")]
-        flat = squash(section)
-        # the feeder table
-        self.assertIn("| `issues` |", section)
-        self.assertIn("| `connections` |", section)
-        self.assertIn("`cursors.issues`", section)
-        self.assertIn("`cursors.connections`", section)
-        self.assertIn("only the last 7 days are taken", section)
-        self.assertIn("every mirror was readable", section)
-        # the item shape and the API
-        self.assertIn("link?, url?}", flat)
-        self.assertIn('"url": null,', section)
-        self.assertIn('"issues": {"enabled": true, "states": ["open"]}', flat)
-        self.assertIn('"connections": {"enabled": true}', flat)
-        self.assertIn("(title, body, link, url; status is never reset)", flat)
-        # the UI
-        self.assertIn("Open link (only when `url` is an http or https address", flat)
-        self.assertIn('`rel="noopener noreferrer"`', section)
-        self.assertIn("All | Issues | Connections | Workspace | Sharing | Agents", section)
-        self.assertIn("- Connections section:", section)
-        self.assertIn(
-            "No connections polled yet. Connect a toolkit on the Connectors tab and turn on polling.",
-            flat,
-        )
+        # Setup Connections' polled-apps list and its empty state
+        self.assertIn("No updates yet. Connect an app below and turn on polling.", squash(readme))
         # the subsection
-        self.assertIn("### Connections polling", section)
-        sub = section[section.index("### Connections polling"): section.index("### Hand-editing")]
+        self.assertIn("### Connections polling", readme)
+        sub = subsection(readme, "### Connections polling")
         self.assertIn("~/.quirq/connections/<toolkit>/", sub)
         for name in ("config.json", "state.json", "events.jsonl"):
             self.assertIn(name, sub)
@@ -123,24 +108,16 @@ class ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("`XO_CONNECTIONS_POLL_ENABLED`", sub)
         self.assertIn("`XO_CONNECTIONS_POLL_TICK_S`", sub)
         self.assertIn("newer than its 24 hour bootstrap floor", sub)
-        self.assertIn("one cursor across every toolkit", section)
-        # hand-editing knows the new cursors and states
-        self.assertIn("`sources.issues.states`", section)
-        self.assertIsNone(DASHES.search(section))
-        # the pre-existing example item names a runtime on purpose, so only
-        # the parts this feature added are held to the no-agent-name rule
-        added = [sub]
-        for needle in ("| `issues` |", "| `connections` |", "- Connections section:"):
-            added.extend(lines_with(section, needle))
+        self.assertIsNone(DASHES.search(sub))
         for agent in AGENT_NAMES:
-            self.assertNotIn(agent, "\n".join(added))
+            self.assertNotIn(agent, sub)
 
     # ------------------------------------------------------------- DEVELOPING
     def test_developing_guide_lists_the_package_and_explains_degradation(self) -> None:
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
         self.assertIn("project_sharing, inbox.py, connections.py)", layout)
-        self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
+        self.assertIn("feeders (sharing, issues, connections)\n                                    service", layout)
         # top level under services/, beside inbox/ and swarm_api/, never under cowork_agent/
         start = layout.index("services/  ")
         services_block = layout[start:layout.index("  cowork_agent/  ", start)]
@@ -195,7 +172,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("http(s) only, up to 2000 chars", text)
         self.assertIn("`url` is what the Open link button does", text)
         self.assertIn("anything else is `invalid_value`", text)
-        self.assertIn('"url": null', text)
+        self.assertIn('"url": null', text)   # the fact of a post without one
         self.assertIn("GitHub issues, and polled connection events", text)
 
 
@@ -256,7 +233,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         layout = squash(dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")])
         self.assertIn("mcp_client (McpSession: one streamable-HTTP JSON-RPC session per poll over httpx)", layout)
         readme = read("space_ui/README.md")
-        section = squash(readme[readme.index("### Connections polling"): readme.index("### Hand-editing")])
+        section = squash(subsection(readme, "### Connections polling"))
         self.assertIn("Each poll opens one MCP session (the handshake once), lists its tools once", section)
         self.assertIn(f'recorded as "{poller.SESSION_LOST}"', section)
         # the package docstring describes the session, not a one-call client
@@ -308,8 +285,6 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
             self.assertIn("`services/periodic.py`", text)
             self.assertIn("never imports the inbox", text)
             self.assertIsNone(DASHES.search(text), rel)
-        import services.inbox as inbox_pkg
-        self.assertIn("``update_many``", inbox_pkg.__doc__ or "")
 
     def test_readme_lists_the_shared_core_modules(self) -> None:
         readme = read("space_ui/README.md")

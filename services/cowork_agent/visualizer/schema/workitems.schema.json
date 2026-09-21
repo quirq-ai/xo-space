@@ -82,9 +82,45 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
+      "description": "Where the workitem came from: `local` is made here, `github` mirrors an issue, and `connection`, `sharing` and `post` are the kinds the Inbox feeds create at ingestion (docs/work-and-workitems.md section 18). `key` is a fed item's dedup identity; the block named by `kind` is present iff that kind.",
       "properties": {
-        "kind":   { "type": "string", "enum": ["local", "github"] },
-        "github": { "$ref": "#/definitions/github_ref" }
+        "kind":       { "type": "string", "enum": ["local", "github", "connection", "sharing", "post"] },
+        "key":        { "type": "string", "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,400}$" },
+        "github":     { "$ref": "#/definitions/github_ref" },
+        "connection": { "$ref": "#/definitions/connection_ref" },
+        "sharing":    { "$ref": "#/definitions/sharing_ref" },
+        "post":       { "$ref": "#/definitions/post_ref" }
+      }
+    },
+    "connection_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolkit", "type", "event"],
+      "description": "Present iff `source.kind == \"connection\"`: the polled app, the collector's event type and the producer's own id.",
+      "properties": {
+        "toolkit": { "type": ["string", "null"], "minLength": 1, "maxLength": 200 },
+        "type":    { "type": ["string", "null"], "minLength": 1, "maxLength": 200 },
+        "event":   { "type": ["string", "null"], "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "sharing_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "event"],
+      "description": "Present iff `source.kind == \"sharing\"`: the shared repo and the relay transition.",
+      "properties": {
+        "repo":  { "type": ["string", "null"], "minLength": 1, "maxLength": 200 },
+        "event": { "type": ["string", "null"], "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "post_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "kind"],
+      "description": "Present iff `source.kind == \"post\"`: who posted through the Inbox API and the note's kind.",
+      "properties": {
+        "agent": { "type": ["string", "null"], "minLength": 1, "maxLength": 200 },
+        "kind":  { "type": ["string", "null"], "minLength": 1, "maxLength": 200 }
       }
     },
     "github_ref": {

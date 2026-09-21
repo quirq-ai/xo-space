@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "session_id": "5c1e4d2a-0000-4000-8000-000000000001",
+  "native_session_id": "11111111-1111-4111-8111-111111111111",
+  "runtime": "sample_agent",
+  "project_id": "sample-project",
+  "workitem_id": "d00d0001-0000-4000-8000-000000000001",
+  "section": "connections",
+  "workbench": "items/d00d0001-0000-4000-8000-000000000001",
+  "agent_type": "inbox-item",
+  "started_at": "2026-01-01T09:15:10Z",
+  "ended_at": "2026-01-01T09:16:40Z",
+  "exit": {
+    "status": "ok",
+    "message": null
+  },
+  "attempt": 1,
+  "manual": true
+}

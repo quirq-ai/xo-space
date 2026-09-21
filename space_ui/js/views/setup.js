@@ -11,9 +11,9 @@ import {mountCommands} from './setup-commands.js?v=20260916-jobs3';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
 import {mountBranding} from './setup-branding.js?v=20260921-branding2';
-import {mountSetupSearch} from './setup-search.js?v=20260921-branding1';
-import {renderSetupShell} from './setup-shell.js?v=20260921-branding1';
-import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
+import {mountSetupSearch} from './setup-search.js?v=20260922-work4';
+import {renderSetupShell} from './setup-shell.js?v=20260922-work4';
+import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260922-work4';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -43,16 +43,18 @@ const formDrafts={workspace:false,agent:false,activity:false};
 const touched=new Set();
 const writes=new Set();
 let runtimeRevision=0,refreshQueued=false;
-let setupMount=null,connectorMount=null,connectorController=null;
+let setupMount=null,connectionsMount=null,connectionsController=null;
 let setupSearch=null;
 const toolbarRefreshers=new Set();
 const refreshSetupToolbar=()=>{for(const refresh of toolbarRefreshers)refresh?.();};
-const setupToolbar=()=>currentPanel==='connectors'?connectorController?.toolbar:setupSearch?.toolbar;
+const setupToolbar=()=>currentPanel==='connections'?connectionsController?.toolbar:setupSearch?.toolbar;
 
 /* Each section is a registered route. They share a mounted shell so changing
-   the URL never rebuilds forms. Connectors mount only on their first visit. */
-export function createSetupViews(controller){
-  connectorController=controller;
+   the URL never rebuilds forms. `connections` is the Connections controller
+   (views/connections.js): mounted into its panel on the first visit, shown and
+   hidden with the panel so its poll runs only while it is on screen. */
+export function createSetupViews(connections=null){
+  connectionsController=connections;
   return SETUP_SECTIONS.map(section=>({
     id:section.route,
     route:section.route,aliases:section.aliases,
@@ -63,6 +65,7 @@ export function createSetupViews(controller){
       selectPanel(section.id);
       if(section.id==='commands')commands?.refresh();
     },
+    hide(){connectionsController?.hide?.();},
   }));
 }
 
@@ -80,7 +83,7 @@ function mountSetup(el,ctx){
     identity.refresh();
     branding=mountBranding(root.querySelector('#setup-branding'),dirty=>{brandingDraft=dirty;renderJourney();});
     branding.refresh();
-    /* Connector links must not wait for unrelated settings/status reads. */
+    /* Section links must not wait for unrelated settings/status reads. */
     loadAll().catch(err=>{
       console.error('Setup status failed to load:',err);
       loading=false;runtimeUnavailable=true;
@@ -129,16 +132,22 @@ function selectPanel(requested){
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
     else button.removeAttribute('aria-current');
   });
-  if(panel==='connectors'&&!connectorMount&&connectorController){
-    const host=root.querySelector('#setup-connectors');
-    connectorMount=connectorController.mount(host).catch(err=>{
-      console.error('Connectors failed to load:',err);
-      host.innerHTML='<div class="setup-empty is-error" role="alert">Connectors could not load. <button type="button" data-connectors-retry>Try again</button></div>';
-      connectorMount=null;
-    });
-  }
+  if(panel==='connections'){mountConnections();connectionsController?.show?.();}
+  else connectionsController?.hide?.();
   refreshSetupToolbar();
   return true;
+}
+
+/* Mounted once, on the first visit, so a connect in flight survives moving
+   between sections; a failed mount leaves a retry in its place. */
+function mountConnections(){
+  if(connectionsMount||!connectionsController)return;
+  const host=root.querySelector('#setup-connections');
+  connectionsMount=Promise.resolve().then(()=>connectionsController.mount(host)).catch(err=>{
+    console.error('Connections failed to load:',err);
+    host.innerHTML='<div class="setup-empty is-error" role="alert">Connections could not load. <button type="button" data-connections-retry>Try again</button></div>';
+    connectionsMount=null;
+  });
 }
 
 async function openPanel(requested,{focus=false,target=null}={}){
@@ -173,7 +182,7 @@ function bindEvents(){
       const panel=link.dataset.setupGo;
       openPanel(panel,{focus:true});
     }
-    if(event.target.closest('[data-connectors-retry]'))selectPanel('connectors');
+    if(event.target.closest('[data-connections-retry]'))selectPanel('connections');
     if(event.target.closest('[data-setup-retry]'))loadAll();
   });
   addEventListener('space:setup-section',event=>{

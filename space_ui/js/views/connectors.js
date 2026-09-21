@@ -1,4 +1,5 @@
-/* Connectors section: workspace integrations and account apps inside Setup.
+/* Connectors: workspace integrations and account apps. Mounted once by Setup's
+   Connections section (views/connections.js), under its polled-apps list.
 
    Account apps run on the user's OWN Composio API key, stored on this machine
    (bring your own key). GET /api/connectors/composio/backend says whether a key
@@ -96,21 +97,22 @@ export default {
     bindEvents();
     await refreshAll();
   },
-  show(){/* keep an in-flight authorization alive across tab switches */}
+  show(){/* keep an in-flight authorization alive across tab switches */},
+  /* The Connections section owns the one Refresh button; a controller that
+     never mounted (or failed to) has nothing to refresh. */
+  refresh(){return root?refreshAll():Promise.resolve();},
+  /* Configure on a polled-apps row: open that toolkit's Polling drawer and
+     bring its card into view. */
+  async showPolling(toolkitId){
+    if(!root||!toolkits.some(t=>t.id===toolkitId))return;
+    if(openPolling!==toolkitId)await togglePolling(toolkitId);
+    root.querySelector('.conn-card[data-toolkit="'+CSS.escape(toolkitId)+'"]')?.scrollIntoView({block:'nearest'});
+  },
 };
 
 function renderShell(){
   root.innerHTML=
     '<div class="conn-page">'
-      +'<header class="conn-hero">'
-        +'<div>'
-          +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
-          +'<p>Tools and apps for this workspace.</p>'
-        +'</div>'
-        +'<div class="conn-hero-actions">'
-          +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
-        +'</div>'
-      +'</header>'
       +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
         +'<div class="conn-group-head"><div><h3 id="conn-workspace-title">Workspace integrations</h3>'
           +'<p>Code, design, deployments, and files.</p></div></div>'
@@ -131,7 +133,6 @@ function renderShell(){
 }
 
 function bindEvents(){
-  root.querySelector('#conn-refresh').addEventListener('click',refreshAll);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
   const keyEl=root.querySelector('#conn-key');
   keyEl.addEventListener('click',ev=>{
@@ -230,8 +231,10 @@ function renderKeyPanel(){
     +'<div class="conn-key-text"><h4>Composio API key</h4><p>'+sub+'</p></div>'
     +pill+'</div>'+form;
 
+  /* Focus only when the person asked to replace the key: a focus on mount
+     would scroll the Connections section past its heading and polled apps. */
   const input=el.querySelector('#conn-key-input');
-  if(input&&showInput)input.focus();
+  if(input&&keyReplacing)input.focus();
 }
 
 async function saveKey(){
