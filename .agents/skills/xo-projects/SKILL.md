@@ -13,7 +13,7 @@ This skill covers the whole lifecycle of an xo-project. It does three things:
    - **Backups and restores happen only through `/api/xo-projects-sync/*`.** Never `tar`, `zip`, `cp`, `rsync`, or `git push` the project to a local archive or external remote, even when the user just says "back this up" or "save this somewhere safe." Local copies miss the encryption, the manifest, and the secret excludes the API enforces, and they can't be discovered or restored by `GET /projects`.
    - **When this skill covers a task, the skill is the way to do it.** Creating a project, recording todos, backing up, restoring: use the documented endpoints and native tools. Don't substitute shell commands, ad-hoc file copies, or local approximations because the proper tool feels heavy. If a documented tool fails, surface the failure to the human; don't silently roll your own.
 2. **A guide to every file in an xo-project:** what it's for, how it lives across the session, and the reasoning behind the conventions, so the agent can apply judgment when an edge case appears.
-3. **Pointers to three reference files** for situational, API-heavy detail: the todo HTTP API (**every** runtime records todos through it), the inbox HTTP API (for raising something for the human), and the backup/restore API, so they load only when the task actually calls for them.
+3. **Pointers to reference files** for situational, API-heavy detail: the todo HTTP API (**every** runtime records todos through it), workitems, peers, the inbox HTTP API (for raising something for the human), and the backup/restore API, so they load only when the task actually calls for them.
 
 ## Base URL
 
@@ -23,18 +23,15 @@ http://${HOST:-localhost}:${PORT:-5002}
 
 ## How this skill is organized
 
-Read this file top to bottom on first contact: the four parts below are all here in full, including todo discipline, which every session needs. Three reference files hold detail you only reach for situationally:
+Read this file top to bottom on first contact: the four parts below are all here in full, including todo discipline, which every session needs. Reference files hold detail you only reach for situationally:
 
 - **`references/todos-http-api.md`**: the todo HTTP endpoint schemas. Every runtime needs this, including runtimes with a native todo tool of their own; read it the first time you record a todo in a session (Part 3).
+- **`references/workitems-http-api.md`**: the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. For work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
+- **`references/peers-http-api.md`**: the peers HTTP endpoints: the roster of humans a project is shared with, kept in `.xo/peers.json`. For who a project is shared with, adding or removing a collaborator, or "who else is on this". An empty roster means the project is solo: say so rather than guessing. Removing a peer is a hard delete: unlike a todo or a workitem, nothing is left behind.
 - **`references/inbox-http-api.md`**: the Space Inbox endpoints. Read it when you have something a person should look at (a question, a finding, a request, a result) and want it to land in the workspace Inbox instead of a transcript.
 - **`references/backup-restore.md`**: the GitHub-backed backup/restore/sync API. Read it when the user asks to back up, save, snapshot, sync, push, restore, pull, download, recover, or migrate projects.
 
 Keeping these out of the main file means a routine session doesn't drag endpoint schemas or the entire backup API into context.
-
-Two further surfaces are documented in the xo-cowork-api repo rather than in this skill, under `docs/`. Read them there when the task calls for them:
-
-- **`docs/workitems-http-api.md`**: the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. For work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
-- **`docs/peers-http-api.md`**: the peers HTTP endpoints: the roster of humans a project is shared with, kept in `.xo/peers.json`. For who a project is shared with, adding or removing a collaborator, or "who else is on this". An empty roster means the project is solo: say so rather than guessing. Removing a peer is a hard delete: unlike a todo or a workitem, nothing is left behind.
 
 ---
 
