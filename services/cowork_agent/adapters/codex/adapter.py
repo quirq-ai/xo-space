@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
+from services.cowork_agent.engine.stream_io import LINE_LIMIT, iter_lines
 from services.cowork_agent.project_layout import (
     project_dir as _xo_project_dir,
     xo_projects_root,
@@ -449,11 +450,14 @@ class CodexAdapter(BaseAgentAdapter):
                 #                                       an unread PIPE would deadlock once the
                 #                                       64 KB stderr buffer fills. Failure info
                 #                                       arrives on the stdout wire (error event).
+                # codex carries a whole tool result on one line, which overruns
+                # asyncio's 64 KiB default and kills the turn mid-response.
+                limit=LINE_LIMIT,
                 env=self._subprocess_env(),
                 cwd=effective_cwd,
             )
 
-            async for raw_line in proc.stdout:
+            async for raw_line in iter_lines(proc.stdout):
                 event = parse_stream_line(raw_line)
                 if event is None:
                     continue

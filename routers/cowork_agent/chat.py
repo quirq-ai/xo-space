@@ -162,6 +162,10 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
             ):
                 await queue.put(event)
         except Exception as exc:
+            # Log before converting to an SSE event. Without this the traceback
+            # is swallowed and a mid-turn crash is indistinguishable from the
+            # agent going quiet — the server log looks clean while the UI hangs.
+            log.exception("Chat stream failed mid-turn (session %s)", our_session_id)
             await queue.put({"type": "error", "error": str(exc)})
         finally:
             await queue.put(_SENTINEL)
