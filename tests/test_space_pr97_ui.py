@@ -241,12 +241,13 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn('target="_blank" rel="noopener noreferrer"', self.src)
 
 
-# Drives views/connectors.js through its own delegated click listener over
-# a DOM stub just big enough for the Polling drawer: the grid keeps the
-# painted html and a model of every drawer's form parsed out of it, the
-# probe edits that model the way a person edits the form. A text pin cannot
-# see evaluation order; this can. The prelude (server, DOM stub, helpers)
-# is shared by the two scenarios below; each prints one JSON line.
+# Drives views/connectors.js through its own delegated click listeners over
+# a DOM stub just big enough for the popup: the grid keeps the painted tile
+# html, the popup body keeps the painted card html and a model of the
+# drawer's form parsed out of it, and the probe edits that model the way a
+# person edits the form. A text pin cannot see evaluation order; this can.
+# The prelude (server, DOM stub, helpers) is shared by the two scenarios
+# below; each prints one JSON line.
 PROBE_PRELUDE = r"""
 const UI=process.argv[process.argv.length-1];
 globalThis.location={pathname:'/space/',search:'',origin:'http://space.test'};
@@ -300,7 +301,8 @@ globalThis.fetch=async(url,opts={})=>{
   throw new Error('unexpected '+method+' '+path);
 };
 
-/* DOM stub */
+/* ---------- DOM stub ---------- */
+
 function parseDrawers(html){
   const out={};
   const re=/<div class="conn-poll" id="poll-([^"]+)">([\s\S]*?)<\/article>/g;
@@ -319,75 +321,114 @@ function parseDrawers(html){
   }
   return out;
 }
-const drawerEl=model=>({
-  querySelector(sel){
-    if(sel==='input[data-poll="enabled"]')return{get checked(){return model.enabled;}};
-    if(sel==='select[data-poll="interval"]')return{get value(){return model.interval;}};
-    return null;
-  },
-  querySelectorAll(sel){
-    if(sel==='input[data-poll="collector"]:checked')
-      return Object.entries(model.collectors).filter(([,on])=>on).map(([id])=>({value:id}));
-    return[];
-  },
-});
-const paints=[];
-/* a paint recreates every card: the error boxes come back hidden and the
-   buttons a click handed out are detached, as in a browser */
+/* index of the element's own closing tag, counting nested opens: the facts
+   row is a span of spans in a tile and a div of spans in the popup's card,
+   so "the next closing tag" is not good enough */
+function closeOf(html,open,tag){
+  let i=html.indexOf('>',open)+1,depth=1;
+  const start='<'+tag,end='</'+tag+'>';
+  while(depth>0){
+    const a=html.indexOf(start,i),b=html.indexOf(end,i);
+    if(b<0)throw new Error('unbalanced '+tag);
+    if(a>=0&&a<b){depth++;i=html.indexOf('>',a)+1;}
+    else{depth--;i=b+end.length;}
+  }
+  return i-end.length;
+}
+
+/* a paint recreates every node it replaces: the error boxes come back
+   hidden and the buttons a click handed out are detached, as in a browser */
 let errs={};
-let cardNodes=new Map();
+let tileNodes=new Map(),cardNodes=new Map();
 const buttons=[];
-const grid={
-  listeners:[],drawers:{},_html:'',
+const paints=[];        /* writes to the grid (the tiles) */
+const cardPaints=[];    /* writes to the popup body (the card and its drawers) */
+const inserts=[];
+const listened={addEventListener(type,fn){(this.listeners[type]=this.listeners[type]||[]).push(fn);}};
+const fire=(node,type,event)=>(node.listeners[type]||[]).forEach(fn=>fn(event));
+
+const grid={...listened,listeners:{},_html:'',
+  get innerHTML(){return this._html;},
+  set innerHTML(html){this._html=html;paints.push(html);tileNodes=new Map();},
+};
+const body={...listened,listeners:{},drawers:{},_html:'',
   get innerHTML(){return this._html;},
   set innerHTML(html){
-    this._html=html;this.drawers=parseDrawers(html);paints.push(html);
+    this._html=html;this.drawers=parseDrawers(html);cardPaints.push(html);
     errs={};buttons.forEach(b=>{b.detached=true;});
     cardNodes=new Map();
   },
-  addEventListener(type,fn){this.listeners.push(fn);},
+  appendChild(){/* only the workspace grid moves a node in, and it is stubbed out */},
 };
-/* one card of the painted html, edited in place: the facts row takes a
-   chip, the open drawer's interval row takes the note after it */
-const inserts=[];
-function cardEl(toolkit){
-  if(cardNodes.has(toolkit))return cardNodes.get(toolkit);
-  const start=()=>grid._html.indexOf('data-toolkit="'+toolkit+'"');
-  if(start()<0)return null;
-  const inner=()=>grid._html.slice(start(),grid._html.indexOf('</article>',start()));
-  const splice=(at,html)=>{grid._html=grid._html.slice(0,at)+html+grid._html.slice(at);inserts.push(html);};
+const modalEl={...listened,listeners:{},hidden:true,
+  querySelector(sel){
+    if(sel==='.conn-modal-close')return{focus(){}};
+    throw new Error('unstubbed modal selector '+sel);
+  },
+};
+
+/* one tile of the grid html, or one card of the popup html, edited in
+   place: the facts row takes the account chip */
+function hostEl(store,cache,tag,toolkit){
+  if(cache.has(toolkit))return cache.get(toolkit);
+  const at=()=>store._html.indexOf('data-toolkit="'+toolkit+'"');
+  if(at()<0)return null;
+  const factsOpen=()=>store._html.indexOf('<'+tag+' class="conn-facts"',at());
   const facts={
-    querySelector:sel=>sel==='.conn-account'&&/conn-account"/.test(inner())?{}:null,
+    querySelector(sel){
+      if(sel!=='.conn-account')throw new Error('unstubbed facts selector '+sel);
+      const open=factsOpen();
+      return /conn-account"/.test(store._html.slice(open,closeOf(store._html,open,tag)))?{}:null;
+    },
     insertAdjacentHTML(where,html){
       if(where!=='beforeend')throw new Error('unstubbed insert '+where);
-      const i=grid._html.indexOf('<div class="conn-facts">',start());
-      splice(grid._html.indexOf('</div>',i),html);
+      const i=closeOf(store._html,factsOpen(),tag);
+      store._html=store._html.slice(0,i)+html+store._html.slice(i);
+      inserts.push(html);
     },
   };
+  const node={dataset:{toolkit},hidden:false,focus(){},
+    querySelector(sel){
+      if(sel==='.conn-facts')return facts;
+      throw new Error('unstubbed host selector '+sel);
+    },
+  };
+  cache.set(toolkit,node);
+  return node;
+}
+const tileEl=toolkit=>hostEl(grid,tileNodes,'span',toolkit);
+const cardEl=toolkit=>hostEl(body,cardNodes,'div',toolkit);
+
+/* the open drawer: the form readPollForm reads, plus the two hooks
+   paintAccount uses to drop its "Polling as" note under the interval row */
+function drawerEl(toolkit){
+  const model=body.drawers[toolkit];
+  if(modalEl.hidden||!model)return null;
+  const at=()=>body._html.indexOf('<div class="conn-poll" id="poll-'+toolkit+'"');
   const row={
     insertAdjacentHTML(where,html){
       if(where!=='afterend')throw new Error('unstubbed insert '+where);
-      const i=grid._html.indexOf('<select data-poll="interval">',start());
-      splice(grid._html.indexOf('</label>',i)+'</label>'.length,html);
+      const i=body._html.indexOf('<select data-poll="interval">',at());
+      const j=body._html.indexOf('</label>',i)+'</label>'.length;
+      body._html=body._html.slice(0,j)+html+body._html.slice(j);
+      inserts.push(html);
     },
   };
-  const drawer={
+  return{
     querySelector(sel){
-      if(sel==='.conn-poll-account')return /conn-poll-account"/.test(inner())?{}:null;
-      if(sel==='select[data-poll="interval"]')return inner().includes('<select data-poll="interval">')?{closest:()=>row}:null;
+      if(sel==='input[data-poll="enabled"]')return{get checked(){return model.enabled;}};
+      if(sel==='select[data-poll="interval"]')return{get value(){return model.interval;},closest:()=>row};
+      if(sel==='.conn-poll-account')return /conn-poll-account"/.test(body._html.slice(at()))?{}:null;
       throw new Error('unstubbed drawer selector '+sel);
     },
-  };
-  const card={dataset:{toolkit},hidden:false,
-    querySelector(sel){
-      if(sel==='.conn-facts')return facts;
-      if(sel==='.conn-poll')return inner().includes('<div class="conn-poll" id="poll-'+toolkit+'"')?drawer:null;
-      throw new Error('unstubbed card selector '+sel);
+    querySelectorAll(sel){
+      if(sel==='input[data-poll="collector"]:checked')
+        return Object.entries(model.collectors).filter(([,on])=>on).map(([id])=>({value:id}));
+      return[];
     },
   };
-  cardNodes.set(toolkit,card);
-  return card;
 }
+
 const alertEl={hidden:true,innerHTML:'',className:''};
 /* the bring-your-own-key panel: its own element with click + keydown listeners
    (bindEvents) and a nested key input (renderKeyPanel). Models the real #conn-key
@@ -403,6 +444,8 @@ const root={
   innerHTML:'',
   querySelector(sel){
     if(sel==='#conn-grid')return grid;
+    if(sel==='#conn-modal')return modalEl;
+    if(sel==='#conn-modal-body')return body;
     if(sel==='#conn-native-grid')return nativeGrid;
     if(sel==='#conn-workspace-section')return workspaceSection;
     if(sel==='#conn-account-section')return accountSection;
@@ -411,27 +454,42 @@ const root={
     if(sel==='#conn-alert')return alertEl;
     if(sel==='#conn-no-match')return noMatch;
     if(sel.startsWith('#err-')){const id=sel.slice(5);return errs[id]||(errs[id]={hidden:true,textContent:''});}
-    if(sel.startsWith('#poll-')){const m=grid.drawers[sel.slice(6)];return m?drawerEl(m):null;}
-    if(sel==='.conn-card[data-toolkit]')return grid._html.includes('conn-card')?{}:null;
-    const card=sel.match(/^\.conn-card\[data-toolkit="([^"]+)"\]$/);
-    if(card)return cardEl(card[1]);
+    if(sel.startsWith('#poll-'))return drawerEl(sel.slice(6));
     throw new Error('unstubbed selector '+sel);
   },
   querySelectorAll(sel){
-    if(sel==='.conn-card[data-toolkit]')
-      return [...grid._html.matchAll(/<article[^>]*data-toolkit="([^"]+)"/g)].map(m=>cardEl(m[1]));
+    if(sel==='.conn-tile[data-toolkit]')
+      return [...grid._html.matchAll(/<button[^>]*data-toolkit="([^"]+)"/g)].map(m=>tileEl(m[1]));
+    const host=sel.match(/^\[data-toolkit="([^"]+)"\]$/);
+    /* the chip goes to the tile always, and to the popup's card when it is
+       this connector's */
+    if(host)return [tileEl(host[1]),modalEl.hidden?null:cardEl(host[1])].filter(Boolean);
     throw new Error('unstubbed all selector '+sel);
   },
 };
+
+/* pressing a tile opens that connector's popup */
+function openTile(toolkit){
+  const tile={dataset:{toolkit},focus(){},isConnected:true};
+  fire(grid,'click',{target:{closest:sel=>sel==='.conn-tile[data-toolkit]'?tile:null}});
+  return tile;
+}
+/* the close button (the backdrop posts the same event) */
+function closePopup(){
+  fire(modalEl,'click',{target:{closest:sel=>sel==='[data-modal="close"]'?{}:null}});
+}
+/* a control inside the open popup */
 function click(toolkit,action){
   const card={dataset:{toolkit}};
   const button={dataset:{action},disabled:false,detached:false,classList:{toggle(){}},closest:()=>card};
   buttons.push(button);
-  grid.listeners.forEach(fn=>fn({target:{closest:sel=>sel.startsWith('input')?null:button}}));
+  fire(modalEl,'click',{target:{closest:sel=>
+    sel.startsWith('input')||sel.startsWith('[data-modal')?null:button}});
   return button;
 }
 const settle=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setTimeout(r,0));};
-const gmail=()=>grid.drawers.gmail;
+const drawers=()=>modalEl.hidden?{}:body.drawers;
+const gmail=()=>drawers().gmail;
 const snap=d=>d?{enabled:d.enabled,interval:d.interval,cal:!!d.collectors.cal,mail:!!d.collectors.mail}:null;
 const out={};
 
@@ -453,20 +511,23 @@ refresh=controller.testRefresh;
 DRAWER_PROBE = PROBE_PRELUDE + r"""
 await view.mount(root);
 await settle();
-out.cards=(grid._html.match(/<article class="conn-card/g)||[]).length;
+out.tiles=(grid._html.match(/<button[^>]*class="conn-tile/g)||[]).length;
+out.noCardsInTheGrid=!/<article/.test(grid._html);
 
-/* open gmail's drawer: painted from the server's copy */
+/* open gmail's popup, then its drawer: painted from the server's copy */
+openTile('gmail');await settle();
 click('gmail','polling');await settle();
 out.opened=snap(gmail());
 
-/* edit the form, then repaint three times through the Actions toggle of
-   the other card (open: two paints, close: one): every paint after the
+/* edit the form, then repaint the popup four times (a Refresh, then the
+   Actions toggle: open is two paints, close one): every paint after the
    edit must still carry it */
 gmail().collectors.cal=true;gmail().interval='1800';
-const before=paints.length;
-click('slack','actions');await settle();
-click('slack','actions');await settle();
-const after=paints.slice(before);
+const before=cardPaints.length;
+refresh();await settle();
+click('gmail','actions');await settle();
+click('gmail','actions');await settle();
+const after=cardPaints.slice(before);
 out.paintsAfterEdit=after.length;
 out.editKeptOnEveryPaint=after.map(h=>/data-poll="collector" value="cal" checked/.test(h)&&/<option value="1800" selected>/.test(h));
 out.afterRepaints=snap(gmail());
@@ -478,24 +539,37 @@ click('gmail','poll-save');await settle();
 const put=calls.find(c=>c.method==='PUT');
 out.putBody=put&&put.body;
 out.afterSave=snap(gmail());
-click('slack','actions');await settle();
+refresh();await settle();
 out.afterSaveRepaint=snap(gmail());
 
-/* edit again and let a repaint file it as the draft, then open the other
-   toolkit's drawer (closes gmail's) and reopen gmail: the close discarded
-   the draft, so the server's copy is back */
+/* edit again and let a repaint file it as the draft, then close the popup:
+   the close took the drawer with it and discarded the draft, so reopening
+   both shows the server's copy */
 gmail().interval='300';
-click('slack','actions');await settle();
+refresh();await settle();
 out.draftHeldEdit=snap(gmail());
-click('slack','polling');await settle();
-out.gmailClosedBySlack=!gmail()&&!!grid.drawers.slack;
+closePopup();
+out.closedPopupHidesEverything=!gmail();
+openTile('gmail');await settle();
+out.drawerClosedOnReopen=!gmail();
 click('gmail','polling');await settle();
 out.reopened=snap(gmail());
-out.slackClosedByGmail=!grid.drawers.slack;
+
+/* one connector at a time: opening another tile ends this popup, drawer,
+   draft and all */
+gmail().interval='300';
+openTile('slack');await settle();
+out.gmailClosedBySlack=!gmail();
+click('slack','polling');await settle();
+out.slackOpened=!!drawers().slack;
+openTile('gmail');await settle();
+out.slackClosedByGmail=!drawers().slack;
+click('gmail','polling');await settle();
+out.reopenedAfterSwitch=snap(gmail());
 
 /* Hide polling discards too */
 gmail().interval='300';
-click('slack','actions');await settle();
+refresh();await settle();
 click('gmail','polling');await settle();
 out.hidden=!gmail();
 click('gmail','polling');await settle();
@@ -505,14 +579,17 @@ console.log(JSON.stringify(out));
 process.exit(0);
 """
 
-# The account label on the Connectors card: one list read per load, one
-# account lookup per load for a connected toolkit turned on here that the
-# read left unlabelled, a repaint (through the draft-keeping paint) when a
-# label arrives, nothing at all when the lookup answers without one.
+# The account label on the Connectors tile and in its popup: one list read
+# per load, one account lookup per load for a connected toolkit turned on
+# here that the read left unlabelled, a repaint (through the draft-keeping
+# paint) when a label arrives, nothing at all when the lookup answers
+# without one.
 ACCOUNT_PROBE = PROBE_PRELUDE + r"""
 const listReads=()=>calls.filter(c=>c.method==='GET'&&c.path==='/api/connections').length;
 const asks=()=>calls.filter(c=>c.method==='POST'&&/\/account$/.test(c.path)).map(c=>c.path);
-const chip=label=>new RegExp('conn-fact conn-account" title="the account this workspace uses">'+label+'<').test(grid._html);
+const has=(html,label)=>new RegExp('conn-fact conn-account" title="the account this workspace uses">'+label+'<').test(html);
+const chip=label=>has(grid._html,label);            /* on the tile, in the grid */
+const cardChip=label=>has(body._html,label);        /* on the card, in the popup */
 const chips=()=>(grid._html.match(/conn-account"/g)||[]).length;
 
 /* mount: the list labels gmail only; slack (connected, on here) is asked
@@ -536,7 +613,7 @@ out.asksAfterRefresh=asks().length;
 out.chipsAfterRefresh=chips();
 
 /* the list forgets slack and the lookup answers with an error and no
-   label: asked once more, and the card is left as it is (no chip, and
+   label: asked once more, and the tile is left as it is (no chip, and
    no paint beyond the load's own) */
 accounts={gmail:'dev@example.com'};
 accountReply=id=>({toolkit:id,account_label:null,account_checked_at:null,
@@ -550,8 +627,10 @@ out.gmailChipAfterFailure=chip('dev@example.com');
 
 /* an unsaved edit in gmail's drawer survives the repaint a label causes,
    and the drawer names the account it polls as */
+openTile('gmail');await settle();
 click('gmail','polling');await settle();
-out.drawerNote=/<p class="conn-poll-note conn-poll-account">Polling as dev@example.com<\/p>/.test(grid._html);
+out.drawerNote=/<p class="conn-poll-note conn-poll-account">Polling as dev@example.com<\/p>/.test(body._html);
+out.popupChip=cardChip('dev@example.com');
 gmail().collectors.cal=true;gmail().interval='1800';
 accountReply=id=>({toolkit:id,account_label:'ops@example.com',account_checked_at:'2026-09-14T00:00:00Z',error:null,cached:false});
 refresh();await settle();
@@ -570,58 +649,54 @@ out.slackChipWhileHanging=chip('ops@example.com');
 release();accountGate=null;await settle();
 out.slackChipAfterRelease=chip('ops@example.com');
 
-/* a label that lands while the page is mid-action: gmail's Save just
-   failed (its card error is showing) and slack's Poll now is still in
-   flight (its button is busy). The chip and, for slack's open drawer, the
-   note land in place: no paint, the error stays, the button stays busy
-   and attached for the setBusy(false) that follows. */
+/* a label that lands while the page is mid-action: slack's Save just
+   failed (its card error is showing) and its Poll now is still in flight
+   (its button is busy). The chips and, for the open drawer, the note land
+   in place: no paint of either kind, the error stays, the button stays
+   busy and attached for the setBusy(false) that follows. slack is the one
+   whose polling has never been read, so its drawer opens without a note. */
+accounts={};
+accountReply=id=>({toolkit:id,account_label:id+'@example.com',account_checked_at:null,error:null,cached:false});
 accountGate=new Promise(r=>{release=r;});
 refresh();await settle();
-click('slack','polling');await settle();           /* gmail's drawer closes, slack's opens */
-click('gmail','polling');await settle();           /* and back: gmail's open for the Save */
+openTile('slack');await settle();
 click('slack','polling');await settle();
-out.bothDrawers=!!gmail()&&!!grid.drawers.slack;   /* one at a time: false */
-click('gmail','polling');await settle();
-putFails=true;
-click('gmail','poll-save');await settle();
-putFails=false;
-out.errorShown=!errs.gmail.hidden&&errs.gmail.textContent==='boom';
+out.noteBeforeLabel=/conn-poll-account/.test(body._html);
+/* Poll now first: it clears the card error on the way in, so a Save that
+   fails after it is what leaves an error on screen beside a busy button */
 pollGate=new Promise(r=>{out.releasePoll=r;});
 const pollBtn=click('slack','poll-now');await settle();
 out.pollBusy=pollBtn.disabled;
-const paintsBefore=paints.length;
+putFails=true;
+click('slack','poll-save');await settle();
+putFails=false;
+out.errorShown=!errs.slack.hidden&&errs.slack.textContent==='boom';
+const tilesBefore=paints.length,cardsBefore=cardPaints.length;
 release();accountGate=null;await settle();
-out.paintsOnLabel=paints.length-paintsBefore;
-out.chipLandedInPlace=chip('ops@example.com');
-out.errorKept=!!errs.gmail&&!errs.gmail.hidden&&errs.gmail.textContent==='boom';
+out.paintsOnLabel=(paints.length-tilesBefore)+(cardPaints.length-cardsBefore);
+out.chipLandedInPlace=chip('gmail@example.com');
+out.cardChipLandedInPlace=cardChip('slack@example.com');
+out.noteLandedInPlace=/<\/label><p class="conn-poll-note conn-poll-account">Polling as slack@example.com<\/p>/.test(body._html);
+out.errorKept=!!errs.slack&&!errs.slack.hidden&&errs.slack.textContent==='boom';
 out.pollStillBusyAndAttached=pollBtn.disabled&&!pollBtn.detached;
 out.inserts=inserts.length;
+out.chipsAfterNote=chips();
 const releasePoll=out.releasePoll;delete out.releasePoll;
 releasePoll();pollGate=null;await settle();
 out.pollReleased=!pollBtn.disabled;
-/* the same lookup, landing while that toolkit's own drawer is open, adds
-   the note in place too; a second label for a card that has one adds nothing */
-accountGate=new Promise(r=>{release=r;});
-refresh();await settle();
-click('slack','polling');await settle();
-out.noteBeforeLabel=/conn-poll-account/.test(grid._html);
-const paintsBeforeNote=paints.length;
-release();accountGate=null;await settle();
-out.paintsOnNote=paints.length-paintsBeforeNote;
-out.noteLandedInPlace=/<\/label><p class="conn-poll-note conn-poll-account">Polling as ops@example.com<\/p>/.test(grid._html);
-out.chipsAfterNote=chips();
-click('slack','polling');await settle();           /* closed again for the scenario below */
 
 /* a hostile label is escaped on the way into the chip (from the list and
    from the lookup) and into the drawer note (slack's own read has none,
    so the note falls back to the looked-up label) */
+closePopup();
 accounts={gmail:'<b>x</b>&y'};
 accountReply=id=>({toolkit:id,account_label:'<i>z</i>',account_checked_at:null,error:null,cached:false});
 refresh();await settle();
 out.escapedChips=grid._html.includes('>&lt;b&gt;x&lt;/b&gt;&amp;y<')&&grid._html.includes('>&lt;i&gt;z&lt;/i&gt;<')
   &&!grid._html.includes('<b>x</b>')&&!grid._html.includes('<i>z</i>');
+openTile('slack');await settle();
 click('slack','polling');await settle();
-out.escapedNote=/Polling as &lt;i&gt;z&lt;\/i&gt;<\/p>/.test(grid._html);
+out.escapedNote=/Polling as &lt;i&gt;z&lt;\/i&gt;<\/p>/.test(body._html);
 
 console.log(JSON.stringify(out));
 process.exit(0);
@@ -652,18 +727,28 @@ class ConnectorsViewTests(unittest.TestCase):
 
     def test_polling_drawer_keeps_unsaved_edits_across_repaints(self) -> None:
         self.assertIn("let pollDraft={};", self.view)
-        # every grid write snapshots the open drawer BEFORE the markup is
-        # built: renderCard paints the drawer from the draft
+        # The form lives in the popup, so the popup's paint is the only one
+        # that can lose an unsaved edit, and it snapshots the open drawer
+        # BEFORE the markup is built: renderDetail paints it from the draft.
         self.assertIn(
-            "function paintGrid(build,{snapshot=true}={}){\n"
+            "function paintModal({snapshot=true}={}){\n"
+            "  if(!modalBody||openCard===null)return;\n"
             "  if(snapshot)snapshotPollDraft();\n"
+            "  const t=toolkits.find(x=>x.id===openCard);\n"
+            "  if(!t){closeModal();return;}\n"
+            "  modalBody.innerHTML=renderDetail(t);\n}",
+            self.view,
+        )
+        self.assertEqual(self.view.count("modalBody.innerHTML=renderDetail("), 1)
+        # tiles carry no form at all, so their write takes no snapshot
+        self.assertIn(
+            "function paintGrid(build){\n"
             "  root.querySelector('#conn-grid').innerHTML=build();\n"
             "  applyFilter();\n}",
             self.view,
         )
-        self.assertIn("paintGrid(()=>toolkits.map(renderCard).join(''),opts);", self.view)
-        self.assertNotRegex(self.view, r"paintGrid\('")          # no pre-built markup
-        self.assertNotRegex(self.view, r"paintGrid\(toolkits")   # nor the cards built first
+        self.assertIn("paintGrid(()=>toolkits.map(renderTile).join(''));", self.view)
+        self.assertNotRegex(self.view, r"paintGrid\(toolkits")   # nor the tiles built first
         self.assertNotIn("grid.innerHTML=", self.view)
         self.assertEqual(self.view.count("root.querySelector('#conn-grid').innerHTML="), 1)
         snap = slice_between(self.view, "function snapshotPollDraft(){", "}")
@@ -680,13 +765,20 @@ class ConnectorsViewTests(unittest.TestCase):
         # Save paints from the server's copy: the pre-save form is not re-read
         save = slice_between(self.view, "async function savePolling(", "async function pollNow(")
         self.assertLess(save.index("pollCache[toolkitId]=res.data;"), save.index("delete pollDraft[toolkitId];"))
-        self.assertIn("if(openPolling===toolkitId)renderGrid({snapshot:false});", save)
-        # every way of closing the drawer clears it, including another drawer opening
-        toggle = slice_between(self.view, "async function togglePolling(", "async function loadPolling(")
+        self.assertIn("if(openPolling===toolkitId)paintModal({snapshot:false});", save)
+        # every way of closing the drawer clears it: Hide polling, closing the
+        # popup (which is also how opening another connector's popup ends this
+        # one), and a connect landing that opens a different toolkit's drawer
+        toggle = slice_between(self.view, "async function togglePolling(", "/* One drawer at a time")
         self.assertIn("openPolling=null;\n    delete pollDraft[toolkitId];", toggle)
         self.assertIn("closeOtherPolling(toolkitId);\n  openPolling=toolkitId;", toggle)
         other = slice_between(self.view, "function closeOtherPolling(toolkitId){", "}")
         self.assertIn("if(openPolling!==null&&openPolling!==toolkitId)delete pollDraft[openPolling];", other)
+        forget = slice_between(self.view, "function forgetCard(toolkitId){", "\n}")
+        self.assertIn("if(openToolkit===toolkitId)openToolkit=null;", forget)
+        self.assertIn("if(openPolling===toolkitId){openPolling=null;delete pollDraft[toolkitId];}", forget)
+        self.assertIn("showModal(tile,closeCardModal);", self.view)
+        self.assertIn("forgetCard(openCard);\n  openCard=null;", self.view)
         active = slice_between(self.view, "if(status==='ACTIVE'){", "if(status==='FAILED'){")
         self.assertIn("closeOtherPolling(toolkitId);\n      openPolling=toolkitId;", active)
         self.assertIn("if(!enabled)delete pollDraft[toolkitId];", self.view)
@@ -696,13 +788,15 @@ class ConnectorsViewTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_polling_drawer_behaviour_under_node(self) -> None:
         out = run_node(DRAWER_PROBE)
-        self.assertEqual(out["cards"], 2)
+        # the grid is tiles only; the card and its drawers live in the popup
+        self.assertEqual(out["tiles"], 2)
+        self.assertTrue(out["noCardsInTheGrid"])
         server = {"enabled": True, "interval": "900", "cal": False, "mail": True}
         self.assertEqual(out["opened"], server)
-        # the edit survives every one of the three repaints (the paint order
-        # bug flipped it on the first and third)
-        self.assertEqual(out["paintsAfterEdit"], 3)
-        self.assertEqual(out["editKeptOnEveryPaint"], [True, True, True])
+        # the edit survives every one of the four repaints (the paint order
+        # bug flipped it on some of them)
+        self.assertEqual(out["paintsAfterEdit"], 4)
+        self.assertEqual(out["editKeptOnEveryPaint"], [True, True, True, True])
         self.assertEqual(out["afterRepaints"], {"enabled": True, "interval": "1800", "cal": True, "mail": True})
         # Save sends the form and the drawer shows the server's normalised
         # copy, right after and on the next repaint (no draft survives Save)
@@ -710,12 +804,17 @@ class ConnectorsViewTests(unittest.TestCase):
         saved = {"enabled": True, "interval": "3600", "cal": True, "mail": True}
         self.assertEqual(out["afterSave"], saved)
         self.assertEqual(out["afterSaveRepaint"], saved)
-        # opening another toolkit's drawer closes this one and discards its
-        # draft, as Hide polling does
+        # closing the popup takes the drawer and the draft with it, so both
+        # come back from the server's copy
         self.assertEqual(out["draftHeldEdit"]["interval"], "300")
-        self.assertTrue(out["gmailClosedBySlack"])
+        self.assertTrue(out["closedPopupHidesEverything"])
+        self.assertTrue(out["drawerClosedOnReopen"])
         self.assertEqual(out["reopened"], saved)
+        # and one connector at a time: another tile ends this popup
+        self.assertTrue(out["gmailClosedBySlack"])
+        self.assertTrue(out["slackOpened"])
         self.assertTrue(out["slackClosedByGmail"])
+        self.assertEqual(out["reopenedAfterSwitch"], saved)
         self.assertTrue(out["hidden"])
         self.assertEqual(out["reopenedAfterHide"], saved)
 
@@ -781,16 +880,20 @@ class AccountLabelTests(unittest.TestCase):
     def test_card_chip_and_drawer_note(self) -> None:
         self.assertIn("import {accountLabel,accountLine} from '../core/connections.js';", self.view)
         self.assertIn("let accountCache={};", self.view)
-        card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
-        self.assertIn("const acct=accountLabel(accountCache[t.id]);", card)
+        # one status row, shared by the tile in the grid and the popup's card,
+        # so the chip cannot end up on one and not the other
+        row = slice_between(self.view, "function statusRow(t,tag){", "/* Tiles hold no form")
+        self.assertIn("const acct=accountLabel(accountCache[t.id]);", row)
         self.assertIn(
-            "+(connected&&acct\n"
-            "          ?'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(acct)+'</span>'\n"
-            "          :'')",
-            card,
+            "+(isConnected(t)&&acct\n"
+            "        ?'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(acct)+'</span>'\n"
+            "        :'')",
+            row,
         )
         # the "N accounts" chip stays
-        self.assertIn("+(t.account_count>1?'<span class=\"conn-fact\">'+t.account_count+' accounts</span>':'')", card)
+        self.assertIn("+(t.account_count>1?'<span class=\"conn-fact\">'+t.account_count+' accounts</span>':'')", row)
+        self.assertIn("statusRow(t,'span')", slice_between(self.view, "function renderTile(t){", "/* The popup"))
+        self.assertIn("statusRow(t,'div')", slice_between(self.view, "function renderDetail(t){", "/* A non-OAuth"))
         drawer = slice_between(self.view, "function renderPolling(t,enabled){", "function pollStatus(")
         self.assertIn("const acct=accountLine(c)||accountLine(accountCache[t.id]);", drawer)
         self.assertIn("+(acct?'<p class=\"conn-poll-note conn-poll-account\">Polling '+esc(acct)+'</p>':'')", drawer)
@@ -814,7 +917,7 @@ class AccountLabelTests(unittest.TestCase):
             accounts,
         )
         self.assertNotIn("headers", accounts)  # workspace-local routes: no session header
-        self.assertNotIn("renderCard", accounts)  # never a request per card
+        self.assertNotIn("renderTile", accounts)  # never a request per tile
         ask = slice_between(accounts, "function askAccounts(){", "async function resolveAccount(")
         self.assertIn("if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;", ask)
         self.assertIn("if(accountAsked.has(t.id)||accountInFlight.has(t.id))continue;", ask)
@@ -826,12 +929,15 @@ class AccountLabelTests(unittest.TestCase):
         self.assertIn("paintAccount(toolkitId,label);", resolve)
         self.assertNotIn("renderGrid(", resolve)
         self.assertNotIn("paintGrid(", resolve)
+        self.assertNotIn("paintModal(", resolve)
         self.assertIn("accountInFlight.delete(toolkitId);", resolve)
         paint = resolve[resolve.index("function paintAccount(toolkitId,label){"):]
         self.assertIn("if(!toolkit||!isConnected(toolkit))return;", paint)
-        self.assertIn("root.querySelector('.conn-card[data-toolkit=\"'+CSS.escape(toolkitId)+'\"]')", paint)
-        self.assertIn("if(facts&&!facts.querySelector('.conn-account'))", paint)
-        self.assertIn("'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'+esc(label)+'</span>'", paint)
+        # the tile always, the popup's card too when it is this connector's
+        self.assertIn("for(const host of root.querySelectorAll('[data-toolkit=\"'+CSS.escape(toolkitId)+'\"]')){", paint)
+        self.assertIn("if(facts&&!facts.querySelector('.conn-account'))facts.insertAdjacentHTML('beforeend',chip);", paint)
+        self.assertIn("'<span class=\"conn-fact conn-account\" title=\"the account this workspace uses\">'\n    +esc(label)+'</span>'", paint)
+        self.assertIn("const drawer=root.querySelector('#poll-'+CSS.escape(toolkitId));", paint)
         self.assertIn("if(!drawer||drawer.querySelector('.conn-poll-account'))return;", paint)
         self.assertIn("'<p class=\"conn-poll-note conn-poll-account\">Polling '+esc(accountLine(accountCache[toolkitId]))+'</p>'", paint)
 
@@ -851,25 +957,26 @@ class AccountLabelTests(unittest.TestCase):
         self.assertFalse(out["slackChipAfterFailure"])
         self.assertTrue(out["gmailChipAfterFailure"])
         self.assertTrue(out["drawerNote"])
+        self.assertTrue(out["popupChip"])
         self.assertTrue(out["slackChipAfterLabel"])
         self.assertEqual(out["editKept"], {"enabled": True, "interval": "1800", "cal": True, "mail": True})
         self.assertEqual(out["asksWhileHanging"], 1)
         self.assertFalse(out["slackChipWhileHanging"])
         self.assertTrue(out["slackChipAfterRelease"])
-        # a label landing mid-action paints nothing: the card error a failed
-        # Save just showed stays, the in-flight Poll now button stays busy
-        # and attached, the chip and the drawer note land in place
-        self.assertFalse(out["bothDrawers"])
+        # a label landing mid-action paints nothing, neither the tiles nor
+        # the popup: the card error a failed Save just showed stays, the
+        # in-flight Poll now button stays busy and attached, and the chips
+        # and the drawer note land in place
         self.assertTrue(out["errorShown"])
         self.assertTrue(out["pollBusy"])
+        self.assertFalse(out["noteBeforeLabel"])
         self.assertEqual(out["paintsOnLabel"], 0)
         self.assertTrue(out["chipLandedInPlace"])
+        self.assertTrue(out["cardChipLandedInPlace"])
+        self.assertTrue(out["noteLandedInPlace"])
         self.assertTrue(out["errorKept"])
         self.assertTrue(out["pollStillBusyAndAttached"])
         self.assertTrue(out["pollReleased"])
-        self.assertFalse(out["noteBeforeLabel"])
-        self.assertEqual(out["paintsOnNote"], 0)
-        self.assertTrue(out["noteLandedInPlace"])
         self.assertEqual(out["chipsAfterNote"], 2)
         self.assertTrue(out["escapedChips"])
         self.assertTrue(out["escapedNote"])

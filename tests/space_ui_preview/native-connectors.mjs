@@ -114,11 +114,19 @@ async function fixture(signedIn=true){
   page.on('pageerror',error=>report.errors.push(error.message));
   page.on('dialog',dialog=>dialog.accept());
   await page.goto(origin+'/space/#/connectors',{waitUntil:'networkidle'});
-  await page.locator('[data-native-connector="github"] .conn-state').filter({hasText:/Not connected|Connected/}).waitFor();
-  await page.waitForFunction(()=>[...document.querySelectorAll('[data-native-connector] .conn-state')].every(node=>!node.textContent.includes('Checking')));
+  await page.locator('[data-native-tile="github"] .conn-state').filter({hasText:/Not connected|Connected/}).waitFor();
+  await page.waitForFunction(()=>[...document.querySelectorAll('[data-native-tile] .conn-state')].every(node=>!node.textContent.includes('Checking')));
   return{context,page};
 }
-const native=(page,id)=>page.locator('[data-native-connector="'+id+'"]');
+/* The grid holds tiles; the card is the popup's contents, so a connector's
+   controls only exist while its tile is open. Opening another tile ends the
+   previous popup and takes its card out of the document, state intact. */
+const tile=(page,id)=>page.locator('[data-native-tile="'+id+'"]');
+const native=(page,id)=>page.locator('#conn-modal [data-native-connector="'+id+'"]');
+async function open(page,id){
+  if(await native(page,id).count())return;
+  await tile(page,id).click();await native(page,id).waitFor();
+}
 const act=(page,id,name)=>native(page,id).locator('[data-native-action="'+name+'"]');
 async function submit(page,id,kind){await native(page,id).locator('form[data-native-form="'+kind+'"] button[type="submit"]').click();}
 async function connected(page,id){await native(page,id).locator('.conn-state').filter({hasText:/Connected|Configured/}).waitFor();}
@@ -126,10 +134,11 @@ async function shot(page,name){await page.screenshot({path:resolve(output,name),
 let context,page;
 try{
   ({context,page}=await fixture());
-  assert.equal(await page.locator('[data-native-connector]').count(),5);
+  assert.equal(await page.locator('[data-native-tile]').count(),5);
   assert.deepEqual(report.writes,[],'Opening native cards makes no provider writes');
   checked('GitHub, MagicPath, Vercel, Google Drive and OneDrive status cards load without provider writes.');
 
+  await open(page,'github');
   await act(page,'github','open').click();
   const token=native(page,'github').locator('input[name="token"]');
   assert.equal(await token.getAttribute('type'),'password');
@@ -148,7 +157,7 @@ try{
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
   await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   pending.release.resolve();
-  await page.waitForFunction(()=>document.querySelector('[data-native-connector="github"] .conn-state').textContent==='Connected');
+  await page.waitForFunction(()=>document.querySelector('[data-native-tile="github"] .conn-state').textContent==='Connected');
   assert.equal(new URL(page.url()).hash,'#/projects/data/list','Pending save does not take over navigation');
   await page.locator('#tab-setup').click();await page.locator('#setup-nav [data-setup-go="connectors"]').click();
   await page.locator('#view-search').fill('');
@@ -172,6 +181,7 @@ try{
   checked('GitHub device sign-in survives internal rereads/filtering; cancel clears the pending flow and ignores late polling.');
 
   await page.locator('#view-search').fill('');
+  await open(page,'magicpath');
   await act(page,'magicpath','setup').click();
   await native(page,'magicpath').locator('.conn-state').filter({hasText:'Sign-in not verified'}).waitFor();
   await act(page,'magicpath','open').click();await act(page,'magicpath','browser').click();
@@ -184,6 +194,7 @@ try{
   await native(page,'magicpath').locator('.conn-state').filter({hasText:'Sign-in not verified'}).waitFor();
   checked('MagicPath installation, code sign-in and logout use existing fixture endpoints; completed code is cleared.');
 
+  await open(page,'vercel');
   await act(page,'vercel','open').click();await act(page,'vercel','browser').click();
   await native(page,'vercel').locator('[role="alert"]').filter({hasText:'invalid sign-in link'}).waitFor();
   assert.equal(await native(page,'vercel').locator('[data-native-link]').getAttribute('href'),null);
@@ -199,6 +210,7 @@ try{
   checked('Vercel rejects unsafe sign-in URLs and completes the OAuth redirect flow without exposing callback data.');
 
   for(const id of ['gdrive','onedrive']){
+    await open(page,id);
     await act(page,id,'open').click();
     await native(page,id).locator('input[name="name"]').fill(id==='gdrive'?'team-files':'work-files');
     await submit(page,id,'remote');
@@ -219,6 +231,7 @@ try{
       await native(page,id).locator('.conn-state').filter({hasText:'Not configured'}).waitFor();
     }
   }
+  await open(page,'gdrive');
   await act(page,'gdrive','remove').click();
   await native(page,'gdrive').locator('.conn-native-remote').waitFor({state:'detached'});
   assert.match(await native(page,'gdrive').locator('.conn-state').textContent(),/Not configured/);
@@ -229,30 +242,31 @@ try{
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1100});
     await page.locator('#view-search').fill('');
-    const bounds=await page.locator('[data-native-connector], [data-native-connector] input, [data-native-connector] button').evaluateAll(nodes=>nodes.filter(node=>node.getClientRects().length).map(node=>{
+    const bounds=await page.locator('[data-native-tile], .conn-modal-panel, .conn-modal-panel input, .conn-modal-panel button').evaluateAll(nodes=>nodes.filter(node=>node.getClientRects().length).map(node=>{
       const r=node.getBoundingClientRect();return{tag:node.tagName,left:r.left,right:r.right};
     }));
-    assert.ok(bounds.every(r=>r.left>=-1&&r.right<=width+1),width+'px native cards/forms fit: '+JSON.stringify(bounds));
+    assert.ok(bounds.every(r=>r.left>=-1&&r.right<=width+1),width+'px native tiles/popup forms fit: '+JSON.stringify(bounds));
     await shot(page,'native-connectors-'+width+'.png');
     await native(page,'gdrive').locator('input[name="name"]').scrollIntoViewIfNeeded();
     await shot(page,'native-drive-form-'+width+'.png');
   }
-  checked('Native cards and expanded forms fit at 1440px, 390px and 320px.');
+  checked('Native tiles and the popup\u2019s forms fit at 1440px, 390px and 320px.');
   await context.close();
 
   const before=report.writes.length;
   ({context,page}=await fixture(false));
-  assert.equal(await page.locator('[data-native-connector]').count(),5);
-  await native(page,'github').waitFor();
+  assert.equal(await page.locator('[data-native-tile]').count(),5);
+  await open(page,'github');
   assert.equal(await act(page,'github','open').isEnabled(),true);
+  await page.locator('.conn-modal-close').click();
   await page.locator('#view-search').fill('MagicPath');
-  assert.equal(await native(page,'magicpath').isVisible(),true);
-  assert.equal(await native(page,'github').isVisible(),false);
+  assert.equal(await tile(page,'magicpath').isVisible(),true);
+  assert.equal(await tile(page,'github').isVisible(),false);
   await page.locator('#view-search').fill('no-connectors-match-this-fixture');
   await page.locator('#conn-no-match').waitFor();
-  assert.equal(await page.locator('[data-native-connector]:visible').count(),0);
+  assert.equal(await page.locator('[data-native-tile]:visible').count(),0);
   await page.locator('#view-search-clear').click();
-  assert.equal(await page.locator('[data-native-connector]:visible').count(),5);
+  assert.equal(await page.locator('[data-native-tile]:visible').count(),5);
   assert.equal(report.writes.length,before,'Unavailable XO session never initiates native auth/install');
   checked('All native connectors remain available and searchable when XO account sign-in is unavailable.');
   assert.deepEqual(report.errors,[]);

@@ -1,6 +1,14 @@
 /* Workspace connectors use their existing local APIs, independently of the XO
-   session used by the account-app catalog. Cards are mounted once: refreshing
-   status and filtering never replace a credential field or an active login. */
+   session used by the account-app catalog. Cards are built once and never
+   rebuilt: refreshing status and filtering must not replace a credential
+   field or an active login.
+
+   The grid holds one tile per app; the card is the popup's contents. Because
+   the card is the node that carries the live state, it is MOVED into the
+   shared popup on open and taken back out on close, rather than re-rendered
+   there: a half-typed token, a device code and an in-flight poll all survive
+   opening and closing the popup. Its listeners sit on the card itself for
+   the same reason, so they travel with it. */
 import {API_BASE,apiFetch} from '../core/api.js';
 import {esc} from '../core/ui.js';
 
@@ -20,6 +28,19 @@ const APPS=[
 const string=value=>typeof value==='string'?value.trim().slice(0,300):'';
 const button=(action,label,primary=false)=>'<button type="button" class="conn-btn '+(primary?'conn-primary':'conn-secondary')+'" data-native-action="'+action+'">'+label+'</button>';
 const field=(id,name,label,type='password',extra='')=>'<label class="conn-native-field" for="native-'+id+'-'+name+'"><span>'+label+'</span><input id="native-'+id+'-'+name+'" name="'+name+'" type="'+type+'" autocomplete="off" spellcheck="false" '+extra+'></label>';
+
+/* The directory entry. A button, so Enter and Space open the popup with no
+   key handling here; paint() keeps its pill and detail line in step with the
+   card's. It carries no control of its own, so a status refresh can never
+   disturb what someone is typing. */
+function tileMarkup(app){
+  return '<button type="button" class="conn-tile" data-native-tile="'+app.id+'" aria-haspopup="dialog">'
+    +'<span class="conn-card-heading"><span class="conn-icon" aria-hidden="true">'+(ICONS[app.id]||app.icon)+'</span>'
+      +'<span class="conn-card-id"><span class="conn-tile-name">'+app.name+'</span></span></span>'
+    +'<span class="conn-card-status"><i class="conn-state">Checking&hellip;</i></span>'
+    +'<span class="conn-tile-desc">'+app.description+'</span>'
+    +'<span class="conn-tile-detail"></span></button>';
+}
 
 function cardMarkup(app){
   const id=app.id;
@@ -58,22 +79,27 @@ function loginURL(value){
   try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password?url.href:'';}catch{return'';}
 }
 
-export function mountNativeConnectors(el,{onChange=()=>{}}={}){
-  el.innerHTML=APPS.map(cardMarkup).join('');
+export function mountNativeConnectors(el,{onChange=()=>{},modal}={}){
+  el.innerHTML=APPS.map(tileMarkup).join('');
   let filter='';
-  const states=new Map(APPS.map(app=>[app.id,{app,card:el.querySelector('[data-native-connector="'+app.id+'"]'),
+  /* The card is created detached and kept that way: it lives in the popup
+     while that app is open and nowhere at all otherwise, so nothing ever
+     replaces it. */
+  const build=markup=>{const holder=document.createElement('div');holder.innerHTML=markup;return holder.firstElementChild;};
+  const states=new Map(APPS.map(app=>[app.id,{app,card:build(cardMarkup(app)),
+    tile:el.querySelector('[data-native-tile="'+app.id+'"]'),
     revision:0,busy:false,pending:null,status:null,statusError:false,timer:null,polling:false,refreshing:null,refreshAgain:false}]));
   const find=(state,selector)=>state.card.querySelector(selector);
   const action=(state,name)=>find(state,'[data-native-action="'+name+'"]');
   const error=(state,message)=>{const node=find(state,'.conn-card-error');node.textContent=message;node.hidden=!message;};
   const notice=(state,message)=>{find(state,'[data-native-note]').textContent=message;};
-  const count=()=>({total:APPS.length,shown:[...states.values()].filter(state=>!state.card.hidden).length});
+  const count=()=>({total:APPS.length,shown:[...states.values()].filter(state=>!state.tile.hidden).length});
 
   function applyFilter(){
     for(const state of states.values()){
       const search=[state.app.name,state.app.description,find(state,'.conn-native-status').textContent,
         find(state,'.conn-state').textContent,find(state,'.conn-native-remotes')?.textContent||''].join(' ').toLowerCase();
-      state.card.hidden=!!filter&&!search.includes(filter);
+      state.tile.hidden=!!filter&&!search.includes(filter);
     }
     return count();
   }
@@ -103,6 +129,13 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     find(state,'.conn-state').classList.toggle('is-connected',connected);
     card.classList.toggle('is-connected',connected);
     find(state,'.conn-native-status').textContent=detail;
+    /* the tile repeats what the popup's head says, so the directory reads
+       correctly whether or not the popup is open */
+    const pill=state.tile.querySelector('.conn-state');
+    pill.textContent=state.pending?'Sign-in pending':label;
+    pill.classList.toggle('is-connected',connected);
+    state.tile.classList.toggle('is-on',connected);
+    state.tile.querySelector('.conn-tile-detail').textContent=detail;
     action(state,'open').textContent=app.drive?'Add account':connected?'Manage':'Connect';
     if(!app.drive)action(state,'disconnect').hidden=!connected;
     if(app.id==='magicpath')action(state,'setup').hidden=!!(data?.cli_installed&&data?.skill_installed);
@@ -301,18 +334,28 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     }
   }
 
+  /* A tile carries nothing but the app it stands for: pressing one hands the
+     card to the popup. Closing takes the card back out; it keeps its state
+     either way, so reopening resumes exactly where the person left off. */
   el.addEventListener('click',event=>{
-    const button=event.target.closest('button[data-native-action]');
-    if(!button||button.disabled)return;
-    const state=states.get(button.closest('[data-native-connector]').dataset.nativeConnector);
-    handle(state,button.dataset.nativeAction,button);
-  });
-  el.addEventListener('submit',event=>{
-    const form=event.target.closest('form[data-native-form]');if(!form)return;
-    event.preventDefault();const state=states.get(form.closest('[data-native-connector]').dataset.nativeConnector);
-    submit(state,form);
+    const tile=event.target.closest('[data-native-tile]');
+    if(!tile)return;
+    const state=states.get(tile.dataset.nativeTile);
+    if(!state||!modal)return;
+    modal.show(tile,()=>state.card.remove());
+    modal.body().appendChild(state.card);
   });
   for(const state of states.values()){
+    /* on the card, not on the grid: the card is what moves */
+    state.card.addEventListener('click',event=>{
+      const button=event.target.closest('button[data-native-action]');
+      if(!button||button.disabled)return;
+      handle(state,button.dataset.nativeAction,button);
+    });
+    state.card.addEventListener('submit',event=>{
+      const form=event.target.closest('form[data-native-form]');if(!form)return;
+      event.preventDefault();submit(state,form);
+    });
     action(state,'open').setAttribute('aria-controls','native-'+state.app.id+'-form');
     action(state,'open').setAttribute('aria-expanded','false');paint(state);
   }

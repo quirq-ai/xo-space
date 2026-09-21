@@ -25,7 +25,7 @@ import quirqView from './views/quirq.js?v=20260921-refresh1';
 import {createSetupViews} from './views/setup.js?v=20260922-theme5';
 import {loadTheme} from './core/theme.js?v=20260922-theme4';
 import {loadBranding} from './core/branding.js?v=20260921-branding1';
-import connectorsView from './views/connectors.js?v=20260921-refresh1';
+import connectorsView from './views/connectors.js?v=20260922-cardpopup1';
 
 
 /* app-shell bulkhead: a fatal script error logs instead of white-screening */
