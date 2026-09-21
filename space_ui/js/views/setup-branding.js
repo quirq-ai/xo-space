@@ -40,6 +40,11 @@ export function mountBranding(el,onDraftChange=()=>{}){
     if(previewURL)URL.revokeObjectURL(previewURL);
     previewURL=null;selectedFile=null;if(resetInput)upload.value='';
   }
+  function showDefaultLogo(){
+    const mark=defaultBrandMark();
+    if(mark.style)mark.style.display='';
+    previewLogo.replaceChildren(mark);
+  }
   function render(){
     const locked=busy||checking||!loaded;
     name.disabled=locked;upload.disabled=locked;reset.disabled=locked;
@@ -53,8 +58,11 @@ export function mountBranding(el,onDraftChange=()=>{}){
     const url=logoURL();
     if(url!==renderedLogo){
       renderedLogo=url;previewLogo.replaceChildren();
-      if(url){const img=document.createElement('img');img.src=url;img.alt='Logo preview';previewLogo.append(img);}
-      else{const mark=defaultBrandMark();if(mark.style)mark.style.display='';previewLogo.append(mark);}
+      if(url){
+        const img=document.createElement('img');img.src=url;img.alt='Logo preview';
+        img.addEventListener('error',()=>{if(previewLogo.contains(img))showDefaultLogo();});
+        previewLogo.append(img);
+      }else showDefaultLogo();
     }
     remove.hidden=!url;
     fileLabel.textContent=selectedFile?selectedFile.name:url?'Custom logo':removeLogo&&saved.logo_url?'Default logo will be restored when you save.':'Default logo';

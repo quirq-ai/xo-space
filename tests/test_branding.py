@@ -17,6 +17,7 @@ from PIL import Image
 
 from routers.space import router
 from services import branding
+from utils.commands import run_sync
 
 
 def image_bytes(format: str = "PNG", size: tuple[int, int] = (8, 8), color: str = "red") -> bytes:
@@ -57,6 +58,50 @@ class BrandingTests(unittest.TestCase):
         self.assertEqual(response.json(), {"name": "Acme Studio", "logo_url": None})
         self.assertEqual(branding.get_branding(), response.json())
         self.assertEqual(json.loads(self.path.read_text())["name"], "Acme Studio")
+
+    def test_default_storage_is_outside_checkout_and_survives_code_updates(self):
+        checkout = self.root / "checkout"
+        asset = checkout / "space_ui" / "index.html"
+        asset.parent.mkdir(parents=True)
+        asset.write_text("bundled Space name and XO logo", encoding="utf-8")
+        home = self.root / "home"
+        logo = image_bytes()
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(checkout)
+            with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": ""}), patch.object(Path, "home", return_value=home):
+                response = self.save(name="Personal workspace", logo=logo)
+                self.assertEqual(response.status_code, 200)
+                saved = response.json()
+                state = home / ".quirq" / "settings" / "branding.json"
+                self.assertTrue(state.is_file())
+                document = json.loads(state.read_text())
+                self.assertEqual(document["name"], "Personal workspace")
+                self.assertTrue(document["logo"]["data"])
+                self.assertEqual([p for p in checkout.rglob("*") if p.is_file()], [asset])
+                self.assertEqual(asset.read_text(), "bundled Space name and XO logo")
+
+                # Replacing the checkout's bundled defaults during an update
+                # does not change this installation's saved branding.
+                asset.write_text("updated application shell", encoding="utf-8")
+                self.assertEqual(self.client.get("/space/branding").json(), saved)
+                self.assertEqual(self.client.get(saved["logo_url"]).content, logo)
+        finally:
+            os.chdir(previous_cwd)
+
+    def test_custom_state_inside_checkout_keeps_branding_ignored_by_git(self):
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        ignore = Path(__file__).resolve().parents[1] / ".gitignore"
+        (checkout / ".gitignore").write_text(ignore.read_text(), encoding="utf-8")
+        initialized = run_sync(["git", "init", "--quiet"], cwd=checkout, timeout=10)
+        self.assertTrue(initialized.ok, initialized.output)
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(checkout / "custom-state")}):
+            self.assertEqual(self.save(name="Private workspace", logo=image_bytes()).status_code, 200)
+        paths = ["custom-state/settings/branding.json", "custom-state/settings/branding.json.tmp"]
+        ignored = run_sync(["git", "check-ignore", "--no-index", *paths], cwd=checkout, timeout=10)
+        self.assertTrue(ignored.ok, ignored.output)
+        self.assertEqual(ignored.stdout.splitlines(), paths)
 
     def test_all_supported_image_formats_use_verified_mime_and_ignore_filename(self):
         for format, media_type in (("PNG", "image/png"), ("JPEG", "image/jpeg"), ("WEBP", "image/webp")):

@@ -64,6 +64,10 @@ htmlcov/
 data/
 docs/
 
+# Branding is machine-local, even when a custom state root is in this checkout.
+**/settings/branding.json
+**/settings/branding.json.tmp
+
 ARCHITECTURE.md
 SECURITY-AUDIT.md
 

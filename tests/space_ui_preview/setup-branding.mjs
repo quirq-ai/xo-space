@@ -24,7 +24,7 @@ const logoFile={name:'fictional-logo.png',mimeType:'image/png',buffer:png};
 const logoURL='/space/branding/logo?v=abcdef1234567890';
 const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return{promise,resolve};};
 const gate=()=>({arrived:deferred(),release:deferred()});
-let saved={name:'Space',logo_url:null},saveError=null,holdSave=null,holdRead=null;
+let saved={name:'Space',logo_url:null},saveError=null,holdSave=null,holdRead=null,logoMissing=false;
 const send=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
 await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url()),path=url.pathname,method=request.method();
@@ -52,7 +52,8 @@ await context.route('**/*',async route=>{
       return send(route,saved);
     }
   }
-  if(path==='/space/branding/logo'&&method==='GET')return route.fulfill({contentType:'image/png',body:png});
+  if(path==='/space/branding/logo'&&method==='GET')return logoMissing
+    ?send(route,{detail:'Logo not found'},404):route.fulfill({contentType:'image/png',body:png});
   if(method!=='GET'){
     report.errors.push('Blocked unexpected write '+method+' '+path);
     return send(route,{detail:'Fixture blocked unexpected write'},403);
@@ -63,11 +64,14 @@ page.on('pageerror',error=>report.errors.push(error.message));
 page.on('console',message=>{
   if(message.type()!=='error')return;
   if(message.location().url===origin+'/space/branding'&&message.text().includes('503'))return;
+  if(logoMissing&&new URL(message.location().url||origin).pathname==='/space/branding/logo'
+    &&message.text().includes('404'))return;
   report.errors.push(message.text());
 });
 page.on('response',response=>{
   if(response.status()<400)return;
   if(new URL(response.url()).pathname==='/space/branding'&&response.status()===503)return;
+  if(logoMissing&&new URL(response.url()).pathname==='/space/branding/logo'&&response.status()===404)return;
   report.errors.push(response.status()+' '+response.url());
 });
 const card=page.locator('#setup-branding'),name=page.locator('#branding-name');
@@ -75,12 +79,21 @@ const file=page.locator('#branding-logo'),save=page.locator('#branding-save');
 const previewName=card.locator('[data-branding-preview-name]');
 const previewLogo=card.locator('[data-branding-preview-logo] img, img[data-branding-preview-logo]');
 const shellName=page.locator('.brand b'),shellLogo=page.locator('.brand .mark img');
+const shellDefaultMark=page.locator('.brand .mark svg[aria-label="XO"]');
+const previewDefaultMark=card.locator('[data-branding-preview-logo] svg[aria-label="XO"]');
 const checked=text=>{report.checks.push(text);console.log(text);};
 async function waitName(expected){
   await page.waitForFunction(expected=>document.querySelector('.brand b')?.textContent===expected,expected);
 }
 async function waitPreview(expected){
   await page.waitForFunction(expected=>document.querySelector('[data-branding-preview-name]')?.textContent===expected,expected);
+}
+async function expectDefaultMark(){
+  await shellDefaultMark.waitFor({state:'visible'});
+  assert.equal(await shellLogo.count(),0,'The header uses the bundled logo without a custom image');
+  assert.ok(await shellDefaultMark.locator('polyline').count()>0,'The default header includes its SVG artwork');
+  await previewDefaultMark.waitFor({state:'visible'});
+  assert.equal(await previewLogo.count(),0,'The preview also uses the bundled logo');
 }
 async function saveDraft(expected){
   await save.click();await waitName(expected);
@@ -110,7 +123,7 @@ try{
   assert.equal(await name.inputValue(),'Space');
   assert.equal(await shellName.textContent(),'Space');
   assert.equal(await page.title(),'XO Space');
-  assert.equal(await shellLogo.count(),0);
+  await expectDefaultMark();
   assert.deepEqual(report.writes,[]);
   for(const type of ['image/png','image/jpeg','image/webp'])assert.ok((await file.getAttribute('accept')).includes(type));
   checked('Workspace owns Branding; the default name and mark load without a write.');
@@ -162,6 +175,20 @@ try{
   checked('Name and image preview locally; multipart save updates the shell and title, persists on reload, and cannot duplicate while pending.');
   checked('Drafts and the Workspace unsaved badge survive navigation and status refresh; a read completing after save cannot roll back the form or shell.');
 
+  const beforeMissingLogo=report.writes.length;
+  logoMissing=true;
+  await page.reload({waitUntil:'networkidle'});await card.waitFor();await waitName(customName);
+  await expectDefaultMark();
+  assert.equal(await name.inputValue(),customName,'A missing logo preserves the saved name');
+  assert.equal(await page.title(),customName);
+  assert.equal(report.writes.length,beforeMissingLogo,'Falling back from a missing image does not write settings');
+  assert.deepEqual(saved,{name:customName,logo_url:logoURL},'Image failure does not discard saved branding');
+  checked('A saved logo returning 404 restores the visible default mark in the header and preview while preserving the custom name.');
+  logoMissing=false;
+  await page.reload({waitUntil:'networkidle'});await card.waitFor();await waitName(customName);
+  await shellLogo.waitFor({state:'visible'});
+  assert.equal(await shellLogo.getAttribute('src'),logoURL);
+
   await page.locator('#branding-remove-logo').click();
   assert.equal(await shellLogo.count(),1,'Removing a logo is a draft until saved');
   assert.equal(report.writes.length,1);
@@ -171,7 +198,13 @@ try{
   assert.equal(report.writes[1].remove_logo,'true');
   assert.equal(report.writes[1].logo,null);
   assert.equal(await shellName.textContent(),customName);
-  checked('Removing the custom logo submits the explicit removal flag and restores the default mark.');
+  await expectDefaultMark();
+  await page.reload({waitUntil:'networkidle'});await card.waitFor();await waitName(customName);
+  await expectDefaultMark();
+  assert.equal(await name.inputValue(),customName);
+  assert.equal(await page.title(),customName);
+  assert.equal(report.writes.length,2,'Reloading after logo removal does not write settings');
+  checked('Removing the custom logo submits the explicit removal flag and restores the visible default mark after save and reload.');
 
   saveError='Branding could not be saved. Please try again.';
   await name.fill('Fictional retry');await file.setInputFiles(logoFile);
@@ -188,14 +221,20 @@ try{
 
   const beforeReset=report.writes.length;
   await page.locator('#branding-reset').click();await waitPreview('Space');
+  await previewDefaultMark.waitFor({state:'visible'});
   assert.equal(await name.inputValue(),'Space');
   assert.equal(await shellName.textContent(),'Fictional retry','Reset creates an explicit draft');
   assert.equal(report.writes.length,beforeReset);
   await saveDraft('Space');
-  assert.equal(await shellLogo.count(),0);
+  await expectDefaultMark();
   assert.equal(await page.title(),'XO Space');
   assert.equal(report.writes.at(-1).remove_logo,'true');
-  checked('Restore defaults previews Space and its default mark before a confirmed save.');
+  await page.reload({waitUntil:'networkidle'});await card.waitFor();await waitName('Space');
+  await expectDefaultMark();
+  assert.equal(await name.inputValue(),'Space');
+  assert.equal(await page.title(),'XO Space');
+  assert.equal(report.writes.length,beforeReset+1,'Reloading after reset does not write settings');
+  checked('Restore defaults previews Space and its default mark; saving and reloading retain the visible default logo, Space name and XO Space title.');
 
   const beforeInvalidName=report.writes.length;
   await name.fill('   ');

@@ -192,6 +192,8 @@ Two setup steps keep one section visible at a time. `core/setup-sections.js` own
 
 Branding previews changes before saving and updates the header and browser title immediately after a successful save. Names are 1–80 characters; logos accept PNG, JPEG or WebP up to 2 MiB and 4096 × 4096 pixels. Remove the logo or reset to the default Space name and XO mark, then save to apply. `GET`/`PUT /space/branding` persist the display settings together in `settings/branding.json` under the configured state root; `GET /space/branding/logo` serves the validated image. Branding does not change the workspace ID or account identity. Image validation uses the Pillow dependency in `requirements.txt`.
 
+The default storage path is `~/.quirq/settings/branding.json`, outside the application repository. Both the custom name and uploaded image bytes live in that one runtime file; saving never rewrites source files or bundled assets, so code updates preserve branding. If `QUIRQ_STATE_ROOT` points inside the checkout, Git ignores the branding file and its atomic-write temporary file. With no saved customization, the UI shows **Space** and the bundled **XO** logo; a missing uploaded image also falls back to the XO logo in the header and preview.
+
 **Next** moves between steps without saving. All forms stay mounted, so section
 and app navigation preserve drafts. Refresh and saving a credential also keep
 unfinished folder, agent and activity edits. Agent and Activity saves send all
