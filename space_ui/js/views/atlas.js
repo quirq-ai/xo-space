@@ -39,8 +39,8 @@ addEventListener('space:projects-changed',()=>{
   if(bootDataset||activeAtlasId)showProjectRefresh();
 });
 
-/* The atlas builds a simulation once. Offer its existing reload explicitly
-   so changing a project never discards unfinished Setup forms automatically. */
+/* The atlas builds a simulation once. Point to the global refresh instead
+   of discarding unfinished Setup forms automatically when projects change. */
 function showProjectRefresh(){
   if(!projectsDirty)return;
   for(const id of ['view-graph','view-time']){
@@ -48,14 +48,7 @@ function showProjectRefresh(){
     if(!view||view.querySelector('.atlas-project-refresh'))continue;
     const notice=document.createElement('div');
     notice.className='atlas-project-refresh';notice.setAttribute('role','status');
-    notice.innerHTML='<span>Projects changed.</span><button type="button">Refresh map</button>';
-    notice.querySelector('button').addEventListener('click',async()=>{
-      const page=activeAtlasId;if(!page)return;
-      const dataset=activeAtlasId==='dashboard'?'dashboard':'graph';
-      datasetReads.clear();
-      try{if(await ensureBoot(dataset,true)&&activeAtlasId===page){hooks.setActiveView?.(page==='time'?'time':'graph');refreshToolbar();}}
-      catch{if(activeAtlasId===page)renderNoData(view,dataset);}
-    });
+    notice.textContent='Projects changed. Use Refresh at the top of the page to reload the map.';
     view.appendChild(notice);
   }
 }

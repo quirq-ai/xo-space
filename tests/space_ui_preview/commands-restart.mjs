@@ -2,6 +2,7 @@
    Start tests/space_ui_preview/server.py, then run this script with Playwright.
    SPACE_PREVIEW_URL may point to another isolated local fixture server. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh,waitForSetup} from './refresh-helpers.mjs';
 import {mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -106,6 +107,7 @@ await context.route('**/*',async route=>{
   assert.equal(method,'GET','Unexpected mutation must never reach a real server: '+path);
   return route.continue();
 });
+await installRefreshProbes(context);
 const row=id=>page.locator('[data-command-id="'+id+'"]');
 const action=(id,name)=>row(id).locator('[data-command-action="'+name+'"]');
 const gate=()=>({arrived:deferred(),release:deferred()});
@@ -169,10 +171,10 @@ try{
   await action('job-b','edit').dispatchEvent('click');
   assert.equal(await page.locator('#command-name').inputValue(),'Edited manual check');
   const listGate=holdList=gate();
-  await page.locator('#setup-refresh').click();await listGate.arrived.promise;
+  await startDataRefresh(page,'setup');await listGate.arrived.promise;
   putGate.release.resolve();
   await page.waitForFunction(()=>document.querySelector('[data-command-id="job-3"] b')?.textContent==='Edited manual check');
-  listGate.release.resolve();await waitEnabled('#setup-refresh');
+  listGate.release.resolve();await waitForSetup(page);
   await page.waitForTimeout(150);
   assert.equal(await row('job-3').locator('b').textContent(),'Edited manual check','A stale list cannot overwrite the saved command');
   assert.deepEqual(jobs.find(job=>job.id==='job-3').command.argv,['git','status','--short']);
@@ -239,7 +241,7 @@ try{
 
   const longName='build_'+ 'x'.repeat(58);
   jobs.find(job=>job.id==='job-b').name=longName;
-  await page.locator('#setup-refresh').click();await waitEnabled('#setup-refresh');
+  await startDataRefresh(page,'setup');await waitForSetup(page);
   await row('job-b').scrollIntoViewIfNeeded();
   assert.equal(await within('[data-command-id="job-b"] b'),true,'A valid 64-character name fits the narrow Jobs row');
   await action('job-b','runs').click();await page.locator('.setup-run').first().waitFor();
@@ -251,11 +253,11 @@ try{
   restartMode='native';restartReject=true;
   fixtureRuntime.restart_required=false;
   fixtureRuntime.roots.change_required=false;
-  await page.locator('#setup-refresh').click();await waitEnabled('#setup-restart');
+  await startDataRefresh(page,'setup');await waitEnabled('#setup-restart');
   await page.locator('#setup-restart').click();
   await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
   fixtureRuntime.restart_required=true;
-  await page.locator('#setup-refresh').click();await waitEnabled('#runtime-restart');
+  await startDataRefresh(page,'setup');await waitEnabled('#runtime-restart');
   await page.locator('#runtime-restart').click();
   await page.waitForFunction(()=>document.querySelector('#setup-restart-error')?.textContent.includes('already in progress'));
   await page.locator('#update-check').click();await page.locator('#update-apply').waitFor();

@@ -16,13 +16,11 @@ function ensureDrawer(){
     <div><span>Command results</span><h2 id="command-runs-title">Inbox</h2></div>
     <button type="button" class="setup-secondary" id="command-runs-close">Close</button>
     </div><div class="setup-command-body">
-      <div class="command-results-tools"><p>Latest 20 runs · newest first</p>
-        <button type="button" class="setup-secondary" id="command-runs-refresh">Refresh</button></div>
+      <div class="command-results-tools"><p>Latest 20 runs · newest first</p></div>
       <div id="command-runs-body"></div>
     </div>`;
   document.body.appendChild(drawer);
   drawer.querySelector('#command-runs-close').addEventListener('click',()=>drawer.close());
-  drawer.querySelector('#command-runs-refresh').addEventListener('click',loadResults);
   drawer.addEventListener('click',async event=>{
     if(!event.target.closest('#command-log-copy')||!current?.history?.log_path)return;
     try{await navigator.clipboard.writeText(current.history.log_path);toast('Log path copied');}
@@ -70,8 +68,6 @@ async function loadResults(){
   clearTimeout(timer);
   const mine=++requestVersion;
   const selected=current;
-  const button=drawer.querySelector('#command-runs-refresh');
-  button.disabled=true;
   const path=API_BASE+'/api/schedules/'+encodeURIComponent(selected.id);
   // A terminal status must precede its history read: parallel snapshots can
   // otherwise stop polling with the output from just before completion.
@@ -81,7 +77,6 @@ async function loadResults(){
   // read its own key so apiFetch cannot share that pre-completion snapshot.
   const history=await apiFetch(path+'/runs?limit=20&read='+mine);
   if(mine!==requestVersion||current!==selected||!drawer.open)return;
-  button.disabled=false;
   selected.errors=[];
   if(job.ok)selected.job=job.data;
   else selected.errors.push('Command status: '+failText(job));

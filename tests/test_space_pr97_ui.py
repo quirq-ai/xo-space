@@ -203,10 +203,10 @@ class InboxViewTests(unittest.TestCase):
         self.assertIn("painted=paintKey();", render)
         self.assertIn("el.focus({preventScroll:true})", render)
         self.assertIn("CSS.escape(a.dataset[k])", self.src)
-        # an unchanged read still ages the relative times and re-enables Refresh
+        # an unchanged read still ages relative times and syncs pending actions
         settle = slice_between(self.src, "function settle(){", "function summary(")
         self.assertIn("syncBusy();", settle)
-        self.assertIn("button[data-act=\"refresh\"]", settle)
+        self.assertNotIn("button[data-act=\"refresh\"]", settle)
         self.assertIn("[data-ts]", settle)
         self.assertIn('data-ts="\'+esc(it.ts)+\'"', self.src)
 
@@ -396,8 +396,7 @@ const keyEl={className:'',innerHTML:'',listeners:{},
 const noMatch={hidden:true,textContent:''};
 const nativeGrid={innerHTML:''};
 const workspaceSection={hidden:false},accountSection={hidden:false};
-const refreshBtn={listeners:[],addEventListener(type,fn){this.listeners.push(fn);}};
-const refresh=()=>refreshBtn.listeners.forEach(fn=>fn());
+let refresh;
 const root={
   innerHTML:'',
   querySelector(sel){
@@ -405,7 +404,6 @@ const root={
     if(sel==='#conn-native-grid')return nativeGrid;
     if(sel==='#conn-workspace-section')return workspaceSection;
     if(sel==='#conn-account-section')return accountSection;
-    if(sel==='#conn-refresh')return refreshBtn;
     if(sel==='#conn-key')return keyEl;
     if(sel==='#conn-key-input')return null;
     if(sel==='#conn-alert')return alertEl;
@@ -437,14 +435,17 @@ const out={};
 
 /* These probes exercise the account-app controller, including its real API,
    session and polling code. Native integrations have independent browser
-   coverage; a no-op child keeps this intentionally small DOM stub focused. */
+   coverage; a no-op child keeps this intentionally small DOM stub focused.
+   The test-only export exercises internal reloads after removing its UI button. */
 const fs=await import('node:fs/promises');
 const connectorURL=new URL(UI+'/js/views/connectors.js');
 const connectorSource=(await fs.readFile(connectorURL,'utf8'))
   .replace(/^import \{mountNativeConnectors\} from .*?;$/m,
     'const mountNativeConnectors=()=>({refresh:async()=>{},setFilter:()=>({total:0,shown:0})});')
   .replace(/from '([^']+)'/g,(_match,specifier)=>"from '"+new URL(specifier,connectorURL).href+"'");
-const view=(await import('data:text/javascript;base64,'+Buffer.from(connectorSource).toString('base64'))).default;
+const controller=await import('data:text/javascript;base64,'+Buffer.from(connectorSource+'\nexport {refreshAll as testRefresh};').toString('base64'));
+const view=controller.default;
+refresh=controller.testRefresh;
 """
 
 DRAWER_PROBE = PROBE_PRELUDE + r"""
@@ -525,7 +526,7 @@ out.gmailChip=chip('dev@example.com');
 out.slackChip=chip('ops@example.com');
 out.headersOnAccountCalls=calls.some(c=>/\/api\/connections/.test(c.path)&&c.headers!==undefined);
 
-/* Refresh with the list now labelling both: one more read, nobody asked */
+/* An internal reload with both labels makes one more read, nobody asked. */
 accounts={gmail:'dev@example.com',slack:'ops@example.com'};
 refresh();await settle();
 out.listReadsAfterRefresh=listReads();
@@ -899,16 +900,16 @@ class ShellTests(unittest.TestCase):
         # Trends absorbing Tools and Models changed navigation.js, so every
         # importer of the vocabulary moved to the agents stamp.
         agents_stamp = "20260915-agents2"
-        for view in ("tree", "inbox-activity", "project-manage"):
+        for view in ("tree", "inbox-activity"):
             self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
-        # Inbox sharing hand-off + Copy path (issues #142, #143) moved these on.
-        for view in ("sharing", "projects", "inbox"):
-            self.assertIn("./views/" + view + ".js?v=20260918-copypath1'", app)
-        for sheet in ("sharing", "projects"):
+        # Global refresh removes per-view controls and advances their cache stamps.
+        for view in ("sharing", "projects", "inbox", "project-manage", "quirq", "connectors", "setup", "atlas"):
+            self.assertIn("./views/" + view + ".js?v=20260921-refresh1'", app)
+        for sheet in ("sharing",):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
-        for module in ("section-nav", "navigation", "preview"):
+        for module in ("navigation", "preview"):
             self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
-        self.assertIn("./views/quirq.js?v=20260915-data1'", app)
+        self.assertIn("./core/section-nav.js?v=20260921-refresh1'", app)
         # The typography pass (Inter, readable small text) restamped every file
         # it changed on top of development.
         type_stamp = "20260915-typesync1"
@@ -916,28 +917,30 @@ class ShellTests(unittest.TestCase):
         # Restoring the footer (and dropping the graph's duplicate counts line)
         # moved these again; toolbar.js is back to development's copy.
         footer_stamp = "20260915-footer1"
-        for module in ("views/sessions", "views/atlas"):
+        for module in ("views/sessions",):
             self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
         self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
         self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
-        self.assertIn("./views/connectors.js?v=20260917-byok1'", app)
+        self.assertIn("./core/page-refresh.js?v=20260921-refresh1'", app)
         html = read("index.html")
         for sheet in ("project-management", "inbox-activity",
-                      "connectors", "sessions", "command-palette"):
+                      "sessions", "command-palette"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
-        for sheet in ("base", "chrome", "graph", "preview", "navigation"):
+        for sheet in ("preview", "navigation"):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
         self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
         # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
         # with Run now in Inbox) restamped the files it changed.
         jobs_stamp = "20260916-jobs3"
-        for module in ("views/setup", "views/wiki", "core/command-palette"):
+        for module in ("views/wiki",):
             self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
         # its calendar landed in the shared shadcn styles
-        for sheet in ("inbox", "shadcn"):
+        for sheet in ("shadcn",):
             self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
-        # the radio focus fix restamped the Setup styles once more
-        self.assertIn('<link rel="stylesheet" href="css/setup.css?v=20260916-jobs4">', html)
+        # Global refresh also advances changed shared and per-view styles.
+        for sheet in ("base", "chrome", "graph", "projects", "inbox", "quirq", "setup", "connectors"):
+            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260921-refresh1">', html)
+        self.assertIn("./core/command-palette.js?v=20260921-refresh1'", app)
         # Later view changes legitimately advance the shell and Wiki stamps;
         # test_space_wiki checks that the cache-bust chain stays intact.
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')

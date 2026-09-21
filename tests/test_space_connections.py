@@ -354,9 +354,9 @@ class CacheBusterTests(unittest.TestCase):
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
         self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260918-copypath1';", app
+            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260921-refresh1';", app
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260917-byok1';", app)
+        self.assertIn("import connectorsView from './views/connectors.js?v=20260921-refresh1';", app)
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
@@ -367,9 +367,9 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
+        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260921-refresh1">', html)
         # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">', html)
+        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260921-refresh1">', html)
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))

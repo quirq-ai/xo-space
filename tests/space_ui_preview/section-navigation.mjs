@@ -2,6 +2,7 @@
 /* Canonical section navigation over actual Space assets and fictional data.
    External requests and service mutations are blocked; one Check now POST is intercepted in memory. */
 import assert from 'node:assert/strict';
+import {startDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -258,9 +259,9 @@ try{
   await shareAction.click();assert.equal(await page.locator('#shl-composer').count(),0);
   checked('Sharing actions align with section controls, retain their nodes across pages, toggle the composer and prevent duplicate checks while preserving its draft.');
 
-  await leaf('tree');await page.locator('#project-refresh').waitFor();
+  await leaf('tree');await page.locator('#space-refresh').waitFor();
   treeGate={arrived:gate(),release:gate()};const delayedTree=treeGate;
-  await page.locator('#project-refresh').click();
+  await startDataRefresh(page);
   await Promise.race([delayedTree.arrived.promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Tree Refresh did not reach its fixture')),5000))]);
   await page.locator('.view.is-active .data-views [data-data-mode="project-list"]').click();await expectRoute('projects/data/list');
   delayedTree.release.resolve();await page.waitForLoadState('networkidle');await expectRoute('projects/data/list');

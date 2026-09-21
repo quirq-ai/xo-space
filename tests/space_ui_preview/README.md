@@ -35,6 +35,23 @@ canonical routes, native secondary links, historical
 file previews across projection changes, closing the preview when leaving
 Projects, the local Wiki resource, number keys 1–4, and responsive navigation.
 
+For the single global Refresh button and full-page reload, run:
+
+```sh
+node tests/space_ui_preview/global-refresh.mjs /tmp/space-global-refresh
+```
+
+This check visits all 24 canonical pages, including expanded project Issues,
+and verifies exactly one Refresh button in the top bar. It checks actual document
+reloads across Projects, Agents, Inbox, Setup and Wiki, unchanged URL query/hash,
+keyboard and command-palette activation, updated Inbox data and subsequent refreshes. Every page is
+checked for header overlap and document overflow at 1440px, 1600px, 1601px,
+1920px, 390px and 320px. The output includes Projects Overview and Manage
+screenshots at 1440px, 390px and 320px
+plus `report.json`. API data is fictional; external requests and service writes
+are blocked. Refresh reloads the entire document, so in-memory filters and unsaved
+drafts follow normal browser reload behavior.
+
 `projects-root.mjs` checks direct List, Tree and Manage loads, root search
 without booting a hidden graph, selection into Data Graph, browser history,
 Timeline root selection, and leaving Projects during a pending metadata read. It blocks service writes
@@ -83,8 +100,9 @@ cancellation, retained drafts, unchanged routes, mocked error/success responses,
 and duplicate submission protection after leaving and returning. The activity check covers
 workspace history, scoped todos and session details, pagination, repository events, independent
 search/selection, escaped payloads, partial errors and late reads. Both capture
-1440px, 390px and 320px layouts. The actions check verifies per-page data refresh,
-retained filters/root/drawers, and the clone form inside Manage. Every write is
+1440px, 390px and 320px layouts. The actions check verifies internal data refresh,
+retained filters/root/drawers, and the clone form inside Manage. The global Refresh
+button is covered separately above. Every write is
 blocked or handled by an explicit in-memory fixture.
 
 For contextual toolbar coverage, use the same server and Playwright settings:
