@@ -13,6 +13,7 @@ from typing import Any
 from utils.commands import CommandResult, run
 
 from .common import get_github_token
+from .repo_access import NOT_SELECTED_MESSAGE, is_repo_allowed
 
 GH_BIN = "gh"
 
@@ -626,6 +627,9 @@ async def fetch_open_issues(
             f"Not a GitHub owner/repo: {repo!r}." if repo else "No repository given.",
         )
     slug = ref.slug
+
+    if ref.is_github_com and not is_repo_allowed(slug):
+        return _failure(slug, "forbidden", NOT_SELECTED_MESSAGE)
 
     if not gh_available(gh_bin):
         return _failure(

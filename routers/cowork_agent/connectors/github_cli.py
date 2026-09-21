@@ -10,6 +10,7 @@ On success the token lands in the same store as a pasted PAT, so `/status`,
 """
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -21,6 +22,12 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class CliStartBody(BaseModel):
+    # "all" (every repository, the default) or "selected" (the user picks
+    # repositories once signed in; nothing is allowed until they do).
+    repo_access: Literal["all", "selected"] = "all"
+
+
 class CliSessionBody(BaseModel):
     session_id: str
 
@@ -30,14 +37,16 @@ class CliSessionBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/connectors/github/cli/start")
-async def cli_login_start() -> JSONResponse:
+async def cli_login_start(body: CliStartBody | None = None) -> JSONResponse:
     """Spawn `gh auth login --web` and return the device code + verification URL.
 
     The frontend should display `user_code` and a clickable link to
     `verification_uri`, then poll `/cli/poll` until status flips to `completed`.
     """
     try:
-        info = await github_cli_auth.start_login()
+        info = await github_cli_auth.start_login(
+            repo_access=body.repo_access if body else "all",
+        )
     except RuntimeError as exc:
         # Caller-actionable: gh missing, parse failure, concurrent session, etc.
         raise HTTPException(status_code=400, detail=str(exc))

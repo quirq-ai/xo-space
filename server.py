@@ -788,6 +788,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
 
+    # GitHub repository selection: re-assert the git credential rule, so a
+    # selection made before a redeploy (or a hand-edited ~/.gitconfig) cannot
+    # leave plain `git` able to reach repositories outside it.
+    try:
+        from services.cowork_agent.connectors.github.git_credential import enforce_selection
+        await enforce_selection()
+    except Exception as e:
+        print(f"⚠️ GitHub repository selection not enforced for git (non-fatal): {e}")
+
     # Connections poller: runs each due connection's collectors over the
     # Composio MCP upstream and appends to ~/.quirq/connections/<toolkit>/
     # events.jsonl, which the Inbox's connections feeder reads.

@@ -48,7 +48,7 @@ async function fixture(signedIn=true){
     }
     if(path==='/api/connectors/github/disconnect'){assert.equal(method,'POST');state.github=false;return json(route,{status:'needs_auth'});}
     if(path==='/api/connectors/github/cli/start'){
-      assert.equal(method,'POST');assert.deepEqual(request.postDataJSON(),{});
+      assert.equal(method,'POST');assert.deepEqual(request.postDataJSON(),{repo_access:'all'});
       return json(route,{session_id:'fixture-github-login',user_code:'TEST-CODE',verification_uri:'https://github.com/login/device'});
     }
     if(path==='/api/connectors/github/cli/poll'){
@@ -119,6 +119,9 @@ async function fixture(signedIn=true){
 const native=(page,id)=>page.locator('[data-native-connector="'+id+'"]');
 const act=(page,id,name)=>native(page,id).locator('[data-native-action="'+name+'"]');
 async function submit(page,id,kind){await native(page,id).locator('form[data-native-form="'+kind+'"] button[type="submit"]').click();}
+/* A connector form is a modal dialog: leave it (Esc works even mid-save, when
+   its buttons are disabled) before touching the page, reopen it to go on. */
+async function leave(page){await page.keyboard.press('Escape');await page.locator('dialog.conn-native-form[open]').waitFor({state:'detached'}).catch(()=>{});}
 async function connected(page,id){await native(page,id).locator('.conn-state').filter({hasText:/Connected|Configured/}).waitFor();}
 async function shot(page,name){await page.screenshot({path:resolve(output,name),fullPage:true});report.screenshots.push(name);}
 let context,page;
@@ -136,13 +139,16 @@ try{
   assert.doesNotMatch(await page.locator('body').innerText(),/RAW|fictional-rejected-token/);
   assert.equal(await token.inputValue(),'fictional-rejected-token','Failed save preserves editable draft');
   await token.fill('fictional-valid-token');const tokenNode=await token.elementHandle();
+  await leave(page);
   await page.locator('#view-search').fill('MagicPath');
   await page.locator('#conn-refresh').click();
   await page.locator('#view-search').fill('GitHub');
   assert.equal(await tokenNode.evaluate(node=>node.isConnected),true);
   assert.equal(await token.inputValue(),'fictional-valid-token');
+  await act(page,'github','open').click();
   const pending=holdToken=gate();await submit(page,'github','token');await pending.arrived.promise;
   assert.equal(await token.isDisabled(),true);
+  await leave(page);
   await page.locator('#setup-nav [data-setup-go="workspace"]').click();
   await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   pending.release.resolve();
@@ -160,15 +166,18 @@ try{
   const device=holdDevicePoll=gate();await act(page,'github','browser').click();await device.arrived.promise;
   assert.equal(await native(page,'github').locator('[data-native-link]').getAttribute('href'),'https://github.com/login/device');
   assert.match(await native(page,'github').locator('[data-native-code]').textContent(),/TEST-CODE/);
+  await leave(page);
   await page.locator('#view-search').fill('magicpath');await page.locator('#conn-refresh').click();
   await page.locator('#view-search').fill('github');
   assert.match(await native(page,'github').locator('.conn-state').textContent(),/pending/);
+  await act(page,'github','open').click();
   await act(page,'github','cancel').click();
   device.release.resolve();
   await native(page,'github').locator('.conn-state').filter({hasText:'Not connected'}).waitFor();
   assert.equal(await native(page,'github').locator('[data-native-link]').isVisible(),false);
   checked('GitHub device sign-in survives Refresh/filtering; cancel clears the pending flow and ignores late polling.');
 
+  await leave(page);
   await page.locator('#view-search').fill('');
   await act(page,'magicpath','setup').click();
   await native(page,'magicpath').locator('.conn-state').filter({hasText:'Sign-in not verified'}).waitFor();
@@ -194,6 +203,7 @@ try{
   await act(page,'vercel','open').click();
   assert.equal(await act(page,'vercel','browser').isDisabled(),true,'An existing Vercel account cannot falsely complete a new OAuth flow');
   assert.match(await act(page,'vercel','browser').textContent(),/Disconnect before browser sign-in/);
+  await leave(page);
   checked('Vercel rejects unsafe sign-in URLs and completes the OAuth redirect flow without exposing callback data.');
 
   for(const id of ['gdrive','onedrive']){
@@ -204,17 +214,20 @@ try{
     if(id==='gdrive'){
       await native(page,id).locator('input[name="code"]').fill('http://localhost/?code=fictional-drive-code');
       const codeNode=await native(page,id).locator('input[name="code"]').elementHandle();
+      await leave(page);
       await page.locator('#view-search').fill('magicpath');await page.locator('#conn-refresh').click();
       await page.locator('#view-search').fill('Google Drive');
       assert.equal(await codeNode.evaluate(node=>node.isConnected),true,'Drive redirect form remains mounted during refresh');
       assert.equal(await native(page,id).locator('input[name="code"]').inputValue(),'http://localhost/?code=fictional-drive-code');
       assert.match(await native(page,id).locator('.conn-state').textContent(),/pending/);
+      await act(page,id,'open').click();
       await submit(page,id,'code');await connected(page,id);
       await page.locator('#view-search').fill('');
       assert.match(await native(page,id).textContent(),/team-files/);
     }else{
       await act(page,id,'cancel').click();
       await native(page,id).locator('.conn-state').filter({hasText:'Not configured'}).waitFor();
+      await leave(page);
     }
   }
   await act(page,'gdrive','remove').click();
@@ -226,7 +239,6 @@ try{
   await native(page,'gdrive').locator('input[name="name"]').fill('a-new-account-draft');
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1100});
-    await page.locator('#view-search').fill('');
     const bounds=await page.locator('[data-native-connector], [data-native-connector] input, [data-native-connector] button').evaluateAll(nodes=>nodes.filter(node=>node.getClientRects().length).map(node=>{
       const r=node.getBoundingClientRect();return{tag:node.tagName,left:r.left,right:r.right};
     }));
@@ -235,7 +247,7 @@ try{
     await native(page,'gdrive').locator('input[name="name"]').scrollIntoViewIfNeeded();
     await shot(page,'native-drive-form-'+width+'.png');
   }
-  checked('Native cards and expanded forms fit at 1440px, 390px and 320px.');
+  checked('Native cards and their form dialog fit at 1440px, 390px and 320px.');
   await context.close();
 
   const before=report.writes.length;

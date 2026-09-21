@@ -6,13 +6,14 @@ Two ways to acquire a token, one shared everything-else:
   * ``pat``      — the user pastes a personal access token
   * ``cli_auth`` — the `gh auth login` device flow
   * ``common``   — storage, validation and status, shared by both
+  * ``repo_access`` — which repositories the workspace may touch
 
 Callers that only need the connected identity should import from this package
 (``from ...connectors.github import get_github_token``) and stay unaware of
 which method established it.
 """
 
-from . import cli_auth, pat
+from . import cli_auth, pat, repo_access
 from .common import (
     GITHUB_API,
     AuthMethod,
@@ -41,6 +42,7 @@ __all__ = [
     "get_github_token",
     "get_status",
     "pat",
+    "repo_access",
     "save_github_token",
     "validate_token",
 ]

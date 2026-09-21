@@ -21,6 +21,17 @@ const string=value=>typeof value==='string'?value.trim().slice(0,300):'';
 const button=(action,label,primary=false)=>'<button type="button" class="conn-btn '+(primary?'conn-primary':'conn-secondary')+'" data-native-action="'+action+'">'+label+'</button>';
 const field=(id,name,label,type='password',extra='')=>'<label class="conn-native-field" for="native-'+id+'-'+name+'"><span>'+label+'</span><input id="native-'+id+'-'+name+'" name="'+name+'" type="'+type+'" autocomplete="off" spellcheck="false" '+extra+'></label>';
 
+/* GitHub sign-in always grants every repository (an OAuth token has no
+   per-repo choice), so the choice is kept by the workspace and enforced by
+   its own checks. Chosen before sign-in, editable while connected. */
+const REPO_ACCESS='<fieldset class="conn-native-repos" data-native-repos><legend>Repository access</legend>'
+  +'<label><input type="radio" name="native-github-repo-mode" value="all" checked> All repositories</label>'
+  +'<label><input type="radio" name="native-github-repo-mode" value="selected"> Only select repositories</label>'
+  +'<p class="conn-native-note" data-native-repo-note></p>'
+  +'<div data-native-repo-picker hidden><input type="search" data-native-repo-filter placeholder="Filter repositories" aria-label="Filter repositories" autocomplete="off">'
+  +'<ul class="conn-native-repo-list"></ul></div>'
+  +button('save-repos','Save repository access')+'</fieldset>';
+
 function cardMarkup(app){
   const id=app.id;
   const token=id==='github'||id==='vercel';
@@ -32,14 +43,16 @@ function cardMarkup(app){
     +'<div class="conn-card-acts">'+button('open',app.drive?'Add account':'Connect',true)
       +(id==='magicpath'?button('setup','Install skill &amp; CLI'):'')
       +(!app.drive?button('disconnect','Disconnect'):'')+'</div>'
-    +'<div class="conn-native-form" id="native-'+id+'-form" hidden>'
+    +'<dialog class="conn-native-form" id="native-'+id+'-form" aria-labelledby="native-'+id+'-form-title">'
+      +'<header class="conn-native-form-head"><span class="conn-icon" aria-hidden="true">'+(ICONS[id]||app.icon)+'</span><h3 id="native-'+id+'-form-title">'+app.name+'</h3></header>'
       +(token?'<form data-native-form="token">'+field(id,'token',id==='github'?'Personal access token':'API token','password','required maxlength="4096"')+'<button class="conn-primary" type="submit">Save token</button></form>'+button('browser','Sign in with '+app.name):'')
+      +(id==='github'?REPO_ACCESS:'')
       +(id==='magicpath'?'<p class="conn-native-note">Sign in, then paste the authorization code from MagicPath.</p>'+button('browser','Open MagicPath sign-in'):'')
       +(app.drive?'<form data-native-form="remote">'+field(id,'name','Account name','text','required pattern="[a-z0-9_-]{1,32}" maxlength="32" placeholder="my-drive"')+'<p class="conn-native-note">Use lowercase letters, numbers, - or _.</p><button class="conn-primary" type="submit">Start sign-in</button></form>':'')
       +'<div class="conn-native-auth" hidden><p class="conn-native-note" data-native-note></p><a class="conn-secondary" data-native-link target="_blank" rel="noopener noreferrer" hidden>Continue sign-in ↗</a><p data-native-code hidden></p></div>'
       +'<form data-native-form="code" hidden>'+field(id,'code',id==='magicpath'?'Authorization code':'Redirect URL','password','required maxlength="16384"')+'<button class="conn-primary" type="submit">Complete sign-in</button></form>'
       +'<div class="conn-card-acts">'+button('check','Check connection')+button('cancel','Cancel sign-in')+button('close','Close')+'</div>'
-    +'</div><p class="conn-card-error" role="alert" hidden></p></article>';
+    +'</dialog><p class="conn-card-error" role="alert" hidden></p></article>';
 }
 
 /* Never render provider errors: CLI output and callback errors can contain a
@@ -62,7 +75,8 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
   el.innerHTML=APPS.map(cardMarkup).join('');
   let filter='';
   const states=new Map(APPS.map(app=>[app.id,{app,card:el.querySelector('[data-native-connector="'+app.id+'"]'),
-    revision:0,busy:false,pending:null,status:null,statusError:false,timer:null,polling:false,refreshing:null,refreshAgain:false}]));
+    revision:0,busy:false,pending:null,status:null,statusError:false,timer:null,polling:false,refreshing:null,refreshAgain:false,
+    repos:{list:[],selected:new Set(),loaded:false,loading:false,dirty:false,failed:false}}]));
   const find=(state,selector)=>state.card.querySelector(selector);
   const action=(state,name)=>find(state,'[data-native-action="'+name+'"]');
   const error=(state,message)=>{const node=find(state,'.conn-card-error');node.textContent=message;node.hidden=!message;};
@@ -117,11 +131,62 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       if(app.id==='vercel')browserButton.textContent=connected?'Disconnect before browser sign-in':
         data?.status==='needs_auth'?'Sign in with Vercel':'Check connection before browser sign-in';
     }
+    if(app.id==='github'){
+      const mode=repoMode(state),repos=state.repos;
+      if(connected&&!repos.dirty&&data.repo_access)detail+=data.repo_access.mode==='selected'
+        ?' · '+data.repo_access.repos.length+' selected repositor'+(data.repo_access.repos.length===1?'y':'ies'):' · All repositories';
+      find(state,'.conn-native-status').textContent=detail;
+      find(state,'[data-native-repos]').hidden=!!state.pending;
+      find(state,'[data-native-repo-picker]').hidden=!(connected&&mode==='selected');
+      action(state,'save-repos').hidden=!connected;
+      action(state,'save-repos').disabled=state.busy||!repos.dirty;
+      find(state,'[data-native-repo-note]').textContent=!connected
+        ?(mode==='selected'?'You will pick repositories right after signing in. Until then none are used.':'')
+        :mode!=='selected'?'':repos.loading?'Loading repositories…':repos.failed?'Could not load repositories. Choose Check connection to retry.'
+        :repos.selected.size+' selected. GitHub sign-in itself covers every repository; this workspace only uses the ones chosen here.';
+    }
     const remoteForm=find(state,'[data-native-form="remote"]');
     if(remoteForm)remoteForm.hidden=!!state.pending;
     const tokenForm=find(state,'[data-native-form="token"]');
     if(tokenForm)tokenForm.hidden=!!state.pending;
     applyFilter();onChange(count());
+  }
+
+  const repoMode=state=>find(state,'input[name="native-github-repo-mode"]:checked')?.value==='selected'?'selected':'all';
+  function paintRepos(state){
+    const repos=state.repos,query=find(state,'[data-native-repo-filter]').value.trim().toLowerCase();
+    /* Keep a selected repo visible even when the listing no longer has it. */
+    const names=new Map(repos.list.map(repo=>[repo.full_name.toLowerCase(),repo]));
+    for(const slug of repos.selected)if(!names.has(slug))names.set(slug,{full_name:slug,private:false});
+    find(state,'.conn-native-repo-list').innerHTML=[...names].filter(([slug])=>!query||slug.includes(query)).map(([slug,repo])=>
+      '<li><label><input type="checkbox" data-native-repo="'+esc(slug)+'"'+(repos.selected.has(slug)?' checked':'')+'> '
+      +esc(repo.full_name)+(repo.private?' <small>Private</small>':'')+'</label></li>').join('');
+  }
+  /* Adopt the stored selection unless the user has unsaved edits. */
+  function syncRepos(state){
+    const repos=state.repos,access=state.status?.repo_access;
+    if(state.status?.status!=='connected'){
+      if(state.status)Object.assign(repos,{list:[],selected:new Set(),loaded:false,dirty:false,failed:false});
+      return;
+    }
+    if(!repos.dirty&&access){
+      find(state,'input[name="native-github-repo-mode"][value="'+(access.mode==='selected'?'selected':'all')+'"]').checked=true;
+      repos.selected=new Set((Array.isArray(access.repos)?access.repos:[]).map(string).filter(Boolean));
+      paintRepos(state);
+    }
+    if(repoMode(state)==='selected'&&find(state,'.conn-native-form').open)loadRepos(state);
+  }
+  async function loadRepos(state,force=false){
+    const repos=state.repos;
+    if(repos.loading||repos.loaded&&!force)return;
+    repos.loading=true;repos.failed=false;paint(state);
+    const res=await apiFetch(BASE+'github/repos');
+    repos.loading=false;
+    if(res.ok&&Array.isArray(res.data?.repos)){
+      repos.list=res.data.repos.filter(repo=>repo&&string(repo.full_name)).map(repo=>({full_name:string(repo.full_name),private:repo.private===true}));
+      repos.loaded=true;
+    }else repos.failed=true;
+    paintRepos(state);paint(state);
   }
 
   async function refreshOne(state){
@@ -139,14 +204,24 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
           state.app.id==='magicpath'?typeof res.data.logged_in==='boolean':['connected','needs_auth','failed'].includes(res.data.status));
         state.status=valid?res.data:null;state.statusError=!valid;
         if(state.pending?.kind==='magicpath'&&!state.pending.initialConnected&&state.status?.logged_in===true)completed(state);
+        if(state.app.id==='github')syncRepos(state);
         paint(state);
       }while(state.refreshAgain&&!state.busy);
     })();
     try{await state.refreshing;}finally{state.refreshing=null;}
   }
 
+  /* The form is a modal dialog, so a card never grows and stretches its row.
+     The alert moves in with it: left on the card it would sit under the backdrop. */
   function showForm(state){
-    find(state,'.conn-native-form').hidden=false;action(state,'open').setAttribute('aria-expanded','true');
+    const form=find(state,'.conn-native-form');
+    if(!form.open){form.lastElementChild.before(find(state,'.conn-card-error'));form.showModal();}
+    action(state,'open').setAttribute('aria-expanded','true');
+    if(state.app.id==='github')syncRepos(state);
+  }
+  function closeForm(state){
+    const form=find(state,'.conn-native-form');
+    if(form.open)form.close();
   }
   function authLink(state,url){
     const link=find(state,'[data-native-link]');
@@ -168,7 +243,7 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     stopPending(state);
     find(state,'input[name="token"]')&&(find(state,'input[name="token"]').value='');
     find(state,'input[name="name"]')&&(find(state,'input[name="name"]').value='');
-    find(state,'.conn-native-form').hidden=true;action(state,'open').setAttribute('aria-expanded','false');
+    closeForm(state);
   }
 
   async function run(state,task){
@@ -191,7 +266,9 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       if(!res.ok){error(state,failure(res,'check sign-in'));return;}
       const data=res.data||{};
       if(data.status==='connected'||data.status==='completed'){
-        completed(state);await refreshOne(state);return;
+        completed(state);await refreshOne(state);
+        if(pending.kind==='github'&&state.status?.repo_access?.mode==='selected')showForm(state);
+        return;
       }
       if(data.status==='failed'||data.status==='cancelled'){
         stopPending(state);error(state,'Sign-in did not complete. Start again.');paint(state);return;
@@ -215,7 +292,8 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     await run(state,async()=>{
       const id=state.app.id;
       const path=id==='github'?'github/cli/start':id==='magicpath'?'magicpath/login':'vercel/oauth/start';
-      const res=await apiFetch(BASE+path,id==='vercel'?{}:{method:'POST',body:{}});
+      if(id==='github')state.repos.dirty=false;
+      const res=await apiFetch(BASE+path,id==='vercel'?{}:{method:'POST',body:id==='github'?{repo_access:repoMode(state)}:{}});
       if(!res.ok){error(state,failure(res,'start sign-in'));return;}
       const data=res.data||{};
       if(!authLink(state,data.verification_uri||data.login_url||data.auth_url)){
@@ -269,8 +347,9 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
 
   async function handle(state,name,button){
     if(name==='open'){showForm(state);return;}
-    if(name==='close'){find(state,'.conn-native-form').hidden=true;action(state,'open').setAttribute('aria-expanded','false');return;}
+    if(name==='close'){closeForm(state);return;}
     if(name==='browser'){await browser(state);return;}
+    if(name==='check'&&state.app.id==='github'&&state.repos.failed)loadRepos(state,true);
     if(name==='check'){if(state.pending&&state.pending.kind!=='magicpath')await poll(state);else await refreshOne(state);return;}
     if(name==='cancel'){
       await run(state,async()=>{
@@ -281,6 +360,13 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
         if(!res.ok){error(state,failure(res,'cancel sign-in'));return;}
         stopPending(state);
       });return;
+    }
+    if(name==='save-repos'){
+      await run(state,async()=>{
+        const res=await apiFetch(BASE+'github/repos',{method:'PUT',body:{mode:repoMode(state),repos:[...state.repos.selected]}});
+        if(!res.ok){error(state,failure(res,'save repository access'));return;}
+        state.repos.dirty=false;
+      });await refreshOne(state);return;
     }
     if(name==='setup'){
       await run(state,async()=>{
@@ -307,12 +393,30 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     const state=states.get(button.closest('[data-native-connector]').dataset.nativeConnector);
     handle(state,button.dataset.nativeAction,button);
   });
+  el.addEventListener('change',event=>{
+    const input=event.target.closest('[data-native-repos] input[type="radio"],[data-native-repos] input[type="checkbox"]');
+    if(!input)return;
+    const state=states.get('github'),repos=state.repos;
+    if(input.type==='checkbox'){
+      if(input.checked)repos.selected.add(input.dataset.nativeRepo);else repos.selected.delete(input.dataset.nativeRepo);
+    }else if(input.value==='selected'&&state.status?.status==='connected')loadRepos(state);
+    /* Before sign-in the choice rides along with the sign-in; nothing to save. */
+    repos.dirty=state.status?.status==='connected';
+    paint(state);
+  });
+  el.addEventListener('input',event=>{
+    if(event.target.matches('[data-native-repo-filter]'))paintRepos(states.get('github'));
+  });
   el.addEventListener('submit',event=>{
     const form=event.target.closest('form[data-native-form]');if(!form)return;
     event.preventDefault();const state=states.get(form.closest('[data-native-connector]').dataset.nativeConnector);
     submit(state,form);
   });
   for(const state of states.values()){
+    const form=find(state,'.conn-native-form');
+    /* Also fires for Esc, so every way out leaves the card consistent. */
+    form.addEventListener('close',()=>{state.card.append(find(state,'.conn-card-error'));action(state,'open').setAttribute('aria-expanded','false');});
+    form.addEventListener('click',event=>{if(event.target===form)form.close();});
     action(state,'open').setAttribute('aria-controls','native-'+state.app.id+'-form');
     action(state,'open').setAttribute('aria-expanded','false');paint(state);
   }

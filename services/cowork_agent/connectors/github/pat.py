@@ -19,6 +19,7 @@ from .common import (
     save_github_token,
     validate_token,
 )
+from .git_credential import apply_policy as apply_git_policy
 
 log = logging.getLogger(__name__)
 
@@ -55,5 +56,7 @@ async def connect(token: str) -> dict[str, Any]:
     save_github_token(token, auth_method=AUTH_METHOD)
     # Identity only — a pasted PAT leaves no `gh` session for git to borrow.
     await configure_git_identity(result, setup_credential_helper=False)
+    # A new token resets repository access to "all"; drop a leftover helper.
+    await apply_git_policy()
     log.info("GitHub connected as @%s (via PAT)", result.get("username"))
     return {"ok": True, "payload": connection_payload(result, AUTH_METHOD)}

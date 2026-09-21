@@ -18,6 +18,7 @@ from .issues import (
     run_graphql,
     run_rest,
 )
+from .repo_access import NOT_SELECTED_MESSAGE, is_repo_allowed
 
 #: The pinned single-issue query.
 ISSUE_QUERY = """
@@ -128,6 +129,8 @@ async def fetch_issue(
         return _failure_issue(
             slug, None, "bad_remote", "An issue number must be a positive integer.",
         )
+    if ref.is_github_com and not is_repo_allowed(slug):
+        return _failure_issue(slug, number, "forbidden", NOT_SELECTED_MESSAGE)
     if not gh_available(gh_bin):
         return _failure_issue(
             slug, number, "no_cli",

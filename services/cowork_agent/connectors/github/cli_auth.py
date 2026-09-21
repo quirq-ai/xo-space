@@ -35,6 +35,8 @@ from .common import (
     save_github_token,
     validate_token,
 )
+from .git_credential import apply_policy as apply_git_policy
+from .repo_access import MODES, get_repo_access, set_repo_access
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +74,8 @@ class _Session:
     status: str = "pending"  # pending | completed | failed | cancelled
     error: str | None = None
     token: str | None = None
+    # "all" | "selected" — the repository access the user asked for at start.
+    repo_access: str = "all"
     # Keeps the background reader alive for the lifetime of the subprocess.
     drain_task: asyncio.Task | None = None
 
@@ -198,12 +202,19 @@ async def _read_gh_token() -> str | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-async def start_login() -> dict[str, Any]:
+async def start_login(repo_access: str = "all") -> dict[str, Any]:
     """
     Spawn `gh auth login --web`, parse the device code, and return the
     user-facing details. The subprocess continues running in the background
     until the user authorizes on github.com (or the code expires).
+
+    ``repo_access`` is the user's choice between every repository ("all") and
+    a hand-picked set ("selected"). GitHub's device flow cannot express that,
+    so it is applied by ``connect()`` the moment the token is stored.
     """
+    if repo_access not in MODES:
+        raise RuntimeError('Repository access must be "all" or "selected".')
+
     if not _gh_available():
         raise RuntimeError(
             "GitHub CLI (`gh`) is not installed on the server. "
@@ -259,7 +270,9 @@ async def start_login() -> dict[str, Any]:
             raise
 
         sid = uuid.uuid4().hex
-        session = _Session(session_id=sid, process=proc, user_code=user_code)
+        session = _Session(
+            session_id=sid, process=proc, user_code=user_code, repo_access=repo_access,
+        )
         _active[sid] = session
         session.drain_task = asyncio.create_task(_drain_until_exit(proc, sid))
 
@@ -297,7 +310,11 @@ async def poll_login(session_id: str) -> dict[str, Any]:
         _active.pop(session_id, None)
 
         if session.status == "completed" and session.token:
-            return {"status": "completed", "token": session.token}
+            return {
+                "status": "completed",
+                "token": session.token,
+                "repo_access": session.repo_access,
+            }
 
         return {
             "status": session.status,
@@ -335,11 +352,20 @@ async def connect(session_id: str) -> dict[str, Any]:
         }
 
     save_github_token(token, auth_method=AUTH_METHOD)
+    # A fresh token starts at "all". When the user asked to choose, switch to
+    # an empty selection right away: nothing is reachable until they pick,
+    # rather than everything being reachable until they get around to it.
+    if result.get("repo_access") == "selected":
+        set_repo_access("selected", [])
     # This flow leaves a live `gh` session behind, so git can borrow it for
     # HTTPS auth as well as take its identity from it.
     await configure_git_identity(validation, setup_credential_helper=True)
+    # ...unless the user chose repositories: then git gets our helper instead.
+    await apply_git_policy()
     log.info("GitHub connected as @%s (via gh CLI)", validation.get("username"))
-    return {"ok": True, "payload": connection_payload(validation, AUTH_METHOD)}
+    payload = connection_payload(validation, AUTH_METHOD)
+    payload["repo_access"] = get_repo_access()
+    return {"ok": True, "payload": payload}
 
 
 async def cancel_login(session_id: str) -> dict[str, Any]:
