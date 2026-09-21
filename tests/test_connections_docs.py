@@ -277,6 +277,17 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         self.assertIn("BRING YOUR OWN KEY", block)
         self.assertIn("never sent to XO", block)
         self.assertIn("COMPOSIO_BYO_API_KEY", block)
+        # the swarm Composio path is gone; docs must not send people there
+        developing = read("DEVELOPING.md")
+        self.assertNotIn("connectors/composio/state.py", developing)
+        self.assertNotIn("connectors/composio/swarm_client.py", developing)
+        self.assertNotIn("test_composio_swarm_client.py", developing)
+        self.assertNotIn("js/core/session.js", developing)
+        self.assertNotIn("js/core/session.js", read("space_ui/README.md"))
+        self.assertIn("composio_key_required", developing)
+        self.assertIn("byo_key.user_id()", developing)
+        self.assertIn("## 12. Browser origin guard", developing)
+        self.assertIn("## 13. Telemetry sources", developing)
 
     def test_placement_rule_names_the_shared_space_modules(self) -> None:
         import importlib

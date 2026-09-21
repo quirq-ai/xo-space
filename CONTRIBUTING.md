@@ -260,6 +260,10 @@ detailed guide changes in `xo-docs`:
 | Change | Also update |
 |---|---|
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in `xo-docs` |
+| workitems or peers HTTP surface | `.agents/skills/xo-projects/references/workitems-http-api.md` / `peers-http-api.md` |
+| Composio / connectors / connections polling | `DEVELOPING.md` §10 |
+| browser origin guard, Jobs writes, server restart | `DEVELOPING.md` §12 |
+| Agents Configure / telemetry sources | `DEVELOPING.md` §13 and `space_ui/README.md` "Agents tab" |
 | any view's behaviour | its Space UI guide in `xo-docs`; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in `xo-docs` |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in `xo-docs` must agree |
