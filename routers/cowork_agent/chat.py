@@ -193,6 +193,16 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
                 # instead of looking frozen.
                 yield f"id: {event_id}\nevent: model-loading\ndata: {json.dumps({'label': event.get('label', '')})}\n\n"
                 event_id += 1
+            elif event.get("type") in ("tool-call", "tool-result", "tool-error"):
+                # Tool lifecycle, forwarded verbatim. An adapter that reports
+                # its tool calls gets live chips; one that doesn't is unaffected,
+                # so this stays backend-agnostic like every other branch here.
+                # Payload keys are the frontend's tool contract (use-sse.ts).
+                yield (
+                    f"id: {event_id}\nevent: {event['type']}\n"
+                    f"data: {json.dumps({k: v for k, v in event.items() if k != 'type'})}\n\n"
+                )
+                event_id += 1
             elif event.get("type") == "error":
                 yield f"id: {event_id}\nevent: agent-error\ndata: {json.dumps({'error_message': event.get('error', 'Stream error')})}\n\n"
                 event_id += 1

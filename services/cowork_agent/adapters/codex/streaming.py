@@ -62,17 +62,78 @@ def _error_text(event: dict[str, Any]) -> str:
     return "Codex error"
 
 
-# Non-message ``item.type`` values that mean "work in progress". Surfaced as a
-# ``model-loading`` progress ping (forwarded to SSE, see chat.py:166-172), never
-# as assistant tokens, and never carrying inputs/paths (PII boundary).
-# TODO(codex): confirm the exact live non-message item.type enum on an authed
-# --json run (blueprint §12.10) — only ``agent_message`` and ``error`` were seen
-# on the local (401'd) run. Unknown item types fall through to None below, safe.
-_TOOL_ITEM_LABELS = {
-    "command_execution": "running command",
-    "file_change": "editing files",
-    "mcp_tool_call": "calling tool",
+# Non-message ``item.type`` values that carry a tool call, mapped to the tool
+# name its chip is labelled with. Kept in step with the names the rollout
+# converter produces (``codex/sessions.py``) so one call reads the same while
+# it runs and after the history refetch replaces the live chip.
+#
+# Verified live for ``command_execution`` (item.started → item.completed, with
+# ``id`` / ``command`` / ``aggregated_output`` / ``exit_code`` / ``status``).
+# The other two are (UNVERIFIED) — their field names come from the blueprint,
+# and ``_tool_arguments`` degrades to an empty dict rather than guessing.
+_TOOL_ITEM_NAMES = {
+    "command_execution": "shell",
+    "file_change": "apply_patch",
+    "mcp_tool_call": "mcp",
 }
+
+# A tool's output goes to the UI so the chip can be opened mid-run. Cap it: a
+# single build or test command can emit megabytes on one line, and holding an
+# SSE frame open for that stalls every later event. The transcript keeps the
+# full text — the history refetch reads it straight from the rollout.
+_MAX_LIVE_OUTPUT = 100_000
+_TRUNCATION_NOTE = "\n… output truncated — see the completed message"
+
+
+def _tool_arguments(item: dict[str, Any]) -> dict[str, Any]:
+    """The chip's ``arguments``, shaped like the rollout converter's
+    ``_tool_input`` (``{"command": …}`` for a shell call) so the live chip and
+    the refetched one describe the call identically."""
+    command = item.get("command")
+    if isinstance(command, str) and command:
+        return {"command": command}
+    args = item.get("arguments") or item.get("input")
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        return {"arguments": args}
+    return {}
+
+
+def _tool_event(etype: str, item: dict[str, Any], item_type: str) -> dict | None:
+    """A tool lifecycle event for the UI, or None when there is nothing new.
+
+    ``item.started`` opens the chip, ``item.completed`` fills in its output and
+    marks success or failure. ``item.updated`` carries no field the chip shows,
+    so it is skipped rather than re-rendering the same row.
+    """
+    call_id = item.get("id") or ""
+    if not call_id:
+        return None                      # nothing to correlate the result to
+    name = _TOOL_ITEM_NAMES[item_type]
+
+    if etype == "item.started":
+        return {
+            "type": "tool-call", "tool": name, "call_id": call_id,
+            "arguments": _tool_arguments(item),
+        }
+
+    if etype == "item.completed":
+        output = item.get("aggregated_output")
+        output = output if isinstance(output, str) else ""
+        if len(output) > _MAX_LIVE_OUTPUT:
+            output = output[:_MAX_LIVE_OUTPUT] + _TRUNCATION_NOTE
+        exit_code = item.get("exit_code")
+        failed = (
+            item.get("status") == "failed"
+            or (isinstance(exit_code, int) and exit_code != 0)
+        )
+        return {
+            "type": "tool-error" if failed else "tool-result",
+            "tool": name, "call_id": call_id, "output": output,
+        }
+
+    return None
 
 
 def parse_stream_line(raw: bytes) -> dict | None:
@@ -159,9 +220,12 @@ def parse_stream_line(raw: bytes) -> dict | None:
         if item_type == "reasoning":
             return {"type": "model-loading", "label": "thinking"}
 
-        # tool/work items → progress ping only (label, never inputs = PII).
-        if item_type in _TOOL_ITEM_LABELS:
-            return {"type": "model-loading", "label": _TOOL_ITEM_LABELS[item_type]}
+        # tool/work items → a real tool chip, opened on item.started and filled
+        # on item.completed. This replaces the old progress-label ping: the chip
+        # shows the same activity plus what actually ran, and unlike the label it
+        # survives on screen instead of being cleared by the next text event.
+        if item_type in _TOOL_ITEM_NAMES:
+            return _tool_event(etype, item, item_type)
 
         # item.type == "error" or any unknown type → skip; the authoritative
         # failure text arrives via a top-level turn.failed/error event below.
