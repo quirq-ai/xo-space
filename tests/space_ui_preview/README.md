@@ -121,6 +121,7 @@ node tests/space_ui_preview/native-connectors.mjs /tmp/space-native-connectors
 node tests/space_ui_preview/setup-identity.mjs /tmp/space-setup-identity
 node tests/space_ui_preview/setup-branding.mjs /tmp/space-setup-branding
 node tests/space_ui_preview/setup-mcp.mjs /tmp/space-setup-mcp
+node tests/space_ui_preview/setup-cli.mjs /tmp/space-setup-cli
 node tests/space_ui_preview/commands-restart.mjs /tmp/space-commands-review
 node tests/space_ui_preview/inbox-jobs.mjs /tmp/space-inbox-jobs-review
 node tests/space_ui_preview/command-results-races.mjs
@@ -172,6 +173,12 @@ local-only error recovery, enabling and disabling, token regeneration and loss
 on reload, URL/token/client configuration copying, credential isolation, pending
 read/write navigation, clipboard failures, and desktop/mobile layout. No real
 MCP server is enabled and no client receives credentials.
+
+The CLI settings check keeps MCP disabled while exercising separate CLI access:
+enable/disable, one-time tokens, regeneration, reload, failed writes, pending
+read/write navigation, safe setup-command copying, authenticated download links,
+and desktop/mobile layout. CLI responses, downloads, and clipboard writes are
+fictional browser fixtures. It never configures a real client or changes Space.
 
 The Inbox Jobs check uses synthetic schedule definitions and histories to verify
 the section order, interval/disabled status, empty/error recovery, refresh races,

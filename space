@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""Space's standalone read-only CLI. Requires Python 3.10+, standard library only."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+from http.client import HTTPException
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unicodedata
+import warnings
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+TIMEOUT_SECONDS = 15
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+DOCUMENTS = ("README.md", "PROJECT.md", "OBJECTIVES.md", "PLAN.md", "PROGRESS.md", "AGENTS.md")
+
+
+class CLIError(Exception):
+    """A deliberate, credential-free error suitable for terminal output."""
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse's default echoes invalid values, which may include a token
+        # pasted into the wrong argument. Keep usage failures value-free.
+        raise CLIError("Invalid command arguments. Run 'space --help' for usage.")
+
+
+def normalize_url(value: str) -> str:
+    if not isinstance(value, str) or not value or any(
+        char.isspace() or unicodedata.category(char).startswith("C") for char in value
+    ):
+        raise CLIError("Provide a valid Space base URL with --url.")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+        if (parsed.scheme not in ("http", "https") or not hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or "?" in value or "#" in value
+                or parsed.path not in ("", "/") or "\\" in value
+                or port is not None and not 1 <= port <= 65535):
+            raise ValueError
+        try:
+            address = ipaddress.ip_address(hostname)
+            host = address.compressed
+            local = address.is_loopback
+            if "%" in host:
+                raise ValueError
+        except ValueError:
+            host = hostname.encode("idna").decode("ascii").lower()
+            if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?", host):
+                raise ValueError
+            local = host == "localhost"
+        if parsed.scheme == "http" and not local:
+            raise CLIError("Use HTTPS for remote Space connections; HTTP is allowed only for loopback hosts.")
+        authority = f"[{host}]" if ":" in host else host
+        if port is not None and port != (443 if parsed.scheme == "https" else 80):
+            authority += f":{port}"
+        return f"{parsed.scheme}://{authority}"
+    except (ValueError, UnicodeError):
+        raise CLIError("Use a Space base URL without credentials, query, fragment, or extra path.") from None
+
+
+def validate_token(value: str) -> str:
+    if (not isinstance(value, str) or not 1 <= len(value) <= 4096
+            or any(not 33 <= ord(char) <= 126 for char in value)):
+        raise CLIError("Provide a valid CLI token from Space Setup → Server.")
+    return value
+
+
+def config_path() -> Path:
+    override = os.environ.get("SPACE_CLI_CONFIG")
+    if override:
+        return Path(override).expanduser()
+    config_root = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(config_root).expanduser() if config_root else Path.home() / ".config") / "xo-space" / "cli.json"
+
+
+def load_config() -> dict:
+    try:
+        with config_path().open("rb") as stream:
+            raw = stream.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            raise ValueError
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict) or not all(isinstance(data.get(key), str) for key in ("url", "token")):
+            raise ValueError
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError):
+        raise CLIError("Saved CLI settings are unreadable. Run 'space configure --url URL' to replace them.") from None
+
+
+def save_config(url: str, token: str) -> None:
+    temporary = None
+    try:
+        path = config_path()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".cli-", suffix=".json", dir=path.parent)
+        # mkstemp creates mode 0600 before any credential bytes are written.
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump({"url": url, "token": token}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    except OSError:
+        raise CLIError("Could not save CLI credentials. Check the local config directory permissions.") from None
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def request_json(url: str, token: str, endpoint: str, parameters: dict | None = None) -> dict:
+    query = "?" + urlencode(parameters) if parameters else ""
+    request = Request(url + endpoint + query, headers={
+        "Authorization": "Bearer " + token,
+        "Accept": "application/json",
+        "User-Agent": "space-cli/1.0",
+    }, method="GET")
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=TIMEOUT_SECONDS) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except HTTPError as exc:
+        messages = {
+            401: "CLI token rejected. Generate a CLI token in Space Setup → Server and configure again.",
+            403: "Access was denied. Check the Space origin and any proxy access requirements.",
+            404: "CLI access is disabled or unavailable. Enable CLI access in Space Setup → Server.",
+            503: "Space CLI access is unavailable. Check Space's server status and saved settings.",
+        }
+        if 300 <= exc.code < 400:
+            message = "Redirects are refused. Configure the final Space base URL directly."
+        else:
+            message = messages.get(exc.code, "Space rejected the request. Check the command and server status.")
+        exc.close()
+        raise CLIError(message) from None
+    except (URLError, OSError, ValueError, HTTPException):
+        raise CLIError("Could not reach Space. Check its URL, network access, and TLS configuration.") from None
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise CLIError("Space's response exceeds the 4 MiB limit. Request fewer items.")
+    try:
+        result = json.loads(raw.decode("utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError
+        return result
+    except (ValueError, RecursionError):
+        raise CLIError("Space returned an invalid JSON response. Check the server and proxy configuration.") from None
+
+
+def connection(args) -> tuple[str, str]:
+    requested_url = args.url or os.environ.get("SPACE_URL")
+    supplied_token = os.environ.get("SPACE_CLI_TOKEN")
+    saved = {} if requested_url and supplied_token else load_config()
+    url = normalize_url(requested_url or saved.get("url", ""))
+    if supplied_token:
+        return url, validate_token(supplied_token)
+    if not saved.get("token"):
+        raise CLIError("Configure CLI access first: space configure --url URL.")
+    if normalize_url(saved.get("url", "")) != url:
+        raise CLIError("The saved token belongs to a different Space URL. Configure this URL or set SPACE_CLI_TOKEN.")
+    return url, validate_token(saved["token"])
+
+
+def terminal_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return "".join(
+        char if char in ("\n", "\t") or not unicodedata.category(char).startswith("C") else "�"
+        for char in value
+    )
+
+
+def validate_result(command: str, result: dict) -> None:
+    key = {"projects": "projects", "todos": "todos", "inbox": "items"}.get(command)
+    valid = True
+    if key:
+        valid = isinstance(result.get(key), list) and all(isinstance(item, dict) for item in result[key])
+    elif command == "document":
+        valid = isinstance(result.get("content"), str)
+    elif command == "status":
+        valid = result.get("enabled") is True and isinstance(result.get("commands"), list)
+    if not valid:
+        raise CLIError("Space returned an unexpected response. Update Space and try again.")
+
+
+def print_human(command: str, result: dict) -> None:
+    if command == "status":
+        print("CLI access is enabled.")
+        names = [terminal_text(name) for name in result["commands"] if isinstance(name, str)]
+        if names:
+            print("Commands: " + ", ".join(names))
+        return
+    if command == "document":
+        print(terminal_text(result["content"]))
+        if result.get("truncated"):
+            print("Document truncated to 64 KiB.", file=sys.stderr)
+        return
+    key = {"projects": "projects", "todos": "todos", "inbox": "items"}[command]
+    items = result[key]
+    if not items:
+        print("No " + ("Inbox items" if command == "inbox" else command) + " found.")
+        return
+    for item in items:
+        if command == "projects":
+            print(terminal_text(item.get("project_id")) + "  " + terminal_text(item.get("display_name")))
+            detail = item.get("description")
+        else:
+            title = item.get("content" if command == "todos" else "title")
+            print("[" + terminal_text(item.get("status")) + "] "
+                  + terminal_text(item.get("id")) + "  " + terminal_text(title))
+            detail = item.get("description" if command == "todos" else "body")
+        if detail:
+            print("  " + terminal_text(detail).replace("\n", "\n  "))
+    if result.get("has_more"):
+        print("More items are available; increase --limit" + (" or --offset." if command == "projects" else " (maximum 100)."))
+
+
+def page_limit(value: str) -> int:
+    number = int(value)
+    if not 1 <= number <= 100:
+        raise ValueError
+    return number
+
+
+def offset(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise ValueError
+    return number
+
+
+def parser() -> ArgumentParser:
+    root = ArgumentParser(prog="space", description="Read a Space using its optional CLI access API.")
+    root.add_argument("--url", help="Space base URL (overrides SPACE_URL and saved settings)")
+    commands = root.add_subparsers(dest="command", required=True)
+    for name, help_text in (
+        ("configure", "Verify a CLI token and save local connection settings"),
+        ("projects", "List projects"), ("document", "Read a project planning document"),
+        ("todos", "List project todos"), ("inbox", "Read saved Inbox items"),
+        ("status", "Check authenticated CLI access"), ("logout", "Remove saved local credentials"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("--url", default=argparse.SUPPRESS, help="Space base URL")
+        if name in ("projects", "document", "todos", "inbox", "status"):
+            command.add_argument("--json", action="store_true", help="Print the response as JSON")
+        if name in ("projects", "todos", "inbox"):
+            command.add_argument("--limit", type=page_limit, default=50, help="Maximum items, 1–100 (default: 50)")
+        if name == "projects":
+            command.add_argument("--offset", type=offset, default=0, help="Projects to skip (default: 0)")
+        if name in ("document", "todos"):
+            command.add_argument("project", metavar="PROJECT", help="Project ID from space projects")
+        if name == "document":
+            command.add_argument("document", metavar="DOCUMENT", choices=DOCUMENTS,
+                                 help="One of: " + ", ".join(DOCUMENTS))
+        if name == "inbox":
+            command.add_argument("--status", choices=("open", "done", "all"), default="open")
+    return root
+
+
+def run(args) -> None:
+    if args.command == "logout":
+        try:
+            config_path().unlink(missing_ok=True)
+        except OSError:
+            raise CLIError("Could not remove the saved CLI credentials. Check local file permissions.") from None
+        print("Saved CLI credentials removed. The server token remains valid until revoked in Space.")
+        return
+    if args.command == "configure":
+        url = normalize_url(args.url or os.environ.get("SPACE_URL", ""))
+        token = os.environ.get("SPACE_CLI_TOKEN")
+        if not token:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", getpass.GetPassWarning)
+                    token = getpass.getpass("Space CLI access token: ")
+            except getpass.GetPassWarning:
+                raise CLIError("A hidden token prompt is unavailable. Set SPACE_CLI_TOKEN for automation.") from None
+        token = validate_token(token)
+        result = request_json(url, token, "/api/cli/status")
+        validate_result("status", result)
+        save_config(url, token)
+        print("CLI connection verified and saved.")
+        return
+    url, token = connection(args)
+    parameters = {}
+    if args.command in ("projects", "todos", "inbox"):
+        parameters["limit"] = args.limit
+    if args.command == "projects":
+        parameters["offset"] = args.offset
+    elif args.command in ("document", "todos"):
+        parameters["project_id"] = args.project
+        if args.command == "document":
+            parameters["document"] = args.document
+    elif args.command == "inbox":
+        parameters["status"] = args.status
+    result = request_json(url, token, "/api/cli/" + args.command, parameters)
+    validate_result(args.command, result)
+    if args.json:
+        print(json.dumps(result, sort_keys=True, ensure_ascii=True, allow_nan=False))
+    else:
+        print_human(args.command, result)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        run(parser().parse_args(argv))
+        return 0
+    except CLIError as exc:
+        print("Error: " + str(exc), file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("Cancelled.", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        return 1
+    except (OSError, ValueError, RecursionError):
+        print("Error: The CLI could not complete this request. Check local settings and the Space response.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -994,3 +994,31 @@ catalog and credential; finer permissions and write tools are not included.
 Validation: `venv/bin/python -m unittest tests.test_mcp_server
 tests.test_mcp_server_tools`; the UI flow is covered by
 `tests/space_ui_preview/setup-mcp.mjs`. Route parity remains required.
+
+## 14. Space CLI access
+
+Setup → Server → Command line controls CLI access independently of MCP.
+`routers/cli_access.py` exposes local management at `GET/PUT /api/cli-access`,
+`POST /api/cli-access/rotate-token`, and a download of the standalone `space`
+Python script at `GET /api/cli-access/client`. The client needs only Python
+3.10+ and uses `GET /api/cli/{status,projects,document,todos,inbox}`. Every command
+request requires its CLI bearer token and passes Space's browser-origin guard.
+
+`services/access_tokens.py` shares persistence and revocation rules between
+the two interfaces. CLI settings are in `settings/cli-access.json`; MCP retains
+`settings/mcp-server.json`, its format, and existing tokens. Neither interface
+accepts the other's token. Both store only hashes on the server and validate
+them afresh per request. `services/space_tools.py` owns their shared bounded
+read operations; `services/mcp_server/tools.py` adapts them to MCP, while
+`services/cli_access.py` is the CLI router's service surface.
+
+The client validates an authenticated status response before saving credentials,
+creates the credential file with mode 0600, binds saved tokens to their configured
+URL, refuses redirects, and permits plain HTTP only for loopback hosts. It reads
+saved Space data through the API and does not launch agents or alter project
+files. Client configuration and usage are documented in [CLI.md](CLI.md).
+
+Validate with `tests.test_cli_access`, `tests.test_space_cli`, the MCP tests,
+`scripts/check_route_parity.py`, and `tests/space_ui_preview/setup-cli.mjs`.
+The integration test runs the downloaded client against the actual FastAPI
+routes with isolated server and client state.

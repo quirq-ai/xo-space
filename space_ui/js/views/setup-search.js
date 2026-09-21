@@ -14,6 +14,7 @@ const SETTINGS=[
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
   ['commands','Jobs','Schedule commands, or save them to run when you choose','jobs commands scheduled manual interval timeout automation results output logs','#setup-commands-title'],
   ['server','MCP server','Connect MCP apps to this Space','model context protocol server endpoint token client access project documents tasks inbox','#mcp-enabled'],
+  ['server','Command line','Download the CLI and connect to this Space','cli terminal python command access token projects documents tasks inbox','#cli-enabled'],
   ['server','Restart server','Apply saved changes','restart apply runtime','#setup-server-title'],
   ['server','Updates','Check for a newer version of Space','update version upgrade','#update-check'],
 ];

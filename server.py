@@ -959,6 +959,8 @@ app.include_router(telemetry_sources_router)
 # Space's optional MCP surface is independent of the configured agent.
 from routers.mcp_server import router as space_mcp_router
 app.include_router(space_mcp_router)
+from routers.cli_access import router as cli_access_router
+app.include_router(cli_access_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space

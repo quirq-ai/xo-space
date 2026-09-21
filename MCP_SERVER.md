@@ -4,6 +4,9 @@ Space can expose its projects, planning documents, todos, and saved Inbox throug
 an MCP server. It is off by default. The initial tool set is read-only and uses
 Streamable HTTP at `/mcp` on the same address and port as Space.
 
+For terminal commands and shell scripts, use the separate [Space CLI](CLI.md).
+Its enablement and token are independent of the MCP server.
+
 ## Enable and connect
 
 1. Open Space's **Setup → Server** page from the local installation.

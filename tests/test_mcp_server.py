@@ -16,6 +16,7 @@ from routers.browser_guard import add_forwarding_middleware
 from routers.mcp_server import router
 from services.errors import ServiceError
 from services.mcp_server import service, store
+from services import access_tokens
 
 
 class MCPStoreTests(unittest.TestCase):
@@ -68,7 +69,7 @@ class MCPStoreTests(unittest.TestCase):
                 self.assertEqual(path.read_text(), content)
 
     def test_write_failure_is_actionable(self):
-        with patch.object(store, "write_json_atomic", side_effect=OSError("secret/path")):
+        with patch.object(access_tokens, "write_json_atomic", side_effect=OSError("secret/path")):
             with self.assertRaises(ServiceError) as failure:
                 store.update(enabled=True)
         self.assertEqual(failure.exception.status, 503)

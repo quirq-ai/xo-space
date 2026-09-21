@@ -50,6 +50,7 @@ curl -fsSL https://quirq.ai/install | sh      # then open http://localhost:5002/
 - ✅ **Manage the work, not the chat** — todos per project, kept up to date as agents check them off, so you always know what's done and what's next.
 - 🔌 **One API for every agent** — `POST /api/chat/prompt`, read an SSE stream. Same contract whether Claude Code, Codex, OpenClaw, Hermes or Antigravity is behind it; switch with one environment variable.
 - **Connect MCP apps to Space** — turn on the MCP server in Setup → Server to share read access to projects, planning documents, todos, and Inbox items. [MCP server usage guide](MCP_SERVER.md).
+- **Use Space from your terminal** — enable CLI access in Setup → Server, download the `space` command, and read the same project data with text or JSON output. CLI and MCP have independent access tokens. [CLI usage guide](CLI.md).
 - 📡 **Sessions across runtimes** — session telemetry from every agent that exposes it, side by side, whichever one you're chatting with.
 - 📈 **Know what it cost** — tokens, cost, per-model and per-tool breakdowns in one shape regardless of runtime.
 - 🕰️ **See how it grew** — every project's git history in parallel lanes; open any commit as a 3D city map where building height is the churn.

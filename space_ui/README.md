@@ -44,6 +44,15 @@ Space server; remote configuration requests are rejected.
 See the [MCP server usage guide](../MCP_SERVER.md) for connection examples,
 available tools, token management, and troubleshooting.
 
+**Setup → Server → Command line** provides an independent **Enable CLI access**
+switch. Download the standalone `space` client and copy the setup command to
+configure it in a terminal using Python 3.10 or newer. The token prompt hides
+input, and the client stores verified credentials in an owner-only file. Commands
+read projects, selected project documents, todos, and saved Inbox items; `--json`
+supports scripts. Turning CLI access off or regenerating its token does not
+affect MCP. Space must keep running; the switch does not install a command on
+the browser's machine. See the [CLI usage guide](../CLI.md).
+
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered
 shortcut. Its three-step quickstart and topic cards link to the

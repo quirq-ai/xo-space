@@ -27,6 +27,17 @@ class Handler(SimpleHTTPRequestHandler):
         url = urlsplit(self.path)
         path = unquote(url.path)
         query = parse_qs(url.query)
+        if path == "/api/cli-access/client":
+            # Native browser downloads may bypass Playwright route interception.
+            body = b"# Fictional CLI download for browser verification only.\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="space"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         native = fixtures.native_connectors().get(path)
         if native is not None:
             self.json_response(native)
@@ -52,6 +63,11 @@ class Handler(SimpleHTTPRequestHandler):
             "/xo/sessions.json": lambda: {"meta": {"sources": [{"id": "demo", "label": "Fictional telemetry", "available": False}]}, "sessions": []},
             "/api/secrets": lambda: {"items": []},
             "/api/schedules": lambda: {"jobs": []},
+            "/api/cli-access": lambda: {
+                "enabled": False, "token_configured": False,
+                "commands": ["projects", "document", "todos", "inbox", "status"],
+                "download_path": "/api/cli-access/client",
+            },
             "/api/mcp-server": lambda: {
                 "enabled": False, "transport": "streamable-http", "endpoint_path": "/mcp",
                 "token_configured": False, "tools": [
