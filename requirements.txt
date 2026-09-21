@@ -40,14 +40,14 @@ argus-code==0.5.1
 # CVE-2020-14343 advisory covers.
 PyYAML>=6.0
 
-# Model Context Protocol — local MCP server exposes composio meta-tools to
-# OpenClaw / Hermes / Claude Code so gateways don't load every action upfront.
+# Model Context Protocol — Space's optional Streamable HTTP server uses the
+# MCPServer API in SDK 2.x, including compatibility for legacy MCP clients.
 #
 # SECURITY: the >=1.2 range this originally shipped with was withdrawn in #77;
 # it admitted six advisories, the last of which (GHSA-vj7q-gjh5-988w, WebSocket
-# Host/Origin validation) is only fixed in 1.28.1. That is the floor here —
-# every known MCP-SDK advisory is fixed at or below it. Do NOT lower it.
-mcp>=1.28.1
+# Host/Origin validation) required at least 1.28.1 on the old SDK line.
+# The 2.2 floor below also supplies the current server API; do not downgrade.
+mcp>=2.2,<3
 
 # Composio SDK — the connectors feature (bring-your-own-key) talks to Composio
 # directly with the user's own key (connectors/composio/client.py). Imported

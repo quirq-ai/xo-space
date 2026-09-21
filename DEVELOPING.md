@@ -952,3 +952,45 @@ Tests: `tests/test_inbox_{store,bff,docs}.py`,
 Versions are annotated SemVer tags on `main`, cut by hand every time `main`
 moves. The runbook, the numbering rules and the hotfix flow are in
 [RELEASING.md](RELEASING.md).
+
+---
+
+## 13. Space as an MCP server
+
+User setup and client examples: [MCP server usage guide](MCP_SERVER.md).
+
+Setup → Server has an opt-in MCP server backed by `services/mcp_server/`.
+`routers/mcp_server.py` exposes `GET/PUT /api/mcp-server`, `POST
+/api/mcp-server/rotate-token`, and the SDK-owned Streamable HTTP endpoint at
+`/mcp`. Settings use the same loopback-peer and browser-origin guard as local
+server controls. Remote MCP clients authenticate with `Authorization: Bearer
+<token>`; the endpoint also validates browser origins through Space's guard,
+including its existing TLS-proxy rules. A hosted Space still needs its normal
+access-controlled proxy in front of its local management API.
+
+The default is disabled. Enabling and token regeneration issue a random token
+once, with `Cache-Control: no-store`. Only its SHA-256 hash is saved in
+`settings/mcp-server.json` under the active Space state root. Disabling clears
+the hash; re-enabling issues a different token. Every HTTP request re-reads
+the state, so these changes apply across workers without restarting. Requests
+already in progress may finish. Invalid or unreadable settings fail closed.
+These settings are independent of agent runtime configuration.
+
+The SDK 2.x transport lifecycle runs inside the parent app lifespan. It serves
+current stateless MCP requests and legacy initialization-based clients, with
+JSON responses and a 64 KiB request-body limit. There is no separate port or
+subprocess. Upgrade installed requirements before starting this version:
+the new MCP implementation requires `mcp>=2.2,<3`.
+
+The initial catalog is read-only: `space_list_projects`,
+`space_read_project_document`, `space_list_todos`, and `space_list_inbox`.
+Documents are limited to root-level `README.md`, `PROJECT.md`, `OBJECTIVES.md`,
+`PLAN.md`, `PROGRESS.md`, and `AGENTS.md`, at most 64 KiB each. Reads reject
+symlinks and escaping paths, omit internal metadata, and never execute an
+agent, ingest feeds, or expose arbitrary files. The Inbox tool reads saved
+items; it does not refresh connections. All connected clients share this
+catalog and credential; finer permissions and write tools are not included.
+
+Validation: `venv/bin/python -m unittest tests.test_mcp_server
+tests.test_mcp_server_tools`; the UI flow is covered by
+`tests/space_ui_preview/setup-mcp.mjs`. Route parity remains required.

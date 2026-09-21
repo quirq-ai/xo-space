@@ -52,6 +52,15 @@ class Handler(SimpleHTTPRequestHandler):
             "/xo/sessions.json": lambda: {"meta": {"sources": [{"id": "demo", "label": "Fictional telemetry", "available": False}]}, "sessions": []},
             "/api/secrets": lambda: {"items": []},
             "/api/schedules": lambda: {"jobs": []},
+            "/api/mcp-server": lambda: {
+                "enabled": False, "transport": "streamable-http", "endpoint_path": "/mcp",
+                "token_configured": False, "tools": [
+                    {"name": "space_list_projects", "description": "List projects in this Space."},
+                    {"name": "space_read_project_document", "description": "Read a project document."},
+                    {"name": "space_list_todos", "description": "List project tasks."},
+                    {"name": "space_list_inbox", "description": "Read the Space Inbox."},
+                ],
+            },
             "/api/runtime-config": lambda: {
                 "configured": {"agent_name": "demo", "watcher_enabled": False, "watcher_source_mode": "all", "watcher_interval_seconds": 30},
                 "applied": {"agent_name": "demo", "watcher_enabled": False, "watcher_source_mode": "all", "watcher_interval_seconds": 30},

@@ -84,11 +84,12 @@ def _resolved_root(raw: str) -> Path:
     return resolved
 
 
-def xo_projects_root() -> Path:
+def xo_projects_root(*, create: bool = True) -> Path:
     """User-facing projects directory.
 
     Sourced from ``XO_PROJECTS_ROOT`` env var; defaults to ``~/xo-projects``.
-    Created on read so callers never have to guard for first-run.
+    Created by default so callers never have to guard for first-run.
+    Read-only integrations can pass ``create=False`` to avoid that side effect.
     """
     raw = (os.getenv("XO_PROJECTS_ROOT", "") or "").strip() or "~/xo-projects"
     root = _resolved_root(raw)
@@ -96,7 +97,7 @@ def xo_projects_root() -> Path:
     # on every call — but it is now a single stat instead of a mkdir that fails
     # with EEXIST *plus* the is_dir() stat pathlib does to decide whether
     # EEXIST was acceptable.
-    if not root.is_dir():
+    if create and not root.is_dir():
         root.mkdir(parents=True, exist_ok=True)
     return root
 

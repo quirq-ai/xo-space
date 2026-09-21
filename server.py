@@ -837,7 +837,9 @@ async def lifespan(app: FastAPI):
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
-    yield
+    from services.mcp_server.service import lifespan as mcp_lifespan
+    async with mcp_lifespan(app):
+        yield
 
     # Stop ingestion first: the daemon is an external process, so leaving it
     # behind outlives this server, unlike the asyncio tasks cancelled below.
@@ -953,6 +955,10 @@ app.include_router(schedules_router)
 # Space: telemetry source configuration (the Agents tab's Configure page).
 from routers.telemetry_sources import router as telemetry_sources_router
 app.include_router(telemetry_sources_router)
+
+# Space's optional MCP surface is independent of the configured agent.
+from routers.mcp_server import router as space_mcp_router
+app.include_router(space_mcp_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space

@@ -108,6 +108,17 @@
 .setup-switch input:checked+span{background:rgba(168,217,79,.17);border-color:#657e45}
 .setup-switch input:checked+span::after{translate:15px 0;background:var(--accent)}
 .setup-switch input:focus-visible+span{outline:2px solid var(--accent);outline-offset:4px}
+.setup-switch input:disabled+span{opacity:.5}
+.setup-switch input:disabled{cursor:not-allowed}
+.setup-mcp-body{padding:20px}
+.setup-mcp-body p{margin:7px 0 0;font:400 12px/1.5 var(--sans);color:var(--ink-3)}
+.setup-mcp-body .setup-check-row p{margin-top:4px}
+.setup-mcp-body label:not(.setup-switch){display:block;margin:18px 0 8px;font:500 12px var(--sans);color:var(--ink-2)}
+.setup-mcp-body label>span{margin-left:8px;font-weight:400;color:var(--ink-3)}
+.setup-mcp-field{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+.setup-mcp-field input{flex:1 1 180px;min-width:0;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:400 12px var(--mono)}
+.setup-mcp-body #mcp-retry{margin-top:12px}
+@media(max-width:650px){.setup-mcp-body{padding:16px}}
 .setup-number{position:relative}.setup-number input{padding-right:76px!important}.setup-number span{position:absolute;right:12px;top:50%;translate:0 -50%;font-size:12px;color:var(--ink-3)}
 .setup-sources{padding:0 20px 18px}
 .source-row{padding:15px;border:1px solid var(--line-soft);border-radius:9px;margin-top:8px}

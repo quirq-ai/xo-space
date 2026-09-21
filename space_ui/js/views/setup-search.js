@@ -13,6 +13,7 @@ const SETTINGS=[
   ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
   ['commands','Jobs','Schedule commands, or save them to run when you choose','jobs commands scheduled manual interval timeout automation results output logs','#setup-commands-title'],
+  ['server','MCP server','Connect MCP apps to this Space','model context protocol server endpoint token client access project documents tasks inbox','#mcp-enabled'],
   ['server','Restart server','Apply saved changes','restart apply runtime','#setup-server-title'],
   ['server','Updates','Check for a newer version of Space','update version upgrade','#update-check'],
 ];

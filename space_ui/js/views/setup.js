@@ -11,8 +11,9 @@ import {mountCommands} from './setup-commands.js?v=20260916-jobs3';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
 import {mountBranding} from './setup-branding.js?v=20260921-branding2';
-import {mountSetupSearch} from './setup-search.js?v=20260921-branding1';
-import {renderSetupShell} from './setup-shell.js?v=20260921-branding1';
+import {mountMcpServer} from './setup-mcp.js?v=20260921-mcp1';
+import {mountSetupSearch} from './setup-search.js?v=20260921-mcp2';
+import {renderSetupShell} from './setup-shell.js?v=20260921-mcp2';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
@@ -35,6 +36,7 @@ let commands=null;
 let identity=null;
 let branding=null;
 let brandingDraft=false;
+let mcpServer=null;
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -77,6 +79,7 @@ function mountSetup(el,ctx){
     setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
+    mcpServer=mountMcpServer(root.querySelector('#setup-mcp'));
     identity.refresh();
     branding=mountBranding(root.querySelector('#setup-branding'),dirty=>{brandingDraft=dirty;renderJourney();});
     branding.refresh();
@@ -124,6 +127,7 @@ function selectPanel(requested){
   if(!target)return false;
   setupSearch?.clear();
   currentPanel=panel;
+  if(panel==='server')mcpServer?.refresh();
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
@@ -196,7 +200,7 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();branding?.refresh();});
+  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();branding?.refresh();if(currentPanel==='server')mcpServer?.refresh();});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);

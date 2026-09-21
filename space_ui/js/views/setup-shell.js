@@ -100,7 +100,8 @@ export function renderSetupShell(root){
         </section>
 
         <section class="setup-panel" id="setup-panel-server" aria-labelledby="setup-server-title" hidden>
-          <header class="setup-section-head"><h2 id="setup-server-title" tabindex="-1">Server</h2><p>Apply saved changes and keep Space up to date.</p></header>
+          <header class="setup-section-head"><h2 id="setup-server-title" tabindex="-1">Server</h2><p>Connect MCP apps, apply saved changes, and keep Space up to date.</p></header>
+          <section class="setup-card setup-mcp" id="setup-mcp" aria-labelledby="setup-mcp-title"></section>
           <section class="setup-card setup-maintenance">
             <div class="setup-card-head"><h3>Restart</h3><button class="setup-restart" id="setup-restart" data-restart type="button" disabled>Restart server</button></div>
             <div class="setup-server-body"><p class="setup-restart-hint" id="setup-restart-hint" role="status"></p><button class="setup-restart" id="runtime-restart" data-restart type="button" hidden>Apply &amp; restart</button></div>
