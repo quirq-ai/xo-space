@@ -250,6 +250,20 @@ def _tool_input(payload: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _reasoning_summary(payload: dict) -> str:
+    """The readable text of a ``reasoning`` item: its ``summary_text`` blocks
+    joined as paragraphs. Empty when codex ran with summaries off, in which
+    case the item is ``encrypted_content`` alone and there is nothing to
+    record."""
+    chunks = []
+    for block in payload.get("summary") or []:
+        if isinstance(block, dict) and block.get("type") == "summary_text":
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                chunks.append(text.strip())
+    return "\n\n".join(chunks)
+
+
 def _convert(session_id: str, path: Path) -> list[dict]:
     """Convert a codex rollout ``.jsonl`` into xo-cowork MessageResponse dicts
     (same shape engine/messages.convert_native_claude_messages produces).
@@ -257,9 +271,10 @@ def _convert(session_id: str, path: Path) -> list[dict]:
     Walks rollout lines in order; one codex turn → one user bubble then one
     assistant message whose parts are the turn's tool chips
     (function_call/custom_tool_call paired to *_output by call_id) followed by
-    the final assistant text (response_item output_text). reasoning is
-    encrypted and skipped; agent_message is a dup of the assistant output_text
-    and skipped; usage is the summed token_count for the turn.
+    the final assistant text (response_item output_text). A reasoning item's
+    readable ``summary`` is a ``reasoning`` part (its ``encrypted_content``
+    is skipped); agent_message is a dup of the assistant output_text and
+    skipped; usage is the summed token_count for the turn.
 
     A user turn is read from BOTH shapes codex has used: the ``response_item``
     ``message`` with ``role: "user"`` (the only record newer builds write) and
@@ -395,7 +410,15 @@ def _convert(session_id: str, path: Path) -> list[dict]:
                     if payload.get("is_error") or payload.get("success") is False:
                         data["state"]["status"] = "error"
 
-            # reasoning (encrypted_content) → skipped entirely.
+            elif ptype == "reasoning":
+                # The model's own reasoning is ``encrypted_content`` (opaque,
+                # never stored). What codex shows as its visible thinking is
+                # the ``summary``: that is the record's ``reasoning`` part,
+                # the same part claude_code writes from a thinking block.
+                text = _reasoning_summary(payload)
+                if text:
+                    a_parts.append({"type": "reasoning", "text": text})
+
             continue
 
         # session_meta / turn / world_state / unknown → ignored.

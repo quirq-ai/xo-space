@@ -448,10 +448,13 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             result_text: str = ""
             usage: dict = {}
             model_id = ""
-            # With --include-partial-messages the CLI streams a text block as
-            # deltas and THEN repeats it as a complete `assistant` message.
-            # Forward the deltas; skip the repeat so the text is not sent twice.
-            saw_partial = False
+            # With --include-partial-messages the CLI streams a block as
+            # deltas (text) or a block start (thinking, tool use) and THEN
+            # repeats it as a complete `assistant` message. Forward the
+            # partial event; skip the repeat so nothing is sent twice. One
+            # flag per event kind, since a thinking start and the text deltas
+            # that follow it are separate blocks with separate repeats.
+            saw_partial = {"token": False, "model-loading": False}
 
             async for raw_line in proc.stdout:
                 event = parse_stream_line(raw_line)
@@ -481,12 +484,14 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                     result_text = (event.get("result") or "").strip()
                     continue
 
-                if event.get("type") == "token":
+                kind = event.get("type")
+                if kind in saw_partial:
                     if event.get("partial"):
-                        saw_partial = True
-                    elif saw_partial:
-                        saw_partial = False
-                        continue  # this block already went out as deltas
+                        saw_partial[kind] = True
+                    elif saw_partial[kind]:
+                        saw_partial[kind] = False
+                        continue  # the complete repeat of a block already forwarded
+                if kind == "token":
                     response_parts.append(event.get("token", ""))
 
                 yield event

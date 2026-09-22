@@ -226,6 +226,52 @@ class CodexUserTurnTests(unittest.TestCase):
         self.assertEqual(out[1]["parts"][0]["data"]["state"]["output"], "README.md")
 
 
+def reasoning_item(summary: list[str] | None, encrypted: str | None = "opaque") -> dict:
+    """A codex ``reasoning`` response item: the model's own text is
+    ``encrypted_content`` (opaque), the readable part is ``summary``."""
+    payload: dict = {"type": "reasoning", "id": "rs_test"}
+    if summary is not None:
+        payload["summary"] = [{"type": "summary_text", "text": t} for t in summary]
+    if encrypted is not None:
+        payload["encrypted_content"] = encrypted
+    return line("response_item", payload)
+
+
+class CodexReasoningTests(unittest.TestCase):
+    """What claude_code already records (a ``reasoning`` part per turn) codex
+    records too, from the readable summary; the encrypted body never does."""
+
+    def test_a_reasoning_summary_is_recorded_as_a_reasoning_part(self) -> None:
+        out = convert([
+            user_item("why is the build red"),
+            reasoning_item(["Checking the failing job.", "The lockfile is stale."]),
+            assistant_item("The lockfile is stale; run install."),
+        ])
+        self.assertEqual(roles(out), ["user", "assistant"])
+        kinds = [p["data"]["type"] for p in out[1]["parts"]]
+        self.assertEqual(kinds, ["reasoning", "text"])
+        self.assertEqual(out[1]["parts"][0]["data"]["text"],
+                         "Checking the failing job.\n\nThe lockfile is stale.")
+        self.assertNotIn("opaque", json.dumps(out))
+
+    def test_encrypted_only_reasoning_records_nothing(self) -> None:
+        out = convert([user_item("hi"), reasoning_item(None), assistant_item("hello")])
+        self.assertEqual([p["data"]["type"] for p in out[1]["parts"]], ["text"])
+        out = convert([user_item("hi"), reasoning_item([]), assistant_item("hello")])
+        self.assertEqual([p["data"]["type"] for p in out[1]["parts"]], ["text"])
+
+    def test_reasoning_stays_out_of_the_transcript(self) -> None:
+        from services.cowork_agent import session_transcript
+
+        out = convert([
+            user_item("why"),
+            reasoning_item(["private summary"]),
+            assistant_item("because"),
+        ])
+        transcript = session_transcript.build_transcript("why", out)
+        self.assertEqual([m["content"] for m in transcript["messages"]], ["why", "because"])
+
+
 class CodexSessionTitleTests(unittest.TestCase):
     """The sidebar title comes from the same prompt source as the bubbles."""
 
