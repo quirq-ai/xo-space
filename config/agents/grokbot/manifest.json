@@ -1,0 +1,57 @@
+{
+  "name": "grokbot",
+  "binary": "",
+  "install_url": "https://github.com/adam91holt/grokbot-sdk",
+  "home_dir": "/home/box/sand-data",
+  "env_file": "/home/box/sand-data/.env",
+  "config_file": "/home/box/sand-data/gateway.json",
+  "agents_dir": "/home/box/sand-data/agents",
+  "workspace_dir": "/home/box/sand-data",
+  "provisioning_log": "/home/box/sand-data/provisioning.log",
+  "cwd": "~",
+  "cli_timeout_seconds": 30,
+  "api": {
+    "url_env": "GROKBOT_GATEWAY_URL",
+    "url_default": "http://127.0.0.1:1340",
+    "token_env": "SAND_GATEWAY_TOKEN",
+    "token_default": "",
+    "session_header": ""
+  },
+  "model_prefix": "grokbot",
+  "model_capabilities": {
+    "function_calling": true,
+    "vision": false,
+    "reasoning": true,
+    "json_output": true,
+    "max_context": 200000,
+    "max_output": 16384
+  },
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": [
+      "agent-transcripts/*/*.jsonl"
+    ],
+    "secrets": [
+      {
+        "key": "SAND_GATEWAY_TOKEN",
+        "label": "Grok Bot gateway token",
+        "description": "Bearer token for the local Grok Bot host. Required for chat. Copied from sand-data/gateway.json (alias agent-data/gateway.json) when the env var is unset."
+      },
+      {
+        "key": "SAND_DATA_ROOT",
+        "label": "sand-data root",
+        "description": "Optional override for the on-disk host state root. Defaults to /home/box/sand-data (alias /home/box/agent-data)."
+      },
+      {
+        "key": "GROKBOT_GATEWAY_URL",
+        "label": "Grok Bot gateway URL",
+        "description": "Optional full origin of the host gateway (alias SAND_GATEWAY_URL). Default http://127.0.0.1:1340."
+      },
+      {
+        "key": "GROKBOT_DEFAULT_AGENT_ID",
+        "label": "Default Grok Bot agent id",
+        "description": "Optional durable host seat for new Space chats. When unset, Space mints a throwaway seat instead of broadcasting."
+      }
+    ]
+  }
+}
