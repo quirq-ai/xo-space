@@ -1,5 +1,5 @@
 /* A project's GitHub mirror. Each mounted card keeps its own filter and DOM;
-   only an explicit issue Refresh asks the server to poll GitHub immediately. */
+   only an explicit Check GitHub action asks the server to poll GitHub immediately. */
 import {API_BASE,apiFetch,failText} from './api.js';
 import {esc,rel} from './ui.js';
 import {icon,copyButton} from './project-ui.js?v=20260915-data1';
@@ -7,7 +7,7 @@ import {icon,copyButton} from './project-ui.js?v=20260915-data1';
 const STATES=[['open','Open'],['closed','Closed'],['all','All']];
 const EMPTY={
   no_remote:'No github.com remote. Add a GitHub origin to include this project’s issues.',
-  never_polled:'Not polled yet. Refresh asks the server to check GitHub now.',
+  never_polled:'Not polled yet. Check GitHub asks the server to check for updated issues now.',
   issues_disabled:'Issues are turned off for this repository on GitHub.',
   empty:'No open issues.',
 };
@@ -45,7 +45,7 @@ export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,ti
     +'<input class="iss-q" type="search" placeholder="Filter issues…" autocomplete="off" spellcheck="false" aria-label="Filter issues">'
     +'<div class="iss-states" role="group" aria-label="Issue state">'
     +STATES.map(([key,label])=>'<button type="button" data-iss-state="'+key+'" aria-pressed="'+(key===state)+'">'+label+' 0</button>').join('')
-    +'</div><button class="iss-refresh" data-iss-refresh type="button" aria-label="Refresh issues" data-tip="Check GitHub for updated issues">'+icon('refresh')+'<span>Refresh</span></button>'
+    +'</div><button class="iss-refresh" data-iss-refresh type="button" aria-label="Check GitHub for updated issues" data-tip="Check GitHub for updated issues">'+icon('refresh')+'<span>Check GitHub</span></button>'
     +'</div></div><p class="iss-status" role="status" hidden></p><div class="iss-list"></div>';
   const $=selector=>element.querySelector(selector);
   const refreshButton=$('[data-iss-refresh]'),status=$('.iss-status'),rows=$('.iss-list'),meta=$('.iss-meta');
@@ -109,7 +109,7 @@ export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,ti
     readController=new AbortController();const controller=readController;
     let timer;
     const timeout=new Promise(resolve=>{timer=setTimeout(()=>{
-      controller.abort();resolve({ok:false,error:'Issues took too long to load. Try Refresh issues.'});
+      controller.abort();resolve({ok:false,error:'Issues took too long to load. Try Check GitHub.'});
     },timeoutMs);});
     pending=(async()=>{
       try{
@@ -120,9 +120,9 @@ export function createProjectIssues({projectId,onData=()=>{},request=apiFetch,ti
         if(response.ok&&validData(response.data,projectId)){
           data=response.data;setStatus('');paintData();onData(data);return data;
         }
-        setStatus(response.ok?'Issues could not be read. Try Refresh issues.':failText(response),true);
+        setStatus(response.ok?'Issues could not be read. Try Check GitHub.':failText(response),true);
       }catch{
-        if(!disposed&&mine===generation)setStatus('Issues could not be read. Try Refresh issues.',true);
+        if(!disposed&&mine===generation)setStatus('Issues could not be read. Try Check GitHub.',true);
       }finally{
         clearTimeout(timer);
         if(mine===generation){pending=null;readController=null;forcing=false;

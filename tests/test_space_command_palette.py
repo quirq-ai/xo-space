@@ -30,7 +30,7 @@ class CommandPaletteCompositionTests(unittest.TestCase):
             r"import \{initCommandPalette\} from './core/command-palette\.js\?v=\d{8}-[a-z0-9]+';",
         )
         # started in its own bulkhead, handed the same switchTo the shell uses
-        self.assertIn("initCommandPalette({switchTo,refreshCurrentView});", app)
+        self.assertIn("initCommandPalette({switchTo,refreshPage});", app)
 
     def test_stylesheet_linked_and_shell_stamp_advanced(self) -> None:
         index = read("index.html")
@@ -108,7 +108,7 @@ class CommandPaletteCompositionTests(unittest.TestCase):
 
     def test_quick_actions_are_present(self) -> None:
         src = read("js/core/command-palette.js")
-        self.assertIn("refreshCurrentView", src)
+        self.assertIn("refreshPage", src)
         self.assertIn("Refresh this page", src)
         self.assertIn("New project", src)
 

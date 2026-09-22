@@ -5,7 +5,6 @@ export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
     <header class="setup-hero">
       <h1>Setup</h1>
-      <button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>
     </header>
     <div class="setup-alert" id="setup-alert" role="status"><div><b>Checking settings…</b></div></div>
     <div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>

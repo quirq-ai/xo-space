@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Separate workspace and relay activity over intercepted fictional reads. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,waitForDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -81,9 +82,9 @@ async function go(kind){
   await page.evaluate(kind=>{location.hash='#/inbox/'+kind;},kind);
   await view(kind).waitFor({state:'visible'});
   await page.waitForFunction(kind=>document.querySelector('#view-search')?.placeholder===(kind==='activity'?'Search activity…':'Search sharing activity…'),kind);
-  await page.waitForFunction(()=>!document.querySelector('#section-refresh').disabled);
+  await waitForDataRefresh(page);
 }
-async function refresh(){await page.locator('#section-refresh').click();await page.waitForFunction(()=>!document.querySelector('#section-refresh').disabled);}
+async function refresh(){await startDataRefresh(page);await waitForDataRefresh(page);}
 async function rowCount(kind,count){await page.waitForFunction(({kind,count})=>document.querySelectorAll('#view-inbox-'+kind+' .iac-event').length===count,{kind,count});}
 try{
   await page.goto(origin+'/space/#/inbox/activity',{waitUntil:'domcontentloaded'});
@@ -94,7 +95,7 @@ try{
   assert.doesNotMatch(await view('activity').textContent(),/fixture-secret-not-rendered/);
   assert.match(await rows('activity').last().textContent(),/Time unavailable/);
   catalogHold.release.resolve();liveHold.release.resolve();
-  await page.waitForFunction(()=>!document.querySelector('#section-refresh').disabled);
+  await waitForDataRefresh(page);
   await view('activity').locator('[data-activity-live-summary]').getByText('2 open sessions',{exact:true}).waitFor();
   await view('activity').locator('[data-activity-live]').click();
   assert.match(await view('activity').locator('[data-activity-live-rows]').textContent(),/Aurora Console/);
@@ -139,7 +140,7 @@ try{
   assert.match(await view('activity').locator('[data-activity-warning]').textContent(),/todos/);
   workspaceFailure=false;liveFailure=false;todosFailure=false;await refresh();
   assert.equal(await view('activity').locator('[data-activity-warning]').isVisible(),false);
-  checked('Failed refreshes preserve readable history, identify unavailable live data, hide raw error payloads, and recover through the shared Refresh action.');
+  checked('Failed refreshes preserve readable history, identify unavailable live data, hide raw error payloads, and recover through the internal data reload.');
 
   await query().fill('');await select('activity').selectOption('');await rowCount('activity',4);
   const waiting=hold('/api/xo-projects/orbit-api/timeline');

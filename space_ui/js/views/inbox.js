@@ -15,7 +15,7 @@ import {clearSlottedInterval,setSlottedInterval} from '../core/store.js';
 import {esc,pills,rel,toast} from '../core/ui.js';
 import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
-import {openCommandResults} from '../core/command-results.js?v=20260914-results1';
+import {openCommandResults} from '../core/command-results.js?v=20260921-refresh1';
 import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 
@@ -177,7 +177,7 @@ function showInboxPage(page){
   inboxPage=page;shown=true;
   root.querySelector('.inb-page-head h1').textContent=INBOX_PAGES.find(item=>item.route==='inbox/'+page)?.label||'Items';
   root.querySelector('.inb-page-actions').innerHTML=page==='connections'
-    ?'<button class="inb-btn" type="button" data-act="conns-refresh">Refresh</button><button class="inb-btn" type="button" data-act="conn-config">Open Setup</button>':'';
+    ?'<button class="inb-btn" type="button" data-act="conn-config">Open Setup</button>':'';
   for(const key of ['items','connections','jobs'])root.querySelector('.inb-'+key+'-page').hidden=key!==page;
   clearSlottedInterval('inbox-poll');
   clearSlottedInterval('inbox-conns-poll');
@@ -251,12 +251,10 @@ function render(){
   painted=paintKey();
   if(sel){const el=box.querySelector(sel);if(el)el.focus({preventScroll:true});}
 }
-/* the parts that move without a repaint: buttons a write disabled, the
-   Refresh button, and the relative times, which an unchanged read still ages */
+/* The parts that move without a repaint: buttons a write disabled and the
+   relative times, which an unchanged read still ages. */
 function settle(){
   syncBusy();
-  const r=root.querySelector('button[data-act="refresh"]');
-  if(r)r.disabled=false;
   root.querySelectorAll('[data-ts]').forEach(el=>{el.textContent=rel(el.dataset.ts);});
 }
 function summary(c){
@@ -273,8 +271,6 @@ function head(){
       +(marking?' disabled':'')+' title="'+(narrowed
         ?'Mark every new item in the loaded status page as seen, including items hidden by search or source filters'
         :'Mark every new item on this page as seen')+'">'+(narrowed?'Mark all loaded seen':'Mark all seen')+'</button>':'')
-    +'<button class="inb-btn" type="button" data-act="refresh" title="Re-read the inbox">'
-      +'&#8635; Refresh</button>'
   +'</div>';
 }
 /* the source pills, a second strip under the header */
@@ -434,7 +430,7 @@ function jobsHTML(){
     :jobs.length?jobs.map(jobRowHTML).join(''):'<p class="inb-jobs-state">No jobs yet. Create one in Setup → Jobs.</p>';
   return'<section class="inb-jobs" aria-labelledby="inb-jobs-title" aria-busy="'+jobsLoading+'">'
     +'<div class="inb-jobs-head"><h2 id="inb-jobs-title">Saved jobs'+(jobs?'<b>'+jobs.length+'</b>':'')+'</h2>'
-      +'<div class="inb-jobs-actions"><button class="inb-btn" type="button" data-act="jobs-refresh" title="Re-read jobs">Refresh</button>'
+      +'<div class="inb-jobs-actions">'
         +'<button class="inb-btn" type="button" data-act="jobs-setup">Open Setup</button></div></div>'
     +failure+content+'</section>';
 }
@@ -501,7 +497,6 @@ function onClick(e){
   if(b.dataset.src){setSource(b.dataset.src);return;}
   const id=b.dataset.id;
   switch(b.dataset.act){
-    case'refresh':b.disabled=true;load();break;
     case'mark-all':markAllSeen();break;
     case'toggle':toggle(id);break;
     case'open':{const it=itemById(id);if(it)openLink(it);break;}
@@ -509,10 +504,8 @@ function onClick(e){
     case'reopen':setStatus(id,'seen');break;
     case'delete':remove(id);break;
     case'conns-toggle':connsOpen=!connsIsOpen();renderConns();break;
-    case'conns-refresh':loadConns();break;
     case'conn-poll':pollConn(b.dataset.toolkit);break;
     case'conn-config':switchTo('setup/connectors');break;
-    case'jobs-refresh':loadJobs();break;
     case'jobs-setup':
       Promise.resolve(switchTo('setup/commands')).then(()=>{
         if(location.hash==='#/setup/commands')dispatchEvent(new CustomEvent('space:setup-section',{detail:{panel:'commands'}}));

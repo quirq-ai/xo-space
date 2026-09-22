@@ -92,8 +92,7 @@ assert.equal(reads.filter(url=>url==='/xo/space.json').length,2);
 // A refresh completed after leaving the map must not activate hidden hooks.
 events.get('space:projects-changed')({});
 pending=gate();
-const notice=elements.get('view-graph').children.at(-1);
-const refreshing=notice.button.listeners.get('click')();
+const refreshing=context.pages.graph.refresh();
 announce('setup/workspace');
 const count=activations.length;
 pending.resolve({ok:true,data:{version:3}});await refreshing;pending=null;

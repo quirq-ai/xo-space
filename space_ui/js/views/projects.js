@@ -470,11 +470,9 @@ function toggle(id){
 function makeDrawer(id){
   const el=document.createElement('div');el.className='prj-drawer';el.id='prj-drawer-'+id;
   el.setAttribute('role','region');el.setAttribute('aria-labelledby','prj-files-title-'+id);
-  el.innerHTML='<div class="prj-detail-head"><h2 class="prj-files-title" id="prj-files-title-'+esc(id)+'">Files</h2>'
-    +'<button type="button" class="prj-detail-refresh">Refresh files</button></div>'
+  el.innerHTML='<div class="prj-detail-head"><h2 class="prj-files-title" id="prj-files-title-'+esc(id)+'">Files</h2></div>'
     +'<div class="prj-panel prj-panel-wide"><div class="prj-pbody" data-panel="files"></div></div>';
   const state={el,slot:{version:0,loaded:false,pending:null,path:null}};drawers.set(id,state);
-  el.querySelector('.prj-detail-refresh').addEventListener('click',()=>fillDrawer(id,true));
   return state;
 }
 function fillDrawer(id,force=false){return fillFiles(id,{force});}
@@ -484,10 +482,9 @@ async function fillFiles(id,{force=false}={}){
   if(!force&&(slot.loaded||slot.pending))return;
   const version=++slot.version,path=API_BASE+filePath(id),previous=slot.pending,previousPath=slot.path;
   const el=state.el.querySelector('[data-panel="files"]');
-  const button=state.el.querySelector('.prj-detail-refresh');
   const current=()=>drawers.get(id)===state&&slot.version===version;
   slot.path=path;slot.loaded=false;
-  el.setAttribute('aria-busy','true');button.disabled=true;
+  el.setAttribute('aria-busy','true');
   if(!el.textContent||previousPath!==path){
     el.innerHTML=crumbs(id,cwd.get(id)||'')+'<div class="prj-note">Loading files…</div>';bindFiles(el,id);
   }
@@ -505,7 +502,7 @@ async function fillFiles(id,{force=false}={}){
       el.innerHTML=res.ok?rTree(res.data):crumbs(id,cwd.get(id)||'')+panelFail(res);
       slot.loaded=true;bindFiles(el,id);
     }catch{el.innerHTML='<div class="prj-note">These files could not be read. Try refreshing.</div>';slot.loaded=true;}
-    el.removeAttribute('aria-busy');button.disabled=false;
+    el.removeAttribute('aria-busy');
   })();
   slot.pending=run;
   try{await run;}finally{if(current())slot.pending=null;}

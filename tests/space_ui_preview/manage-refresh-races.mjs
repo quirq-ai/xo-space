@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Manage re-entry must invalidate catalog and access reads. Fictional GETs only. */
 import assert from 'node:assert/strict';
+import {startDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -52,7 +53,7 @@ try{
   await page.locator('#manage-project-confirm').fill('race-project');
   const remove=page.locator('#manage-project-delete');assert.equal(await remove.isEnabled(),true);
   const oldAccess=accessHold=hold();pending.push(oldAccess);
-  await page.locator('#project-refresh').click();await oldAccess.arrived.promise;
+  await startDataRefresh(page);await oldAccess.arrived.promise;
   assert.equal(await remove.isDisabled(),true);
   await page.evaluate(()=>{window.guardViolations=[];new MutationObserver(()=>{
     const button=document.querySelector('#manage-project-delete');
