@@ -9,14 +9,6 @@
 .conn-hero h2{font:500 27px/1.2 var(--sans);margin:0 0 8px}
 .conn-hero h2:focus{outline:none}
 .conn-hero p{color:var(--ink-2);font-size:13px;line-height:1.5;max-width:62ch;margin:0}
-.conn-hero-actions{display:flex;gap:8px;flex:0 0 auto}
-
-.conn-refresh{
-  border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);
-  padding:9px 13px;font:500 12px var(--sans);cursor:pointer
-}
-.conn-refresh:hover{border-color:var(--ink-4);color:var(--ink)}
-
 .conn-group+.conn-group{margin-top:30px}
 .conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
 .conn-group-head h3{font:500 14px var(--sans);color:var(--ink);margin:0}
@@ -124,7 +116,7 @@
 /* :disabled alone means "cannot act"; only an in-flight request earns the wait
    cursor, via .is-busy. Same distinction as the Setup tab. */
 .conn-primary:disabled,.conn-secondary:disabled{opacity:.45;cursor:not-allowed}
-.conn-primary.is-busy,.conn-secondary.is-busy,.conn-refresh.is-busy{cursor:wait}
+.conn-primary.is-busy,.conn-secondary.is-busy{cursor:wait}
 .conn-page button:focus-visible,.conn-page a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 
 .conn-actions{border-top:1px solid var(--line-soft);background:rgba(0,0,0,.1);padding:13px 16px 16px;max-height:340px;overflow:auto}

@@ -1,6 +1,7 @@
 /* Workspace branding uses fictional, browser-owned settings and image bytes.
    All writes are intercepted before reaching the read-only preview server. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -60,6 +61,7 @@ await context.route('**/*',async route=>{
   }
   return route.continue();
 });
+await installRefreshProbes(context);
 page.on('pageerror',error=>report.errors.push(error.message));
 page.on('console',message=>{
   if(message.type()!=='error')return;
@@ -142,14 +144,14 @@ try{
   await card.waitFor();
   assert.equal(await name.inputValue(),customName,'Navigation retains the name draft');
   assert.match(await previewLogo.getAttribute('src'),/^blob:/,'Navigation retains the logo draft');
-  await page.locator('#setup-refresh').click();
+  await startDataRefresh(page,'setup');
   await page.waitForFunction(()=>document.querySelector('#branding-form')?.getAttribute('aria-busy')==='false');
-  assert.equal(await name.inputValue(),customName,'Refreshing status retains the name draft');
-  assert.match(await previewLogo.getAttribute('src'),/^blob:/,'Refreshing status retains the logo draft');
+  assert.equal(await name.inputValue(),customName,'An internal status reread retains the name draft');
+  assert.match(await previewLogo.getAttribute('src'),/^blob:/,'An internal status reread retains the logo draft');
   assert.match(await page.locator('#setup-step-workspace').textContent(),/Unsaved changes/);
   await screenshot('branding-draft-1440.png');
   const staleRead=holdRead=gate();
-  await page.locator('#setup-refresh').click();await staleRead.arrived.promise;
+  await startDataRefresh(page,'setup');await staleRead.arrived.promise;
   const pending=holdSave=gate();
   await save.click();await pending.arrived.promise;
   assert.equal(await save.isDisabled(),true,'A pending save cannot be duplicated');
@@ -173,7 +175,7 @@ try{
   assert.equal(await shellLogo.getAttribute('src'),logoURL);
   assert.equal(await page.title(),customName);
   checked('Name and image preview locally; multipart save updates the shell and title, persists on reload, and cannot duplicate while pending.');
-  checked('Drafts and the Workspace unsaved badge survive navigation and status refresh; a read completing after save cannot roll back the form or shell.');
+  checked('Drafts and the Workspace unsaved badge survive navigation and internal status rereads; a read completing after save cannot roll back the form or shell.');
 
   const beforeMissingLogo=report.writes.length;
   logoMissing=true;
@@ -260,7 +262,7 @@ try{
       const card=document.querySelector('#setup-branding');
       return{viewport:innerWidth,scroll:document.documentElement.scrollWidth,card:rect(card),
         brand:rect(document.querySelector('.brand')),tabs:rect(document.querySelector('.tabs')),
-        resources:rect(document.querySelector('.resource-links')),
+        resources:rect(document.querySelector('.resource-links')),refresh:rect(document.querySelector('#space-refresh')),
         controls:[...card.querySelectorAll('input,button')].filter(node=>node.getClientRects().length).map(node=>({id:node.id,...rect(node)}))};
     });
     report.layouts.push({width,...layout});
@@ -271,10 +273,22 @@ try{
       &&Math.min(a.bottom,b.bottom)>Math.max(a.top,b.top)+1;
     assert.equal(overlap(layout.brand,layout.resources),false,'The saved name clears resource controls at '+width+'px');
     assert.equal(overlap(layout.brand,layout.tabs),false,'The saved name clears primary tabs at '+width+'px');
+    assert.ok(layout.refresh.left>=-1&&layout.refresh.right<=width+1,'Global Refresh fits at '+width+'px');
+    assert.equal(overlap(layout.brand,layout.refresh),false,'The saved name clears global Refresh at '+width+'px');
+    assert.equal(overlap(layout.tabs,layout.refresh),false,'Global Refresh clears primary tabs at '+width+'px');
+    assert.equal(await page.locator('#space-refresh:visible').count(),1,'One global Refresh is visible at '+width+'px');
     for(const control of layout.controls)assert.ok(control.left>=-1&&control.right<=width+1,control.id+' fits at '+width+'px');
     await screenshot('branding-'+width+'.png');
   }
   checked('Branding controls and a saved 80-character name fit without header overlap at 1440px, 1024px, 768px, 390px and 320px.');
+  await page.evaluate(()=>{window.brandingRefreshSentinel=true;});
+  await Promise.all([page.waitForNavigation({waitUntil:'networkidle'}),page.locator('#space-refresh').click()]);
+  await card.waitFor();await waitName(longName);
+  assert.equal(await page.evaluate(()=>window.brandingRefreshSentinel),undefined,'Global Refresh reloads the document');
+  assert.equal(await name.inputValue(),longName,'Global Refresh restores the saved name in place of its draft');
+  assert.equal(await shellLogo.getAttribute('src'),logoURL,'The saved logo survives a full refresh');
+  assert.equal(new URL(page.url()).hash,'#/setup/workspace','Global Refresh retains the current route');
+  checked('At 320px, global Refresh reloads the document and restores the saved custom name and logo.');
   assert.deepEqual(report.errors,[],'No unexpected browser, console or HTTP errors');
   console.log(JSON.stringify(report,null,2));
 }catch(error){

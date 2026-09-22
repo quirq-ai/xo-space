@@ -39,20 +39,23 @@ tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
 The toolbar adapts to the active page. The Cmd+K search trigger sits with
-**Wiki** and **GitHub** in the top-right cluster on every page, including Overview and Graph. Every Projects page keeps **Graph root** and
-**Refresh** together in the section bar. **Manage** is a Projects page at
+**Wiki** and **GitHub** in the top-right cluster on every page, including Overview and Graph. A single **Refresh** button stays in the top bar on every page, beside search,
+Wiki and GitHub. It reloads the entire document at the current URL, including
+its route and query string. Unsaved forms, open drawers and temporary filters
+reset just as they do with the browser reload button. **Refresh this page**
+in the command palette uses the same action. Every Projects page keeps
+**Graph root** in the section bar. **Manage** is a Projects page at
 `#/projects/manage`; its **Add project** button opens the clone form. The old
 `#/setup/projects` link opens Manage. Cards start collapsed; one card opens at a time to show
 metadata and Issues, while inline sharing drafts stay mounted. Copy icons
 beside recorded metadata copy its exact value; tooltips and keyboard focus identify
 each action. **View activity**, **Share**, **Pin**, **Copy GitHub URL** and **Remove**
 are grouped in each card header and work while collapsed. Pins keep their existing
-browser storage and feed Data List’s **Pinned** filter, including across open tabs. Refresh rereads the active page’s data without reloading the app, retaining its
-query, selected root and existing project drawers. Inbox Sharing keeps **Share a project**,
-**Check now**, and **Refresh** beside its own navigation.
+browser storage and feed Data List’s **Pinned** filter, including across open tabs. Inbox Sharing keeps **Share a project**
+and **Check now** beside its own navigation.
 Each Manage project card has **Share**, which opens a Space ID form
 in that card. Cancel keeps you on the page; submitting grants access to that
-Space ID. Drafts stay with their project while you filter, refresh or navigate.
+Space ID. Drafts stay with their project while you filter or navigate within Space.
 Choosing a node from Data List, Data Tree, Manage or
 Timeline opens Data Graph rooted on that node. The secondary navigation does
 not repeat primary section labels. Projects page descriptions are removed to leave more room
@@ -105,6 +108,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/core/data-views.js` | Native List, Graph and Tree links shared by the local Data toolbars. |
 | `js/core/section-nav.js` | Shared secondary navigation and a slot for stable view-owned actions; native links mark the active page. |
 | `js/core/project-root.js` | Root picker shared by all Projects pages. Reads node metadata independently of the canvas; a selection opens the appropriate graph, while stale reads cannot reopen the picker after navigation. |
+| `js/core/page-refresh.js` | Shared full-document refresh for the top-bar button and command palette. |
 | `js/core/toolbar.js` | Shared toolbar: Cmd+K trigger in the navbar search slot, active-filter page search, and the `/` shortcut that opens the palette. |
 | `js/core/api.js` | The one fetch layer: `API_BASE`, query-string auth forwarding, offline / HTTP-error / 501 classification, single-flight GETs, and `failText(res)`, the one wording for a failed result ("xo-space is unreachable", "not available for the active agent", or the HTTP error) that every tab shows. |
 | `js/core/store.js` | Idempotency helpers: single-flight promises, slotted (non-stacking) intervals. |
@@ -117,7 +121,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/inbox.js` | Three Inbox routes (`items`, `connections`, `jobs`) share a mounted controller. Items shows what arrived in the workspace (new sessions, blocked todos, shares, anything POSTed to `/api/inbox`) as new / seen / done rows, plus the unread badge on the primary link (`initInboxBadge`). Styled by `css/inbox.css`, its own `.inb-*` classes. |
 | `js/views/inbox-activity.js` | Independent workspace Activity and Sharing activity pages. Workspace events, live sessions and project names come from their existing read APIs; Sharing activity reads the relay’s recent-event buffer. |
 | `js/views/sharing.js` | Inbox Sharing management: shared repositories, incoming clones, commits, Apply, members, grants and revocations. Existing Sharing links normalize to `#/inbox/sharing`. |
-| `js/views/projects.js` | Data List: searchable catalog, Pinned and Live filters and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Refresh files rereads the current folder. Each file and folder row has a **Copy path** button (also on right-click) offering the path relative to the project root or the full path, built from `roots.applied.xo_projects_root` in `GET /api/runtime-config` plus the project id. Registers `project-list` at `#/projects/data/list`. |
+| `js/views/projects.js` | Data List: searchable catalog, Pinned and Live filters and a file browser in each expanded row. Catalog and optional telemetry load independently. Stable rows retain focus, folders and scroll across sorting and navigation; request generations reject stale file replies. Each file and folder row has a **Copy path** button (also on right-click) offering the path relative to the project root or the full path, built from `roots.applied.xo_projects_root` in `GET /api/runtime-config` plus the project id. Registers `project-list` at `#/projects/data/list`. |
 | `js/core/workspace.js` | Indexed project counts from `/xo/space.json`. Prefers hub `index_counts` captured before graph display limits; marks incomplete scans with `+` and treats missing counts as unknown. Older graphs use conservative lower bounds when their display limits were reached. |
 | `js/views/tree.js` | The Projects Tree page: horizontal hierarchy over the same `/xo/space.json` dataset as Graph: folders as columns, files stacked beside their parent. Deep-link `#/projects/data/tree`. |
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
@@ -125,7 +129,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
 | `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
 | `js/views/project-management.js` | Clone, collapsible project cards, pins, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
-| `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through Refresh. Styled by `css/project-management.css`. |
+| `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through **Check GitHub**. Styled by `css/project-management.css`. |
 | `js/views/setup.js` | The guided Setup controller: `createSetupViews` registers Workspace and Intelligence layer, then Connectors, Secrets, Jobs and Server management under `#/setup/<section>`. Every route shares one mounted shell, so forms keep drafts across sections and status refreshes. |
 | `js/views/setup-shell.js` | Setup layout and stable form controls. Workspace shows Space ID and verified account status; Secrets uses the existing masked-list and single-key environment APIs. |
 | `js/core/setup-sections.js` | Setup section IDs, labels, canonical routes and compatibility mappings for old section handoffs. |
@@ -135,8 +139,8 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/setup-commands.js` | Setup Jobs card: scheduled/manual kind choice, plain-language schedule and time-limit form, Run now, live results and history drawer over `/api/schedules`. |
 | `js/core/jobs.js` | Job vocabulary shared by Setup and Inbox Jobs, with no DOM or network: schedule presets ↔ `every_seconds`/`first_run_at`, upcoming runs and runs per day for the editor's preview, schedule and status wording, duration units. |
 | `js/core/command-results.js` | Shared job results drawer used by Setup and Inbox Jobs, including output, status, working directory and log path. |
-| `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints Refresh, the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
-| `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, refresh and navigation. |
+| `js/views/connectors.js` | The persistent Connectors controller inside Setup: Composio toolkits, connect / disconnect, the Actions drawer and the Polling drawer (`PUT /api/connections/{toolkit}`). The Polling drawer keeps unsaved edits across the repaints the Actions drawer and a connect landing cause; Save repaints from the server's copy, and closing the drawer (Hide, opening another toolkit's drawer, turning the toolkit off, disconnect) discards them. Lazily authenticates on first selection (`js/core/session.js`); opens at `#/setup/connectors`, with `#/connectors` retained as an alias. |
+| `js/views/native-connectors.js` | GitHub, MagicPath, Vercel, Google Drive and OneDrive connection controls using their existing `/api/connectors/` routes. Status reads run independently of XO sign-in; credential fields and pending authorization stay mounted across filtering, status updates and navigation. |
 
 | `js/core/markdown.js` | Escape-first mini-markdown (fences, inline code, bold/italic, links, headings, lists). |
 
@@ -197,8 +201,8 @@ The default storage path is `~/.quirq/settings/branding.json`, outside the appli
 **Theme** provides a dropdown with **Grove**, the original green default with warm neutrals, and **Neon**, a cyberpunk-inspired palette of charcoal, soft magenta, violet and amber, plus **Midnight**, with periwinkle blue and silver on near-black. **Graphite** uses neutral black/grey surfaces; **Linen** is a warm white-and-terracotta light mode. Neon and Midnight keep Inter body text, use Poppins for the workspace name and JetBrains Mono for code. The persisted IDs remain `space` (Grove) and `quirq` (Neon), with `midnight` for Midnight, so existing preferences continue working. Fonts are served locally with their licenses and sources in `fonts/README.md`. Select a theme and choose **Save theme** to apply it across the app immediately; failed saves preserve the current appearance and the selected draft. Name and logo settings are independent. `GET`/`PUT /space/theme` uses `{ "theme": "space" | "quirq" | "midnight" | "graphite" | "linen" }` and saves to `~/.quirq/settings/theme.json` (or the configured state root), with Git exclusions for custom state inside the checkout. Missing preferences retain Grove; code updates do not reset a saved theme.
 
 **Next** moves between steps without saving. All forms stay mounted, so section
-and app navigation preserve drafts. Refresh and saving a credential also keep
-unfinished folder, agent and activity edits. Agent and Activity saves send all
+and app navigation preserve drafts. Saving a credential also keeps unfinished
+folder, agent and activity edits; the global Refresh reloads the page and resets drafts. Agent and Activity saves send all
 required runtime fields, but use the last saved values for the other form. Intelligence also retains the advanced collection interval and usage-reporting status. Its footer opens Manage, whose project drafts, count and load errors remain independent of runtime settings.
 The status strip points to pending changes or a reported folder/installation
 issue; it does not infer authenticated access from a saved key or installed CLI.
@@ -243,8 +247,8 @@ removes local files; it does not delete the remote repository or backups.
 Automatic sharing clones remember the local removal so they do not recreate
 the folder. Explicitly cloning it again restores it. Projects List, Tree and
 Sharing refresh on return. Project changes invalidate cached map data; a map
-still showing earlier data offers **Refresh map**. Changing projections or
-refreshing the map preserves the document and unfinished Setup forms.
+still showing earlier data directs you to the global **Refresh** button. Changing
+projections preserves the document and unfinished Setup forms; Refresh reloads it.
 
 For never-shared Git repositories, XO Swarm must support `GET /commits/members`
 returning `200` with `members: []` when its sharing ledger has no rows. Older
@@ -315,8 +319,7 @@ polls the job every three seconds until the status and duration appear. The row
 shows its folder and a preview of the latest result, with the status in words
 (Succeeded, Failed, Timed out, Command not found, …).
 **Results** opens the latest 20 results with escaped output, exit codes, timing,
-and a copyable full-log path. The drawer updates while a job runs and also
-offers Refresh. A concurrent run or a full shared execution limit returns 409.
+and a copyable full-log path. The drawer updates while a job runs; reopening it rereads the latest results. A concurrent run or a full shared execution limit returns 409.
 Restart, command writes and runs require a local client; browser requests must come from the same loopback origin. Remote requests receive 403.
 
 Definitions and every result stay under `<quirq state>/scheduler/`, and the full output of every run under `<quirq state>/logs/scheduler/<id>.log`:
@@ -346,8 +349,7 @@ switchable regardless.
 
 - Data: `GET /xo/sessions.json`, one pre-aggregated payload built from the
   session telemetry every runtime that reports it contributes. Fetched
-  lazily on first open; the section's Refresh button (shell chrome, shared
-  by every page) re-fetches (the file is rebuilt at most every
+  lazily on first open; the global Refresh button reloads the page and re-fetches (the file is rebuilt at most every
   `XO_VIEWS_REFRESH_S`, default 30 s).
 - Sub-views: Overview · Sessions (list → detail with sub-agents and
   per-session tools) · Trends (charts only: weekly volume stacked by model
@@ -382,7 +384,7 @@ also show their enabled state and next due time, and every job shows its
 latest/running status. **Run now** is the section's one write
 (`POST /api/schedules/{id}/run`; a 409 re-reads the list). **Results** opens the
 same results drawer used by Setup; **Open Setup** returns to job management.
-Jobs refresh on entry, through either Refresh button, and every 30 seconds while
+Jobs load on entry and after a global Refresh, and update every 30 seconds while
 visible (every three seconds while a listed job is running). This section
 creates no Inbox items, and item search, filters and unread counts retain their
 existing scope.
@@ -401,8 +403,8 @@ events** follows `next_cursor` with `before`; search covers loaded events.
 `recent` from `/api/project-sharing/status`: the latest 50 relay events, cleared
 when the server restarts. This is distinct from workspace history and the
 **Sharing** management page at `#/inbox/sharing`. Each activity page keeps its own
-search and selection, refreshes on entry and every 30 seconds while visible,
-and has **Refresh** in the section bar. Failed refreshes keep the previous events
+search and selection during navigation, and refreshes on entry and every
+30 seconds while visible. The global Refresh reloads the page. Failed refreshes keep the previous events
 visible with an error; malformed records are reported rather than shown as an empty history.
 
 - Data: `GET /api/inbox?status=open|done|all&limit=N` (defaults `open`, 200;

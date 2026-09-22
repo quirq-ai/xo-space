@@ -4,7 +4,7 @@
   #view-inbox{overflow-y:auto}
   .inb{max-width:1180px;margin:0 auto;padding:70px 26px 60px;font-family:var(--sans)}
 
-  /* header strip: eyebrow · summary · filter · mark all seen · refresh */
+  /* header strip: eyebrow · summary · filter · mark all seen */
   .inb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
   .inb-eyebrow{font:600 11px/1 var(--sans);letter-spacing:.06em;color:var(--ink-3);
     text-transform:uppercase}

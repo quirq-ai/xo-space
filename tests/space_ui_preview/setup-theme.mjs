@@ -1,6 +1,7 @@
 /* Theme preferences are fictional and browser-owned. Every mutation is
    intercepted before it can reach the read-only preview server. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -60,6 +61,7 @@ await context.route('**/*',async route=>{
   }
   return route.continue();
 });
+await installRefreshProbes(context);
 page.on('pageerror',error=>report.errors.push(error.message));
 page.on('console',message=>{
   if(message.type()!=='error')return;
@@ -137,7 +139,7 @@ try{
 
   await select.selectOption('quirq');saved={theme:'quirq'};
   const externalRead=holdRead=gate();pendingGates.push(externalRead);
-  await page.locator('#setup-refresh').click();await arrived(externalRead.arrived.promise);
+  await startDataRefresh(page,'setup');await arrived(externalRead.arrived.promise);
   await select.selectOption('space');externalRead.release.resolve();await arrived(externalRead.finished.promise);await idle();
   await currentTheme('quirq');assert.equal((await select.inputValue()==='space'),true);
   assert.equal(await save.isEnabled(),true,'A newer draft is compared with the refreshed saved theme');
@@ -152,13 +154,13 @@ try{
   assert.match(await page.locator('#setup-step-workspace').textContent(),/Unsaved changes/);
   await page.locator('#tab-projects').click();await page.locator('#tab-setup').click();
   await card.waitFor();await idle();assert.equal((await select.inputValue()==='quirq'),true);
-  await page.locator('#setup-refresh').click();await idle();
-  assert.equal((await select.inputValue()==='quirq'),true,'Refresh preserves the draft selection');
+  await startDataRefresh(page,'setup');await idle();
+  assert.equal((await select.inputValue()==='quirq'),true,'Internal status rereads preserve the draft selection');
   assert.equal(report.writes.length,writesBeforeQuirq);await expectBranding();
-  checked('Theme drafts survive navigation and Refresh and keep the Workspace unsaved badge without changing the shell.');
+  checked('Theme drafts survive navigation and internal status rereads and keep the Workspace unsaved badge without changing the shell.');
 
   const stale=holdRead=gate();pendingGates.push(stale);
-  await page.locator('#setup-refresh').click();await arrived(stale.arrived.promise);
+  await startDataRefresh(page,'setup');await arrived(stale.arrived.promise);
   const pending=holdSave=gate();pendingGates.push(pending);
   await save.click();await arrived(pending.arrived.promise);
   assert.equal(await save.isDisabled(),true);assert.equal(await select.isDisabled(),true);
@@ -283,6 +285,14 @@ try{
     await screenshot('theme-'+theme+'-agents.png',false);
   }
   checked('Graphite and Linen persist, keep branding, meet text/button contrast, fit mobile, and theme graph and agent charts.');
+  await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});await card.waitFor();await idle();
+  await select.selectOption('space');
+  const writesBeforeRefresh=report.writes.length;
+  await Promise.all([page.waitForNavigation({waitUntil:'networkidle'}),page.locator('#space-refresh').click()]);
+  await card.waitFor();await idle();await currentTheme('linen');
+  assert.equal(await select.inputValue(),'linen','Global refresh restores the saved theme rather than the draft');
+  assert.equal(report.writes.length,writesBeforeRefresh,'Global refresh does not save a draft');
+  checked('The global full-page Refresh restores the saved theme and preserves branding.');
   assert.deepEqual(report.errors,[],'No unexpected browser, console or HTTP errors');
   console.log(JSON.stringify(report,null,2));
 }catch(error){

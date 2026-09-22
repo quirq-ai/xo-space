@@ -2,7 +2,7 @@
    refreshes leave clone, access-review and inline sharing drafts mounted. */
 import {projectPage} from '../core/navigation.js?v=20260915-agents2';
 import {openProjectActivity} from '../core/project-actions.js?v=20260914-details1';
-import {mountProjectManagement} from './project-management.js?v=20260915-data1';
+import {mountProjectManagement} from './project-management.js?v=20260921-refresh1';
 
 let root=null,manager=null,active=false,scrollTop=0;
 function refresh(){

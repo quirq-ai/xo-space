@@ -63,8 +63,8 @@ let openPolling=null;      /* id of the expanded Polling drawer, if any */
 let pollCache={};          /* toolkit id -> GET /api/connections/<id> payload; null on failure */
 let pollNotes={};          /* toolkit id -> one-line result of the last "Poll now" */
 /* The drawer is an uncontrolled form: until Save its state lives only in the
-   DOM, and the grid is rebuilt by Refresh, by the Actions toggle of any card
-   and by a connect landing. So every grid paint first reads the open drawer's
+   DOM, and the grid is rebuilt by the Actions toggle of any card and by a
+   connect landing. So every grid paint first reads the open drawer's
    form into a draft, the drawer is painted from the draft when one exists,
    and Save or closing the drawer (Hide polling, opening another toolkit's
    drawer, turning the toolkit off, deleting the connection) discards it. The
@@ -107,9 +107,6 @@ function renderShell(){
           +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
           +'<p>Tools and apps for this workspace.</p>'
         +'</div>'
-        +'<div class="conn-hero-actions">'
-          +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
-        +'</div>'
       +'</header>'
       +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
         +'<div class="conn-group-head"><div><h3 id="conn-workspace-title">Workspace integrations</h3>'
@@ -131,7 +128,6 @@ function renderShell(){
 }
 
 function bindEvents(){
-  root.querySelector('#conn-refresh').addEventListener('click',refreshAll);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
   const keyEl=root.querySelector('#conn-key');
   keyEl.addEventListener('click',ev=>{
@@ -599,8 +595,8 @@ async function loadAccounts(){
 
 /* A connected toolkit turned on here that the read left unlabelled gets one
    live lookup per load; the server answers from its cache for a minute, so
-   a Refresh right after costs no provider call. Not awaited by loadAll: a
-   slow provider must not hold the Refresh button. */
+   a refresh right after costs no provider call. Not awaited by loadAll: a
+   slow provider must not delay the connector grid. */
 function askAccounts(){
   for(const t of toolkits){
     if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;

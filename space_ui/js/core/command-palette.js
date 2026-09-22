@@ -3,7 +3,7 @@
    the active page's own search.
 
    Shell chrome, like core/lens-switch.js: it never imports the view modules
-   and navigates through the switchTo (and refreshCurrentView) it is handed at
+   and navigates through the switchTo (and refreshPage) it is handed at
    init, the same instances app.js uses, so the no-bundler stamp split can
    never hand it an empty registry. The navigable destinations are kept here
    as route vocabulary, the same way the lens switch keeps its lens list.
@@ -62,7 +62,7 @@ function scoreEntry(tokens,label,keywords){
   return total;
 }
 
-export function initCommandPalette({switchTo,refreshCurrentView}={}){
+export function initCommandPalette({switchTo,refreshPage}={}){
   if(typeof switchTo!=='function')return;
   if(document.getElementById('cmdk'))return; /* idempotent: one palette only */
 
@@ -71,7 +71,7 @@ export function initCommandPalette({switchTo,refreshCurrentView}={}){
   /* Quick actions: safe, page-agnostic verbs. Navigation lives in NAV. */
   const ACTIONS=[
     {kind:'action',label:'Refresh this page',group:'Actions',keywords:'reload refresh update',
-     run:()=>{try{refreshCurrentView?.();}catch(err){console.error(err);}}},
+     run:()=>{try{refreshPage?.();}catch(err){console.error(err);}}},
     {kind:'action',label:'New project',group:'Actions',keywords:'create add project new',
      run:()=>go('projects/manage')},
     {kind:'action',label:'Copy link to this page',group:'Actions',keywords:'copy url share link',
