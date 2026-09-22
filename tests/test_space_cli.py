@@ -102,6 +102,16 @@ class SpaceCLITests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), original)
         self.assertEqual(list(self.config.parent.iterdir()), [self.config])
 
+    def test_save_needs_only_mkstemp_for_owner_only_mode(self):
+        # Windows Python below 3.13 has no os.fchmod; the 0600 guarantee must
+        # come from mkstemp alone so the client stays standard-library portable.
+        with patch.dict(cli.os.__dict__):
+            del cli.os.fchmod
+            cli.save_config(URL, TOKEN)
+        self.assertEqual(json.loads(self.config.read_text()), {"url": URL, "token": TOKEN})
+        if hasattr(os, "fchmod"):
+            self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
+
     def test_config_path_precedence(self):
         self.assertEqual(cli.config_path(), self.config)
         with patch.dict(os.environ, {"SPACE_CLI_CONFIG": "", "XDG_CONFIG_HOME": str(self.root / "xdg")}):

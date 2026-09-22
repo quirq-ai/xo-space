@@ -113,9 +113,9 @@ def save_config(url: str, token: str) -> None:
         path = config_path()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=".cli-", suffix=".json", dir=path.parent)
-        # mkstemp creates mode 0600 before any credential bytes are written.
+        # mkstemp creates mode 0600 before any credential bytes are written;
+        # no fchmod follow-up, which Windows Python below 3.13 lacks.
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
             json.dump({"url": url, "token": token}, stream)
             stream.write("\n")
             stream.flush()
