@@ -185,11 +185,15 @@
      cached ones included, to one stamped URL: one module instance, fetched
      fresh. Bump a stamp here when its file changes. A core module with a
      single importer keeps its stamp on that import instead (app.js,
-     views/connectors.js). -->
+     views/connectors.js). Every module the shell loads is either stamped
+     by its importer or listed here; tests/test_space_pr97_ui.py holds the
+     tree to that rule. -->
 <script type="importmap">
 {"imports":{
   "./js/core/api.js":"./js/core/api.js?v=20260921-branding1",
   "./js/core/ui.js":"./js/core/ui.js?v=20260914-accounts1",
+  "./js/core/store.js":"./js/core/store.js?v=20260922-stamps1",
+  "./js/core/markdown.js":"./js/core/markdown.js?v=20260922-stamps1",
   "./js/core/connections.js":"./js/core/connections.js?v=20260914-accounts1"
 }}
 </script>

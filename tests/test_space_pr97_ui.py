@@ -18,7 +18,9 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("XO_SPACE_ROOT") or Path(__file__).resolve().parents[1])
 UI = ROOT / "space_ui"
-STAMP = "20260914-accounts1"
+# The shape of a cache stamp, never a particular value: a bump is a routine
+# change and must not fail a test. What is asserted is that the stamp is there.
+STAMP_RE = r"\d{8}-[a-z0-9]+"
 DASHES = re.compile("[\\u2013\\u2014]")
 
 
@@ -893,78 +895,70 @@ class ShellTests(unittest.TestCase):
         registry = read("js/core/registry.js")
         self.assertIn("if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||''))return;", registry)
 
-    def test_stamps_moved_together(self) -> None:
-        app = read("js/app.js")
-        # The shared routing vocabulary, all participating views and shell
-        # imports advance together; unchanged controllers retain their URLs.
-        # Trends absorbing Tools and Models changed navigation.js, so every
-        # importer of the vocabulary moved to the agents stamp.
-        agents_stamp = "20260915-agents2"
-        for view in ("tree", "inbox-activity"):
-            self.assertIn("./views/" + view + ".js?v=" + agents_stamp + "'", app)
-        # Global refresh removes per-view controls and advances their cache stamps.
-        for view in ("sharing", "projects", "inbox", "project-manage", "quirq", "connectors", "atlas"):
-            self.assertIn("./views/" + view + ".js?v=20260921-refresh1'", app)
-        self.assertIn("./views/setup.js?v=20260922-refresh2'", app)
-        for sheet in ("sharing",):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260918-copypath1">', read("index.html"))
-        for module in ("navigation", "preview"):
-            self.assertIn("./core/" + module + ".js?v=" + agents_stamp + "'", app)
-        self.assertIn("./core/section-nav.js?v=20260921-refresh1'", app)
-        # The typography pass (Inter, readable small text) restamped every file
-        # it changed on top of development.
-        type_stamp = "20260915-typesync1"
-        self.assertIn("./core/registry.js?v=" + type_stamp + "'", app)
-        # Restoring the footer (and dropping the graph's duplicate counts line)
-        # moved these again; toolbar.js is back to development's copy.
-        footer_stamp = "20260915-footer1"
-        for module in ("views/sessions",):
-            self.assertIn("./" + module + ".js?v=" + footer_stamp + "'", app)
-        self.assertIn("./core/toolbar.js?v=20260915-cmdk6'", app)
-        self.assertIn("./core/project-actions.js?v=20260914-details1'", app)
-        self.assertIn("./core/page-refresh.js?v=20260921-refresh1'", app)
+    def _import_map(self) -> dict:
+        """index.html's import map, checked to sit ahead of app.js: a map
+        read after the entry module rewrites nothing."""
         html = read("index.html")
-        for sheet in ("project-management", "inbox-activity",
-                      "sessions", "command-palette"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + type_stamp + '">', html)
-        for sheet in ("preview", "navigation"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + footer_stamp + '">', html)
-        self.assertIn('<link rel="stylesheet" href="css/project-share.css?v=20260914-inboxshare1">', html)
-        # Jobs (Setup's Commands as scheduled and manual jobs, and manual jobs
-        # with Run now in Inbox) restamped the files it changed.
-        jobs_stamp = "20260916-jobs3"
-        for module in ("views/wiki",):
-            self.assertIn("./" + module + ".js?v=" + jobs_stamp + "'", app)
-        # its calendar landed in the shared shadcn styles
-        for sheet in ("shadcn",):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=' + jobs_stamp + '">', html)
-        # Global refresh also advances changed shared and per-view styles.
-        for sheet in ("chrome", "graph", "projects", "inbox", "quirq", "connectors"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260921-refresh1">', html)
-        for sheet in ("base", "setup"):
-            self.assertIn('<link rel="stylesheet" href="css/' + sheet + '.css?v=20260922-refresh2">', html)
-        self.assertIn("./core/command-palette.js?v=20260921-refresh1'", app)
-        # Later view changes legitimately advance the shell and Wiki stamps;
-        # test_space_wiki checks that the cache-bust chain stays intact.
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
+        m = re.search(r'<script type="importmap">\s*(\{.*?\})\s*</script>', html, re.S)
+        self.assertIsNotNone(m, "index.html carries no import map")
+        self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
+        return json.loads(m.group(1))["imports"]
+
+    def test_every_loaded_asset_is_stamped_or_mapped(self) -> None:
+        """StaticFiles sends no Cache-Control, so the only thing that makes a
+        browser fetch a changed file is its ``?v=`` stamp. This holds the tree
+        to the rule rather than to any stamp value (a bump is routine and must
+        not fail a test): every stylesheet and the app entry carry a stamp and
+        exist; every relative import is either stamped by its importer (its
+        own cache key) or bare and rewritten by the import map (one stamped
+        instance shared by every importer); never both, and never neither. A
+        bare import of a module missing from the map is the real defect: the
+        browser keeps serving the copy it has."""
+        html = read("index.html")
+        for href in re.findall(r'<link rel="stylesheet" href="([^"]+)"', html):
+            self.assertRegex(href, r"\?v=" + STAMP_RE + "$", href)
+            self.assertTrue((UI / href.split("?")[0]).is_file(), href)
+        scripts = re.findall(r'<script type="module" src="([^"]+)"', html)
+        self.assertEqual([s.split("?")[0] for s in scripts], ["js/app.js"])
+        self.assertRegex(scripts[0], r"\?v=" + STAMP_RE + "$")
+
+        imports = self._import_map()
+        for bare, stamped in imports.items():
+            self.assertEqual(stamped.split("?")[0], bare, bare)
+            self.assertRegex(stamped, r"\?v=" + STAMP_RE + "$", bare)
+            self.assertTrue((UI / bare).is_file(), bare)
+        mapped = {(UI / bare).resolve() for bare in imports}
+
+        for path in sorted((UI / "js").rglob("*.js")):
+            src = path.read_text(encoding="utf-8")
+            # static imports (``from './x'``, ``import './x'``) and dynamic ``import('./x')``
+            for spec in re.findall(r"""(?:\bfrom|\bimport)\s*\(?\s*['"](\.[^'"]+)['"]""", src):
+                target = (path.parent / spec.split("?")[0]).resolve()
+                where = str(path.relative_to(UI)) + " imports " + spec
+                self.assertTrue(target.is_file(), where)
+                if "?" in spec:
+                    self.assertRegex(spec, r"\?v=" + STAMP_RE + "$", where)
+                    self.assertNotIn(target, mapped, where + ": a mapped module is imported bare")
+                else:
+                    self.assertIn(target, mapped, where + ": unstamped and not in the import map")
 
     def test_import_map_stamps_the_bare_core_modules(self) -> None:
         """core/api.js and core/ui.js gained exports and are imported bare
         everywhere; StaticFiles sends no Cache-Control, so the stamp that
         makes a browser fetch them fresh (and every importer share one
         instance) is the import map in index.html, ahead of app.js."""
-        html = read("index.html")
-        m = re.search(r'<script type="importmap">\s*(\{.*?\})\s*</script>', html, re.S)
-        self.assertIsNotNone(m, "index.html carries no import map")
-        self.assertLess(m.start(), html.index('<script type="module" src="js/app.js'))
-        imports = json.loads(m.group(1))["imports"]
+        imports = self._import_map()
         for name in self.CORE_MAPPED:
-            stamp = "20260921-branding1" if name == "api.js" else STAMP
-            self.assertEqual(imports["./js/core/" + name], "./js/core/" + name + "?v=" + stamp, name)
+            self.assertRegex(
+                imports.get("./js/core/" + name, ""),
+                r"^\./js/core/" + re.escape(name) + r"\?v=" + STAMP_RE + "$",
+                name,
+            )
         # one instance means every importer uses the bare specifier
+        mapped = [Path(bare).name for bare in imports]
         for path in sorted((UI / "js").rglob("*.js")):
             src = path.read_text(encoding="utf-8")
-            for name in self.CORE_MAPPED:
+            for name in mapped:
                 self.assertNotRegex(src, r"core/" + re.escape(name) + r"\?v=", str(path))
                 self.assertNotRegex(src, r"from '\./" + re.escape(name) + r"\?v=", str(path))
 
