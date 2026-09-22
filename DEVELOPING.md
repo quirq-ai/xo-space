@@ -701,7 +701,12 @@ origin that will connect must be registered as an allowed callback on them in th
 dashboard; miss that and `/connect` succeeds while the OAuth redirect fails, which
 surfaces late, in the popup. It is **required and has no default**: unset,
 `_callback_url()` raises before any network call and `/connect` returns a 422 whose
-detail names the variable, which the Connectors tab matches on.
+detail names the variable, which the Connectors tab matches on. The service keeps no
+default because it cannot know its own public origin; `install.sh` can, so it exports
+`http://127.0.0.1:${PORT}/api/connectors/composio/callback` (derived from the resolved
+port) and writes it into the generated `.env`, which is why a local install connects
+without hand-editing anything. Any value already set — shell, `.env`, the Setup tab's
+`runtime.env` — still wins.
 
 Degradation is per-scope, and worth knowing when reading a bug report:
 
