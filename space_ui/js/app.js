@@ -21,7 +21,7 @@ import sharingView from './views/sharing.js?v=20260918-copypath1';
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';
 import quirqView from './views/quirq.js?v=20260915-data1';
-import {createSetupViews} from './views/setup.js?v=20260922-theme1';
+import {createSetupViews} from './views/setup.js?v=20260922-theme2';
 import {loadTheme} from './core/theme.js?v=20260922-theme1';
 import {loadBranding} from './core/branding.js?v=20260921-branding1';
 import connectorsView from './views/connectors.js?v=20260917-byok1';

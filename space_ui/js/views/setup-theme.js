@@ -7,14 +7,14 @@ export function mountTheme(el,onDraftChange=()=>{}){
         <p class="setup-theme-intro">Set the colors and typography across your workspace.</p>
         <div class="setup-theme-options">
           <label class="setup-theme-option" for="theme-space">
-            <span class="theme-sample theme-sample-space" aria-hidden="true"><span class="theme-sample-bar"><b>Space</b><i></i><i></i></span><span class="theme-sample-body"><b>Your workspace</b><span></span><span></span><em>Explore projects</em></span></span>
-            <span class="theme-option-title"><input id="theme-space" type="radio" name="workspace-theme" value="space" checked><b>Space</b><small>Default</small></span>
-            <span class="theme-option-description">Green accents · Inter</span>
+            <span class="theme-sample theme-sample-space" aria-hidden="true"><span class="theme-sample-bar"><b>Grove</b><i></i><i></i></span><span class="theme-sample-body"><b>Your workspace</b><span></span><span></span><em>Explore projects</em></span></span>
+            <span class="theme-option-title"><input id="theme-space" type="radio" name="workspace-theme" value="space" checked><b>Grove</b><small>Default</small></span>
+            <span class="theme-option-description">Moss green · Warm neutrals</span>
           </label>
           <label class="setup-theme-option" for="theme-quirq">
-            <span class="theme-sample theme-sample-quirq" aria-hidden="true"><span class="theme-sample-bar"><b>Quirq</b><i></i><i></i></span><span class="theme-sample-body"><b>Your workspace</b><span></span><span></span><em>Explore projects</em></span></span>
-            <span class="theme-option-title"><input id="theme-quirq" type="radio" name="workspace-theme" value="quirq"><b>Quirq</b></span>
-            <span class="theme-option-description">Monochrome &amp; spectrum · Inter, Poppins &amp; JetBrains Mono</span>
+            <span class="theme-sample theme-sample-quirq" aria-hidden="true"><span class="theme-sample-bar"><b>Neon</b><i></i><i></i></span><span class="theme-sample-body"><b>Your workspace</b><span></span><span></span><em>Explore projects</em></span></span>
+            <span class="theme-option-title"><input id="theme-quirq" type="radio" name="workspace-theme" value="quirq"><b>Neon</b></span>
+            <span class="theme-option-description">Soft magenta · Charcoal · Violet &amp; amber</span>
           </label>
         </div>
       </fieldset>

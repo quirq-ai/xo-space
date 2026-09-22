@@ -108,8 +108,8 @@ async function assertStyles(theme){
     assert.equal(styles.bg,'rgb(11, 12, 15)');assert.equal(styles.accent,'#a8d94f');
     assert.equal(styles.active,'rgb(168, 217, 79)');assert.match(styles.brandFont,/Inter/);
   }else{
-    assert.equal(styles.bg,'rgb(0, 0, 0)');assert.equal(styles.ink,'rgb(244, 243, 240)');
-    assert.equal(styles.active,'rgb(244, 243, 240)');assert.equal(styles.activeInk,'rgb(0, 0, 0)');
+    assert.equal(styles.bg,'rgb(16, 15, 20)');assert.equal(styles.ink,'rgb(243, 236, 228)');
+    assert.equal(styles.active,'rgb(242, 162, 213)');assert.equal(styles.activeInk,'rgb(33, 20, 30)');
     assert.match(styles.brandFont,/Poppins/);assert.match(styles.mono,/JetBrains Mono/);
     assert.ok(styles.fonts.some(f=>f.includes('Poppins')),'Poppins brand typeface is loaded');
     const monoLoaded=await page.evaluate(async()=>{
@@ -124,10 +124,12 @@ try{
   await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});
   await card.waitFor();await idle();await currentTheme('space');
   assert.equal(await page.locator('#setup-panel-workspace #setup-theme').count(),1);
+  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
+  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
   assert.equal(await space.isChecked(),true);assert.equal(await save.isDisabled(),true);
   assert.deepEqual(report.writes,[]);await expectBranding();await assertStyles('space');
   await screenshot('theme-space-1440.png');
-  checked('Workspace owns Theme; the original green Space theme and custom branding load without a write.');
+  checked('Workspace owns Theme; the original green Grove theme and custom branding load without a write.');
 
   await quirq.check();saved={theme:'quirq'};
   const externalRead=holdRead=gate();pendingGates.push(externalRead);
@@ -165,7 +167,7 @@ try{
   await expectBranding();await assertStyles('quirq');
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();await currentTheme('quirq');
   assert.equal(await quirq.isChecked(),true);await expectBranding();
-  checked('Save applies Quirq immediately, blocks duplicate saves, survives reload, and ignores a stale GET arriving after save.');
+  checked('Save applies Neon immediately, blocks duplicate saves, survives reload, and ignores a stale GET arriving after save.');
 
   saveError='Theme could not be saved. Please try again.';
   await space.check();await save.click();await idle();
@@ -173,10 +175,14 @@ try{
   assert.equal(await space.isChecked(),true,'Failed save retains the draft');await currentTheme('quirq');
   assert.deepEqual(saved,{theme:'quirq'});await expectBranding();
   saveError=null;await save.click();await currentTheme('space');await idle();
+  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
+  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
   assert.equal(await space.isChecked(),true);await assertStyles('space');
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();await currentTheme('space');
+  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
+  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
   assert.equal(await space.isChecked(),true);await expectBranding();
-  checked('A failed save preserves Quirq and the Space draft; retry and reload restore the original green theme without changing the name or logo.');
+  checked('A failed save preserves Neon and the Grove draft; retry and reload restore the original green theme without changing the name or logo.');
 
   readError='Theme settings are unavailable. Please try again.';
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();
@@ -203,7 +209,7 @@ try{
     for(const control of layout.controls)assert.ok(control.left>=-1&&control.right<=width+1,control.id+' fits at '+width+'px');
     await screenshot('theme-quirq-'+width+'.png');
   }
-  checked('Quirq theme controls and previews fit desktop, 390px and 320px layouts.');
+  checked('Neon theme controls and previews fit desktop, 390px and 320px layouts.');
 
   await page.setViewportSize({width:1440,height:1000});await page.locator('#tab-projects').click();
   await page.waitForURL('**/#/projects/overview');
@@ -213,7 +219,7 @@ try{
   await page.locator('#view-graph.is-active').waitFor();await page.waitForFunction(()=>document.querySelector('#gcanvas')?.width>0);
   await currentTheme('quirq');await screenshot('theme-quirq-graph-1440.png',false);
   assert.ok(report.requests.some(r=>r.path==='/xo/space.json'),'Graph loads fixture data');
-  checked('Quirq persists across Projects Overview and Graph, with screenshots for non-Setup theme coverage.');
+  checked('Neon persists across Projects Overview and Graph, with screenshots for non-Setup theme coverage.');
 
   const legendColors=()=>page.locator('#legend .sw[style]').evaluateAll(nodes=>nodes.map(node=>getComputedStyle(node).backgroundColor));
   const quirqLegend=await legendColors();assert.ok(quirqLegend.length>0,'Graph has category swatches');
@@ -221,14 +227,14 @@ try{
   await space.check();await save.click();await currentTheme('space');await idle();
   await page.goto(origin+'/space/#/projects/data/graph');
   await page.locator('#view-graph.is-active').waitFor();
-  assert.notDeepEqual(await legendColors(),quirqLegend,'Existing graph adopts Space category colors');
+  assert.notDeepEqual(await legendColors(),quirqLegend,'Existing graph adopts Grove category colors');
   await screenshot('theme-space-graph-1440.png',false);
   await page.locator('#tab-setup').click();await card.waitFor();await idle();
   await quirq.check();await save.click();await currentTheme('quirq');await idle();
   await page.goto(origin+'/space/#/projects/data/graph');
   await page.locator('#view-graph.is-active').waitFor();
-  assert.deepEqual(await legendColors(),quirqLegend,'Existing graph restores Quirq category colors');
-  checked('An already mounted Graph refreshes its legend through Quirq → Space → Quirq without reloading the document.');
+  assert.deepEqual(await legendColors(),quirqLegend,'Existing graph restores Neon category colors');
+  checked('An already mounted Graph refreshes its legend through Neon → Grove → Neon without reloading the document.');
   assert.deepEqual(report.errors,[],'No unexpected browser, console or HTTP errors');
   console.log(JSON.stringify(report,null,2));
 }catch(error){

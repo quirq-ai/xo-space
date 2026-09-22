@@ -1,28 +1,27 @@
-/* Quirq's official site uses a black/ivory interface, Inter body/headings,
-   Poppins for its wordmark and JetBrains Mono for labels. The spectrum is
-   reserved for data and small accents. Sources and font licenses are recorded
-   in fonts/README.md. No selector here changes the default Space theme. */
+/* Neon pairs warm charcoal with soft magenta, violet and amber accents.
+   Typography originates from Quirq; font sources and licenses are in
+   fonts/README.md. Stable theme IDs preserve existing saved preferences. */
 @font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("../fonts/jetbrains-mono/JetBrainsMono-Latin.woff2") format("woff2")}
 @font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("../fonts/poppins/Poppins-SemiBold-Latin.woff2") format("woff2")}
 
 :root[data-theme="quirq"]{
   color-scheme:dark;
-  --bg:#000000; --bg-2:#0e0e0d; --bg-3:#181817;
-  --line:#f4f3f01a; --line-soft:#f4f3f00e;
-  --ink:#f4f3f0; --ink-2:#bdbdb7; --ink-3:#a3a39e; --ink-4:#85857f;
-  --accent:#f4f3f0; --accent-deep:#d9d8d3; --err:#ff453a;
-  --accent-rgb:244,243,240; --accent-deep-rgb:217,216,211;
-  --accent-ink:#000000; --accent-hover:#ffffff; --focus-line:#a3a39e;
-  --bg-rgb:0,0,0; --bg-2-rgb:14,14,13; --bg-3-rgb:24,24,23;
-  --line-rgb:40,40,39; --overlay-rgb:10,10,9;
-  --line-hover:#f4f3f04d; --row-hover-line:#f4f3f033; --secondary-hover:#232322;
-  --topbar-bg:#000000;
+  --bg:#100f14; --bg-2:#19161e; --bg-3:#231e2a;
+  --line:#39303f; --line-soft:#2b2531;
+  --ink:#f3ece4; --ink-2:#d0c3cc; --ink-3:#b1a2b4; --ink-4:#918496;
+  --accent:#f2a2d5; --accent-deep:#d784bb; --err:#ed978d;
+  --accent-rgb:242,162,213; --accent-deep-rgb:215,132,187;
+  --accent-ink:#21141e; --accent-hover:#f8bce2; --focus-line:#d784bb;
+  --bg-rgb:16,15,20; --bg-2-rgb:25,22,30; --bg-3-rgb:35,30,42;
+  --line-rgb:57,48,63; --overlay-rgb:20,17,25;
+  --line-hover:#66526b; --row-hover-line:#514056; --secondary-hover:#302636;
+  --topbar-bg:linear-gradient(180deg,#1b151f,#100f14);
   --sans:"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --brand-font:"Poppins",var(--sans);
-  --eng:#30d158; --res:#2fd2ff; --ops:#ffd60a; --mkt:#ff9f0a;
-  --chart-1:#2fd2ff; --chart-2:#0a84ff; --chart-3:#bf5af2; --chart-4:#ff453a;
-  --chart-5:#ff9f0a; --chart-6:#ffd60a; --chart-7:#30d158; --chart-8:#f4f3f0;
+  --eng:#b7cc91; --res:#bb9aef; --ops:#eac17a; --mkt:#e995ce;
+  --chart-1:#e995ce; --chart-2:#bb9aef; --chart-3:#eac17a; --chart-4:#e59b8d;
+  --chart-5:#b7cc91; --chart-6:#cc83b0; --chart-7:#d9c9ad; --chart-8:#f3ece4;
 }
 
 :root[data-theme="quirq"] .brand .mark{filter:none}

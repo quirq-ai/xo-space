@@ -1,13 +1,13 @@
 # Locally served theme fonts
 
 Fonts are bundled so the interface works offline without sending font requests
-to a third party. The default Space theme retains its existing Inter files.
+to a third party. The default Grove theme retains its existing Inter files.
 
-The Quirq theme uses the typography and palette inspected on the official
+Neon uses the typography inspected on the official
 [home page](https://www.quirq.ai/) and [products page](https://www.quirq.ai/products)
 on 2026-09-22: Inter for body/headings, Poppins 600 for the brand wordmark,
-and JetBrains Mono for technical labels and code. Its black/ivory interface uses
-the site's spectrum sparingly in charts and data categories.
+and JetBrains Mono for technical labels and code. Its custom palette pairs warm
+charcoal surfaces with soft magenta, violet and amber accents.
 
 ## Font provenance
 
