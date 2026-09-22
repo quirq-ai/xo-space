@@ -163,7 +163,7 @@ drafts across navigation/status refresh, stale reads after save, and saved long 
 at 1440px, 1024px, 768px, 390px and 320px. Branding writes and logo responses are intercepted
 in the browser; the preview server only supplies the default read response.
 
-The Theme check covers the default Grove palette, Neon colors and bundled fonts,
+The Theme check covers the three-option dropdown, default Grove palette, Neon/Midnight colors and bundled fonts,
 independent name/logo preservation, retained drafts across navigation and Refresh,
 save/reload persistence, failed-save recovery, unavailable reads and retry, duplicate
 submission protection, stale reads after save, and newer drafts during an external

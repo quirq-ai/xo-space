@@ -4,7 +4,7 @@
 @font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("../fonts/jetbrains-mono/JetBrainsMono-Latin.woff2") format("woff2")}
 @font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("../fonts/poppins/Poppins-SemiBold-Latin.woff2") format("woff2")}
 
-:root[data-theme="quirq"]{
+:root:is([data-theme="quirq"],[data-theme="midnight"]){
   color-scheme:dark;
   --bg:#100f14; --bg-2:#19161e; --bg-3:#231e2a;
   --line:#39303f; --line-soft:#2b2531;
@@ -24,12 +24,29 @@
   --chart-5:#b7cc91; --chart-6:#cc83b0; --chart-7:#d9c9ad; --chart-8:#f3ece4;
 }
 
-:root[data-theme="quirq"] .brand .mark{filter:none}
-:root[data-theme="quirq"] :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
+/* Midnight: cool silver text and luminous periwinkle on ink-black surfaces. */
+:root[data-theme="midnight"]{
+  --bg:#090c12; --bg-2:#101620; --bg-3:#192230;
+  --line:#2a3548; --line-soft:#1e2837;
+  --ink:#eaf0fa; --ink-2:#c5cfdf; --ink-3:#9eacc3; --ink-4:#8190a8;
+  --accent:#91adff; --accent-deep:#7898ee; --err:#e99aab;
+  --accent-rgb:145,173,255; --accent-deep-rgb:120,152,238;
+  --accent-ink:#10182c; --accent-hover:#adc2ff; --focus-line:#91adff;
+  --bg-rgb:9,12,18; --bg-2-rgb:16,22,32; --bg-3-rgb:25,34,48;
+  --line-rgb:42,53,72; --overlay-rgb:12,17,25;
+  --line-hover:#4d6183; --row-hover-line:#3b4d68; --secondary-hover:#253248;
+  --topbar-bg:linear-gradient(180deg,#111926,#090c12);
+  --eng:#92c9b4; --res:#91adff; --ops:#d8bc89; --mkt:#aba0dc;
+  --chart-1:#91adff; --chart-2:#92c9b4; --chart-3:#aba0dc; --chart-4:#d8bc89;
+  --chart-5:#e3a2b5; --chart-6:#9bbbd0; --chart-7:#c5cfdf; --chart-8:#eaf0fa;
+}
+
+:root:is([data-theme="quirq"],[data-theme="midnight"]) .brand .mark{filter:none}
+:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
 /* Only the bundled SVG mark is recolored; uploaded logos keep their colors. */
-:root[data-theme="quirq"] :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
-:root[data-theme="quirq"] :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
+:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
+:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
 
 /* This neutral hover border predates the shared tokens. */
-:root[data-theme="quirq"] .quirq-storage-actions button:hover{border-color:var(--line-hover)}
-:root[data-theme="quirq"] .srv .pip:not(.on):not(.off){background:var(--ink-4)}
+:root:is([data-theme="quirq"],[data-theme="midnight"]) .quirq-storage-actions button:hover{border-color:var(--line-hover)}
+:root:is([data-theme="quirq"],[data-theme="midnight"]) .srv .pip:not(.on):not(.off){background:var(--ink-4)}

@@ -40,7 +40,7 @@ await context.route('**/*',async route=>{
       assert.match(request.headers()['content-type'],/^application\/json/);
       const body=request.postDataJSON();report.writes.push(body);
       assert.deepEqual(Object.keys(body),['theme'],'Only the theme preference is submitted');
-      assert.ok(['space','quirq'].includes(body.theme));
+      assert.ok(['space','quirq','midnight'].includes(body.theme));
       const pending=holdSave;holdSave=null;
       if(pending){pending.arrived.resolve();await pending.release.promise;}
       if(saveError)return send(route,{detail:saveError},503);
@@ -67,7 +67,7 @@ page.on('response',response=>{
   report.errors.push(response.status()+' '+response.url());
 });
 const card=page.locator('#setup-theme'),save=page.locator('#theme-save');
-const space=page.locator('#theme-space'),quirq=page.locator('#theme-quirq');
+const select=page.locator('#theme-select');
 const checked=text=>{report.checks.push(text);console.log(text);};
 async function arrived(promise){
   let timer;
@@ -124,18 +124,17 @@ try{
   await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});
   await card.waitFor();await idle();await currentTheme('space');
   assert.equal(await page.locator('#setup-panel-workspace #setup-theme').count(),1);
-  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
-  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
-  assert.equal(await space.isChecked(),true);assert.equal(await save.isDisabled(),true);
+  assert.deepEqual(await select.locator('option').allTextContents(),['Grove — default','Neon','Midnight']);
+  assert.equal((await select.inputValue()==='space'),true);assert.equal(await save.isDisabled(),true);
   assert.deepEqual(report.writes,[]);await expectBranding();await assertStyles('space');
   await screenshot('theme-space-1440.png');
   checked('Workspace owns Theme; the original green Grove theme and custom branding load without a write.');
 
-  await quirq.check();saved={theme:'quirq'};
+  await select.selectOption('quirq');saved={theme:'quirq'};
   const externalRead=holdRead=gate();pendingGates.push(externalRead);
   await page.locator('#setup-refresh').click();await arrived(externalRead.arrived.promise);
-  await space.check();externalRead.release.resolve();await arrived(externalRead.finished.promise);await idle();
-  await currentTheme('quirq');assert.equal(await space.isChecked(),true);
+  await select.selectOption('space');externalRead.release.resolve();await arrived(externalRead.finished.promise);await idle();
+  await currentTheme('quirq');assert.equal((await select.inputValue()==='space'),true);
   assert.equal(await save.isEnabled(),true,'A newer draft is compared with the refreshed saved theme');
   assert.match(await page.locator('#theme-status').textContent(),/Unsaved changes/);
   await save.click();await currentTheme('space');await idle();
@@ -143,13 +142,13 @@ try{
   checked('A selection made during an externally changed refresh remains a saveable draft against the new baseline.');
 
   const writesBeforeQuirq=report.writes.length;
-  await quirq.check();
+  await select.selectOption('quirq');
   assert.equal(await page.locator('html').getAttribute('data-theme'),'space','Selecting a preview is an unsaved draft');
   assert.match(await page.locator('#setup-step-workspace').textContent(),/Unsaved changes/);
   await page.locator('#tab-projects').click();await page.locator('#tab-setup').click();
-  await card.waitFor();await idle();assert.equal(await quirq.isChecked(),true);
+  await card.waitFor();await idle();assert.equal((await select.inputValue()==='quirq'),true);
   await page.locator('#setup-refresh').click();await idle();
-  assert.equal(await quirq.isChecked(),true,'Refresh preserves the draft selection');
+  assert.equal((await select.inputValue()==='quirq'),true,'Refresh preserves the draft selection');
   assert.equal(report.writes.length,writesBeforeQuirq);await expectBranding();
   checked('Theme drafts survive navigation and Refresh and keep the Workspace unsaved badge without changing the shell.');
 
@@ -157,52 +156,48 @@ try{
   await page.locator('#setup-refresh').click();await arrived(stale.arrived.promise);
   const pending=holdSave=gate();pendingGates.push(pending);
   await save.click();await arrived(pending.arrived.promise);
-  assert.equal(await save.isDisabled(),true);assert.equal(await quirq.isDisabled(),true);
+  assert.equal(await save.isDisabled(),true);assert.equal(await select.isDisabled(),true);
   assert.equal(report.writes.length,writesBeforeQuirq+1);await currentTheme('space');
   pending.release.resolve();await currentTheme('quirq');
   stale.release.resolve();await arrived(stale.finished.promise);await idle();
-  assert.equal(await quirq.isChecked(),true);await currentTheme('quirq');
+  assert.equal((await select.inputValue()==='quirq'),true);await currentTheme('quirq');
   assert.deepEqual(saved,{theme:'quirq'});assert.deepEqual(report.writes.at(-1),{theme:'quirq'});
   assert.doesNotMatch(await page.locator('#setup-step-workspace').textContent(),/Unsaved changes/);
   await expectBranding();await assertStyles('quirq');
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();await currentTheme('quirq');
-  assert.equal(await quirq.isChecked(),true);await expectBranding();
+  assert.equal((await select.inputValue()==='quirq'),true);await expectBranding();
   checked('Save applies Neon immediately, blocks duplicate saves, survives reload, and ignores a stale GET arriving after save.');
 
   saveError='Theme could not be saved. Please try again.';
-  await space.check();await save.click();await idle();
+  await select.selectOption('space');await save.click();await idle();
   assert.match(await page.locator('#theme-error').textContent(),/Please try again/);
-  assert.equal(await space.isChecked(),true,'Failed save retains the draft');await currentTheme('quirq');
+  assert.equal((await select.inputValue()==='space'),true,'Failed save retains the draft');await currentTheme('quirq');
   assert.deepEqual(saved,{theme:'quirq'});await expectBranding();
   saveError=null;await save.click();await currentTheme('space');await idle();
-  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
-  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
-  assert.equal(await space.isChecked(),true);await assertStyles('space');
+  assert.equal((await select.inputValue()==='space'),true);await assertStyles('space');
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();await currentTheme('space');
-  assert.equal(await page.locator('label[for=theme-space] .theme-option-title b').textContent(),'Grove');
-  assert.equal(await page.locator('label[for=theme-quirq] .theme-option-title b').textContent(),'Neon');
-  assert.equal(await space.isChecked(),true);await expectBranding();
+  assert.equal((await select.inputValue()==='space'),true);await expectBranding();
   checked('A failed save preserves Neon and the Grove draft; retry and reload restore the original green theme without changing the name or logo.');
 
   readError='Theme settings are unavailable. Please try again.';
   await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();
-  assert.equal(await space.isDisabled(),true);assert.equal(await save.isDisabled(),true);
+  assert.equal(await select.isDisabled(),true);assert.equal(await save.isDisabled(),true);
   assert.equal(await page.locator('#theme-retry').isVisible(),true);
   assert.match(await page.locator('#theme-error').textContent(),/unavailable/);await expectBranding();
   const writesBeforeRetry=report.writes.length;
   readError=null;await page.locator('#theme-retry').click();await idle();
-  assert.equal(await space.isEnabled(),true);assert.equal(await space.isChecked(),true);
+  assert.equal(await select.isEnabled(),true);assert.equal((await select.inputValue()==='space'),true);
   assert.equal(report.writes.length,writesBeforeRetry);assert.equal(await page.locator('#theme-error').isVisible(),false);
   checked('Unavailable reads disable theme writes, retain branding, and recover through Try again without a settings mutation.');
 
-  await quirq.check();await save.click();await currentTheme('quirq');await idle();await expectBranding();
+  await select.selectOption('quirq');await save.click();await currentTheme('quirq');await idle();await expectBranding();
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});await card.scrollIntoViewIfNeeded();
     const layout=await page.evaluate(()=>{
       const rect=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,width:r.width};};
       const card=document.querySelector('#setup-theme');
       return{viewport:innerWidth,scroll:document.documentElement.scrollWidth,card:rect(card),
-        controls:[...card.querySelectorAll('input,button,label')].filter(node=>node.getClientRects().length).map(node=>({id:node.id||node.htmlFor,...rect(node)}))};
+        controls:[...card.querySelectorAll('select,button,label')].filter(node=>node.getClientRects().length).map(node=>({id:node.id||node.htmlFor,...rect(node)}))};
     });
     report.layouts.push(layout);assert.ok(layout.scroll<=width,'No horizontal overflow at '+width+'px');
     assert.ok(layout.card.left>=-1&&layout.card.right<=width+1,'Theme card fits at '+width+'px');
@@ -224,17 +219,37 @@ try{
   const legendColors=()=>page.locator('#legend .sw[style]').evaluateAll(nodes=>nodes.map(node=>getComputedStyle(node).backgroundColor));
   const quirqLegend=await legendColors();assert.ok(quirqLegend.length>0,'Graph has category swatches');
   await page.locator('#tab-setup').click();await card.waitFor();await idle();
-  await space.check();await save.click();await currentTheme('space');await idle();
+  await select.selectOption('space');await save.click();await currentTheme('space');await idle();
   await page.goto(origin+'/space/#/projects/data/graph');
   await page.locator('#view-graph.is-active').waitFor();
   assert.notDeepEqual(await legendColors(),quirqLegend,'Existing graph adopts Grove category colors');
   await screenshot('theme-space-graph-1440.png',false);
   await page.locator('#tab-setup').click();await card.waitFor();await idle();
-  await quirq.check();await save.click();await currentTheme('quirq');await idle();
+  await select.selectOption('quirq');await save.click();await currentTheme('quirq');await idle();
   await page.goto(origin+'/space/#/projects/data/graph');
   await page.locator('#view-graph.is-active').waitFor();
   assert.deepEqual(await legendColors(),quirqLegend,'Existing graph restores Neon category colors');
   checked('An already mounted Graph refreshes its legend through Neon → Grove → Neon without reloading the document.');
+  await page.locator('#tab-setup').click();await card.waitFor();await idle();
+  await select.selectOption('midnight');
+  await currentTheme('quirq');
+  assert.match(await page.locator('#theme-description').textContent(),/Periwinkle/);
+  await save.click();await currentTheme('midnight');await idle();await expectBranding();
+  await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();
+  assert.equal(await select.inputValue(),'midnight');await currentTheme('midnight');
+  const midnightStyle=await page.evaluate(()=>({bg:getComputedStyle(document.body).backgroundColor,accent:getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()}));
+  assert.deepEqual(midnightStyle,{bg:'rgb(9, 12, 18)',accent:'#91adff'});
+  for(const width of [1440,390,320]){
+    await page.setViewportSize({width,height:1000});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await screenshot('theme-midnight-'+width+'.png');
+  }
+  await page.setViewportSize({width:1440,height:1000});
+  await page.goto(origin+'/space/#/projects/data/graph');await page.locator('#view-graph.is-active').waitFor();
+  await page.locator('#legend .sw[style]').first().waitFor();
+  assert.equal((await legendColors())[0],'rgb(145, 173, 255)');
+  await screenshot('theme-midnight-graph.png',false);
+  checked('Midnight saves, survives reload, preserves branding and applies its blue palette to the graph and responsive dropdown.');
   assert.deepEqual(report.errors,[],'No unexpected browser, console or HTTP errors');
   console.log(JSON.stringify(report,null,2));
 }catch(error){

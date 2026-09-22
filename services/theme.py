@@ -12,7 +12,7 @@ from services.storage.flock import locked
 from services.storage.layout import settings_dir
 
 DEFAULT_THEME = "space"
-THEMES = frozenset({"space", "quirq"})
+THEMES = frozenset({"space", "quirq", "midnight"})
 _WRITE_LOCK = threading.Lock()
 
 
@@ -61,7 +61,7 @@ def get_theme() -> dict:
 def save_theme(theme: str) -> dict:
     """Persist a supported theme without changing saved branding."""
     if not _valid_theme(theme):
-        raise ThemeError("invalid_theme", "Choose the Grove or Neon theme.", 422)
+        raise ThemeError("invalid_theme", "Choose the Grove, Neon or Midnight theme.", 422)
     try:
         path = _path()
         with _WRITE_LOCK, locked(path):

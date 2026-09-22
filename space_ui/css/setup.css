@@ -62,36 +62,19 @@
 .setup-branding-preview>small{margin:0}
 .setup-theme form{padding:20px}
 .setup-theme fieldset{padding:0;border:0;min-width:0}
-.setup-theme legend{font:500 13px var(--sans);color:var(--ink);margin-bottom:7px}
+.setup-theme label{display:block;font:500 13px var(--sans);color:var(--ink);margin-bottom:7px}
 .setup-theme-intro,.setup-theme-note{font:400 12px/1.5 var(--sans);color:var(--ink-3)}
-.setup-theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
-.setup-theme-option{display:flex;flex-direction:column;min-width:0;padding:10px;border:1px solid var(--line);border-radius:10px;cursor:pointer}
-.setup-theme-option:has(input:checked){border-color:var(--accent);background:rgba(var(--accent-rgb),.04)}
-.setup-theme-option:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:3px}
-.setup-theme fieldset:disabled .setup-theme-option{opacity:.55;cursor:wait}
-.theme-option-title{display:flex;align-items:center;gap:8px;margin-top:13px}
-.theme-option-title input{width:16px;height:16px;accent-color:var(--accent);flex:none}
-.theme-option-title b{font:500 13px var(--sans)}
-.theme-option-title small{margin-left:auto;font:400 11px var(--sans);color:var(--ink-3)}
-.theme-option-description{margin:7px 0 4px;font:400 12px/1.5 var(--sans);color:var(--ink-3)}
-.setup-theme-note{margin-top:15px}
-.theme-sample{display:block;overflow:hidden;border-radius:6px;border:1px solid #242832;background:#0b0c0f;color:#e9e4d9;font-family:Inter,sans-serif}
-.theme-sample-bar{display:flex;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #242832}
-.theme-sample-bar b{font:600 12px Inter,sans-serif;margin-right:auto}
-.theme-sample-bar i{width:18px;height:5px;background:#242832;border-radius:2px}
-.theme-sample-body{display:flex;flex-direction:column;gap:9px;padding:16px 12px}
-.theme-sample-body b{font:500 13px Inter,sans-serif}
-.theme-sample-body>span{display:block;width:80%;height:4px;border-radius:2px;background:#242832}
-.theme-sample-body>span+span{width:60%}
-.theme-sample-body em{align-self:flex-start;margin-top:5px;padding:6px 9px;border-radius:4px;background:#a8d94f;color:#14100a;font:500 10px Inter,sans-serif}
-.theme-sample-quirq{position:relative;background:radial-gradient(ellipse at top right,rgba(187,154,239,.10),transparent 70%),#100f14;color:#f3ece4;border-color:#39303f}
-.theme-sample-quirq::before{content:'';display:block;height:2px;background:linear-gradient(90deg,#e995ce,#bb9aef,#eac17a)}
-.theme-sample-quirq .theme-sample-bar{border-color:#39303f;padding-top:8px}
-.theme-sample-quirq .theme-sample-bar b{font-family:Poppins,Inter,sans-serif}
-.theme-sample-quirq .theme-sample-bar i,.theme-sample-quirq .theme-sample-body>span{background:#39303f}
-.theme-sample-quirq .theme-sample-body em{background:#f2a2d5;color:#21141e;box-shadow:0 3px 15px rgba(242,162,213,.12)}
+.setup-theme select{display:block;width:100%;max-width:420px;margin-top:16px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:500 14px var(--sans);cursor:pointer}
+.setup-theme select:disabled{opacity:.55;cursor:wait}
+.theme-palette{display:flex;align-items:center;gap:12px;margin-top:14px;min-height:24px}
+.theme-palette>span{display:flex;gap:5px;flex:none}
+.theme-palette i{width:12px;height:12px;border-radius:50%;background:#a8d94f;box-shadow:inset 0 0 0 1px #ffffff20}
+.theme-palette i:nth-child(2){background:#beb9ac}.theme-palette i:nth-child(3){background:#6f93ad}
+.theme-palette[data-preview="quirq"] i{background:#f2a2d5}.theme-palette[data-preview="quirq"] i:nth-child(2){background:#bb9aef}.theme-palette[data-preview="quirq"] i:nth-child(3){background:#eac17a}
+.theme-palette[data-preview="midnight"] i{background:#91adff}.theme-palette[data-preview="midnight"] i:nth-child(2){background:#c5cfdf}.theme-palette[data-preview="midnight"] i:nth-child(3){background:#aba0dc}
+.theme-palette p{font:400 12px/1.5 var(--sans);color:var(--ink-3)}
+.setup-theme-note{margin-top:20px}
 @media(max-width:650px){.setup-theme form{padding:16px}}
-@media(max-width:480px){.setup-theme-options{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:900px){.setup-branding-fields{grid-template-columns:minmax(0,1fr);gap:20px}}
 @media(max-width:650px){.setup-branding form{padding:16px}}
 .setup-agent-label{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:8px}.setup-agent-label label{margin:0}

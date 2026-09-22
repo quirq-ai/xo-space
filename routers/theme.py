@@ -14,7 +14,7 @@ router = APIRouter(prefix="/theme")
 
 
 class ThemeBody(ForbidExtra):
-    theme: Literal["space", "quirq"]
+    theme: Literal["space", "quirq", "midnight"]
 
 
 @router.get("")

@@ -2,7 +2,7 @@
 import {API_BASE,apiFetch} from './api.js';
 
 export const DEFAULT_THEME='space';
-export const THEMES=Object.freeze(['space','quirq']);
+export const THEMES=Object.freeze(['space','quirq','midnight']);
 let current=DEFAULT_THEME,revision=0;
 
 function applyTheme(theme){
