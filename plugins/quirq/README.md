@@ -32,10 +32,11 @@ This is a repository marketplace, not a claim of publication in OpenAI's public
 plugin directory. The repository URL can be shared with other users; they do not
 need to clone the backend or copy skills themselves.
 
-**Before these changes reach `main`:** add the marketplace with
-`--ref development` after the PR merges (or `--ref <PR-branch>` for review).
-The plugin always installs the reviewed backend `main` by default. To explicitly
-test another backend branch, set `QUIRQ_SOURCE_REF=development` when launching it.
+**Before a change reaches `main`:** add the marketplace with
+`--ref <PR-branch>` to review it. The plugin always installs the reviewed
+backend `main` by default. To test the maintainers' staging branch or any
+other backend branch instead, set `QUIRQ_SOURCE_REF=<branch>` (for example
+`QUIRQ_SOURCE_REF=development`) when launching it.
 
 ## What first use does
 

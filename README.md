@@ -299,7 +299,7 @@ We'd love your help. Found a bug 🐛, want a runtime that isn't here 🧩, or h
 - **Start with** [`good first issue`](https://github.com/quirq-ai/xo-space/labels/good%20first%20issue) or [`help wanted`](https://github.com/quirq-ai/xo-space/labels/help%20wanted).
 - **Small fix?** Just open the PR. **Bigger change?** Open an issue first so nobody duplicates the work.
 - **Adding an agent** is designed to be two folders and zero core edits — the best-paved path in the repo.
-- Branch from and target **`development`**; `main` is what the installer ships.
+- Branch from and target **`main`**; that is what the installer ships. `development` is the maintainers' staging branch, not a PR target.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the dev setup, the ground rules and the PR checklist. No CLA — contributions are MIT like the rest of the code.
 

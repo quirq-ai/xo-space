@@ -1,10 +1,16 @@
 # Releasing XO Space
 
-A release is an annotated SemVer tag on `main` plus a GitHub Release. Merging
-to `main` and shipping are the same event: installs follow `main` (the
-installer clones it and the Setup tab's Update fast-forwards to it), so **every
-time `main` moves, tag it.** The tag gives that version a name, a changelog and
-something to quote in a bug report.
+A release is an annotated SemVer tag on `main` plus a GitHub Release. Pull
+requests merge into `main` continuously; a release is cut when the maintainers
+decide, after testing and validation on the `development` staging branch. Not
+every merge is a release, and a release is not cut right after a merge. The
+tag gives that version a name, a changelog and something to quote in a bug
+report.
+
+Know what that means for users: installs follow the `main` tip (the installer
+clones it and the Setup tab's Update fast-forwards to it), not the latest
+tag. A change merged into `main` reaches new installs and updates before it
+is part of a named release. Keep that in mind when deciding what merges.
 
 ## Version numbers
 
@@ -17,9 +23,11 @@ something to quote in a bug report.
 
 ## Cutting a release
 
-1. Open a PR `development` -> `main`, merge it, and verify `main`:
+1. Decide that `main` is ready: the changes since the last tag have been
+   tested on `development` (`git merge --ff-only main` into it, or a merge
+   commit if it has diverged) and validated there. Verify `main` itself:
    `venv/bin/python scripts/check_route_parity.py` and the test suite.
-2. Tag the new `main` commit (annotated):
+2. Tag the `main` commit (annotated):
 
    ```
    git checkout main
@@ -36,9 +44,9 @@ To see what the next release contains before choosing its number:
 
 ## Rules
 
-- **Tag every time `main` moves**, right after the merge. An untagged commit
-  on `main` is already in users' hands but has no name.
 - **Tag only commits that are on `main`.**
+- **A tag is a decision, not a reflex.** It follows testing and validation on
+  `development`; several merges may go into one release.
 - **Never move or delete a pushed tag.** People, caches and the container
   registry trust it. Fix a bad release by shipping the next PATCH version.
 - **Use annotated tags (`-a`).** They record who tagged and when, and
@@ -47,8 +55,9 @@ To see what the next release contains before choosing its number:
 ## Hotfix
 
 1. Branch from `main`, fix, PR to `main`, merge.
-2. Tag the PATCH bump on `main` and publish it (steps 2-4 above).
-3. Merge `main` back into `development` so the fix is not lost.
+2. When validated, tag the PATCH bump on `main` and publish it (steps 2-4
+   above).
+3. Bring `development` up to date with `main` so staging has the fix.
 
 ## Side effects of pushing a tag
 
@@ -65,8 +74,9 @@ deletion and updates (Settings -> Rules -> Rulesets -> New tag ruleset).
 
 - The process is manual. Automate a step once it has proved repetitive.
 - Tags name versions; they do not gate delivery. The updater
-  (`services/cowork_agent/self_update.py`) follows the `main` tip. If releases
-  ever start batching several merges, so that "merged" and "shipped" become
-  different moments, the updater should follow release tags instead.
+  (`services/cowork_agent/self_update.py`) follows the `main` tip, so
+  "merged" and "released" are already different moments. If that gap starts
+  to matter to users, the installer and the updater should follow release
+  tags instead.
 - The API's reported version (`server.py`, `version="1.0.0"`) is a fixed
   string and is not derived from the tag.

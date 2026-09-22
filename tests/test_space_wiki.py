@@ -684,10 +684,12 @@ class SpaceWikiTests(unittest.TestCase):
         facts most likely to rot are pinned: the branch model, the four
         invariants, the validation commands, and the README pointing at it."""
         guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-        # Work lands on development; main is the release branch.
-        self.assertIn("target `development`", guide)
+        # Work lands on main; development is the maintainers' staging branch
+        # and never a PR target.
+        self.assertIn("Branch from `main`, target `main`", guide)
+        self.assertIn("Do not target it with a pull request", guide)
         self.assertIn("publish-container.yml", guide)
-        self.assertNotIn("Branch from and target **`main`**", guide)
+        self.assertNotIn("target `development`", guide)
         for invariant in (
             "modularity invariant", "Thin routers", "project folder is sacred",
             "belongs to the watcher",
