@@ -272,7 +272,7 @@
   .tchip{font:500 11px/1 var(--sans);color:var(--ink-2);background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:3px 6px;flex:none;white-space:nowrap}
   .tchip.st-in_progress{color:var(--accent);border-color:var(--accent)}
   .tchip.st-pending{color:var(--ink-2)}
-  .tchip.st-blocked{color:#e0b04c;border-color:#e0b04c}
+  .tchip.st-blocked{color:var(--warning-text,#e0b04c);border-color:var(--warning-text,#e0b04c)}
   .tchip.st-completed,.tchip.st-cancelled{color:var(--ink-3)}
   .truntime{font:500 12px/1 var(--sans);color:var(--ink-3);flex:none}
   .tmuted{color:var(--ink-3);font-size:12px;margin-left:auto;flex:none}

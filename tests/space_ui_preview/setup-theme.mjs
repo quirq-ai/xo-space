@@ -40,13 +40,18 @@ await context.route('**/*',async route=>{
       assert.match(request.headers()['content-type'],/^application\/json/);
       const body=request.postDataJSON();report.writes.push(body);
       assert.deepEqual(Object.keys(body),['theme'],'Only the theme preference is submitted');
-      assert.ok(['space','quirq','midnight'].includes(body.theme));
+      assert.ok(['space','quirq','midnight','graphite','linen'].includes(body.theme));
       const pending=holdSave;holdSave=null;
       if(pending){pending.arrived.resolve();await pending.release.promise;}
       if(saveError)return send(route,{detail:saveError},503);
       saved=body;return send(route,saved);
     }
   }
+  if(path==='/xo/sessions.json'&&method==='GET')return send(route,{
+    meta:{sources:[{id:'demo',label:'Fictional telemetry',available:true}]},
+    totals:{sessions:0,sessions_by_agent:{demo:0}},sessions:[],daily_sessions:[],daily_tools:[],
+    daily_models:[{agent:'demo',day:new Date().toISOString().slice(0,10),model:'Demo model',tokens:1500,cost:0,cost_known:false}],
+  });
   if(path==='/space/branding'&&method==='GET')return send(route,branding);
   if(path==='/space/branding/logo'&&method==='GET')return route.fulfill({contentType:'image/png',body:png});
   if(method!=='GET'){
@@ -124,7 +129,7 @@ try{
   await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});
   await card.waitFor();await idle();await currentTheme('space');
   assert.equal(await page.locator('#setup-panel-workspace #setup-theme').count(),1);
-  assert.deepEqual(await select.locator('option').allTextContents(),['Grove — default','Neon','Midnight']);
+  assert.deepEqual(await select.locator('option').allTextContents(),['Grove — default','Neon','Midnight','Graphite','Linen — light']);
   assert.equal((await select.inputValue()==='space'),true);assert.equal(await save.isDisabled(),true);
   assert.deepEqual(report.writes,[]);await expectBranding();await assertStyles('space');
   await screenshot('theme-space-1440.png');
@@ -250,6 +255,34 @@ try{
   assert.equal((await legendColors())[0],'rgb(145, 173, 255)');
   await screenshot('theme-midnight-graph.png',false);
   checked('Midnight saves, survives reload, preserves branding and applies its blue palette to the graph and responsive dropdown.');
+  for(const theme of ['graphite','linen']){
+    await page.goto(origin+'/space/#/setup/workspace',{waitUntil:'networkidle'});await card.waitFor();await idle();
+    await select.selectOption(theme);await save.click();await currentTheme(theme);await idle();
+    await page.reload({waitUntil:'networkidle'});await card.waitFor();await idle();
+    assert.equal(await select.inputValue(),theme);await currentTheme(theme);await expectBranding();
+    const appearance=await page.evaluate(()=>{
+      const css=getComputedStyle(document.documentElement),body=getComputedStyle(document.body);
+      const rgb=value=>value.match(/[\d.]+/g).slice(0,3).map(Number);
+      const luminance=value=>rgb(value).map(c=>{c/=255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i],0);
+      const contrast=(a,b)=>{a=luminance(a);b=luminance(b);return(Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
+      const button=getComputedStyle(document.querySelector('.tabs .is-on'));
+      return{scheme:css.colorScheme,bg:body.backgroundColor,textContrast:contrast(body.color,body.backgroundColor),buttonContrast:contrast(button.color,button.backgroundColor)};
+    });
+    assert.equal(appearance.scheme,theme==='linen'?'light':'dark');
+    assert.ok(appearance.textContrast>=4.5,'Readable '+theme+' body text');assert.ok(appearance.buttonContrast>=4.5,'Readable '+theme+' active controls');
+    for(const width of [1440,320]){
+      await page.setViewportSize({width,height:1000});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await screenshot('theme-'+theme+'-'+width+'.png');
+    }
+    await page.setViewportSize({width:1440,height:1000});
+    await page.goto(origin+'/space/#/projects/data/graph');await page.locator('#legend .sw[style]').first().waitFor();
+    assert.equal((await legendColors())[0],theme==='linen'?'rgb(166, 77, 47)':'rgb(238, 238, 238)');
+    await screenshot('theme-'+theme+'-graph.png',false);
+    await page.goto(origin+'/space/#/agents/overview',{waitUntil:'networkidle'});
+    await page.locator('[data-slot="chart"]').first().waitFor();
+    await screenshot('theme-'+theme+'-agents.png',false);
+  }
+  checked('Graphite and Linen persist, keep branding, meet text/button contrast, fit mobile, and theme graph and agent charts.');
   assert.deepEqual(report.errors,[],'No unexpected browser, console or HTTP errors');
   console.log(JSON.stringify(report,null,2));
 }catch(error){

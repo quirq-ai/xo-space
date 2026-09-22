@@ -12,7 +12,7 @@
     border:1px solid var(--line-soft);border-radius:10px;font-size:12px}
   .shr-left,.shr-right{display:flex;align-items:center;gap:8px;min-width:0}
   .shr-muted{color:var(--ink-3);font-size:12px}
-  .shr-muted.is-warn,.is-warn{color:#e0b04c}
+  .shr-muted.is-warn,.is-warn{color:var(--warning-text,#e0b04c)}
   .shr-id{font:500 11px var(--mono);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line-soft);border-radius:6px;padding:2px 7px;white-space:nowrap}
   .shr-copy{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
@@ -33,7 +33,7 @@
 
   /* chips added to the shared vocabulary */
   .tchip.st-shared{color:var(--accent);border-color:var(--accent)}
-  .tchip.st-available{color:#e0b04c;border-color:#e0b04c}
+  .tchip.st-available{color:var(--warning-text,#e0b04c);border-color:var(--warning-text,#e0b04c)}
   .tchip.st-quiet{color:var(--ink-3)}
 
   /* rail | detail */
@@ -111,7 +111,7 @@
   .shr-row.is-revoked .shr-id{text-decoration:line-through;color:var(--ink-3)}
   .shr-act{margin-left:auto;display:flex;align-items:center}
   .shr-revoke{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
-    color:#e1937d;border:1px solid transparent;border-radius:999px;padding:3px 9px}
+    color:var(--danger-text,#e1937d);border:1px solid transparent;border-radius:999px;padding:3px 9px}
   .shr-revoke:hover{border-color:#e07a5f}
   .shr-confirm{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .shr-confirm-yes{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;

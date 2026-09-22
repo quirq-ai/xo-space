@@ -67,7 +67,7 @@
   .sess-agent-status i{flex:none;width:6px;height:6px;border-radius:50%;background:var(--ink-3)}
   .sess-agent-status[data-state="on"] i{background:var(--accent)}
   .sess-agent-status[data-state="down"] i{background:var(--err)}
-  .sess-agent-status[data-state="pending"] i{background:#e2ae5b;animation:ui-pulse 1.6s ease-in-out infinite}
+  .sess-agent-status[data-state="pending"] i{background:var(--warning-text,#e2ae5b);animation:ui-pulse 1.6s ease-in-out infinite}
   .sess-agent-card .sess-agent-head [data-slot="switch"]{margin-left:4px}
   /* stats band */
   .sess-agent-card .sess-agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:12px 16px 14px}

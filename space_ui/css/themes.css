@@ -4,7 +4,7 @@
 @font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("../fonts/jetbrains-mono/JetBrainsMono-Latin.woff2") format("woff2")}
 @font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("../fonts/poppins/Poppins-SemiBold-Latin.woff2") format("woff2")}
 
-:root:is([data-theme="quirq"],[data-theme="midnight"]){
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]){
   color-scheme:dark;
   --bg:#100f14; --bg-2:#19161e; --bg-3:#231e2a;
   --line:#39303f; --line-soft:#2b2531;
@@ -41,12 +41,57 @@
   --chart-5:#e3a2b5; --chart-6:#9bbbd0; --chart-7:#c5cfdf; --chart-8:#eaf0fa;
 }
 
-:root:is([data-theme="quirq"],[data-theme="midnight"]) .brand .mark{filter:none}
-:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
+/* Graphite: neutral charcoal and greys, with no tinted surfaces. */
+:root[data-theme="graphite"]{
+  --bg:#181818; --bg-2:#212121; --bg-3:#2d2d2d;
+  --line:#424242; --line-soft:#343434;
+  --ink:#f3f3f3; --ink-2:#d0d0d0; --ink-3:#b0b0b0; --ink-4:#949494;
+  --accent:#e8e8e8; --accent-deep:#cccccc; --err:#ee9999;
+  --accent-rgb:232,232,232; --accent-deep-rgb:204,204,204;
+  --accent-ink:#181818; --accent-hover:#ffffff; --focus-line:#b0b0b0;
+  --bg-rgb:24,24,24; --bg-2-rgb:33,33,33; --bg-3-rgb:45,45,45;
+  --line-rgb:66,66,66; --overlay-rgb:28,28,28;
+  --line-hover:#707070; --row-hover-line:#555555; --secondary-hover:#383838;
+  --topbar-bg:#181818; --brand-font:var(--sans);
+  --eng:#d6d6d6; --res:#aaaaaa; --ops:#eeeeee; --mkt:#999999;
+  --chart-1:#eeeeee; --chart-2:#bcbcbc; --chart-3:#929292; --chart-4:#d7d7d7;
+  --chart-5:#a5a5a5; --chart-6:#808080; --chart-7:#c9c9c9; --chart-8:#f3f3f3;
+}
+
+/* Linen: warm paper surfaces, dark readable text and terracotta accents. */
+:root[data-theme="linen"]{
+  color-scheme:light;
+  --bg:#f7f5f0; --bg-2:#fffefa; --bg-3:#eeebe4;
+  --line:#d7d1c7; --line-soft:#e6e1d8;
+  --ink:#302b26; --ink-2:#514a42; --ink-3:#6c6359; --ink-4:#82786c;
+  --accent:#a64d2f; --accent-deep:#8e4028; --err:#ac3434;
+  --accent-rgb:166,77,47; --accent-deep-rgb:142,64,40;
+  --accent-ink:#fffefa; --accent-hover:#914026; --focus-line:#a64d2f;
+  --bg-rgb:247,245,240; --bg-2-rgb:255,254,250; --bg-3-rgb:238,235,228;
+  --line-rgb:215,209,199; --overlay-rgb:255,254,250;
+  --line-hover:#a79b8a; --row-hover-line:#c0b5a5; --secondary-hover:#e5dfd5;
+  --topbar-bg:#fffefa; --brand-font:var(--sans);
+  --eng:#526b4c; --res:#506e88; --ops:#866226; --mkt:#a64d2f;
+  --chart-1:#a64d2f; --chart-2:#506e88; --chart-3:#526b4c; --chart-4:#84658f;
+  --chart-5:#866226; --chart-6:#9b5267; --chart-7:#4a7772; --chart-8:#514a42;
+  --warning-text:#856018; --danger-text:#ac3434;
+  --shadow-xs:0 1px 2px #302b2608; --shadow-sm:0 2px 6px #302b2610;
+  --shadow-xl:0 16px 40px #302b2620;
+}
+:root[data-theme="linen"] .setup-switch span{background:var(--bg-3);border-color:var(--line-hover)}
+:root[data-theme="linen"] .setup-switch input:checked+span{background:rgba(var(--accent-rgb),.17);border-color:var(--accent)}
+:root[data-theme="linen"] #preview-version option{background:var(--bg-2);color:var(--ink)}
+:root[data-theme="linen"] .native-conn-card .conn-icon{color:var(--ink-2)}
+:root[data-theme="linen"] [data-slot="badge"][data-source]{--source-color:var(--ink-2)}
+:root[data-theme="linen"] [data-variant="destructive"]{background:var(--err);color:#fff}
+:root[data-theme="linen"] :is(.setup-card,.ui-card){box-shadow:var(--shadow-xs)}
+
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .brand .mark{filter:none}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
 /* Only the bundled SVG mark is recolored; uploaded logos keep their colors. */
-:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
-:root:is([data-theme="quirq"],[data-theme="midnight"]) :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
 
 /* This neutral hover border predates the shared tokens. */
-:root:is([data-theme="quirq"],[data-theme="midnight"]) .quirq-storage-actions button:hover{border-color:var(--line-hover)}
-:root:is([data-theme="quirq"],[data-theme="midnight"]) .srv .pip:not(.on):not(.off){background:var(--ink-4)}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .quirq-storage-actions button:hover{border-color:var(--line-hover)}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .srv .pip:not(.on):not(.off){background:var(--ink-4)}

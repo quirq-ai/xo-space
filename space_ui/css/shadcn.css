@@ -41,7 +41,7 @@
   --chart-5:#b48ead;
   --chart-6:#6f93ad;
   --chart-7:#cfc9bb;
-  --chart-8:#e2ae5b;
+  --chart-8:var(--warning-text,#e2ae5b);
   /* Tailwind "ring-3 ring-ring/50": a 3px translucent halo. */
   --ring-shadow:0 0 0 3px rgba(var(--accent-rgb),.5);
   --destructive-ring-shadow:0 0 0 3px rgba(200,103,76,.2);

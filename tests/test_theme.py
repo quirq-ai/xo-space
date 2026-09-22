@@ -43,7 +43,7 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_selected_theme_and_return_to_default_survive_fresh_reads(self):
-        for selected in ("quirq", "midnight", "space"):
+        for selected in ("quirq", "midnight", "graphite", "linen", "space"):
             with self.subTest(selected=selected):
                 response = self.save(selected)
                 self.assertEqual(response.status_code, 200)

@@ -110,8 +110,8 @@
   .inb-job-enabled.is-disabled{color:var(--ink-3)}
   .inb-job-result{margin-top:6px;font:400 12px/1.6 var(--sans);color:var(--ink-3)}
   .inb-job-result.is-good{color:var(--accent)}
-  .inb-job-result.is-running{color:#e2ae5b}
-  .inb-job-result.is-error,.inb-jobs-state.is-error{color:#e1937d}
+  .inb-job-result.is-running{color:var(--warning-text,#e2ae5b)}
+  .inb-job-result.is-error,.inb-jobs-state.is-error{color:var(--danger-text,#e1937d)}
   @media (max-width:500px){
     .inb-job-row{align-items:flex-start;flex-wrap:wrap;gap:10px}
     .inb-job-info{flex-basis:100%}
@@ -141,7 +141,7 @@
   .inb-conns-head i{font-style:normal;width:10px;color:var(--ink-4)}
   .inb-conns-head b{font-weight:600;letter-spacing:0;color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line);border-radius:999px;padding:2px 7px}
-  .inb-conns-head em{font-style:normal;letter-spacing:.06em;color:#e1937d}
+  .inb-conns-head em{font-style:normal;letter-spacing:.06em;color:var(--danger-text,#e1937d)}
   .inb-conn-row{display:grid;grid-template-columns:minmax(120px,auto) minmax(0,1fr) minmax(0,1fr) auto;
     align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--line-soft);
     font-size:12.5px}
@@ -152,7 +152,7 @@
     font:400 12px var(--sans);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis}
   .inb-conn-meta{font:400 12px var(--sans);color:var(--ink-3);min-width:0;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
-  .inb-conn-meta.is-error{color:#e1937d}
+  .inb-conn-meta.is-error{color:var(--danger-text,#e1937d)}
   /* the section's one-line states: loading, failed, nothing polled yet */
   .inb-conns>.inb-conn-meta{display:block;padding:9px 14px;white-space:normal;line-height:1.5}
   .inb-conn-acts{display:flex;gap:6px;justify-content:flex-end}

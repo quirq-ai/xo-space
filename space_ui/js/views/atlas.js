@@ -97,7 +97,7 @@ async function readDataset(dataset){
 /* Both the picker and atlas use the same category order and palette, while
    the source dataset retains its original colors for the Space theme. */
 function themedCategories(categories={},css=getComputedStyle(document.documentElement)){
-  const quirq=['quirq','midnight'].includes(document.documentElement.dataset.theme);
+  const quirq=['quirq','midnight','graphite','linen'].includes(document.documentElement.dataset.theme);
   return Object.fromEntries(Object.entries(categories).map(([id,category],index)=>[id,{
     ...category,
     color:quirq?(css.getPropertyValue(`--chart-${index%7+1}`).trim()||category.color):category.color,
@@ -279,7 +279,7 @@ function readPalette(){
   ACCENT=token('--accent','#a8d94f');ACCENT_DEEP=token('--accent-deep','#83d63a');
   INK=token('--ink','#e9e4d9');INK_MUTED=token('--ink-3','#a6a094');
   BACKGROUND=token('--bg','#0b0c0f');SANS=token('--sans','Inter,system-ui,sans-serif');
-  quirqTheme=['quirq','midnight'].includes(document.documentElement.dataset.theme);
+  quirqTheme=['quirq','midnight','graphite','linen'].includes(document.documentElement.dataset.theme);
   for(const[id,category]of Object.entries(themedCategories(DATA.categories,css)))CAT[id].color=category.color;
 }
 readPalette();

@@ -31,7 +31,7 @@
 .conn-alert.is-good{border-color:rgba(var(--accent-deep-rgb),.4);background:rgba(var(--accent-deep-rgb),.06)}
 .conn-alert.is-good span{color:var(--accent-deep)}
 .conn-alert.is-pending{border-color:rgba(226,174,91,.42);background:rgba(226,174,91,.06)}
-.conn-alert.is-pending span{color:#e2ae5b}
+.conn-alert.is-pending span{color:var(--warning-text,#e2ae5b)}
 .conn-alert.is-error{border-color:rgba(200,103,76,.42);background:rgba(200,103,76,.07)}
 .conn-alert.is-error span{color:var(--err)}
 
@@ -79,8 +79,8 @@
 .conn-state{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:500 11px/1.4 var(--sans);font-style:normal;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px;overflow-wrap:anywhere}
 .conn-state::before{content:"";width:5px;height:5px;flex:none;border-radius:50%;background:currentColor;opacity:.75}
 .conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(var(--accent-rgb),.22);background:rgba(var(--accent-rgb),.04)}
-.conn-state.is-pending{color:#e2ae5b;border-color:rgba(226,174,91,.22)}
-.conn-state.is-error{color:#e1937d;border-color:rgba(200,103,76,.22)}
+.conn-state.is-pending{color:var(--warning-text,#e2ae5b);border-color:rgba(226,174,91,.22)}
+.conn-state.is-error{color:var(--danger-text,#e1937d);border-color:rgba(200,103,76,.22)}
 /* Connected on the account but off in this workspace: a deliberate state, not a
    fault, so it reads as muted rather than as an error. */
 .conn-state.is-idle{color:var(--ink-2)}
@@ -97,7 +97,7 @@
 
 .conn-card-error{
   margin-top:11px;padding:9px 11px;border:1px solid rgba(200,103,76,.35);border-radius:8px;
-  background:rgba(200,103,76,.08);color:#e1937d;font-size:12px;line-height:1.5;overflow-wrap:anywhere
+  background:rgba(200,103,76,.08);color:var(--danger-text,#e1937d);font-size:12px;line-height:1.5;overflow-wrap:anywhere
 }
 
 .conn-card-acts{display:flex;align-items:center;gap:6px;padding:14px 16px 16px;flex-wrap:wrap}
@@ -112,14 +112,14 @@
 .conn-primary:hover{background:var(--accent-hover)}
 .conn-secondary{border-color:var(--line);background:transparent;color:var(--ink-2)}
 .conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
-.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}
+.conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:var(--danger-text,#e1937d)}
 .conn-secondary.is-danger:hover{background:rgba(200,103,76,.1)}
 /* account-wide delete: icon-only, in the card's top-right corner, away from the
    workspace-local buttons (which then fit on one row); red only on hover so it
    does not compete with them */
 .conn-secondary.is-danger.conn-delete{position:absolute;top:14px;right:14px;width:30px;min-height:30px;height:30px;padding:0;border-color:var(--line);color:var(--ink-3)}
 .conn-card:has(.conn-delete) .conn-card-heading{padding-right:38px}
-.conn-secondary.is-danger.conn-delete:hover{border-color:rgba(200,103,76,.42);color:#e1937d}
+.conn-secondary.is-danger.conn-delete:hover{border-color:rgba(200,103,76,.42);color:var(--danger-text,#e1937d)}
 .conn-delete svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 /* :disabled alone means "cannot act"; only an in-flight request earns the wait
    cursor, via .is-busy. Same distinction as the Setup tab. */
@@ -135,10 +135,10 @@
 .conn-action-name{flex:1;font-family:var(--sans);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conn-tag{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;border-radius:999px;padding:2px 7px}
 .conn-tag.is-read{color:var(--res);border:1px solid rgba(111,147,173,.4)}
-.conn-tag.is-write{color:#e2ae5b;border:1px solid rgba(226,174,91,.4)}
+.conn-tag.is-write{color:var(--warning-text,#e2ae5b);border:1px solid rgba(226,174,91,.4)}
 
 .conn-empty{padding:22px;text-align:center;color:var(--ink-3);font-size:12px;border:1px dashed var(--line);border-radius:12px}
-.conn-empty.is-error{color:#e1937d;border-color:rgba(200,103,76,.35)}
+.conn-empty.is-error{color:var(--danger-text,#e1937d);border-color:rgba(200,103,76,.35)}
 
 @media (max-width:720px){
   .conn-hero{flex-wrap:wrap;gap:12px}
@@ -188,5 +188,5 @@
 /* last poll, last error, or the result of a Poll now; the error style is the
    card error's colour, not its box, so it stays one quiet line */
 .conn-poll-status{margin-top:4px;font:400 12px var(--sans);color:var(--ink-3);line-height:1.5;word-break:break-word}
-.conn-poll-status.is-error{color:#e1937d}
+.conn-poll-status.is-error{color:var(--danger-text,#e1937d)}
 .conn-poll-acts{display:flex;gap:8px;margin-top:6px}

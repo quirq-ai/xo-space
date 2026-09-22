@@ -1,4 +1,4 @@
-import {DEFAULT_THEME,loadTheme,saveTheme} from '../core/theme.js?v=20260922-theme3';
+import {DEFAULT_THEME,loadTheme,saveTheme} from '../core/theme.js?v=20260922-theme4';
 
 export function mountTheme(el,onDraftChange=()=>{}){
   el.innerHTML=`<div class="setup-card-head"><h3>Theme</h3><i id="theme-status" role="status">Loading…</i></div>
@@ -10,6 +10,8 @@ export function mountTheme(el,onDraftChange=()=>{}){
           <option value="space">Grove — default</option>
           <option value="quirq">Neon</option>
           <option value="midnight">Midnight</option>
+          <option value="graphite">Graphite</option>
+          <option value="linen">Linen — light</option>
         </select>
         <div class="theme-palette" data-preview="space"><span aria-hidden="true"><i></i><i></i><i></i></span><p id="theme-description"></p></div>
       </fieldset>
@@ -22,7 +24,7 @@ export function mountTheme(el,onDraftChange=()=>{}){
   const retry=el.querySelector('#theme-retry'),error=el.querySelector('#theme-error'),status=el.querySelector('#theme-status');
   let saved=DEFAULT_THEME,loaded=false,busy=false,refreshing=false,revision=0,saveRevision=0,lastDirty=false;
   const selection=()=>select.value||DEFAULT_THEME;
-  const descriptions={space:'Moss green and warm neutrals.',quirq:'Soft magenta, violet and amber on charcoal.',midnight:'Periwinkle blue and silver on near-black.'};
+  const descriptions={space:'Moss green and warm neutrals.',quirq:'Soft magenta, violet and amber on charcoal.',midnight:'Periwinkle blue and silver on near-black.',graphite:'Quiet black and grey. Clear, simple and focused.',linen:'Warm white, soft stone and burnt orange.'};
   const dirty=()=>loaded&&selection()!==saved;
   function showError(message=''){error.textContent=message;error.hidden=!message;}
   function render(){
