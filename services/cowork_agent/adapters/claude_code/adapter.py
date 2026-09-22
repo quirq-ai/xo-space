@@ -53,7 +53,7 @@ def make_session_key(agent_id: str) -> str:
 
 def _agent_id_from_key(session_key: str) -> str:
     parts = session_key.split(":")
-    return parts[1] if len(parts) >= 2 else "default"
+    return parts[1] if len(parts) >= 2 else ""
 
 
 def find_session_id_by_key(session_key: str) -> str | None:
@@ -177,9 +177,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         """Compute the working directory for a Claude subprocess.
 
         All agents run inside ``~/xo-projects/<agent_id>/``. When agent_id
-        is None or "default", falls back to the xo-projects root itself.
+        is None or empty (no project chosen), it runs in the xo-projects root
+        itself and no folder is created.
         """
-        if agent_id and agent_id not in ("default", ""):
+        if agent_id and agent_id.strip():
             project = _xo_project_dir(agent_id)
             project.mkdir(parents=True, exist_ok=True)
             return str(project)
@@ -396,7 +397,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         sk: str | None = kwargs.get("session_key")
         if not sk:
             if is_new:
-                sk = make_session_key(agent_id or "default")
+                sk = make_session_key(agent_id or "")
             elif our_session_id:
                 sk = find_session_key_for_session_id(our_session_id)
 

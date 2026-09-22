@@ -74,15 +74,15 @@ async function projectChrome() {
       const bounds = await page.evaluate(() => {
         const rect = node => {const r = node.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height};};
         const nav = document.querySelector('#section-nav');
-        return {root:rect(document.querySelector('#root-btn')), refresh:rect(document.querySelector('#project-refresh')),
+        return {root:rect(document.querySelector('#root-btn')), refresh:rect(document.querySelector('#space-refresh')),
           nav:rect(nav), row:rect(nav.querySelector('.section-nav-inner')), graph:rect(document.querySelector('#view-graph')),
           canvas:rect(document.querySelector('#gcanvas')), scroll:document.documentElement.scrollWidth,
           context:[...document.querySelectorAll('.section-page-context')].some(node=>node.getClientRects().length)};
       });
       report.layouts.push({page:id,width,...bounds});
       assert.equal(await page.locator('#section-nav #graph-root').count(), 1, 'Projects navigation owns the root picker');
-      assert.ok(bounds.root.right <= bounds.refresh.left + 1 && Math.abs(bounds.root.top - bounds.refresh.top) < 4,
-        id + ' root sits immediately left of Refresh at ' + width);
+      assert.ok(bounds.refresh.bottom <= bounds.nav.top + 1,
+        id + ' global Refresh stays in the top bar above Projects navigation at ' + width);
       assert.ok(bounds.root.left >= 0 && bounds.refresh.right <= width + 1 && bounds.scroll <= width,
         id + ' actions fit the viewport at ' + width);
       assert.equal(bounds.context, false, id + ' has no visible context hero');
@@ -137,7 +137,7 @@ async function projectChrome() {
     await page.locator('#root-btn').click();
     assert.equal(await page.locator('#rootdd.is-open').count(),0,'One click toggles once after '+id+' navigation');
   }
-  report.checks.push('Projects root picker stays beside Refresh, preserves its DOM and listeners across sections, reroots and resets both maps, and fits unclipped at 1440/390/320px without context heroes.');
+  report.checks.push('Projects root picker stays below the global Refresh button, preserves its DOM and listeners across sections, reroots and resets both maps, and fits unclipped at 1440/390/320px without context heroes.');
 }
 
 try {

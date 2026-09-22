@@ -50,6 +50,7 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/xo-projects/timeline": fixtures.timeline,
             "/api/project-sharing/status": fixtures.sharing,
             "/space/branding": lambda: {"name": "Space", "logo_url": None},
+            "/space/theme": lambda: {"theme": "space"},
             "/space/setup/status": lambda: {
                 "checked_at": fixtures.stamp(),
                 "space": {"status": "configured", "id": fixtures.WORKSPACE_ID,

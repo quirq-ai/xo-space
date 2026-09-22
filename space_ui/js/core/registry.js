@@ -132,7 +132,8 @@ export async function switchTo(target,{replace=false}={}){
   return true;
 }
 
-/* The shell owns the button and its busy state; each page owns what to read
+/* In-place data refresh lifecycle; the global button uses page-refresh.js
+   to reload the document instead. Each page owns what to read
    and which local state to retain. Waiting for mount prevents an early click
    from refreshing uninitialized DOM. A later navigation cancels that wait. */
 export function refreshCurrentView(){

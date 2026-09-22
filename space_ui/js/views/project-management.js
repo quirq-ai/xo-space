@@ -3,7 +3,7 @@
 import {API_BASE,apiFetch,failText} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {createProjectShare,isProjectSharing} from '../core/project-share.js?v=20260914-manage1';
-import {createProjectIssues} from '../core/project-issues.js?v=20260915-data1';
+import {createProjectIssues} from '../core/project-issues.js?v=20260921-refresh1';
 import {icon,copyButton,bindProjectUi} from '../core/project-ui.js?v=20260915-data1';
 import {isProjectPinned,toggleProjectPin,subscribeProjectPins} from '../core/project-pins.js?v=20260915-data1';
 

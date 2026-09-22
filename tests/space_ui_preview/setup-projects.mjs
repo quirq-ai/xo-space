@@ -1,6 +1,7 @@
 /* Project management uses fictional browser fixtures exclusively. Every clone,
    revoke, roster change and deletion is intercepted before reaching a server. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,refreshData} from './refresh-helpers.mjs';
 import {openProjectList,openProjectPage} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -133,7 +134,7 @@ try{
   assert.equal(await page.locator('#setup-nav [data-setup-go="projects"]').count(),0,'Setup no longer owns project management');
   await chooseProjects();
   assert.equal(await repositoryNode.evaluate(node=>node.isConnected),true,'Manage keeps the clone draft mounted across Setup visits');
-  await page.locator('#project-refresh').click();
+  await startDataRefresh(page);
   await page.locator('#tab-setup').click();
   await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   await page.locator('#prj-row-solo-demo').waitFor();
@@ -227,12 +228,12 @@ try{
   const before=gate();holds.set('solo-demo',before);await page.locator('#manage-project-recheck').click();await before.arrived.promise;
   assert.equal(await removeButton.isDisabled(),true);
   members.set('solo-demo',[{...owner},{workspace_id:'arrived-during-check',role:'member',status:'active',can_revoke:true,is_self:false}]);
-  const after=gate();holds.set('solo-demo',after);await page.locator('#project-refresh').click();
+  const after=gate();holds.set('solo-demo',after);await startDataRefresh(page);
   before.release.resolve();await after.arrived.promise;
   assert.equal(await removeButton.isDisabled(),true);after.release.resolve();
   await projectRoot.locator('[data-project-revoke-start="arrived-during-check"]').waitFor();
   assert.equal(await removeButton.isDisabled(),true);
-  assert.equal(await page.locator('#manage-project-confirm').inputValue(),'solo-demo','Refresh keeps the typed confirmation but rechecks its authority');
+  assert.equal(await page.locator('#manage-project-confirm').inputValue(),'solo-demo','Internal rereads keep the typed confirmation but rechecks its authority');
   members.delete('solo-demo');await close();
   checked('Late status for another project is ignored; a queued recheck cannot enable deletion from a stale clear result.');
 
@@ -268,7 +269,8 @@ try{
     if(lens==='graph')await page.waitForFunction(()=>/\d+/.test(document.querySelector('#fmeta')?.textContent||''));
     const notice=page.locator('#view-'+lens+' .atlas-project-refresh');
     if(await notice.isVisible()){
-      await notice.getByRole('button',{name:'Refresh map',exact:true}).click();
+      assert.equal(await notice.locator('button').count(),0,'Stale data notice has no local refresh action');
+      await refreshData(page);
       await notice.waitFor({state:'detached'});
       await page.waitForLoadState('networkidle');
     }

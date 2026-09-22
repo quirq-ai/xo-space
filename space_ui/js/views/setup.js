@@ -7,14 +7,15 @@
 import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
-import {mountCommands} from './setup-commands.js?v=20260916-jobs3';
+import {mountCommands} from './setup-commands.js?v=20260921-refresh1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
 import {mountBranding} from './setup-branding.js?v=20260921-branding2';
 import {mountMcpServer} from './setup-mcp.js?v=20260921-mcp1';
 import {mountCliAccess} from './setup-cli.js?v=20260921-cli1';
-import {mountSetupSearch} from './setup-search.js?v=20260921-cli1';
-import {renderSetupShell} from './setup-shell.js?v=20260921-cli1';
+import {mountTheme} from './setup-theme.js?v=20260922-theme4';
+import {mountSetupSearch} from './setup-search.js?v=20260922-mcpcli1';
+import {renderSetupShell} from './setup-shell.js?v=20260922-mcpcli1';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
@@ -39,6 +40,7 @@ let branding=null;
 let brandingDraft=false;
 let mcpServer=null;
 let cliAccess=null;
+let theme=null,themeDraft=false;
 let serverData=null;
 let restarting=false;
 let currentPanel='workspace';
@@ -86,11 +88,12 @@ function mountSetup(el,ctx){
     identity.refresh();
     branding=mountBranding(root.querySelector('#setup-branding'),dirty=>{brandingDraft=dirty;renderJourney();});
     branding.refresh();
+    theme=mountTheme(root.querySelector('#setup-theme'),dirty=>{themeDraft=dirty;renderJourney();});
+    theme.refresh();
     /* Connector links must not wait for unrelated settings/status reads. */
     loadAll().catch(err=>{
       console.error('Setup status failed to load:',err);
       loading=false;runtimeUnavailable=true;
-      root.querySelector('#setup-refresh').disabled=false;
       renderRuntimeFailure({error:'Could not load settings. Try refreshing status.'});
       setConfigBusy(false);
     });
@@ -203,7 +206,6 @@ function bindEvents(){
     if(writes.size)return;
     resetSecretForm();secretForm.hidden=false;keyInput.focus();
   });
-  root.querySelector('#setup-refresh').addEventListener('click',()=>{loadAll();identity?.refresh();branding?.refresh();if(currentPanel==='server'){mcpServer?.refresh();cliAccess?.refresh();}});
   runtimeForm.addEventListener('submit',saveRuntime);
   root.querySelector('#roots-form').addEventListener('submit',saveRoots);
   root.querySelector('#roots-copy').addEventListener('click',copyRootCommand);
@@ -302,12 +304,10 @@ async function loadAll(){
   if(loading||writes.size){refreshQueued=true;return;}
   loading=true;refreshQueued=false;
   const mine=runtimeRevision;
-  root.querySelector('#setup-refresh').disabled=true;
   const [runtimeRes,secretsRes,serverRes]=await Promise.all([
     apiFetch('/api/runtime-config'),apiFetch('/api/secrets'),pollServer(),commands.refresh()
   ]);
   loading=false;
-  root.querySelector('#setup-refresh').disabled=false;
   if(mine!==runtimeRevision){refreshQueued=true;}
   else{
     serverData=serverRes.ok?serverRes.data:null;
@@ -351,7 +351,7 @@ function renderRuntime(){
 function renderJourney(){
   const steps=setupSteps(runtimeUnavailable?null:runtimeData);
   const credentialDraft=!secretForm.hidden&&Boolean(valueInput.value||(!editingKey&&keyInput.value));
-  const dirty={workspace:formDrafts.workspace||brandingDraft,intelligence:formDrafts.agent||formDrafts.activity,secrets:credentialDraft};
+  const dirty={workspace:formDrafts.workspace||brandingDraft||themeDraft,intelligence:formDrafts.agent||formDrafts.activity,secrets:credentialDraft};
   const secretsStep=root.querySelector('#setup-step-secrets');
   secretsStep.textContent=credentialDraft?'Unsaved changes':'Environment values';
   secretsStep.className=credentialDraft?'is-pending':'';
@@ -620,13 +620,13 @@ async function restartRuntime(){
   }
   restarting=false;
   renderRestartButtons();
-  error.textContent='The restart is taking longer than expected. Refresh status or check the server log.';
+  error.textContent='The restart is taking longer than expected. Refresh the page or check the server log.';
   error.hidden=false;
 }
 
 function renderRestartButtons(){
   const supported=['managed','native'].includes(serverData?.restart_mode);
-  const hint=!serverData?'Server status unavailable. Refresh status to retry.'
+  const hint=!serverData?'Server status unavailable. Refresh the page to retry.'
     :supported?'':'Ctrl-C and re-run Space in the terminal where it started.';
   const reasons=runtimeData?.restart_reasons||[];
   const changes=[runtimeData?.roots?.change_required?'folders':'',

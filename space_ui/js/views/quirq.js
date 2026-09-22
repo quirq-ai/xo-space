@@ -4,7 +4,6 @@
    values, source cursor paths, and raw native-session data never reach this
    view. */
 import {apiFetch} from '../core/api.js';
-import {toast} from '../core/ui.js';
 
 const esc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -28,16 +27,15 @@ export default {
     root=el;
     go=ctx.switchTo;
     renderShell();
-    root.querySelector('#quirq-refresh').addEventListener('click',()=>loadCatalog(true));
     root.addEventListener('click',handleCrossViewNavigation);
     await loadCatalog();
   },
   show(){
     if(root){
-      loadCatalog(false);
+      loadCatalog();
     }
     if(root&&!timer){
-      timer=setInterval(()=>loadCatalog(false),10000);
+      timer=setInterval(loadCatalog,10000);
     }
   },
   hide(){
@@ -59,7 +57,6 @@ function renderShell(){
            leads further away, so the way home belongs in the hero. */
         +'<div class="quirq-hero-actions">'
           +'<button id="quirq-back" type="button" data-go-view="setup/server">&#8592; Setup</button>'
-          +'<button id="quirq-refresh" type="button">Refresh data</button>'
         +'</div>'
       +'</header>'
       +'<section class="quirq-path" id="quirq-path"><div class="quirq-skeleton"></div></section>'
@@ -104,22 +101,16 @@ function renderShell(){
     +'</div>';
 }
 
-async function loadCatalog(notify=false){
+async function loadCatalog(){
   if(loading||!root)return;
   loading=true;
-  const button=root.querySelector('#quirq-refresh');
-  button.disabled=true;
-  button.textContent='Refreshing…';
   const response=await apiFetch('/api/quirq');
   loading=false;
-  button.disabled=false;
-  button.textContent='Refresh data';
   if(!response.ok){
     renderFailure(response.error);
     return;
   }
   renderCatalog(response.data);
-  if(notify)toast('Quirq state refreshed');
 }
 
 function renderCatalog(data){

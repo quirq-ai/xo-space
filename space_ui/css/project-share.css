@@ -9,10 +9,10 @@
 .project-share .project-share-controls>button:hover:not(:disabled){filter:brightness(1.12)}
 .project-share .project-share-controls>:disabled{cursor:not-allowed;opacity:.55}
 .project-share .project-share-controls>:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.project-share .project-share-controls>[aria-invalid=true]{border-color:#e1937d}
+.project-share .project-share-controls>[aria-invalid=true]{border-color:var(--danger-text,#e1937d)}
 .project-share>[data-share-result]{display:block;margin:9px 0 0;font:400 12px/1.5 var(--sans);color:var(--ink-3);overflow-wrap:anywhere}
 .project-share>[data-share-result][hidden]{display:none!important}
-.project-share>[data-share-result][data-state=error]{color:#e1937d}
+.project-share>[data-share-result][data-state=error]{color:var(--danger-text,#e1937d)}
 .project-share>[data-share-result][data-state=success]{color:var(--accent)}
 @media(max-width:650px){
   .project-share{padding:12px}

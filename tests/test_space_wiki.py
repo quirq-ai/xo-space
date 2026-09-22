@@ -559,7 +559,8 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('id="prj-filter"', projects)
         self.assertNotIn("data-project-tab=", projects)
         self.assertIn('data-panel="files"', projects)
-        self.assertIn("Refresh files", projects)
+        self.assertNotIn("Refresh files", projects)
+        self.assertNotIn("prj-detail-refresh", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # Data rows have a single file-browser action; management lives in Manage.
         self.assertIn('<button class="prj-row-head"', projects)

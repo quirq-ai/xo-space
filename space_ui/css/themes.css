@@ -1,0 +1,97 @@
+/* Neon pairs warm charcoal with soft magenta, violet and amber accents.
+   Typography originates from Quirq; font sources and licenses are in
+   fonts/README.md. Stable theme IDs preserve existing saved preferences. */
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("../fonts/jetbrains-mono/JetBrainsMono-Latin.woff2") format("woff2")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("../fonts/poppins/Poppins-SemiBold-Latin.woff2") format("woff2")}
+
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]){
+  color-scheme:dark;
+  --bg:#100f14; --bg-2:#19161e; --bg-3:#231e2a;
+  --line:#39303f; --line-soft:#2b2531;
+  --ink:#f3ece4; --ink-2:#d0c3cc; --ink-3:#b1a2b4; --ink-4:#918496;
+  --accent:#f2a2d5; --accent-deep:#d784bb; --err:#ed978d;
+  --accent-rgb:242,162,213; --accent-deep-rgb:215,132,187;
+  --accent-ink:#21141e; --accent-hover:#f8bce2; --focus-line:#d784bb;
+  --bg-rgb:16,15,20; --bg-2-rgb:25,22,30; --bg-3-rgb:35,30,42;
+  --line-rgb:57,48,63; --overlay-rgb:20,17,25;
+  --line-hover:#66526b; --row-hover-line:#514056; --secondary-hover:#302636;
+  --topbar-bg:linear-gradient(180deg,#1b151f,#100f14);
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --brand-font:"Poppins",var(--sans);
+  --eng:#b7cc91; --res:#bb9aef; --ops:#eac17a; --mkt:#e995ce;
+  --chart-1:#e995ce; --chart-2:#bb9aef; --chart-3:#eac17a; --chart-4:#e59b8d;
+  --chart-5:#b7cc91; --chart-6:#cc83b0; --chart-7:#d9c9ad; --chart-8:#f3ece4;
+}
+
+/* Midnight: cool silver text and luminous periwinkle on ink-black surfaces. */
+:root[data-theme="midnight"]{
+  --bg:#090c12; --bg-2:#101620; --bg-3:#192230;
+  --line:#2a3548; --line-soft:#1e2837;
+  --ink:#eaf0fa; --ink-2:#c5cfdf; --ink-3:#9eacc3; --ink-4:#8190a8;
+  --accent:#91adff; --accent-deep:#7898ee; --err:#e99aab;
+  --accent-rgb:145,173,255; --accent-deep-rgb:120,152,238;
+  --accent-ink:#10182c; --accent-hover:#adc2ff; --focus-line:#91adff;
+  --bg-rgb:9,12,18; --bg-2-rgb:16,22,32; --bg-3-rgb:25,34,48;
+  --line-rgb:42,53,72; --overlay-rgb:12,17,25;
+  --line-hover:#4d6183; --row-hover-line:#3b4d68; --secondary-hover:#253248;
+  --topbar-bg:linear-gradient(180deg,#111926,#090c12);
+  --eng:#92c9b4; --res:#91adff; --ops:#d8bc89; --mkt:#aba0dc;
+  --chart-1:#91adff; --chart-2:#92c9b4; --chart-3:#aba0dc; --chart-4:#d8bc89;
+  --chart-5:#e3a2b5; --chart-6:#9bbbd0; --chart-7:#c5cfdf; --chart-8:#eaf0fa;
+}
+
+/* Graphite: neutral charcoal and greys, with no tinted surfaces. */
+:root[data-theme="graphite"]{
+  --bg:#181818; --bg-2:#212121; --bg-3:#2d2d2d;
+  --line:#424242; --line-soft:#343434;
+  --ink:#f3f3f3; --ink-2:#d0d0d0; --ink-3:#b0b0b0; --ink-4:#949494;
+  --accent:#e8e8e8; --accent-deep:#cccccc; --err:#ee9999;
+  --accent-rgb:232,232,232; --accent-deep-rgb:204,204,204;
+  --accent-ink:#181818; --accent-hover:#ffffff; --focus-line:#b0b0b0;
+  --bg-rgb:24,24,24; --bg-2-rgb:33,33,33; --bg-3-rgb:45,45,45;
+  --line-rgb:66,66,66; --overlay-rgb:28,28,28;
+  --line-hover:#707070; --row-hover-line:#555555; --secondary-hover:#383838;
+  --topbar-bg:#181818; --brand-font:var(--sans);
+  --eng:#d6d6d6; --res:#aaaaaa; --ops:#eeeeee; --mkt:#999999;
+  --chart-1:#eeeeee; --chart-2:#bcbcbc; --chart-3:#929292; --chart-4:#d7d7d7;
+  --chart-5:#a5a5a5; --chart-6:#808080; --chart-7:#c9c9c9; --chart-8:#f3f3f3;
+}
+
+/* Linen: warm paper surfaces, dark readable text and terracotta accents. */
+:root[data-theme="linen"]{
+  color-scheme:light;
+  --bg:#f7f5f0; --bg-2:#fffefa; --bg-3:#eeebe4;
+  --line:#d7d1c7; --line-soft:#e6e1d8;
+  --ink:#302b26; --ink-2:#514a42; --ink-3:#6c6359; --ink-4:#82786c;
+  --accent:#a64d2f; --accent-deep:#8e4028; --err:#ac3434;
+  --accent-rgb:166,77,47; --accent-deep-rgb:142,64,40;
+  --accent-ink:#fffefa; --accent-hover:#914026; --focus-line:#a64d2f;
+  --bg-rgb:247,245,240; --bg-2-rgb:255,254,250; --bg-3-rgb:238,235,228;
+  --line-rgb:215,209,199; --overlay-rgb:255,254,250;
+  --line-hover:#a79b8a; --row-hover-line:#c0b5a5; --secondary-hover:#e5dfd5;
+  --topbar-bg:#fffefa; --brand-font:var(--sans);
+  --eng:#526b4c; --res:#506e88; --ops:#866226; --mkt:#a64d2f;
+  --chart-1:#a64d2f; --chart-2:#506e88; --chart-3:#526b4c; --chart-4:#84658f;
+  --chart-5:#866226; --chart-6:#9b5267; --chart-7:#4a7772; --chart-8:#514a42;
+  --warning-text:#856018; --danger-text:#ac3434;
+  --shadow-xs:0 1px 2px #302b2608; --shadow-sm:0 2px 6px #302b2610;
+  --shadow-xl:0 16px 40px #302b2620;
+}
+:root[data-theme="linen"] .setup-switch span{background:var(--bg-3);border-color:var(--line-hover)}
+:root[data-theme="linen"] .setup-switch input:checked+span{background:rgba(var(--accent-rgb),.17);border-color:var(--accent)}
+:root[data-theme="linen"] #preview-version option{background:var(--bg-2);color:var(--ink)}
+:root[data-theme="linen"] .native-conn-card .conn-icon{color:var(--ink-2)}
+:root[data-theme="linen"] [data-slot="badge"][data-source]{--source-color:var(--ink-2)}
+:root[data-theme="linen"] [data-variant="destructive"]{background:var(--err);color:#fff}
+:root[data-theme="linen"] :is(.setup-card,.ui-card){box-shadow:var(--shadow-xs)}
+
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .brand .mark{filter:none}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
+/* Only the bundled SVG mark is recolored; uploaded logos keep their colors. */
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
+
+/* This neutral hover border predates the shared tokens. */
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .quirq-storage-actions button:hover{border-color:var(--line-hover)}
+:root:is([data-theme="quirq"],[data-theme="midnight"],[data-theme="graphite"],[data-theme="linen"]) .srv .pip:not(.on):not(.off){background:var(--ink-4)}

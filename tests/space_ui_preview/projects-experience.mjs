@@ -2,6 +2,7 @@
 /* The real Projects UI against fictional, browser-owned API fixtures. No
    request can mutate a service or leave the local preview origin. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,waitForDataRefresh} from './refresh-helpers.mjs';
 import {openProjectList,openProjectPage} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -227,13 +228,13 @@ try{
   checked('Expanded Files rows contain only the file browser, with no Activity or Issues requests.');
 
   const oldTree=hold('/api/xo-projects/aurora-console/tree',tree('aurora-console'));
-  await drawer().locator('.prj-detail-refresh').click();await within(oldTree.arrived.promise,'older root-tree refresh starts');
+  await body('files').locator('.fx-crumb[data-cd=""]').click();await within(oldTree.arrived.promise,'older root-folder read starts');
   await body('files').locator('[data-cd="src"]').click();
   await body('files').locator('[data-file="src/implementation.ts"]').waitFor();
-  oldTree.release.resolve();await within(oldTree.done.promise,'older root-tree refresh completes');await page.waitForTimeout(50);
+  oldTree.release.resolve();await within(oldTree.done.promise,'older root-folder read completes');await page.waitForTimeout(50);
   assert.equal(await body('files').locator('[data-file="src/implementation.ts"]').count(),1);
   assert.equal(await body('files').locator('[data-file="README.md"]').count(),0);
-  checked('A late root-folder refresh cannot replace a newer same-project folder navigation.');
+  checked('A late root-folder read cannot replace a newer same-project folder navigation.');
 
   await openProjectPage(page,'manage');await page.waitForURL('**/#/projects/manage');
   await page.locator('#manage-project-add').waitFor();assert.deepEqual(report.writes,[]);
@@ -268,13 +269,13 @@ try{
   checked('List, Files and empty results fit 1440px, 390px and 320px with no overflowing controls.');
   const beforeFailure=await aurora.elementHandle();
   const refreshFailure=hold('/api/xo-projects',{detail:'Catalog temporarily unavailable'},503);
-  await page.locator('#project-refresh').click();await within(refreshFailure.arrived.promise,'catalog refresh failure arrives');
+  await startDataRefresh(page);await within(refreshFailure.arrived.promise,'catalog refresh failure arrives');
   refreshFailure.release.resolve();await within(refreshFailure.done.promise,'catalog refresh failure completes');
   await page.locator('#prj-status').getByText(/Showing the last list/).waitFor();
   assert.equal((await visibleIDs()).length,catalog.length);
   assert.equal(await beforeFailure.evaluate(node=>node===document.querySelector('#prj-row-aurora-console')),true);
-  await page.locator('#project-refresh').click();
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled&&document.querySelector('#prj-status').hidden);
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);await page.locator('#prj-status').waitFor({state:'hidden'});
   const initialFailure=hold('/api/xo-projects',{detail:'Catalog temporarily unavailable'},503);
   await page.reload({waitUntil:'domcontentloaded'});await within(initialFailure.arrived.promise,'initial catalog failure arrives');
   initialFailure.release.resolve();await within(initialFailure.done.promise,'initial catalog failure completes');

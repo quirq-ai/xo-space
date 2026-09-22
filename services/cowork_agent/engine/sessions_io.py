@@ -13,6 +13,7 @@ from typing import Iterator, Optional
 from services.cowork_agent import project_layout
 from services.cowork_agent.helpers import iso_now, ms_to_iso
 from services.cowork_agent.project_layout import xo_projects_root
+from services.storage.layout import sessions_dir
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,35 @@ def read_session_index_at(
     return merged
 
 
+# ── Sessions with no project ──────────────────────────────────────────────────
+# A chat started with neither ``agent_id`` nor ``workspace`` runs in the
+# projects root. It belongs to no project, so its identity is the ABSENCE of a
+# project id: an empty project segment in the session key (``claude::web:…``)
+# and an empty ``name`` at this seam. No folder can be named the empty string,
+# so no project can ever collide with it. Its rows live at the Space level,
+# ``~/.quirq/sessions/sessionslist.d/``, one step above ``projects/<key>/``.
+
+
+def _is_root(name: str | None) -> bool:
+    return not name or not name.strip()
+
+
+def _root_shard_dir() -> Path:
+    return sessions_dir() / project_layout.RUNTIME_SESSION_SHARDS_SUBDIR.name
+
+
+def read_root_session_index() -> dict:
+    """Merged ``{key: row}`` of the sessions started with no project."""
+    return _read_shards(_root_shard_dir())
+
+
 def read_session_index(name: str) -> dict:
-    """Merged ``{key: row}`` for a project, resolved from its folder name."""
+    """Merged ``{key: row}`` for a project, resolved from its folder name.
+
+    An empty ``name`` is the projects root (see above).
+    """
+    if _is_root(name):
+        return read_root_session_index()
     runtime_root, legacy_root = project_layout.runtime_read_roots(name)
     if runtime_root is None:
         return {}
@@ -120,21 +148,44 @@ def read_session_index(name: str) -> dict:
 
 
 def write_session_row(name: str, composite_key: str, row: dict) -> bool:
-    """Replace one row in a project's session index. Returns ``True`` on write."""
-    if not name or not composite_key or not isinstance(row, dict):
+    """Replace one row in a project's session index. Returns ``True`` on write.
+
+    An empty ``name`` is the projects root; its home always exists. A refusal
+    is always logged: a dropped row is a lost session (#146).
+    """
+    if not composite_key or not isinstance(row, dict):
+        logger.warning(
+            "session index: refusing to write %r for project %r (empty key "
+            "or non-dict row)", composite_key, name,
+        )
         return False
-    runtime_root = project_layout.runtime_dir_for_project(name, create=True)
-    if runtime_root is None:
-        return False
-    shard_dir = runtime_root / project_layout.RUNTIME_SESSION_SHARDS_SUBDIR
+    if _is_root(name):
+        shard_dir = _root_shard_dir()
+    else:
+        runtime_root = project_layout.runtime_dir_for_project(name, create=True)
+        if runtime_root is None:
+            logger.warning(
+                "session index: refusing to write %r: project %r has no runtime "
+                "home (no such folder under the projects root)", composite_key, name,
+            )
+            return False
+        shard_dir = runtime_root / project_layout.RUNTIME_SESSION_SHARDS_SUBDIR
     shard_dir.mkdir(parents=True, exist_ok=True)
     _write_shard_atomic(shard_dir / shard_filename(composite_key), {composite_key: row})
     return True
 
 
 def iter_project_session_indexes() -> Iterator[tuple[str, Path, dict]]:
-    """Yield ``(project_id, project_dir, merged_index)`` for every project."""
+    """Yield ``(project_id, project_dir, merged_index)`` for every project.
+
+    The root index comes first, with ``""`` as its project id and the projects
+    root as its directory, so every reader built on this walk sees the
+    sessions started with no project.
+    """
     root = xo_projects_root()
+    root_index = read_root_session_index()
+    if root_index:
+        yield "", root, root_index
     try:
         entries = sorted(root.iterdir())
     except OSError:

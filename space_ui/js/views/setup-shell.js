@@ -5,7 +5,6 @@ export function renderSetupShell(root){
   root.innerHTML=`<div class="setup-page">
     <header class="setup-hero">
       <h1>Setup</h1>
-      <button class="setup-refresh" id="setup-refresh" type="button">Refresh status</button>
     </header>
     <div class="setup-alert" id="setup-alert" role="status"><div><b>Checking settings…</b></div></div>
     <div class="setup-form-error" id="setup-restart-error" role="alert" hidden></div>
@@ -24,6 +23,7 @@ export function renderSetupShell(root){
         <section class="setup-panel" id="setup-panel-workspace" aria-labelledby="setup-workspace-title">
           <header class="setup-section-head"><h2 id="setup-workspace-title" tabindex="-1">Workspace</h2><p>Customize your workspace and choose where its projects and settings live.</p></header>
           <section class="setup-card setup-branding" id="setup-branding" aria-label="Workspace branding"></section>
+          <section class="setup-card setup-theme" id="setup-theme" aria-label="Workspace theme"></section>
           <section class="setup-card setup-identity" id="setup-identity" aria-label="Workspace identity"></section>
           <section class="setup-card setup-roots">
             <div class="setup-card-head"><h3>Folders</h3><i id="roots-badge">Checking</i></div>

@@ -1,7 +1,6 @@
 /* Section navigation is shell chrome. Native links keep history, deep links
    and opening a page in another tab available without importing the router. */
 import {PRIMARY_TABS,PROJECT_PAGES,PROJECT_SECTIONS,DATA_VIEWS,AGENT_PAGES,INBOX_PAGES} from './navigation.js?v=20260915-agents2';
-import {toast} from './ui.js';
 
 const GROUPS={projects:PROJECT_SECTIONS,agents:AGENT_PAGES,inbox:INBOX_PAGES};
 const PAGES=new Map([...PROJECT_PAGES,...AGENT_PAGES,...INBOX_PAGES].map(page=>[page.id,page]));
@@ -17,25 +16,14 @@ export function setSectionActions(pageId,node){
   refreshActions();
 }
 
-export function initSectionNav({refreshCurrentView}){
+export function initSectionNav(){
   const nav=document.getElementById('section-nav');
   const stage=document.getElementById('stage');
   const graphRoot=document.getElementById('graph-root');
   if(!nav||!stage||nav.dataset.initialized)return;
   nav.dataset.initialized='true';
-  let parent=null,active=null,height=-1,frame=0,refreshable=false;
+  let parent=null,active=null,height=-1,frame=0;
   let lastData=DATA_VIEWS[0];
-
-  function refreshState({busy=false,available=false}={}){
-    const button=nav.querySelector('[data-page-refresh]');
-    if(!button)return;
-    refreshable=available;
-    button.hidden=parent!=='projects'&&!available;
-    button.disabled=busy||!available;
-    button.setAttribute('aria-busy',String(busy));
-    button.textContent=busy?'Refreshing…':'Refresh';
-    measure();
-  }
 
   function measure(){
     const next=nav.hidden?0:Math.ceil(nav.getBoundingClientRect().height);
@@ -63,7 +51,7 @@ export function initSectionNav({refreshCurrentView}){
     if(slot.firstElementChild!==node)slot.replaceChildren(...(node?[node]:[]));
     slot.hidden=!node;
     const tools=nav.querySelector('.section-nav-tools');
-    if(tools)tools.hidden=parent!=='projects'&&!node&&!refreshable;
+    if(tools)tools.hidden=parent!=='projects'&&!node;
     measure();
   }
   refreshActions=placeActions;
@@ -82,21 +70,12 @@ export function initSectionNav({refreshCurrentView}){
     const tools=document.createElement('div');tools.className='section-nav-tools';
     const slot=document.createElement('div');slot.className='section-page-actions';slot.hidden=true;
     tools.appendChild(slot);
-    const quick=document.createElement('div');quick.className='section-nav-actions';
     if(group==='projects'){
       const actions=document.createElement('div');actions.className='section-nav-actions';
       if(graphRoot)actions.appendChild(graphRoot);
       tools.appendChild(actions);
     }
-    const refresh=document.createElement('button');
-    refresh.id=group==='projects'?'project-refresh':'section-refresh';refresh.dataset.pageRefresh='';refresh.type='button';
-    refresh.className='section-nav-action';refresh.textContent='Refresh';
-    refresh.addEventListener('click',async()=>{
-      const page=active;
-      try{await refreshCurrentView();}
-      catch(error){console.error('Page refresh failed:',error);if(active===page)toast('Could not refresh this page. Try again.');}
-    });
-    quick.appendChild(refresh);tools.appendChild(quick);inner.appendChild(tools);
+    inner.appendChild(tools);
     const title=document.createElement('h1');title.className='section-page-title';title.hidden=true;
     // Keep the same picker node mounted. Its controller owns state,
     // listeners and visibility; section navigation only places it.
@@ -113,7 +92,6 @@ export function initSectionNav({refreshCurrentView}){
     if(nav.hidden){parent=null;active=null;measure();return;}
     if(group!==parent){render(group);parent=group;}
     active=page.id;
-    refreshState({busy:detail.refreshing,available:detail.refreshable});
     const dataActive=group==='projects'&&DATA_IDS.has(page.id);
     if(dataActive)lastData=page;
     const section=document.getElementById('view-'+(detail.section||page.section||page.id));
@@ -131,9 +109,6 @@ export function initSectionNav({refreshCurrentView}){
   }
 
   addEventListener('space:view',event=>sync(event.detail));
-  addEventListener('space:refresh-state',event=>{
-    if(event.detail?.id===active)refreshState({busy:event.detail.busy,available:refreshable});
-  });
   addEventListener('resize',()=>{measure();if(active)revealCurrent();});
   if(typeof ResizeObserver==='function')new ResizeObserver(measure).observe(nav);
   measure();

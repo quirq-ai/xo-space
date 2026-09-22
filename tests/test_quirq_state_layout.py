@@ -74,7 +74,7 @@ class SampleTests(_Sandbox):
             layout.projects_dir(), layout.inbox_dir(), layout.sharing_dir(),
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
-            layout.connections_dir(), layout.scheduler_dir(),
+            layout.connections_dir(), layout.scheduler_dir(), layout.sessions_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -88,6 +88,7 @@ class StorePathTests(_Sandbox):
     def test_every_store_writes_inside_a_sample_folder(self) -> None:
         paths = {
             "project history": project_layout.runtime_dir(PID),
+            "sessions with no project": sessions_io._root_shard_dir(),
             "the Space timeline": project_layout.workspace_timeline_path(),
             "watcher reading positions": watcher_state.watcher_state_dir(),
             "the Inbox": inbox_store.inbox_path(),
