@@ -103,7 +103,51 @@ case "$m" in *"QUIRQ_SOURCE_REF=development curl"*) bad "managed banner on dev r
 i="$(hint 0 "$W/ws/xo-space" "$W/ws/xo-space")"
 case "$i" in *"cd $W/ws/xo-space && ./install.sh"*"git pull --ff-only"*) ok "in-place banner";; *) bad "in-place banner" "$i";; esac
 
-# ---- 4. strictness: set -u / -e under bash 5, and shellcheck if present -----
+# ---- 4. the generated .env -------------------------------------------------
+# start_server resolves every default and then writes .env, so the file is
+# driven through the real function: VENV_PYTHON points at /bin/true, whose
+# exec ends the subshell where the server would have taken over.
+gen_env(){ ( cd "$W"; source "$W/lib.sh" 2>/dev/null
+             REPO_DIR="$1"; LAUNCH_DIR="$1"; MANAGED_CHECKOUT=0; SOURCE_REF=main
+             HOST=127.0.0.1; PORT="$2"; VENV_PYTHON=/bin/true
+             start_server "$1/projects" "$1/state" ) >/dev/null 2>&1; }
+env_line(){ grep "^${2}=" "$1/.env"; }
+
+mkdir -p "$W/env-default" && gen_env "$W/env-default" 5002
+check "default port -> loopback Composio callback in .env" \
+      "$(env_line "$W/env-default" COMPOSIO_CALLBACK_URL)" \
+      "COMPOSIO_CALLBACK_URL=http://127.0.0.1:5002/api/connectors/composio/callback"
+
+# the callback is derived from the resolved port, not a hardcoded 5002
+mkdir -p "$W/env-port" && gen_env "$W/env-port" 8080
+check "PORT=8080 -> the callback follows the port" \
+      "$(env_line "$W/env-port" COMPOSIO_CALLBACK_URL)" \
+      "COMPOSIO_CALLBACK_URL=http://127.0.0.1:8080/api/connectors/composio/callback"
+
+# a real deployment's public origin must survive the installer's default
+mkdir -p "$W/env-explicit"
+( export COMPOSIO_CALLBACK_URL="https://quirq.example/api/connectors/composio/callback"
+  gen_env "$W/env-explicit" 5002 )
+check "an exported callback wins over the default" \
+      "$(env_line "$W/env-explicit" COMPOSIO_CALLBACK_URL)" \
+      "COMPOSIO_CALLBACK_URL=https://quirq.example/api/connectors/composio/callback"
+
+# ENV_KEYS membership: a hand-edited .env is read back on the next run, and
+# the file the user edited is not rewritten.
+mkdir -p "$W/env-edit"
+printf 'COMPOSIO_CALLBACK_URL=https://edited.example/api/connectors/composio/callback\n' \
+    > "$W/env-edit/.env"
+check "a .env value is read back into the environment" \
+      "$( cd "$W"; source "$W/lib.sh" 2>/dev/null; REPO_DIR="$W/env-edit"
+          unset COMPOSIO_CALLBACK_URL; load_env_file
+          printf '%s' "${COMPOSIO_CALLBACK_URL:-}" )" \
+      "https://edited.example/api/connectors/composio/callback"
+gen_env "$W/env-edit" 5002
+check "…and the existing .env is left alone" \
+      "$(env_line "$W/env-edit" COMPOSIO_CALLBACK_URL)" \
+      "COMPOSIO_CALLBACK_URL=https://edited.example/api/connectors/composio/callback"
+
+# ---- 5. strictness: set -u / -e under bash 5, and shellcheck if present -----
 bash -n "$W/lib.sh" && ok "bash -n (LF-normalised copy)" || bad "bash -n" "syntax error"
 # the banner must never be the thing that runs the server
 case "$(sed -n '/^print_restart_hint()/,/^}/p' "$W/lib.sh")" in *exec*) bad "print_restart_hint contains exec" "exec inside the hint function";; *) ok "print_restart_hint has no exec";; esac
