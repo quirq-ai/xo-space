@@ -32,7 +32,7 @@
   .prj-row{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px;
     transition:border-color .16s var(--ease),background .16s var(--ease)}
   .prj-row:hover{border-color:var(--line)}
-  .prj-row.is-open{border-color:#2c3240;background:var(--bg-3)}
+  .prj-row.is-open{border-color:var(--row-hover-line);background:var(--bg-3)}
   .prj-row.is-empty .prj-name b{color:var(--ink-2)}
   .prj-line{display:flex;align-items:stretch;gap:8px;padding-right:0}
   .prj-row-head{flex:1;min-width:0;text-align:left;padding:12px 4px 12px 17px;
@@ -53,7 +53,7 @@
   .prj-live{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--accent);align-items:center}
   .prj-live i{width:6px;height:6px;border-radius:50%;background:var(--accent);
-    box-shadow:0 0 0 3px rgba(168,217,79,.14)}
+    box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
   .prj-live.is-idle{min-height:6px}
   .prj-num{font:400 12px var(--sans);color:var(--ink-2);white-space:nowrap;gap:7px;font-variant-numeric:tabular-nums}
   .prj-num em{font-style:normal;color:var(--ink-3)}
@@ -124,7 +124,7 @@
     border-bottom:1px solid var(--line-soft)}
   .tv-filter{width:190px;background:var(--bg-3);border:1px solid var(--line);border-radius:7px;
     padding:5px 9px;font-size:12px;color:var(--ink)}
-  .tv-filter:focus{outline:none;border-color:#39404d}
+  .tv-filter:focus{outline:none;border-color:var(--line-hover)}
   /* Not a scroller: the pane clips a surface the camera pans (drag) and
      zooms (wheel, cursor-anchored) via a transform — the same read as the
      Graph lens. The left gutter is the camera's initial x (tree.js), so the
@@ -132,7 +132,7 @@
   .tv-canvas{flex:1;min-height:0;overflow:hidden;position:relative;
     cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;
     /* a faint vignette so the canvas reads as a surface you pan around */
-    background:radial-gradient(120% 90% at 8% 40%,rgba(168,217,79,.035),transparent 62%)}
+    background:radial-gradient(120% 90% at 8% 40%,rgba(var(--accent-rgb),.035),transparent 62%)}
   .tv-canvas.is-panning{cursor:grabbing}
   .tv-surface{position:absolute;left:0;top:0;transform-origin:0 0}
 
@@ -166,7 +166,7 @@
   .tv-bud{width:var(--bud,8px);height:var(--bud,8px);border-radius:50%;
     border:1.5px solid var(--accent);opacity:.55;transition:all .16s var(--ease)}
   .tv-node.is-open .tv-bud{background:var(--accent);opacity:1;
-    box-shadow:0 0 0 3px rgba(168,217,79,.12)}
+    box-shadow:0 0 0 3px rgba(var(--accent-rgb),.12)}
   .tv-node.is-empty .tv-bud{border-color:var(--ink-4);opacity:.4}
   .tv-node:hover .tv-bud{opacity:1}
   .tv-label{min-width:0;display:flex;flex-direction:column;gap:1px}
@@ -181,7 +181,7 @@
 
   /* ---- leaf cards ---- */
   .tv-stack{position:absolute;width:196px;padding:7px 0 8px;border-radius:9px;
-    background:rgba(16,19,24,.62);border:1px solid var(--line-soft)}
+    background:rgba(var(--bg-2-rgb),.62);border:1px solid var(--line-soft)}
   .tv-stack-head{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);padding:0 10px 5px;margin-bottom:2px;
     border-bottom:1px solid var(--line-soft)}
@@ -304,7 +304,7 @@
 #view-projects .prj-cols{padding-right:0;gap:8px;font-size:11px;letter-spacing:.06em}
 #view-projects .prj-rows{gap:8px}
 #view-projects .prj-row{border-radius:11px}
-#view-projects .prj-row.is-open{border-color:rgba(168,217,79,.24);background:var(--bg-2)}
+#view-projects .prj-row.is-open{border-color:rgba(var(--accent-rgb),.24);background:var(--bg-2)}
 #view-projects .prj-row-head{padding:15px 17px;border-radius:11px}
 #view-projects .prj-row-head:focus-visible{outline-offset:-2px}
 #view-projects .prj-name{gap:4px 8px}

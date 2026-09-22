@@ -16,13 +16,13 @@
   .srv{position:relative;display:flex;align-items:center;gap:9px;
     font:400 12px var(--sans);letter-spacing:.02em;color:var(--ink-3)}
   .srv .pip{width:7px;height:7px;border-radius:50%;background:#565c52}
-  .srv .pip.on{background:var(--accent-deep);box-shadow:0 0 8px rgba(131,214,58,.45)}
+  .srv .pip.on{background:var(--accent-deep);box-shadow:0 0 8px rgba(var(--accent-deep-rgb),.45)}
   .srv .pip.off{background:var(--err)}
   #srv-btn{font:500 12px var(--sans);color:var(--ink-2);
     border:1px solid var(--line);border-radius:999px;padding:4px 11px;transition:all .16s var(--ease)}
-  #srv-btn:hover{color:var(--ink);border-color:#39404d}
+  #srv-btn:hover{color:var(--ink);border-color:var(--line-hover)}
   .srvpop{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;display:none;z-index:70;
-    background:rgba(16,19,24,.97);backdrop-filter:blur(14px);border:1px solid var(--line);
+    background:rgba(var(--bg-2-rgb),.97);backdrop-filter:blur(14px);border:1px solid var(--line);
     border-radius:12px;padding:12px;text-transform:none;letter-spacing:0;box-shadow:0 20px 44px rgba(0,0,0,.6)}
   .srvpop.is-open{display:block}
   .srvpop .hint{font:400 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px}
@@ -41,7 +41,7 @@
   .nodata pre{font:400 12px var(--mono);color:var(--accent);background:var(--bg-2);
     border:1px solid var(--line);border-radius:8px;padding:10px 14px}
   .nodata button{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
-    color:#14100a;background:var(--accent);border-radius:999px;padding:9px 18px}
+    color:var(--accent-ink);background:var(--accent);border-radius:999px;padding:9px 18px}
   @media (max-width:1640px){ .brand>span:not(.mark){display:none} }
   @media (max-width:1600px){ #root-btn .rlab{display:none} }
   /* Reflow the primary tabs below the brand, graph controls and resource links. */

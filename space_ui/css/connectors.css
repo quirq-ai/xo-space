@@ -28,7 +28,7 @@
 .conn-alert b{display:block;font-size:13px;margin-bottom:3px}
 .conn-alert p{margin:0;color:var(--ink-2);font-size:12px;line-height:1.5}
 .conn-alert span{color:var(--ink-3);line-height:1.3}
-.conn-alert.is-good{border-color:rgba(131,214,58,.4);background:rgba(131,214,58,.06)}
+.conn-alert.is-good{border-color:rgba(var(--accent-deep-rgb),.4);background:rgba(var(--accent-deep-rgb),.06)}
 .conn-alert.is-good span{color:var(--accent-deep)}
 .conn-alert.is-pending{border-color:rgba(226,174,91,.42);background:rgba(226,174,91,.06)}
 .conn-alert.is-pending span{color:#e2ae5b}
@@ -39,7 +39,7 @@
    Reuses the card surface, the .conn-state pill and the .conn-primary/.conn-secondary
    buttons so it reads as part of the same section. */
 .conn-key{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px}
-.conn-key.is-set{border-color:rgba(168,217,79,.24)}
+.conn-key.is-set{border-color:rgba(var(--accent-rgb),.24)}
 .conn-key-head{display:flex;align-items:flex-start;gap:12px}
 .conn-key-head .conn-icon{flex:0 0 36px;color:var(--ink-2)}
 .conn-key.is-set .conn-key-head .conn-icon{color:var(--accent)}
@@ -64,7 +64,7 @@
 
 .conn-card{position:relative;display:flex;flex-direction:column;min-width:0;min-height:200px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:border-color .16s var(--ease)}
 .conn-card:hover{border-color:#41464f}
-.conn-card.is-on,.conn-card.is-connected{border-color:rgba(168,217,79,.24)}
+.conn-card.is-on,.conn-card.is-connected{border-color:rgba(var(--accent-rgb),.24)}
 
 .conn-card-head{display:flex;align-items:flex-start;flex-direction:column;gap:12px;padding:16px 16px 10px}
 .conn-card-heading{display:flex;align-items:center;gap:11px;min-width:0}
@@ -78,7 +78,7 @@
 .conn-card-status .conn-facts{margin-top:0;min-width:0;max-width:100%}
 .conn-state{display:inline-flex;align-items:center;gap:6px;max-width:100%;font:500 11px/1.4 var(--sans);font-style:normal;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:3px 8px;overflow-wrap:anywhere}
 .conn-state::before{content:"";width:5px;height:5px;flex:none;border-radius:50%;background:currentColor;opacity:.75}
-.conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(168,217,79,.22);background:rgba(168,217,79,.04)}
+.conn-state.is-good,.conn-state.is-connected{color:var(--accent);border-color:rgba(var(--accent-rgb),.22);background:rgba(var(--accent-rgb),.04)}
 .conn-state.is-pending{color:#e2ae5b;border-color:rgba(226,174,91,.22)}
 .conn-state.is-error{color:#e1937d;border-color:rgba(200,103,76,.22)}
 /* Connected on the account but off in this workspace: a deliberate state, not a
@@ -108,8 +108,8 @@
   border-radius:7px;padding:7px 10px;font:500 12px/1.4 var(--sans);text-decoration:none;
   cursor:pointer;border:1px solid transparent;overflow-wrap:anywhere
 }
-.conn-primary{background:var(--accent);color:#14100a}
-.conn-primary:hover{background:#b7e467}
+.conn-primary{background:var(--accent);color:var(--accent-ink)}
+.conn-primary:hover{background:var(--accent-hover)}
 .conn-secondary{border-color:var(--line);background:transparent;color:var(--ink-2)}
 .conn-secondary:hover{border-color:var(--ink-4);color:var(--ink)}
 .conn-secondary.is-danger{border-color:rgba(200,103,76,.42);color:#e1937d}

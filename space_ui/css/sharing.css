@@ -24,12 +24,12 @@
 
   /* buttons added to the Files vocabulary: the one primary action per
      surface (Share, Apply) and a smaller size for row-level actions */
-  .shl-primary{color:#14100a;background:var(--accent);border-color:var(--accent);font-weight:500}
-  .shl-primary:hover{color:#14100a;background:var(--accent-deep);border-color:var(--accent-deep)}
+  .shl-primary{color:var(--accent-ink);background:var(--accent);border-color:var(--accent);font-weight:500}
+  .shl-primary:hover{color:var(--accent-ink);background:var(--accent-deep);border-color:var(--accent-deep)}
   .sess-refresh.is-sm{font-size:12px;padding:4px 10px;border-radius:7px}
   .sess-refresh[disabled]{opacity:.5;cursor:default}
   .sess-refresh[disabled]:hover{color:var(--ink-2);border-color:var(--line)}
-  .shl-primary[disabled]:hover{color:#14100a;background:var(--accent);border-color:var(--accent)}
+  .shl-primary[disabled]:hover{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}
 
   /* chips added to the shared vocabulary */
   .tchip.st-shared{color:var(--accent);border-color:var(--accent)}
@@ -65,7 +65,7 @@
     border-radius:12px;transition:border-color .16s var(--ease),background .16s var(--ease)}
   .shl-row:hover{border-color:var(--line)}
   .shl-row.is-need{box-shadow:inset 2px 0 0 var(--accent)}
-  .shl-row.is-sel{background:var(--bg-3);border-color:#2c3240;box-shadow:inset 2px 0 0 var(--accent)}
+  .shl-row.is-sel{background:var(--bg-3);border-color:var(--row-hover-line);box-shadow:inset 2px 0 0 var(--accent)}
   .shl-row-head{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;text-align:left;
     padding:12px 17px;border-radius:12px;color:var(--ink)}
   .shl-row-head:hover .shl-row-top b{color:var(--accent)}
@@ -88,7 +88,7 @@
   .shl-rule{height:1px;background:var(--line-soft)}
   /* commits fetched but not applied: what to do next, above the list */
   .shl-callout{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--accent);
-    border-radius:8px;background:rgba(168,217,79,.08);font:400 12px/1.5 var(--sans);color:var(--ink-2)}
+    border-radius:8px;background:rgba(var(--accent-rgb),.08);font:400 12px/1.5 var(--sans);color:var(--ink-2)}
   .shl-callout b{font-weight:600;color:var(--accent)}
   /* an Inbox hand-off lands here: one brief ring so the eye finds the panel */
   .shl-detail.is-flash{animation:shlflash 1.6s var(--ease) 1}
@@ -115,7 +115,7 @@
   .shr-revoke:hover{border-color:#e07a5f}
   .shr-confirm{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .shr-confirm-yes{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
-    color:#14100a;background:#e07a5f;border-radius:999px;padding:4px 10px}
+    color:var(--accent-ink);background:#e07a5f;border-radius:999px;padding:4px 10px}
   .shr-confirm-yes:hover{background:#eb8f77}
   .shr-confirm-no{font:500 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;
     color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:3px 9px}
@@ -132,7 +132,7 @@
 
   /* composer: swaps into the detail panel */
   .shl-composer{display:flex;flex-direction:column;gap:18px;padding:18px 20px 20px;
-    background:var(--bg-3);border:1px solid #2c3240;border-radius:12px}
+    background:var(--bg-3);border:1px solid var(--row-hover-line);border-radius:12px}
   .shl-composer-title{display:flex;flex-direction:column;gap:4px}
   .shl-composer-title b{font:600 20px/1.15 var(--sans);color:var(--ink)}
   .shl-step{font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
@@ -146,7 +146,7 @@
   .shl-pick b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .shl-pick em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .shl-dot{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ink-4);flex:none;transition:all .16s var(--ease)}
-  .shl-pick.is-sel .shl-dot{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 3px rgba(168,217,79,.14)}
+  .shl-pick.is-sel .shl-dot{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
 
   /* nothing shared yet: two ways in, side by side */
   .shl-empty{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}

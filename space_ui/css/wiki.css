@@ -1,5 +1,5 @@
 /* Wiki — one compact directory, with full guides in xo-docs. */
-#view-wiki{overflow:hidden;background:radial-gradient(circle at 90% 0,rgba(168,217,79,.045),transparent 36%),var(--bg)}
+#view-wiki{overflow:hidden;background:radial-gradient(circle at 90% 0,rgba(var(--accent-rgb),.045),transparent 36%),var(--bg)}
 .wiki-shell{height:100%;min-width:0}
 .wiki-main{height:100%;overflow-y:auto;scrollbar-gutter:stable}
 .wiki-content{max-width:1280px;margin:0 auto;padding:18px clamp(20px,3vw,40px)}

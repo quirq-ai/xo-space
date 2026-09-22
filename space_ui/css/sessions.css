@@ -75,7 +75,7 @@
   .sess-stat span{font-size:12px;line-height:1.2;color:var(--muted-foreground)}
   .sess-stat b{font:600 15px/1.2 var(--sans);color:var(--foreground);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* path band */
-  .sess-agent-card .sess-agent-foot{display:flex;flex-direction:column;gap:8px;align-items:stretch;padding:10px 16px;border-top:1px solid var(--border-soft);background:rgba(22,26,32,.45)}
+  .sess-agent-card .sess-agent-foot{display:flex;flex-direction:column;gap:8px;align-items:stretch;padding:10px 16px;border-top:1px solid var(--border-soft);background:rgba(var(--bg-3-rgb),.45)}
   .sess-path{display:flex;align-items:center;gap:10px;min-width:0;min-height:28px}
   .sess-path-key{flex:none;font:500 12px var(--mono);letter-spacing:.02em;color:var(--muted-foreground)}
   .sess-path-value{flex:1;min-width:0;font:400 12px var(--sans);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

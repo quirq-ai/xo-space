@@ -1,0 +1,36 @@
+/* Quirq's official site uses a black/ivory interface, Inter body/headings,
+   Poppins for its wordmark and JetBrains Mono for labels. The spectrum is
+   reserved for data and small accents. Sources and font licenses are recorded
+   in fonts/README.md. No selector here changes the default Space theme. */
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("../fonts/jetbrains-mono/JetBrainsMono-Latin.woff2") format("woff2")}
+@font-face{font-family:"Poppins";font-style:normal;font-weight:600;font-display:swap;src:url("../fonts/poppins/Poppins-SemiBold-Latin.woff2") format("woff2")}
+
+:root[data-theme="quirq"]{
+  color-scheme:dark;
+  --bg:#000000; --bg-2:#0e0e0d; --bg-3:#181817;
+  --line:#f4f3f01a; --line-soft:#f4f3f00e;
+  --ink:#f4f3f0; --ink-2:#bdbdb7; --ink-3:#a3a39e; --ink-4:#85857f;
+  --accent:#f4f3f0; --accent-deep:#d9d8d3; --err:#ff453a;
+  --accent-rgb:244,243,240; --accent-deep-rgb:217,216,211;
+  --accent-ink:#000000; --accent-hover:#ffffff; --focus-line:#a3a39e;
+  --bg-rgb:0,0,0; --bg-2-rgb:14,14,13; --bg-3-rgb:24,24,23;
+  --line-rgb:40,40,39; --overlay-rgb:10,10,9;
+  --line-hover:#f4f3f04d; --row-hover-line:#f4f3f033; --secondary-hover:#232322;
+  --topbar-bg:#000000;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --brand-font:"Poppins",var(--sans);
+  --eng:#30d158; --res:#2fd2ff; --ops:#ffd60a; --mkt:#ff9f0a;
+  --chart-1:#2fd2ff; --chart-2:#0a84ff; --chart-3:#bf5af2; --chart-4:#ff453a;
+  --chart-5:#ff9f0a; --chart-6:#ffd60a; --chart-7:#30d158; --chart-8:#f4f3f0;
+}
+
+:root[data-theme="quirq"] .brand .mark{filter:none}
+:root[data-theme="quirq"] :is(.brand b,.setup-branding-preview b){font-family:var(--brand-font)}
+/* Only the bundled SVG mark is recolored; uploaded logos keep their colors. */
+:root[data-theme="quirq"] :is(.brand .mark,[data-branding-preview-logo]) svg polyline{stroke:var(--ink)}
+:root[data-theme="quirq"] :is(.setup-nav>p,.setup-branding-preview>span,.nodata .eyebrow,.srvpop .hint,.rootdd .hint){font-family:var(--mono);letter-spacing:.1em}
+
+/* This neutral hover border predates the shared tokens. */
+:root[data-theme="quirq"] .quirq-storage-actions button:hover{border-color:var(--line-hover)}
+:root[data-theme="quirq"] .srv .pip:not(.on):not(.off){background:var(--ink-4)}
