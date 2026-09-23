@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import unittest
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from routers.cowork_agent import doctor as doctor_router
 from services.doctor import checks, inventory, run
 from tests.doctor_sandbox import PID, DoctorSandbox, snapshot
 
@@ -231,6 +236,101 @@ class ReadOnlyTests(DoctorSandbox):
         self.report()
         self.assertFalse(self.projects.exists())
         self.assertEqual(snapshot(self.state), before)
+
+
+class HostileFileTests(DoctorSandbox):
+    """When things go wrong on disk the doctor still reports, promptly and
+    completely: it never waits on a file, never reads one without limit, and
+    never produces a report the HTTP response can't send."""
+
+    def report_within(self, seconds: float = 10) -> dict:
+        box: list = []
+        worker = threading.Thread(target=lambda: box.append(self.report()), daemon=True)
+        worker.start()
+        worker.join(seconds)
+        if worker.is_alive():
+            self.fail(f"the doctor run was still going after {seconds}s")
+        return box[0]
+
+    def findings_for(self, report: dict, subject: str) -> list[tuple[str, str]]:
+        return [(f["id"], f["level"]) for c in report["checks"] for f in c["findings"] if f["subject"] == subject]
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes")
+    def test_a_pipe_in_place_of_project_json_is_reported_not_waited_on(self) -> None:
+        path = self.projects / "sample-project" / ".xo" / "project.json"
+        path.unlink()
+        os.mkfifo(path)
+        report = self.report_within()
+        self.assertEqual(self.findings_for(report, "sample-project/.xo/project.json"), [("read.special", "FAIL")])
+        self.assertEqual(report["summary"]["ERROR"], 0)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes")
+    def test_a_pipe_in_place_of_the_heartbeat_is_not_waited_on(self) -> None:
+        path = self.state / "cache" / "heartbeat.json"
+        path.unlink()
+        os.mkfifo(path)
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}):
+            report = self.report_within()
+        self.assertIn("watcher.heartbeat", self.ids(report))
+
+    @unittest.skipUnless(os.path.exists("/dev/null"), "needs /dev/null")
+    def test_a_link_to_a_device_is_reported_not_read(self) -> None:
+        # /dev/null, not /dev/zero: both are character devices, so the
+        # guard is exercised the same way, but if it ever regresses this
+        # reads nothing instead of reading without end and exhausting the
+        # machine's memory (which a /dev/zero version of this test did).
+        path = self.projects / "sample-project" / ".xo" / "agent.json"
+        path.symlink_to("/dev/null")
+        report = self.report_within()
+        self.assertEqual(self.findings_for(report, "sample-project/.xo/agent.json"), [("read.special", "FAIL")])
+
+    def test_an_oversized_keep_file_is_reported_not_read(self) -> None:
+        path = self.state / "inbox" / "inbox.json"
+        with patch("services.doctor.reading.MAX_READ_BYTES", 16):
+            report = self.report()
+        self.assertEqual(self.findings_for(report, "inbox/inbox.json"), [("read.too_large", "FAIL")])
+        self.assertTrue(path.is_file())
+
+    def test_json_nested_too_deeply_is_one_finding_not_an_error(self) -> None:
+        # Before: a RecursionError escaped the reader and turned every check
+        # that lists projects into ERROR, hiding which file was bad.
+        path = self.projects / "sample-project" / ".xo" / "project.json"
+        path.write_text("[" * 100_000, encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+        report = self.report()
+        self.assertEqual(report["summary"]["ERROR"], 0)
+        self.assertEqual(self.findings_for(report, "sample-project/.xo/project.json"), [("read.invalid_json", "FAIL")])
+
+    def get_over_http(self) -> tuple[int, dict]:
+        app = FastAPI()
+        app.include_router(doctor_router.router)
+        response = TestClient(app, raise_server_exceptions=False).get("/api/doctor")
+        return response.status_code, (response.json() if response.status_code == 200 else {})
+
+    def test_a_file_name_that_is_not_utf8_still_gives_a_report(self) -> None:
+        # Before: the name reached the report as lone surrogates, the JSON
+        # response refused to encode them and GET /api/doctor answered 500.
+        try:
+            (self.state / os.fsdecode(b"bad\xff.json")).write_text("{}", encoding="utf-8")
+        except (OSError, UnicodeError):
+            self.skipTest("this filesystem refuses names that are not UTF-8")
+        status, report = self.get_over_http()
+        self.assertEqual(status, 200)
+        subjects = [f["subject"] for c in report["checks"] for f in c["findings"]]
+        self.assertIn("bad\\xff.json", subjects)
+
+    def test_a_timeline_name_with_a_lone_surrogate_still_gives_a_report(self) -> None:
+        other = "11111111-1111-4111-8111-111111111111"
+        (self.state / "projects" / other).mkdir()
+        (self.state / "projects" / other / "stats.json").write_text('{"schema": 2}', encoding="utf-8")
+        with open(self.state / "projects" / "timeline.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"pid": other, "project_id": "gone\ud800"}) + "\n")
+        status, report = self.get_over_http()
+        self.assertEqual(status, 200)
+        names = [f["details"].get("project_name") for c in report["checks"] for f in c["findings"]
+                 if f["id"] == "runtime.leftover"]
+        self.assertEqual(names, ["gone\\ud800"])
 
 
 if __name__ == "__main__":

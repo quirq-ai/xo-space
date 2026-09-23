@@ -15,11 +15,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from services.doctor.model import size
+
 #: A bad JSON file modified this recently may be an in-place write in progress;
 #: it is left out of this run (architecture §7.4).
 RECENT_WRITE_S = 5
 #: Entries one walk visits before it gives up and says so.
 MAX_WALK_ENTRIES = 50_000
+#: Files past this size are not read (the same bound as checks.MAX_FILE_BYTES).
+#: State files are small; a runaway one must not cost the server its memory.
+#: Read from the module at call time, so tests can lower it.
+MAX_READ_BYTES = 50 * 1024 * 1024
+
+
+def _special_kind(mode: int) -> str:
+    if stat.S_ISFIFO(mode):
+        return "a pipe"
+    if stat.S_ISSOCK(mode):
+        return "a socket"
+    if stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+        return "a device"
+    return "not a regular file"
 
 
 @dataclass(frozen=True)
@@ -37,12 +53,35 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
     document whose own schema leaves ``schema`` out of ``required``: an absent
     version there means the lowest accepted one, not a refused file."""
     try:
-        mtime = os.stat(path).st_mtime
-        raw = Path(path).read_bytes()
+        # stat() never blocks and never reads; everything that could is
+        # refused here, before any open(). A FIFO's open() waits for a writer
+        # forever, and a device such as /dev/zero reports st_size 0 and never
+        # ends, so the type check (not the size cap) is what protects the
+        # server from both.
+        info = os.stat(path)
+        if stat.S_ISDIR(info.st_mode):
+            return ReadResult("unreadable", "Is a directory")
+        if not stat.S_ISREG(info.st_mode):
+            return ReadResult("special", _special_kind(info.st_mode))
+        if info.st_size > MAX_READ_BYTES:
+            return ReadResult("too_large", size(info.st_size))
+        # O_NONBLOCK and the fstat below close the gap in which the path could
+        # be swapped for a FIFO after the stat above; on a regular file both
+        # are no-ops.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as handle:
+            opened_mode = os.fstat(handle.fileno()).st_mode
+            if not stat.S_ISREG(opened_mode):
+                return ReadResult("special", _special_kind(opened_mode))
+            # Bounded even if the file grew since the stat above.
+            raw = handle.read(MAX_READ_BYTES + 1)
     except FileNotFoundError:
         return ReadResult("absent")
     except OSError as exc:
         return ReadResult("unreadable", exc.strerror or type(exc).__name__)
+    if len(raw) > MAX_READ_BYTES:
+        return ReadResult("too_large", f"over {size(MAX_READ_BYTES)}")
+    mtime = info.st_mtime
     # A file dated AHEAD of the clock is not a write in progress: the negative
     # difference would otherwise make it "recent" forever, and a corrupt keep
     # file would never be reported. Restored backups, copied state roots and
@@ -60,6 +99,13 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
         # Position only: exc.msg is a fixed phrase, never the file's text.
         detail = f"{exc.msg} at line {exc.lineno} column {exc.colno}"
         return ReadResult("recent") if recent else ReadResult("invalid_json", detail)
+    except RecursionError:
+        # Thousands of nested brackets exhaust the parser's recursion limit
+        # instead of raising a decode error.
+        return ReadResult("recent") if recent else ReadResult("invalid_json", "nested too deeply to read")
+    except ValueError:
+        # int() refuses a number longer than sys.get_int_max_str_digits().
+        return ReadResult("recent") if recent else ReadResult("invalid_json", "holds a number too long to read")
     if not isinstance(value, dict):
         return ReadResult("wrong_type", type(value).__name__)
     if accepted is None:

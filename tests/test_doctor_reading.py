@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from services.doctor import model
-from services.doctor.reading import Tree, classify, measure_tree, readable_dir
+from services.doctor import model, reading
+from services.doctor.reading import ReadResult, Tree, classify, measure_tree, readable_dir
 
 ONE = frozenset({1})
 
@@ -53,6 +55,54 @@ class ClassifyTests(unittest.TestCase):
         path = self.write("a.json", b"{not json")
         os.utime(path, (self.later + 86400, self.later + 86400))
         self.assertEqual(classify(path, now=self.later, accepted=ONE).outcome, "invalid_json")
+
+    def classify_within(self, path: Path, seconds: float = 5) -> ReadResult:
+        """classify() in a daemon thread, so a read that blocks fails the test
+        instead of hanging the suite."""
+        box: list = []
+        worker = threading.Thread(target=lambda: box.append(classify(path, now=self.later, accepted=ONE)), daemon=True)
+        worker.start()
+        worker.join(seconds)
+        if worker.is_alive():
+            self.fail(f"classify() was still reading {path.name} after {seconds}s")
+        return box[0]
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes")
+    def test_a_pipe_is_never_opened(self) -> None:
+        # Opening a pipe for reading waits for a writer that never comes.
+        path = self.dir / "a.json"
+        os.mkfifo(path)
+        self.assertEqual(self.classify_within(path).outcome, "special")
+
+    @unittest.skipUnless(os.path.exists("/dev/null"), "needs /dev/null")
+    def test_a_link_to_a_device_is_never_opened(self) -> None:
+        # /dev/null, not /dev/zero: both are character devices, so the
+        # guard is exercised the same way, but if it ever regresses this
+        # reads nothing instead of reading without end and exhausting the
+        # machine's memory (which a /dev/zero version of this test did).
+        path = self.dir / "a.json"
+        path.symlink_to("/dev/null")
+        self.assertEqual(self.classify_within(path).outcome, "special")
+
+    def test_a_file_over_the_read_limit_is_not_read(self) -> None:
+        path = self.write("a.json", b'{"schema": 1, "pad": "' + b"a" * 200 + b'"}')
+        with patch.object(reading, "MAX_READ_BYTES", 64):
+            result = classify(path, now=self.later, accepted=ONE)
+        self.assertEqual((result.outcome, result.value), ("too_large", None))
+
+    def test_a_file_at_the_read_limit_is_read(self) -> None:
+        data = b'{"schema": 1}'
+        with patch.object(reading, "MAX_READ_BYTES", len(data)):
+            result = classify(self.write("a.json", data), now=self.later, accepted=ONE)
+        self.assertEqual(result.outcome, "ok")
+
+    def test_json_nested_too_deeply_to_parse_is_invalid_json(self) -> None:
+        result = classify(self.write("a.json", b"[" * 100_000), now=self.later, accepted=ONE)
+        self.assertEqual(result.outcome, "invalid_json")
+
+    def test_a_number_too_long_to_convert_is_invalid_json(self) -> None:
+        result = classify(self.write("a.json", b'{"schema": 1' + b"0" * 5000 + b"}"), now=self.later, accepted=ONE)
+        self.assertEqual(result.outcome, "invalid_json")
 
     def test_wrong_type(self) -> None:
         result = classify(self.write("a.json", b"[]"), now=self.later, accepted=ONE)

@@ -90,9 +90,17 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, 
             "empty": "The file is empty.",
             "invalid_json": f"The file is not valid JSON ({result.detail}).",
             "wrong_type": f"The file holds a JSON {result.detail}, not an object.",
+            "special": f"This is {result.detail}, not a file.",
+            "too_large": f"The file is {result.detail}, too large to check.",
         }[result.outcome]
         if result.outcome == "unreadable":
             why = "This is not corruption. Check the file's permissions and the disk; until then nothing can use it."
+        elif result.outcome == "special":
+            why = ("Reading it could wait or run forever, so it was not opened, and the store that owns this "
+                   "name can't use it either. Replace it with the real file.")
+        elif result.outcome == "too_large":
+            why = ("It was not read, so it was not checked. State files are small: something may be writing "
+                   "to this one without limit.")
         elif keep:
             why = "The store that owns it can't use it, and what it records exists nowhere else."
         else:

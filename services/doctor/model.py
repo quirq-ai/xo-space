@@ -62,6 +62,26 @@ class CheckResult:
         return out
 
 
+def printable(value: Any) -> Any:
+    """``value`` with every string made encodable as UTF-8, recursively.
+
+    A file name that isn't valid UTF-8 reaches Python as lone surrogates
+    (``\\udcff``), and so can a ``"\\ud800"`` escape parsed from JSON on disk.
+    The HTTP response's UTF-8 encoder refuses both, which turned one oddly
+    named file into a 500 with no report at all. Undecodable name bytes are
+    shown as ``\\xNN``, any other lone surrogate as ``\\uNNNN``."""
+    if isinstance(value, str):
+        try:
+            return value.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, dict):
+        return {printable(key): printable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [printable(item) for item in value]
+    return value
+
+
 def ago(seconds: float) -> str:
     seconds = max(0, int(seconds))
     for unit, span in (("day", 86400), ("hour", 3600), ("minute", 60)):

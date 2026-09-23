@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from services.cowork_agent.helpers import normalize_agent_id
 from services.doctor.context import Context
-from services.doctor.model import FAIL, WARN, Finding, ago, size
+from services.doctor.model import FAIL, WARN, Finding, ago, printable, size
 from services.doctor.projects import is_safe_runtime_key
 from services.doctor.reading import Tree, measure_tree, readable_dir
 from services.errors import ServiceError
@@ -290,5 +290,5 @@ def move_aside(key: str, *, now: Optional[float] = None) -> dict:
     except OSError as exc:
         raise DoctorError("doctor_move_failed", f"Could not move {shown}: {exc.strerror or exc}. Nothing was moved.", 500) from exc
     logger.info("doctor: moved runtime leftover %s aside to %s", key, target)
-    return {"moved": True, "key": key, "to": ctx.display(target),
-            "bytes": leftover.tree.bytes, "files": leftover.tree.files}
+    return printable({"moved": True, "key": key, "to": ctx.display(target),
+                       "bytes": leftover.tree.bytes, "files": leftover.tree.files})

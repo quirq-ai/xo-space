@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from services.doctor import inventory
+from services.doctor.model import printable
 from services.doctor.reading import ReadResult, classify
 
 if TYPE_CHECKING:
@@ -66,12 +67,14 @@ class Context:
         return self._projects
 
     def display(self, path: Path) -> str:
-        """The host path in Docker, where container paths mean nothing to a person."""
+        """The host path in Docker, where container paths mean nothing to a
+        person. Always encodable as UTF-8, because it also reaches the error
+        messages of the move-aside action, which the report sanitizer never sees."""
         for root, host in ((self.state_root, self.host_state), (self.projects_root, self.host_projects)):
             if not host:
                 continue
             try:
-                return str(Path(host) / Path(path).relative_to(root))
+                return printable(str(Path(host) / Path(path).relative_to(root)))
             except ValueError:
                 continue
-        return str(path)
+        return printable(str(path))

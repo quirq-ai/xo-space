@@ -9,7 +9,7 @@ from typing import Callable
 
 from services.doctor import checks, leftovers
 from services.doctor.context import Context
-from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, rank, worst
+from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, printable, rank, worst
 from services.doctor.reading import readable_dir
 from services.timestamps import iso
 
@@ -79,7 +79,9 @@ def run_checks(*, now: float | None = None) -> dict:
     else:
         results = [_run_one(family, check, ctx) for family, check in CHECKS]
     levels = [result.level for result in results]
-    return {
+    # printable: file and project names reach the report verbatim, and one
+    # that isn't valid UTF-8 would otherwise make the response unencodable.
+    return printable({
         "schema": 1,
         "checked_at": iso(datetime.fromtimestamp(ctx.now, timezone.utc)),
         "duration_ms": round((time.monotonic() - started) * 1000),
@@ -87,4 +89,4 @@ def run_checks(*, now: float | None = None) -> dict:
         "summary": {level: levels.count(level) for level in LEVELS},
         "roots": {"state": ctx.display(ctx.state_root), "projects": ctx.display(ctx.projects_root)},
         "checks": [result.to_dict() for result in results],
-    }
+    })
