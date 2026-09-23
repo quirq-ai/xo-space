@@ -63,6 +63,19 @@ class SpaceIdentityTests(DoctorSandbox):
             self.write_space("space-1", roots=other, age_s=10)
             self.assertEqual(self.identity(), [])
 
+    def test_roots_that_cannot_be_resolved_are_reported_not_an_error(self) -> None:
+        # Before: a NUL, an unknown ~user or a symlink loop in a recorded root
+        # raised from Path.resolve() and put the whole space check into ERROR.
+        loop = self.state.parent / "loop"
+        loop.symlink_to(loop)
+        for bad in ("bad\x00path", "~no-such-user-xo-doctor/projects", str(loop)):
+            with self.subTest(root=bad):
+                self.write_space(None, roots={"projects_root": bad, "state_root": str(self.state)})
+                report = self.report()
+                space = [c for c in report["checks"] if c["id"] == "space"][0]
+                self.assertEqual(space["level"], "WARN", space)
+                self.assertIn("projects_root", space["findings"][0]["observed"])
+
     def test_an_unreadable_space_json_is_left_to_the_read_check(self) -> None:
         (self.projects / ".xo").mkdir()
         (self.projects / ".xo" / "space.json").write_text("{", encoding="utf-8")

@@ -35,7 +35,12 @@ def _special_kind(mode: int) -> str:
         return "a socket"
     if stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
         return "a device"
-    return "not a regular file"
+    return "a special file"
+
+
+#: How much one os.read() asks for. A single read(MAX_READ_BYTES + 1) reserves
+#: the whole limit up front, even for a 12-byte file.
+READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -44,6 +49,34 @@ class ReadResult:
     detail: str = ""
     value: Optional[dict] = None
     schema: Any = None
+
+
+def _read_regular(path: Path) -> "bytes | ReadResult":
+    """The bytes of ``path``, at most ``MAX_READ_BYTES`` of them, or the
+    ReadResult that says why not. Raises OSError as open() and read() do."""
+    # O_NONBLOCK and the fstat close the gap in which the path could be
+    # swapped for a FIFO or a folder after the caller's stat; on a regular
+    # file both are no-ops.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISDIR(mode):
+            return ReadResult("unreadable", "Is a directory")
+        if not stat.S_ISREG(mode):
+            return ReadResult("special", _special_kind(mode))
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, READ_CHUNK_BYTES)
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > MAX_READ_BYTES:
+                # The file grew past the limit since the caller's stat.
+                return ReadResult("file_too_large", f"over {size(MAX_READ_BYTES)}")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
 
 
 def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
@@ -64,23 +97,14 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
         if not stat.S_ISREG(info.st_mode):
             return ReadResult("special", _special_kind(info.st_mode))
         if info.st_size > MAX_READ_BYTES:
-            return ReadResult("too_large", size(info.st_size))
-        # O_NONBLOCK and the fstat below close the gap in which the path could
-        # be swapped for a FIFO after the stat above; on a regular file both
-        # are no-ops.
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
-        with os.fdopen(fd, "rb") as handle:
-            opened_mode = os.fstat(handle.fileno()).st_mode
-            if not stat.S_ISREG(opened_mode):
-                return ReadResult("special", _special_kind(opened_mode))
-            # Bounded even if the file grew since the stat above.
-            raw = handle.read(MAX_READ_BYTES + 1)
+            return ReadResult("file_too_large", size(info.st_size))
+        raw = _read_regular(path)
     except FileNotFoundError:
         return ReadResult("absent")
     except OSError as exc:
         return ReadResult("unreadable", exc.strerror or type(exc).__name__)
-    if len(raw) > MAX_READ_BYTES:
-        return ReadResult("too_large", f"over {size(MAX_READ_BYTES)}")
+    if isinstance(raw, ReadResult):
+        return raw
     mtime = info.st_mtime
     # A file dated AHEAD of the clock is not a write in progress: the negative
     # difference would otherwise make it "recent" forever, and a corrupt keep

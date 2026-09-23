@@ -77,7 +77,8 @@ def printable(value: Any) -> Any:
             return value.encode("utf-8", "backslashreplace").decode("utf-8")
     if isinstance(value, dict):
         return {printable(key): printable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set, frozenset)):
+        # A set becomes a list, which is what JSON would make of it anyway.
         return [printable(item) for item in value]
     return value
 

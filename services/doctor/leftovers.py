@@ -79,11 +79,14 @@ def survey(ctx: Context) -> Survey:
             f"{len(candidates)} runtime data folder(s) exist, but the projects folder is missing, unreadable or empty.",
             "Every project's runtime data would look abandoned. Check that the projects folder is mounted and that XO_PROJECTS_ROOT is right.",
         ), [])
-    unknown = [project.name for project in live if project.read.outcome not in ("ok", "absent")]
-    if unknown:
+    unreadable = [project for project in live if project.read.outcome not in ("ok", "absent")]
+    if unreadable:
+        unknown = [project.name for project in unreadable]
+        reasons = [f"{project.name} ({project.read.detail or project.read.outcome.replace('_', ' ')})"
+                   for project in unreadable]
         return Survey(Finding(
             "runtime.keys_unknown", WARN, ", ".join(unknown), ctx.display(ctx.projects_root),
-            f"project.json can't be read in: {', '.join(unknown)}.",
+            f"project.json can't be read in: {', '.join(reasons)}.",
             "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked. Fix the project.json files reported above first.",
         ), [])
     in_use = frozenset().union(*(project.keys_in_use for project in live))
@@ -117,7 +120,13 @@ def _last_known_names(ctx: Context) -> dict[str, str]:
             # reading here.
             return {}
         size_bytes = info.st_size
-        with open(path, "rb") as handle:
+        # O_NONBLOCK and the fstat below close the gap in which the file could
+        # be swapped for a FIFO after the stat above (reading.classify does
+        # the same); on a regular file both are no-ops.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return {}
             seeked = size_bytes > NAME_SCAN_BYTES
             if seeked:
                 handle.seek(size_bytes - NAME_SCAN_BYTES)
@@ -287,8 +296,10 @@ def move_aside(key: str, *, now: Optional[float] = None) -> dict:
         if not source.exists():
             raise gone from exc
         raise DoctorError("doctor_move_failed", f"Could not move {shown}: {exc.strerror or exc}. Nothing was moved.", 500) from exc
-    except OSError as exc:
-        raise DoctorError("doctor_move_failed", f"Could not move {shown}: {exc.strerror or exc}. Nothing was moved.", 500) from exc
+    except (OSError, RuntimeError) as exc:
+        # RuntimeError: Path.resolve() on a symlink loop, which is not an OSError.
+        detail = getattr(exc, "strerror", None) or exc
+        raise DoctorError("doctor_move_failed", f"Could not move {shown}: {detail}. Nothing was moved.", 500) from exc
     logger.info("doctor: moved runtime leftover %s aside to %s", key, target)
     return printable({"moved": True, "key": key, "to": ctx.display(target),
                        "bytes": leftover.tree.bytes, "files": leftover.tree.files})

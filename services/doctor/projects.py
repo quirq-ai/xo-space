@@ -51,6 +51,19 @@ def _pid(value: Optional[dict]) -> Optional[str]:
     return key if is_safe_runtime_key(key) else None
 
 
+def _dangling(path: Path) -> bool:
+    """A symlink whose target can't be reached: missing, or a loop."""
+    try:
+        return path.is_symlink() and not path.exists()
+    except OSError:
+        return False
+
+
+def _unknown(entry: Path, xo: Path, why: str) -> Project:
+    return Project(entry.name, xo, ReadResult("unreadable", why), None,
+                   frozenset({normalize_agent_id(entry.name)}))
+
+
 def scan(ctx: "Context") -> list[Project]:
     """Every non-hidden directory directly under the projects root, symlinks
     included (more keys in use only makes the leftover rule safer)."""
@@ -63,12 +76,21 @@ def scan(ctx: "Context") -> list[Project]:
     for entry in entries:
         if entry.name.startswith("."):
             continue
+        xo = entry / ".xo"
         try:
             if not entry.is_dir():
+                if _dangling(entry):
+                    # A project on storage that isn't there (an unmounted disk,
+                    # a moved target). Its pid can't be read, so its runtime
+                    # data must not look abandoned: an unreadable project
+                    # blocks every move-aside (leftovers.survey).
+                    found.append(_unknown(entry, xo, "the folder links to something missing"))
                 continue
         except OSError:
             continue
-        xo = entry / ".xo"
+        if _dangling(xo):
+            found.append(_unknown(entry, xo, ".xo links to something missing"))
+            continue
         result = ctx.read(xo / "project.json", spec)
         pid = _pid(result.value)
         keys = {normalize_agent_id(entry.name)} | ({pid} if pid else set())

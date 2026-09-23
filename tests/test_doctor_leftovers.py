@@ -351,6 +351,27 @@ class MoveAsideTests(LeftoverSandbox):
         self.projects.mkdir()
         self.assertEqual(self.code(OTHER), ("doctor_projects_root_suspect", 409))
 
+    def test_refuses_while_a_project_folder_links_to_missing_storage(self) -> None:
+        # A project on a disk that isn't mounted: its runtime folder is keyed
+        # by a pid nobody can read, so it must not look abandoned.
+        self.runtime(OTHER)
+        (self.projects / "on-a-missing-disk").symlink_to(self.state.parent / "unmounted" / "project")
+        self.assertEqual(self.code(OTHER), ("doctor_keys_unknown", 409))
+        [blocked] = [f for f in self.runtime_findings() if f["id"] == "runtime.keys_unknown"]
+        self.assertEqual(blocked["subject"], "on-a-missing-disk")
+        self.assertTrue(all("action" not in f for f in self.runtime_findings()))
+
+    def test_refuses_while_a_project_xo_links_to_missing_storage(self) -> None:
+        self.runtime(OTHER)
+        (self.projects / "external-xo").mkdir()
+        (self.projects / "external-xo" / ".xo").symlink_to(self.state.parent / "unmounted" / ".xo")
+        self.assertEqual(self.code(OTHER), ("doctor_keys_unknown", 409))
+
+    def test_a_state_root_symlink_loop_is_refused_not_raised(self) -> None:
+        shutil.rmtree(self.state)
+        self.state.symlink_to(self.state)
+        self.assertIn(self.code(OTHER)[0], ("doctor_gone", "doctor_move_failed"))
+
     def test_a_failed_rename_moves_nothing_and_never_copies(self) -> None:
         self.runtime(OTHER)
         with patch("services.doctor.leftovers.os.rename", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")):

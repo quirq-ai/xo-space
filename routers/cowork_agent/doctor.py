@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -26,9 +27,21 @@ class MoveAside(ForbidExtra):
     """No fields: the body exists so the JSON requirement applies."""
 
 
+#: The run in progress, and the event loop it belongs to. Requests that arrive
+#: while it runs share it: each run holds a thread from the pool the rest of
+#: the server shares and costs memory while it parses a large state root, so
+#: several open Quirq pages must not multiply either.
+_in_flight: Optional[tuple[asyncio.AbstractEventLoop, "asyncio.Future[dict]"]] = None
+
+
 @router.get("/api/doctor")
 async def get_doctor_report() -> dict:
-    return await asyncio.to_thread(run.run_checks)
+    global _in_flight
+    loop = asyncio.get_running_loop()
+    if _in_flight is None or _in_flight[0] is not loop or _in_flight[1].done():
+        _in_flight = (loop, asyncio.ensure_future(asyncio.to_thread(run.run_checks)))
+    # shield: one caller disconnecting must not cancel the run the others wait on.
+    return await asyncio.shield(_in_flight[1])
 
 
 @router.post("/api/doctor/runtime-leftovers/{key}/move-aside")

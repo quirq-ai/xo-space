@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +59,47 @@ class DoctorRouteTests(unittest.TestCase):
                 response = self.client.post(PATH, json={})
                 self.assertEqual(response.status_code, status)
                 self.assertEqual(response.json()["detail"], {"code": code, "message": "message"})
+
+
+class OneRunAtATimeTests(unittest.TestCase):
+    """Requests that arrive while a run is in progress share it. A run holds a
+    thread from the pool the rest of the server shares, and a large state root
+    costs memory while it parses, so page opens must not multiply either."""
+
+    def test_concurrent_requests_share_one_run(self) -> None:
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def slow_run() -> dict:
+            calls.append(1)
+            started.set()
+            release.wait(5)
+            return {"schema": 1, "n": len(calls)}
+
+        async def three_requests() -> list:
+            first = asyncio.ensure_future(doctor.get_doctor_report())
+            await asyncio.to_thread(started.wait, 5)
+            rest = [asyncio.ensure_future(doctor.get_doctor_report()) for _ in range(2)]
+            await asyncio.sleep(0.05)
+            release.set()
+            return await asyncio.gather(first, *rest)
+
+        with patch("routers.cowork_agent.doctor.run.run_checks", side_effect=slow_run):
+            reports = asyncio.run(three_requests())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(reports, [{"schema": 1, "n": 1}] * 3)
+
+    def test_a_finished_run_is_not_reused(self) -> None:
+        with patch("routers.cowork_agent.doctor.run.run_checks", side_effect=[{"n": 1}, {"n": 2}]) as run_checks:
+            first = asyncio.run(doctor.get_doctor_report())
+            second = asyncio.run(doctor.get_doctor_report())
+        self.assertEqual((first, second, run_checks.call_count), ({"n": 1}, {"n": 2}, 2))
+
+    def test_a_failed_run_is_not_reused(self) -> None:
+        with patch("routers.cowork_agent.doctor.run.run_checks", side_effect=[RuntimeError("boom"), {"n": 2}]):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(doctor.get_doctor_report())
+            self.assertEqual(asyncio.run(doctor.get_doctor_report()), {"n": 2})
 
 
 if __name__ == "__main__":

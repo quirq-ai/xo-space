@@ -91,14 +91,14 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, 
             "invalid_json": f"The file is not valid JSON ({result.detail}).",
             "wrong_type": f"The file holds a JSON {result.detail}, not an object.",
             "special": f"This is {result.detail}, not a file.",
-            "too_large": f"The file is {result.detail}, too large to check.",
+            "file_too_large": f"The file is {result.detail}, too large to check.",
         }[result.outcome]
         if result.outcome == "unreadable":
             why = "This is not corruption. Check the file's permissions and the disk; until then nothing can use it."
         elif result.outcome == "special":
             why = ("Reading it could wait or run forever, so it was not opened, and the store that owns this "
                    "name can't use it either. Replace it with the real file.")
-        elif result.outcome == "too_large":
+        elif result.outcome == "file_too_large":
             why = ("It was not read, so it was not checked. State files are small: something may be writing "
                    "to this one without limit.")
         elif keep:
@@ -178,6 +178,17 @@ def reads(ctx: Context) -> list[Finding]:
 SPACE_REFRESH_S = 60
 
 
+def _resolved(recorded: str) -> Path | None:
+    """A root space.json records, resolved the way the server resolves its
+    own, or None when it can't be: a NUL byte, an unknown ~user or a symlink
+    loop. None never equals a current root, so it is reported as differing
+    instead of turning the whole check into ERROR."""
+    try:
+        return Path(recorded).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def space_identity(ctx: Context) -> list[Finding]:
     """F1: space.json copies XO_SPACE_ID with no carry-forward (space_json.py:197)."""
     path = ctx.projects_root / ".xo" / "space.json"
@@ -207,7 +218,7 @@ def space_identity(ctx: Context) -> list[Finding]:
         pairs = (("projects_root", ctx.projects_root), ("state_root", ctx.state_root))
         stale = [name for name, current in pairs
                  if isinstance(stored_roots.get(name), str)
-                 and Path(stored_roots[name]).expanduser().resolve() != current]
+                 and _resolved(stored_roots[name]) != current]
         if stale:
             out.append(Finding("space.identity", WARN, "space.json roots", shown,
                                f"space.json records different {' and '.join(stale)} than this server uses.",

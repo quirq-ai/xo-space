@@ -41,6 +41,13 @@ class BaselineTests(DoctorSandbox):
         self.assertEqual(self.ids(report), {"roots.state_unavailable"})
         self.assertFalse(self.state.exists())
 
+    def test_a_state_root_that_is_a_symlink_loop_is_one_fail_not_a_crash(self) -> None:
+        # Before: Path.resolve() raised RuntimeError("Symlink loop") and GET
+        # /api/doctor answered 500 with no report at all.
+        shutil.rmtree(self.state)
+        self.state.symlink_to(self.state)
+        self.assertEqual(self.ids(self.report()), {"roots.state_unavailable"})
+
     def test_a_check_that_raises_is_an_error_and_the_rest_still_run(self) -> None:
         def boom(ctx):
             raise RuntimeError("broken check")
@@ -288,7 +295,7 @@ class HostileFileTests(DoctorSandbox):
         path = self.state / "inbox" / "inbox.json"
         with patch("services.doctor.reading.MAX_READ_BYTES", 16):
             report = self.report()
-        self.assertEqual(self.findings_for(report, "inbox/inbox.json"), [("read.too_large", "FAIL")])
+        self.assertEqual(self.findings_for(report, "inbox/inbox.json"), [("read.file_too_large", "FAIL")])
         self.assertTrue(path.is_file())
 
     def test_json_nested_too_deeply_is_one_finding_not_an_error(self) -> None:

@@ -88,7 +88,18 @@ class ClassifyTests(unittest.TestCase):
         path = self.write("a.json", b'{"schema": 1, "pad": "' + b"a" * 200 + b'"}')
         with patch.object(reading, "MAX_READ_BYTES", 64):
             result = classify(path, now=self.later, accepted=ONE)
-        self.assertEqual((result.outcome, result.value), ("too_large", None))
+        self.assertEqual((result.outcome, result.value), ("file_too_large", None))
+
+    def test_a_read_never_asks_for_more_than_one_chunk_at_a_time(self) -> None:
+        # One read(MAX_READ_BYTES + 1) reserves the whole 50 MB up front, even
+        # for a 12-byte file; under strict memory overcommit that fails with a
+        # MemoryError, which is not an OSError and would escape classify().
+        path = self.write("a.json", b'{"schema": 1}')
+        with patch.object(reading.os, "read", wraps=os.read) as spy:
+            result = classify(path, now=self.later, accepted=ONE)
+        self.assertEqual(result.outcome, "ok")
+        self.assertTrue(spy.called, "classify() must read through os.read in chunks")
+        self.assertLessEqual(max(call.args[1] for call in spy.call_args_list), reading.READ_CHUNK_BYTES)
 
     def test_a_file_at_the_read_limit_is_read(self) -> None:
         data = b'{"schema": 1}'
@@ -183,6 +194,21 @@ class MeasureTreeTests(unittest.TestCase):
         tree = measure_tree(self.dir)
         self.assertIsNone(tree.newest)
         self.assertFalse(tree.truncated)
+
+
+class PrintableTests(unittest.TestCase):
+    def test_valid_text_is_unchanged(self) -> None:
+        for text in ("plain", "é€", "emoji \U0001F600", "back\\slash", "\x07ctl"):
+            with self.subTest(text=text):
+                self.assertEqual(model.printable(text), text)
+
+    def test_undecodable_name_bytes_and_lone_surrogates_are_escaped(self) -> None:
+        self.assertEqual(model.printable("bad\udcff"), "bad\\xff")
+        self.assertEqual(model.printable("x\ud800"), "x\\ud800")
+
+    def test_containers_are_cleaned_all_the_way_down(self) -> None:
+        cleaned = model.printable({"k\udcff": ["a\udcff", ("b\udcfe",), {"c\udcfd"}], "n": 3})
+        self.assertEqual(cleaned, {"k\\xff": ["a\\xff", ["b\\xfe"], ["c\\xfd"]], "n": 3})
 
 
 class ModelTests(unittest.TestCase):

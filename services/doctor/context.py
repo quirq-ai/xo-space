@@ -21,7 +21,13 @@ def _root(variable: str, default: str) -> Path:
     # mkdir xo_projects_root() performs. Inside the server, roots.env has
     # already been applied to the environment (server.py:63-98).
     raw = (os.getenv(variable, "") or "").strip() or default
-    return Path(raw).expanduser().resolve()
+    try:
+        return Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        # A symlink loop or an unknown ~user: not a folder anyone can use.
+        # Kept unresolved, so readable_dir() reports it as unavailable instead
+        # of the whole run raising (and GET /api/doctor answering 500).
+        return Path(os.path.abspath(raw))
 
 
 @dataclass
