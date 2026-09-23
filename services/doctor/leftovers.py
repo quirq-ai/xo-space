@@ -195,7 +195,9 @@ def _split_findings(ctx: Context) -> list[Finding]:
         if folder_dir.is_symlink() or not folder_dir.is_dir():
             continue
         tree = measure_tree(folder_dir)
-        if tree.newest is not None and ctx.now - tree.newest < SPLIT_MIN_AGE_S:
+        # Forward only, as in reading.classify: a future-dated folder would
+        # otherwise be skipped as "being written" on every run.
+        if tree.newest is not None and 0 <= ctx.now - tree.newest < SPLIT_MIN_AGE_S:
             continue
         pid_dir = runtime / project.pid
         if pid_dir.is_dir():

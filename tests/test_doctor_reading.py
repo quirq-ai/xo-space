@@ -49,6 +49,11 @@ class ClassifyTests(unittest.TestCase):
         path = self.write("a.json", b'{"schema": 1}')
         self.assertEqual(classify(path, now=time.time(), accepted=ONE).outcome, "ok")
 
+    def test_a_bad_file_dated_in_the_future_is_still_judged(self) -> None:
+        path = self.write("a.json", b"{not json")
+        os.utime(path, (self.later + 86400, self.later + 86400))
+        self.assertEqual(classify(path, now=self.later, accepted=ONE).outcome, "invalid_json")
+
     def test_wrong_type(self) -> None:
         result = classify(self.write("a.json", b"[]"), now=self.later, accepted=ONE)
         self.assertEqual((result.outcome, result.detail), ("wrong_type", "list"))

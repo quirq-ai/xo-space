@@ -71,6 +71,17 @@ class DetectionTests(LeftoverSandbox):
         [finding] = self.runtime_findings(now=time.time() + 60)
         self.assertNotIn("action", finding)
 
+    def test_a_folder_dated_in_the_future_has_no_action(self) -> None:
+        folder = self.state / "projects" / "11111111-1111-4111-8111-111111111111"
+        folder.mkdir(parents=True)
+        (folder / "stats.json").write_text("{}", encoding="utf-8")
+        ahead = self.now + 86400
+        for path in (folder / "stats.json", folder):
+            os.utime(path, (ahead, ahead))
+        leftover = [f for f in self.problems() if f["id"] == "runtime.leftover"]
+        self.assertEqual(len(leftover), 1)
+        self.assertIsNone(leftover[0].get("action"))
+
     def test_a_folder_named_after_a_project_is_not_leftover(self) -> None:
         self.runtime("sample-project")  # pre-pid runtime folder, not yet merged
         self.assertEqual([f for f in self.runtime_findings() if f["id"] == "runtime.leftover"], [])
@@ -150,6 +161,15 @@ class RuntimeSplitTests(LeftoverSandbox):
         self.runtime("sample-project")
         (self.projects / "Sample-Project").mkdir()
         self.assertEqual(self.splits(), [])
+
+    def test_a_folder_key_copy_dated_in_the_future_still_warns(self) -> None:
+        self.runtime("sample-project")
+        folder = self.state / "projects" / "sample-project"
+        ahead = self.now + 86400
+        for path in (folder / "stats.json", folder / "sessions", folder):
+            os.utime(path, (ahead, ahead))
+        [finding] = self.splits()
+        self.assertEqual(finding["subject"], "sample-project")
 
     def test_a_folder_key_equal_to_another_projects_pid_does_not_warn(self) -> None:
         self.runtime("sample-project")

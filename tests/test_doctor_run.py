@@ -65,6 +65,13 @@ class ReadCheckTests(DoctorSandbox):
         path.write_text("", encoding="utf-8")
         self.assertEqual(self.problems(self.report(now=path.stat().st_mtime + 1)), [])
 
+    def test_a_corrupt_file_dated_in_the_future_is_reported(self) -> None:
+        path = self.state / "inbox" / "inbox.json"
+        path.write_text("{corrupt", encoding="utf-8")
+        ahead = self.now + 86400
+        os.utime(path, (ahead, ahead))
+        self.assertIn("read.invalid_json", self.ids())
+
     def test_an_empty_rebuildable_file_warns(self) -> None:
         (self.state / "cache" / "stats.json").write_text("", encoding="utf-8")
         finding = self.finding("read.empty")

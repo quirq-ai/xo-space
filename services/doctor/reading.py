@@ -40,7 +40,11 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]]) -> R
         return ReadResult("absent")
     except OSError as exc:
         return ReadResult("unreadable", exc.strerror or type(exc).__name__)
-    recent = now - mtime < RECENT_WRITE_S
+    # A file dated AHEAD of the clock is not a write in progress: the negative
+    # difference would otherwise make it "recent" forever, and a corrupt keep
+    # file would never be reported. Restored backups, copied state roots and
+    # NFS or container clock skew all produce future mtimes.
+    recent = 0 <= now - mtime < RECENT_WRITE_S
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
