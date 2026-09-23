@@ -135,6 +135,17 @@ def reads(ctx: Context) -> list[Finding]:
     # state root (F7); a plain string slice does the same job on Linux, where
     # os.sep is already "/".
     prefix = os.path.join(str(ctx.state_root), "")
+    # read.too_large and the unreadable-folder findings go first: run._cap
+    # sorts stably by level, so on a badly broken state root with well over
+    # MAX_FINDINGS_PER_CHECK per-file FAILs, these two are the ones that say
+    # the report is incomplete and must never fall past the cap into the
+    # rollup themselves.
+    if truncated:
+        out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
+                           f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
+                           "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy."))
+    for path in sorted(unreadable_dirs):
+        out.append(_unreadable_dir_finding(ctx, path, str(path)[len(prefix):]))
     for path in files:
         rel = str(path)[len(prefix):]
         spec = inventory.spec_for(inventory.STATE, rel)
@@ -142,8 +153,6 @@ def reads(ctx: Context) -> list[Finding]:
             unknown.append((rel, path))
             continue
         _judge(ctx, out, path, rel, spec)
-    for path in sorted(unreadable_dirs):
-        out.append(_unreadable_dir_finding(ctx, path, str(path)[len(prefix):]))
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
                inventory.spec_for(inventory.WORKSPACE, name))
@@ -154,10 +163,6 @@ def reads(ctx: Context) -> list[Finding]:
     for rel, path in unknown[:MAX_UNKNOWN_LISTED]:
         out.append(Finding("inventory.unknown_file", OK, rel, ctx.display(path),
                            "A file this version of the doctor doesn't know.", "Listed for information only."))
-    if truncated:
-        out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
-                           f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
-                           "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy."))
     return out
 
 
@@ -237,8 +242,10 @@ def stale_temps(ctx: Context) -> list[Finding]:
     """F4. One agent-neutral rule instead of a list of writers (architecture §8.2).
 
     In the state root a hidden file also counts (mkstemp names such as
-    ``.state-XXXX.json``). In a git-tracked ``.xo/`` it doesn't, because
-    files like ``.gitkeep`` are legitimate there.
+    ``.state-XXXX.json``), except for the names in INERT_HIDDEN_NAMES
+    (``.DS_Store``, ``.localized``, ``.gitkeep``, ``.gitignore``, ``.keep``),
+    which are legitimate there too. In a git-tracked ``.xo/`` a hidden file
+    never counts, because names like ``.gitkeep`` are legitimate there.
     """
     skip_top = {".locks", layout.quarantine_dir().name}
     candidates: list[tuple[str, Path]] = []
@@ -292,6 +299,10 @@ def private_permissions(ctx: Context) -> list[Finding]:
     prefix = os.path.join(str(ctx.state_root), "")
     for path in files:
         rel = str(path)[len(prefix):]
+        # Cheap prefix check first: spec_for (a pattern scan) only runs for
+        # the small minority of files that could even be private (F7).
+        if not rel.startswith(("secrets/", "settings/")):
+            continue
         spec = inventory.spec_for(inventory.STATE, rel)
         if spec is None or spec.pattern not in PRIVATE_PATTERNS:
             continue

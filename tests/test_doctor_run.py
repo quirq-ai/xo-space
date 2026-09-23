@@ -186,6 +186,22 @@ class ReportSizeTests(DoctorSandbox):
         ids = [f["id"] for c in self.report()["checks"] for f in c["findings"]]
         self.assertNotIn("read.truncated", ids)
 
+    def test_a_truncated_walk_survives_the_cap_alongside_105_corrupt_shards(self) -> None:
+        # 105 corrupt KEEP shards are already >MAX_FINDINGS_PER_CHECK FAILs on
+        # their own; read.too_large must not be pushed past the cap by them.
+        self._corrupt_shards(105)
+        real_walk = inventory.walk_files
+
+        def force_truncated(root, limit=inventory.MAX_WALK_ENTRIES):
+            found, _truncated, unreadable = real_walk(root, limit)
+            return found, True, unreadable
+
+        with patch.object(inventory, "walk_files", force_truncated):
+            report = self.report()
+        read = [c for c in report["checks"] if c["id"] == "read"][0]
+        ids = [f["id"] for f in read["findings"]]
+        self.assertIn("read.too_large", ids)
+
 
 class ReadOnlyTests(DoctorSandbox):
     """Architecture §12 invariant 1: a run changes nothing and creates nothing."""

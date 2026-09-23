@@ -52,7 +52,7 @@ def _cap(family: str, findings: list[Finding]) -> list[Finding]:
         # list: informational OK rows (inventory.unknown_file) sort last and
         # are dropped first, and must not be announced as failures.
         f"{family}.truncated", worst(finding.level for finding in dropped), family, "",
-        f"{len(dropped):,} more finding(s) of this kind are not listed.",
+        f"{len(dropped):,} more finding(s) from this check are not listed.",
         "The list is capped so the report stays readable. Fix the ones above and run the checks again.",
         details={"dropped": len(dropped)},
     )]

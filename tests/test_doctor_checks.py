@@ -10,8 +10,13 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from services.doctor import checks, inventory
+from services.doctor.context import Context
 from services.timestamps import iso
 from tests.doctor_sandbox import DoctorSandbox, _Statvfs
+
+#: Captured before DoctorSandbox.setUp() ever patches os.statvfs, so a test
+#: can run a check against whatever this machine's real filesystem reports.
+_REAL_STATVFS = os.statvfs
 
 
 class SpaceIdentityTests(DoctorSandbox):
@@ -212,6 +217,13 @@ class PrivatePermissionTests(DoctorSandbox):
         self.assertEqual([f["subject"] for f in found], ["secrets/secrets.env"])
         self.assertNotIn("=", found[0]["observed"], "a finding never carries what is inside")
 
+    def test_a_world_readable_secrets_content_never_appears_in_the_report(self) -> None:
+        secret_path = self.state / "secrets" / "secrets.env"
+        secret_path.write_text("TOKEN=SENTINEL-do-not-leak\n", encoding="utf-8")
+        secret_path.chmod(0o644)
+        report = self.report()
+        self.assertNotIn("SENTINEL-do-not-leak", json.dumps(report))
+
     def test_a_world_readable_env_warns(self) -> None:
         (self.state / "settings" / "runtime.env").chmod(0o666)
         self.assertEqual([f["subject"] for f in self.perms()], ["settings/runtime.env"])
@@ -260,6 +272,14 @@ class DiskSpaceTests(DoctorSandbox):
             report = self.report()
         disk = [c for c in report["checks"] if c["id"] == "disk"][0]
         self.assertEqual((disk["level"], disk["findings"]), ("OK", []))
+
+    def test_the_real_statvfs_is_exercised_at_least_once(self) -> None:
+        # Every other test in this class stubs os.statvfs; run disk_space
+        # against whatever this machine's real filesystem actually reports.
+        ctx = Context(state_root=self.state, projects_root=self.projects, now=self.now)
+        with patch.object(os, "statvfs", _REAL_STATVFS):
+            findings = checks.disk_space(ctx)
+        self.assertIsInstance(findings, list)
 
 
 if __name__ == "__main__":
