@@ -9,6 +9,7 @@ import shutil
 import signal
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent import project_layout
@@ -366,6 +367,53 @@ class MoveAsideTests(LeftoverSandbox):
         (self.projects / "external-xo").mkdir()
         (self.projects / "external-xo" / ".xo").symlink_to(self.state.parent / "unmounted" / ".xo")
         self.assertEqual(self.code(OTHER), ("doctor_keys_unknown", 409))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_refuses_while_a_project_links_to_storage_it_cannot_reach(self) -> None:
+        # Not dangling, unreachable: the target exists behind a folder this
+        # user can't enter (a mount that went unreadable). Before, is_dir()
+        # raised, the project was skipped, and its live pid folder moved.
+        victim = "44444444-4444-4444-8444-444444444444"
+        external = self.state.parent / "ext"
+        (external / "gamma" / ".xo").mkdir(parents=True)
+        (external / "gamma" / ".xo" / "project.json").write_text(
+            json.dumps({"schema": 2, "pid": victim, "name": "gamma"}), encoding="utf-8")
+        (self.projects / "gamma").symlink_to(external / "gamma")
+        self.runtime(victim)
+        external.chmod(0)
+        self.addCleanup(external.chmod, 0o755)
+        self.assertEqual(self.code(victim), ("doctor_keys_unknown", 409))
+        self.assertTrue((self.state / "projects" / victim).is_dir())
+
+    def test_refuses_while_a_project_entry_cannot_be_checked(self) -> None:
+        # Any error other than "not there" (a stale NFS handle, an I/O
+        # error) means the project can't be read, never that it isn't one.
+        self.runtime(OTHER)
+        (self.projects / "on-a-stale-mount").mkdir()
+        real_is_dir = Path.is_dir
+
+        def is_dir(path: Path) -> bool:
+            if path.name == "on-a-stale-mount":
+                raise OSError(errno.ESTALE, "Stale file handle")
+            return real_is_dir(path)
+
+        with patch.object(Path, "is_dir", is_dir):
+            self.assertEqual(self.code(OTHER), ("doctor_keys_unknown", 409))
+
+    def test_a_resolve_that_raises_during_the_move_is_a_move_failure(self) -> None:
+        # Path.resolve() raises RuntimeError, not OSError, on a symlink loop;
+        # it must become a refusal, never escape as a 500.
+        self.runtime(OTHER)
+        real_resolve = Path.resolve
+
+        def resolve(path: Path, *args, **kwargs):
+            if path.name == OTHER:
+                raise RuntimeError("Symlink loop from 'x'")
+            return real_resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", resolve):
+            self.assertEqual(self.code(OTHER), ("doctor_move_failed", 500))
+        self.assertTrue((self.state / "projects" / OTHER).is_dir())
 
     def test_a_state_root_symlink_loop_is_refused_not_raised(self) -> None:
         shutil.rmtree(self.state)

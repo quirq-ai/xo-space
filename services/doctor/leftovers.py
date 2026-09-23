@@ -87,7 +87,8 @@ def survey(ctx: Context) -> Survey:
         return Survey(Finding(
             "runtime.keys_unknown", WARN, ", ".join(unknown), ctx.display(ctx.projects_root),
             f"project.json can't be read in: {', '.join(reasons)}.",
-            "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked. Fix the project.json files reported above first.",
+            "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked and nothing can be moved. "
+            "Fix or reconnect the projects named here first.",
         ), [])
     in_use = frozenset().union(*(project.keys_in_use for project in live))
     found = [Leftover(path.name, path, measure_tree(path)) for path in candidates if path.name not in in_use]

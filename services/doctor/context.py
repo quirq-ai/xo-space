@@ -27,7 +27,7 @@ def _root(variable: str, default: str) -> Path:
         # A symlink loop or an unknown ~user: not a folder anyone can use.
         # Kept unresolved, so readable_dir() reports it as unavailable instead
         # of the whole run raising (and GET /api/doctor answering 500).
-        return Path(os.path.abspath(raw))
+        return Path(os.path.abspath(os.path.expanduser(raw)))
 
 
 @dataclass

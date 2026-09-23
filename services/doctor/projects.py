@@ -52,11 +52,17 @@ def _pid(value: Optional[dict]) -> Optional[str]:
 
 
 def _dangling(path: Path) -> bool:
-    """A symlink whose target can't be reached: missing, or a loop."""
+    """A symlink whose target can't be reached: missing, a loop, or behind an
+    error (a folder this user can't enter, a stale network mount)."""
     try:
-        return path.is_symlink() and not path.exists()
+        if not path.is_symlink():
+            return False
     except OSError:
         return False
+    try:
+        return not path.exists()
+    except OSError:
+        return True
 
 
 def _unknown(entry: Path, xo: Path, why: str) -> Project:
@@ -86,7 +92,11 @@ def scan(ctx: "Context") -> list[Project]:
                     # blocks every move-aside (leftovers.survey).
                     found.append(_unknown(entry, xo, "the folder links to something missing"))
                 continue
-        except OSError:
+        except OSError as exc:
+            # Anything but "not there" (EIO, ESTALE, EACCES behind a link)
+            # means this project can't be read, never that it isn't one:
+            # skipping it would make its live pid folder look abandoned.
+            found.append(_unknown(entry, xo, exc.strerror or "can't be reached"))
             continue
         if _dangling(xo):
             found.append(_unknown(entry, xo, ".xo links to something missing"))

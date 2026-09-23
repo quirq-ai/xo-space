@@ -51,7 +51,7 @@ class ReadResult:
     schema: Any = None
 
 
-def _read_regular(path: Path) -> "bytes | ReadResult":
+def _read_regular(path: Path) -> "bytes | bytearray | ReadResult":
     """The bytes of ``path``, at most ``MAX_READ_BYTES`` of them, or the
     ReadResult that says why not. Raises OSError as open() and read() do."""
     # O_NONBLOCK and the fstat close the gap in which the path could be
@@ -64,17 +64,17 @@ def _read_regular(path: Path) -> "bytes | ReadResult":
             return ReadResult("unreadable", "Is a directory")
         if not stat.S_ISREG(mode):
             return ReadResult("special", _special_kind(mode))
-        chunks: list[bytes] = []
-        total = 0
+        # One growing buffer, not a list of chunks joined at the end, so the
+        # peak stays near one copy of the file rather than two.
+        raw = bytearray()
         while True:
             chunk = os.read(fd, READ_CHUNK_BYTES)
             if not chunk:
-                return b"".join(chunks)
-            total += len(chunk)
-            if total > MAX_READ_BYTES:
+                return raw
+            raw += chunk
+            if len(raw) > MAX_READ_BYTES:
                 # The file grew past the limit since the caller's stat.
                 return ReadResult("file_too_large", f"over {size(MAX_READ_BYTES)}")
-            chunks.append(chunk)
     finally:
         os.close(fd)
 

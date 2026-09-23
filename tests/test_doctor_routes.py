@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from routers.cowork_agent import doctor
@@ -94,6 +94,28 @@ class OneRunAtATimeTests(unittest.TestCase):
             first = asyncio.run(doctor.get_doctor_report())
             second = asyncio.run(doctor.get_doctor_report())
         self.assertEqual((first, second, run_checks.call_count), ({"n": 1}, {"n": 2}, 2))
+
+    def test_a_run_that_never_finishes_is_a_timeout_not_a_hang(self) -> None:
+        # A read hung on a dead network mount can't be cancelled. The caller
+        # gets a 503 instead of waiting forever; the run is still shared.
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck_run() -> dict:
+            # asyncio.run() waits for this thread when it exits (to_thread
+            # work can't be cancelled), so keep the "hang" short.
+            release.wait(1)
+            return {"late": True}
+
+        async def request():
+            return await doctor.get_doctor_report()
+
+        with patch("routers.cowork_agent.doctor.run.run_checks", side_effect=stuck_run), \
+                patch.object(doctor, "REPORT_TIMEOUT_S", 0.2):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(request())
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["code"], "doctor_timeout")
 
     def test_a_failed_run_is_not_reused(self) -> None:
         with patch("routers.cowork_agent.doctor.run.run_checks", side_effect=[RuntimeError("boom"), {"n": 2}]):

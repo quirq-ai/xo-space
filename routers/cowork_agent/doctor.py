@@ -32,6 +32,17 @@ class MoveAside(ForbidExtra):
 #: the server shares and costs memory while it parses a large state root, so
 #: several open Quirq pages must not multiply either.
 _in_flight: Optional[tuple[asyncio.AbstractEventLoop, "asyncio.Future[dict]"]] = None
+#: How long one request waits for the report. A read hung on a dead network
+#: mount can't be cancelled (to_thread work can't be), so past this the caller
+#: gets a 503 instead of waiting for ever; the run itself stays shared.
+REPORT_TIMEOUT_S = 60.0
+
+
+def _retrieve(future: "asyncio.Future[dict]") -> None:
+    """Mark a finished run's exception as seen, so a run whose every caller
+    gave up doesn't log "Task exception was never retrieved"."""
+    if not future.cancelled():
+        future.exception()
 
 
 @router.get("/api/doctor")
@@ -39,9 +50,20 @@ async def get_doctor_report() -> dict:
     global _in_flight
     loop = asyncio.get_running_loop()
     if _in_flight is None or _in_flight[0] is not loop or _in_flight[1].done():
-        _in_flight = (loop, asyncio.ensure_future(asyncio.to_thread(run.run_checks)))
-    # shield: one caller disconnecting must not cancel the run the others wait on.
-    return await asyncio.shield(_in_flight[1])
+        future = asyncio.ensure_future(asyncio.to_thread(run.run_checks))
+        future.add_done_callback(_retrieve)
+        _in_flight = (loop, future)
+    else:
+        future = _in_flight[1]
+    try:
+        # shield: one caller timing out or disconnecting must not cancel the
+        # run the others are waiting on.
+        return await asyncio.wait_for(asyncio.shield(future), REPORT_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail={
+            "code": "doctor_timeout",
+            "message": "The checks are taking too long. A disk or network mount may not be responding.",
+        }) from None
 
 
 @router.post("/api/doctor/runtime-leftovers/{key}/move-aside")
