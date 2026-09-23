@@ -166,6 +166,20 @@ class LegacyTests(DoctorSandbox):
         self.assertIn("stats.json", finding["observed"])
         self.assertIn("Restart the server once to move them into the state folder.", finding["why_it_matters"])
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_a_project_that_cannot_be_reached_is_not_an_error(self) -> None:
+        # Found by the live smoke test: a project behind a folder this user
+        # can't enter made the legacy check raise PermissionError (ERROR).
+        # runtime.keys_unknown already reports that project; skip it here.
+        external = self.state.parent / "ext"
+        (external / "gamma" / ".xo").mkdir(parents=True)
+        (self.projects / "gamma").symlink_to(external / "gamma")
+        external.chmod(0)
+        self.addCleanup(external.chmod, 0o755)
+        report = self.report()
+        legacy = [c for c in report["checks"] if c["id"] == "legacy"][0]
+        self.assertEqual((legacy["level"], legacy.get("error")), ("OK", None))
+
 
 class HeartbeatTests(DoctorSandbox):
     def beats(self) -> list[dict]:

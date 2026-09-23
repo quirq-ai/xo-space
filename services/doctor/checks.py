@@ -414,9 +414,15 @@ def legacy_pending(ctx: Context) -> list[Finding]:
 
     out: list[Finding] = []
     for project in ctx.projects():
-        if project.xo.is_symlink() or not project.xo.is_dir():
+        try:
+            if project.xo.is_symlink() or not project.xo.is_dir():
+                continue
+            pending = _pending_sources(project.xo)
+        except OSError:
+            # A project that can't be reached (a folder this user can't enter,
+            # a stale mount) is reported by runtime.keys_unknown; it must not
+            # turn this whole check into ERROR.
             continue
-        pending = _pending_sources(project.xo)
         if pending:
             names = ", ".join(path.name for path in pending)
             out.append(Finding("legacy.pending", WARN, project.name, ctx.display(project.xo),
