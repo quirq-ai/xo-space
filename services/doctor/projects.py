@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from services.cowork_agent.helpers import normalize_agent_id
-from services.cowork_agent.project_layout import _is_safe_runtime_key  # a safety rule is imported, never copied
 from services.doctor import inventory
 from services.doctor.reading import ReadResult
 
@@ -32,6 +31,16 @@ class Project:
     keys_in_use: frozenset[str]
 
 
+def is_safe_runtime_key(key: str) -> bool:
+    """``project_layout``'s own rule, imported rather than copied — a safety
+    rule must have one definition. Borrowed inside the function so a rename
+    upstream turns every check that scans projects into an ERROR result
+    instead of stopping the server importing the doctor router."""
+    from services.cowork_agent.project_layout import _is_safe_runtime_key
+
+    return _is_safe_runtime_key(key)
+
+
 def _pid(value: Optional[dict]) -> Optional[str]:
     if not isinstance(value, dict):
         return None
@@ -39,7 +48,7 @@ def _pid(value: Optional[dict]) -> Optional[str]:
     if not raw or value.get("_template", False):
         return None
     key = str(raw)
-    return key if _is_safe_runtime_key(key) else None
+    return key if is_safe_runtime_key(key) else None
 
 
 def scan(ctx: "Context") -> list[Project]:

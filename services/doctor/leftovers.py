@@ -19,9 +19,9 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from services.cowork_agent.helpers import normalize_agent_id
-from services.cowork_agent.project_layout import _is_safe_runtime_key
 from services.doctor.context import Context
 from services.doctor.model import FAIL, WARN, Finding, ago, size
+from services.doctor.projects import is_safe_runtime_key
 from services.doctor.reading import Tree, measure_tree, readable_dir
 from services.errors import ServiceError
 from services.storage import layout
@@ -65,7 +65,7 @@ def _candidates(ctx: Context) -> list[Path]:
     except OSError:
         return []
     return [entry for entry in entries
-            if entry.is_dir() and not entry.is_symlink() and _is_safe_runtime_key(entry.name)]
+            if entry.is_dir() and not entry.is_symlink() and is_safe_runtime_key(entry.name)]
 
 
 def survey(ctx: Context) -> Survey:
@@ -247,7 +247,7 @@ def move_aside(key: str, *, now: Optional[float] = None) -> dict:
     Never trusts an earlier report: every §9.1 rule is evaluated again here.
     """
     invalid = DoctorError("doctor_invalid_key", "That is not a runtime data folder.", 400)
-    if not isinstance(key, str) or not _is_safe_runtime_key(key):
+    if not isinstance(key, str) or not is_safe_runtime_key(key):
         raise invalid
     ctx = Context.from_environment(now)
     runtime = ctx.state_root / "projects"

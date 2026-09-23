@@ -7,8 +7,6 @@ import stat
 from pathlib import Path
 
 from services.cowork_agent import runtime_config
-from services.cowork_agent.quirq_catalog import _stale_after_seconds  # the Quirq view's liveness rule, shared
-from services.cowork_agent.visualizer.migrate import _pending_sources  # pure: exists() and glob() only
 from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 from services.doctor import inventory
 from services.doctor.context import Context
@@ -338,6 +336,10 @@ def _watcher_enabled() -> bool:
 
 
 def _stale_after() -> float:
+    # Borrowed inside the function: a rename upstream must turn this one check
+    # into an ERROR result, not stop the server importing the doctor router.
+    from services.cowork_agent.quirq_catalog import _stale_after_seconds  # the Quirq view's liveness rule, shared
+
     return _stale_after_seconds(runtime_env.watcher_tick_interval_seconds())
 
 
@@ -378,6 +380,8 @@ def layout_moves(ctx: Context) -> list[Finding]:
 
 def legacy_pending(ctx: Context) -> list[Finding]:
     """Pre-T19 runtime files still inside a project's .xo/ (visualizer/migrate.py)."""
+    from services.cowork_agent.visualizer.migrate import _pending_sources  # pure: exists() and glob() only
+
     out: list[Finding] = []
     for project in ctx.projects():
         if project.xo.is_symlink() or not project.xo.is_dir():
