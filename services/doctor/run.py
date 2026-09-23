@@ -20,6 +20,7 @@ Check = Callable[[Context], list[Finding]]
 #: Listed explicitly, in report order. No auto-discovery.
 CHECKS: tuple[tuple[str, Check], ...] = (
     ("roots", checks.roots),
+    ("disk", checks.disk_space),
     ("read", checks.reads),
     ("perms", checks.private_permissions),
     ("space", checks.space_identity),

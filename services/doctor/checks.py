@@ -39,6 +39,40 @@ def roots(ctx: Context) -> list[Finding]:
     )]
 
 
+#: Under this, a write of any size is likely to fail outright.
+DISK_FAIL_BYTES = 50 * 1024 * 1024
+#: Under this, the state root is close enough that someone should look.
+DISK_WARN_BYTES = 500 * 1024 * 1024
+#: Free inodes under this run out before the bytes do.
+DISK_WARN_INODES = 10_000
+
+
+def disk_space(ctx: Context) -> list[Finding]:
+    """A full filesystem is the most ordinary cause of the empty and
+    half-written files every other check reports."""
+    try:
+        info = os.statvfs(ctx.state_root)
+    except OSError:
+        return []  # a filesystem that won't answer is the roots check's business
+    out: list[Finding] = []
+    free = info.f_bavail * info.f_frsize
+    if free < DISK_WARN_BYTES:
+        level = FAIL if free < DISK_FAIL_BYTES else WARN
+        out.append(Finding(
+            "disk.low_space", level, "state root", ctx.display(ctx.state_root),
+            f"The filesystem holding the state folder has {size(free)} free.",
+            "Every store writes a whole temp file before replacing its target, so a write that runs "
+            "out of room leaves the old file intact but records nothing new. Free some space."))
+    # f_files == 0 means the filesystem does not report inodes at all.
+    if info.f_files > 0 and info.f_favail < DISK_WARN_INODES:
+        out.append(Finding(
+            "disk.low_inodes", WARN, "state root", ctx.display(ctx.state_root),
+            f"The filesystem holding the state folder has {info.f_favail:,} free inodes.",
+            "Inodes run out before space does on a folder of many small files, and a store that "
+            "cannot create its temp file records nothing new."))
+    return out
+
+
 def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, result: ReadResult) -> Finding:
     keep = spec.klass == inventory.KEEP
     level = FAIL if keep else WARN

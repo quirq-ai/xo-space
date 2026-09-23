@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from services.doctor import checks, inventory
 from services.timestamps import iso
-from tests.doctor_sandbox import DoctorSandbox
+from tests.doctor_sandbox import DoctorSandbox, _Statvfs
 
 
 class SpaceIdentityTests(DoctorSandbox):
@@ -227,6 +227,39 @@ class PrivatePermissionTests(DoctorSandbox):
     def test_the_private_patterns_are_in_the_inventory(self) -> None:
         patterns = {spec.pattern for spec in inventory.SPECS if spec.klass == inventory.UNPARSED}
         self.assertTrue(set(checks.PRIVATE_PATTERNS) <= patterns)
+
+
+class DiskSpaceTests(DoctorSandbox):
+    def disk(self, *, free_bytes: int, files: int = 1_000_000, favail: int = 900_000) -> list[dict]:
+        info = _Statvfs(f_frsize=4096, f_bavail=free_bytes // 4096, f_files=files, f_favail=favail)
+        with patch.object(os, "statvfs", return_value=info):
+            return [f for f in self.problems() if f["id"].startswith("disk.")]
+
+    def test_plenty_of_room_is_healthy(self) -> None:
+        self.assertEqual(self.disk(free_bytes=20 * 1024**3), [])
+
+    def test_a_nearly_full_disk_warns(self) -> None:
+        found = self.disk(free_bytes=100 * 1024 * 1024)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_space", "WARN")])
+
+    def test_a_full_disk_fails(self) -> None:
+        found = self.disk(free_bytes=10 * 1024 * 1024)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_space", "FAIL")])
+
+    def test_exhausted_inodes_warn(self) -> None:
+        found = self.disk(free_bytes=20 * 1024**3, favail=100)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_inodes", "WARN")])
+
+    def test_a_filesystem_that_reports_no_inodes_is_not_judged(self) -> None:
+        # Several filesystems (many FUSE mounts, some network mounts) report
+        # f_files == 0 rather than a real count.
+        self.assertEqual(self.disk(free_bytes=20 * 1024**3, files=0, favail=0), [])
+
+    def test_a_statvfs_that_raises_is_not_an_error(self) -> None:
+        with patch.object(os, "statvfs", side_effect=OSError(5, "I/O error")):
+            report = self.report()
+        disk = [c for c in report["checks"] if c["id"] == "disk"][0]
+        self.assertEqual((disk["level"], disk["findings"]), ("OK", []))
 
 
 if __name__ == "__main__":

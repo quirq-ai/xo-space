@@ -8,6 +8,7 @@ run is judged a week from now, so no copied file counts as a recent write.
 
 from __future__ import annotations
 
+import collections
 import os
 import shutil
 import tempfile
@@ -23,6 +24,11 @@ STATE_FIXTURE = ROOT / "tests" / "fixtures" / "quirq-state"
 PROJECT_FIXTURE = ROOT / "tests" / "fixtures" / "xo-project" / ".xo"
 PID = "00000000-0000-4000-8000-000000000000"
 WEEK = 7 * 86400
+
+_Statvfs = collections.namedtuple("_Statvfs", "f_frsize f_bavail f_files f_favail")
+#: 20 GB and 900,000 inodes free: every sandbox run sees a roomy disk unless
+#: a test patches os.statvfs itself.
+ROOMY_DISK = _Statvfs(f_frsize=4096, f_bavail=20 * 1024**3 // 4096, f_files=1_000_000, f_favail=900_000)
 
 
 def snapshot(*roots: Path) -> dict[str, tuple[int, int, int]]:
@@ -66,6 +72,9 @@ class DoctorSandbox(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.now = time.time() + WEEK
+        disk = patch.object(os, "statvfs", return_value=ROOMY_DISK)
+        disk.start()
+        self.addCleanup(disk.stop)
 
     def report(self, now: float | None = None) -> dict:
         return run.run_checks(now=self.now if now is None else now)
