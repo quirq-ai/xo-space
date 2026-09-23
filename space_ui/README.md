@@ -31,6 +31,28 @@ remain aliases for Data. Connectors and Secrets keep their aliases
 `view: "projects"` continue to open List; that API value is independent of the
 Projects section URL.
 
+**Setup → Server → MCP server** lets MCP apps connect to this Space over
+Streamable HTTP at `/mcp`. The server starts disabled. Enabling it takes effect
+immediately and issues an access token for read access to project listings,
+selected project documents, tasks, and Inbox items. Copy the URL, token, or
+client configuration from the card. Tokens are only returned when issued and
+remain in this page's memory; reloading the page clears them. If you no longer
+have the token, generate a new one and update your clients. Turning the server
+off or generating a new token revokes existing clients' access. Remote clients
+need a reachable URL served over HTTPS. Manage this setting from the local
+Space server; remote configuration requests are rejected.
+See the [MCP server usage guide](../MCP_SERVER.md) for connection examples,
+available tools, token management, and troubleshooting.
+
+**Setup → Server → Command line** provides an independent **Enable CLI access**
+switch. Download the standalone `space` client and copy the setup command to
+configure it in a terminal using Python 3.10 or newer. The token prompt hides
+input, and the client stores verified credentials in an owner-only file. Commands
+read projects, selected project documents, todos, and saved Inbox items; `--json`
+supports scripts. Turning CLI access off or regenerating its token does not
+affect MCP. Space must keep running; the switch does not install a command on
+the browser's machine. See the [CLI usage guide](../CLI.md).
+
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered
 shortcut. Its three-step quickstart and topic cards link to the

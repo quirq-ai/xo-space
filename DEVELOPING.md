@@ -952,3 +952,73 @@ Tests: `tests/test_inbox_{store,bff,docs}.py`,
 Versions are annotated SemVer tags on `main`, cut by hand every time `main`
 moves. The runbook, the numbering rules and the hotfix flow are in
 [RELEASING.md](RELEASING.md).
+
+---
+
+## 13. Space as an MCP server
+
+User setup and client examples: [MCP server usage guide](MCP_SERVER.md).
+
+Setup → Server has an opt-in MCP server backed by `services/mcp_server/`.
+`routers/mcp_server.py` exposes `GET/PUT /api/mcp-server`, `POST
+/api/mcp-server/rotate-token`, and the SDK-owned Streamable HTTP endpoint at
+`/mcp`. Settings use the same loopback-peer and browser-origin guard as local
+server controls. Remote MCP clients authenticate with `Authorization: Bearer
+<token>`; the endpoint also validates browser origins through Space's guard,
+including its existing TLS-proxy rules. A hosted Space still needs its normal
+access-controlled proxy in front of its local management API.
+
+The default is disabled. Enabling and token regeneration issue a random token
+once, with `Cache-Control: no-store`. Only its SHA-256 hash is saved in
+`settings/mcp-server.json` under the active Space state root. Disabling clears
+the hash; re-enabling issues a different token. Every HTTP request re-reads
+the state, so these changes apply across workers without restarting. Requests
+already in progress may finish. Invalid or unreadable settings fail closed.
+These settings are independent of agent runtime configuration.
+
+The SDK 2.x transport lifecycle runs inside the parent app lifespan. It serves
+current stateless MCP requests and legacy initialization-based clients, with
+JSON responses and a 64 KiB request-body limit. There is no separate port or
+subprocess. Upgrade installed requirements before starting this version:
+the new MCP implementation requires `mcp>=2.2,<3`.
+
+The initial catalog is read-only: `space_list_projects`,
+`space_read_project_document`, `space_list_todos`, and `space_list_inbox`.
+Documents are limited to root-level `README.md`, `PROJECT.md`, `OBJECTIVES.md`,
+`PLAN.md`, `PROGRESS.md`, and `AGENTS.md`, at most 64 KiB each. Reads reject
+symlinks and escaping paths, omit internal metadata, and never execute an
+agent, ingest feeds, or expose arbitrary files. The Inbox tool reads saved
+items; it does not refresh connections. All connected clients share this
+catalog and credential; finer permissions and write tools are not included.
+
+Validation: `venv/bin/python -m unittest tests.test_mcp_server
+tests.test_mcp_server_tools`; the UI flow is covered by
+`tests/space_ui_preview/setup-mcp.mjs`. Route parity remains required.
+
+## 14. Space CLI access
+
+Setup → Server → Command line controls CLI access independently of MCP.
+`routers/cli_access.py` exposes local management at `GET/PUT /api/cli-access`,
+`POST /api/cli-access/rotate-token`, and a download of the standalone `space`
+Python script at `GET /api/cli-access/client`. The client needs only Python
+3.10+ and uses `GET /api/cli/{status,projects,document,todos,inbox}`. Every command
+request requires its CLI bearer token and passes Space's browser-origin guard.
+
+`services/access_tokens.py` shares persistence and revocation rules between
+the two interfaces. CLI settings are in `settings/cli-access.json`; MCP retains
+`settings/mcp-server.json`, its format, and existing tokens. Neither interface
+accepts the other's token. Both store only hashes on the server and validate
+them afresh per request. `services/space_tools.py` owns their shared bounded
+read operations; `services/mcp_server/tools.py` adapts them to MCP, while
+`services/cli_access.py` is the CLI router's service surface.
+
+The client validates an authenticated status response before saving credentials,
+creates the credential file with mode 0600, binds saved tokens to their configured
+URL, refuses redirects, and permits plain HTTP only for loopback hosts. It reads
+saved Space data through the API and does not launch agents or alter project
+files. Client configuration and usage are documented in [CLI.md](CLI.md).
+
+Validate with `tests.test_cli_access`, `tests.test_space_cli`, the MCP tests,
+`scripts/check_route_parity.py`, and `tests/space_ui_preview/setup-cli.mjs`.
+The integration test runs the downloaded client against the actual FastAPI
+routes with isolated server and client state.

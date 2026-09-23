@@ -11,9 +11,11 @@ import {mountCommands} from './setup-commands.js?v=20260921-refresh1';
 import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
 import {mountBranding} from './setup-branding.js?v=20260921-branding2';
+import {mountMcpServer} from './setup-mcp.js?v=20260921-mcp1';
+import {mountCliAccess} from './setup-cli.js?v=20260921-cli1';
 import {mountTheme} from './setup-theme.js?v=20260922-theme4';
-import {mountSetupSearch} from './setup-search.js?v=20260922-theme4';
-import {renderSetupShell} from './setup-shell.js?v=20260922-theme5';
+import {mountSetupSearch} from './setup-search.js?v=20260922-mcpcli1';
+import {renderSetupShell} from './setup-shell.js?v=20260922-mcpcli1';
 import {SETUP_STEPS,SETUP_SECTIONS,resolveSetupSection,setupSectionRoute} from '../core/setup-sections.js?v=20260916-jobs3';
 
 const KEY_RE=/^[A-Z_][A-Z0-9_]*$/;
@@ -36,6 +38,8 @@ let commands=null;
 let identity=null;
 let branding=null;
 let brandingDraft=false;
+let mcpServer=null;
+let cliAccess=null;
 let theme=null,themeDraft=false;
 let serverData=null;
 let restarting=false;
@@ -79,6 +83,8 @@ function mountSetup(el,ctx){
     setupSearch=mountSetupSearch(root,openPanel,refreshSetupToolbar);
     commands=mountCommands(root.querySelector('#setup-commands'));
     identity=mountIdentity(root.querySelector('#setup-identity'));
+    mcpServer=mountMcpServer(root.querySelector('#setup-mcp'));
+    cliAccess=mountCliAccess(root.querySelector('#setup-cli'));
     identity.refresh();
     branding=mountBranding(root.querySelector('#setup-branding'),dirty=>{brandingDraft=dirty;renderJourney();});
     branding.refresh();
@@ -127,6 +133,7 @@ function selectPanel(requested){
   if(!target)return false;
   setupSearch?.clear();
   currentPanel=panel;
+  if(panel==='server'){mcpServer?.refresh();cliAccess?.refresh();}
   root.querySelectorAll('.setup-panel').forEach(el=>el.hidden=el!==target);
   root.querySelectorAll('#setup-nav [data-setup-go]').forEach(button=>{
     if(button.dataset.setupGo===panel)button.setAttribute('aria-current','step');
