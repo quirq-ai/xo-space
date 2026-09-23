@@ -8,7 +8,7 @@ import shutil
 import unittest
 from unittest.mock import patch
 
-from services.doctor import checks, run
+from services.doctor import checks, inventory, run
 from tests.doctor_sandbox import PID, DoctorSandbox, snapshot
 
 
@@ -149,6 +149,42 @@ class ReadCheckTests(DoctorSandbox):
         self.addCleanup(folder.chmod, 0o755)
         finding = self.finding("read.unreadable")
         self.assertEqual((finding["level"], finding["subject"]), ("FAIL", "inbox"))
+
+    def test_a_truncated_walk_is_a_failure_not_a_warning(self) -> None:
+        real_walk = inventory.walk_files
+        with patch.object(inventory, "walk_files", lambda root, limit=2: real_walk(root, limit)):
+            report = self.report()
+        truncated = [f for c in report["checks"] for f in c["findings"] if f["id"] == "read.too_large"]
+        self.assertEqual([f["level"] for f in truncated], ["FAIL"])
+
+
+class ReportSizeTests(DoctorSandbox):
+    def _corrupt_shards(self, count: int) -> None:
+        shards = self.state / "projects" / PID / "sessions" / "sessionslist.d"
+        shards.mkdir(parents=True, exist_ok=True)
+        old = self.now - 86400
+        for i in range(count):
+            path = shards / f"s{i}.json"
+            path.write_text("{not json", encoding="utf-8")
+            os.utime(path, (old, old))
+
+    def test_findings_are_capped_with_a_rollup(self) -> None:
+        self._corrupt_shards(run.MAX_FINDINGS_PER_CHECK + 50)
+        read = [c for c in self.report()["checks"] if c["id"] == "read"][0]
+        self.assertEqual(len(read["findings"]), run.MAX_FINDINGS_PER_CHECK + 1)
+        rollup = read["findings"][-1]
+        self.assertEqual(rollup["id"], "read.truncated")
+        self.assertEqual(rollup["details"]["dropped"], 50)
+
+    def test_a_capped_check_keeps_its_worst_level(self) -> None:
+        self._corrupt_shards(run.MAX_FINDINGS_PER_CHECK + 50)
+        read = [c for c in self.report()["checks"] if c["id"] == "read"][0]
+        self.assertEqual(read["level"], "FAIL")
+
+    def test_an_uncapped_check_gains_no_rollup(self) -> None:
+        self._corrupt_shards(3)
+        ids = [f["id"] for c in self.report()["checks"] for f in c["findings"]]
+        self.assertNotIn("read.truncated", ids)
 
 
 class ReadOnlyTests(DoctorSandbox):

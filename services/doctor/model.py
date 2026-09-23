@@ -15,6 +15,11 @@ def worst(levels: Iterable[str]) -> str:
     return max(levels, key=_RANK.__getitem__, default=OK)
 
 
+def rank(level: str) -> int:
+    """How serious a level is, for ordering findings when a list is capped."""
+    return _RANK[level]
+
+
 @dataclass
 class Finding:
     id: str

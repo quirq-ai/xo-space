@@ -9,7 +9,7 @@ from typing import Callable
 
 from services.doctor import checks, leftovers
 from services.doctor.context import Context
-from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, worst
+from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, rank, worst
 from services.doctor.reading import readable_dir
 from services.timestamps import iso
 
@@ -32,9 +32,33 @@ CHECKS: tuple[tuple[str, Check], ...] = (
 )
 
 
+#: A badly broken state root can produce one finding per file: 3,000 corrupt
+#: session shards made a 1.9 MB report, and the Space UI renders every row.
+#: Keep the worst ones and say how many were left out.
+MAX_FINDINGS_PER_CHECK = 100
+
+
+def _cap(family: str, findings: list[Finding]) -> list[Finding]:
+    if len(findings) <= MAX_FINDINGS_PER_CHECK:
+        return findings
+    # A stable sort by rank keeps each level's original order, so the report
+    # still reads in inventory order within the worst level.
+    ordered = sorted(findings, key=lambda finding: -rank(finding.level))
+    kept, dropped = ordered[:MAX_FINDINGS_PER_CHECK], ordered[MAX_FINDINGS_PER_CHECK:]
+    return kept + [Finding(
+        # The rollup's level is the worst of what it hides, not of the whole
+        # list: informational OK rows (inventory.unknown_file) sort last and
+        # are dropped first, and must not be announced as failures.
+        f"{family}.truncated", worst(finding.level for finding in dropped), family, "",
+        f"{len(dropped):,} more finding(s) of this kind are not listed.",
+        "The list is capped so the report stays readable. Fix the ones above and run the checks again.",
+        details={"dropped": len(dropped)},
+    )]
+
+
 def _run_one(family: str, check: Check, ctx: Context) -> CheckResult:
     try:
-        findings = check(ctx)
+        findings = _cap(family, check(ctx))
     except Exception as exc:  # noqa: BLE001 - one broken check must not hide the others
         logger.exception("doctor: check %s raised", family)
         return CheckResult(family, ERROR, [], error=f"{type(exc).__name__}: {exc}")

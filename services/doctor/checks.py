@@ -122,9 +122,9 @@ def reads(ctx: Context) -> list[Finding]:
         out.append(Finding("inventory.unknown_file", OK, rel, ctx.display(path),
                            "A file this version of the doctor doesn't know.", "Listed for information only."))
     if truncated:
-        out.append(Finding("read.too_large", WARN, "state root", ctx.display(ctx.state_root),
+        out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
                            f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
-                           "Some state files were not checked for corruption."))
+                           "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy."))
     return out
 
 
