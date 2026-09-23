@@ -194,6 +194,12 @@ def _is_temp_name(name: str) -> bool:
     return name.endswith(".tmp") or ".tmp." in name
 
 
+#: Hidden files that are not a temp file anyone left behind. A state root
+#: browsed from macOS or kept under git legitimately holds these, and calling
+#: one an interrupted write tells a person to delete the wrong thing.
+INERT_HIDDEN_NAMES = frozenset({".DS_Store", ".localized", ".gitkeep", ".gitignore", ".keep"})
+
+
 def stale_temps(ctx: Context) -> list[Finding]:
     """F4. One agent-neutral rule instead of a list of writers (architecture §8.2).
 
@@ -208,7 +214,8 @@ def stale_temps(ctx: Context) -> list[Finding]:
     for path in files:
         # Cheap name check first: spec_for (a pattern scan) only runs for the
         # small minority of files that look like a temp name at all (F7).
-        if not (_is_temp_name(path.name) or path.name.startswith(".")):
+        if not (_is_temp_name(path.name)
+                or (path.name.startswith(".") and path.name not in INERT_HIDDEN_NAMES)):
             continue
         rel = str(path)[len(prefix):]
         if rel.split("/", 1)[0] in skip_top or inventory.spec_for(inventory.STATE, rel) is not None:

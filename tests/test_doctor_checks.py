@@ -97,6 +97,21 @@ class StaleTempTests(DoctorSandbox):
         tmp.unlink()
         self.assertEqual(self.temps(), [])
 
+    def test_inert_hidden_files_are_not_interrupted_writes(self) -> None:
+        old = self.now - 86400
+        for name in sorted(checks.INERT_HIDDEN_NAMES):
+            path = self.state / name
+            path.write_bytes(b"\x00" * 8)
+            os.utime(path, (old, old))
+        self.assertNotIn("tmp.stale", self.ids())
+
+    def test_an_mkstemp_name_is_still_reported(self) -> None:
+        path = self.state / "settings" / ".state-ab12cd.json"
+        path.write_text("{}", encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+        self.assertIn("tmp.stale", self.ids())
+
 
 class LayoutTests(DoctorSandbox):
     def test_an_old_copy_beside_the_new_one_warns(self) -> None:
