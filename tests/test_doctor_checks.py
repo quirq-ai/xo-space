@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from services.doctor import checks
+from services.doctor import checks, inventory
 from services.timestamps import iso
 from tests.doctor_sandbox import DoctorSandbox
 
@@ -197,6 +197,36 @@ class GrowthTests(DoctorSandbox):
         with patch.object(checks, "MAX_FILE_BYTES", 32), patch.object(checks, "MAX_ENTRIES", 1):
             found = {f["id"] for f in self.problems()}
         self.assertTrue({"growth.file_size", "growth.quarantine", "growth.locks", "growth.offsets"} <= found, found)
+
+
+class PrivatePermissionTests(DoctorSandbox):
+    def perms(self) -> list[dict]:
+        return [f for f in self.problems() if f["id"] == "perms.too_open"]
+
+    def test_the_samples_are_private(self) -> None:
+        self.assertEqual(self.perms(), [])
+
+    def test_a_world_readable_secret_warns(self) -> None:
+        (self.state / "secrets" / "secrets.env").chmod(0o644)
+        found = self.perms()
+        self.assertEqual([f["subject"] for f in found], ["secrets/secrets.env"])
+        self.assertNotIn("=", found[0]["observed"], "a finding never carries what is inside")
+
+    def test_a_world_readable_env_warns(self) -> None:
+        (self.state / "settings" / "runtime.env").chmod(0o666)
+        self.assertEqual([f["subject"] for f in self.perms()], ["settings/runtime.env"])
+
+    def test_a_group_readable_file_warns(self) -> None:
+        (self.state / "secrets" / "token.json").chmod(0o640)
+        self.assertEqual([f["subject"] for f in self.perms()], ["secrets/token.json"])
+
+    def test_a_parsed_state_file_is_not_judged_on_permissions(self) -> None:
+        (self.state / "settings" / "onboarding.json").chmod(0o644)
+        self.assertEqual(self.perms(), [])
+
+    def test_the_private_patterns_are_in_the_inventory(self) -> None:
+        patterns = {spec.pattern for spec in inventory.SPECS if spec.klass == inventory.UNPARSED}
+        self.assertTrue(set(checks.PRIVATE_PATTERNS) <= patterns)
 
 
 if __name__ == "__main__":

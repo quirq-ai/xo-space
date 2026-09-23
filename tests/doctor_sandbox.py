@@ -47,6 +47,11 @@ class DoctorSandbox(unittest.TestCase):
         self.projects = base / "projects"
         shutil.copytree(STATE_FIXTURE, self.state, ignore=shutil.ignore_patterns("README.md"))
         shutil.copytree(PROJECT_FIXTURE, self.projects / "sample-project" / ".xo")
+        # git cannot carry 0600, so the sample's private files arrive 0644.
+        # A real install writes them 0600; make the baseline match.
+        for pattern in ("secrets/*", "settings/*.env"):
+            for path in self.state.glob(pattern):
+                path.chmod(0o600)
         env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(self.state),
             "XO_PROJECTS_ROOT": str(self.projects),

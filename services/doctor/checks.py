@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 from services.cowork_agent import runtime_config
@@ -241,6 +242,39 @@ def stale_temps(ctx: Context) -> list[Finding]:
             out.append(Finding("tmp.stale", WARN, subject, ctx.display(path),
                                f"A temporary file left {ago(age)} ago.",
                                "A write was interrupted here. The file it belongs to kept its previous content, and this temporary file can be deleted."))
+    return out
+
+
+#: The inventory patterns whose contents are private. The doctor never opens
+#: these files; it only reports when the filesystem lets others read them.
+PRIVATE_PATTERNS: tuple[str, ...] = ("secrets/**", "settings/*.env")
+#: Any group or other permission bit on a private file.
+_TOO_OPEN = 0o077
+
+
+def private_permissions(ctx: Context) -> list[Finding]:
+    """Credentials and machine settings that other users on this machine can
+    read or change. Nothing here opens a file (§12 invariant 6)."""
+    out: list[Finding] = []
+    files, _, _ = ctx.state_files()
+    prefix = os.path.join(str(ctx.state_root), "")
+    for path in files:
+        rel = str(path)[len(prefix):]
+        spec = inventory.spec_for(inventory.STATE, rel)
+        if spec is None or spec.pattern not in PRIVATE_PATTERNS:
+            continue
+        try:
+            mode = stat.S_IMODE(path.lstat().st_mode)
+        except OSError:
+            continue
+        if mode & _TOO_OPEN:
+            out.append(Finding(
+                "perms.too_open", WARN, rel, ctx.display(path),
+                f"The file's mode is {mode:04o}, so other users on this machine can read it.",
+                "It holds credentials or machine settings. Nothing but this server needs it: chmod 600 the file. "
+                "Some mounts (Windows or WSL bind mounts, some network filesystems) ignore chmod and show every "
+                "file as open; there, keep the state folder on a filesystem that stores permissions.",
+                details={"mode": f"{mode:04o}"}))
     return out
 
 
