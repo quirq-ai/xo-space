@@ -30,9 +30,12 @@ class ReadResult:
     schema: Any = None
 
 
-def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]]) -> ReadResult:
+def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
+             stamped: bool = True) -> ReadResult:
     """``accepted`` is the set of schema versions this xo-space reads, or
-    ``None`` for a file exempt from stamping."""
+    ``None`` for a file exempt from stamping. ``stamped`` is False for a
+    document whose own schema leaves ``schema`` out of ``required``: an absent
+    version there means the lowest accepted one, not a refused file."""
     try:
         mtime = os.stat(path).st_mtime
         raw = Path(path).read_bytes()
@@ -61,6 +64,10 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]]) -> R
         return ReadResult("wrong_type", type(value).__name__)
     if accepted is None:
         return ReadResult("ok", value=value)
+    if not stamped and "schema" not in value:
+        # Only an ABSENT key is legitimate; a present but malformed stamp
+        # ("1", null, true) is still refused below.
+        return ReadResult("ok", value=value, schema=min(accepted))
     found = value.get("schema")
     if isinstance(found, bool) or not isinstance(found, int):
         return ReadResult("schema_unsupported", "missing", value=value, schema=None)

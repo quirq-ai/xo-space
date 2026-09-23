@@ -49,7 +49,8 @@ class Context:
         key = (Path(path), spec)
         if key not in self._reads:
             accepted = inventory.accepted(spec) if spec is not None else None
-            self._reads[key] = classify(Path(path), now=self.now, accepted=accepted)
+            stamped = inventory.stamp_required(spec) if spec is not None else True
+            self._reads[key] = classify(Path(path), now=self.now, accepted=accepted, stamped=stamped)
         return self._reads[key]
 
     def state_files(self) -> tuple[list[Path], bool, list[Path]]:

@@ -72,6 +72,31 @@ class InventoryCoversTheFixtures(unittest.TestCase):
         self.assertIsNone(inventory.spec_for(inventory.STATE, "projects/p1/x/stats.json"))
 
 
+class StampRequiredTests(unittest.TestCase):
+    """A document whose own schema leaves `schema` out of `required` is
+    legitimate unstamped; every other one is not."""
+
+    def test_agent_json_is_the_only_unstamped_document(self) -> None:
+        optional = {spec.pattern for spec in inventory.SPECS
+                    if inventory.accepted(spec) is not None and not inventory.stamp_required(spec)}
+        self.assertEqual(optional, {"agent.json"})
+
+    def test_stamp_required_mirrors_each_schema_file(self) -> None:
+        for spec in inventory.SPECS:
+            if not spec.schema_file:
+                continue
+            document = json.loads((inventory.SCHEMA_DIR / spec.schema_file).read_text(encoding="utf-8"))
+            with self.subTest(schema=spec.schema_file):
+                self.assertEqual(inventory.stamp_required(spec),
+                                 "schema" in (document.get("required") or []))
+
+    def test_the_inventory_version_table_always_requires_a_stamp(self) -> None:
+        for spec in inventory.SPECS:
+            if spec.versions is not None:
+                with self.subTest(pattern=spec.pattern):
+                    self.assertTrue(inventory.stamp_required(spec))
+
+
 class WalkFilesTests(unittest.TestCase):
     def test_regular_files_only_and_the_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

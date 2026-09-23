@@ -94,6 +94,42 @@ class ReadCheckTests(DoctorSandbox):
         self.assertIn("older than this xo-space", found["sample-project/.xo/todos.json"]["observed"])
         self.assertEqual({f["level"] for f in found.values()}, {"FAIL"})
 
+    def _write_agent_json(self, document: dict) -> None:
+        path = self.projects / "sample-project" / ".xo" / "agent.json"
+        path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+
+    def test_an_unstamped_agent_json_is_healthy(self) -> None:
+        # agent.schema.json is the one schema that does not require `schema`:
+        # records written before the stamp existed are still on disk and every
+        # adapter reads them.
+        self._write_agent_json({"id": "sample-project", "name": "Sample",
+                                "backend": "some-backend", "created_at": "2025-01-01T00:00:00+00:00"})
+        self.assertEqual(self.problems(), [])
+
+    def test_a_stamped_agent_json_is_healthy(self) -> None:
+        self._write_agent_json({"$schema": "xo/agent.schema.json", "schema": 1, "id": "sample-project"})
+        self.assertEqual(self.problems(), [])
+
+    def test_an_agent_json_from_a_newer_xo_space_is_still_unsupported(self) -> None:
+        self._write_agent_json({"schema": 99, "id": "sample-project"})
+        self.assertIn("schema.unsupported", self.ids())
+
+    def test_a_malformed_agent_json_stamp_is_still_unsupported(self) -> None:
+        # Only an absent stamp is legitimate; a present but wrong-typed one is not.
+        for stamp in ("1", None, True):
+            with self.subTest(stamp=stamp):
+                self._write_agent_json({"schema": stamp, "id": "sample-project"})
+                self.assertIn("schema.unsupported", self.ids())
+
+    def test_an_unstamped_peers_json_still_fails(self) -> None:
+        path = self.projects / "sample-project" / ".xo" / "peers.json"
+        path.write_text(json.dumps({"peers": []}), encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+        self.assertIn("schema.unsupported", self.ids())
+
     def test_private_files_are_never_opened(self) -> None:
         (self.state / "secrets" / "secrets.env").write_bytes(b"\xff not text, not json")
         (self.state / "settings" / "runtime.env").write_text("", encoding="utf-8")

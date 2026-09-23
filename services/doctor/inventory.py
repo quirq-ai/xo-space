@@ -116,11 +116,25 @@ def spec_for(base: str, rel: str) -> Optional[Spec]:
 
 
 @lru_cache(maxsize=None)
+def _schema_document(name: str) -> dict:
+    return json.loads((SCHEMA_DIR / name).read_text(encoding="utf-8"))
+
+
 def schema_file_versions(name: str) -> frozenset[int]:
     """The versions a shipped schema file accepts: ``properties.schema.const`` or ``enum``."""
-    document = json.loads((SCHEMA_DIR / name).read_text(encoding="utf-8"))
-    rule = document["properties"]["schema"]
+    rule = _schema_document(name)["properties"]["schema"]
     return frozenset({rule["const"]}) if "const" in rule else frozenset(rule["enum"])
+
+
+def stamp_required(spec: Spec) -> bool:
+    """False when the document's own schema leaves ``schema`` out of
+    ``required``. Such a record is legitimate unstamped and an absent version
+    means the lowest accepted one — ``agent.schema.json`` says so in as many
+    words, and every adapter reads an unstamped record without complaint. The
+    inventory's own version table (§7.3) always requires a stamp."""
+    if spec.schema_file:
+        return "schema" in (_schema_document(spec.schema_file).get("required") or [])
+    return True
 
 
 def accepted(spec: Spec) -> Optional[frozenset[int]]:
