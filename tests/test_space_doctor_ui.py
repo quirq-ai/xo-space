@@ -39,9 +39,11 @@ class HealthPanelTests(unittest.TestCase):
         self.assertIsNotNone(match, "handleHealthClick not found")
         self.assertIn("if(movingKey)return", match.group(1))
 
-    def test_assets_are_restamped(self) -> None:
-        self.assertIn("./views/quirq.js?v=20260916-doctor1'", read("js/app.js"))
-        self.assertIn('href="css/quirq.css?v=20260916-doctor1"', read("index.html"))
+    def test_assets_are_stamped(self) -> None:
+        # The stamp's shape, never its value: development's cache-stamp rule
+        # (test_space_pr97_ui) fails no test for a routine bump.
+        self.assertRegex(read("js/app.js"), r"\./views/quirq\.js\?v=\d{8}-[a-z0-9]+'")
+        self.assertRegex(read("index.html"), r'href="css/quirq\.css\?v=\d{8}-[a-z0-9]+"')
 
     def test_preview_stubs_answer_the_doctor(self) -> None:
         preview = ROOT / "tests" / "space_ui_preview"

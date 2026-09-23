@@ -70,6 +70,9 @@ SPECS: tuple[Spec, ...] = (
     _s("projects/*/workitems/claims.json", KEEP, versions=V1),
     _s("projects/*/sessions/sessions-augment.json", KEEP, schema_file="sessions-augment.schema.json"),
     _s("projects/*/sessions/sessionslist.d/*.json", KEEP),  # keyed by session; exempt
+    # The Space's own index of sessions started with no project (#146): the same
+    # shard shape as a project's, one level up, outside projects/<key>/.
+    _s("sessions/sessionslist.d/*.json", KEEP),  # keyed by session; exempt
     _s("projects/*/github/issues.json", REBUILDABLE, schema_file="github-issues.schema.json"),
     _s("projects/*/timeline*.jsonl", UNPARSED),
     _s("cache/heartbeat.json", REBUILDABLE, versions=V1),
