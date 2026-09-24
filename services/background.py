@@ -5,7 +5,7 @@ drive them (``services.periodic.run_forever``, the watcher) record each tick.
 The doctor reads :func:`snapshot` to say "the watcher crashed at 20:27:05
 with RuntimeError: …" instead of "last ticked 3 minutes ago".
 
-Space-level: every component uses it (CLAUDE.md placement rule). It only
+Space-level: every component uses it (the project's placement rule). It only
 records: nothing here restarts, cancels or changes a task. No function
 raises; a bookkeeping bug must never stop the loop it observes.
 """
