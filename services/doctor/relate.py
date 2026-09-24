@@ -47,7 +47,8 @@ def _unblock_named_projects(by_family: dict[str, CheckResult]) -> None:
     if runtime is None or read is None:
         return
     own = {f.subject.split("/", 1)[0]: f for f in read.findings
-           if f.subject.endswith("/.xo/project.json") and f.id.startswith(_FILE_IDS)}
+           if f.subject.endswith("/.xo/project.json") and f.id.startswith(_FILE_IDS)
+           and f.id not in _NOT_ONE_FILE}
     if not own:
         return
     for blocked in [f for f in runtime.findings if f.id == "runtime.keys_unknown"]:

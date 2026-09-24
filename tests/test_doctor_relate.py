@@ -37,6 +37,17 @@ class ProjectIdentityFoldTests(DoctorSandbox):
         self.assertEqual([f["id"] for f in problems], ["read.empty"])
         self.assertIn("Leftover checks", [e["label"] for e in problems[0]["evidence"]])
 
+    def test_a_recent_project_json_keeps_the_project_in_keys_unknown(self) -> None:
+        # A project.json that read as "recent" (being written; OK level) is
+        # not an actual read finding explaining anything: the project must
+        # not be silently dropped from keys_unknown on its strength.
+        path = self.projects / "sample-project" / ".xo" / "project.json"
+        path.write_text("{corrupt", encoding="utf-8")
+        report = self.report(now=path.stat().st_mtime + 1)
+        problems = self.problems(report)
+        [blocked] = [f for f in problems if f["id"] == "runtime.keys_unknown"]
+        self.assertEqual([p["name"] for p in blocked["details"]["projects"]], ["sample-project"])
+
     def test_a_project_with_no_file_finding_stays_in_keys_unknown(self) -> None:
         (self.projects / "sample-project" / ".xo" / "project.json").write_text("", encoding="utf-8")
         (self.projects / "on-a-missing-disk").symlink_to(self.projects / "nowhere")
