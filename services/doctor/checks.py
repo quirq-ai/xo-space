@@ -32,6 +32,10 @@ def roots(ctx: Context) -> list[Finding]:
         "roots.projects_unavailable", FAIL, "projects root", ctx.display(ctx.projects_root),
         "The projects folder is missing or can't be read.",
         "No project's .xo/ can be checked. Check that the folder is mounted and that XO_PROJECTS_ROOT is right.",
+        title="The projects folder can't be read",
+        consequence="No project's files can be checked, and the server can't use them either.",
+        self_repair="Nothing.",
+        next_step="Check that the folder is mounted and that XO_PROJECTS_ROOT is right.",
     )]
 
 
@@ -58,14 +62,24 @@ def disk_space(ctx: Context) -> list[Finding]:
             "disk.low_space", level, "state root", ctx.display(ctx.state_root),
             f"The filesystem holding the state folder has {size(free)} free.",
             "Every store writes a whole temp file before replacing its target, so a write that runs "
-            "out of room leaves the old file intact but records nothing new. Free some space."))
+            "out of room leaves the old file intact but records nothing new. Free some space.",
+            title="The disk holding the state folder is nearly full",
+            evidence=[ev("Free", size(free))],
+            consequence="A store that runs out of room keeps its old file but records nothing new.",
+            self_repair="Nothing.",
+            next_step="Free space on that disk; the state folder's quarantine/ and logs/ are safe places to start."))
     # f_files == 0 means the filesystem does not report inodes at all.
     if info.f_files > 0 and info.f_favail < DISK_WARN_INODES:
         out.append(Finding(
             "disk.low_inodes", WARN, "state root", ctx.display(ctx.state_root),
             f"The filesystem holding the state folder has {info.f_favail:,} free inodes.",
             "Inodes run out before space does on a folder of many small files, and a store that "
-            "cannot create its temp file records nothing new."))
+            "cannot create its temp file records nothing new.",
+            title="The state folder's disk is running out of inodes",
+            evidence=[ev("Free inodes", f"{info.f_favail:,}")],
+            consequence="A store that can't create its temp file records nothing new.",
+            self_repair="Nothing.",
+            next_step="Delete files you don't need on that disk; the state folder's quarantine/ is a safe place to start."))
     return out
 
 
@@ -181,7 +195,11 @@ def _unreadable_dir_finding(ctx: Context, path: Path, rel: str) -> Finding:
     level = FAIL if top in _KEEP_TOP_SEGMENTS else WARN
     return Finding("read.unreadable", level, rel, ctx.display(path),
                    f"The folder can't be listed ({_listing_error(path)}).",
-                   "This is not corruption. Check the folder's permissions; nothing inside it can be checked or used until then.")
+                   "This is not corruption. Check the folder's permissions; nothing inside it can be checked or used until then.",
+                   title=f"The folder {rel} can't be listed",
+                   consequence="Nothing inside it can be checked or used.",
+                   self_repair="This isn't corruption: its files may be intact.",
+                   next_step="Check the folder's permissions and the disk it's on.")
 
 
 def reads(ctx: Context) -> list[Finding]:
@@ -201,7 +219,11 @@ def reads(ctx: Context) -> list[Finding]:
     if truncated:
         out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
                            f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
-                           "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy."))
+                           "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy.",
+                           title="The state folder is too large to check fully",
+                           consequence="Files past the first 50,000 entries weren't checked, so a healthy report doesn't mean the state is healthy.",
+                           self_repair="Nothing.",
+                           next_step="Find the folder holding far more files than it should (logs/, quarantine/ or a runtime folder) and clear what isn't needed."))
     for path in sorted(unreadable_dirs):
         out.append(_unreadable_dir_finding(ctx, path, str(path)[len(prefix):]))
     for path in files:
@@ -255,15 +277,31 @@ def space_identity(ctx: Context) -> list[Finding]:
     if expected and stored is None:
         out.append(Finding("space.identity", FAIL, "space.json", shown,
                            "space.json has no xo_space_id, but XO_SPACE_ID is set.",
-                           "Project sharing, usage reporting and Composio identify this Space by that id; the record no longer says which Space this is."))
+                           "Project sharing, usage reporting and Composio identify this Space by that id; the record no longer says which Space this is.",
+                           title="The Space record lost its id",
+                           consequence="Project sharing, usage reporting and Composio identify this Space by that id.",
+                           self_repair="The watcher's next refresh of space.json (within a minute) writes the id from XO_SPACE_ID again.",
+                           next_step="Nothing is needed while the watcher runs; run checks again in a minute.",
+                           problem_key="space:identity"))
     elif expected and stored != expected:
         out.append(Finding("space.identity", FAIL, "space.json", shown,
                            f"space.json names Space {stored}, but XO_SPACE_ID is {expected}.",
-                           "The record describes a different Space than the one this server runs as."))
+                           "The record describes a different Space than the one this server runs as.",
+                           title="The Space record names a different Space",
+                           evidence=[ev("Recorded", stored), ev("This server", expected)],
+                           consequence="Anything reading space.json takes this Space for another one.",
+                           self_repair="The watcher's next refresh writes this server's id.",
+                           next_step="If this server should be that Space, set XO_SPACE_ID to it; otherwise nothing is needed.",
+                           problem_key="space:identity"))
     elif not expected and stored:
         out.append(Finding("space.identity", WARN, "space.json", shown,
                            "XO_SPACE_ID is not set, but space.json has an xo_space_id.",
-                           "The next write of space.json will erase the id. Set XO_SPACE_ID to keep it."))
+                           "The next write of space.json will erase the id. Set XO_SPACE_ID to keep it.",
+                           title="This server has no Space id set",
+                           consequence="The next write of space.json erases the id it still records.",
+                           self_repair="Nothing.",
+                           next_step="Set XO_SPACE_ID to keep it.",
+                           problem_key="space:identity"))
     updated = parse_ts(document.get("updated_at"))
     stored_roots = document.get("roots") if isinstance(document.get("roots"), dict) else {}
     if updated is not None and ctx.now - updated.timestamp() >= SPACE_REFRESH_S:
@@ -274,7 +312,12 @@ def space_identity(ctx: Context) -> list[Finding]:
         if stale:
             out.append(Finding("space.identity", WARN, "space.json roots", shown,
                                f"space.json records different {' and '.join(stale)} than this server uses.",
-                               "Anything that reads the roots from space.json looks in the wrong folder until the watcher rewrites it."))
+                               "Anything that reads the roots from space.json looks in the wrong folder until the watcher rewrites it.",
+                               title="The Space record lists other folders",
+                               consequence="Anything that reads the folders from space.json looks in the wrong place.",
+                               self_repair="The watcher rewrites it within a minute while it runs.",
+                               next_step="Nothing is needed while the watcher runs; otherwise restart the server.",
+                               problem_key="space:roots"))
     return out
 
 
@@ -289,7 +332,14 @@ def duplicate_ids(ctx: Context) -> list[Finding]:
                 f"Folders {', '.join(names)} have the same pid {pid}.",
                 "They write to one runtime folder, so their stats, sessions and timelines merge. "
                 "If one folder is a copy meant to be its own project, delete the \"pid\" line from that copy's "
-                ".xo/project.json and the server gives it a new pid within seconds. Leave the original's pid alone.")
+                ".xo/project.json and the server gives it a new pid within seconds. Leave the original's pid alone.",
+                title=f"Folders {', '.join(names)} share one project id",
+                evidence=[ev("Project id", pid)],
+                consequence="They write to one runtime folder, so their stats, sessions and timelines merge.",
+                self_repair="Nothing.",
+                next_step="If one folder is a copy meant to be its own project, delete the \"pid\" line from that "
+                          "copy's .xo/project.json; the server gives it a new pid within seconds. Leave the "
+                          "original's pid alone.")
         for pid, names in sorted(by_pid.items()) if len(names) > 1
     ]
 
@@ -351,7 +401,13 @@ def stale_temps(ctx: Context) -> list[Finding]:
         if age >= TMP_MIN_AGE_S:
             out.append(Finding("tmp.stale", WARN, subject, ctx.display(path),
                                f"A temporary file left {ago(age)} ago.",
-                               "A write was interrupted here. The file it belongs to kept its previous content, and this temporary file can be deleted."))
+                               "A write was interrupted here. The file it belongs to kept its previous content, and this temporary file can be deleted.",
+                               title="A temporary file was left behind",
+                               evidence=[ev("Left", f"{ago(age)} ago")],
+                               consequence="Nothing uses it: a write was interrupted, and the file it belongs to kept its previous content.",
+                               self_repair="Nothing removes it.",
+                               next_step="Delete it.",
+                               problem_key=f"file:{subject}:tmp"))
     return out
 
 
@@ -388,7 +444,14 @@ def private_permissions(ctx: Context) -> list[Finding]:
                 "It holds credentials or machine settings. Nothing but this server needs it: chmod 600 the file. "
                 "Some mounts (Windows or WSL bind mounts, some network filesystems) ignore chmod and show every "
                 "file as open; there, keep the state folder on a filesystem that stores permissions.",
-                details={"mode": f"{mode:04o}"}))
+                details={"mode": f"{mode:04o}"},
+                title=f"{rel} can be read by other users",
+                evidence=[ev("Mode", f"{mode:04o}")],
+                consequence="It holds credentials or machine settings that other users on this machine can read.",
+                self_repair="Nothing.",
+                next_step="chmod 600 the file. On mounts that ignore chmod (Windows or WSL bind mounts, some "
+                          "network filesystems), keep the state folder on a filesystem that stores permissions.",
+                problem_key=f"file:{rel}:perms"))
     return out
 
 
@@ -409,9 +472,15 @@ def layout_moves(ctx: Context) -> list[Finding]:
     if old_server_fresh:
         old_copy_why = "A server from an older xo-space still writes this old path. Update or stop that install before deleting anything here."
         not_migrated_why = "A server from an older xo-space is still running and writing the old layout. Update that install."
+        old_copy_consequence = "An older xo-space server still writes this old path."
+        old_copy_next = "Update or stop that older install before deleting anything here."
+        not_migrated_next = "Update the older install that still writes them."
     else:
         old_copy_why = "Every reader ignores the old copy, but it looks like live data. Delete it once you've checked nothing in it is needed."
         not_migrated_why = "Restart the server once to move or clear these files."
+        old_copy_consequence = "Every reader ignores the old copy, but it looks like live data."
+        old_copy_next = "Delete it once you've checked nothing in it is needed."
+        not_migrated_next = "Restart the server once."
 
     old_left: list[Finding] = []
     pending: list[str] = []
@@ -423,13 +492,25 @@ def layout_moves(ctx: Context) -> list[Finding]:
         if new is not None and _exists(new):
             old_left.append(Finding("layout.old_copy_left", WARN, move.what, ctx.display(old),
                                     f"An old copy of {move.what} is still at {ctx.display(old)}; the current one is {ctx.display(new)}.",
-                                    old_copy_why))
+                                    old_copy_why,
+                                    title=f"An old copy of {move.what} is still in the state folder",
+                                    evidence=[ev("Old copy", ctx.display(old)), ev("Current", ctx.display(new))],
+                                    consequence=old_copy_consequence,
+                                    self_repair="Nothing.",
+                                    next_step=old_copy_next,
+                                    problem_key=f"layout:{move.what}"))
         else:
             pending.append(move.what)
     out = list(old_left)
     if pending:
         out.append(Finding("layout.not_migrated", WARN, "state root", ctx.display(ctx.state_root),
-                           f"{len(pending)} item(s) are still at their old paths: {', '.join(pending)}.", not_migrated_why))
+                           f"{len(pending)} item(s) are still at their old paths: {', '.join(pending)}.", not_migrated_why,
+                           title="Some state is still at its old paths",
+                           evidence=[ev("Items", ", ".join(pending))],
+                           consequence="Readers look only at the new paths, so what's at the old ones isn't used.",
+                           self_repair="The server moves them when it starts.",
+                           next_step=not_migrated_next,
+                           problem_key="layout:not_migrated"))
     return out
 
 
@@ -452,7 +533,13 @@ def legacy_pending(ctx: Context) -> list[Finding]:
             names = ", ".join(path.name for path in pending)
             out.append(Finding("legacy.pending", WARN, project.name, ctx.display(project.xo),
                                f"{len(pending)} runtime file(s) from before runtime data moved to the state folder: {names}.",
-                               "They are no longer written. Restart the server once to move them into the state folder."))
+                               "They are no longer written. Restart the server once to move them into the state folder.",
+                               title=f"Project {project.name} still has files from an older layout",
+                               evidence=[ev("Files", names)],
+                               consequence="They're no longer written or read.",
+                               self_repair="The server moves them into the state folder when it starts.",
+                               next_step="Restart the server once.",
+                               problem_key=f"legacy:{project.name}"))
     return out
 
 
@@ -511,17 +598,29 @@ def growth(ctx: Context) -> list[Finding]:
         if tree.bytes > MAX_FILE_BYTES:
             out.append(Finding("growth.quarantine", WARN, "quarantine", ctx.display(quarantine),
                                f"Moved-aside data takes {size(tree.bytes)}.",
-                               "It stays until you delete it by hand. Check nothing in it is needed, then delete the folders you don't want."))
+                               "It stays until you delete it by hand. Check nothing in it is needed, then delete the folders you don't want.",
+                               title="Moved-aside data is piling up",
+                               consequence=f"It takes {size(tree.bytes)} and stays until someone deletes it.",
+                               self_repair="Nothing: quarantine is never emptied automatically.",
+                               next_step="Check nothing in it is needed, then delete the folders you don't want."))
     locks = state / ".locks"
     if _count_entries(locks, MAX_ENTRIES) > MAX_ENTRIES:
         out.append(Finding("growth.locks", WARN, ".locks", ctx.display(locks),
                            f"More than {MAX_ENTRIES:,} lock files.",
-                           "Lock files are never removed. Each is tiny, but a huge folder slows every lock."))
+                           "Lock files are never removed. Each is tiny, but a huge folder slows every lock.",
+                           title="Lock files are piling up",
+                           consequence="Each is tiny, but a huge folder slows every lock.",
+                           self_repair="Nothing: lock files are never removed.",
+                           next_step="Stop the server, then delete .locks/; it is recreated as needed."))
     offsets = state / "projects" / "offsets.json"
     result = ctx.read(offsets, inventory.spec_for(inventory.STATE, "projects/offsets.json"))
     entries = result.value.get("offsets") if result.outcome == "ok" else None
     if isinstance(entries, dict) and len(entries) > MAX_ENTRIES:
         out.append(Finding("growth.offsets", WARN, "projects/offsets.json", ctx.display(offsets),
                            f"{len(entries):,} reading positions are stored.",
-                           "Positions for deleted session files are never dropped, so the file only grows."))
+                           "Positions for deleted session files are never dropped, so the file only grows.",
+                           title="The reading-position file keeps growing",
+                           consequence="Positions for deleted sessions are never dropped.",
+                           self_repair="Nothing.",
+                           next_step="Nothing is needed yet."))
     return out

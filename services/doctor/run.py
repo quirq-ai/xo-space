@@ -62,6 +62,10 @@ def _cap(family: str, findings: list[Finding]) -> list[Finding]:
         f"{len(dropped):,} more finding(s) from this check are not listed.",
         "The list is capped so the report stays readable. Fix the ones above and run the checks again.",
         details={"dropped": len(dropped)},
+        title=f"{len(dropped):,} more findings aren't shown",
+        consequence="The list is capped so the report stays readable.",
+        self_repair="Nothing.",
+        next_step="Fix the ones above and run the checks again.",
     )]
 
 
@@ -82,6 +86,10 @@ def run_checks(*, now: float | None = None) -> dict:
             "roots.state_unavailable", FAIL, "state root", ctx.display(ctx.state_root),
             "The Quirq state folder is missing or can't be read.",
             "Nothing Quirq keeps on this machine can be checked. Check QUIRQ_STATE_ROOT and the folder's permissions.",
+            title="The Quirq state folder can't be read",
+            consequence="Nothing Quirq keeps on this machine can be checked, and the server can't use it either.",
+            self_repair="Nothing.",
+            next_step="Check QUIRQ_STATE_ROOT and the folder's permissions.",
         )])]
     else:
         results = relate.relate([_run_one(family, check, ctx) for family, check in CHECKS])

@@ -87,6 +87,10 @@ def survey(ctx: Context) -> Survey:
             "runtime.projects_root_suspect", FAIL, "projects root", ctx.display(ctx.projects_root),
             f"{len(candidates)} runtime data folder(s) exist, but the projects folder is missing, unreadable or empty.",
             "Every project's runtime data would look abandoned. Check that the projects folder is mounted and that XO_PROJECTS_ROOT is right.",
+            title="Every project's runtime data looks abandoned",
+            consequence="The projects folder is missing, unreadable or empty, so leftovers can't be told apart from live data.",
+            self_repair="Nothing.",
+            next_step="Check that the projects folder is mounted and that XO_PROJECTS_ROOT is right.",
         ), [])
     unreadable = [project for project in live if project.read.outcome not in ("ok", "absent")]
     if unreadable:
@@ -99,6 +103,10 @@ def survey(ctx: Context) -> Survey:
             "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked and nothing "
             "can be moved. Fix or reconnect the projects named here first.",
             details={"projects": entries},
+            title="Leftover checks are paused",
+            consequence="These projects' runtime data can't be told apart from leftovers, so leftovers aren't listed and nothing can be moved aside.",
+            self_repair="Nothing.",
+            next_step="Fix or reconnect the projects named here.",
         ), [])
     in_use = frozenset().union(*(project.keys_in_use for project in live))
     found = [Leftover(path.name, path, measure_tree(path)) for path in candidates if path.name not in in_use]
@@ -109,6 +117,11 @@ def survey(ctx: Context) -> Survey:
             "Either projects were deleted, or the projects folder itself changed (Setup, projects folder). If you "
             "changed it, switch back or move the projects over first. Nothing can be moved aside while more folders "
             "look abandoned than there are projects, in case they belong to projects that are only in another folder.",
+            title="More folders look abandoned than there are projects",
+            consequence="Nothing can be moved aside while this is true.",
+            self_repair="Nothing.",
+            next_step="If you changed the projects folder (Setup), switch back or move the projects over. If you "
+                      "deleted those projects, their folders are the ones listed below.",
         ), found)
     return Survey(None, found)
 
@@ -287,6 +300,12 @@ def _split_findings(ctx: Context) -> list[Finding]:
             "runtime.split", WARN, project.name, ctx.display(folder_dir), observed,
             "Data in the folder-name copy isn't shown for this project. Restart the server once; "
             "it merges that folder into the pid folder.",
+            title=f"Project {project.name}'s runtime data is split in two",
+            evidence=[ev("Folder-name copy", ctx.display(folder_dir))],
+            consequence="Data in the folder-name copy isn't shown for this project.",
+            self_repair="The server merges it into the pid folder the next time it starts.",
+            next_step="Restart the server once.",
+            problem_key=f"split:{project.name}",
         ))
     return out
 
