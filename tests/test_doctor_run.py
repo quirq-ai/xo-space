@@ -60,6 +60,13 @@ class BaselineTests(DoctorSandbox):
         self.assertEqual(by_id["roots"]["level"], "OK")
         self.assertEqual(report["level"], "ERROR")
 
+    def test_a_relate_bug_does_not_turn_the_report_into_a_500(self) -> None:
+        with patch.object(run.relate, "relate", side_effect=RuntimeError("relate bug")):
+            with self.assertLogs("services.doctor.run", level="ERROR"):
+                report = self.report()
+        self.assertEqual(report["level"], "OK")
+        self.assertTrue(report["checks"])
+
 
 class ReadCheckTests(DoctorSandbox):
     def finding(self, finding_id: str) -> dict:
@@ -129,6 +136,15 @@ class ReadCheckTests(DoctorSandbox):
         # The peers store accepts a missing stamp (atomic_write.read_stamped_document), so this is not a problem.
         path = self.projects / "sample-project" / ".xo" / "peers.json"
         path.write_text(json.dumps({"peers": []}), encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+        self.assertNotIn("schema.unsupported", self.ids())
+
+    def test_a_null_peers_json_stamp_is_accepted(self) -> None:
+        # atomic_write.read_stamped_document (:232) treats a present `null`
+        # exactly like an absent key: `found is not None and (...)`.
+        path = self.projects / "sample-project" / ".xo" / "peers.json"
+        path.write_text(json.dumps({"schema": None, "peers": []}), encoding="utf-8")
         old = self.now - 86400
         os.utime(path, (old, old))
         self.assertNotIn("schema.unsupported", self.ids())

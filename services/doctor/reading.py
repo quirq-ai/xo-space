@@ -147,9 +147,11 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
         return stamped_result(ReadResult("wrong_type", type(value).__name__))
     if accepted is None:
         return stamped_result(ReadResult("ok", value=value))
-    if not stamped and "schema" not in value:
-        # Only an ABSENT key is legitimate; a present but malformed stamp
-        # ("1", null, true) is still refused below.
+    if not stamped and value.get("schema") is None:
+        # An absent key and a present `"schema": null` both mean the lowest
+        # accepted version: the stores accept either the same way
+        # (services/storage/atomic_write.py:232, `found is not None and …`).
+        # A present but malformed stamp ("1", true) is still refused below.
         return stamped_result(ReadResult("ok", value=value, schema=min(accepted)))
     found = value.get("schema")
     if isinstance(found, bool) or not isinstance(found, int):

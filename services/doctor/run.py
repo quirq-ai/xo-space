@@ -92,7 +92,11 @@ def run_checks(*, now: float | None = None) -> dict:
             next_step="Check QUIRQ_STATE_ROOT and the folder's permissions.",
         )])]
     else:
-        results = relate.relate([_run_one(family, check, ctx) for family, check in CHECKS])
+        results = [_run_one(family, check, ctx) for family, check in CHECKS]
+        try:
+            results = relate.relate(results)
+        except Exception:  # noqa: BLE001 - a relate bug must not hide every check's findings
+            logger.exception("doctor: relate failed")
     levels = [result.level for result in results]
     top = [finding for result in results for finding in result.findings]
     finding_counts = {level: sum(1 for finding in top if finding.level == level) for level in LEVELS}
