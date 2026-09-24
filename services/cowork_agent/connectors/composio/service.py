@@ -1137,6 +1137,14 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
 
     async with _sweep_lock():
         try:
+            # First, before any gate that can return: identity is a property of this
+            # backend, not of the sweep, and the whole connector surface reads it
+            # synchronously afterwards. Resolving it behind the gates below is how a
+            # Space ends up stuck at "key set, signed out" — the boot sweep returns at
+            # `no_key` (non-retryable, so the reconcile loop ends) and nothing resolves
+            # it again. Cheap: cached after the first success, on disk across restarts.
+            account = await account_identity.resolve()
+
             agents = gateway_install_agents()
             if not agents:
                 detail = "no agent manifest declares an enabled 'mcp' block"
@@ -1151,10 +1159,7 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                 )
                 return GatewaySweep(skipped="no_key", detail=detail)
 
-            # Before the store is read: _ensure_sessions_loaded compares the store's
-            # account stamp against this one, and a sweep that ran first with an unknown
-            # account would adopt a session minted for someone else.
-            if not await account_identity.resolve():
+            if not account:
                 detail = (
                     "this backend does not know its XO account id yet (sign in to XO, "
                     "or set XO_API_KEY)"
@@ -1162,6 +1167,9 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                 log.info("composio: %s; skipping MCP install for %s.", detail, agents)
                 return GatewaySweep(skipped="no_account", detail=detail, retryable=True)
 
+            # After the resolve: _ensure_sessions_loaded compares the store's account
+            # stamp against this one, and reading it first, with the account unknown,
+            # would adopt a session minted for someone else.
             _ensure_sessions_loaded()
 
             results = await asyncio.to_thread(_apply_to_agents, agents, announce)

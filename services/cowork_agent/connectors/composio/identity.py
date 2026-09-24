@@ -40,26 +40,41 @@ def _identity_required() -> HTTPException:
 async def resolve_user(request: Request) -> str | None:
     """The Composio user id for this request, or None when Composio cannot run.
 
-    None when no key is configured, and None when the XO account id has not been
-    resolved. The soft paths (chat, ``/api/tools``) read None as "run without Composio
-    tools"; nothing here fetches, so it is safe on a request path.
+    None when no key is configured, and None when the XO account id is not known. Reads
+    the cache only — never a round trip — because the soft paths (chat, ``/api/tools``)
+    call this every turn and read None as "run without Composio tools".
     """
     if not byo_key.configured():
         return None
     return account_identity.account_id()
 
 
-async def get_composio_user(request: Request) -> str:
-    """FastAPI dependency for the Composio *action* routes.
+async def _account(request: Request) -> str | None:
+    """The guard both dependencies share: origin, then the account id.
 
-    403s a cross-site browser request and 409s when the XO account id is unknown. It
-    does not require a key, so the key routes can report the "no key" state themselves
-    rather than 403ing. Read routes that must render either way (``/toolkits``) use
-    :func:`get_composio_user_optional`.
+    **Resolves when the cache is cold**, rather than only reading it. The connector
+    routes are where a Space discovers it has an identity at all, and leaving that to
+    the boot sweep alone is how one ends up stuck at "key set, signed out": the sweep
+    returns at its ``no_key`` gate (non-retryable, so the reconcile loop ends) and
+    nothing afterwards resolves it. One round trip, then cached for the life of the pod
+    and on disk across restarts; a failure is rate-limited inside
+    :func:`account_identity.resolve`, so an outage costs one call per backoff window,
+    not one per page load.
     """
     if not origin_allowed(request):
         raise HTTPException(status_code=403, detail="Cross-site request refused.")
-    account = account_identity.account_id()
+    return account_identity.account_id() or await account_identity.resolve()
+
+
+async def get_composio_user(request: Request) -> str:
+    """FastAPI dependency for the Composio *action* routes.
+
+    403s a cross-site browser request and 409s when the XO account id cannot be
+    established. It does not require a key, so the key routes can report the "no key"
+    state themselves rather than 403ing. Read routes that must render either way
+    (``/toolkits``) use :func:`get_composio_user_optional`.
+    """
+    account = await _account(request)
     if not account:
         raise _identity_required()
     return account
@@ -71,6 +86,4 @@ async def get_composio_user_optional(request: Request) -> str | None:
     For the routes whose job is to *report* the state, which cannot report it from
     behind a 409.
     """
-    if not origin_allowed(request):
-        raise HTTPException(status_code=403, detail="Cross-site request refused.")
-    return account_identity.account_id()
+    return await _account(request)

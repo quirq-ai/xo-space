@@ -45,12 +45,16 @@ class ApiKeyBody(BaseModel):
 @router.get("/api/connectors/composio/backend")
 async def get_backend(request: Request) -> JSONResponse:
     _guard_origin(request)
+    # Resolve rather than only read: this is the first call the Connectors tab makes and
+    # the one that decides whether the panel reads "Signed out", so it must be able to
+    # establish the identity, not just report that nobody has yet. Cached afterwards.
+    account = account_identity.account_id() or await account_identity.resolve()
     return JSONResponse({
         "mode": "local" if byo_key.configured() else "inactive",
         "key_source": byo_key.source(),
         # Whether this backend knows which XO account it acts for. Composio needs both
         # this and a key; the panel says which one is missing.
-        "signed_in": account_identity.known(),
+        "signed_in": bool(account),
     })
 
 

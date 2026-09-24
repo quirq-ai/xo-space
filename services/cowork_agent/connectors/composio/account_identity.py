@@ -45,9 +45,15 @@ STORE_VERSION = 1
 
 _PATH = paths.store_dir() / "identity.json"
 
+#: Seconds to wait before asking again after a failed lookup. The connector routes
+#: resolve on a cold cache, so without this a swarm outage would cost one round trip per
+#: page load; with it, the tab stays responsive and retries on its own.
+RETRY_AFTER_SECONDS = 30.0
+
 _LOCK = threading.Lock()
 _CACHED: Optional[str] = None
 _LOADED = False
+_LAST_FAILURE = 0.0     # monotonic; 0 = no failure since the last success
 
 
 class XOAccountRequired(RuntimeError):
@@ -145,10 +151,11 @@ def remember(value: Optional[str]) -> Optional[str]:
 
 def forget() -> None:
     """Drop the cached id, on disk and in memory. Test hook; nothing else calls it."""
-    global _CACHED, _LOADED
+    global _CACHED, _LOADED, _LAST_FAILURE
     with _LOCK:
         _CACHED = None
         _LOADED = False
+        _LAST_FAILURE = 0.0
     try:
         _PATH.unlink()
     except FileNotFoundError:
@@ -164,24 +171,43 @@ async def resolve(*, force: bool = False) -> Optional[str]:
     xo-swarm-api needs no change to serve connector identity. Returns the cached id
     without a round trip unless ``force``.
 
+    Rate-limited after a failure (:data:`RETRY_AFTER_SECONDS`), because the connector
+    routes call this on a cold cache: without the floor, a swarm outage would cost a
+    round trip on every page load. ``force`` ignores both the cache and the floor.
+
     Never raises: a swarm that cannot be reached leaves whatever is cached in place and
     returns it (None when nothing is cached), which is what lets the boot sweep treat
     identity as retryable rather than fatal.
     """
+    global _LAST_FAILURE
     if not force:
         cached = account_id()
         if cached:
             return cached
+        with _LOCK:
+            waiting = (
+                _LAST_FAILURE
+                and time.monotonic() - _LAST_FAILURE < RETRY_AFTER_SECONDS
+            )
+        if waiting:
+            return None
     from services.swarm_api import auth as swarm_auth
+
+    def _failed() -> None:
+        global _LAST_FAILURE
+        _LAST_FAILURE = time.monotonic()
 
     res = await swarm_auth.get_user_id()
     if not res.ok:
         if not res.unauthenticated:
             log.info("composio: xo-swarm-api did not answer the account id: %s", res.detail)
+        _failed()
         return account_id()
     data = res.data if isinstance(res.data, dict) else {}
     resolved = str(data.get("user_id") or "").strip()
     if not resolved:
         log.warning("composio: xo-swarm-api returned no user_id for this credential.")
+        _failed()
         return account_id()
+    _LAST_FAILURE = 0.0
     return remember(resolved)

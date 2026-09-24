@@ -43,8 +43,16 @@ class _KeyBase(unittest.TestCase):
         for var in (byo_key.ENV_VAR, account_identity.ENV_VAR):
             os.environ.pop(var, None)
             self.addCleanup(lambda v=var: os.environ.pop(v, None))
+        # The connector routes resolve on a cold cache, so the swarm door is stubbed
+        # here: a developer shell holding a real XO_API_KEY must not turn a unit test
+        # into a live call. A test that wants a resolve to succeed re-patches this.
+        from services.swarm_api import auth as swarm_auth
+        from services.swarm_api._http import SwarmResult
+        self.swarm_user_id = AsyncMock(
+            return_value=SwarmResult(ok=False, unauthenticated=True))
         for p in (patch.object(byo_key, "_KEY_PATH", self.key_path),
-                  patch.object(account_identity, "_PATH", self.identity_path)):
+                  patch.object(account_identity, "_PATH", self.identity_path),
+                  patch.object(swarm_auth, "get_user_id", self.swarm_user_id)):
             p.start(); self.addCleanup(p.stop)
         # Start signed out, whatever a previous test left in the module cache.
         self._forget_account()
@@ -577,6 +585,48 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         none = AsyncMock(return_value=_swarm_result(ok=False, unauthenticated=True))
         with patch.object(swarm_auth, "get_user_id", none):
             self.assertIsNone(await account_identity.resolve())
+
+    async def test_a_connector_route_resolves_a_cold_cache(self) -> None:
+        # The bug this guards: with the resolve living only in the boot sweep, a Space
+        # whose sweep ended before a key was saved sat at "key set, signed out" forever,
+        # because every route only *read* the cache. Opening the tab must fix it.
+        from routers.cowork_agent.connectors import composio as r
+        byo_key.save("sk_live")
+        self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+        self.assertIsNone(account_identity.account_id())
+
+        body = json.loads((await r.get_backend(_req())).body)
+
+        self.assertTrue(body["signed_in"])
+        self.assertEqual(account_identity.account_id(), ACCOUNT)
+        self.assertTrue(self.identity_path.exists())
+
+    async def test_the_action_gate_resolves_before_refusing(self) -> None:
+        from services.cowork_agent.connectors.composio import identity as identity_mod
+        self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+        self.assertEqual(await identity_mod.get_composio_user(_req()), ACCOUNT)
+
+    async def test_a_failed_lookup_is_not_retried_on_every_page_load(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        self.swarm_user_id.return_value = _swarm_result(ok=False, offline=True)
+        for _ in range(3):
+            self.assertFalse(json.loads((await r.get_backend(_req())).body)["signed_in"])
+        self.assertEqual(self.swarm_user_id.await_count, 1,
+                         "an outage must cost one call per backoff window, not per load")
+        # The floor is a delay, not a giving-up: the window passing lets it through.
+        account_identity._LAST_FAILURE -= account_identity.RETRY_AFTER_SECONDS + 1
+        self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+        self.assertTrue(json.loads((await r.get_backend(_req())).body)["signed_in"])
+
+    async def test_the_sweep_resolves_even_when_it_installs_nothing(self) -> None:
+        # The gates that return early (no agent declares an mcp block, no key) must not
+        # take the identity with them: the rest of the connector surface needs it.
+        from services.cowork_agent.connectors.composio import service
+        self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+        with patch.object(service, "gateway_install_agents", return_value=[]):
+            sweep = await service.install_gateways(announce=False)
+        self.assertEqual(sweep.skipped, "no_agents")
+        self.assertEqual(account_identity.account_id(), ACCOUNT)
 
     async def test_the_boot_sweep_waits_for_an_account_rather_than_installing(self):
         from services.cowork_agent.connectors.composio import service
