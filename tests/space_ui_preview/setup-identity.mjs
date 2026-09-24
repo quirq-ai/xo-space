@@ -1,6 +1,7 @@
 /* Setup identity statuses use fictional browser responses. No environment
    dump, browser-session mint, connector operation or service write is allowed. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh,waitForSetup} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -57,6 +58,7 @@ await context.route('**/*',async route=>{
   }
   return route.continue();
 });
+await installRefreshProbes(context);
 const card=page.locator('#setup-identity');
 const status=kind=>card.locator('[data-setup-identity="'+kind+'"] .setup-identity-status');
 const detail=kind=>card.locator('[data-setup-identity="'+kind+'"] .setup-identity-detail');
@@ -66,8 +68,8 @@ async function waitStatus(xo,github){
     &&document.querySelector('[data-setup-identity="github"] .setup-identity-status')?.textContent===github,{xo,github});
 }
 async function startRefresh(){
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
-  await page.locator('#setup-refresh').click();
+  await waitForSetup(page);
+  await startDataRefresh(page,'setup');
 }
 async function refresh(xo,github){
   const response=page.waitForResponse(response=>new URL(response.url()).pathname==='/space/setup/status');

@@ -60,6 +60,11 @@ async def _proxy(
 
     try:
         entry = composio_service.build_mcp_server_entry(user_id)
+    except composio_service.swarm_client.ComposioKeyRequired as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "composio_key_required", "detail": str(exc)},
+        )
     except composio_service.NoToolkitsEnabled as exc:
         # 409 rather than 502: the agent should report "nothing turned on here", not
         # "Composio is broken".

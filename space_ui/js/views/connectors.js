@@ -1,10 +1,10 @@
 /* Connectors section: workspace integrations and account apps inside Setup.
 
-   Account app identity is the XO account id resolved from
-   an X-XO-Session header, so every call here goes through core/session.js. Nothing
-   on this page (or on this server) holds a provider credential; xo-swarm-api
-   keeps the Composio API key and runs every Composio call itself, so the browser
-   only ever sees status.
+   Account apps run on the user's OWN Composio API key, stored on this machine
+   (bring your own key). GET /api/connectors/composio/backend says whether a key
+   is configured; without one the tiles read NEEDS_KEY and the key panel is the
+   only call to action. No XO sign-in and no session header are involved. The
+   browser never sees the key: it is injected server-side by the MCP proxy.
 
    Two independent states per card, and the UI has to keep them apart:
      - connected      -> the ACCOUNT holds a connection (shared by every workspace)
@@ -17,10 +17,10 @@
    GET /api/connections, resolved live through POST /api/connections/<id>/account
    when the read had none, and shown as a chip. Never a control, never blocking.
 
-   Three failure modes are first-class states, not errors to hide:
-     - no XO session      -> the backend holds no credential to identify you
-     - COMPOSIO_API_KEY    -> unset, so /toolkits 500s (documented in .env.example)
-     - no auth config      -> that one toolkit 422s on connect
+   Two failure modes are first-class states, not errors to hide:
+     - no key configured  -> connectors inactive; the key panel is shown
+     - no auth config     -> that one toolkit 422s on connect (rare: we create
+                             a Composio-managed auth config on first connect)
 
    Connect opens the provider in a popup. The callback page posts back to its
    opener, but it posts to "*", so the listener below verifies the origin. A
@@ -36,7 +36,6 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
 import {accountLabel,accountLine} from '../core/connections.js';
-import {ensureSession,sessionHeaders,sessionError} from '../core/session.js?v=20260914-accounts1';
 import {mountNativeConnectors} from './native-connectors.js?v=20260914-connectors2';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -54,6 +53,8 @@ let loading=false;
 let listener=null;
 let filter='';
 let nativeConnectors=null;
+let keyState={mode:'inactive',key_source:null};   /* GET /api/connectors/composio/backend */
+let keyReplacing=false;   /* Replace pressed: show the input over a configured key */
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
    one open id, one cache. The connections routes are workspace-local files under
@@ -62,8 +63,8 @@ let openPolling=null;      /* id of the expanded Polling drawer, if any */
 let pollCache={};          /* toolkit id -> GET /api/connections/<id> payload; null on failure */
 let pollNotes={};          /* toolkit id -> one-line result of the last "Poll now" */
 /* The drawer is an uncontrolled form: until Save its state lives only in the
-   DOM, and the grid is rebuilt by Refresh, by the Actions toggle of any card
-   and by a connect landing. So every grid paint first reads the open drawer's
+   DOM, and the grid is rebuilt by the Actions toggle of any card and by a
+   connect landing. So every grid paint first reads the open drawer's
    form into a draft, the drawer is painted from the draft when one exists,
    and Save or closing the drawer (Hide polling, opening another toolkit's
    drawer, turning the toolkit off, deleting the connection) discards it. The
@@ -106,9 +107,6 @@ function renderShell(){
           +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
           +'<p>Tools and apps for this workspace.</p>'
         +'</div>'
-        +'<div class="conn-hero-actions">'
-          +'<button class="conn-refresh" id="conn-refresh" type="button">Refresh</button>'
-        +'</div>'
       +'</header>'
       +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
         +'<div class="conn-group-head"><div><h3 id="conn-workspace-title">Workspace integrations</h3>'
@@ -119,6 +117,7 @@ function renderShell(){
         +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3>'
           +'<p>Connect once to your XO account, then enable per workspace.</p></div>'
           +'<span class="conn-group-badge">Composio</span></div>'
+        +'<div class="conn-key" id="conn-key"></div>'
         +'<div class="conn-alert" id="conn-alert" hidden></div>'
         +'<div class="conn-grid" id="conn-grid" aria-label="Composio toolkits">'
           +'<div class="conn-empty">Loading apps&hellip;</div>'
@@ -129,8 +128,19 @@ function renderShell(){
 }
 
 function bindEvents(){
-  root.querySelector('#conn-refresh').addEventListener('click',refreshAll);
   root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
+  const keyEl=root.querySelector('#conn-key');
+  keyEl.addEventListener('click',ev=>{
+    const b=ev.target.closest('button[data-action]');
+    if(!b)return;
+    if(b.dataset.action==='key-save')saveKey();
+    else if(b.dataset.action==='key-remove')removeKey();
+    else if(b.dataset.action==='key-replace'){keyReplacing=true;renderKeyPanel();}
+    else if(b.dataset.action==='key-cancel'){keyReplacing=false;renderKeyPanel();}
+  });
+  keyEl.addEventListener('keydown',ev=>{
+    if(ev.key==='Enter'&&ev.target.id==='conn-key-input'){ev.preventDefault();saveKey();}
+  });
   if(!listener){
     listener=onAuthMessage;
     addEventListener('message',listener);
@@ -149,18 +159,21 @@ async function loadAll(){
   loading=true;
   setAlert(null);
   try{
-    const session=await ensureSession();
-    if(!session){renderSignedOut();return;}
+    /* Which mode are we in? A key (env or local file) activates connectors; without
+       one they are inactive and the key panel is the only call to action. */
+    const backend=await apiFetch(BASE+'/backend');
+    keyState=(backend.ok&&backend.data)||{mode:'inactive',key_source:null};
+    renderKeyPanel();
 
     /* the account labels ride alongside the listing; awaited before the
        paint so the cards come up labelled, never awaited past a failure */
     accountAsked=new Set();
     const accounts=loadAccounts();
 
-    /* Listing also starts the server's MCP-gateway sweep in the background, so
-       opening this tab (or pressing Refresh) does what the old "Reinstall MCP
+    /* Listing also starts the server's MCP-gateway sweep in the background (only
+       when a key is set), so opening this tab does what the old "Reinstall MCP
        gateway" button did: the agent's wiring is never installed by hand. */
-    const list=await apiFetch(BASE+'/toolkits',{headers:sessionHeaders()});
+    const list=await apiFetch(BASE+'/toolkits');
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
@@ -172,41 +185,83 @@ async function loadAll(){
   }
 }
 
-function renderSignedOut(){
-  setAlert('pending',
-    'Sign in to XO to connect account apps',
-    'Sign in from the app, or add XO_API_KEY and XO_SPACE_ID in Secrets, then refresh.'
-      +(sessionError()?' '+esc(sessionError()):''));
-  paintGrid(()=>'');
+const KEY_ICON='<span class="conn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" '
+  +'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+  +'<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-4 0 2 2"/></svg></span>';
+
+function renderKeyPanel(){
+  const el=root.querySelector('#conn-key');
+  if(!el)return;
+  const configured=keyState.mode==='local';
+  const fromEnv=keyState.key_source==='env';
+  const showInput=!configured||keyReplacing;
+
+  const pill=configured
+    ? '<span class="conn-state is-good">Configured</span>'
+    : '<span class="conn-state is-pending">Not set</span>';
+
+  const sub=configured
+    ? 'Connectors are active. Key held on this machine only'
+      +(fromEnv?', from <code>COMPOSIO_BYO_API_KEY</code>.':', in a private file.')
+    : 'Add your Composio API key to activate connectors. It is stored only on this '
+      +'machine and never sent to XO.';
+
+  let form='';
+  if(showInput){
+    form='<div class="conn-key-form">'
+      +'<input type="password" id="conn-key-input" autocomplete="off" spellcheck="false" '
+      +'placeholder="Paste your Composio API key">'
+      +'<button type="button" class="conn-primary" data-action="key-save">Save key</button>'
+      +(keyReplacing?'<button type="button" class="conn-secondary" data-action="key-cancel">Cancel</button>':'')
+      +'</div>';
+  }else if(configured&&!fromEnv){
+    form='<div class="conn-key-form">'
+      +'<button type="button" class="conn-secondary" data-action="key-replace">Replace</button>'
+      +'<button type="button" class="conn-secondary is-danger" data-action="key-remove">Remove</button>'
+      +'</div>';
+  }
+
+  el.className='conn-key'+(configured?' is-set':'');
+  el.innerHTML='<div class="conn-key-head">'+KEY_ICON
+    +'<div class="conn-key-text"><h4>Composio API key</h4><p>'+sub+'</p></div>'
+    +pill+'</div>'+form;
+
+  const input=el.querySelector('#conn-key-input');
+  if(input&&showInput)input.focus();
+}
+
+async function saveKey(){
+  const input=root.querySelector('#conn-key-input');
+  const api_key=input?input.value.trim():'';
+  if(!api_key){setAlert('error','No key entered','Paste your Composio API key first.');return;}
+  const res=await apiFetch(BASE+'/api-key',{method:'PUT',body:{api_key}});
+  if(!res.ok){
+    setAlert('error','Could not save the key',
+      res.status===422?'Composio rejected this API key.':esc(res.error||'Try again.'));
+    return;
+  }
+  setAlert(null);
+  keyReplacing=false;
+  toast('Composio API key saved');
+  await refreshAll();
+}
+
+async function removeKey(){
+  const res=await apiFetch(BASE+'/api-key',{method:'DELETE'});
+  if(!res.ok){setAlert('error','Could not remove the key',esc(res.error||'Try again.'));return;}
+  toast('Composio API key removed');
+  await refreshAll();
 }
 
 /* The /toolkits route is the only source of the toolkit list, so when it fails
-   there are no tiles to draw. Say precisely which of the two causes it was. */
+   there are no tiles to draw. It returns 200 even with no key (tiles read
+   NEEDS_KEY), so a failure here is offline or a genuine server fault. */
 function renderListFailure(res){
-  /* SwarmComposioError's message always contains the literal "COMPOSIO_API_KEY"
-     (swarm_client.py) for an authoritative failure (no key configured on
-     xo-swarm-api, or this backend's XO credential rejected), so matching it
-     names the cause with confidence. A bare 500 is *not* proof of one: any
-     other server-side fault in the route (a Composio outage, an unreachable
-     xo-swarm-api) is rendered by FastAPI as the same plain-text 500 with no
-     detail to match on. Blaming credentials for all of them sends the operator
-     off to verify keys that are already correct, so an unmatched 500 points at
-     the log instead, where the traceback says which it was. */
-  const notConfigured=/COMPOSIO_API_KEY/i.test(res.error||'');
-  const serverFault=!notConfigured&&res.status===500;
   let note;
   if(res.offline){
     setAlert('error','xo-space is unreachable','The server is down or restarting.');
     note='Cannot reach the server.';
-  }else if(res.status===401){
-    setAlert('pending','Session expired','Refresh to sign in again.');
-    note='Your session is no longer valid.';
-  }else if(notConfigured){
-    setAlert('pending','Account apps need server configuration',
-      'Check this workspace’s XO_API_KEY. Set COMPOSIO_API_KEY and each app’s '
-      +'COMPOSIO_AUTH_CONFIG_&lt;TOOLKIT&gt; on xo-swarm-api, then refresh.');
-    note='Account apps are not configured.';
-  }else if(serverFault){
+  }else if(res.status===500){
     setAlert('error','Could not load account apps',
       'Check the xo-space server log for the cause, then refresh.');
     note='Account apps are temporarily unavailable.';
@@ -214,7 +269,7 @@ function renderListFailure(res){
     setAlert('error','Could not list connectors',esc(res.error||''));
     note=res.error||'Unavailable.';
   }
-  paintGrid(()=>'<div class="conn-empty'+(notConfigured?'':' is-error')+'">'+esc(note)+'</div>');
+  paintGrid(()=>'<div class="conn-empty is-error">'+esc(note)+'</div>');
 }
 
 /* ---------- rendering ---------- */
@@ -316,10 +371,10 @@ function renderCard(t){
           +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +'</div>'
       +'</div>'
+      /* status and account facts share one row, so a connected card is no
+         taller than an unconnected one */
+      +'<div class="conn-card-status">'
       +'<i class="conn-state '+status.cls+'">'+esc(status.text)+'</i>'
-    +'</div>'
-    +'<div class="conn-card-body">'
-      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
       +'<div class="conn-facts">'
         +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
         /* which account the session is bound to; only a connection has one */
@@ -327,6 +382,10 @@ function renderCard(t){
           ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
           :'')
       +'</div>'
+      +'</div>'
+    +'</div>'
+    +'<div class="conn-card-body">'
+      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Enable it to use this account in this workspace.</p>'
         :'')
@@ -342,12 +401,6 @@ function renderCard(t){
         :(enabled
           ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
           :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
-      /* Deleting is account-wide, so it is kept visually apart from the
-         workspace-local toggle above and confirmed before it runs. */
-      +(connected
-        ?'<button class="conn-secondary is-danger" data-action="disconnect">'
-          +'Delete connection&hellip;</button>'
-        :'')
       +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
@@ -357,6 +410,14 @@ function renderCard(t){
       +(connected&&(enabled||polling)
         ?'<button class="conn-secondary" data-action="polling">'
           +(polling?'Hide polling':'Polling')+'</button>'
+        :'')
+      /* Deleting is account-wide, so it sits apart from the workspace-local
+         buttons, at the row's far end, and is confirmed before it runs. */
+      +(connected
+        ?'<button class="conn-secondary is-danger conn-delete" data-action="disconnect"'
+          +' title="Delete connection" aria-label="Delete connection">'
+          +'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6.5 4V2.75h3V4M4.5 4l.6 9.25h5.8L11.5 4M6.75 6.5v4.5M9.25 6.5v4.5"/></svg>'
+          +'</button>'
         :'')
     +'</div>'
     +(open?renderActions(t.id):'')
@@ -534,8 +595,8 @@ async function loadAccounts(){
 
 /* A connected toolkit turned on here that the read left unlabelled gets one
    live lookup per load; the server answers from its cache for a minute, so
-   a Refresh right after costs no provider call. Not awaited by loadAll: a
-   slow provider must not hold the Refresh button. */
+   a refresh right after costs no provider call. Not awaited by loadAll: a
+   slow provider must not delay the connector grid. */
 function askAccounts(){
   for(const t of toolkits){
     if(!isConnected(t)||!isEnabledHere(t)||accountLabel(accountCache[t.id]))continue;
@@ -663,7 +724,7 @@ async function connect(toolkitId,button){
     /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
        the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},headers:sessionHeaders(),
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();
@@ -690,10 +751,8 @@ function connectErrorText(res,toolkitId){
         +'and register that origin as an allowed callback on the Composio auth '
         +'configs in the dashboard.';
     }
-    return'This toolkit has no auth config on the server. Create one in the '
-      +'Composio dashboard and set COMPOSIO_AUTH_CONFIG_'
-      +String(toolkitId).toUpperCase()+' where this install reads its Composio '
-      +'credentials: your XO account, or locally in self-host mode.';
+    return'This toolkit could not be set up automatically. Create an auth config '
+      +'for it in your Composio dashboard, then try again.';
   }
   if(res.offline)return'xo-space is unreachable.';
   return res.error||'Could not start authorization.';
@@ -708,7 +767,7 @@ async function pollUntilConnected(toolkitId,requestId,popup){
     +encodeURIComponent(requestId);
   for(let attempt=0;attempt<POLL_ATTEMPTS;attempt+=1){
     await delay(POLL_INTERVAL);
-    const res=await apiFetch(path,{headers:sessionHeaders()});
+    const res=await apiFetch(path);
     const status=String((res.data&&res.data.status)||'').toUpperCase();
     if(status==='ACTIVE'){
       if(popup&&!popup.closed)popup.close();
@@ -748,10 +807,10 @@ async function setScope(toolkitId,enabled,button){
     const path=BASE+'/'+encodeURIComponent(toolkitId)
       +(enabled?'/scope':'/accounts/'+encodeURIComponent(toolkit.connected_account_id||'')+'/unlink');
     const res=enabled
-      ? await apiFetch(path,{method:'PUT',headers:sessionHeaders(),
+      ? await apiFetch(path,{method:'PUT',
           body:{enabled:true,
                 connected_account_ids:[toolkit.connected_account_id].filter(Boolean)}})
-      : await apiFetch(path,{method:'POST',headers:sessionHeaders()});
+      : await apiFetch(path,{method:'POST'});
     if(!res.ok){cardError(toolkitId,res.error||'Could not save that change.');return;}
     toast(labelFor(toolkitId)+(enabled?' on in this workspace':' off in this workspace'));
     if(!enabled&&openToolkit===toolkitId)openToolkit=null;
@@ -780,7 +839,6 @@ async function disconnect(toolkitId,button){
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/disconnect',{
       method:'POST',
       body:{connected_account_id:toolkit.connected_account_id},
-      headers:sessionHeaders(),
     });
     if(!res.ok){cardError(toolkitId,res.error||'Delete failed.');return;}
     toast(labelFor(toolkitId)+' connection deleted');
@@ -801,8 +859,7 @@ async function toggleDrawer(toolkitId){
   openToolkit=toolkitId;
   if(toolsCache[toolkitId]===undefined){
     renderGrid();
-    const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/tools',
-      {headers:sessionHeaders()});
+    const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/tools');
     toolsCache[toolkitId]=res.ok&&res.data?(res.data.tools||[]):null;
   }
   renderGrid();
@@ -813,7 +870,7 @@ async function toggleAction(toolkitId,input){
   const enabled=input.checked;
   input.disabled=true;
   const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/prefs',{
-    method:'PUT',body:{actions:{[slug]:enabled}},headers:sessionHeaders(),
+    method:'PUT',body:{actions:{[slug]:enabled}},
   });
   input.disabled=false;
   if(!res.ok){

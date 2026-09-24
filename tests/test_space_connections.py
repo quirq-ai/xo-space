@@ -8,8 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "space_ui"
 # Shared core modules and connector styles retain the account-chip stamp.
 # Inbox imports and styles advanced for the Jobs and command-results UI.
-STAMP = "20260914-accounts1"
-RESULTS_STAMP = "20260914-results1"
+# The shape of a cache stamp, never a particular value: a bump is a routine
+# change and must not fail a test. What is asserted is that the stamp is there.
+STAMP_RE = r"\d{8}-[a-z0-9]+"
 AGENTS = ("claude_code", "openclaw", "hermes", "codex", "antigravity")
 # en dash (U+2013) and em dash (U+2014) are banned in this repo; spelled as
 # escapes so this file passes its own check
@@ -197,7 +198,7 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         # the same pins test_space_wiki keeps, restated here so this feature
         # cannot be the change that breaks them
         self.assertIn("id:'connectors',label:'Connectors'", self.view)
-        self.assertIn("sessionHeaders()", self.view)
+        self.assertNotIn("sessionHeaders", self.view)
         self.assertIn("event.origin!==location.origin", self.view)
         self.assertIn("connector-auth-complete", self.view)
         self.assertIn("connection_request_id=", self.view)
@@ -267,9 +268,9 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         for call in calls:
             self.assertNotIn("sessionHeaders", call)
             self.assertNotIn("headers", call)
-        # the Composio routes still carry it
+        # BYO key: the Composio routes carry no session header either
         self.assertIn("const BASE=API_BASE+'/api/connectors/composio';", self.view)
-        self.assertIn("apiFetch(BASE+'/toolkits',{headers:sessionHeaders()})", self.view)
+        self.assertIn("apiFetch(BASE+'/toolkits')", self.view)
 
     def test_save_sends_the_three_fields_and_disables_while_in_flight(self) -> None:
         save = slice_between(self.view, "async function savePolling(", "async function pollNow(")
@@ -353,24 +354,28 @@ class CacheBusterTests(unittest.TestCase):
 
     def test_app_js_imports(self) -> None:
         app = read("js/app.js")
-        self.assertIn(
-            "import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260916-jobs3';", app
+        # a per-view module carries its stamp on the import in app.js
+        self.assertRegex(
+            app, r"import \{createInboxViews,initInboxBadge\} from '\./views/inbox\.js\?v=" + STAMP_RE + "';"
         )
-        self.assertIn("import connectorsView from './views/connectors.js?v=20260914-setupapps1';", app)
+        self.assertRegex(app, r"import connectorsView from '\./views/connectors\.js\?v=" + STAMP_RE + "';")
         # both views import core/api.js bare: the stamp is the import map's
         self.assertIn("import {API_BASE,apiFetch,failText} from '../core/api.js';", read("js/views/inbox.js"))
         self.assertIn("import {API_BASE,apiFetch} from '../core/api.js';", read("js/views/connectors.js"))
         html = read("index.html")
         for name in ("api.js", "ui.js", "connections.js"):
-            stamp = "20260914-files2" if name == "api.js" else STAMP
-            self.assertIn('"./js/core/' + name + '":"./js/core/' + name + "?v=" + stamp + '"', html)
+            self.assertRegex(
+                html,
+                r'"\./js/core/' + re.escape(name) + r'":"\./js/core/' + re.escape(name) + r"\?v=" + STAMP_RE + '"',
+                name,
+            )
 
     def test_index_html_links(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
-        # Connectors now shares the Setup shell and its updated styles.
-        self.assertIn('<link rel="stylesheet" href="css/connectors.css?v=20260915-typesync1">', html)
-        self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
+        # Connectors shares the Setup shell; both sheets are loaded with a stamp.
+        for sheet in ("inbox", "connectors"):
+            self.assertRegex(html, r'<link rel="stylesheet" href="css/' + sheet + r'\.css\?v=' + STAMP_RE + '">', sheet)
+        self.assertRegex(html, r'src="js/app\.js\?v=' + STAMP_RE + '"')
         # the import map is read before app.js is, or it rewrites nothing
         self.assertLess(html.index('<script type="importmap">'), html.index('<script type="module" src="js/app.js'))
 

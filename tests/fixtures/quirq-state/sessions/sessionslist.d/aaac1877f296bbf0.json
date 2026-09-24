@@ -1,0 +1,15 @@
+{
+  "claude::web:0f146a2b": {
+    "sessionId": "sample-session-2",
+    "nativeSessionId": "22222222-2222-4222-8222-222222222222",
+    "directory": "/home/you/xo-projects",
+    "backend": "sample_agent",
+    "updatedAt": 1767258700000,
+    "usage": {
+      "input_tokens": 800,
+      "output_tokens": 150,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

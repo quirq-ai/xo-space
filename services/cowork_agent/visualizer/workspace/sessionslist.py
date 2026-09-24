@@ -24,6 +24,10 @@ def reset_caches() -> None:
 def apply(project_ids: Sequence[str] | None = None) -> bool:
     """Rebuild the union. Returns ``True`` iff the file changed (T26)."""
     merged: dict[str, dict] = {}
+    # Sessions started with no project chosen are indexed at the Space level
+    # (``~/.quirq/sessions/``), not under any project, so ``list_project_ids``
+    # never reaches them.
+    merged.update(session_index.read_root_session_index())
     for pid in (project_ids if project_ids is not None else list_project_ids()):
         # The per-project index is partitioned across shard files now, so this
         # is a merge rather than one read — see engine.sessions_io.

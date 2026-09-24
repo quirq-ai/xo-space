@@ -21,6 +21,9 @@ anyio>=4.2.0
 gunicorn>=21.2.0
 python-multipart>=0.0.20
 
+# Decode uploaded workspace logos before persisting or serving them.
+Pillow>=11.3.0
+
 # Session telemetry (Argus) — daemon started at boot by
 # scripts/install_shared_deps.sh; the Space Sessions tab reads its DB.
 # Pinned: bump deliberately (an unpinned latest makes installs
@@ -45,3 +48,11 @@ PyYAML>=6.0
 # Host/Origin validation) is only fixed in 1.28.1. That is the floor here —
 # every known MCP-SDK advisory is fixed at or below it. Do NOT lower it.
 mcp>=1.28.1
+
+# Composio SDK — the connectors feature (bring-your-own-key) talks to Composio
+# directly with the user's own key (connectors/composio/client.py). Imported
+# lazily, so a missing install only affects the Composio routes, not boot. Pin to
+# the 0.18.x line: the 0.7.x range carries GHSA-3mwv-j45g-vp3w — do NOT install
+# it. Pulls in composio-client, openai, pysher, jiter and a few small transitive
+# deps automatically.
+composio>=0.18,<0.19

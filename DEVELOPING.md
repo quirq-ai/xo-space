@@ -211,7 +211,6 @@ The project venv is `venv/bin/python` (it has fastapi/uvicorn; the system
 
 ```bash
 # Run
-./quirq                                            # Docker on localhost:5003
 ./cowork-api.sh dev                                # native venv + reload
 PORT=5010 ./cowork-api.sh dev                      # choose another native port
 AGENT_NAME=hermes venv/bin/python server.py        # boot a specific backend
@@ -514,115 +513,52 @@ one branch, serve both.
 
 Composio gives the active agent tools in the user's own SaaS accounts (Gmail,
 Google Workspace, Notion, Figma, Slack, Telegram) via [Composio](https://composio.dev).
-OAuth toolkits and key-based ones (Telegram takes a bot token) share one connect
-flow: the swarm mints a hosted link for either. It is laid
-out like every other connector: logic under `services/cowork_agent/connectors/`,
-HTTP surface under `routers/cowork_agent/connectors/`:
+OAuth toolkits and key-based ones (Telegram takes a bot token) share one connect flow.
+It is laid out like every other connector: logic under
+`services/cowork_agent/connectors/`, HTTP surface under `routers/cowork_agent/connectors/`:
 
 | module | what it serves |
 |---|---|
-| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...`: toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
+| `routers/cowork_agent/connectors/composio.py` | `/api/connectors/composio/...`: backend/api-key, toolkits, connect/disconnect, accounts, tools, prefs, the OAuth callback |
 | `routers/cowork_agent/connectors/composio_mcp_proxy.py` | `/mcp/composio-proxy/...`: the loopback reverse proxy agents reach Composio through |
-| `services/cowork_agent/connectors/composio/` | `service.py`, `identity.py`, `session_identity.py`, `mcp.py`, `action_prefs.py`, `categories.py`, `paths.py` |
+| `services/cowork_agent/connectors/composio/` | `service.py`, `byo_key.py`, `client.py`, `identity.py`, `mcp.py`, `action_prefs.py`, `categories.py`, `paths.py` |
 
-It is the only sub-package among that folder's flat modules; seven modules is more
-than one file should carry. Note the depth: `paths._CHECKOUT_DATA_DIR` reaches the repo
-root with `parents[4]`, one deeper than a flat connector module would need, and it is
-the only thing in the package that still needs to know where the checkout is, purely to
-find the pre-move `data/` location to migrate away from.
+### 10.1 Bring your own key
 
-### 10.1 The identity chain
+**Composio runs only when the user supplies their own Composio API key.** There is no
+swarm fallback and no XO sign-in. The key comes from `COMPOSIO_BYO_API_KEY` or, failing
+that, an owner-only file (`~/.config/composio/api_key.json`, 0600; `COMPOSIO_STORE_DIR`
+relocates it). The env var wins over the file. `byo_key.py` owns this: `api_key()`,
+`source()`, `configured()`, `require()` (raises `ComposioKeyRequired`), `save()`/`clear()`,
+and the auth-config cache. The key is never sent to XO and never returned in any response.
 
-**One backend, one account.** This process holds exactly one XO credential
-(`routers/auth/auth.py`; `get_auth_token()` takes no arguments), so it has exactly one
-Composio `user_id` for its whole lifetime.
+**Identity is local.** The Composio `user_id` is `XO_SPACE_ID`, or the fixed default
+`xo-space-default` when that is unset (`byo_key.user_id()`, no network, never raises). Two
+installs sharing that id and the same key see the same connections; which toolkits a
+workspace may use is still decided per workspace (see 10.2). The connector routes are
+gated by `routers/browser_guard.origin_allowed` (a cross-site browser request is refused);
+they carry no session bearer.
 
-There is no auth subsystem in this repo. xo-swarm-api owns authentication: it verifies
-Clerk credentials, runs the browser OAuth handshake, and mints the session ids the UI
-carries. What lives here is one credential and one pass-through route.
+**The SDK client.** `client.py` talks to Composio directly with the user's key, exposing
+the same call shapes `service.py` uses (`connect`, `connection_status`, `list_connections`,
+`set_alias`, `disconnect`, `list_tools`, `create_session`, `update_session`,
+`delete_session`). It is memoised on the key value and imports the `composio` package
+lazily, so a missing install only affects the Composio routes. Every call first runs
+`byo_key.require()`, so with no key configured the routes answer `409 composio_key_required`
+and `/toolkits` reports `key_configured: false` with each toolkit `NEEDS_KEY`.
 
-**Composio is addressed by the bare Clerk account id.** It was once addressed by a
-composed `<account_id>__ws__<workspace id>` key. That gave hard workspace
-isolation at a price nobody wanted: a connected account belonged to one workspace only,
-so you re-ran the OAuth dance per workspace, per toolkit, forever. Connections are
-**account-wide**, and workspaces are separated inside the Composio tool-router session
-instead; see §10.2.
+**Auth configs are handled for the user** (`client.auth_config_for`): on first connect of a
+toolkit it lists the project's auth configs and reuses an enabled one, otherwise it creates
+a Composio-managed OAuth config (or an API_KEY config for Telegram). The id is cached
+against the key's fingerprint, so a key change rebuilds it. `COMPOSIO_CALLBACK_URL` stays
+required (this deployment's public callback, registered on the Composio auth configs).
 
-```
-browser ──X-XO-Session: <opaque id>──▶ composio/identity.py
-                                        │  session_identity.is_valid()   (gate only)
-                                        ▼
-                                      state.aaccount_id() ──▶ XO /auth/workspace-principal
-                                        │                        (cached; one per pod)
-                                        ▼
-                                      account_id ──▶ Composio user_id
-```
-
-**The bearer is a gate, not a selector.** It chooses nothing (there is one account);
-it only proves the tab was vouched for by a backend that is signed in to XO. Session ids
-therefore carry no account id, and `connectors/composio/state.py` composes no identity at
-all. If you find yourself adding a `SEPARATOR` constant back to xo-space, you are
-re-creating the scheme this design removed. `tests/test_composio.py` asserts it stays gone.
-
-The retired key is gone from both repos: nothing composes it and nothing reads it. During
-the migration the swarm kept returning it as `legacy_principal` so the UI could list the
-connections stranded under it and prompt a reconnect; that probe, and
-`xo-swarm-api/auth/principal.py` with it, has been deleted. Connections made under the old
-scheme are still in Composio and still unreachable (a pinned connected account must belong
-to the session's `user_id`), so the user simply reconnects the toolkit once.
-
-**Why not several humans per backend?** Because this backend never holds anyone's XO
-token but its own, it cannot forward another caller's credential, and the swarm composes
-from the credential it is called with. A session naming another account would therefore
-receive *this* backend's principal, and its Composio connections with it. That is why
-`POST /xo-auth/session` was removed rather than guarded. Serving several XO accounts from
-one backend needs credential forwarding: a design change, not a re-add.
-
-**`XO_SPACE_ID` is the space identity, and it is a store stamp, not a tenant key.**
-One flow on Coder and off: the id the swarm knows this Space by (the same value project
-sharing and usage reporting send) is the only identity the connector reads, so every
-install sets `XO_SPACE_ID` explicitly.
-
-On the wire it is sent as `space_id`: `GET /auth/workspace-principal?space_id=` and the
-`space_id` body field of `POST /auth/session/self`. Until xo-swarm-api #41 is deployed it
-is dual-sent as `workspace_id` too: the deployed swarm declares that field and ignores
-`space_id`, #41 the reverse, and neither rejects the key it does not know. A 422 whose
-pydantic detail says the identity field is `missing` or `extra_forbidden`
-(`state.identity_field_gap`) is a deploy gap, handled like a 404 on the route:
-`GET /xo-auth/session/self` answers 503 naming xo-swarm-api #41, and the identity lookup
-falls back to the cached identity, then to the account recorded in the store, exactly as
-during an outage. Any other 422 (a string detail: the swarm read the id and rejected its
-value) is authoritative and points at `XO_SPACE_ID`. It is never sent to Composio and is not
-a key in any store: a pod is one space, so the local stores are already isolated by the
-filesystem. Locally its job is stamping `sessions.json` with the space that wrote it, so
-a store restored out of a backup or another space's home directory is discarded rather than
-adopted along with that space's connector scope. Without `XO_SPACE_ID` the store is never
-written; only a `space_id` stamp is compared, so an unstamped document is adopted and
-stamped on its next write; a document carrying the retired `workspace_id` key and no
-`space_id` is treated as another space's (not adopted, its session queued for the boot
-sweep, replaced by the next write). Comparing the stamp needs no network, which is what
-keeps the MCP hot path offline. `space_scope.json` (formerly `workspace_scope.json`) carries the same `space_id`
-stamp, but there it is informational: nothing compares it, and a write without
-`XO_SPACE_ID` keeps the stamp already on disk.
-
-The route gate that used to 401 on a missing workspace id is **gone**: it existed to
-prevent "falling back to an account-wide bucket", and that bucket is now the intended
-design, so the check had inverted from a protection into an outage.
-
-The browser never holds the raw XO token: `GET /xo-auth/session/self`
-(`routers/cowork_agent/connectors/composio_session.py`) presents the backend's credential
-to xo-swarm-api's `POST /auth/session/self` and hands the page only the opaque id that
-comes back. **The swarm mints it** (`auth/session_identity.py` over there); minting is the
-check, not a formality: it succeeds only if the credential still authenticates and the
-workspace id is well-formed, so a backend whose credential has been revoked fails at
-sign-in rather than rendering "signed in" and 401ing every route afterwards.
-
-This side keeps a local record of the ids it was handed
-(`connectors/composio/session_identity.py`) so that checking one stays a dict lookup: the
-check runs on the MCP proxy's hot path and must not become a round trip. The cost is
-stated where it lives: the record is a TTL cache, so an id revoked at the swarm keeps
-working here until it expires. `GET /auth/session/resolve` is the definitive answer for
-anything that needs one.
+**Saving or clearing a key** (`PUT`/`DELETE /api/connectors/composio/api-key`, refused with
+409 when the key comes from the environment) re-stamps `sessions.json`: its `backend`
+fingerprint changes, so the stored tool-router session is dropped (a session minted under
+one key is invalid under another) while the local proxy tokens are kept, so agents' MCP
+configs keep working without a restart. Pins in `space_scope.json` that pointed at the old
+project are pruned on the next session build; the user reconnects each app.
 
 ### 10.2 Workspace isolation lives in the session
 
@@ -940,9 +876,9 @@ per new item: `ts`, `type`, `key`, `title`, `body`, `url`, `toolkit`; rotated at
 floor in the poller. The Inbox feeder applies its own 24 hour bootstrap floor
 and reads only the live file, so `events_total` can exceed what Inbox shows.
 
-**How it degrades.** Every failure is recorded, never raised. No XO credential
-(`state.account_id_if_known()` and `aaccount_id()` both fail) records
-`last_error` "not signed in to XO (no account id)" and stamps `last_poll_at`
+**How it degrades.** Every failure is recorded, never raised. No Composio API key
+(`byo_key.configured()` is false) records
+`last_error` "add your Composio API key to activate connections" and stamps `last_poll_at`
 but not `last_ok_at`; a toolkit missing from `space_scope.enabled_toolkits()`
 records "<toolkit> is not turned on in this workspace"; a collector the upstream
 rejects records "<collector>: <message>" while the other collectors still run.
@@ -1010,3 +946,9 @@ only as the literal `true`; the schema is
 
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
+
+## 12. Releases
+
+Versions are annotated SemVer tags on `main`, cut by hand every time `main`
+moves. The runbook, the numbering rules and the hotfix flow are in
+[RELEASING.md](RELEASING.md).

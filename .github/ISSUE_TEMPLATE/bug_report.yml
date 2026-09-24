@@ -38,7 +38,6 @@ body:
         - curl -fsSL https://quirq.ai/install | sh
         - ./install.sh from a clone
         - ./cowork-api.sh dev
-        - ./quirq (Docker / compose.local.yml)
         - Hosted / managed workspace
         - Other
     validations:

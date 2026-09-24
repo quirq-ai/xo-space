@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Claude Code plugin (plugin/) and the Codex plugin (.agents/plugins/quirq/)
+# The Claude Code plugin (plugin/) and the Codex plugin (plugins/quirq/)
 # share discovery logic that must not drift. Run from the repo root; exits
 # non-zero with a diff when the copies disagree.
 set -u
@@ -14,7 +14,7 @@ compare() {
     fi
 }
 
-compare plugin/scripts/discover.sh .agents/plugins/quirq/skills/quirq/scripts/discover.sh
+compare plugin/scripts/discover.sh plugins/quirq/scripts/discover.sh
 
 if [ "$fail" -eq 0 ]; then
     printf 'Plugin bundles in sync.\n'

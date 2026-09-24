@@ -35,12 +35,12 @@ async def list_tools(request: Request):
     """
     try:
         from services.cowork_agent.connectors.composio import service as composio_service
-        from services.cowork_agent.connectors.composio.identity import resolve_user_from_bearer
+        from services.cowork_agent.connectors.composio.identity import resolve_user
     except Exception as exc:
         log.debug("tools: composio not importable: %s", exc)
         return []
 
-    user_id = await resolve_user_from_bearer(request)
+    user_id = await resolve_user(request)
     if not user_id:
         log.debug("tools: no valid session bearer on request; returning []")
         return []

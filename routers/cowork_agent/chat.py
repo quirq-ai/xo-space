@@ -40,22 +40,16 @@ router = APIRouter()
 async def _resolve_user_id(request: Request) -> str | None:
     """Resolve the Composio user_id for an incoming chat request.
 
-    The bearer is a gate, not a selector: this backend has exactly one Composio
-    account id, fetched from xo-swarm-api. ``body.user_id`` is still never trusted.
-    Chat/session storage is unchanged.
-
-    Returns None when the request carries no valid session, or when the account id
-    cannot be resolved. Chat still runs — the agent simply gets no Composio MCP
-    server for that turn, which is the only safe answer.
+    Composio runs on the user's own key; ``body.user_id`` is never trusted. Returns None
+    when no Composio API key is configured, in which case the turn runs without Composio
+    tools — the only safe answer.
     """
-    from services.cowork_agent.connectors.composio.identity import resolve_user_from_bearer
+    from services.cowork_agent.connectors.composio.identity import resolve_user
 
-    user_id = await resolve_user_from_bearer(request)
+    user_id = await resolve_user(request)
     if not user_id:
-        log.warning(
-            "chat: no valid session bearer on this prompt — the turn runs "
-            "without Composio tools. Mint a session id via "
-            "GET /xo-auth/session/self and send it as 'X-XO-Session: <id>'."
+        log.debug(
+            "chat: no Composio API key configured — the turn runs without Composio tools."
         )
     return user_id
 

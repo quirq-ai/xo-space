@@ -9,6 +9,7 @@ into them.
 ```
 ~/.quirq/
 ├── projects/      one folder per project, named by pid, plus the Space timeline
+├── sessions/      the sessions started with no project (they run in the projects root)
 ├── inbox/         the Inbox
 ├── connections/   one folder per connection
 ├── scheduler/     saved commands and their run history
@@ -26,6 +27,7 @@ into them.
 | Folder | Files | Written by | Delete it and you lose |
 |---|---|---|---|
 | `projects/` | `<pid>/timeline.jsonl`, `<pid>/stats.json`, `<pid>/sessions/`, `<pid>/github/issues.json`, `<pid>/workitems/claims.json`; `timeline.jsonl` for the whole Space; `offsets.json` and `<source>-offsets.json`, where the watcher stopped reading | the watcher; the todo, workitem and claim APIs | history nothing can rebuild |
+| `sessions/` | `sessionslist.d/<shard>.json`, one row per session started with no project (it belongs to no `projects/<pid>/`, so it lives one level up, where no project key can collide with it) | the chat adapters | those sessions vanish from the session list, messages and transcript |
 | `inbox/` | `inbox.json` | `services/inbox/` | Inbox items and what you marked done |
 | `connections/` | `accounts.json`; `<toolkit>/config.json`, `state.json`, `events.jsonl` | `services/connections/` | what each connection collected |
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |

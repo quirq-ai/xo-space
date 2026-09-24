@@ -56,8 +56,8 @@ def _prune_blank_env_shadows(dotenv_path: Path) -> None:
             os.environ.pop(key, None)
 
 
-# Load environment variables. Keys already exported by the shell (or by
-# docker -e / compose) are recorded first: they outrank every file below,
+# Load environment variables. Keys already exported by the shell are
+# recorded first: they outrank every file below,
 # exactly as install.sh orders them, but only when they actually carry a
 # value, which is what the prune above guarantees.
 _prune_blank_env_shadows(Path(__file__).resolve().parent / ".env")
@@ -68,11 +68,11 @@ load_dotenv()
 def _load_storage_roots() -> None:
     """Apply ``<state root>/roots.env``: the storage roots the Setup tab writes.
 
-    Precedence, mirroring install.sh: shell/container env > roots.env >
+    Precedence, mirroring install.sh: shell env > roots.env >
     the checkout's .env. Loading it here is what makes the Setup tab's XO
     root real for every reader (all of which resolve through
     ``project_layout.xo_projects_root()``) after a restart, instead of only
-    when the Docker installer is re-run.
+    when the installer is re-run.
 
     The file is anchored to the state root we can see right now; if it
     relocates the state root, runtime.env and secrets are then read from the
@@ -133,9 +133,6 @@ from routers.auth.auth import (
     get_auth_token,
     get_auth_state,
     router as auth_router,
-)
-from routers.cowork_agent.connectors.composio_session import (
-    router as xo_auth_session_router,
 )
 from routers.auth.claude_setup_token import router as claude_setup_token_router
 from routers.auth.codex_setup import router as codex_setup_router
@@ -662,7 +659,6 @@ async def lifespan(app: FastAPI):
     print(f"   AI Workspace Root: {AI_WORKSPACE_ROOT}")
     print(f"   Codex CLI: {CODEX_CLI_PATH} (timeout={CODEX_TIMEOUT}s)")
     print(f"   Startup warmup: {'enabled' if STARTUP_WARMUP_ENABLED else 'disabled'} ({STARTUP_WARMUP_URL})")
-    print("   Skills: .claude/skills (Claude-native)")
     print("   Skills: .agents/skills + AGENTS.md (Codex-native)")
     startup_auth_session_id = os.getenv("XO_AUTH_SESSION_ID", "").strip()
     startup_poll_token = os.getenv("XO_POLL_TOKEN", "").strip()
@@ -937,7 +933,6 @@ app.add_middleware(
 # after the TCP peer is recorded: the browser guard needs the real peer.
 from routers.browser_guard import add_forwarding_middleware
 add_forwarding_middleware(app)
-app.include_router(xo_auth_session_router)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)

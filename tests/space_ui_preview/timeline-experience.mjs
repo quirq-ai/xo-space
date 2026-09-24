@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Timeline over an explicit fictional graph: all service writes are blocked. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,waitForDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -144,7 +145,7 @@ try{
   }
   checked('Timeline summary, rectangular controls and plot fit 1440px, 390px and 320px without repeating the title.');
 
-  longMilestones=true;await page.locator('#project-refresh').click();await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  longMilestones=true;await startDataRefresh(page);await waitForDataRefresh(page);
   await expectSummary('15 commits');
   const captionBounds=[];
   for(const [position,text] of [[600,'Documentation milestone'],[950,'Documentation milestone with a longer release note that wraps on small screens']]){
@@ -162,7 +163,7 @@ try{
   report.layouts.push({label:'milestone caption reflow',width:320,captions:captionBounds});
   checked('At 320px, changing and hiding milestone captions rebuilds the SVG to the actual available plot height.');
 
-  empty=true;longMilestones=false;await page.locator('#project-refresh').click();await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  empty=true;longMilestones=false;await startDataRefresh(page);await waitForDataRefresh(page);
   await expectSummary('0 dated files','3 mapped projects');assert.equal(await page.locator('#tmode').isHidden(),true);
   assert.equal(await page.locator('#tdots [data-id],#tplot [data-hist]').count(),0);
   assert.match(await page.locator('#tsub').textContent(),/no|without/i);

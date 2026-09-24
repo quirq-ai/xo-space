@@ -40,7 +40,9 @@ class SpaceInboxCompositionTests(unittest.TestCase):
 
     def test_stylesheet_is_linked_and_the_shell_stamp_moved(self) -> None:
         html = read("index.html")
-        self.assertIn('<link rel="stylesheet" href="css/inbox.css?v=20260916-jobs3">', html)
+        # stamped, whatever the current stamp is: a bump is routine and must
+        # not fail this test (test_space_pr97_ui holds the tree to the rule)
+        self.assertRegex(html, r'<link rel="stylesheet" href="css/inbox\.css\?v=\d{8}-[a-z0-9]+">')
         self.assertLess(html.index("css/sharing.css?v="), html.index("css/inbox.css?v="))
         self.assertRegex(html, r'src="js/app\.js\?v=\d{8}-[a-z0-9]+"')
         # the registry creates #view-inbox itself; no section markup needed

@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from routers.browser_guard import is_local_mutation
+from routers.branding import router as branding_router
+from routers.theme import router as theme_router
 
 # Bundled UI (space_ui/ at the repo root); SPACE_DIR env var overrides, e.g.
 # to point at a live xo-atlas checkout during UI development.
@@ -27,6 +29,8 @@ DEFAULT_SPACE_DIR = str(Path(__file__).resolve().parent.parent / "space_ui")
 SPACE_DIR = Path(os.getenv("SPACE_DIR", DEFAULT_SPACE_DIR)).expanduser()
 
 router = APIRouter(prefix="/space", tags=["space"])
+router.include_router(branding_router)
+router.include_router(theme_router)
 _SERVER_INSTANCE = str(time.time_ns())
 
 

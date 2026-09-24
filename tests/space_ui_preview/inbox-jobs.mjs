@@ -1,6 +1,7 @@
 /* Inbox Jobs and the shared results drawer, using read-only browser fixtures.
    No command, Inbox item, connection, or server process is changed. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -64,9 +65,10 @@ await context.route('**/*',async route=>{
   if(url.pathname==='/api/inbox')return send(route,{items:inbox,counts:{new:1,seen:1,done:0},total:2});
   await route.continue();
 });
+await installRefreshProbes(context);
 const rows=page.locator('.inb-job-row');
 const item=id=>page.locator(`[data-job-id="${id}"]`);
-const refresh=()=>page.locator('[data-act="jobs-refresh"]').click();
+const refresh=()=>startDataRefresh(page,'inbox');
 const inboxPage=name=>page.locator('#section-nav [href="#/inbox/'+name+'"]');
 async function settled(){await page.locator('.inb-jobs[aria-busy="false"]').waitFor();}
 async function expectCount(count){await page.waitForFunction(count=>document.querySelectorAll('.inb-job-row').length===count,count);}
@@ -122,7 +124,7 @@ try{
   await refresh();
   slow.release.resolve();await settled();
   await page.waitForFunction(()=>document.querySelector('[data-job-id="half-minute"] h3')?.textContent==='Current release readiness');
-  assert.equal(await page.locator('[data-act="jobs-refresh"]').evaluate(el=>el===document.activeElement),true,'Refresh focus survives updated jobs');
+  assert.equal(await page.locator('[data-act="jobs-refresh"]').count(),0,'Jobs has no local Refresh button');
 
   failure='Scheduler temporarily unavailable <img src=x>';
   await refresh();await settled();

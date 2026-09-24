@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from services.cowork_agent.connectors.composio import paths, state
+from services.cowork_agent.connectors.composio import byo_key, paths
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.reader import read_json
@@ -114,8 +114,8 @@ def pins() -> Dict[str, List[str]]:
 def _write(mutate) -> Dict[str, Dict[str, object]]:
     """Lock, re-read, mutate, atomically replace.
 
-    Stamps the ``space_id`` this scope was written under (:func:`state.space_stamp`), as
-    ``sessions.json`` does. Informational only: :func:`load` never compares it.
+    Stamps the local ``user_id`` this scope was written under. Informational only:
+    :func:`load` never compares it.
     """
     path = _store_path()
     # Before the lock: the sentinel is keyed on the store's absolute path.
@@ -125,7 +125,7 @@ def _write(mutate) -> Dict[str, Dict[str, object]]:
         mutate(current)
         write_json_atomic(path, {
             "version": STORE_VERSION,
-            "space_id": state.space_stamp(read_json(path)),
+            "space_id": byo_key.user_id(),
             "toolkits": current,
         })
     return current

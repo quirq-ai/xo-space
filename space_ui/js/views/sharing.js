@@ -1,5 +1,5 @@
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
-import {setSectionActions} from '../core/section-nav.js?v=20260915-agents2';
+import {setSectionActions} from '../core/section-nav.js?v=20260921-refresh1';
 /* Sharing: the project-sharing page in the
    Space UI (issue #83). Designed around the loop, not a layout: share once,
    then commits flow and each side applies.
@@ -44,6 +44,14 @@ let busy=new Set();       /* project ids with a write in flight */
 let confirmRevoke=null;   /* {id,ws} while a revoke waits for Confirm */
 let renderedAt=0;
 let catalogDirty=false;
+/* Inbox hands off here ("show this project", issue #142). The request is
+   parked until the rail lists the project; once selected, focus moves to
+   its Apply button (or the row) as soon as its commits are in. */
+let focusReq=null,focusNow=false;
+addEventListener('space:sharing-focus',e=>{
+  focusReq=String(e.detail||'')||null;
+  if(root&&!editing())render();
+});
 addEventListener('space:projects-changed',()=>{catalogDirty=true;});
 addEventListener('space:project-access-changed',()=>{catalogDirty=true;members.clear();});
 
@@ -177,9 +185,34 @@ function render(){
   if(!root)return;
   renderActions();
   const m=model();
+  const again=focusKey();
   root.querySelector('.prj').innerHTML=headHTML(m)+stripHTML()+bodyHTML(m);
+  if(again){const el=root.querySelector(again);if(el)el.focus({preventScroll:true});}
   renderedAt=Date.now();
   if(open&&!composer)ensureDetail(open);
+  if(focusNow&&!composer&&root.classList.contains('is-active')){
+    const r=m.find(x=>x.mine&&x.project===open);
+    if(r&&r.c){focusNow=false;revealSelected();}
+  }
+}
+/* A repaint replaces every node; the focused control (by action, id and
+   panel) gets focus back, so a poll tick or a refresh never drops it. */
+function focusKey(){
+  const el=document.activeElement;
+  if(!el||!root.contains(el)||!el.dataset||!el.dataset.act)return null;
+  const scope=el.closest('#shl-detail')?'#shl-detail ':el.closest('.shl-rail')?'.shl-rail ':'';
+  return scope+'[data-act="'+CSS.escape(el.dataset.act)+'"]'+(el.dataset.id?'[data-id="'+CSS.escape(el.dataset.id)+'"]':'');
+}
+function revealSelected(){
+  const row=root.querySelector('#shl-row-'+CSS.escape(open));
+  if(row)row.scrollIntoView({block:'nearest'});
+  const detail=root.querySelector('#shl-detail');
+  if(detail){
+    detail.scrollIntoView({block:'start',behavior:'smooth'});
+    detail.classList.add('is-flash');
+  }
+  const target=root.querySelector('#shl-detail [data-act="apply"]')||(row&&row.querySelector('.shl-row-head'));
+  if(target)target.focus({preventScroll:true});
 }
 function summary(m){
   const res=sharingStatusRes();
@@ -317,6 +350,11 @@ function sharedChip(r){
    selection made then would land on the wrong project and stick. */
 function selected(m){
   const mine=m.filter(r=>r.mine);
+  if(focusReq){
+    if(mine.some(r=>r.project===focusReq)){open=focusReq;focusReq=null;focusNow=true;}
+    /* the first reads are in and it is not shared from here: open the page as is */
+    else if(commitsReady)focusReq=null;
+  }
   if(!mine.length){open=null;return null;}
   if(!open||!mine.some(r=>r.project===open)){
     if(!commitsReady)return null;
@@ -358,6 +396,9 @@ function detailHTML(r){
         +(busy.has(id)?' disabled':'')+'>'+(busy.has(id)?'Applying…':'Apply '+plural(behind,'commit'))+'</button>':'')
       +'<button class="sess-refresh" type="button" data-act="list" data-id="'+esc(id)+'">Open in List</button>'
     +'</div>'
+    /* say what to do, not only that something changed: fetched is not applied */
+    +(behind>0?'<div class="shl-callout"><b>'+plural(behind,'new commit')+' fetched from origin/'+esc(c.branch||'main')+'</b>'
+      +'<span>They are not in your local copy yet. Apply fast-forwards '+esc(r.name)+' to include them; nothing changes until you do.</span></div>':'')
     +'<div class="shl-rule"></div>'
     +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Commits on origin/'+esc(c&&c.branch||'main')+'</span>'
       +(behind>0?'<span class="tchip st-shared">'+behind+' new · not applied</span>':(c&&c.ok?'<span class="tchip st-quiet">up to date</span>':''))
@@ -516,7 +557,7 @@ async function onClick(e){
       return;
     case'select':
       if(sharePending)return;
-      open=id;
+      open=id;focusReq=null;focusNow=false;
       confirmRevoke=null;
       composer=null; /* picking a project answers "what do you want to see" */
       render();

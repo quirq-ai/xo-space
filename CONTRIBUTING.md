@@ -26,7 +26,7 @@ file tells you how to work with us.
 
 **Getting it merged**
 
-10. [Branches, commits, pull requests](#branches-commits-pull-requests) — `development` vs `main`, what a PR must say
+10. [Branches, commits, pull requests](#branches-commits-pull-requests) — `main` vs `development`, what a PR must say
 11. [Review](#review) — what we look at, in what order, and how fast
 12. [Windows](#windows) — what works natively and what needs WSL
 13. [Community and licence](#community-and-licence) — where to ask, MIT
@@ -119,8 +119,7 @@ agent CLI such as `npm install -g @anthropic-ai/claude-code`.
 
 ```bash
 git clone https://github.com/quirq-ai/xo-space.git
-cd xo-space
-git checkout development          # where work lands; see Branches below
+cd xo-space                       # you are on main, where work lands; see Branches below
 ```
 
 Two equivalent ways to run it; pick one:
@@ -191,7 +190,8 @@ config/agents/<name>/          per-runtime manifest, capabilities, settings, set
 space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the offline overview
 install.sh · cowork-api.sh · quirq   the three ways to run it
 tests/                         xo-space's own unittest suite
-plugin/ · .agents/             the Claude Code / Codex plugin bundles (kept in sync by a script)
+plugin/ · plugins/quirq/       Claude Code / Codex bundles (shared discovery checked by scripts/check_plugin_sync.sh)
+.agents/plugins/marketplace.json  Codex repository marketplace
 ```
 
 DEVELOPING.md §2 has the full map; the README's "Project structure" section
@@ -271,12 +271,16 @@ quotes (route counts, test counts).
 
 ## Branches, commits, pull requests
 
-**Branch from `development`, target `development`.** `main` is the release
-branch: it is what the public one-liner installs, what the container image is
-built from (`.github/workflows/publish-container.yml` runs on push to `main`),
-and what `install.sh` fast-forwards a managed checkout to. `development` is
-merged into `main` by the maintainers in "Merge Dev to Main" pull requests;
-nothing lands on `main` directly.
+**Branch from `main`, target `main`.** `main` is where every change lands and
+what users run: it is what the public one-liner installs, what the container
+image is built from (`.github/workflows/publish-container.yml` runs on push to
+`main`), and what `install.sh` fast-forwards a managed checkout to. A merge into
+`main` is not a release by itself; releases are tagged on `main` when the
+maintainers decide ([RELEASING.md](RELEASING.md)).
+
+`development` is the maintainers' staging branch: it is where the internal
+team tests `main` before a release, and it is kept in step with `main` by the
+maintainers. Do not target it with a pull request.
 
 Name branches by intent: `fix/…`, `feat/…`, `docs/…`, `chore/…`.
 
@@ -289,9 +293,8 @@ write them for that reader.
 **Pull requests** — the description should let a reviewer understand the
 change without reading the diff first:
 
-- what it does and why (link the issue: `Fixes #N` — note that a PR into
-  `development` does not auto-close the issue; a maintainer closes it after
-  the merge);
+- what it does and why (link the issue: `Fixes #N` closes it when the PR
+  merges into `main`);
 - how you verified it, precisely — which commands, on which platform. Say
   plainly what you did *not* run;
 - any behaviour change a user could notice, and any contract you touched;
@@ -299,7 +302,7 @@ change without reading the diff first:
 
 Keep PRs focused: a rename, a fix, and a feature are three PRs. Allow edits
 from maintainers so small review fixes don't need a round trip. Keep your
-branch rebased on `development` if it falls behind; we merge with a merge
+branch up to date with `main` if it falls behind; we merge with a merge
 commit, so no need to squash yourself.
 
 Contributions do not need a CLA. By submitting a PR you agree your change is

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================
-# install.sh — set up and run Quirq natively, without Docker.
+# install.sh — set up and run Quirq natively.
 #
-# Replaces the previous Docker installer. Instead of pulling an image
-# and `docker run`ing it, this prepares a virtual environment with uv
-# and runs `server.py` directly in the foreground, the way you would
-# during normal local development. Docker Desktop is no longer a
-# prerequisite; git and a network connection are.
+# Prepares a virtual environment with uv and runs `server.py` directly
+# in the foreground, the way you would during normal local development.
+# git and a network connection are the only prerequisites.
 #
 # Two ways to use it, chosen automatically:
 #
@@ -206,8 +204,8 @@ ensure_uv() {
 
 # ==============================================================
 # Python environment. Lives at venv/ rather than uv's default
-# .venv/ because CLAUDE.md, DEVELOPING.md and compose.local.yml all
-# document venv/bin/python as this project's interpreter path.
+# .venv/ because CLAUDE.md and DEVELOPING.md both document
+# venv/bin/python as this project's interpreter path.
 #
 # Only created when absent, so repeat runs skip straight to the
 # dependency sync. To rebuild from scratch: rm -rf venv
@@ -225,8 +223,8 @@ sync_dependencies() {
 }
 
 # ==============================================================
-# Optional runtime tools. The Docker image apt-installed these; a
-# native run inherits whatever the host has. The server already
+# Optional runtime tools. A native run inherits whatever the host
+# has. The server already
 # degrades non-fatally without each of them, so this reports and
 # continues rather than adding a second, divergent gate.
 # ==============================================================
@@ -392,24 +390,21 @@ PY
 }
 
 # ==============================================================
-# Environment contract. This is install.sh's `docker run --env`
-# block, minus everything that existed only to bridge the container
-# boundary:
+# Environment contract. Nothing here bridges a container boundary:
 #
-#   QUIRQ_HOST_HOME / _PROJECTS_ROOT / _STATE_ROOT  translated
-#       container paths back to host paths. Running natively they
-#       are the same path, and runtime_config renders the single
-#       true path when they are unset.
+#   QUIRQ_HOST_HOME / _PROJECTS_ROOT / _STATE_ROOT  stay unset.
+#       Running natively the host path is the true path, and
+#       runtime_config renders it when they are unset.
 #   QUIRQ_MANAGED_CONTAINER / QUIRQ_ALLOW_SELF_RESTART  both
 #       default to false, so the Setup tab correctly reports that
 #       it cannot restart this process instead of offering a
 #       control that would fail.
 #
-# AGENT_NAME defaults to claude_code here, where the Docker installer
-# left it unset. Without it the server still boots — agent_registry safe-boots
-# to openclaw — but _run_agent_setup reads AGENT_NAME directly with no
-# fallback, so nothing would install a CLI and no backend would work.
-# Setting it makes the Docker-free path self-sufficient on first run.
+# AGENT_NAME defaults to claude_code here. Without it the server still
+# boots — agent_registry safe-boots to openclaw — but _run_agent_setup
+# reads AGENT_NAME directly with no fallback, so nothing would install a
+# CLI and no backend would work. Setting it makes the first run
+# self-sufficient.
 # It stays overridable, and runtime.env (loaded with override=True)
 # still wins, so the Setup tab remains authoritative.
 #

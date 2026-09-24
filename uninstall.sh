@@ -8,9 +8,8 @@
 # (rclone.conf, mcp-tokens.json), the Quirq state root except secrets/ (roots.env
 # is read first, so a root moved from Setup is still found), the
 # workspace-tier .xo/ the watcher wrote, the derived telemetry DB
-# in ~/.argus, a legacy ~/.xo-cowork migration source, the
-# cowork-api.sh daemon files in /tmp, and the local Docker compose
-# project and image when the compose launcher was used.
+# in ~/.argus, a legacy ~/.xo-cowork migration source, and the
+# cowork-api.sh daemon files in /tmp.
 #
 # What stays, always: your project folders under the XO root —
 # that is your actual work. --purge-projects (or --all) removes
@@ -279,32 +278,6 @@ stop_server() {
 }
 
 # ==============================================================
-# Docker — only when the compose launcher could have been used.
-# A stopped daemon or absent Docker is a skip, not an error.
-# ==============================================================
-docker_down() {
-    local compose_file="${REPO_DIR:+${REPO_DIR}/compose.local.yml}"
-
-    if [ -z "$compose_file" ] || [ ! -f "$compose_file" ]; then
-        SKIPPED+=("Docker compose project: no compose.local.yml here")
-        return
-    fi
-    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-        SKIPPED+=("Docker compose project: Docker not available")
-        return
-    fi
-    if [ "$DRY_RUN" -eq 1 ]; then
-        REMOVED+=("Docker compose project quirq-local + built image [dry run]")
-        return
-    fi
-    if docker compose -f "$compose_file" down --rmi local --volumes --remove-orphans >/dev/null 2>&1; then
-        REMOVED+=("Docker compose project quirq-local + built image")
-    else
-        SKIPPED+=("Docker compose project: nothing to bring down")
-    fi
-}
-
-# ==============================================================
 # The checkout. Removed wholesale only when it is the managed
 # layout (projects live beside it, not inside it) and has no local
 # changes (--force overrides). In-place installs strip what the
@@ -431,7 +404,6 @@ main() {
 
     confirm_or_exit
     stop_server
-    docker_down
 
     # ${PROJECTS_ROOT}/.xo is deliberately NOT removed. It used to hold only
     # watcher output, which is why this line used to delete it; since the tier

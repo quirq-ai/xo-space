@@ -11,7 +11,7 @@
     height:min(78vh,calc(100vh - var(--topbar-inset,var(--topbar-h)) - var(--section-nav-inset,0px) - var(--footer-h) - 32px));
     min-width:340px;min-height:240px;max-width:96vw;max-height:92vh;
     z-index:60;display:flex;flex-direction:column;
-    background:rgba(13,16,20,.975);backdrop-filter:blur(18px);
+    background:rgba(var(--overlay-rgb),.975);backdrop-filter:blur(18px);
     border:1px solid var(--line);border-radius:13px;
     box-shadow:0 18px 60px rgba(0,0,0,.55),0 4px 14px rgba(0,0,0,.35);
     overflow:hidden;resize:both;
@@ -48,7 +48,7 @@
     color:var(--ink-2);border:1px solid var(--line);border-radius:999px;
     padding:5px 11px;transition:all .16s var(--ease);
   }
-  .pv-acts button:hover{color:var(--ink);border-color:#39404d;background:var(--bg-3)}
+  .pv-acts button:hover{color:var(--ink);border-color:var(--line-hover);background:var(--bg-3)}
   #preview-close{border:0;font-size:13px;padding:4px 7px;letter-spacing:0}
   @media (max-width:480px){
     #preview>header{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
@@ -86,7 +86,7 @@
     background-repeat:no-repeat;background-position:right 9px center;
     transition:all .16s var(--ease);
   }
-  #preview-version:hover{color:var(--ink);border-color:#39404d}
+  #preview-version:hover{color:var(--ink);border-color:var(--line-hover)}
   #preview-version option{background:#14171c;color:var(--ink-2)}
 
   /* rendered markdown — same restrained typography as the wiki articles */

@@ -8,8 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from services.cowork_agent.connectors.composio import paths, state
-from services.swarm_api import composio as swarm_client
+from services.cowork_agent.connectors.composio import byo_key, paths
+from services.cowork_agent.connectors.composio import client as swarm_client
 
 log = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ def list_connections(
     # already shaped exactly like the `out` list this function used to build itself.
     try:
         return swarm_client.list_connections(statuses=statuses, toolkit_slugs=toolkit_slugs)
-    except swarm_client.SwarmComposioError as exc:
+    except swarm_client.ComposioError as exc:
         if exc.authoritative:
             raise
         log.warning("composio: list_connections failed for user=%s: %s", user_id, exc)
@@ -284,7 +284,7 @@ def set_alias(connected_account_id: str, alias: Optional[str]) -> Optional[str]:
     normalized = normalize_alias(alias)
     try:
         swarm_client.set_alias(connected_account_id, normalized)
-    except swarm_client.SwarmComposioError as exc:
+    except swarm_client.ComposioError as exc:
         # No special-casing of "not owned" (a 404 from xo-swarm-api) here on purpose:
         # the router has never distinguished it from any other alias-update failure,
         # so both keep mapping to the same 502.
@@ -303,9 +303,9 @@ def disconnect(connected_account_id: str) -> bool:
     try:
         swarm_client.disconnect(connected_account_id)
         return True
-    except swarm_client.SwarmComposioNotFound as exc:
+    except swarm_client.ComposioNotFound as exc:
         raise ValueError(str(exc)) from exc
-    except swarm_client.SwarmComposioError as exc:
+    except swarm_client.ComposioError as exc:
         log.warning("composio: disconnect failed: %s", exc)
         return False
 
@@ -319,7 +319,7 @@ def list_tools(
     meta = toolkit_meta(toolkit_id)
     try:
         tools = swarm_client.list_tools(toolkit_id)
-    except swarm_client.SwarmComposioError as exc:
+    except swarm_client.ComposioError as exc:
         if exc.authoritative:
             raise
         log.warning("composio: list_tools failed (toolkit=%s): %s", meta.slug, exc)
@@ -358,9 +358,12 @@ def list_tools(
 _SESSIONS_PATH = paths.store_dir() / "sessions.json"
 _LEGACY_SESSIONS_PATHS = (paths.legacy_checkout_path("composio_sessions.json"),)
 
-# v4 dropped the per-principal maps: a pod serves one workspace and Composio is addressed
-# by the bare account id, so there is exactly one session and one account here.
-STORE_VERSION = 4
+# v5: the swarm/XO-session path is gone. Composio is addressed with the user's own key
+# (:mod:`.byo_key`), so the store is stamped with the key's fingerprint (``backend``) and
+# the local ``user_id``. A store from v4 or below belonged to the shared org project and
+# its session cannot be reached with this key, so it is discarded — but its proxy tokens
+# are carried forward so agents' MCP configs keep working across the switch.
+STORE_VERSION = 5
 
 _SESSION_ID: Optional[str] = None
 _PROXY_TOKENS: set[str] = set()
@@ -384,55 +387,31 @@ class NoToolkitsEnabled(RuntimeError):
     """
 
 
-# What :func:`_stamp_of` answers for a document the previous build wrote: stamped with
-# ``workspace_id`` (Coder's id, not ``XO_SPACE_ID``), so which space it belongs to is
-# unknown. Never equal to a real ``XO_SPACE_ID``, which the swarm restricts to
-# ``[A-Za-z0-9_-]``, so it reads as foreign everywhere a stamp is compared.
-LEGACY_STAMP = "<workspace_id stamp: space unknown>"
+def _backend_stamp() -> str:
+    """Which Composio project this store belongs to: the active key's fingerprint.
 
-
-def _stamp_of(data: object) -> Optional[str]:
-    """The space a store document was written for, or None when unstamped.
-
-    ``space_id`` (``XO_SPACE_ID``) is the only identity. A document carrying the retired
-    ``workspace_id`` key and no ``space_id`` was stamped by the previous build for a
-    space this one cannot name, so it answers :data:`LEGACY_STAMP` rather than None: it
-    is another space's store as far as adoption goes, not an unstamped one.
+    A session minted under one key is invalid under another, so a store whose stamp does
+    not match the live key must drop its session (its proxy tokens are kept). ``"none"``
+    when no key is set, so a store written with no key is not mistaken for a keyed one.
     """
-    if not isinstance(data, dict):
-        return None
-    stamp = str(data.get("space_id") or "").strip() or None
-    if stamp:
-        return stamp
-    if str(data.get("workspace_id") or "").strip():
-        return LEGACY_STAMP
-    return None
+    key = byo_key.api_key()
+    return "local:" + byo_key.fingerprint(key) if key else "none"
 
 
 def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]]:
-    """Read the store, returning ``(stamp, account, session_id, proxy_tokens)``.
+    """Read the store, returning ``(backend, account, session_id, proxy_tokens)``.
 
-    One read serves every field: the stamp and the tokens it vouches for come from the
-    same document, never from two reads a concurrent replace could straddle. That is
-    the whole consistency argument, and it needs no lock: the writer replaces the file
-    in one ``os.replace`` (:func:`write_json_atomic`), so a single read sees the old
-    document or the new one, whole. :func:`_write_store` locks around its own
-    read-mutate-write; the hot path (:func:`account_for_proxy_token_local`) calls this
-    bare by design, since ``locked`` can wait up to two seconds.
+    One read serves every field, so the tokens and the stamp that vouches for them come
+    from the same document; the hot path (:func:`account_for_proxy_token_local`) calls
+    this without a lock, which is safe because :func:`write_json_atomic` replaces the
+    file in one ``os.replace``.
 
-    ``stamp`` is the ``space_id`` of the install that wrote the document
-    (:func:`_stamp_of`; :data:`LEGACY_STAMP` for a ``workspace_id``-stamped one). It is
-    what lets this pod tell its own store from one restored out of a backup or another
-    space's home directory: with connections now account-wide, adopting a foreign store
-    would mean inheriting that space's connector scope. The store also names its
-    ``account_id``, which is what lets a pod that has booted once ride out a swarm
-    outage (:func:`state.adopt_account_id`).
-
-    Anything below v4 is discarded rather than upgraded. Those rows are keyed by the
-    retired ``<account>__ws__<space>`` tenant key and their sessions were minted
-    against it, so every one of them addresses a Composio user that is no longer ours.
-    Their session ids are parked in ``_ORPHANED_SESSION_IDS`` for the boot sweep to
-    delete.
+    A store below :data:`STORE_VERSION` (the swarm/XO era) is discarded: its session was
+    minted in the shared org project and cannot be used with this key. The session id is
+    parked in :data:`_ORPHANED_SESSION_IDS` (best-effort delete by the boot sweep, though
+    a different key cannot delete it), but its ``proxy_tokens`` are returned so agents
+    keep their MCP URLs. ``backend`` comes back ``None`` for such a store so the caller
+    drops the session but adopts the tokens.
     """
     from services.cowork_agent.visualizer.reader import read_json
 
@@ -445,83 +424,68 @@ def _load_store() -> tuple[Optional[str], Optional[str], Optional[str], set[str]
     except (TypeError, ValueError):
         version = 0
 
+    raw_tokens = data.get("proxy_tokens")
+    tokens = {
+        str(t) for t in raw_tokens if isinstance(t, str) and t
+    } if isinstance(raw_tokens, list) else set()
+
     if version < STORE_VERSION:
+        session_id = str(data.get("session") or "").strip()
+        if session_id and session_id not in _ORPHANED_SESSION_IDS:
+            _ORPHANED_SESSION_IDS.append(session_id)
+        # v3 and below kept a per-principal `sessions` map; queue those too.
         sessions = data.get("sessions")
         if isinstance(sessions, dict):
             for sid in sessions.values():
                 if isinstance(sid, str) and sid and sid not in _ORPHANED_SESSION_IDS:
                     _ORPHANED_SESSION_IDS.append(sid)
         log.info(
-            "composio: discarding a v%d session store. Its sessions were minted against "
-            "the retired space-scoped user id; a fresh one is minted on demand.",
-            version,
+            "composio: discarding a v%d session store (its session belonged to the "
+            "shared org project); carrying its proxy tokens forward.", version,
         )
-        return None, None, None, set()
+        return None, None, None, tokens
 
-    stamp = _stamp_of(data)
+    backend = str(data.get("backend") or "").strip() or None
     account = str(data.get("account_id") or "").strip() or None
     session_id = str(data.get("session") or "").strip() or None
-    raw_tokens = data.get("proxy_tokens")
-    tokens = {
-        str(t) for t in raw_tokens if isinstance(t, str) and t
-    } if isinstance(raw_tokens, list) else set()
-    return stamp, account, session_id, tokens
+    return backend, account, session_id, tokens
 
 
 def _ensure_sessions_loaded() -> None:
-    """Populate the in-memory mirrors from disk, if the store is this space's.
+    """Populate the in-memory mirrors from disk. No network.
 
-    Classifying the document needs no network: the stamp is compared against this pod's
-    own ``XO_SPACE_ID``. That matters because proxy-token resolution runs on every
-    agent ``tools/call``.
-
-    A store stamped for another space is left alone on disk and simply not adopted: it
-    is somebody's restored backup, and destroying it here would be an odd thing for a
-    read to do. Its session id is parked for the boot sweep, and the next write replaces
-    the document. A store the previous build stamped with ``workspace_id`` is treated
-    the same way, since which space wrote it is unknown (:data:`LEGACY_STAMP`). Only a
-    store with no stamp at all is adopted.
+    Proxy tokens are always adopted (they are this pod's own local secrets and stay valid
+    across a key change), but the stored session is adopted only when its ``backend``
+    stamp matches the live key: a session from a different key cannot be used, so it is
+    parked for the boot sweep and a fresh one is minted on demand.
     """
     global _SESSIONS_LOADED, _SESSION_ID, _STORE_ACCOUNT
     if _SESSIONS_LOADED:
         return
     try:
-        stamp, account, session_id, tokens = _load_store()
+        backend, account, session_id, tokens = _load_store()
     except Exception as exc:
         log.warning("composio: could not read session store: %s", exc)
         _SESSIONS_LOADED = True
         return
 
-    try:
-        mine = state.space_id()
-    except state.SpaceIdentityUnavailable:
-        # No stamp to compare against. Leave _SESSIONS_LOADED False so a later call
-        # retries once the pod's environment is complete.
-        return
-
-    if stamp and stamp != mine:
-        if stamp == LEGACY_STAMP:
-            log.warning(
-                "composio: ignoring a session store stamped with the retired "
-                "workspace_id key; which space wrote it is unknown, so this space "
-                "mints its own.",
-            )
-        else:
-            log.warning(
-                "composio: ignoring a session store stamped for a different space. "
-                "It was most likely restored from a backup; this space mints its own.",
-            )
-        if session_id and session_id not in _ORPHANED_SESSION_IDS:
-            _ORPHANED_SESSION_IDS.append(session_id)
+    _PROXY_TOKENS.update(tokens)
+    if backend is not None and backend == _backend_stamp():
+        _SESSION_ID = session_id
+        if account:
+            _STORE_ACCOUNT = account
         _SESSIONS_LOADED = True
         return
 
-    _SESSION_ID = session_id
-    _PROXY_TOKENS.update(tokens)
-    if account:
-        _STORE_ACCOUNT = account
-        state.adopt_account_id(account)
+    # A session from another key (or a discarded pre-v5 store): keep the tokens, drop
+    # the session.
+    if session_id and session_id not in _ORPHANED_SESSION_IDS:
+        _ORPHANED_SESSION_IDS.append(session_id)
     _SESSIONS_LOADED = True
+    # Re-stamp the on-disk store under the live key so the stale document (and its dead
+    # session) is replaced; the carried-forward tokens are re-persisted.
+    if tokens:
+        _persist_session_id(None)
 
 
 def _write_store(mutate) -> None:
@@ -530,46 +494,37 @@ def _write_store(mutate) -> None:
     ``mutate(session_id, tokens) -> (session_id, tokens)`` sees what is on disk, not the
     in-memory mirror, so two processes sharing a store converge instead of clobbering.
 
-    The document is stamped with this install's ``space_id``, so it is never written
-    without one: an unstamped store could not be told apart from one restored out of
-    another space. A document already on disk that is stamped for a different space
-    (a ``workspace_id`` stamp from the previous build included) is replaced, never
-    merged into.
+    The document is stamped with the live key's ``backend`` fingerprint and the local
+    ``user_id``. A document on disk whose ``backend`` differs (a different key, or a
+    pre-v5 store) keeps its proxy tokens but drops its session, so agents' MCP URLs
+    survive a key change while a stale session does not.
     """
     global _STORE_ACCOUNT
     from services.cowork_agent.visualizer.atomic_write import write_json_atomic
     from services.cowork_agent.visualizer.flock import locked
 
-    try:
-        space = state.space_id()
-    except state.SpaceIdentityUnavailable as exc:
-        log.warning("composio: refusing to write an unstamped session store: %s", exc)
-        return
-
-    account = _STORE_ACCOUNT or state.account_id_if_known()
+    backend = _backend_stamp()
+    account = _STORE_ACCOUNT or byo_key.user_id()
     try:
         # Before the lock: the sentinel is keyed on the store's absolute path.
         paths.migrate_legacy(_SESSIONS_PATH, _LEGACY_SESSIONS_PATHS, mode=0o600)
         with locked(_SESSIONS_PATH):
-            existing_space, existing_account, session_id, tokens = _load_store()
-            if existing_space and existing_space != space:
-                # Another space's document. Do not merge its rows into ours.
-                session_id, tokens = None, set()
-            elif existing_account:
-                account = account or existing_account
+            existing_backend, _existing_account, session_id, tokens = _load_store()
+            if existing_backend is not None and existing_backend != backend:
+                # A different key's document. Keep the tokens (local), drop the session.
+                session_id = None
             session_id, tokens = mutate(session_id, set(tokens))
             write_json_atomic(
                 _SESSIONS_PATH,
                 {
                     "version": STORE_VERSION,
-                    "space_id": space,
+                    "backend": backend,
                     "account_id": account,
                     "session": session_id,
                     "proxy_tokens": sorted(tokens),
                 },
             )
-        if account:
-            _STORE_ACCOUNT = account
+        _STORE_ACCOUNT = account
         try:
             _SESSIONS_PATH.chmod(0o600)
         except OSError:
@@ -632,25 +587,16 @@ def account_for_proxy_token_local(token: str) -> Optional[str]:
         return None
     _ensure_sessions_loaded()
     if token not in _PROXY_TOKENS:
-        # A row written by another process since this one last read. The stamp is checked
-        # again, from the same read as the tokens: a document replaced by another space's
-        # store must not leak its tokens. Unlocked on purpose; see the docstring.
+        # A token written by another process since this one last read. Proxy tokens are
+        # local secrets, adopted regardless of the backend stamp. Unlocked on purpose.
         try:
-            stamp, account, _session, tokens = _load_store()
+            _backend, _account, _session, tokens = _load_store()
         except Exception:
             return None
-        try:
-            mine = state.space_id()
-        except state.SpaceIdentityUnavailable:
-            return None
-        if stamp and stamp != mine:
-            return None
         _PROXY_TOKENS.update(tokens)
-        if account:
-            state.adopt_account_id(account)
         if token not in _PROXY_TOKENS:
             return None
-    return _STORE_ACCOUNT or state.account_id_if_known()
+    return _STORE_ACCOUNT or byo_key.user_id()
 
 
 async def account_for_proxy_token(token: str) -> Optional[str]:
@@ -671,7 +617,7 @@ def _delete_remote_session(session_id: str) -> None:
     try:
         swarm_client.delete_session(session_id)
         log.info("composio: deleted session %s", session_id)
-    except swarm_client.SwarmComposioError as exc:
+    except swarm_client.ComposioError as exc:
         log.warning(
             "composio: could not delete session %s (it may linger server-side): %s",
             session_id, exc,
@@ -858,6 +804,7 @@ def get_session(user_id: str) -> dict[str, Any]:
     be the catastrophic reading of it, so the session is never created in that state.
     """
     global _SESSION_ID, _session_mcp_cache
+    byo_key.require()
     user_id = _require_user_id(user_id, "get_session")
     _ensure_sessions_loaded()
 
@@ -873,7 +820,7 @@ def get_session(user_id: str) -> dict[str, Any]:
             session = swarm_client.update_session(sid, _update_payload(config))
             _session_mcp_cache = (sid, session, now + _SESSION_MCP_CACHE_TTL)
             return session
-        except swarm_client.SwarmComposioError as exc:
+        except swarm_client.ComposioError as exc:
             log.debug("composio: update_session(%s) failed: %s", sid, exc)
             _SESSION_ID = None
             _persist_session_id(None)
@@ -1086,9 +1033,6 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
     ``announce`` prints the full per-agent summary (the boot pass). Later sweeps print
     only what changed and errors not seen before.
     """
-    # Local import: this module is reached from server.py's lifespan, and the
-    # composio and auth packages import each other lazily to avoid a load cycle.
-    from routers.auth.auth import get_auth_token
     global _LAST_SWEEP_AT
 
     async with _sweep_lock():
@@ -1099,62 +1043,14 @@ async def install_gateways(*, announce: bool = True) -> GatewaySweep:
                 log.info("composio: %s; nothing to install.", detail)
                 return GatewaySweep(skipped="no_agents", detail=detail)
 
-            if not get_auth_token():
-                detail = (
-                    "the backend holds no XO credential (no XO_API_KEY and no "
-                    "consumed session)"
+            if not byo_key.configured():
+                detail = "no Composio API key is configured"
+                log.info(
+                    "composio: %s; skipping MCP install for %s. Add a key to activate "
+                    "connectors.", detail, agents,
                 )
-                log.info("composio: %s; skipping MCP install for %s.", detail, agents)
-                return GatewaySweep(skipped="no_credential", detail=detail)
+                return GatewaySweep(skipped="no_key", detail=detail)
 
-            try:
-                state.space_id()
-            except state.SpaceIdentityUnavailable as exc:
-                detail = f"{exc}: set {state.SPACE_ENV} to this install's id at XO"
-                log.warning(
-                    "composio: %s; the identity lookup names this install to "
-                    "xo-swarm-api, so it cannot run.", detail,
-                )
-                return GatewaySweep(skipped="no_space", detail=detail)
-
-            # A store that already names its account lets the identity fetch fall
-            # back to it during a swarm outage (state.identity_payload), so read first.
-            _ensure_sessions_loaded()
-
-            # Not needed to write the config: the proxy URL carries an opaque token,
-            # not an identity. Fetched anyway because it is the gate (an account we
-            # cannot name is an install we should not do), and because it warms the
-            # cache and records the account for the offline hot path.
-            try:
-                account_id = await state.aaccount_id()
-                state.adopt_account_id(account_id)
-            except state.StateUnavailable as exc:
-                retryable = not exc.authoritative
-                detail = (
-                    f"xo-swarm-api could not provide this account's id ({exc})"
-                    if retryable else
-                    f"xo-swarm-api rejected this backend's XO credential ({exc})"
-                )
-                log.warning(
-                    "composio: %s; skipping MCP install. Agents keep their existing "
-                    "config; %s.", detail,
-                    "the next sweep retries" if retryable else "fix it and restart",
-                )
-                return GatewaySweep(
-                    skipped="account_unavailable", retryable=retryable, detail=detail,
-                )
-            except Exception as exc:  # network/JSON faults must not break boot
-                detail = f"xo-swarm-api could not provide this account's id ({exc})"
-                log.warning(
-                    "composio: %s; skipping MCP install. Agents keep their existing "
-                    "config; the next sweep retries.", detail,
-                )
-                return GatewaySweep(
-                    skipped="account_unavailable", retryable=True, detail=detail,
-                )
-
-            # Now that the account is known, an unstamped store can classify and
-            # rewrite itself, which keeps the proxy serving locally through a later outage.
             _ensure_sessions_loaded()
 
             results = await asyncio.to_thread(_apply_to_agents, agents, announce)

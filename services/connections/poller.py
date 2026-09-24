@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import state, space_scope
+from services.cowork_agent.connectors.composio import byo_key, space_scope
 from services.periodic import run_forever
 from services.timestamps import aware, parse_ts
 
@@ -81,7 +81,7 @@ FORCE_WAIT_S = 25.0
 ACCOUNT_TTL_S = 86400
 ACCOUNT_MIN_REFRESH_S = 60
 
-NOT_SIGNED_IN = "not signed in to XO (no account id)"
+NOT_SIGNED_IN = "add your Composio API key to activate connections"
 NO_TOOLKITS = "no toolkits are turned on in this workspace"
 #: Recorded for every collector after the one whose ``tools/call`` found the session gone.
 SESSION_LOST = "not attempted, the MCP session died mid-poll"
@@ -175,18 +175,10 @@ def _ready(toolkit: str, now: datetime) -> bool:
 
 
 async def resolve_user_id() -> Optional[str]:
-    """The account id Composio knows this workspace by, or ``None``. The
-    cached id first (no network), then one identity round trip."""
-    try:
-        known = state.account_id_if_known()
-        if known:
-            return known
-        return (await state.aaccount_id()) or None
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.info("connections poller: identity unavailable (%s)", type(exc).__name__)
-        return None
+    """The Composio user id for this workspace, or ``None`` when no key is configured.
+
+    No network: Composio runs on the user's own local key (:mod:`.byo_key`)."""
+    return byo_key.user_id() if byo_key.configured() else None
 
 
 _NO_ACTIVE_CONNECTION = "No active connection found for toolkit"

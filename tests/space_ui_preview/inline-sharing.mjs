@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Actual UI with in-memory share responses. No service mutation may pass. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,waitForDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -54,8 +55,8 @@ async function open(scope,id='aurora-console'){
   await assertInline(scope);return formFor(scope,id);
 }
 async function refresh(scope){
-  await page.locator('#project-refresh').click();
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);
 }
 try{
   await page.goto(origin+'/space/#/projects/data/list',{waitUntil:'networkidle'});

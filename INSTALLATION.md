@@ -1,5 +1,21 @@
 # Install and run Quirq
 
+## From Codex
+
+Add the marketplace with `codex plugin marketplace add quirq-ai/xo-space`, then
+open **Plugins → Quirq → XO Space** and click **Install**. In a new Codex task,
+say **“Open XO Space”** or **“Install XO Space in ~/work.”** The plugin handles
+first setup and opens the local UI; fresh installs use the Codex backend.
+
+The default workspace is `~/xo-workspace`, separate from Codex's plugin cache.
+Keep the server's task/terminal running; ask Codex to open Space to start it again.
+Existing installs retain their backend and configuration. A working authenticated
+Codex CLI is required for agent chat (`CODEX_CLI_PATH` supports a bundled CLI).
+See the [Codex plugin guide](plugins/quirq/README.md) for supported environments,
+branch selection, updates, removal and troubleshooting.
+
+## From a terminal
+
 Pick a directory to keep Quirq in, then run:
 
 ```bash
@@ -8,7 +24,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Open <http://localhost:5002/space/>.
 
-Docker is not required. The command:
+The command:
 
 1. installs [uv](https://docs.astral.sh/uv/) if it is missing;
 2. clones Quirq into `./xo-space`, named after the repository;
@@ -116,8 +132,7 @@ projects. Run it the way you run the installer — from the workspace:
 ```
 
 It stops the running server first (the `cowork-api.sh` daemon included),
-brings down the local Docker compose project when the compose launcher was
-used, and then removes the managed checkout (venv, `.env`, and the
+and then removes the managed checkout (venv, `.env`, and the
 `rclone.conf` / `mcp-tokens.json` connector credentials with it), the
 `.quirq` state root (all but `secrets/`, which keeps your credentials) — `roots.env` is read first, so a root moved from the
 Setup tab is found — the workspace-tier `.xo/` the watcher wrote, the

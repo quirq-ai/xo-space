@@ -8,10 +8,11 @@
       "name": "quirq",
       "source": {
         "source": "local",
-        "path": "./.agents/plugins/quirq"
+        "path": "./plugins/quirq"
       },
       "policy": {
-        "installation": "AVAILABLE"
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
     }
