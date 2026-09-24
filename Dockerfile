@@ -7,8 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # Inside a container the server must listen on the container's own interfaces;
-# how far it reaches is decided where the port is published (compose.local.yml
-# publishes 127.0.0.1 only). Outside a container server.py defaults to loopback.
+# how far it reaches is decided where the port is published (publish it as
+# -p 127.0.0.1:5002:5002 to keep it on this machine). Outside a container
+# server.py defaults to loopback.
 ENV HOST=0.0.0.0
 
 WORKDIR /app
