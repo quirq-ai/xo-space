@@ -415,8 +415,9 @@ def github(ctx: Context) -> list[Finding]:
             next_step=RESTART, problem_key=f"github:{project.name}:stale"))
     if pause and stale_while_paused:
         kind = pause.split(":", 1)[0].strip()
+        shown_pause = background.redact(pause)
         out.append(Finding(
-            "github.paused", WARN, "github poller", "", f"The GitHub poller is paused: {pause}.", "",
+            "github.paused", WARN, "github poller", "", f"The GitHub poller is paused: {shown_pause}.", "",
             title="GitHub polling is paused", evidence=[ev("Projects waiting", stale_while_paused)],
             consequence="GitHub issue copies aren't refreshed while it's paused.",
             self_repair="It resumes by itself when the pause ends.",

@@ -229,6 +229,20 @@ class GitHubTests(LivenessSandbox):
         self.assertEqual([f["id"] for f in found], ["github.paused"])
         self.assertIn("rate_limited", found[0]["observed"])
 
+    def test_a_pause_reason_is_redacted(self) -> None:
+        self.write_mirror(fetched_at=_stamp(self.now - 7200), error=None)
+        snapshot = {"paused": True,
+                    "pause_reason": "no_cli: gh isn't installed; see https://cli.github.com/ token "
+                                     "sk_" "live_0123456789abcdefghij0123456789ab",
+                    "spent_last_hour": 0, "remaining": 0, "limit": 5000, "reset_at": None}
+        with self.tasks(self.record("github poller")), \
+             patch("services.cowork_agent.github_poller.budget_snapshot", return_value=snapshot):
+            [finding] = self.of("github.paused")
+        text = json.dumps(finding)
+        self.assertNotIn("cli.github.com", text)
+        self.assertNotIn("0123456789abcdefghij", text)
+        self.assertIn("Install the GitHub CLI", finding["next_step"])
+
     def test_a_project_without_a_github_remote_is_not_checked(self) -> None:
         project = self.projects / "sample-project" / ".xo" / "project.json"
         document = json.loads(project.read_text(encoding="utf-8"))
