@@ -107,9 +107,11 @@ class DetectionTests(LeftoverSandbox):
     def test_a_corrupt_project_json_blocks_leftover_detection(self) -> None:
         self.runtime(OTHER)
         (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
-        [finding] = self.runtime_findings()
-        self.assertEqual(finding["id"], "runtime.keys_unknown")
-        self.assertNotIn("action", finding)
+        report = self.report()
+        runtime = [f for c in report["checks"] if c["id"] == "runtime" for f in c["findings"]]
+        self.assertEqual(runtime, [])  # no leftover listed, no action offered
+        [identity] = [f for f in self.problems(report) if f["subject"] == "sample-project/.xo/project.json"]
+        self.assertIn("Leftover checks", [e["label"] for e in identity["evidence"]])
 
     def test_a_missing_or_empty_projects_root_is_suspect(self) -> None:
         self.runtime(OTHER)

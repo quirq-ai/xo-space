@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Callable
 
-from services.doctor import checks, history, leftovers, liveness
+from services.doctor import checks, history, leftovers, liveness, relate
 from services.doctor.context import Context
 from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, printable, rank, worst
 from services.doctor.reading import readable_dir
@@ -84,7 +84,7 @@ def run_checks(*, now: float | None = None) -> dict:
             "Nothing Quirq keeps on this machine can be checked. Check QUIRQ_STATE_ROOT and the folder's permissions.",
         )])]
     else:
-        results = [_run_one(family, check, ctx) for family, check in CHECKS]
+        results = relate.relate([_run_one(family, check, ctx) for family, check in CHECKS])
     levels = [result.level for result in results]
     top = [finding for result in results for finding in result.findings]
     finding_counts = {level: sum(1 for finding in top if finding.level == level) for level in LEVELS}
