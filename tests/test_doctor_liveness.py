@@ -65,6 +65,20 @@ class WatcherTests(LivenessSandbox):
             [finding] = self.of("watcher.")
         self.assertIn("another xo-space server", " ".join(e["value"] for e in finding["evidence"]))
 
+    def test_a_heartbeat_older_than_the_crash_is_not_mistaken_for_another_server(self) -> None:
+        # The heartbeat (now-2) predates the crash (now-1): it's this watcher's
+        # own last beat before it died, not evidence of a second server.
+        self.beat(2)
+        with self.tasks(self.record("watcher", state="crashed", ended_at=self.now - 1, error="RuntimeError: x")):
+            [finding] = self.of("watcher.")
+        self.assertNotIn("another xo-space server", " ".join(e["value"] for e in finding["evidence"]))
+
+    def test_a_heartbeat_written_after_the_crash_names_another_server(self) -> None:
+        self.beat(1)
+        with self.tasks(self.record("watcher", state="crashed", ended_at=self.now - 2, error="RuntimeError: x")):
+            [finding] = self.of("watcher.")
+        self.assertIn("another xo-space server", " ".join(e["value"] for e in finding["evidence"]))
+
     def test_a_stale_heartbeat_escalates_after_five_minutes(self) -> None:
         for age, level in ((12, "WARN"), (400, "FAIL")):
             with self.subTest(age=age):
@@ -79,6 +93,19 @@ class WatcherTests(LivenessSandbox):
             [finding] = self.of("watcher.heartbeat")
         self.assertEqual(finding["title"], "The watcher is stuck")
         self.assertIn("ValueError: bad stats", " ".join(e["value"] for e in finding["evidence"]))
+
+    def test_a_heartbeat_older_than_the_process_is_not_stuck_right_after_a_restart(self) -> None:
+        # The heartbeat file predates this server's start: it's a leftover
+        # from before the restart, not evidence the watcher is stuck.
+        self.beat(900)
+        with self.tasks(self.record("watcher", started_at=self.now - 2)):
+            self.assertEqual(self.of("watcher.heartbeat"), [])
+
+    def test_a_slow_first_tick_still_fails_once_the_process_has_run_long_enough(self) -> None:
+        self.beat(900)
+        with self.tasks(self.record("watcher", started_at=self.now - 400)):
+            [finding] = self.of("watcher.heartbeat")
+        self.assertEqual(finding["level"], "FAIL")
 
     def test_failing_work_under_a_fresh_heartbeat_is_reported(self) -> None:
         self.beat(1)
@@ -150,6 +177,19 @@ class ConnectionsTests(LivenessSandbox):
         self.assertEqual(finding["title"], "Gmail is no longer being checked")
         self.assertIn("Inbox", finding["consequence"])
 
+    def test_a_freshly_restarted_poller_is_not_yet_overdue(self) -> None:
+        # Gmail polls every 900 s; tick 30 s; grace 300 s → threshold 1260 s.
+        # The poller task started 10 s ago: it hasn't had its chance yet.
+        self.write_state(last_poll_at=_stamp(self.now - 1300), last_ok_at=_stamp(self.now - 1300))
+        with self.tasks(self.record("connections poller", started_at=self.now - 10)):
+            self.assertEqual(self.of("connections.overdue"), [])
+
+    def test_a_poller_running_past_its_own_grace_is_still_overdue(self) -> None:
+        self.write_state(last_poll_at=_stamp(self.now - 1300), last_ok_at=_stamp(self.now - 1300))
+        with self.tasks(self.record("connections poller", started_at=self.now - 2000)):
+            [finding] = self.of("connections.overdue")
+        self.assertEqual(finding["subject"], "gmail")
+
     def test_a_future_last_poll_is_not_overdue(self) -> None:
         self.write_state(last_poll_at=_stamp(self.now + 3600), last_ok_at=_stamp(self.now + 3600))
         self.assertEqual(self.of("connections."), [])
@@ -210,6 +250,19 @@ class GitHubTests(LivenessSandbox):
         [finding] = self.of("github.stale")
         self.assertEqual(finding["subject"], "sample-project")
         self.assertIn("acme/sample-project", " ".join(e["value"] for e in finding["evidence"]))
+
+    def test_a_freshly_restarted_poller_is_not_yet_stale(self) -> None:
+        # 60 s interval → stale after max(180 s, 300 s) = 300 s. The poller
+        # task started 10 s ago: it hasn't had its chance yet.
+        self.write_mirror(fetched_at=_stamp(self.now - 600), error=None)
+        with self.tasks(self.record("github poller", started_at=self.now - 10)):
+            self.assertEqual(self.of("github.stale"), [])
+
+    def test_a_poller_running_past_its_own_grace_is_still_stale(self) -> None:
+        self.write_mirror(fetched_at=_stamp(self.now - 600), error=None)
+        with self.tasks(self.record("github poller", started_at=self.now - 2000)):
+            [finding] = self.of("github.stale")
+        self.assertEqual(finding["subject"], "sample-project")
 
     def test_a_failing_repository_names_its_error(self) -> None:
         self.write_mirror(fetched_at=_stamp(self.now - 7200),

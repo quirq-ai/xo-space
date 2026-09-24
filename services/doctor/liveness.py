@@ -126,6 +126,18 @@ def _when(ts: object, now: float) -> str:
     return moment(ts, now) if isinstance(ts, (int, float)) else "an unknown time"
 
 
+def _poller_recently_started(ctx: Context, name: str, grace: float) -> bool:
+    """The task record for ``name`` says it's running and started less than
+    ``grace`` seconds ago: it hasn't had its chance to poll again yet since
+    this start, so a stale-looking file on disk (from before the restart)
+    isn't yet evidence the poller stopped."""
+    record = ctx.components.get(name)
+    if record is None or record.get("state") != "running":
+        return False
+    started = record.get("started_at")
+    return isinstance(started, (int, float)) and ctx.now - started < grace
+
+
 def _stopped(ctx: Context, name: str, record: dict, *, path: str = "",
              heartbeat_fresh: bool = False) -> Finding:
     """A task that ended while the server runs: crashed (FAIL) or returned."""
@@ -166,8 +178,20 @@ def watcher(ctx: Context) -> list[Finding]:
     limit = stale_after()
     _, stops = _label(WATCHER)
     if watcher_dead(ctx):
-        return [_stopped(ctx, WATCHER, record, path=shown, heartbeat_fresh=age is not None and age <= limit)]
+        # The heartbeat is only evidence of another server when it was
+        # written AFTER this one ended, not merely when it looks fresh: a
+        # heartbeat that predates the crash is this watcher's own last beat.
+        heartbeat_at = None if age is None else ctx.now - age
+        ended_at = record.get("ended_at")
+        fresh = (heartbeat_at is not None and isinstance(ended_at, (int, float)) and heartbeat_at > ended_at)
+        return [_stopped(ctx, WATCHER, record, path=shown, heartbeat_fresh=fresh)]
     out: list[Finding] = []
+    if age is not None and record is not None and record.get("state") == "running" \
+            and isinstance(record.get("started_at"), (int, float)):
+        # A heartbeat older than the process itself is left over from before
+        # a restart: judge staleness against how long this process has run,
+        # not the file's raw age.
+        age = min(age, ctx.now - record["started_at"])
     if age is None:
         out.append(Finding(
             "watcher.heartbeat", WARN, "watcher", shown,
@@ -294,7 +318,9 @@ def connections(ctx: Context) -> list[Finding]:
         interval = _interval(config.value)
         last_poll, last_ok = _ts(state.value.get("last_poll_at")), _ts(state.value.get("last_ok_at"))
         shown = ctx.display(folder / "state.json")
-        overdue = last_poll is not None and ctx.now - last_poll > interval + 2 * tick + CONNECTIONS_GRACE_S
+        grace = interval + 2 * tick + CONNECTIONS_GRACE_S
+        overdue = (last_poll is not None and ctx.now - last_poll > grace
+                  and not _poller_recently_started(ctx, "connections poller", grace))
         if overdue:
             out.append(Finding(
                 "connections.overdue", WARN, toolkit, shown,
@@ -400,7 +426,10 @@ def github(ctx: Context) -> list[Finding]:
                 next_step=_GITHUB_NEXT.get(kind, "The server log has the details."),
                 problem_key=f"github:{project.name}:failing"))
             continue
-        if fetched is None or ctx.now - fetched <= max(3 * interval, GITHUB_STALE_MIN_S) or repo in cooling:
+        stale_threshold = max(3 * interval, GITHUB_STALE_MIN_S)
+        if fetched is None or ctx.now - fetched <= stale_threshold or repo in cooling:
+            continue
+        if _poller_recently_started(ctx, "github poller", stale_threshold):
             continue
         if pause:
             stale_while_paused += 1
