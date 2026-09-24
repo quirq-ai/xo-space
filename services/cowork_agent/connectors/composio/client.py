@@ -206,15 +206,8 @@ def list_connections(*, statuses: Optional[list[str]] = None,
 def account_ids_in_project() -> list[str]:
     """Every XO account id that has a connection in this key's Composio project.
 
-    Ordered so the first is the one to adopt: an XO account id (``user_...``) before
-    anything else, then by how much of the project it holds, ties broken by the newest
-    connection.
-
-    The shape matters because a project that predates account-scoping still holds
-    connections filed under a Space's bare UUID. Adopting one of those would put the
-    Space id back where the account id belongs — the very state
-    ``scripts/fix_composio_identity.py`` exists to undo — and it would do it silently,
-    on any Space whose cache was cleared.
+    Ordered by how much of the project each one holds: most connections first, ties
+    broken by the newest connection. Callers take the first.
 
     This is the seam that makes a second Space seamless. The project is the thing two
     Spaces share when they hold the same key, and Composio records the ``user_id`` on
@@ -239,11 +232,7 @@ def account_ids_in_project() -> list[str]:
         created = str(_attr(it, "created_at", default="") or "")
         if created > newest.get(uid, ""):
             newest[uid] = created
-    return sorted(
-        counts,
-        key=lambda uid: (uid.startswith("user_"), counts[uid], newest.get(uid, "")),
-        reverse=True,
-    )
+    return sorted(counts, key=lambda uid: (counts[uid], newest.get(uid, "")), reverse=True)
 
 
 def _owned_ids() -> set[str]:
