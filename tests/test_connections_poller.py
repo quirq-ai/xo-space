@@ -133,7 +133,10 @@ class _Base(unittest.TestCase):
         poller.reset_for_tests()
         self.loop = asyncio.new_event_loop()
         self.configured = patch.object(poller.byo_key, "configured", return_value=True)
-        self.userid = patch.object(poller.byo_key, "user_id", return_value="user_x")
+        # The poll runs as the XO account, not as the Space: one sign-in covers every
+        # Space, so this is the id a poll addresses Composio with.
+        self.userid = patch.object(
+            poller.account_identity, "account_id", return_value="user_x")
         self.scope = patch.object(poller.space_scope, "enabled_toolkits",
                                   return_value=["gmail", "googlecalendar", "notion"])
         # the pins: space_scope.load() reads a path fixed at import time, so it is
@@ -283,7 +286,7 @@ class SuccessfulPollTests(_Base):
         self.assertEqual((len(FakeSession.opened), self.mocks["names"].await_count, FakeSession.closed), (1, 1, 1),
                          "the identity call and both collectors ran through one session and one listing")
 
-    def test_identity_is_the_local_user_id(self) -> None:
+    def test_identity_is_the_xo_account_id(self) -> None:
         store.write_config("gmail")
         self.assertTrue(self.run_(poller.poll_connection("gmail"))["polled"])
         self.assertTrue(self.run_(poller.poll_connection("gmail", force=True))["polled"])

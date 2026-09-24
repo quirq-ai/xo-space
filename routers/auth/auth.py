@@ -33,6 +33,24 @@ auth_state: Dict[str, Any] = {
 }
 
 
+def _remember_composio_account(user_id: Optional[str]) -> None:
+    """Hand a freshly learned XO user id to the Composio stores.
+
+    Composio addresses connections by the XO *account*, so this id is what the connector
+    stores are keyed on. Signing in is where it is already known, so caching it here
+    saves the connector side a round trip to ``/get-user-id``. Lazy import and
+    best-effort: auth must not depend on the connector tree, nor fail because of it.
+    """
+    if not user_id:
+        return
+    try:
+        from services.cowork_agent.connectors.composio import account_identity
+
+        account_identity.remember(user_id)
+    except Exception:  # noqa: BLE001 — the boot sweep resolves it again anyway
+        pass
+
+
 def set_auth_token(
     access_token: str,
     refresh_token: Optional[str] = None,
@@ -53,6 +71,7 @@ def set_auth_token(
         auth_state["expires_at"] = expires_at
         auth_state["user_id"] = user_id
         auth_state["auth_session_id"] = auth_session_id
+    _remember_composio_account(user_id)
 
 
 def clear_auth_token() -> None:
@@ -244,6 +263,7 @@ async def xo_auth_whoami():
     data = res.data if isinstance(res.data, dict) else {}
     with auth_lock:
         auth_state["user_id"] = data.get("user_id")
+    _remember_composio_account(data.get("user_id"))
     return {"success": True, "user_id": data.get("user_id")}
 
 

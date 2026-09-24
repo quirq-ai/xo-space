@@ -3,18 +3,24 @@
 Same nine call shapes as the retired ``services/swarm_api/composio.py`` so
 ``service.py`` calls them unchanged. The SDK is imported lazily and memoised on the
 key value; a key change makes a new client. Connections are scoped to
-``byo_key.user_id()`` on every read.
+``byo_key.user_id()`` — this backend's XO account id, not its Space — on every read.
+
+Every call resolves that id *before* its ``try``: an unknown account is this backend's
+own state, not something Composio said, so it must surface as
+:class:`~.account_identity.XOAccountRequired` rather than be wrapped into a
+:class:`ComposioError` by the handler below.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Optional
 
-from services.cowork_agent.connectors.composio import byo_key
+from services.cowork_agent.connectors.composio import account_identity, byo_key
 
 log = logging.getLogger(__name__)
 
 ComposioKeyRequired = byo_key.ComposioKeyRequired
+XOAccountRequired = account_identity.XOAccountRequired
 
 
 class ComposioError(RuntimeError):
@@ -70,7 +76,7 @@ def _raise(exc: Exception) -> "ComposioError":
         if isinstance(exc, (composio_client.AuthenticationError,
                             composio_client.PermissionDeniedError)):
             return ComposioError(
-                "Composio rejected your API key. Check COMPOSIO_BYO_API_KEY or the "
+                "Composio rejected your API key. Check COMPOSIO_API_KEY or the "
                 "key on the Connectors tab.",
                 authoritative=True,
             )
@@ -134,9 +140,10 @@ def auth_config_for(toolkit_id: str) -> str:
 
 def connect(toolkit_id: str, *, auth_scheme: str, redirect_uri: str,
             alias: Optional[str], allow_multiple: bool) -> dict[str, Any]:
+    uid = byo_key.user_id()
     ac = auth_config_for(toolkit_id)
     kwargs: dict[str, Any] = {
-        "user_id": byo_key.user_id(), "auth_config_id": ac, "callback_url": redirect_uri,
+        "user_id": uid, "auth_config_id": ac, "callback_url": redirect_uri,
     }
     if alias:
         kwargs["alias"] = alias
@@ -169,6 +176,8 @@ def list_connections(*, statuses: Optional[list[str]] = None,
                      toolkit_slugs: Optional[list[str]] = None) -> list[dict[str, Any]]:
     byo_key.require()
     kwargs: dict[str, Any] = {"user_ids": [byo_key.user_id()]}
+    # Account-scoped, so this lists what the whole XO account has connected, including
+    # connections another Space of the same account made.
     if statuses:
         kwargs["statuses"] = statuses
     if toolkit_slugs:
@@ -195,8 +204,9 @@ def list_connections(*, statuses: Optional[list[str]] = None,
 
 
 def _owned_ids() -> set[str]:
+    uid = byo_key.user_id()
     try:
-        page = _sdk().connected_accounts.list(user_ids=[byo_key.user_id()])
+        page = _sdk().connected_accounts.list(user_ids=[uid])
     except Exception as exc:  # noqa: BLE001
         raise _raise(exc) from exc
     items = _attr(page, "items", default=page) or []
@@ -255,8 +265,9 @@ def _session_response(session_id: str, session: Any) -> dict[str, Any]:
 
 def create_session(config: dict[str, Any]) -> dict[str, Any]:
     byo_key.require()
+    uid = byo_key.user_id()
     try:
-        session = _sdk().create(user_id=byo_key.user_id(), mcp=True, **config)
+        session = _sdk().create(user_id=uid, mcp=True, **config)
     except Exception as exc:  # noqa: BLE001
         raise _raise(exc) from exc
     new_id = _attr(session, "session_id") or _attr(session, "id")

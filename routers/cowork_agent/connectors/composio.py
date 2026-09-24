@@ -10,11 +10,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from routers.browser_guard import origin_allowed
-from services.cowork_agent.connectors.composio import byo_key
+from services.cowork_agent.connectors.composio import account_identity, byo_key
 from services.cowork_agent.connectors.composio import client as composio_client
 from services.cowork_agent.connectors.composio import service as composio_service
 from services.cowork_agent.connectors.composio import space_scope
-from services.cowork_agent.connectors.composio.identity import get_composio_user
+from services.cowork_agent.connectors.composio.identity import (
+    get_composio_user,
+    get_composio_user_optional,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -45,6 +48,9 @@ async def get_backend(request: Request) -> JSONResponse:
     return JSONResponse({
         "mode": "local" if byo_key.configured() else "inactive",
         "key_source": byo_key.source(),
+        # Whether this backend knows which XO account it acts for. Composio needs both
+        # this and a key; the panel says which one is missing.
+        "signed_in": account_identity.known(),
     })
 
 
@@ -54,7 +60,7 @@ async def put_api_key(body: ApiKeyBody, request: Request) -> JSONResponse:
     if byo_key.source() == "env":
         raise HTTPException(
             status_code=409,
-            detail="The API key is set by COMPOSIO_BYO_API_KEY in the environment; "
+            detail="The API key is set by COMPOSIO_API_KEY in the environment; "
                    "edit it there.",
         )
     key = (body.api_key or "").strip()
@@ -86,7 +92,7 @@ async def delete_api_key(request: Request) -> JSONResponse:
     if byo_key.source() == "env":
         raise HTTPException(
             status_code=409,
-            detail="The API key is set by COMPOSIO_BYO_API_KEY in the environment; "
+            detail="The API key is set by COMPOSIO_API_KEY in the environment; "
                    "unset it there.",
         )
     byo_key.clear()
@@ -151,14 +157,18 @@ class AliasBody(BaseModel):
 
 @router.get("/api/connectors/composio/toolkits")
 async def list_toolkits(
-    user_id: str = Depends(get_composio_user),
+    user_id: Optional[str] = Depends(get_composio_user_optional),
 ) -> JSONResponse:
     from services.cowork_agent.connectors.composio import categories as composio_categories
 
+    # Both gates, reported separately: the tab must render either way — it is where the
+    # user fixes whichever one is shut — so neither is a 409 here.
+    signed_in = user_id is not None
     key_configured = byo_key.configured()
+    active = key_configured and signed_in
     # Loading the tab (or its Refresh) is what installs the agent's MCP wiring: the
     # sweep runs here, in the background, rate-limited. Nothing to install with no key.
-    if key_configured:
+    if active:
         composio_service.kick_gateway_sweep()
         # One fetch feeds both the primary-account map and the per-toolkit counts.
         rows = composio_service.newest_first(
@@ -173,8 +183,11 @@ async def list_toolkits(
     multi = composio_service.multi_account_config()
     scope = space_scope.load()
 
-    # With no key, the account has no connections here: every toolkit reads NEEDS_KEY.
-    default_status = "NEEDS_AUTH" if key_configured else "NEEDS_KEY"
+    # Nothing was listed unless both gates are open, so say which one shut: NEEDS_KEY
+    # when no Composio key, NEEDS_SIGNIN when there is one but no XO account to act for.
+    default_status = (
+        "NEEDS_AUTH" if active else ("NEEDS_SIGNIN" if key_configured else "NEEDS_KEY")
+    )
 
     toolkits: list[dict[str, Any]] = []
     for toolkit_id, meta in composio_service.TOOLKITS.items():
@@ -204,6 +217,7 @@ async def list_toolkits(
         "max_accounts_per_toolkit": composio_service.max_accounts_per_toolkit(),
         "key_configured": key_configured,
         "key_source": byo_key.source(),
+        "signed_in": signed_in,
     })
 
 

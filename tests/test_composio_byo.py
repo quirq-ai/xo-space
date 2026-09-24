@@ -1,7 +1,13 @@
-"""Bring-your-own-key Composio: local key store and SDK client.
+"""Bring-your-own-key Composio: local key store, XO account identity, and SDK client.
 
-Hermetic: the key file is redirected into a temp dir, the lock root points at the
-temp dir, and no ambient COMPOSIO_BYO_API_KEY from the developer's shell leaks in.
+Two gates open Composio and both are exercised here: the key (which Composio project)
+and the XO account id (whose connections inside it). Composio is addressed by the
+account, never by the Space, which is what lets one sign-in serve every Space.
+
+Hermetic: the key file *and* the identity cache are redirected into a temp dir, the lock
+root points at the temp dir, and no ambient COMPOSIO_API_KEY or XO_ACCOUNT_ID from
+the developer's shell leaks in. Nothing here may reach xo-swarm-api: the account id is
+seeded with ``sign_in()``, which is what a resolved lookup would have cached.
 """
 from __future__ import annotations
 
@@ -12,10 +18,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.cowork_agent.connectors.composio import byo_key
+from services.cowork_agent.connectors.composio import account_identity, byo_key
 from services.cowork_agent.connectors.composio import client as byo_client
+
+#: A stand-in for the id xo-swarm-api answers ``GET /get-user-id`` with.
+ACCOUNT = "user_3TESTACCOUNT"
 
 
 def _sdk_stub(**resources) -> SimpleNamespace:
@@ -28,16 +37,32 @@ class _KeyBase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
         self.key_path = tmp / "composio" / "api_key.json"
+        self.identity_path = tmp / "composio" / "identity.json"
         env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(tmp / "quirq")}, clear=False)
         env.start(); self.addCleanup(env.stop)
-        os.environ.pop(byo_key.ENV_VAR, None)
-        self.addCleanup(lambda: os.environ.pop(byo_key.ENV_VAR, None))
-        p = patch.object(byo_key, "_KEY_PATH", self.key_path)
-        p.start(); self.addCleanup(p.stop)
+        for var in (byo_key.ENV_VAR, account_identity.ENV_VAR):
+            os.environ.pop(var, None)
+            self.addCleanup(lambda v=var: os.environ.pop(v, None))
+        for p in (patch.object(byo_key, "_KEY_PATH", self.key_path),
+                  patch.object(account_identity, "_PATH", self.identity_path)):
+            p.start(); self.addCleanup(p.stop)
+        # Start signed out, whatever a previous test left in the module cache.
+        self._forget_account()
+        self.addCleanup(self._forget_account)
         # A key change must not be masked by the memoised SDK client.
         byo_client._sdk_client = None
         byo_client._sdk_key = ""
         self.addCleanup(lambda: setattr(byo_client, "_sdk_client", None))
+
+    @staticmethod
+    def _forget_account() -> None:
+        """Signed out for real: the module cache *and* the redirected disk cache."""
+        account_identity.forget()
+
+    def sign_in(self, account: str = ACCOUNT) -> str:
+        """Seed the account id the way a resolved lookup (or a consumed token) would."""
+        account_identity.remember(account)
+        return account
 
 
 class SourceTests(_KeyBase):
@@ -61,11 +86,14 @@ class SourceTests(_KeyBase):
         with self.assertRaises(byo_key.ComposioKeyRequired):
             byo_key.require()
 
-    def test_user_id_defaults_then_reads_space_env(self) -> None:
-        with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
-            self.assertEqual(byo_key.user_id(), byo_key.DEFAULT_USER_ID)
+    def test_user_id_is_the_xo_account_never_the_space(self) -> None:
+        # Fails closed: no account id, no Composio user id — and XO_SPACE_ID is never
+        # a substitute, or a Space could file connections where no other Space sees them.
         with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
-            self.assertEqual(byo_key.user_id(), "space-42")
+            with self.assertRaises(account_identity.XOAccountRequired):
+                byo_key.user_id()
+            self.sign_in()
+            self.assertEqual(byo_key.user_id(), ACCOUNT)
 
 
 class FileTests(_KeyBase):
@@ -101,6 +129,16 @@ class ClientTests(_KeyBase):
     def setUp(self) -> None:
         super().setUp()
         byo_key.save("sk_live")
+        self.sign_in()
+
+    def test_an_unknown_account_raises_before_touching_the_sdk(self) -> None:
+        self._forget_account()
+        with patch.object(byo_client, "_sdk") as sdk:
+            # Resolved outside the try, so it surfaces as itself rather than as a
+            # ComposioError blamed on Composio.
+            with self.assertRaises(account_identity.XOAccountRequired):
+                byo_client.list_connections()
+        sdk.assert_not_called()
 
     def test_no_key_raises_before_touching_the_sdk(self) -> None:
         byo_key.clear()
@@ -185,6 +223,7 @@ class ServiceBackendTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         byo_key.save("sk_live")
         self._sp = tempfile.TemporaryDirectory(); self.addCleanup(self._sp.cleanup)
         self.sessions_path = Path(self._sp.name) / "sessions.json"
+        self.sign_in()
         for p in (patch.object(service, "_SESSIONS_PATH", self.sessions_path),
                   patch.object(service, "_LEGACY_SESSIONS_PATHS", ()),
                   patch.dict(os.environ, {"XO_SPACE_ID": "space-42"})):
@@ -200,12 +239,67 @@ class ServiceBackendTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         s._STORE_ACCOUNT = None
         s._ORPHANED_SESSION_IDS.clear()
 
-    def test_store_records_the_backend_stamp_and_the_local_user(self) -> None:
+    def test_store_records_all_three_stamps(self) -> None:
         self.service.proxy_token()
         data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
         self.assertEqual(data["version"], 5)
         self.assertEqual(data["backend"], "local:" + byo_key.fingerprint("sk_live"))
-        self.assertEqual(data["account_id"], "space-42")
+        # Composio is addressed by the account; the Space is recorded beside it because
+        # the *session* is per-Space, not because Composio ever sees it.
+        self.assertEqual(data["account_id"], ACCOUNT)
+        self.assertEqual(data["space_id"], "space-42")
+
+    def _write_store(self, **overrides) -> None:
+        doc = {
+            "version": 5, "backend": "local:" + byo_key.fingerprint("sk_live"),
+            "account_id": ACCOUNT, "space_id": "space-42",
+            "session": "trs_existing", "proxy_tokens": ["keep-me"],
+        }
+        doc.update(overrides)
+        self.sessions_path.write_text(json.dumps(doc), encoding="utf-8")
+        self._reset()
+
+    def test_a_store_from_another_space_keeps_its_tokens_but_drops_its_session(self):
+        # The session carries that Space's toolkit allowlist and account pins, so
+        # adopting it would hand this Space reach it was never granted.
+        self._write_store(space_id="space-99", session="trs_theirs")
+        self.service._ensure_sessions_loaded()
+        self.assertIsNone(self.service._SESSION_ID)
+        self.assertIn("keep-me", self.service._PROXY_TOKENS)
+        self.assertIn("trs_theirs", self.service._ORPHANED_SESSION_IDS)
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["space_id"], "space-42")
+
+    def test_a_store_written_before_the_space_stamp_is_adopted_then_stamped(self) -> None:
+        # An unstamped store is almost certainly this pod's own, and discarding it would
+        # churn a session for no reason. Unknown is not a mismatch.
+        self._write_store(space_id=None)
+        self.service._ensure_sessions_loaded()
+        self.assertEqual(self.service._SESSION_ID, "trs_existing")
+        # Adoption itself writes nothing (no churn); the next write is what stamps it.
+        self.service._persist_session_id("trs_existing")
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["space_id"], "space-42")
+
+    def test_a_pod_that_cannot_name_its_space_adopts_rather_than_discards(self) -> None:
+        self._write_store(space_id="space-99")
+        with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
+            self.service._ensure_sessions_loaded()
+        self.assertEqual(self.service._SESSION_ID, "trs_existing")
+
+    def test_a_store_from_another_account_keeps_its_tokens_but_drops_its_session(self):
+        self.sessions_path.write_text(json.dumps({
+            "version": 5, "backend": "local:" + byo_key.fingerprint("sk_live"),
+            "account_id": "user_SOMEONEELSE", "session": "trs_theirs",
+            "proxy_tokens": ["keep-me"],
+        }), encoding="utf-8")
+        self._reset()
+        self.service._ensure_sessions_loaded()
+        self.assertIsNone(self.service._SESSION_ID)          # minted for another account
+        self.assertIn("keep-me", self.service._PROXY_TOKENS)  # local; agents keep their URL
+        self.assertIn("trs_theirs", self.service._ORPHANED_SESSION_IDS)
+        data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["account_id"], ACCOUNT)
 
     def test_a_v4_store_is_discarded_but_keeps_proxy_tokens(self) -> None:
         self.sessions_path.write_text(json.dumps({
@@ -275,8 +369,20 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_no_session_header_needed(self) -> None:
         from services.cowork_agent.connectors.composio import identity as identity_mod
         byo_key.save("sk_live")
-        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
-            self.assertEqual(await identity_mod.get_composio_user(_req()), "space-42")
+        self.sign_in()
+        self.assertEqual(await identity_mod.get_composio_user(_req()), ACCOUNT)
+
+    async def test_unknown_account_is_409_but_the_optional_gate_reports_it(self) -> None:
+        from fastapi import HTTPException
+        from services.cowork_agent.connectors.composio import identity as identity_mod
+        byo_key.save("sk_live")
+        with self.assertRaises(HTTPException) as raised:
+            await identity_mod.get_composio_user(_req())
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail["error"], "composio_identity_required")
+        # The routes that must render the state cannot do it from behind the 409.
+        self.assertIsNone(await identity_mod.get_composio_user_optional(_req()))
 
     async def test_cross_site_origin_is_403(self) -> None:
         from fastapi import HTTPException
@@ -287,12 +393,13 @@ class IdentityGateTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
             await identity_mod.get_composio_user(req)
         self.assertEqual(raised.exception.status_code, 403)
 
-    async def test_resolve_user_none_without_a_key(self) -> None:
+    async def test_resolve_user_none_without_a_key_or_an_account(self) -> None:
         from services.cowork_agent.connectors.composio import identity as identity_mod
         self.assertIsNone(await identity_mod.resolve_user(_req()))
         byo_key.save("sk_live")
-        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
-            self.assertEqual(await identity_mod.resolve_user(_req()), "space-42")
+        self.assertIsNone(await identity_mod.resolve_user(_req()))   # key, no account
+        self.sign_in()
+        self.assertEqual(await identity_mod.resolve_user(_req()), ACCOUNT)
 
 
 class StaleGatingErrorTests(_KeyBase):
@@ -331,24 +438,28 @@ class PollerUserTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         from services.connections import poller
         self.assertIsNone(await poller.resolve_user_id())
 
-    async def test_key_resolves_to_local_user(self) -> None:
+    async def test_key_alone_is_not_enough_then_resolves_to_the_account(self) -> None:
         from services.connections import poller
         byo_key.save("sk_live")
-        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
-            self.assertEqual(await poller.resolve_user_id(), "space-42")
+        self.assertIsNone(await poller.resolve_user_id())
+        self.sign_in()
+        self.assertEqual(await poller.resolve_user_id(), ACCOUNT)
 
 
 class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
     async def test_backend_route_reports_inactive_without_a_key(self) -> None:
         from routers.cowork_agent.connectors import composio as r
         resp = await r.get_backend(_req())
-        self.assertEqual(json.loads(resp.body), {"mode": "inactive", "key_source": None})
+        self.assertEqual(json.loads(resp.body), {
+            "mode": "inactive", "key_source": None, "signed_in": False})
 
     async def test_backend_route_reports_local_with_a_key(self) -> None:
         from routers.cowork_agent.connectors import composio as r
         byo_key.save("sk_live")
+        self.sign_in()
         resp = await r.get_backend(_req())
-        self.assertEqual(json.loads(resp.body), {"mode": "local", "key_source": "file"})
+        self.assertEqual(json.loads(resp.body), {
+            "mode": "local", "key_source": "file", "signed_in": True})
 
     async def test_put_key_validates_and_saves(self) -> None:
         from routers.cowork_agent.connectors import composio as r
@@ -387,16 +498,97 @@ class RouteTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         from fastapi import HTTPException
         from routers.cowork_agent.connectors import composio as r
         with self.assertRaises(HTTPException) as raised:
-            await r.connect("gmail", r.ConnectBody(), user_id=byo_key.user_id())
+            await r.connect("gmail", r.ConnectBody(), user_id=self.sign_in())
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(raised.exception.detail["error"], "composio_key_required")
 
     async def test_toolkits_without_a_key_are_needs_key(self) -> None:
         from routers.cowork_agent.connectors import composio as r
-        resp = await r.list_toolkits(user_id=byo_key.user_id())
+        resp = await r.list_toolkits(user_id=self.sign_in())
         body = json.loads(resp.body)
         self.assertFalse(body["key_configured"])
+        self.assertTrue(body["signed_in"])
         self.assertTrue(all(t["status"] == "NEEDS_KEY" for t in body["toolkits"]))
+
+    async def test_toolkits_without_an_account_are_needs_signin(self) -> None:
+        from routers.cowork_agent.connectors import composio as r
+        byo_key.save("sk_live")
+        resp = await r.list_toolkits(user_id=None)
+        body = json.loads(resp.body)
+        self.assertTrue(body["key_configured"])     # the key is not the missing half
+        self.assertFalse(body["signed_in"])
+        self.assertTrue(all(t["status"] == "NEEDS_SIGNIN" for t in body["toolkits"]))
+
+
+def _swarm_result(**kwargs):
+    from services.swarm_api._http import SwarmResult
+    kwargs.setdefault("ok", True)
+    return SwarmResult(**kwargs)
+
+
+class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
+    """The XO account id: how it is learned, cached and fallen back on."""
+
+    async def test_unknown_until_resolved_and_never_guessed(self) -> None:
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertIsNone(account_identity.account_id())
+            self.assertFalse(account_identity.known())
+            with self.assertRaises(account_identity.XOAccountRequired):
+                account_identity.require()
+
+    async def test_remember_caches_on_disk_and_survives_a_restart(self) -> None:
+        account_identity.remember(ACCOUNT)
+        self.assertEqual(
+            json.loads(self.identity_path.read_text(encoding="utf-8"))["account_id"],
+            ACCOUNT)
+        # A fresh process: memory empty, disk intact. This is the read the MCP hot path
+        # and the boot sweep make before any swarm call has happened.
+        account_identity._CACHED = None
+        account_identity._LOADED = False
+        self.assertEqual(account_identity.account_id(), ACCOUNT)
+
+    async def test_the_env_override_pins_it_without_a_swarm(self) -> None:
+        with patch.dict(os.environ, {account_identity.ENV_VAR: "user_env"}):
+            self.assertEqual(account_identity.account_id(), "user_env")
+
+    async def test_resolve_asks_get_user_id_once_and_caches(self) -> None:
+        from services.swarm_api import auth as swarm_auth
+        call = AsyncMock(return_value=_swarm_result(data={"user_id": ACCOUNT}))
+        with patch.object(swarm_auth, "get_user_id", call):
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+        self.assertEqual(call.await_count, 1, "the second read came from the cache")
+        self.assertTrue(self.identity_path.exists())
+
+    async def test_an_unreachable_swarm_keeps_what_is_cached(self) -> None:
+        from services.swarm_api import auth as swarm_auth
+        account_identity.remember(ACCOUNT)
+        failed = AsyncMock(return_value=_swarm_result(
+            ok=False, offline=True, detail="connection refused"))
+        with patch.object(swarm_auth, "get_user_id", failed):
+            self.assertEqual(await account_identity.resolve(force=True), ACCOUNT)
+        # Nothing was overwritten: an outage must not sign this Space out.
+        self.assertEqual(
+            json.loads(self.identity_path.read_text(encoding="utf-8"))["account_id"],
+            ACCOUNT)
+
+    async def test_an_unauthenticated_backend_resolves_to_nothing(self) -> None:
+        from services.swarm_api import auth as swarm_auth
+        none = AsyncMock(return_value=_swarm_result(ok=False, unauthenticated=True))
+        with patch.object(swarm_auth, "get_user_id", none):
+            self.assertIsNone(await account_identity.resolve())
+
+    async def test_the_boot_sweep_waits_for_an_account_rather_than_installing(self):
+        from services.cowork_agent.connectors.composio import service
+        byo_key.save("sk_live")
+        with patch.object(service, "gateway_install_agents", return_value=["codex"]), \
+                patch.object(account_identity, "resolve", AsyncMock(return_value=None)), \
+                patch.object(service, "_apply_to_agents") as apply_:
+            sweep = await service.install_gateways(announce=False)
+        apply_.assert_not_called()
+        self.assertEqual(sweep.skipped, "no_account")
+        # Signing in opens this gate without a restart, so the loop must keep trying.
+        self.assertTrue(sweep.retryable)
 
 
 if __name__ == "__main__":

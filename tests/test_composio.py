@@ -218,12 +218,12 @@ class MigrationTests(_ComposioBase):
         self._write_legacy_store()
         self._arm()
 
-        backend, account, session_id, tokens = service._load_store()
+        doc = service._load_store()
 
-        self.assertEqual(backend, service._backend_stamp())
-        self.assertEqual(account, ACCOUNT)
-        self.assertEqual(session_id, "trs_legacy")
-        self.assertEqual(tokens, {"tok-from-the-checkout"})
+        self.assertEqual(doc.backend, service._backend_stamp())
+        self.assertEqual(doc.account, ACCOUNT)
+        self.assertEqual(doc.session_id, "trs_legacy")
+        self.assertEqual(doc.tokens, {"tok-from-the-checkout"})
         self.assertTrue(self.sessions_path.exists())
         # Moved, not copied: a store left behind in the checkout is exactly the thing
         # this change exists to stop shipping around.
@@ -246,9 +246,7 @@ class MigrationTests(_ComposioBase):
         )
         self._arm()
 
-        _backend, _account, session_id, _tokens = service._load_store()
-
-        self.assertEqual(session_id, "trs_current")
+        self.assertEqual(service._load_store().session_id, "trs_current")
         # The legacy file is left alone rather than deleted: nothing read it, so
         # nothing should destroy it either.
         self.assertTrue(self.legacy_sessions.exists())
@@ -258,11 +256,11 @@ class MigrationTests(_ComposioBase):
         self._arm()
 
         with patch.object(paths.shutil, "move", side_effect=OSError("read-only")):
-            stamp, account, session_id, tokens = service._load_store()
+            doc = service._load_store()
 
         # The same degradation as a store that was never written: not a crash on the
         # MCP hot path, which runs this on every tools/call.
-        self.assertEqual((stamp, account, session_id, tokens), (None, None, None, set()))
+        self.assertEqual(doc, service._StoreDoc())
         self.assertFalse(self.sessions_path.exists())
 
     def test_prefs_migrate_through_the_patched_store_path(self) -> None:
@@ -1584,12 +1582,15 @@ class SpaceScopeTests(_ComposioBase):
         self.assertNotIn("workspaces", stored)
         self.assertEqual(stored["space_id"], WORKSPACE)
 
-    def test_the_scope_stamps_the_default_user_when_the_space_id_is_unset(self) -> None:
+    def test_the_scope_stamps_nothing_when_the_space_id_is_unset(self) -> None:
+        # The stamp is informational and names the *Space*. With no XO_SPACE_ID there is
+        # no honest name for it, and a default would read as a real one; the account id
+        # is not a substitute, since it is the half these choices are scoped *within*.
         _enable("gmail", "ca_1")
         with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
             space_scope.set_toolkit("gmail", enabled=False)
         stored = json.loads(self.scope_path.read_text(encoding="utf-8"))
-        self.assertEqual(stored["space_id"], byo_key.DEFAULT_USER_ID)
+        self.assertIsNone(stored["space_id"])
         self.assertFalse(stored["toolkits"]["gmail"]["enabled"])
 
     def test_an_unreadable_document_reads_as_nothing_enabled(self) -> None:
