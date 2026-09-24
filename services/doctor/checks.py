@@ -456,23 +456,6 @@ def legacy_pending(ctx: Context) -> list[Finding]:
     return out
 
 
-def heartbeat(ctx: Context) -> list[Finding]:
-    if not liveness.watcher_enabled():
-        return []
-    from services.cowork_agent.visualizer.state import watcher_heartbeat_path
-
-    path = watcher_heartbeat_path()
-    age = liveness.heartbeat_age(ctx, path, inventory.spec_for(inventory.STATE, "cache/heartbeat.json"))
-    why = "Stats, timelines and the Inbox stop updating while the watcher isn't ticking."
-    if age is None:
-        return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
-                        "The watcher is enabled but there is no readable heartbeat yet.", why)]
-    if age > liveness.stale_after():
-        return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
-                        f"The watcher is enabled but last ticked {ago(age)} ago.", why)]
-    return []
-
-
 def _count_entries(path: Path, stop: int) -> int:
     count = 0
     try:

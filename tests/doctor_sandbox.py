@@ -2,7 +2,8 @@
 
 The state root is a copy of tests/fixtures/quirq-state/ and the projects root
 holds sample-project, whose .xo/ is tests/fixtures/xo-project/.xo/; both use
-one pid. The watcher is off (the sample heartbeat is from January), and every
+one pid. The watcher and the background pollers are off, and there is
+no task record (the doctor runs as if outside the server), and every
 run is judged a week from now, so no copied file counts as a recent write.
 """
 
@@ -68,6 +69,11 @@ class DoctorSandbox(unittest.TestCase):
             "QUIRQ_COMMAND_LOG_PATH": "",
             "QUIRQ_RUNTIME_FILE": "",
             "QUIRQ_SECRETS_FILE": "",
+            # The golden samples carry January timestamps (poll records,
+            # mirrors, schedules); each liveness test turns its source on.
+            "XO_CONNECTIONS_POLL_ENABLED": "false",
+            "XO_GITHUB_POLL_ENABLED": "false",
+            "XO_SCHEDULER_ENABLED": "false",
         })
         env.start()
         self.addCleanup(env.stop)
