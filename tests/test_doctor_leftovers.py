@@ -444,5 +444,70 @@ class MoveAsideTests(LeftoverSandbox):
         self.assertTrue((self.state / "projects" / OTHER).is_dir())
 
 
+class NameSourceTests(LeftoverSandbox):
+    """#188 issue 7: the name survives an emptied Space timeline."""
+
+    def orphan_sample(self) -> None:
+        shutil.rmtree(self.projects / "sample-project")   # its runtime folder PID stays behind
+        (self.projects / "third-project").mkdir()          # stay under the count guard
+        (self.state / "projects" / "timeline.jsonl").write_text("", encoding="utf-8")
+
+    def clear_inbox(self) -> None:
+        inbox = self.state / "inbox" / "inbox.json"
+        document = json.loads(inbox.read_text(encoding="utf-8"))
+        document["items"] = []
+        inbox.write_text(json.dumps(document), encoding="utf-8")
+
+    def leftover(self) -> dict:
+        [finding] = [f for f in self.runtime_findings() if f["id"] == "runtime.leftover"]
+        return finding
+
+    def test_the_inbox_names_it_when_the_space_timeline_is_empty(self) -> None:
+        self.orphan_sample()
+        finding = self.leftover()
+        self.assertIn("It belonged to project sample-project", finding["observed"])
+        self.assertEqual(finding["details"]["name_source"], "the Inbox")
+        self.assertEqual(finding["title"], "Project sample-project's runtime data is no longer used")
+
+    def test_its_own_session_list_names_it(self) -> None:
+        self.orphan_sample()
+        self.clear_inbox()
+        finding = self.leftover()
+        self.assertEqual(finding["details"]["project_name"], "sample-project")
+        self.assertEqual(finding["details"]["name_source"], "its session list")
+
+    def test_a_github_repository_is_only_a_hint(self) -> None:
+        self.orphan_sample()
+        self.clear_inbox()
+        shutil.rmtree(self.state / "projects" / PID / "sessions")
+        finding = self.leftover()
+        self.assertNotIn("It belonged to project", finding["observed"])
+        self.assertIn("GitHub repository acme/sample-project", finding["observed"])
+        self.assertEqual(finding["details"]["repository"], "acme/sample-project")
+        self.assertNotIn("project_name", finding["details"])
+
+    def test_the_leftover_explains_itself(self) -> None:
+        self.runtime(OTHER)
+        finding = [f for f in self.runtime_findings() if f["id"] == "runtime.leftover"][0]
+        labels = {e["label"] for e in finding["evidence"]}
+        self.assertTrue({"Size", "Files", "Last written", "Contains"} <= labels)
+        self.assertIn("quarantine", finding["next_step"])
+        self.assertEqual(finding["problem_key"], f"leftover:{OTHER}")
+        self.assertEqual(finding["subject"], OTHER)  # the UI POSTs the subject
+
+    def test_too_many_leftovers_names_both_causes(self) -> None:
+        self.runtime(OTHER)
+        self.runtime("33333333-3333-4333-8333-333333333333")
+        [blocked] = [f for f in self.runtime_findings() if f["id"] == "runtime.too_many_leftovers"]
+        self.assertIn("deleted", blocked["why_it_matters"])
+        self.assertIn("projects folder", blocked["why_it_matters"])
+
+    def test_unreadable_projects_are_listed_in_details(self) -> None:
+        self.runtime(OTHER)
+        (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
+        [blocked] = [f for f in self.runtime_findings() if f["id"] == "runtime.keys_unknown"]
+        self.assertEqual([p["name"] for p in blocked["details"]["projects"]], ["sample-project"])
+
+
 if __name__ == "__main__":
     unittest.main()

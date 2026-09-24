@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,10 +18,11 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from services.cowork_agent.helpers import normalize_agent_id
+from services.doctor import inventory
 from services.doctor.context import Context
-from services.doctor.model import FAIL, WARN, Finding, ago, printable, size
+from services.doctor.model import FAIL, WARN, Finding, ago, ev, moment, printable, size
 from services.doctor.projects import is_safe_runtime_key
-from services.doctor.reading import Tree, measure_tree, readable_dir
+from services.doctor.reading import Tree, measure_tree, readable_dir, read_tail
 from services.errors import ServiceError
 from services.storage import layout
 from services.timestamps import iso
@@ -39,6 +39,8 @@ SPLIT_MIN_AGE_S = 60
 NAME_SCAN_BYTES = 4 * 1024 * 1024
 #: A project_id past this length is never a real one; don't record it.
 NAME_MAX_LEN = 200
+#: At most this many of a leftover's own session index entries are read for its name.
+NAME_SESSION_FILES = 20
 ACTION = {"kind": "move_runtime_leftover_aside"}
 _CONTENTS = (("sessions", "sessions"), ("stats.json", "stats"), ("timeline.jsonl", "timeline"),
              ("github", "issues mirror"), ("workitems", "claims"))
@@ -68,6 +70,13 @@ def _candidates(ctx: Context) -> list[Path]:
             if entry.is_dir() and not entry.is_symlink() and is_safe_runtime_key(entry.name)]
 
 
+def describe_unknown(entries: list[dict]) -> tuple[str, str]:
+    """(subject, observed) of runtime.keys_unknown for these projects."""
+    names = ", ".join(entry["name"] for entry in entries)
+    reasons = ", ".join(f"{entry['name']} ({entry['reason']})" for entry in entries)
+    return names, f"project.json can't be read in: {reasons}."
+
+
 def survey(ctx: Context) -> Survey:
     candidates = _candidates(ctx)
     if not candidates:
@@ -81,22 +90,25 @@ def survey(ctx: Context) -> Survey:
         ), [])
     unreadable = [project for project in live if project.read.outcome not in ("ok", "absent")]
     if unreadable:
-        unknown = [project.name for project in unreadable]
-        reasons = [f"{project.name} ({project.read.detail or project.read.outcome.replace('_', ' ')})"
+        entries = [{"name": project.name,
+                    "reason": project.read.detail or project.read.outcome.replace("_", " ")}
                    for project in unreadable]
+        subject, observed = describe_unknown(entries)
         return Survey(Finding(
-            "runtime.keys_unknown", WARN, ", ".join(unknown), ctx.display(ctx.projects_root),
-            f"project.json can't be read in: {', '.join(reasons)}.",
-            "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked and nothing can be moved. "
-            "Fix or reconnect the projects named here first.",
+            "runtime.keys_unknown", WARN, subject, ctx.display(ctx.projects_root), observed,
+            "Those projects' runtime data can't be told apart from leftovers, so leftovers aren't checked and nothing "
+            "can be moved. Fix or reconnect the projects named here first.",
+            details={"projects": entries},
         ), [])
     in_use = frozenset().union(*(project.keys_in_use for project in live))
     found = [Leftover(path.name, path, measure_tree(path)) for path in candidates if path.name not in in_use]
     if found and len(found) >= len(live):
         return Survey(Finding(
             "runtime.too_many_leftovers", WARN, "runtime data", ctx.display(ctx.state_root / "projects"),
-            f"{len(found)} runtime data folder(s) look abandoned, and there are {len(live)} project(s).",
-            "If you changed the projects folder in Setup, switch back or move the projects over first. None of the folders listed can be moved from here while this is true.",
+            f"Runtime data folders no project uses: {len(found)}. Projects: {len(live)}.",
+            "Either projects were deleted, or the projects folder itself changed (Setup, projects folder). If you "
+            "changed it, switch back or move the projects over first. Nothing can be moved aside while more folders "
+            "look abandoned than there are projects, in case they belong to projects that are only in another folder.",
         ), found)
     return Survey(None, found)
 
@@ -106,80 +118,135 @@ def too_recent(ctx: Context, leftover: Leftover) -> bool:
     return newest is None or ctx.now - newest < LEFTOVER_MIN_AGE_S
 
 
-def _last_known_names(ctx: Context) -> dict[str, str]:
-    """The last project_id the Space timeline recorded for each pid, from at
-    most the last ``NAME_SCAN_BYTES`` of ``projects/timeline.jsonl``. Reads
-    nothing else from a line, and nothing but a pid and its project_id
-    reaches the caller."""
-    path = ctx.state_root / "projects" / "timeline.jsonl"
-    names: dict[str, str] = {}
-    try:
-        info = os.stat(path)
-        if not stat.S_ISREG(info.st_mode):
-            # A FIFO or other special file: opening it for reading can block
-            # forever waiting for a writer. Nothing but a plain file is worth
-            # reading here.
-            return {}
-        size_bytes = info.st_size
-        # O_NONBLOCK and the fstat below close the gap in which the file could
-        # be swapped for a FIFO after the stat above (reading.classify does
-        # the same); on a regular file both are no-ops.
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
-        with os.fdopen(fd, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                return {}
-            seeked = size_bytes > NAME_SCAN_BYTES
-            if seeked:
-                handle.seek(size_bytes - NAME_SCAN_BYTES)
-            # Bounded even if the file grows between the stat above and this
-            # read, so the amount read never exceeds NAME_SCAN_BYTES.
-            data = handle.read(NAME_SCAN_BYTES)
-    except OSError:
-        return {}
+def _valid_name(value: object) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= NAME_MAX_LEN and value.isprintable()
+
+
+def _timeline_names(data: bytes, seeked: bool) -> dict[str, str]:
+    """The last ``project_id`` per ``pid`` in a tail of the Space timeline.
+    Reads nothing else from a line."""
     lines = data.split(b"\n")
     if seeked and lines:
         lines = lines[1:]  # the partial line the seek landed inside
+    names: dict[str, str] = {}
     for raw in lines:
         if not raw.strip():
             continue
         try:
             document = json.loads(raw.decode("utf-8", errors="replace"))
         except (ValueError, RecursionError):
-            # ValueError covers json.JSONDecodeError; a pathologically deep
-            # line (e.g. thousands of nested "[") can also blow the parser's
-            # recursion limit instead of raising a decode error.
+            # A pathologically deep line can exhaust the parser's recursion limit.
             continue
         if not isinstance(document, dict):
             continue
         pid, project_id = document.get("pid"), document.get("project_id")
-        if (isinstance(pid, str) and pid and isinstance(project_id, str) and project_id
-                and len(project_id) <= NAME_MAX_LEN):
+        if isinstance(pid, str) and pid and _valid_name(project_id):
             names[pid] = project_id
     return names
 
 
-def _finding(ctx: Context, leftover: Leftover, actionable: bool, names: dict[str, str]) -> Finding:
+def _name_from_sessions(ctx: Context, key: str) -> Optional[str]:
+    """The project folder name recorded in the leftover's own session index
+    (each row's ``directory``). The composite key is adapter-shaped and is
+    never parsed."""
+    spec = inventory.spec_for(inventory.STATE, "projects/x/sessions/sessionslist.d/y.json")
+    try:
+        shards = sorted((ctx.state_root / "projects" / key / "sessions" / "sessionslist.d").glob("*.json"))
+    except OSError:
+        return None
+    for shard in shards[:NAME_SESSION_FILES]:
+        result = ctx.read(shard, spec)
+        if result.outcome != "ok":
+            continue
+        for row in result.value.values():
+            directory = row.get("directory") if isinstance(row, dict) else None
+            if isinstance(directory, str):
+                name = os.path.basename(directory.rstrip("/"))
+                if _valid_name(name):
+                    return name
+    return None
+
+
+def _repository_hint(ctx: Context, key: str) -> Optional[str]:
+    """The GitHub repository the leftover mirrored, as a hint (not a folder name)."""
+    result = ctx.read(ctx.state_root / "projects" / key / "github" / "issues.json",
+                      inventory.spec_for(inventory.STATE, "projects/x/github/issues.json"))
+    repo = result.value.get("repo") if result.outcome == "ok" else None
+    return repo if _valid_name(repo) else None
+
+
+def _last_known_names(ctx: Context, keys: list[str]) -> dict[str, tuple[str, str]]:
+    """key → (project name, where it was found), from the Space timeline,
+    then the Inbox, then the leftover's own session list. Only names and
+    pids leave these files."""
+    wanted = set(keys)
+    found: dict[str, tuple[str, str]] = {}
+    tail = read_tail(ctx.state_root / "projects" / "timeline.jsonl", NAME_SCAN_BYTES)
+    if tail is not None:
+        for pid, name in _timeline_names(*tail).items():
+            if pid in wanted:
+                found[pid] = (name, "the Space timeline")
+    if wanted - found.keys():
+        inbox = ctx.read(ctx.state_root / "inbox" / "inbox.json",
+                         inventory.spec_for(inventory.STATE, "inbox/inbox.json"))
+        items = inbox.value.get("items") if inbox.outcome == "ok" else None
+        for item in items if isinstance(items, list) else []:
+            pid = item.get("pid") if isinstance(item, dict) else None
+            if pid in wanted and pid not in found and _valid_name(item.get("project_id")):
+                found[pid] = (item["project_id"], "the Inbox")
+    for key in sorted(wanted - found.keys()):
+        name = _name_from_sessions(ctx, key)
+        if name:
+            found[key] = (name, "its session list")
+    return found
+
+
+def _finding(ctx: Context, leftover: Leftover, actionable: bool, names: dict[str, tuple[str, str]]) -> Finding:
     tree = leftover.tree
     contains = [label for name, label in _CONTENTS if (leftover.path / name).exists()]
     written = (f"Last written {ago(ctx.now - tree.newest)} ago." if tree.newest is not None
                else "Can't be dated: too large or partly unreadable.")
-    project_name = names.get(leftover.key)
+    project_name, source = names.get(leftover.key, (None, None))
+    repo = None if project_name else _repository_hint(ctx, leftover.key)
+    root = ctx.display(ctx.projects_root)
     if project_name:
-        observed = (f"No project in {ctx.display(ctx.projects_root)} uses this data. "
-                    f"It belonged to project {project_name}. {written}")
+        observed = f"No project in {root} uses this data. It belonged to project {project_name}. {written}"
+        title = f"Project {project_name}'s runtime data is no longer used"
+    elif repo:
+        observed = (f"No project in {root} uses this data. It belonged to the project for GitHub repository "
+                    f"{repo}. {written}")
+        title = f"Runtime data of the {repo} project is no longer used"
     else:
-        observed = f"No project in {ctx.display(ctx.projects_root)} uses this data. {written}"
+        observed = f"No project in {root} uses this data. {written}"
+        title = "Runtime data that no project uses"
+    taken = f"{'at least ' if tree.truncated else ''}{size(tree.bytes)}"
     details = {"bytes": tree.bytes, "files": tree.files, "truncated": tree.truncated, "contains": contains,
                "newest_mtime": None if tree.newest is None else iso(datetime.fromtimestamp(tree.newest, timezone.utc))}
+    evidence = [ev("Size", taken), ev("Files", f"{tree.files:,}"),
+                ev("Last written", moment(tree.newest, ctx.now) if tree.newest is not None
+                   else "unknown (too large or partly unreadable)"),
+                ev("Contains", ", ".join(contains) or "nothing it recognises")]
     if project_name:
-        details["project_name"] = project_name
+        details["project_name"], details["name_source"] = project_name, source
+        evidence.append(ev("Named from", source))
+    elif repo:
+        details["repository"] = repo
+        evidence.append(ev("Named from", "its GitHub issue copy (a repository, not a folder name)"))
+    offered = actionable and not too_recent(ctx, leftover)
+    back = ("If you moved or renamed the project folder yourself, move it back instead; this data will be picked "
+            "up again. ")
+    if offered:
+        next_step = back + "Otherwise use Move aside: it goes into quarantine/, and nothing is deleted."
+    elif actionable:
+        next_step = back + "It was written in the last 10 minutes; Move aside (into quarantine/) becomes available after that."
+    else:
+        next_step = back + "Moving it into quarantine/ is paused until the problem named above is fixed."
     return Finding(
-        "runtime.leftover", WARN, leftover.key, ctx.display(leftover.path), observed,
-        f"It takes {'at least ' if tree.truncated else ''}{size(tree.bytes)} and is never read unless the project folder comes back. "
-        "If you moved or renamed the project folder yourself, move it back instead; this data will be picked up again.",
-        details=details,
-        action=dict(ACTION) if actionable and not too_recent(ctx, leftover) else None,
-    )
+        "runtime.leftover", WARN, leftover.key, ctx.display(leftover.path), observed, "",
+        details=details, action=dict(ACTION) if offered else None, title=title, evidence=evidence,
+        consequence=f"It takes {taken} and is never read unless its project folder comes back.",
+        self_repair="Nothing: it stays until a person moves or deletes it.",
+        next_step=next_step, problem_key=f"leftover:{leftover.key}")
 
 
 def _split_findings(ctx: Context) -> list[Finding]:
@@ -227,7 +294,7 @@ def _split_findings(ctx: Context) -> list[Finding]:
 def check(ctx: Context) -> list[Finding]:
     result = survey(ctx)
     out = [result.blocked] if result.blocked is not None else []
-    names = _last_known_names(ctx) if result.leftovers else {}
+    names = _last_known_names(ctx, [leftover.key for leftover in result.leftovers]) if result.leftovers else {}
     out += [_finding(ctx, leftover, result.blocked is None, names) for leftover in result.leftovers]
     out += _split_findings(ctx)
     return out
