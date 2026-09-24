@@ -31,6 +31,8 @@ CHECKS: tuple[tuple[str, Check], ...] = (
     ("legacy", checks.legacy_pending),
     ("watcher", liveness.watcher),
     ("components", liveness.components),
+    ("connections", liveness.connections),
+    ("github", liveness.github),
     ("growth", checks.growth),
 )
 

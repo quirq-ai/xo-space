@@ -17,6 +17,7 @@ class PrivateSeamsTests(unittest.TestCase):
         ("services.cowork_agent.quirq_catalog", "_stale_after_seconds"),
         ("services.cowork_agent.visualizer.migrate", "_pending_sources"),
         ("services.cowork_agent.runtime_config", "_as_bool"),
+        ("services.connections.service", "_live_last_error"),
     )
 
     def test_every_borrowed_private_name_exists_and_is_callable(self) -> None:
@@ -24,6 +25,10 @@ class PrivateSeamsTests(unittest.TestCase):
             with self.subTest(seam=f"{module_name}.{attribute}"):
                 module = importlib.import_module(module_name)
                 self.assertTrue(callable(getattr(module, attribute, None)))
+
+    def test_borrowed_private_state_exists(self) -> None:
+        module = importlib.import_module("services.cowork_agent.github_poller")
+        self.assertIsInstance(getattr(module, "_cooldowns", None), dict)
 
     def test_a_renamed_seam_does_not_stop_the_doctor_importing(self) -> None:
         import services.doctor.checks as checks

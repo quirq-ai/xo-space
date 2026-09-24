@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from services.timestamps import iso
-from tests.doctor_sandbox import DoctorSandbox
+from tests.doctor_sandbox import PID, DoctorSandbox
 
 
 class LivenessSandbox(DoctorSandbox):
@@ -117,3 +117,122 @@ class ComponentTests(LivenessSandbox):
     def test_a_cancelled_task_is_shutdown_not_a_problem(self) -> None:
         with self.tasks(self.record("usage sync", state="cancelled", ended_at=self.now - 5)):
             self.assertEqual(self.of("component."), [])
+
+
+def _stamp(ts: float) -> str:
+    return iso(datetime.fromtimestamp(ts, timezone.utc))
+
+
+class ConnectionsTests(LivenessSandbox):
+    def setUp(self) -> None:
+        super().setUp()
+        env = patch.dict(os.environ, {"XO_CONNECTIONS_POLL_ENABLED": "true", "XO_CONNECTIONS_POLL_TICK_S": "30"})
+        env.start()
+        self.addCleanup(env.stop)
+        # The live-gate filter needs Composio settings; the tests pin it to "error still live".
+        live = patch("services.doctor.liveness._live_error", side_effect=lambda toolkit, stored: stored)
+        live.start()
+        self.addCleanup(live.stop)
+
+    def write_state(self, **fields) -> None:
+        path = self.state / "connections" / "gmail" / "state.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document.update(fields)
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_a_poller_that_stopped_is_reported_once_overdue(self) -> None:
+        # #188 issue 1. Gmail polls every 900 s; tick 30 s; grace 300 s.
+        self.write_state(last_poll_at=_stamp(self.now - 900), last_ok_at=_stamp(self.now - 900))
+        self.assertEqual(self.of("connections."), [])
+        self.write_state(last_poll_at=_stamp(self.now - 1300), last_ok_at=_stamp(self.now - 1300))
+        [finding] = self.of("connections.overdue")
+        self.assertEqual((finding["subject"], finding["level"]), ("gmail", "WARN"))
+        self.assertEqual(finding["title"], "Gmail is no longer being checked")
+        self.assertIn("Inbox", finding["consequence"])
+
+    def test_a_future_last_poll_is_not_overdue(self) -> None:
+        self.write_state(last_poll_at=_stamp(self.now + 3600), last_ok_at=_stamp(self.now + 3600))
+        self.assertEqual(self.of("connections."), [])
+
+    def test_a_connection_failing_for_hours_is_reported_with_its_error(self) -> None:
+        # #188 issue 2, the real Gmail case.
+        self.write_state(last_poll_at=_stamp(self.now - 60), last_ok_at=_stamp(self.now - 5 * 3600),
+                         last_error="gmail is not turned on in this workspace")
+        [finding] = self.of("connections.failing")
+        self.assertIn("5 hours", finding["observed"])
+        self.assertIn("gmail is not turned on in this workspace", finding["observed"])
+
+    def test_the_error_shown_is_redacted(self) -> None:
+        self.write_state(last_poll_at=_stamp(self.now - 60), last_ok_at=None,
+                         last_error="session unavailable: https://mcp.example.com/u/abc?api_key=0123456789abcdefghijklmn")
+        [finding] = self.of("connections.failing")
+        text = json.dumps(finding)
+        self.assertNotIn("mcp.example.com", text)
+        self.assertNotIn("0123456789abcdefghijklmn", text)
+
+    def test_a_stale_gate_error_is_not_reported(self) -> None:
+        self.write_state(last_poll_at=_stamp(self.now - 60), last_ok_at=None, last_error="gmail is not turned on")
+        with patch("services.doctor.liveness._live_error", return_value=None):
+            self.assertEqual(self.of("connections.failing"), [])
+
+    def test_disabled_connections_and_a_disabled_poller_are_silent(self) -> None:
+        self.write_state(last_poll_at=_stamp(self.now - 99999))
+        config = self.state / "connections" / "gmail" / "config.json"
+        config.write_text(json.dumps({**json.loads(config.read_text(encoding="utf-8")), "enabled": False}),
+                          encoding="utf-8")
+        self.assertEqual(self.of("connections."), [])
+        with patch.dict(os.environ, {"XO_CONNECTIONS_POLL_ENABLED": "false"}):
+            self.assertEqual(self.of("connections."), [])
+
+
+class GitHubTests(LivenessSandbox):
+    def setUp(self) -> None:
+        super().setUp()
+        env = patch.dict(os.environ, {"XO_GITHUB_POLL_ENABLED": "true", "XO_GITHUB_POLL_INTERVAL_S": "60"})
+        env.start()
+        self.addCleanup(env.stop)
+        project = self.projects / "sample-project" / ".xo" / "project.json"
+        document = json.loads(project.read_text(encoding="utf-8"))
+        document["git"] = {"remote_url": "https://github.com/acme/sample-project"}
+        project.write_text(json.dumps(document), encoding="utf-8")
+        self.mirror = self.state / "projects" / PID / "github" / "issues.json"
+
+    def write_mirror(self, **fields) -> None:
+        document = json.loads(self.mirror.read_text(encoding="utf-8"))
+        document.update(fields)
+        self.mirror.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_a_mirror_that_stopped_refreshing_is_reported(self) -> None:
+        # #188 issue 4: 60 s interval → stale after max(180 s, 300 s).
+        self.write_mirror(fetched_at=_stamp(self.now - 60), error=None)
+        self.assertEqual(self.of("github."), [])
+        self.write_mirror(fetched_at=_stamp(self.now - 600), error=None)
+        [finding] = self.of("github.stale")
+        self.assertEqual(finding["subject"], "sample-project")
+        self.assertIn("acme/sample-project", " ".join(e["value"] for e in finding["evidence"]))
+
+    def test_a_failing_repository_names_its_error(self) -> None:
+        self.write_mirror(fetched_at=_stamp(self.now - 7200),
+                          error={"kind": "not_found", "message": "repository not found", "at": _stamp(self.now - 3600)})
+        [finding] = self.of("github.")
+        self.assertEqual(finding["id"], "github.failing")
+        self.assertIn("not_found", finding["observed"])
+        self.assertIn("git remote", finding["next_step"])
+
+    def test_a_paused_poller_is_one_finding_not_a_page_of_stale_mirrors(self) -> None:
+        self.write_mirror(fetched_at=_stamp(self.now - 7200), error=None)
+        snapshot = {"paused": True, "pause_reason": "rate_limited: hourly budget", "spent_last_hour": 0,
+                    "remaining": 0, "limit": 5000, "reset_at": None}
+        with self.tasks(self.record("github poller")), \
+             patch("services.cowork_agent.github_poller.budget_snapshot", return_value=snapshot):
+            found = self.of("github.")
+        self.assertEqual([f["id"] for f in found], ["github.paused"])
+        self.assertIn("rate_limited", found[0]["observed"])
+
+    def test_a_project_without_a_github_remote_is_not_checked(self) -> None:
+        project = self.projects / "sample-project" / ".xo" / "project.json"
+        document = json.loads(project.read_text(encoding="utf-8"))
+        document["git"] = {"remote_url": "https://gitlab.com/acme/sample-project"}
+        project.write_text(json.dumps(document), encoding="utf-8")
+        self.write_mirror(fetched_at=_stamp(self.now - 7200), error=None)
+        self.assertEqual(self.of("github."), [])
