@@ -61,6 +61,14 @@ class LevelPolicyTests(unittest.TestCase):
         self.assertEqual(catalog.level_for(self.spec("agent.json", inventory.PROJECT), "invalid_json",
                                            watcher_alive=True), WARN)
 
+    def test_agent_json_warns_for_every_outcome(self) -> None:
+        # spec §4: agent.json → WARN for every outcome, not just the three
+        # "readable bytes, unusable content" ones.
+        spec = self.spec("agent.json", inventory.PROJECT)
+        for outcome in ("empty", "invalid_json", "wrong_type", "unreadable", "special", "file_too_large"):
+            with self.subTest(outcome=outcome):
+                self.assertEqual(catalog.level_for(spec, outcome, watcher_alive=True), WARN)
+
 
 class LabelTests(unittest.TestCase):
     def test_labels_fill_project_and_toolkit(self) -> None:

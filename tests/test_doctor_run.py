@@ -296,7 +296,9 @@ class HostileFileTests(DoctorSandbox):
         path = self.projects / "sample-project" / ".xo" / "agent.json"
         path.symlink_to("/dev/null")
         report = self.report_within()
-        self.assertEqual(self.findings_for(report, "sample-project/.xo/agent.json"), [("read.special", "FAIL")])
+        # agent.json warns for every outcome (#188 design §4), unlike most
+        # IRREPLACEABLE files, which FAIL on "special".
+        self.assertEqual(self.findings_for(report, "sample-project/.xo/agent.json"), [("read.special", "WARN")])
 
     def test_an_oversized_keep_file_is_reported_not_read(self) -> None:
         path = self.state / "inbox" / "inbox.json"

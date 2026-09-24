@@ -363,7 +363,10 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing.",
         next_step=(_RESTORE_PROJECT + ". Don't re-create the agent while project.json is also damaged: that "
                    "replaces the project's identity."),
-        levels={outcome: WARN for outcome in UNUSABLE},
+        # spec §4: WARN for every outcome, not just "readable bytes, unusable
+        # content" - unreadable/special/file_too_large would otherwise fall
+        # back to IRREPLACEABLE's default FAIL.
+        levels={outcome: WARN for outcome in UNUSABLE + ("unreadable", "special", "file_too_large")},
     ),
 }
 
