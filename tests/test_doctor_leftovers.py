@@ -505,10 +505,12 @@ class NameSourceTests(LeftoverSandbox):
         self.assertIn("projects folder", blocked["why_it_matters"])
 
     def test_unreadable_projects_are_listed_in_details(self) -> None:
+        # A project on storage that isn't there has no file finding of its own,
+        # so it stays in keys_unknown (a damaged project.json is folded instead).
         self.runtime(OTHER)
-        (self.projects / "sample-project" / ".xo" / "project.json").write_text("{", encoding="utf-8")
+        (self.projects / "on-a-missing-disk").symlink_to(self.projects / "nowhere")
         [blocked] = [f for f in self.runtime_findings() if f["id"] == "runtime.keys_unknown"]
-        self.assertEqual([p["name"] for p in blocked["details"]["projects"]], ["sample-project"])
+        self.assertEqual([p["name"] for p in blocked["details"]["projects"]], ["on-a-missing-disk"])
 
 
 if __name__ == "__main__":
