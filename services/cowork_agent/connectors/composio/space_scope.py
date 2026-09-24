@@ -1,7 +1,10 @@
 """What this workspace may reach: the per-workspace half of connector isolation.
 
-Composio connections are **account-wide**, so "which workspace is this?" does not answer
-"what can it touch?". This store does.
+Composio connections are **account-wide**, and this install addresses Composio by the XO
+account (:mod:`.account_identity`), so every Space of one account sees the same
+connections and "which workspace is this?" does not answer "what can it touch?". This
+store does. It is the other half of that arrangement: one sign-in, then a per-Space
+true/false.
 
 Two decisions per toolkit, both scoped to this workspace:
 
@@ -27,7 +30,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from services.cowork_agent.connectors.composio import byo_key, paths
+from services.cowork_agent import coder_identity
+from services.cowork_agent.connectors.composio import paths
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.reader import read_json
@@ -114,8 +118,11 @@ def pins() -> Dict[str, List[str]]:
 def _write(mutate) -> Dict[str, Dict[str, object]]:
     """Lock, re-read, mutate, atomically replace.
 
-    Stamps the local ``user_id`` this scope was written under. Informational only:
-    :func:`load` never compares it.
+    Stamps ``XO_SPACE_ID``: which Space made these choices, which is the right stamp
+    now that Composio itself is addressed by the *account*
+    (:mod:`.account_identity`) — this store is the half that stays per-Space.
+    Informational only: :func:`load` never compares it, and an unset ``XO_SPACE_ID``
+    writes ``None`` rather than inventing a name.
     """
     path = _store_path()
     # Before the lock: the sentinel is keyed on the store's absolute path.
@@ -125,7 +132,7 @@ def _write(mutate) -> Dict[str, Dict[str, object]]:
         mutate(current)
         write_json_atomic(path, {
             "version": STORE_VERSION,
-            "space_id": byo_key.user_id(),
+            "space_id": coder_identity.xo_space_id(),
             "toolkits": current,
         })
     return current

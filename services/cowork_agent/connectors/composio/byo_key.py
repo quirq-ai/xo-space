@@ -1,10 +1,14 @@
 """The user's own Composio API key, stored locally on this pod.
 
 Composio runs only when a key is configured here; there is no swarm fallback. The
-key comes from ``COMPOSIO_BYO_API_KEY`` or, failing that, an owner-only file next
+key comes from ``COMPOSIO_API_KEY`` or, failing that, an owner-only file next
 to the other Composio stores. It is never sent to XO and never returned in any
-response. The ``user_id`` addressing the key's Composio project is ``XO_SPACE_ID``
-(else a fixed default), so a store restored elsewhere reaches the same project.
+response.
+
+Two separate gates gate Composio, and both must open: the key (here) says *which
+Composio project*, and :mod:`.account_identity` says *whose connections inside it*.
+Paste the same key into two Spaces of one XO account and they share one set of
+connections; each Space still decides for itself which of them it turns on.
 """
 from __future__ import annotations
 
@@ -13,15 +17,14 @@ import logging
 import os
 from typing import Optional
 
-from services.cowork_agent.connectors.composio import paths
+from services.cowork_agent.connectors.composio import account_identity, paths
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.reader import read_json
 
 log = logging.getLogger(__name__)
 
-ENV_VAR = "COMPOSIO_BYO_API_KEY"
-DEFAULT_USER_ID = "xo-space-default"
+ENV_VAR = "COMPOSIO_API_KEY"
 STORE_VERSION = 1
 
 _KEY_PATH = paths.store_dir() / "api_key.json"
@@ -73,7 +76,15 @@ def require() -> str:
 
 
 def user_id() -> str:
-    return (os.getenv("XO_SPACE_ID") or "").strip() or DEFAULT_USER_ID
+    """The Composio ``user_id``: this backend's XO account id.
+
+    Not the Space. Re-exported here because every Composio call site already reaches for
+    this function; :mod:`.account_identity` owns the value and the fail-closed rule.
+
+    Raises:
+        account_identity.XOAccountRequired: when the account id is not known yet.
+    """
+    return account_identity.require()
 
 
 def _persist(doc: dict) -> None:

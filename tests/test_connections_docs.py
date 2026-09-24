@@ -266,7 +266,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
 
     def test_identity_docs_describe_the_local_key(self) -> None:
         dev = squash(read("DEVELOPING.md"))
-        self.assertIn("COMPOSIO_BYO_API_KEY", dev)
+        self.assertIn("COMPOSIO_API_KEY", dev)
         self.assertIn("Composio runs only when the user supplies their own", dev)
         # no XO sign-in, and the store is stamped by the key's fingerprint
         self.assertIn("There is no", dev)
@@ -276,7 +276,7 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
         block = squash(re.sub(r"(?m)^#\s?", "", block))   # one comment block, read as prose
         self.assertIn("BRING YOUR OWN KEY", block)
         self.assertIn("never sent to XO", block)
-        self.assertIn("COMPOSIO_BYO_API_KEY", block)
+        self.assertIn("COMPOSIO_API_KEY", block)
 
     def test_placement_rule_names_the_shared_space_modules(self) -> None:
         import importlib

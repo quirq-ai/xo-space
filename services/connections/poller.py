@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import byo_key, space_scope
+from services.cowork_agent.connectors.composio import account_identity, byo_key, space_scope
 from services.periodic import run_forever
 from services.timestamps import aware, parse_ts
 
@@ -175,10 +175,18 @@ def _ready(toolkit: str, now: datetime) -> bool:
 
 
 async def resolve_user_id() -> Optional[str]:
-    """The Composio user id for this workspace, or ``None`` when no key is configured.
+    """The Composio user id for this poll, or ``None`` when Composio cannot run.
 
-    No network: Composio runs on the user's own local key (:mod:`.byo_key`)."""
-    return byo_key.user_id() if byo_key.configured() else None
+    The XO account id this Space acts for, not the Space itself, so a poll reaches the
+    same connections the user signed in with anywhere. ``None`` when there is no
+    Composio key or no known account: either way the tick is skipped rather than run
+    against a guessed identity.
+
+    No network: the key is local (:mod:`.byo_key`) and the account id is cached
+    (:mod:`.account_identity`)."""
+    if not byo_key.configured():
+        return None
+    return account_identity.account_id()
 
 
 _NO_ACTIVE_CONNECTION = "No active connection found for toolkit"

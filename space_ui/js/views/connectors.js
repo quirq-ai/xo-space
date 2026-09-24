@@ -53,7 +53,7 @@ let loading=false;
 let listener=null;
 let filter='';
 let nativeConnectors=null;
-let keyState={mode:'inactive',key_source:null};   /* GET /api/connectors/composio/backend */
+let keyState={mode:'inactive',key_source:null,signed_in:false};  /* GET .../backend */
 let keyReplacing=false;   /* Replace pressed: show the input over a configured key */
 
 /* Polling drawer (spec: connections polling). Same shape as the Actions drawer:
@@ -162,7 +162,7 @@ async function loadAll(){
     /* Which mode are we in? A key (env or local file) activates connectors; without
        one they are inactive and the key panel is the only call to action. */
     const backend=await apiFetch(BASE+'/backend');
-    keyState=(backend.ok&&backend.data)||{mode:'inactive',key_source:null};
+    keyState=(backend.ok&&backend.data)||{mode:'inactive',key_source:null,signed_in:false};
     renderKeyPanel();
 
     /* the account labels ride alongside the listing; awaited before the
@@ -194,17 +194,26 @@ function renderKeyPanel(){
   if(!el)return;
   const configured=keyState.mode==='local';
   const fromEnv=keyState.key_source==='env';
+  /* Two gates open connectors: the key, and knowing which XO account this Space acts
+     for (connections belong to the account, not the Space). A server too old to send
+     the field is read as signed in, so this panel never invents a problem. */
+  const signedIn=keyState.signed_in!==false;
   const showInput=!configured||keyReplacing;
 
-  const pill=configured
-    ? '<span class="conn-state is-good">Configured</span>'
-    : '<span class="conn-state is-pending">Not set</span>';
+  const pill=!configured
+    ? '<span class="conn-state is-pending">Not set</span>'
+    : signedIn
+      ? '<span class="conn-state is-good">Configured</span>'
+      : '<span class="conn-state is-pending">Signed out</span>';
 
-  const sub=configured
-    ? 'Connectors are active. Key held on this machine only'
-      +(fromEnv?', from <code>COMPOSIO_BYO_API_KEY</code>.':', in a private file.')
-    : 'Add your Composio API key to activate connectors. It is stored only on this '
-      +'machine and never sent to XO.';
+  const sub=!configured
+    ? 'Add your Composio API key to activate connectors. It is stored only on this '
+      +'machine and never sent to XO.'
+    : signedIn
+      ? 'Connectors are active. Key held on this machine only'
+        +(fromEnv?', from <code>COMPOSIO_API_KEY</code>.':', in a private file.')
+      : 'The key is set, but this Space does not know which XO account it acts for, so '
+        +'connectors are inactive. Sign in to XO and reload.';
 
   let form='';
   if(showInput){
@@ -221,7 +230,7 @@ function renderKeyPanel(){
       +'</div>';
   }
 
-  el.className='conn-key'+(configured?' is-set':'');
+  el.className='conn-key'+(configured&&signedIn?' is-set':'');
   el.innerHTML='<div class="conn-key-head">'+KEY_ICON
     +'<div class="conn-key-text"><h4>Composio API key</h4><p>'+sub+'</p></div>'
     +pill+'</div>'+form;
