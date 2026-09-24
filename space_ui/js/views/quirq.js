@@ -19,6 +19,8 @@ let healthLoading=false;
 let lastHealth=null;
 let pendingMove=null;
 let movingKey=null;
+let previousFindings=null;
+let goneFindings=[];
 
 /* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
@@ -70,7 +72,7 @@ function renderShell(){
       +'</header>'
       +'<section class="quirq-panel quirq-health" id="quirq-health">'
         +'<header><div><span>State health</span><h2>Health checks</h2></div>'
-          +'<div class="quirq-health-actions"><b id="quirq-health-level">—</b>'
+          +'<div class="quirq-health-actions"><small id="quirq-health-checked"></small><b id="quirq-health-level">—</b>'
           +'<button id="quirq-health-run" type="button">Run checks</button></div>'
         +'</header>'
         +'<div id="quirq-health-list"><div class="quirq-empty">Checking state…</div></div>'
@@ -402,8 +404,33 @@ async function loadHealth(){
     renderHealthFailure(failText(response));
     return;
   }
+  previousFindings=lastHealth?new Map(flattenFindings(lastHealth).map(finding=>[stableKey(finding),finding])):null;
   lastHealth=response.data;
+  goneFindings=vanished(previousFindings,lastHealth);
   renderHealth(lastHealth);
+}
+
+/* A finding's identity across runs: problem_key when the server sends one
+   (stable even when the damage changes kind), else the v1 key. */
+function stableKey(finding){return finding.problem_key||finding.key;}
+
+function flattenFindings(report){
+  return (report.checks||[]).flatMap(check=>check.error
+    ?[{id:check.id,key:'error:'+check.id,level:'ERROR',subject:check.id,path:'',
+       observed:'This check could not run: '+check.error,why_it_matters:'This part of the state was not checked.'}]
+    :(check.findings||[]).filter(finding=>finding.level!=='OK'));
+}
+
+/* What the previous run showed that this one doesn't: fixed, no longer
+   checked, or now folded under another entry. Kept in memory only. */
+function vanished(previous,report){
+  if(!previous)return [];
+  const current=flattenFindings(report);
+  const present=new Set(current.map(stableKey));
+  const parentOf=new Map();
+  current.forEach(finding=>(finding.related||[]).forEach(item=>parentOf.set(stableKey(item),finding.title||finding.observed)));
+  return [...previous.values()].filter(finding=>!present.has(stableKey(finding)))
+    .map(finding=>({title:finding.title||finding.observed,parent:parentOf.get(stableKey(finding))||''}));
 }
 
 function renderHealth(report){
@@ -411,13 +438,16 @@ function renderHealth(report){
   const badge=root.querySelector('#quirq-health-level');
   badge.textContent=level==='OK'?'Healthy':level;
   badge.className='is-'+level.toLowerCase();
-  const findings=(report.checks||[]).flatMap(check=>check.error
-    ?[{id:check.id,key:'error:'+check.id,level:'ERROR',subject:check.id,path:'',
-       observed:'This check could not run: '+check.error,why_it_matters:'This part of the state was not checked.'}]
-    :(check.findings||[]).filter(finding=>finding.level!=='OK'));
-  root.querySelector('#quirq-health-list').innerHTML=findings.length
+  root.querySelector('#quirq-health-checked').textContent='Checked '+relativeTime(report.checked_at);
+  const findings=flattenFindings(report);
+  const gone=goneFindings.length
+    ?'<div class="quirq-health-gone" id="quirq-health-gone"><span>No longer seen since the previous check</span>'
+      +goneFindings.map(g=>'<p>'+esc(g.title)+' — '+(g.parent?'now part of: '+esc(g.parent):'fixed, or no longer checked')+'</p>').join('')
+    +'</div>'
+    :'';
+  root.querySelector('#quirq-health-list').innerHTML=(findings.length
     ?findings.map(healthRow).join('')
-    :'<div class="quirq-empty">No problems found. Checked '+esc(relativeTime(report.checked_at))+'.</div>';
+    :'<div class="quirq-empty">No problems found. Checked '+esc(relativeTime(report.checked_at))+'.</div>')+gone;
 }
 
 function healthRow(finding){
@@ -430,11 +460,29 @@ function healthRow(finding){
         +'<button type="button" data-move-cancel'+disabled+'>Cancel</button>'
         +'<em id="quirq-health-move-error"></em></div>'
       :'<button type="button" data-move-aside="'+esc(finding.subject)+'"'+disabled+'>Move aside…</button>';
-  return '<div class="quirq-health-row is-'+esc(String(finding.level).toLowerCase())+'" data-finding="'+esc(finding.key)+'">'
+  const headline=finding.title||finding.observed;
+  const observed=finding.title?'<p class="quirq-health-observed">'+esc(finding.observed)+'</p>':'';
+  const evidence=(finding.evidence||[]).length
+    ?'<dl class="quirq-health-evidence">'
+      +finding.evidence.map(item=>'<dt>'+esc(item.label)+'</dt><dd>'+esc(item.value)+'</dd>').join('')
+    +'</dl>'
+    :'';
+  const answers=[['What stops working',finding.consequence],['What the Space does by itself',finding.self_repair],
+                 ['What you can do',finding.next_step]].filter(([,text])=>text);
+  const explain=answers.length
+    ?answers.map(([label,text])=>'<p><em>'+esc(label)+':</em> '+esc(text)+'</p>').join('')
+    :'<p>'+esc(finding.why_it_matters)+'</p>';
+  const related=(finding.related||[]).length
+    ?'<details class="quirq-health-related"><summary>'+esc(finding.related.length)+' related</summary>'
+      +finding.related.map(item=>'<div><b>'+esc(item.title||item.observed)+'</b>'
+        +(item.path?'<code>'+esc(item.path)+'</code>':'')+'</div>').join('')
+    +'</details>'
+    :'';
+  return '<div class="quirq-health-row is-'+esc(String(finding.level).toLowerCase())+'" data-finding="'+esc(stableKey(finding))+'">'
     +'<div><span>'+esc(finding.level)+' · '+esc(finding.id)+'</span>'
-      +'<b>'+esc(finding.observed)+'</b>'
-      +'<p>'+esc(finding.why_it_matters)+'</p>'
+      +'<b>'+esc(headline)+'</b>'+observed+evidence+explain
       +(finding.path?'<code>'+esc(finding.path)+'</code>':'')
+      +related
     +'</div>'+action
   +'</div>';
 }
@@ -466,5 +514,6 @@ function renderHealthFailure(message){
   const badge=root.querySelector('#quirq-health-level');
   badge.textContent='—';
   badge.className='';
+  root.querySelector('#quirq-health-checked').textContent='';
   root.querySelector('#quirq-health-list').innerHTML='<div class="quirq-empty">Health checks unavailable: '+esc(message)+'</div>';
 }

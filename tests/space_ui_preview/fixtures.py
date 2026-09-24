@@ -213,19 +213,47 @@ def sharing():
 
 
 def doctor_report():
-    """One leftover runtime folder with its action, for manual review of the Health panel."""
+    """Every part of a Health panel row, for manual review in the preview."""
     key = "11111111-1111-4111-8111-111111111111"
+    leftover = {
+        "id": "runtime.leftover", "key": f"runtime.leftover:{key}", "problem_key": f"leftover:{key}",
+        "level": "WARN", "subject": key, "path": f"/demo/.quirq/projects/{key}",
+        "title": "Project atlas-handbook's runtime data is no longer used",
+        "observed": "No project in /demo/projects uses this data. It belonged to project atlas-handbook. Last written 3 days ago.",
+        "why_it_matters": "It takes 41.0 MB and is never read unless its project folder comes back.",
+        "consequence": "It takes 41.0 MB and is never read unless its project folder comes back.",
+        "self_repair": "Nothing: it stays until a person moves or deletes it.",
+        "next_step": "If you moved or renamed the project folder yourself, move it back instead. Otherwise use Move aside: it goes into quarantine/, and nothing is deleted.",
+        "evidence": [{"label": "Size", "value": "41.0 MB"}, {"label": "Files", "value": "318"},
+                     {"label": "Last written", "value": stamp(4320) + " (3 days ago)"},
+                     {"label": "Named from", "value": "the Inbox"}],
+        "related": [{"id": "read.invalid_json", "key": f"read.invalid_json:projects/{key}/stats.json",
+                     "level": "FAIL", "subject": f"projects/{key}/stats.json",
+                     "path": f"/demo/.quirq/projects/{key}/stats.json",
+                     "title": "Project atlas-handbook's usage record is damaged (not valid JSON)",
+                     "observed": "The file is not valid JSON (Expecting ',' delimiter at line 13 column 9).",
+                     "why_it_matters": "", "details": {}}],
+        "details": {"bytes": 42996121, "files": 318, "truncated": False, "contains": ["sessions", "stats"],
+                    "newest_mtime": stamp(4320), "project_name": "atlas-handbook", "name_source": "the Inbox"},
+        "action": {"kind": "move_runtime_leftover_aside"},
+    }
+    watcher = {
+        "id": "watcher.stopped", "key": "watcher.stopped:watcher", "problem_key": "component:watcher",
+        "level": "FAIL", "subject": "watcher", "path": "/demo/.quirq/cache/heartbeat.json",
+        "title": "The watcher crashed",
+        "observed": "The watcher stopped at " + stamp(3) + " (3 minutes ago) with RuntimeError: example.",
+        "why_it_matters": "", "details": {"state": "crashed"},
+        "consequence": "Stats, timelines, live presence, session lists, scheduled commands and the Inbox's session feed stop updating.",
+        "self_repair": "Nothing restarts it by itself.",
+        "next_step": "Restart the server. If it stops again, the server log has the error.",
+        "evidence": [{"label": "Stopped", "value": stamp(3) + " (3 minutes ago)"},
+                     {"label": "Error", "value": "RuntimeError: example"}],
+    }
     return {
-        "schema": 1, "checked_at": stamp(), "duration_ms": 18, "level": "WARN",
-        "summary": {"OK": 9, "WARN": 1, "FAIL": 0, "ERROR": 0},
+        "schema": 1, "checked_at": stamp(), "duration_ms": 18, "level": "FAIL",
+        "summary": {"OK": 17, "WARN": 1, "FAIL": 1, "ERROR": 0},
+        "finding_counts": {"OK": 0, "WARN": 1, "FAIL": 1, "ERROR": 0},
         "roots": {"state": "/demo/.quirq", "projects": "/demo/projects"},
-        "checks": [{"id": "runtime", "level": "WARN", "findings": [{
-            "id": "runtime.leftover", "key": f"runtime.leftover:{key}", "level": "WARN", "subject": key,
-            "path": f"/demo/.quirq/projects/{key}",
-            "observed": "No project in /demo/projects uses this data. Last written 3 days ago.",
-            "why_it_matters": "It takes 41.0 MB and is never read unless the project folder comes back.",
-            "details": {"bytes": 42996121, "files": 318, "truncated": False, "contains": ["sessions", "stats"],
-                        "newest_mtime": stamp(4320)},
-            "action": {"kind": "move_runtime_leftover_aside"},
-        }]}],
+        "checks": [{"id": "runtime", "level": "WARN", "findings": [leftover]},
+                   {"id": "watcher", "level": "FAIL", "findings": [watcher]}],
     }

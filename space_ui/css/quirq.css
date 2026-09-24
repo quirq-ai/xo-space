@@ -152,4 +152,16 @@
 .quirq-health-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:320px}
 .quirq-health-confirm p{flex-basis:100%;margin:0}
 .quirq-health-confirm em{flex-basis:100%;font-style:normal;font-size:12px;color:#e1937d}
-@media (max-width:640px){.quirq-health-row{flex-direction:column}.quirq-health-confirm{max-width:none}}
+.quirq-health-actions small{font-size:12px;color:var(--ink-3)}
+.quirq-health-row .quirq-health-observed{color:var(--ink-3)}
+.quirq-health-row p em{font-style:normal;font-weight:600;color:var(--ink)}
+.quirq-health-evidence{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:8px 0 0;font-size:12px}
+.quirq-health-evidence dt{color:var(--ink-3)}
+.quirq-health-evidence dd{margin:0;color:var(--ink-2);overflow-wrap:anywhere}
+.quirq-health-related{margin-top:8px;font-size:12px}
+.quirq-health-related summary{cursor:pointer;color:var(--ink-3)}
+.quirq-health-related div{padding:6px 0 0 12px}
+.quirq-health-gone{padding:12px 19px;border-top:1px solid var(--line-soft);font-size:12px;color:var(--ink-3)}
+.quirq-health-gone span{display:block;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+.quirq-health-gone p{margin:2px 0}
+@media (max-width:640px){.quirq-health-row{flex-direction:column}.quirq-health-confirm{max-width:none}.quirq-health-evidence{grid-template-columns:1fr}}

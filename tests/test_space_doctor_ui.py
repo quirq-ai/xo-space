@@ -52,6 +52,36 @@ class HealthPanelTests(unittest.TestCase):
                 self.assertIn("url.pathname==='/api/doctor'", (preview / script).read_text(encoding="utf-8"))
         self.assertIn('"/api/doctor"', (preview / "server.py").read_text(encoding="utf-8"))
 
+    def test_row_falls_back_to_observed_and_why(self) -> None:
+        # An old or partial report (no title, no answers) renders as before.
+        self.assertIn("finding.title||finding.observed", self.quirq)
+        self.assertIn("'<p>'+esc(finding.why_it_matters)+'</p>'", self.quirq)
+
+    def test_row_shows_evidence_and_the_three_answers_escaped(self) -> None:
+        for text in ("'<dt>'+esc(item.label)+'</dt><dd>'+esc(item.value)+'</dd>'",
+                     "'What stops working'", "'What the Space does by itself'", "'What you can do'",
+                     "esc(label)", "esc(text)"):
+            with self.subTest(text=text):
+                self.assertIn(text, self.quirq)
+
+    def test_related_findings_are_folded_under_their_entry(self) -> None:
+        self.assertIn('<details class="quirq-health-related">', self.quirq)
+        self.assertIn("esc(item.title||item.observed)", self.quirq)
+
+    def test_findings_that_vanish_are_listed(self) -> None:
+        self.assertIn("function vanished(previous,report)", self.quirq)
+        self.assertIn('id="quirq-health-gone"', self.quirq)
+        self.assertIn("'fixed, or no longer checked'", self.quirq)
+        self.assertIn("'now part of: '+esc(g.parent)", self.quirq)
+
+    def test_the_check_time_is_always_shown(self) -> None:
+        self.assertIn('id="quirq-health-checked"', self.quirq)
+        self.assertIn("#quirq-health-checked", self.quirq)
+
+    def test_the_move_identity_is_still_the_subject(self) -> None:
+        self.assertIn("pendingMove===finding.subject", self.quirq)
+        self.assertIn('data-move-aside="\'+esc(finding.subject)+\'"', self.quirq)
+
 
 if __name__ == "__main__":
     unittest.main()
