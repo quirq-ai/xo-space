@@ -250,3 +250,100 @@ class GitHubTests(LivenessSandbox):
         project.write_text(json.dumps(document), encoding="utf-8")
         self.write_mirror(fetched_at=_stamp(self.now - 7200), error=None)
         self.assertEqual(self.of("github."), [])
+
+
+class SchedulerTests(LivenessSandbox):
+    def setUp(self) -> None:
+        super().setUp()
+        env = patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "true", "QUIRQ_WATCHER_ENABLED": "true"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.beat(1)
+
+    def schedule(self, *, enabled=True, **entry) -> None:
+        job = {"id": "nightly-1", "name": "nightly tests", "enabled": enabled, "every_seconds": 86400,
+               "command": {"argv": ["true"], "timeout": 60}}
+        state = {"next_run": None, "last_run": None, "running_since": None, "last_result": None, **entry}
+        (self.state / "scheduler" / "jobs.json").write_text(
+            json.dumps({"schema": 1, "jobs": {"nightly-1": job}}), encoding="utf-8")
+        (self.state / "scheduler" / "state.json").write_text(
+            json.dumps({"schema": 1, "jobs": {"nightly-1": state}}), encoding="utf-8")
+
+    def test_a_job_that_did_not_run_on_time(self) -> None:
+        self.schedule(next_run=_stamp(self.now - 60))
+        self.assertEqual(self.of("scheduler."), [])
+        self.schedule(next_run=_stamp(self.now - 600))
+        [finding] = self.of("scheduler.overdue")
+        self.assertEqual(finding["title"], "Scheduled command 'nightly tests' didn't run on time")
+
+    def test_a_run_that_outlives_its_timeout_is_stuck(self) -> None:
+        self.schedule(running_since=_stamp(self.now - 1000), next_run=_stamp(self.now - 1000))
+        self.assertEqual([f["id"] for f in self.of("scheduler.")], ["scheduler.stuck"])
+
+    def test_a_failed_last_run_is_reported(self) -> None:
+        self.schedule(next_run=_stamp(self.now + 3600),
+                      last_result={"status": "timed_out", "returncode": None, "finished_at": _stamp(self.now - 60)})
+        [finding] = self.of("scheduler.last_failed")
+        self.assertIn("timed_out", finding["observed"])
+
+    def test_disabled_jobs_and_a_disabled_scheduler_are_silent(self) -> None:
+        self.schedule(enabled=False, next_run=_stamp(self.now - 99999))
+        self.assertEqual(self.of("scheduler."), [])
+        self.schedule(next_run=_stamp(self.now - 99999))
+        with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
+            self.assertEqual(self.of("scheduler."), [])
+
+
+class UsageTests(LivenessSandbox):
+    def setUp(self) -> None:
+        super().setUp()
+        self.bookmark = self.state / "usage" / "active.json"
+        env = patch.dict(os.environ, {"USAGE_SYNC_STATE_FILE": str(self.bookmark)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def probe(self, outcome: str, age: float) -> None:
+        self.bookmark.write_text(json.dumps({"schema": 1, "key_probe": {
+            "outcome": outcome, "status": 200 if outcome == "accepted" else 401,
+            "at": _stamp(self.now - age)}}), encoding="utf-8")
+
+    def test_usage_that_stopped_being_reported(self) -> None:
+        with patch("services.doctor.liveness._usage_token_present", return_value=True):
+            self.probe("accepted", 3600)
+            self.assertEqual(self.of("usage."), [])
+            self.probe("accepted", 27 * 3600)
+            [finding] = self.of("usage.stale")
+        self.assertIn("Restart the server", finding["next_step"])
+
+    def test_a_rejected_key(self) -> None:
+        with patch("services.doctor.liveness._usage_token_present", return_value=True):
+            self.probe("rejected", 3600)
+            self.assertEqual([f["id"] for f in self.of("usage.")], ["usage.rejected"])
+
+    def test_no_key_means_nothing_is_expected(self) -> None:
+        with patch("services.doctor.liveness._usage_token_present", return_value=False):
+            self.probe("accepted", 99 * 3600)
+            self.assertEqual(self.of("usage."), [])
+
+
+class RelayTests(LivenessSandbox):
+    def relay(self, **snapshot):
+        base = {"cadence": "running", "last_poll_at": _stamp(self.now - 30), "last_poll_ok": True}
+        base.update(snapshot)
+        return patch("services.cowork_agent.project_sharing.status.snapshot", return_value=base)
+
+    def test_a_relay_that_stopped_polling(self) -> None:
+        with self.tasks(self.record("relay poller")), self.relay(last_poll_at=_stamp(self.now - 400)), \
+             patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
+            self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.overdue"])
+
+    def test_an_unreachable_xo_and_a_parked_relay(self) -> None:
+        with self.tasks(self.record("relay poller")), self.relay(last_poll_ok=False), \
+             patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
+            self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.unreachable"])
+        with self.tasks(self.record("relay poller")), self.relay(cadence="parked", last_poll_at=None):
+            self.assertEqual(self.of("relay."), [])
+
+    def test_outside_the_server_the_relay_is_not_judged(self) -> None:
+        with self.relay(last_poll_at=_stamp(self.now - 99999)):
+            self.assertEqual(self.of("relay."), [])

@@ -33,6 +33,9 @@ CHECKS: tuple[tuple[str, Check], ...] = (
     ("components", liveness.components),
     ("connections", liveness.connections),
     ("github", liveness.github),
+    ("scheduler", liveness.scheduler),
+    ("usage", liveness.usage),
+    ("relay", liveness.relay),
     ("growth", checks.growth),
 )
 

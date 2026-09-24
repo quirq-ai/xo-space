@@ -424,3 +424,155 @@ def github(ctx: Context) -> list[Finding]:
             next_step=_GITHUB_NEXT.get(kind, "Nothing to do; it resumes by itself."),
             problem_key="component:github poller:paused"))
     return out
+
+
+#: A schedule slot missed by more than max(this, 5 ticks) is overdue.
+SCHEDULER_GRACE_S = 300
+#: A run still marked running this long past its timeout is stuck.
+SCHEDULER_STUCK_GRACE_S = 300
+#: The usage report runs daily; a probe older than this means it stopped.
+USAGE_STALE_S = 26 * 3600
+_OK_RESULTS = frozenset({"ok", "skipped"})
+
+
+def scheduler(ctx: Context) -> list[Finding]:
+    """Scheduled commands that didn't run, are stuck, or failed. The
+    scheduler runs inside the watcher, so both must be enabled."""
+    from utils.commands.scheduler import max_concurrent, scheduler_enabled
+
+    if not watcher_enabled() or not scheduler_enabled():
+        return []
+    jobs = ctx.read(ctx.state_root / "scheduler" / "jobs.json",
+                    inventory.spec_for(inventory.STATE, "scheduler/jobs.json"))
+    state = ctx.read(ctx.state_root / "scheduler" / "state.json",
+                     inventory.spec_for(inventory.STATE, "scheduler/state.json"))
+    if jobs.outcome != "ok" or state.outcome != "ok":
+        return []  # absent (no commands) or damaged (the read check reports that)
+    job_map, state_map = jobs.value.get("jobs"), state.value.get("jobs")
+    if not isinstance(job_map, dict) or not isinstance(state_map, dict):
+        return []
+    grace = max(float(SCHEDULER_GRACE_S), 5 * runtime_env.watcher_tick_interval_seconds())
+    running_now = sum(1 for entry in state_map.values()
+                      if isinstance(entry, dict) and entry.get("running_since"))
+    at_capacity = running_now >= max_concurrent()  # a due job then waits by design
+    shown = ctx.display(ctx.state_root / "scheduler" / "state.json")
+    out: list[Finding] = []
+    for job_id, job in sorted(job_map.items()):
+        entry = state_map.get(job_id)
+        if not isinstance(job, dict) or not isinstance(entry, dict) or not job.get("enabled", True):
+            continue
+        name = str(job.get("name") or job_id)
+        command = job.get("command") if isinstance(job.get("command"), dict) else {}
+        timeout = command.get("timeout") if isinstance(command.get("timeout"), (int, float)) else 3600
+        running = _ts(entry.get("running_since"))
+        if running is not None:
+            if ctx.now - running > timeout + SCHEDULER_STUCK_GRACE_S:
+                out.append(Finding(
+                    "scheduler.stuck", WARN, job_id, shown,
+                    f"It started {ago(ctx.now - running)} ago and is still marked running; its timeout is {ago(timeout)}.",
+                    "", title=f"Scheduled command '{name}' is still running after {ago(ctx.now - running)}",
+                    evidence=[ev("Started", moment(running, ctx.now)), ev("Timeout", ago(timeout))],
+                    consequence="Its next runs are skipped while this one is still marked running.",
+                    self_repair="When the server restarts, a run that was cut off is recorded as lost.",
+                    next_step="Look at the command's output on the Schedules page; restart the server if its process is gone.",
+                    problem_key=f"job:{job_id}:stuck"))
+            continue
+        due = _ts(entry.get("next_run"))
+        if due is not None and ctx.now - due > grace and not at_capacity:
+            out.append(Finding(
+                "scheduler.overdue", WARN, job_id, shown,
+                f"It was due {ago(ctx.now - due)} ago and hasn't started.", "",
+                title=f"Scheduled command '{name}' didn't run on time",
+                evidence=[ev("Was due", moment(due, ctx.now))],
+                consequence="The command doesn't run while the scheduler isn't ticking.",
+                self_repair="The scheduler runs inside the watcher; it catches up as soon as the watcher ticks again.",
+                next_step="Check the watcher above; restarting the server restarts both.",
+                problem_key=f"job:{job_id}:overdue"))
+        result = entry.get("last_result")
+        status = result.get("status") if isinstance(result, dict) else None
+        if isinstance(status, str) and status not in _OK_RESULTS:
+            code = result.get("returncode")
+            out.append(Finding(
+                "scheduler.last_failed", WARN, job_id, shown,
+                f"Its last run ended with status {status}" + (f" (exit code {code})." if code is not None else "."),
+                "", title=f"Scheduled command '{name}' failed its last run",
+                evidence=[ev("Finished", _when(_ts(result.get("finished_at")), ctx.now)), ev("Status", status)],
+                consequence="Whatever the command does didn't happen on its last run.",
+                self_repair="It runs again at its next scheduled time.",
+                next_step="Open the command on the Schedules page and read its output.",
+                problem_key=f"job:{job_id}:last_failed"))
+    return out
+
+
+def _usage_token_present() -> bool:
+    try:
+        from routers.auth.auth import get_auth_token
+
+        return bool(get_auth_token())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def usage(ctx: Context) -> list[Finding]:
+    """Usage reporting that stopped (daily probe gone stale) or was refused."""
+    if not _usage_token_present():
+        return []  # no key: nothing is reported, by design
+    path = usage_state_path(ctx)
+    if path is None:
+        return []
+    bookmark = ctx.read(path, inventory.spec_for(inventory.STATE, "usage/x.json"))
+    if bookmark.outcome != "ok" or not isinstance(bookmark.value.get("key_probe"), dict):
+        return []  # first sync still to run, or damaged (the read check reports that)
+    probe = bookmark.value["key_probe"]
+    at = _ts(probe.get("at"))
+    shown = ctx.display(path)
+    if probe.get("outcome") == "rejected":
+        return [Finding(
+            "usage.rejected", WARN, "usage sync", shown,
+            f"XO refused this Space's API key on the last report (HTTP {probe.get('status')}).", "",
+            title="XO refused this Space's API key", evidence=[ev("Refused", _when(at, ctx.now))],
+            consequence="No usage is reported to XO.", self_repair="It tries again at the next daily run.",
+            next_step="Check the XO API key in Setup.", problem_key="component:usage sync:rejected")]
+    if at is not None and ctx.now - at > USAGE_STALE_S:
+        return [Finding(
+            "usage.stale", WARN, "usage sync", shown,
+            f"The last usage report attempt was {ago(ctx.now - at)} ago; it runs daily.", "",
+            title="Usage hasn't been reported for over a day", evidence=[ev("Last attempt", moment(at, ctx.now))],
+            consequence="Usage stops being reported to XO.",
+            self_repair="Nothing: the daily run appears to have stopped.",
+            next_step="Restart the server; it catches up when it starts.",
+            problem_key="component:usage sync:stale")]
+    return []
+
+
+def relay(ctx: Context) -> list[Finding]:
+    """The sharing relay keeps its state in memory only, so it is judged only
+    inside the server (when its task is in the record)."""
+    if "relay poller" not in ctx.components:
+        return []
+    try:
+        from services.cowork_agent.project_sharing import config, status
+
+        snapshot, interval = status.snapshot(), config.poll_interval()
+    except Exception:  # noqa: BLE001
+        return []
+    if snapshot.get("cadence") != "running":
+        return []  # parked (sharing off, no Space id, not signed in): by design
+    last = _ts(snapshot.get("last_poll_at"))
+    if last is not None and ctx.now - last > 2 * interval * 1.2 + 60:
+        return [Finding(
+            "relay.overdue", WARN, "relay poller", "",
+            f"The project-sharing relay last polled {ago(ctx.now - last)} ago; it polls about every {ago(interval)}.",
+            "", title="The project-sharing relay stopped polling", evidence=[ev("Last poll", moment(last, ctx.now))],
+            consequence=COMPONENTS["relay poller"][1],
+            self_repair="Nothing: a git fetch may be hanging (they have no timeout).",
+            next_step=RESTART, problem_key="component:relay poller:overdue")]
+    if snapshot.get("last_poll_ok") is False:
+        return [Finding(
+            "relay.unreachable", WARN, "relay poller", "", "The project-sharing relay can't reach XO.", "",
+            title="The project-sharing relay can't reach XO",
+            evidence=[ev("Last attempt", _when(last, ctx.now))],
+            consequence="Shared projects don't exchange commits until XO is reachable again.",
+            self_repair="It keeps retrying every poll.", next_step="Check this machine's network connection.",
+            problem_key="component:relay poller:unreachable")]
+    return []
