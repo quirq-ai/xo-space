@@ -57,6 +57,19 @@ class WatcherRecordsTests(unittest.TestCase):
         self.watcher.tick()
         self.assertEqual(self.watcher.step_errors, [])
 
+    def test_a_step_error_whose_str_raises_still_writes_the_heartbeat(self) -> None:
+        class Unprintable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no string for you")
+
+        with patch.object(watcher_mod.ws_stats, "apply", side_effect=Unprintable()):
+            with self.assertLogs(watcher_mod.logger, level="ERROR"):
+                self.watcher.tick()
+        self.assertEqual(len(self.watcher.step_errors), 1)
+        self.assertIn("Unprintable", self.watcher.step_errors[0])
+        beat = json.loads(watcher_heartbeat_path().read_text(encoding="utf-8"))
+        self.assertEqual(beat["step_errors"], 1)
+
     def test_run_records_a_failed_tick_then_a_clean_one(self) -> None:
         loop = asyncio.new_event_loop()
         self.addCleanup(loop.close)

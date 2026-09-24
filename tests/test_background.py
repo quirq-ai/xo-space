@@ -123,6 +123,13 @@ class RedactTests(unittest.TestCase):
     def test_describe_uses_the_type_when_the_message_is_empty(self) -> None:
         self.assertEqual(background.describe(TimeoutError()), "TimeoutError")
 
+    def test_describe_never_raises_even_when_str_does(self) -> None:
+        class Unprintable(ValueError):
+            def __str__(self) -> str:
+                raise RuntimeError("no string for you")
+
+        self.assertEqual(background.describe(Unprintable()), "Unprintable")
+
 
 if __name__ == "__main__":
     unittest.main()

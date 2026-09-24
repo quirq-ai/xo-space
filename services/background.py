@@ -36,9 +36,14 @@ def redact(text: str) -> str:
 
 
 def describe(exc: BaseException) -> str:
-    """``TypeName: message`` (or just the type), redacted."""
-    message = str(exc)
-    return redact(f"{type(exc).__name__}: {message}" if message else type(exc).__name__)
+    """``TypeName: message`` (or just the type), redacted. Never raises: an
+    exception whose own __str__ raises falls back to its type name."""
+    name = type(exc).__name__
+    try:
+        message = str(exc)
+    except Exception:  # noqa: BLE001 - a broken __str__ must not break describe
+        return redact(name)
+    return redact(f"{name}: {message}" if message else name)
 
 
 @dataclass
