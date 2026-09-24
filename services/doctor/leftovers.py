@@ -119,7 +119,7 @@ def too_recent(ctx: Context, leftover: Leftover) -> bool:
 
 
 def _valid_name(value: object) -> bool:
-    return isinstance(value, str) and 0 < len(value) <= NAME_MAX_LEN and value.isprintable()
+    return isinstance(value, str) and 0 < len(value) <= NAME_MAX_LEN
 
 
 def _timeline_names(data: bytes, seeked: bool) -> dict[str, str]:
