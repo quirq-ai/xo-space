@@ -212,7 +212,7 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         self.assertIn("function renderActions(toolkitId){", self.view)
 
     def test_polling_button_only_on_cards_connected_and_enabled_here(self) -> None:
-        card = slice_between(self.view, "function renderCard(t){", "/* ---------- polling")
+        card = slice_between(self.view, "function renderDetail(t){", "/* ---------- polling")
         self.assertIn("const polling=openPolling===t.id;", card)
         self.assertIn(
             "+(connected&&(enabled||polling)\n        ?'<button class=\"conn-secondary\" data-action=\"polling\">'",
@@ -286,12 +286,13 @@ class ConnectorsPollingDrawerTests(unittest.TestCase):
         poll = slice_between(self.view, "async function pollNow(", "/* Turning a toolkit on or off")
         self.assertIn("'Polled just now: '+(Number(r.new_events)||0)+' new'", poll)
         self.assertIn("await loadPolling(toolkitId);", poll)
-        self.assertIn("if(openPolling===toolkitId)renderGrid();", poll)
+        # the drawer lives in the popup, so only the popup repaints
+        self.assertIn("if(openPolling===toolkitId)paintModal();", poll)
 
     def test_drawer_auto_opens_after_a_successful_connect(self) -> None:
         active = slice_between(self.view, "if(status==='ACTIVE'){", "if(status==='FAILED'){")
         self.assertIn("openPolling=toolkitId;", active)
-        # set before loadAll(): it re-renders the grid
+        # set before loadAll(): it repaints the popup
         self.assertLess(active.index("openPolling=toolkitId;"), active.index("await loadAll();"))
         self.assertIn("await loadPolling(toolkitId);", active)
         self.assertIn("Nothing is persisted until Save.", active)

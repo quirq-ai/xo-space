@@ -432,7 +432,8 @@ PY
 # untouched through load_dotenv().
 ENV_KEYS="HOST PORT STAGE AGENT_NAME UVICORN_RELOAD QUIRQ_SKIP_BOOT_INSTALL
 XO_PROJECTS_ROOT AI_WORKSPACE_ROOT QUIRQ_STATE_ROOT QUIRQ_WATCHER_SOURCE_MODE
-QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE STARTUP_WARMUP_URL"
+QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE STARTUP_WARMUP_URL
+COMPOSIO_CALLBACK_URL"
 
 read_env_value() {
     local key="$1"
@@ -514,6 +515,16 @@ AI_WORKSPACE_ROOT=${AI_WORKSPACE_ROOT}
 QUIRQ_STATE_ROOT=${QUIRQ_STATE_ROOT}
 QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 
+# --- Connectors ---
+# Where the OAuth provider redirects back after a Composio connect. It has no
+# default in the server — unset, /connect answers 422 naming this variable
+# rather than handing out an auth_url that redirects nowhere — so the
+# installer writes the loopback one this local install actually listens on.
+# A deployment reachable from outside sets it to that public origin instead,
+# and the same URL must be registered as an allowed callback on the Composio
+# auth configs in the dashboard.
+COMPOSIO_CALLBACK_URL=${COMPOSIO_CALLBACK_URL}
+
 # --- Credentials ---
 # Uncomment and fill in, or configure them through the Setup tab instead.
 # Leave them commented rather than blank: an empty value overrides the
@@ -553,6 +564,13 @@ start_server() {
     export QUIRQ_SECRETS_FILE="${QUIRQ_SECRETS_FILE:-${state_root}/secrets/secrets.env}"
     export QUIRQ_WATCHER_SOURCE_MODE="${QUIRQ_WATCHER_SOURCE_MODE:-all}"
     export QUIRQ_PUBLIC_URL="${QUIRQ_PUBLIC_URL:-http://localhost:${PORT}}"
+    # The server fails closed without this, on purpose: it cannot know its own
+    # public origin. The installer can — it is the one starting the server, on
+    # this machine, on this port — so a local install gets the loopback
+    # callback and Composio connects work out of the box. Anything already set
+    # (shell, .env, the Setup tab's runtime.env) still wins, which is what a
+    # real deployment behind a public origin relies on.
+    export COMPOSIO_CALLBACK_URL="${COMPOSIO_CALLBACK_URL:-http://127.0.0.1:${PORT}/api/connectors/composio/callback}"
 
     # Written here, after every value is resolved, so the file records the
     # configuration this install actually ran with.

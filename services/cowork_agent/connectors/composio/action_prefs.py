@@ -103,10 +103,6 @@ def load_prefs() -> Dict[str, Dict[str, bool]]:
     return {}
 
 
-def get_toolkit_prefs(toolkit_id: str) -> Dict[str, bool]:
-    return dict(load_prefs().get(toolkit_id, {}))
-
-
 def disabled_slugs(toolkit_id: str) -> frozenset[str]:
     """The disabled slugs for one toolkit, in a single read.
 

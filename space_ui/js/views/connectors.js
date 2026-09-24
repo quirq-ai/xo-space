@@ -1,31 +1,43 @@
 /* Connectors section: workspace integrations and account apps inside Setup.
 
+   The section is a DIRECTORY of tiles. A tile is a button and nothing else:
+   it names the app, its auth scheme, its state and (when connected) the
+   account it is bound to. Pressing one opens that connector's POPUP, and
+   every control lives there: Connect, Turn on/off here, Add account, the
+   Actions list, the Polling form, the account-wide Delete and the card's
+   error line. One popup is open at a time, for one connector.
+   The split is what keeps the paint rules simple: a tile holds no form, so
+   a tile repaint can never disturb an unsaved edit, and only the popup's
+   own paint has to take the draft snapshot below.
+
    Account apps run on the user's OWN Composio API key, stored on this machine
    (bring your own key). GET /api/connectors/composio/backend says whether a key
    is configured; without one the tiles read NEEDS_KEY and the key panel is the
    only call to action. No XO sign-in and no session header are involved. The
    browser never sees the key: it is injected server-side by the MCP proxy.
 
-   Two independent states per card, and the UI has to keep them apart:
+   Two independent states per connector, and the UI has to keep them apart:
      - connected      -> the ACCOUNT holds a connection (shared by every workspace)
      - enabled here   -> THIS workspace has turned it on
-   A card can be connected and off, which is the normal state for a workspace that
-   did not run the OAuth flow itself. Hence two controls: "Turn off here" edits
-   only this workspace, "Delete connection" removes it account-wide.
-   A third, read-only fact per connected card is WHICH account the session is
-   bound to (an email for Gmail and Google Calendar): read with the grid from
+   A connector can be connected and off, which is the normal state for a
+   workspace that did not run the OAuth flow itself. Hence two controls:
+   "Turn off here" edits only this workspace, "Delete connection" removes it
+   account-wide.
+   A third, read-only fact per connected connector is WHICH account the session
+   is bound to (an email for Gmail and Google Calendar): read with the grid from
    GET /api/connections, resolved live through POST /api/connections/<id>/account
-   when the read had none, and shown as a chip. Never a control, never blocking.
+   when the read had none, and shown as a chip on the tile and in the popup.
+   Never a control, never blocking.
 
    Two failure modes are first-class states, not errors to hide:
      - no key configured  -> connectors inactive; the key panel is shown
      - no auth config     -> that one toolkit 422s on connect (rare: we create
                              a Composio-managed auth config on first connect)
 
-   Connect opens the provider in a popup. The callback page posts back to its
-   opener, but it posts to "*", so the listener below verifies the origin. A
-   popup can also be blocked or dismissed silently, so the postMessage is only
-   an accelerator: the status poll is what actually decides.
+   Connect opens the provider in a browser popup window. The callback page posts
+   back to its opener, but it posts to "*", so the listener below verifies the
+   origin. A popup can also be blocked or dismissed silently, so the postMessage
+   is only an accelerator: the status poll is what actually decides.
 
    Every call goes through API_BASE like the rest of the UI (same-origin under
    /space/, the dev fallback otherwise). core/api.js is imported bare, the
@@ -36,7 +48,7 @@ import {API_BASE,apiFetch} from '../core/api.js';
 import {esc,toast} from '../core/ui.js';
 import {pollLine} from '../core/connections.js';
 import {accountLabel,accountLine} from '../core/connections.js';
-import {mountNativeConnectors} from './native-connectors.js?v=20260914-connectors2';
+import {mountNativeConnectors} from './native-connectors.js?v=20260921-cardpopup1';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
@@ -47,6 +59,8 @@ const POLL_INTERVAL=2000;
 
 let root=null;
 let toolkits=[];
+let maxAccounts=1;         /* GET /toolkits max_accounts_per_toolkit; >1 means multi-account is on */
+let openCard=null;         /* id of the toolkit whose popup is open, if any */
 let openToolkit=null;      /* id of the expanded action drawer, if any */
 let toolsCache={};         /* toolkit id -> action rows */
 let loading=false;
@@ -63,21 +77,22 @@ let openPolling=null;      /* id of the expanded Polling drawer, if any */
 let pollCache={};          /* toolkit id -> GET /api/connections/<id> payload; null on failure */
 let pollNotes={};          /* toolkit id -> one-line result of the last "Poll now" */
 /* The drawer is an uncontrolled form: until Save its state lives only in the
-   DOM, and the grid is rebuilt by the Actions toggle of any card and by a
-   connect landing. So every grid paint first reads the open drawer's
-   form into a draft, the drawer is painted from the draft when one exists,
-   and Save or closing the drawer (Hide polling, opening another toolkit's
-   drawer, turning the toolkit off, deleting the connection) discards it. The
+   DOM, and the popup is rebuilt by a refresh, by a landing account label, by a
+   connect landing and by the Actions toggle. So every popup paint first reads
+   the open drawer's form into a draft, the drawer is painted from the draft
+   when one exists, and Save or closing the drawer (Hide polling, closing the
+   popup, turning the toolkit off, deleting the connection) discards it. The
    paint right after Save reads the server's copy, not the form. */
 let pollDraft={};          /* toolkit id -> {enabled, interval_s, collectors} not yet saved */
 const INTERVALS=[[300,'5 min'],[900,'15 min'],[1800,'30 min'],[3600,'1 hour'],
   [21600,'6 hours'],[86400,'24 hours']];
 
 /* Account labels (spec: connected account name). Filled once per grid load
-   from GET /api/connections, never per card; a connected toolkit turned on
+   from GET /api/connections, never per tile; a connected toolkit turned on
    here that the read left unlabelled is asked once per load through
    POST /api/connections/<id>/account, and a label that arrives is written
-   into its card in place. Both calls are workspace-local: no session header. */
+   into its tile (and its open popup) in place. Both calls are
+   workspace-local: no session header. */
 let accountCache={};       /* toolkit id -> {account_label, account_checked_at} */
 let accountAsked=new Set(); /* ids POSTed this load; reset by every load (Refresh included) */
 const accountInFlight=new Set(); /* ids with a POST in flight, kept across loads: one request per toolkit */
@@ -92,7 +107,9 @@ export default {
   async mount(el){
     root=el;
     renderShell();
-    nativeConnectors=mountNativeConnectors(root.querySelector('#conn-native-grid'),{onChange:applyFilter});
+    bindModal();
+    nativeConnectors=mountNativeConnectors(root.querySelector('#conn-native-grid'),
+      {onChange:applyFilter,modal:{show:showModal,close:closeModal,body:()=>modalBody}});
     bindEvents();
     await refreshAll();
   },
@@ -105,7 +122,7 @@ function renderShell(){
       +'<header class="conn-hero">'
         +'<div>'
           +'<h2 id="setup-connectors-title" tabindex="-1">Connectors</h2>'
-          +'<p>Tools and apps for this workspace.</p>'
+          +'<p>Tools and apps for this workspace. Open one to connect it or change what it does.</p>'
         +'</div>'
       +'</header>'
       +'<section class="conn-group" id="conn-workspace-section" aria-labelledby="conn-workspace-title">'
@@ -114,8 +131,7 @@ function renderShell(){
         +'<div class="conn-grid" id="conn-native-grid"></div>'
       +'</section>'
       +'<section class="conn-group" id="conn-account-section" aria-labelledby="conn-account-title">'
-        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3>'
-          +'<p>Connect once to your XO account, then enable per workspace.</p></div>'
+        +'<div class="conn-group-head"><div><h3 id="conn-account-title">Account apps</h3></div>'
           +'<span class="conn-group-badge">Composio</span></div>'
         +'<div class="conn-key" id="conn-key"></div>'
         +'<div class="conn-alert" id="conn-alert" hidden></div>'
@@ -124,11 +140,17 @@ function renderShell(){
         +'</div>'
       +'</section>'
       +'<div class="conn-empty" id="conn-no-match" role="status" hidden></div>'
+      +modalMarkup()
     +'</div>';
 }
 
 function bindEvents(){
-  root.querySelector('#conn-grid').addEventListener('click',handleGridAction);
+  /* A tile is a button and carries nothing else, so the grid has exactly one
+     thing to listen for: which connector to open. */
+  root.querySelector('#conn-grid').addEventListener('click',event=>{
+    const tile=event.target.closest('.conn-tile[data-toolkit]');
+    if(tile)openCardModal(tile.dataset.toolkit,tile);
+  });
   const keyEl=root.querySelector('#conn-key');
   keyEl.addEventListener('click',ev=>{
     const b=ev.target.closest('button[data-action]');
@@ -145,6 +167,71 @@ function bindEvents(){
     listener=onAuthMessage;
     addEventListener('message',listener);
   }
+}
+
+/* ---------- popup ---------- */
+
+/* One overlay serves both grids. Its body is whatever the opener puts there:
+   the account-app controller paints markup into it, the workspace-integration
+   controller moves its own long-lived card node in (that card holds live
+   credential fields and an in-flight sign-in, so it is never rebuilt). The
+   cleanup the opener registers runs on every close, whichever way it closed. */
+let modalEl=null;
+let modalBody=null;
+let modalReturn=null;      /* the tile to return focus to */
+let modalCleanup=null;     /* the opener's close handler */
+let escListener=null;
+
+function modalMarkup(){
+  return'<div class="conn-modal" id="conn-modal" hidden>'
+    +'<div class="conn-modal-backdrop" data-modal="close"></div>'
+    +'<div class="conn-modal-panel" role="dialog" aria-modal="true" aria-label="Connector">'
+      +'<button type="button" class="conn-modal-close" data-modal="close" aria-label="Close">'
+        +'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7"/></svg></button>'
+      +'<div class="conn-modal-body" id="conn-modal-body"></div>'
+    +'</div>'
+  +'</div>';
+}
+
+function bindModal(){
+  modalEl=root.querySelector('#conn-modal');
+  modalBody=root.querySelector('#conn-modal-body');
+  modalEl.addEventListener('click',event=>{
+    if(event.target.closest('[data-modal="close"]'))closeModal();
+  });
+  /* The account-app controls live in the popup now, so its delegated handler
+     is the one the old grid listener was. */
+  modalEl.addEventListener('click',handleCardAction);
+  /* Escape is bound globally, not on the panel: a click inside the popup
+     leaves focus on a button the next paint detaches, and a key listener on
+     the panel would then never fire. Guarded, so it is inert while closed. */
+  if(!escListener){
+    escListener=event=>{if(event.key==='Escape'&&modalEl&&!modalEl.hidden)closeModal();};
+    addEventListener('keydown',escListener);
+  }
+}
+
+/* Opening always closes whatever was open first, so the previous opener's
+   cleanup runs before the next one registers its own. */
+function showModal(returnTo,cleanup){
+  if(!modalEl)return;
+  closeModal();
+  modalReturn=returnTo||null;
+  modalCleanup=cleanup||null;
+  modalBody.innerHTML='';
+  modalEl.hidden=false;
+  modalEl.querySelector('.conn-modal-close').focus();
+}
+
+function closeModal(){
+  if(!modalEl||modalEl.hidden)return;
+  modalEl.hidden=true;
+  const cleanup=modalCleanup;
+  modalCleanup=null;
+  if(cleanup)cleanup();
+  const back=modalReturn;
+  modalReturn=null;
+  if(back&&back.isConnected!==false)back.focus();
 }
 
 /* ---------- loading ---------- */
@@ -166,7 +253,7 @@ async function loadAll(){
     renderKeyPanel();
 
     /* the account labels ride alongside the listing; awaited before the
-       paint so the cards come up labelled, never awaited past a failure */
+       paint so the tiles come up labelled, never awaited past a failure */
     accountAsked=new Set();
     const accounts=loadAccounts();
 
@@ -177,6 +264,7 @@ async function loadAll(){
 
     if(!list.ok){renderListFailure(list);return;}
     toolkits=(list.data&&list.data.toolkits)||[];
+    maxAccounts=Number(list.data&&list.data.max_accounts_per_toolkit)||1;
     await accounts;
     renderGrid();
     askAccounts();
@@ -314,56 +402,104 @@ function statusOf(t){
   return{text:'On in this workspace',cls:'is-good'};
 }
 
-/* Every write to the grid goes through here. The open Polling drawer's
-   unsaved form is read into its draft FIRST, and only then is build() run:
-   renderCard paints the drawer from that draft, so building before the
-   snapshot would paint the previous snapshot and file the fresh edits away
-   for the paint after (a form that flips between edited and saved values
-   on every repaint). The one paint that must not read the form is the one
-   right after Save: the form in the DOM is the pre-save one and the
-   server's copy is the truth, so savePolling passes snapshot:false. */
-function paintGrid(build,{snapshot=true}={}){
-  if(snapshot)snapshotPollDraft();
+function descriptionOf(t){return t.description||APP_ART[t.id]?.[2]||'Account app integration';}
+
+/* status pill and account chip on one row, shared by the tile and the popup */
+function statusRow(t,tag){
+  const status=statusOf(t);
+  const acct=accountLabel(accountCache[t.id]);
+  return'<'+tag+' class="conn-card-status">'
+    +'<i class="conn-state '+status.cls+'">'+esc(status.text)+'</i>'
+    +'<'+tag+' class="conn-facts">'
+      +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
+      /* which account the session is bound to; only a connection has one */
+      +(isConnected(t)&&acct
+        ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
+        :'')
+    +'</'+tag+'>'
+  +'</'+tag+'>';
+}
+
+/* Tiles hold no form and no button, so this write never has to take a draft
+   snapshot; only paintModal does. */
+function paintGrid(build){
   root.querySelector('#conn-grid').innerHTML=build();
   applyFilter();
 }
-function renderGrid(opts){
+function paintTiles(){
   if(!toolkits.length){
-    paintGrid(()=>'<div class="conn-empty">No toolkits are registered on this server.</div>',opts);
+    paintGrid(()=>'<div class="conn-empty">No toolkits are registered on this server.</div>');
     return;
   }
-  paintGrid(()=>toolkits.map(renderCard).join(''),opts);
+  paintGrid(()=>toolkits.map(renderTile).join(''));
+}
+/* Every write to the popup goes through here. The open Polling drawer's
+   unsaved form is read into its draft FIRST, and only then is the markup
+   built: renderDetail paints the drawer from that draft, so building before
+   the snapshot would paint the previous snapshot and file the fresh edits
+   away for the paint after (a form that flips between edited and saved
+   values on every repaint). The one paint that must not read the form is
+   the one right after Save: the form in the DOM is the pre-save one and
+   the server's copy is the truth, so savePolling passes snapshot:false. */
+function paintModal({snapshot=true}={}){
+  if(!modalBody||openCard===null)return;
+  if(snapshot)snapshotPollDraft();
+  const t=toolkits.find(x=>x.id===openCard);
+  if(!t){closeModal();return;}
+  modalBody.innerHTML=renderDetail(t);
+}
+function renderGrid(opts){
+  paintTiles();
+  paintModal(opts);
 }
 
-/* Filter in place: replacing cards while someone authorizes, saves a poll
-   draft or toggles an action would detach its controls and lose live state. */
+/* Filter in place: replacing tiles while someone authorizes, saves a poll
+   draft or toggles an action would detach its controls and lose live state.
+   A popup left open on a tile the query hides stays open: the person is
+   working in it. */
 function applyFilter(){
   if(!root)return;
   const q=filter.trim().toLowerCase();
-  const cards=root.querySelectorAll('.conn-card[data-toolkit]');
+  const tiles=root.querySelectorAll('.conn-tile[data-toolkit]');
   let shown=0;
-  for(const card of cards){
-    const t=toolkits.find(t=>t.id===card.dataset.toolkit);
+  for(const tile of tiles){
+    const t=toolkits.find(t=>t.id===tile.dataset.toolkit);
     const fields=t?[t.id,t.slug,t.display_name,t.description,APP_ART[t.id]?.[2],
       isConnected(t)?accountLabel(accountCache[t.id]):'']:[];
-    card.hidden=!!q&&!fields.some(value=>String(value??'').toLowerCase().includes(q));
-    if(!card.hidden)shown++;
+    tile.hidden=!!q&&!fields.some(value=>String(value??'').toLowerCase().includes(q));
+    if(!tile.hidden)shown++;
   }
   const native=nativeConnectors?.setFilter(filter)||{total:0,shown:0};
   root.querySelector('#conn-workspace-section').hidden=!!q&&native.shown===0;
   root.querySelector('#conn-account-section').hidden=!!q&&shown===0;
   const note=root.querySelector('#conn-no-match');
-  note.hidden=!(cards.length+native.total)||shown+native.shown>0;
+  note.hidden=!(tiles.length+native.total)||shown+native.shown>0;
   note.textContent=note.hidden?'':'No connectors match “'+filter.trim()+'”. Clear the search to show all connectors.';
 }
 
-function renderCard(t){
+/* The directory entry: what the app is, how it signs in, where it stands.
+   A button, so Enter and Space open the popup without any key handling here. */
+function renderTile(t){
+  return'<button type="button" class="conn-tile'+(isConnected(t)&&isEnabledHere(t)?' is-on':'')+'"'
+    +' data-toolkit="'+esc(t.id)+'" aria-haspopup="dialog">'
+    +'<span class="conn-card-heading">'+appIcon(t)
+      +'<span class="conn-card-id">'
+        +'<span class="conn-tile-name">'+esc(t.display_name||t.id)+'</span>'
+        +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
+      +'</span>'
+    +'</span>'
+    +statusRow(t,'span')
+    +'<span class="conn-tile-desc">'+esc(descriptionOf(t))+'</span>'
+  +'</button>';
+}
+
+/* The popup's contents: the same card the grid used to expand in place, with
+   every control, both drawers and the error line. */
+function renderDetail(t){
   const connected=isConnected(t);
   const enabled=isEnabledHere(t);
-  const status=statusOf(t);
   const open=openToolkit===t.id;
   const polling=openPolling===t.id;
-  const acct=accountLabel(accountCache[t.id]);
   return'<article class="conn-card'+(connected&&enabled?' is-on':'')+'" data-toolkit="'+esc(t.id)+'">'
     +'<div class="conn-card-head">'
       +'<div class="conn-card-heading">'+appIcon(t)
@@ -371,36 +507,44 @@ function renderCard(t){
           +'<span>'+esc((t.schemes||['OAUTH2']).map(schemeLabel).join(', '))+'</span>'
         +'</div>'
       +'</div>'
-      /* status and account facts share one row, so a connected card is no
-         taller than an unconnected one */
-      +'<div class="conn-card-status">'
-      +'<i class="conn-state '+status.cls+'">'+esc(status.text)+'</i>'
-      +'<div class="conn-facts">'
-        +(t.account_count>1?'<span class="conn-fact">'+t.account_count+' accounts</span>':'')
-        /* which account the session is bound to; only a connection has one */
-        +(connected&&acct
-          ?'<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(acct)+'</span>'
-          :'')
-      +'</div>'
-      +'</div>'
+      +statusRow(t,'div')
     +'</div>'
     +'<div class="conn-card-body">'
-      +'<p class="conn-card-description">'+esc(t.description||APP_ART[t.id]?.[2]||'Account app integration')+'</p>'
+      +'<p class="conn-card-description">'+esc(descriptionOf(t))+'</p>'
       +(connected&&!enabled
         ?'<p class="conn-card-note">Enable it to use this account in this workspace.</p>'
         :'')
-      +(!connected&&String(schemeOf(t.id)).toUpperCase()!=='OAUTH2'
-        ?'<p class="conn-card-note">Connect opens a page that asks for the '+esc(schemeLabel(schemeOf(t.id)))
-          +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'.</p>'
-        :'')
       +'<div class="conn-card-error" id="err-'+esc(t.id)+'" role="alert" hidden></div>'
     +'</div>'
-    +'<div class="conn-card-acts">'
+    +renderActs(t,{connected,enabled,open,polling})
+    +(open?renderActions(t.id):'')
+    /* The drawer needs a connection, not "enabled here": a fresh connect opens
+       it before the workspace has turned the toolkit on, and it says so. */
+    +(polling&&connected?renderPolling(t,enabled):'')
+  +'</article>';
+}
+
+/* A non-OAuth toolkit's Connect asks for a key on the hosted page; the card's
+   subtitle already names the scheme, so the detail is a tooltip. */
+function connectHint(t){
+  const scheme=schemeOf(t.id);
+  if(String(scheme).toUpperCase()==='OAUTH2')return'';
+  return' title="Opens a page that asks for the '+esc(schemeLabel(scheme))
+    +(t.id==='telegram'?' (the bot token BotFather gave you)':'')+'."';
+}
+
+function renderActs(t,{connected,enabled,open,polling}){
+  return'<div class="conn-card-acts">'
       +(!connected
-        ?'<button class="conn-primary" data-action="connect">Connect</button>'
+        ?'<button class="conn-primary" data-action="connect"'+connectHint(t)+'>Connect</button>'
         :(enabled
           ?'<button class="conn-secondary" data-action="unlink">Turn off here</button>'
           :'<button class="conn-primary" data-action="enable">Turn on here</button>'))
+      /* Another account of the same toolkit (work and personal Gmail). Only when
+         the server's multi-account mode lets it reach the agent, up to the cap. */
+      +(connected&&maxAccounts>1&&(t.account_count||1)<maxAccounts
+        ?'<button class="conn-secondary" data-action="add-account">Add account</button>'
+        :'')
       +(connected&&enabled&&t.supports_action_prefs
         ?'<button class="conn-secondary" data-action="actions">'
           +(open?'Hide actions':'Actions')+'</button>'
@@ -419,12 +563,30 @@ function renderCard(t){
           +'<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6.5 4V2.75h3V4M4.5 4l.6 9.25h5.8L11.5 4M6.75 6.5v4.5M9.25 6.5v4.5"/></svg>'
           +'</button>'
         :'')
-    +'</div>'
-    +(open?renderActions(t.id):'')
-    /* The drawer needs a connection, not "enabled here": a fresh connect opens
-       it before the workspace has turned the toolkit on, and it says so. */
-    +(polling&&connected?renderPolling(t,enabled):'')
-    +'</article>';
+    +'</div>';
+}
+
+/* Open a connector's popup. One at a time: showModal closes whatever was
+   open, which runs closeCardModal below and so discards the previous
+   connector's unsaved polling edits, exactly as its Hide polling would. */
+function openCardModal(toolkitId,tile){
+  if(!toolkits.some(t=>t.id===toolkitId))return;
+  showModal(tile,closeCardModal);
+  openCard=toolkitId;
+  paintModal();
+}
+
+function closeCardModal(){
+  if(openCard===null)return;
+  forgetCard(openCard);
+  openCard=null;
+}
+
+/* Closing a popup closes its drawers too, the same as pressing Hide actions /
+   Hide polling (unsaved polling edits go). */
+function forgetCard(toolkitId){
+  if(openToolkit===toolkitId)openToolkit=null;
+  if(openPolling===toolkitId){openPolling=null;delete pollDraft[toolkitId];}
 }
 
 /* ---------- polling ---------- */
@@ -492,19 +654,21 @@ async function togglePolling(toolkitId){
   if(openPolling===toolkitId){
     openPolling=null;
     delete pollDraft[toolkitId]; /* closing the drawer discards unsaved edits */
-    renderGrid();
+    paintModal();
     return;
   }
   closeOtherPolling(toolkitId);
   openPolling=toolkitId;
-  renderGrid();
+  paintModal();
   if(pollCache[toolkitId]===undefined)await loadPolling(toolkitId);
-  if(openPolling===toolkitId)renderGrid();
+  if(openPolling===toolkitId)paintModal();
 }
 
 /* One drawer at a time: opening one closes whichever other was open, and
    that close discards the other's unsaved edits, the same as pressing its
-   Hide polling would. Called before openPolling is reassigned. */
+   Hide polling would. Called before openPolling is reassigned. Only a
+   connect landing can reach it with another toolkit's drawer open, since a
+   popup shows one connector. */
 function closeOtherPolling(toolkitId){
   if(openPolling!==null&&openPolling!==toolkitId)delete pollDraft[openPolling];
 }
@@ -551,7 +715,7 @@ async function savePolling(toolkitId,button){
     /* painted from the server's copy (res.data), not from the form just
        submitted: that form is still in the DOM, and a snapshot would file it
        as a draft again and mask whatever the server normalised */
-    if(openPolling===toolkitId)renderGrid({snapshot:false});
+    if(openPolling===toolkitId)paintModal({snapshot:false});
   }finally{
     setBusy(button,false);
   }
@@ -569,7 +733,7 @@ async function pollNow(toolkitId,button){
       :'Polled just now: '+(Number(r.new_events)||0)+' new';
     /* the server is the truth for last_poll_at and last_error: re-read, repaint */
     await loadPolling(toolkitId);
-    if(openPolling===toolkitId)renderGrid();
+    if(openPolling===toolkitId)paintModal();
   }finally{
     setBusy(button,false);
   }
@@ -577,8 +741,8 @@ async function pollNow(toolkitId,button){
 
 /* ---------- accounts ---------- */
 
-/* One read per grid load, never per card: the list route carries every
-   toolkit's account_label, so the cards paint with whatever the server
+/* One read per grid load, never per tile: the list route carries every
+   toolkit's account_label, so the tiles paint with whatever the server
    already knows. A failed read keeps the labels of the previous load. */
 async function loadAccounts(){
   const path=API_BASE+'/api/connections';
@@ -612,7 +776,7 @@ async function resolveAccount(toolkitId){
     const path=API_BASE+'/api/connections/'+encodeURIComponent(toolkitId)+'/account';
     const res=await apiFetch(path,{method:'POST'});
     /* no retry: an error with no label (a provider fault, a toolkit with no
-       lookup yet) leaves the card exactly as it is */
+       lookup yet) leaves the tile exactly as it is */
     const label=res.ok&&res.data?accountLabel(res.data):'';
     if(!label)return;
     accountCache[toolkitId]={account_label:label,account_checked_at:res.data.account_checked_at||null};
@@ -623,25 +787,26 @@ async function resolveAccount(toolkitId){
   }
 }
 
-/* The label lands in place, never through a grid repaint: a lookup answers
-   at any moment after the load, and rebuilding the grid then would hide a
-   card error a failed Save, Poll now or scope change just showed, and
-   re-enable the button of a connect or delete still in flight (its later
-   setBusy would reach a detached node). The next full paint reads
-   accountCache and draws the same chip and note. Nothing to do when the
-   card is gone or its toolkit is no longer connected (deleted meanwhile). */
+/* The label lands in place, never through a repaint: a lookup answers at any
+   moment after the load, and rebuilding the popup then would hide a card
+   error a failed Save, Poll now or scope change just showed, and re-enable
+   the button of a connect or delete still in flight (its later setBusy would
+   reach a detached node). Both the tile and, when it is this connector's,
+   the open popup get the chip; the next full paint reads accountCache and
+   draws the same chip and note. Nothing to do when the toolkit is no longer
+   connected (deleted meanwhile). */
 function paintAccount(toolkitId,label){
   const toolkit=toolkits.find(t=>t.id===toolkitId);
   if(!toolkit||!isConnected(toolkit))return;
-  const card=root.querySelector('.conn-card[data-toolkit="'+CSS.escape(toolkitId)+'"]');
-  if(!card)return;
-  const facts=card.querySelector('.conn-facts');
-  if(facts&&!facts.querySelector('.conn-account'))
-    facts.insertAdjacentHTML('beforeend',
-      '<span class="conn-fact conn-account" title="the account this workspace uses">'+esc(label)+'</span>');
+  const chip='<span class="conn-fact conn-account" title="the account this workspace uses">'
+    +esc(label)+'</span>';
+  for(const host of root.querySelectorAll('[data-toolkit="'+CSS.escape(toolkitId)+'"]')){
+    const facts=host.querySelector('.conn-facts');
+    if(facts&&!facts.querySelector('.conn-account'))facts.insertAdjacentHTML('beforeend',chip);
+  }
   /* an open drawer gets its "Polling as" note under the interval row, the
      spot renderPolling gives it */
-  const drawer=card.querySelector('.conn-poll');
+  const drawer=root.querySelector('#poll-'+CSS.escape(toolkitId));
   if(!drawer||drawer.querySelector('.conn-poll-account'))return;
   const interval=drawer.querySelector('select[data-poll="interval"]');
   const row=interval&&interval.closest('label');
@@ -692,7 +857,7 @@ function setBusy(button,busy){
 
 /* ---------- actions ---------- */
 
-function handleGridAction(event){
+function handleCardAction(event){
   const input=event.target.closest('input[data-action="toggle"]');
   if(input){
     const card=input.closest('[data-toolkit]');
@@ -705,6 +870,7 @@ function handleGridAction(event){
   if(!card)return;
   const id=card.dataset.toolkit;
   if(button.dataset.action==='connect')connect(id,button);
+  else if(button.dataset.action==='add-account')connect(id,button,{addAccount:true});
   else if(button.dataset.action==='enable')setScope(id,true,button);
   else if(button.dataset.action==='unlink')setScope(id,false,button);
   else if(button.dataset.action==='disconnect')disconnect(id,button);
@@ -714,17 +880,19 @@ function handleGridAction(event){
   else if(button.dataset.action==='poll-now')pollNow(id,button);
 }
 
-async function connect(toolkitId,button){
+/* addAccount sends allow_multiple, so Composio keeps the existing connection and
+   stores this one beside it instead of replacing it. */
+async function connect(toolkitId,button,{addAccount=false}={}){
   cardError(toolkitId,'');
   setBusy(button,true);
-  /* Opened before the await: a popup opened later is not tied to the click and
-     is blocked by default in most browsers. */
+  /* Opened before the await: a browser popup opened later is not tied to the
+     click and is blocked by default in most browsers. */
   const popup=window.open('','composio-auth','width=560,height=760');
   try{
     /* The toolkit says how it authenticates (OAUTH2, or API_KEY for a bot token);
        the swarm's hosted page handles either, so the popup flow is the same. */
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/connect',{
-      method:'POST',body:{auth_scheme:schemeOf(toolkitId)},
+      method:'POST',body:{auth_scheme:schemeOf(toolkitId),allow_multiple:addAccount},
     });
     if(!res.ok||!res.data||!res.data.auth_url){
       if(popup)popup.close();
@@ -774,14 +942,14 @@ async function pollUntilConnected(toolkitId,requestId,popup){
       toast(labelFor(toolkitId)+' connected');
       /* Open the Polling drawer for the toolkit that just connected, so the
          interval and the data to collect get picked right away. Set BEFORE
-         loadAll(): it re-renders the grid, and a drawer flagged afterwards
+         loadAll(): it repaints the popup, and a drawer flagged afterwards
          would be lost. Nothing is persisted until Save. */
       closeOtherPolling(toolkitId);
       openPolling=toolkitId;
       delete pollCache[toolkitId];
       await loadAll();
       await loadPolling(toolkitId);
-      if(openPolling===toolkitId&&root.querySelector('.conn-card[data-toolkit]'))renderGrid();
+      if(openPolling===toolkitId)paintModal();
       return;
     }
     if(status==='FAILED'){
@@ -855,14 +1023,14 @@ async function disconnect(toolkitId,button){
 }
 
 async function toggleDrawer(toolkitId){
-  if(openToolkit===toolkitId){openToolkit=null;renderGrid();return;}
+  if(openToolkit===toolkitId){openToolkit=null;paintModal();return;}
   openToolkit=toolkitId;
   if(toolsCache[toolkitId]===undefined){
-    renderGrid();
+    paintModal();
     const res=await apiFetch(BASE+'/'+encodeURIComponent(toolkitId)+'/tools');
     toolsCache[toolkitId]=res.ok&&res.data?(res.data.tools||[]):null;
   }
-  renderGrid();
+  paintModal();
 }
 
 async function toggleAction(toolkitId,input){

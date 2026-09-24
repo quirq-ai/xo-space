@@ -627,18 +627,18 @@ the blocking half (reading or minting the token, then the file writes) runs in a
 thread. The periodic pass is what repairs the cases the button existed for: a config file
 that appeared after boot, an agent that rewrote its config and dropped the entry, and a
 pod whose token store was lost (the sweep mints a fresh token and rewrites every config).
-The `/mcp/cowork-proxy/...` aliases are the pre-rename paths; unscoped routes exist only
-to 401 a stale config with a useful message.
+The unscoped routes exist only to 401 a stale config with a useful message.
 
 **The install is declarative.** Each agent describes its own gateway shape as an
 `"mcp"` block in `config/agents/<name>/manifest.json`, and `composio/mcp.py` is the
 single writer that reads it; there is no per-agent Python, and adding an agent is
 adding a block. The manifest loader ignores keys it does not know and keeps the whole
 document on `AgentManifest.raw`, the same seam the `providers` and `channels` recipes
-use, so this needed no registry change. Today's four:
+use, so this needed no registry change. Today's five:
 
 | agent | file | format | key path | entry |
 |---|---|---|---|---|
+| antigravity | `~/.gemini/config/mcp_config.json` | JSON | `mcpServers.composio` | `{"serverUrl":…}` |
 | claude_code | `~/.claude.json` | JSON | `mcpServers.composio` | `{"type":"http","url":…}` |
 | codex | `$CODEX_HOME/config.toml` | TOML | `mcp_servers.composio` | `{url:…, enabled:true}` |
 | hermes | `~/.hermes/config.yaml` | YAML | `mcp_servers.composio` | `{url:…, transport:"streamable-http", enabled:true}` |
@@ -647,16 +647,31 @@ use, so this needed no registry change. Today's four:
 A block sets the target file three ways, in precedence order: an explicit `path`,
 `home_env` + `path_in_home` (env override, else the manifest's `home_dir`; this is
 how codex follows `$CODEX_HOME`), or the manifest's own `config_file`, which is
-already the right file for three of the four. `entry` is written verbatim with
+already the right file for all but claude_code and codex. `entry` is written verbatim with
 `{proxy_url}` substituted; `legacy_names` are purged on every write so a rename can't
 leave two keys pointing at the same proxy and list every tool twice.
+
+That the entry is verbatim is what lets each agent keep its own vocabulary without a
+writer change. antigravity spells the remote URL `serverUrl` and reads it from a file of
+its own, `~/.gemini/config/mcp_config.json` — not the `settings.json` its manifest points
+at, which is why its block is one of the two that set an explicit `path`. Its bundled
+docs call that transport SSE; `agy mcp list` reports the configured server as type
+`http`, and `agy mcp add` offers only `stdio` and `http`, so the label is stale and the
+streamable-HTTP proxy is what it actually speaks.
+
+antigravity and codex set `"create_if_missing": true` for the same reason: their target
+holds nothing but MCP servers, so writing one invents no other state, and waiting for the
+CLI to create it first would leave the gateway uninstalled on a fresh machine (antigravity
+ships the file as zero bytes, which parses as an empty document rather than failing).
+`~/.claude.json` is the counter-example and stays `false` — it is that CLI's whole state
+file, and a stub standing in for it would be a lie about what has run.
 
 The TOML path splices text instead of round-tripping the document (the stdlib has no
 TOML writer, and that config is hand-written with comments), so it re-parses its own
 output and aborts if anything outside the managed table moved. Across every format,
 two rules hold: a config that failed to parse is never rewritten, and an existing
-file's permissions are preserved. An agent without a block is not a bug: antigravity
-has none and is simply skipped. A block can also say `"enabled": false` to opt an agent
+file's permissions are preserved. An agent without a block is not a bug — it is simply
+skipped — though every agent shipping today declares one. A block can also say `"enabled": false` to opt an agent
 out of the automatic install without deleting the recipe (the sweep would otherwise
 re-add an entry removed by hand); nothing already written is removed.
 
@@ -702,7 +717,12 @@ origin that will connect must be registered as an allowed callback on them in th
 dashboard; miss that and `/connect` succeeds while the OAuth redirect fails, which
 surfaces late, in the popup. It is **required and has no default**: unset,
 `_callback_url()` raises before any network call and `/connect` returns a 422 whose
-detail names the variable, which the Connectors tab matches on.
+detail names the variable, which the Connectors tab matches on. The service keeps no
+default because it cannot know its own public origin; `install.sh` can, so it exports
+`http://127.0.0.1:${PORT}/api/connectors/composio/callback` (derived from the resolved
+port) and writes it into the generated `.env`, which is why a local install connects
+without hand-editing anything. Any value already set — shell, `.env`, the Setup tab's
+`runtime.env` — still wins.
 
 Degradation is per-scope, and worth knowing when reading a bug report:
 
@@ -793,9 +813,10 @@ Gmail). Two switches, and they are independent:
   adds an account instead of replacing the existing one, and `alias` labels it.
   Aliases must be unique per user and toolkit; `service.assert_alias_free`
   checks that before the call so a collision is a 409, not an opaque 502.
-- **In the session**: `COMPOSIO_MULTI_ACCOUNT=1` puts a `multi_account` block
-  on every session, which is what lets *several* accounts of one toolkit reach
-  the agent at once. With it off, `pinned_connected_accounts` pins exactly one
+- **In the session**: a `multi_account` block goes on every session, which is
+  what lets *several* accounts of one toolkit reach the agent at once. It is on
+  by default in code (`MULTI_ACCOUNT_DEFAULT_ENABLED`); `COMPOSIO_MULTI_ACCOUNT=0`
+  turns it off. With it off, `pinned_connected_accounts` pins exactly one
   account per toolkit: the newest active one, matching what Composio would
   pick itself. Pinning two with the flag off is rejected at session creation,
   which is why the cap is enforced here rather than left to the API.

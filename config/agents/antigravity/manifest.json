@@ -14,6 +14,14 @@
     "session_header": ""
   },
   "model_prefix": "antigravity",
+  "mcp": {
+    "format": "json",
+    "path": "~/.gemini/config/mcp_config.json",
+    "key_path": ["mcpServers"],
+    "server_name": "composio",
+    "entry": {"serverUrl": "{proxy_url}"},
+    "create_if_missing": true
+  },
   "model_capabilities": {
     "function_calling": true,
     "vision": true,

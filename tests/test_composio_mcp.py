@@ -81,13 +81,18 @@ class _TempConfig(unittest.TestCase):
 
 
 class ManifestBlockTests(unittest.TestCase):
-    def test_the_four_shipped_agents_declare_a_usable_block(self) -> None:
+    def test_every_shipped_agent_declares_a_usable_block(self) -> None:
         self.assertEqual(
-            mcp.agents_with_targets(), ["claude_code", "codex", "hermes", "openclaw"]
+            mcp.agents_with_targets(),
+            ["antigravity", "claude_code", "codex", "hermes", "openclaw"],
         )
 
     def test_each_block_resolves_to_the_file_that_agent_actually_reads(self) -> None:
         expected = {
+            # antigravity reads a dedicated mcp_config.json, not the
+            # settings.json its manifest points at (which it keeps a level
+            # down, in antigravity-cli/) — hence the explicit `path`.
+            "antigravity": Path.home() / ".gemini" / "config" / "mcp_config.json",
             "claude_code": Path.home() / ".claude.json",
             "codex": Path.home() / ".codex" / "config.toml",
             "hermes": Path.home() / ".hermes" / "config.yaml",
@@ -97,9 +102,22 @@ class ManifestBlockTests(unittest.TestCase):
             with self.subTest(agent=agent):
                 self.assertEqual(mcp.load_target(agent).path, path)
 
+    def test_no_two_agents_write_to_the_same_file(self) -> None:
+        # A copy-paste that pointed two agents at one file would have them
+        # overwrite each other's entry on every sweep.
+        paths = [mcp.load_target(a).path for a in mcp.agents_with_targets()]
+        self.assertEqual(len(paths), len(set(paths)))
+
     def test_an_agent_without_a_block_is_not_a_target(self) -> None:
-        # antigravity has no MCP support; that is normal, not an error.
-        self.assertIsNone(mcp.load_target("antigravity"))
+        # Every shipped agent now declares one, so this pins the behaviour with a
+        # manifest that has no `mcp` key rather than with whichever agent last
+        # happened to lack one.
+        blockless = SimpleNamespace(raw={}, home_dir=Path("/x"), config_file=Path("/x/c"))
+        with patch(
+            "services.cowork_agent.registry.agent_registry.get_agent",
+            return_value=blockless,
+        ):
+            self.assertIsNone(mcp.load_target("blockless"))
 
     def test_an_unknown_agent_degrades_instead_of_raising(self) -> None:
         self.assertIsNone(mcp.load_target("no-such-agent"))
@@ -540,6 +558,48 @@ class NestedJsonAndPruneTests(_TempConfig):
         self.assertIn("not a table", result["error"])
 
 
+class AntigravityWriterTests(_TempConfig):
+    """antigravity keeps its MCP servers in a file of their own, and spells the
+    remote URL a third way again (`serverUrl`)."""
+
+    filename = "mcp_config.json"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.target = _target("antigravity", self.config)
+
+    def _parsed(self) -> dict:
+        return json.loads(self._text())
+
+    def test_the_url_is_written_under_server_url(self) -> None:
+        self._write("{}")
+        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        self.assertEqual(
+            self._parsed()["mcpServers"]["composio"], {"serverUrl": PROXY}
+        )
+
+    def test_an_empty_file_is_treated_as_an_empty_document(self) -> None:
+        # A fresh install ships mcp_config.json as a zero-byte file; that is not
+        # a parse failure and must not be refused as one.
+        self._write("")
+        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        self.assertEqual(self._parsed()["mcpServers"]["composio"], {"serverUrl": PROXY})
+
+    def test_a_missing_config_is_created(self) -> None:
+        # Unlike ~/.claude.json this file holds nothing but MCP servers, so
+        # creating it invents no state.
+        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        self.assertTrue(self.config.exists())
+        self.assertEqual(self._parsed()["mcpServers"]["composio"], {"serverUrl": PROXY})
+
+    def test_a_stdio_server_configured_by_hand_survives(self) -> None:
+        self._write(json.dumps({"mcpServers": {"sqlite": {"command": "sqlite-mcp"}}}))
+        self.assertTrue(mcp.apply(self.target, PROXY)["ok"])
+        servers = self._parsed()["mcpServers"]
+        self.assertEqual(servers["sqlite"], {"command": "sqlite-mcp"})
+        self.assertEqual(servers["composio"], {"serverUrl": PROXY})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Writer: YAML (hermes)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -642,7 +702,7 @@ class GatewayWiringTests(unittest.TestCase):
     def test_every_agent_with_a_block_is_an_install_target(self) -> None:
         self.assertEqual(
             composio_service.gateway_install_agents(),
-            ["claude_code", "codex", "hermes", "openclaw"],
+            ["antigravity", "claude_code", "codex", "hermes", "openclaw"],
         )
 
     def test_install_into_gateway_passes_a_scoped_proxy_url(self) -> None:
@@ -655,9 +715,17 @@ class GatewayWiringTests(unittest.TestCase):
         self.assertIn("/mcp/composio-proxy/u/", proxy_url)
 
     def test_an_agent_without_a_block_is_refused_by_name(self) -> None:
-        result = composio_service.install_into_gateway("antigravity")
+        # No shipped agent lacks a block any more, so the refusal is pinned
+        # against a manifest with no `mcp` key. The name has to reach the
+        # message: that is what tells the reader which manifest to go and fix.
+        blockless = SimpleNamespace(raw={}, home_dir=Path("/x"), config_file=Path("/x/c"))
+        with patch(
+            "services.cowork_agent.registry.agent_registry.get_agent",
+            return_value=blockless,
+        ):
+            result = composio_service.install_into_gateway("blockless")
         self.assertFalse(result["ok"])
-        self.assertIn("antigravity", result["error"])
+        self.assertIn("blockless", result["error"])
         self.assertIn("manifest.json", result["error"])
 
     def test_install_into_gateway_accepts_a_precomputed_proxy_url(self) -> None:

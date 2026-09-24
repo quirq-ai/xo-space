@@ -83,7 +83,7 @@ await context.route('**/*',async route=>{
     }
     if(action==='connect'){
       assert.equal(method,'POST');assert.equal(id,'telegram');
-      assert.deepEqual(request.postDataJSON(),{auth_scheme:'API_KEY'});
+      assert.deepEqual(request.postDataJSON(),{auth_scheme:'API_KEY',allow_multiple:false});
       return json(route,{auth_url:origin+'/fixture-authorization',connection_request_id:'fixture-request'});
     }
     const pending=holdStatus;holdStatus=null;await pause(pending);authorized=true;
@@ -171,7 +171,7 @@ try{
   const host=await page.locator('#setup-connectors').elementHandle();
   await choose('workspace');
   listing.release.resolve();
-  await page.locator('#setup-connectors .conn-card').first().waitFor({state:'attached'});
+  await page.locator('#setup-connectors .conn-tile').first().waitFor({state:'attached'});
   assert.equal(new URL(page.url()).hash,'#/setup/workspace');
   assert.equal(await panel('workspace').isVisible(),true,'A delayed connector mount cannot reclaim the current panel');
   assert.equal(await page.locator('.topbar').getAttribute('data-toolbar'),'search');
@@ -181,15 +181,18 @@ try{
   await choose('connectors');
   assert.equal(count('/xo-auth/session/self'),1);assert.equal(count('/api/connectors/composio/toolkits'),1);
   assert.equal(await page.locator('#view-connectors').count(),0);
-  assert.equal(await page.locator('#setup-connectors .conn-card[data-toolkit]').count(),3);
+  assert.equal(await page.locator('#setup-connectors .conn-tile[data-toolkit]').count(),3);
   checked('First connector load is lazy and shared; slow completion preserves the later panel, toolbar and focus.');
 
-  await page.locator('[data-toolkit="gmail"] [data-action="polling"]').click();
+  /* a tile opens its connector in a popup, and every control lives there */
+  await page.locator('.conn-tile[data-toolkit="gmail"]').click();
+  await page.locator('#conn-modal .conn-card[data-toolkit="gmail"]').waitFor();
+  await page.locator('#conn-modal [data-action="polling"]').click();
   const interval=page.locator('#poll-gmail [data-poll="interval"]');
   await interval.selectOption('1800');
   await page.locator('#poll-gmail [data-poll="collector"][value="calendar"]').check();
-  await page.locator('[data-toolkit="slack"] [data-action="actions"]').click();
-  const action=page.locator('[data-toolkit="slack"] input[data-action="toggle"]');
+  await page.locator('#conn-modal [data-action="actions"]').click();
+  const action=page.locator('#conn-modal input[data-action="toggle"]');
   await action.waitFor();
   const pollNode=await interval.elementHandle(),actionNode=await action.elementHandle();
   const pendingPrefs=holdPrefs=gate();await action.uncheck();await pendingPrefs.arrived.promise;
@@ -207,18 +210,19 @@ try{
   assert.equal(await interval.inputValue(),'1800');
   assert.equal(await action.isDisabled(),true,'Pending action stays busy across panel and top-level navigation');
   assert.equal(count('/api/connectors/composio/toolkits'),1,'Panel and tab navigation never remounts the connector controller');
-  pendingPrefs.release.resolve();await page.waitForFunction(()=>!document.querySelector('[data-toolkit="slack"] input[data-action="toggle"]').disabled);
+  pendingPrefs.release.resolve();await page.waitForFunction(()=>!document.querySelector('#conn-modal input[data-action="toggle"]').disabled);
   assert.equal(await action.isChecked(),false);
   await search.fill('');
-  await page.locator('[data-toolkit="gmail"] [data-action="poll-save"]').click();
-  await page.waitForFunction(()=>!document.querySelector('[data-toolkit="gmail"] [data-action="poll-save"]').disabled);
+  await page.locator('#conn-modal [data-action="poll-save"]').click();
+  await page.waitForFunction(()=>!document.querySelector('#conn-modal [data-action="poll-save"]').disabled);
   assert.deepEqual(settings.get('gmail'),{enabled:true,interval_s:1800,collectors:['recent','calendar'],configured:true});
-  await page.locator('[data-toolkit="gmail"] [data-action="poll-now"]').click();
+  await page.locator('#conn-modal [data-action="poll-now"]').click();
   await page.getByText('Polled just now: 1 new',{exact:false}).waitFor();
   checked('Search, polling drafts, settings/credential drafts and pending action controls survive panel and top-level navigation; polling saves and runs through fixture APIs.');
 
   const authorization=holdStatus=gate();
-  await page.locator('[data-toolkit="telegram"] [data-action="connect"]').click();
+  await page.locator('.conn-tile[data-toolkit="telegram"]').click();
+  await page.locator('#conn-modal [data-action="connect"]').click();
   await authorization.arrived.promise;
   await choose('server');await openProjectList(page);await page.waitForURL('**/#/projects/data/list');
   authorization.release.resolve();
@@ -226,27 +230,27 @@ try{
   assert.equal(new URL(page.url()).hash,'#/projects/data/list','Completing authorization cannot navigate away from the current tab');
   await page.locator('#tab-setup').click();await panel('workspace').waitFor();
   await choose('connectors');await page.locator('#poll-telegram').waitFor();
-  assert.match(await page.locator('[data-toolkit="telegram"]').textContent(),/Off in this workspace/);
+  assert.match(await page.locator('.conn-tile[data-toolkit="telegram"]').textContent(),/Off in this workspace/);
   checked('Authorization completes while Setup is hidden and retains its polling follow-up without stealing navigation.');
 
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:1000});
     await choose('connectors');
-    const bounds=await page.locator('#setup-nav,#setup-panel-connectors,.conn-card,.conn-card button,.conn-poll select').evaluateAll(nodes=>
+    const bounds=await page.locator('#setup-nav,#setup-panel-connectors,.conn-tile,.conn-modal-panel,.conn-modal-panel button,.conn-poll select').evaluateAll(nodes=>
       nodes.filter(node=>node.getClientRects().length).map(node=>{
         const rect=node.getBoundingClientRect();return{tag:node.tagName,cls:node.className,left:rect.left,right:rect.right};
       }));
     assert.ok(bounds.every(rect=>rect.left>=-1&&rect.right<=width+1),width+'px connector controls fit: '+JSON.stringify(bounds));
     await shot('setup-connectors-'+width+'.png');
   }
-  checked('Connectors navigation, cards and polling controls fit at 1440px, 390px and 320px.');
+  checked('Connectors navigation, tiles and the popup\u2019s polling controls fit at 1440px, 390px and 320px.');
 
   const direct=await context.newPage();observe(direct);
   const before=count('/api/connectors/composio/toolkits');
   const runtime=holdRuntime=gate();
   await direct.goto(origin+'/space/#/connectors',{waitUntil:'domcontentloaded'});
   await runtime.arrived.promise;
-  await direct.locator('#setup-panel-connectors .conn-card').first().waitFor({timeout:5000});
+  await direct.locator('#setup-panel-connectors .conn-tile').first().waitFor({timeout:5000});
   assert.equal(await direct.locator('#tab-setup.is-on').count(),1);
   assert.equal(await direct.locator('#view-setup.is-active').count(),1);
   assert.equal(await direct.locator('#tab-connectors,#view-connectors').count(),0);
@@ -283,7 +287,7 @@ try{
   checked('Inbox Configure and the Wiki Connectors link still open the nested Setup panel.');
   assert.deepEqual(report.errors,[]);
   assert.deepEqual(report.writes.map(write=>write.path),[
-    '/api/connectors/composio/slack/prefs','/api/connections/gmail','/api/connections/gmail/poll',
+    '/api/connectors/composio/gmail/prefs','/api/connections/gmail','/api/connections/gmail/poll',
     '/api/connectors/composio/telegram/connect']);
 }catch(error){
   report.failure=error.stack;await shot('failure.png').catch(()=>{});throw error;

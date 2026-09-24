@@ -151,7 +151,7 @@ accountReply=id=>({toolkit:id,account_label:'ops@example.com'});
 const search=view.toolbar.search;
 search.setValue('inbox'); // safe before mount; query applied after loading
 await view.mount(root);await settle();
-const visible=()=>root.querySelectorAll('.conn-card[data-toolkit]').filter(c=>!c.hidden).map(c=>c.dataset.toolkit);
+const visible=()=>root.querySelectorAll('.conn-tile[data-toolkit]').filter(t=>!t.hidden).map(t=>t.dataset.toolkit);
 assert.deepEqual(visible(),['gmail']);
 search.setValue('  TELEGRAM  ');assert.deepEqual(visible(),['telegram']);
 search.setValue('dev@');assert.deepEqual(visible(),['gmail']);
@@ -159,38 +159,52 @@ search.setValue('ops@');assert.deepEqual(visible(),[]);assert.equal(noMatch.hidd
 const beforeAccount=paints.length;
 releaseAccount();accountGate=null;await settle();
 assert.deepEqual(visible(),['slack']);assert.equal(noMatch.hidden,true);
-assert.equal(paints.length,beforeAccount,'late account matching preserves cards');
+assert.equal(paints.length,beforeAccount,'late account matching preserves tiles');
 
+// A popup open on work in progress: an unsaved polling draft, a Poll now
+// and an action preference still in flight. Typing in the toolbar must
+// touch neither the tiles nor the popup.
 search.setValue('');
+openTile('gmail');await settle();
 click('gmail','polling');await settle();
 gmail().interval='1800';gmail().collectors.cal=true;
-click('slack','actions');await settle();
+click('gmail','actions');await settle();
 const draft=gmail();
 let releasePoll;pollGate=new Promise(r=>{releasePoll=r;});
 const pollButton=click('gmail','poll-now');await settle();
 let releasePrefs;prefsGate=new Promise(r=>{releasePrefs=r;});
 const actionInput={dataset:{slug:'send'},checked:false,disabled:false,
-  closest:()=>({dataset:{toolkit:'slack'}})};
-grid.listeners.forEach(fn=>fn({target:{closest:selector=>selector.startsWith('input')?actionInput:null}}));
-let releaseConnect;connectGate=new Promise(r=>{releaseConnect=r;});
-globalThis.window={open:()=>({close(){}})};
-const connectButton=click('telegram','connect');await settle();
-const beforeFilter=paints.length,originalCards=[...cardNodes.values()];
+  closest:()=>({dataset:{toolkit:'gmail'}})};
+fire(modalEl,'click',{target:{closest:selector=>selector.startsWith('input')?actionInput:null}});
+const beforeFilter=paints.length,beforeCards=cardPaints.length,originalTiles=[...tileNodes.values()];
 search.setValue('missing <connector>');
 assert.deepEqual(visible(),[]);assert.equal(noMatch.hidden,false);
 assert.match(noMatch.textContent,/missing <connector>/);
 search.setValue('');view.show();
 assert.equal(search.getValue(),'');assert.equal(noMatch.hidden,true);
-assert.equal(paints.length,beforeFilter,'typing never rebuilds busy cards');
-assert.deepEqual([...cardNodes.values()],originalCards);
+assert.equal(paints.length,beforeFilter,'typing never rebuilds the tiles');
+assert.equal(cardPaints.length,beforeCards,'typing never rebuilds the open popup');
+assert.deepEqual([...tileNodes.values()],originalTiles);
 assert.equal(gmail(),draft);assert.equal(gmail().interval,'1800');assert.equal(gmail().collectors.cal,true);
 assert.equal(pollButton.disabled,true);assert.equal(pollButton.detached,false);
-assert.equal(connectButton.disabled,true);assert.equal(connectButton.detached,false);
 assert.equal(actionInput.disabled,true);assert.equal(actionInput.checked,false);
-releaseConnect();connectGate=null;releasePrefs();prefsGate=null;await settle();
-assert.equal(connectButton.disabled,false);assert.equal(actionInput.disabled,false);
+releasePrefs();prefsGate=null;await settle();
+assert.equal(actionInput.disabled,false);
 releasePoll();pollGate=null;await settle();
 assert.equal(pollButton.disabled,false);
+
+// and the same for an authorization still running in another connector's popup
+let releaseConnect;connectGate=new Promise(r=>{releaseConnect=r;});
+globalThis.window={open:()=>({close(){}})};
+openTile('telegram');await settle();
+const connectButton=click('telegram','connect');await settle();
+const beforeConnectFilter=paints.length,beforeConnectCards=cardPaints.length;
+search.setValue('missing <connector>');search.setValue('');
+assert.equal(paints.length,beforeConnectFilter);
+assert.equal(cardPaints.length,beforeConnectCards);
+assert.equal(connectButton.disabled,true);assert.equal(connectButton.detached,false);
+releaseConnect();connectGate=null;await settle();
+assert.equal(connectButton.disabled,false);
 
 // Search must not mistake a server-side empty catalog for no query matches.
 TOOLKITS.length=0;refresh();await settle();

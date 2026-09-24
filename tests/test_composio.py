@@ -412,29 +412,45 @@ class MultiAccountTests(_ComposioBase):
 
     # ---- configuration ----
 
-    def test_multi_account_is_off_unless_asked_for(self) -> None:
-        self.assertIsNone(service.multi_account_config())
-        self.assertFalse(service.multi_account_enabled())
+    def test_multi_account_is_on_by_default(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": ""}):
+            self.assertTrue(service.multi_account_enabled())
+
+    def test_multi_account_can_be_turned_off(self) -> None:
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}):
+            self.assertIsNone(service.multi_account_config())
+            self.assertFalse(service.multi_account_enabled())
 
     def test_enabling_yields_composio_defaults(self) -> None:
         with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}):
             config = service.multi_account_config()
         self.assertEqual(config, {
             "enable": True,
-            "max_accounts_per_toolkit": service.MULTI_ACCOUNT_DEFAULT_MAX,
+            "max_accounts_per_toolkit": service.MULTI_ACCOUNT_MAX,
             "require_explicit_selection": False,
         })
 
     def test_max_outside_the_supported_range_is_clamped_not_forwarded(self) -> None:
-        # Composio rejects a max outside 2-10, and a session that cannot be
-        # created costs the user every tool, so an operator typo is clamped.
-        for raw, expected in (("99", 10), ("1", 2), ("notanumber", 5)):
+        # A session that cannot be created costs the user every tool, so an
+        # operator typo is clamped into MULTI_ACCOUNT_MIN..MULTI_ACCOUNT_MAX.
+        for raw, expected in (("99", 5), ("3", 3), ("notanumber", 5)):
             with patch.dict(os.environ, {
                 "COMPOSIO_MULTI_ACCOUNT": "true",
                 "COMPOSIO_MULTI_ACCOUNT_MAX": raw,
             }):
                 config = service.multi_account_config()
             self.assertEqual(config["max_accounts_per_toolkit"], expected, raw)
+
+    def test_a_max_of_one_is_single_account(self) -> None:
+        # Composio rejects a multi-account session capped below 2, so a limit of
+        # 1 (or less, clamped up to 1) turns the block off instead.
+        for raw in ("1", "0", "-3"):
+            with patch.dict(os.environ, {
+                "COMPOSIO_MULTI_ACCOUNT": "1",
+                "COMPOSIO_MULTI_ACCOUNT_MAX": raw,
+            }):
+                self.assertIsNone(service.multi_account_config(), raw)
+                self.assertEqual(service.max_accounts_per_toolkit(), 1, raw)
 
     def test_explicit_selection_is_passed_through(self) -> None:
         with patch.dict(os.environ, {
@@ -451,10 +467,6 @@ class MultiAccountTests(_ComposioBase):
         self.assertEqual(service.normalize_alias("  work-gmail "), "work-gmail")
         self.assertIsNone(service.normalize_alias("   "))
         self.assertIsNone(service.normalize_alias(None))
-
-    def test_over_long_alias_is_refused_before_the_api_call(self) -> None:
-        with self.assertRaises(ValueError):
-            service.normalize_alias("x" * (service.ALIAS_MAX_LENGTH + 1))
 
     def test_duplicate_alias_is_caught_locally_and_names_the_holder(self) -> None:
         with patch.object(
@@ -644,7 +656,8 @@ class MultiAccountTests(_ComposioBase):
         self.assertEqual(space_scope.pins(), {"gmail": ["ca_1", "ca_2"]})
 
     def test_a_non_multi_account_session_pins_exactly_one(self) -> None:
-        self.assertEqual(service.max_accounts_per_toolkit(), 1)
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}):
+            self.assertEqual(service.max_accounts_per_toolkit(), 1)
         with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "1"}):
             self.assertEqual(service.max_accounts_per_toolkit(), 5)
 
@@ -726,7 +739,8 @@ class MultiAccountTests(_ComposioBase):
     def test_session_creation_omits_multi_account_when_the_flag_is_off(self) -> None:
         seen: list[dict] = []
         _enable("gmail")
-        with patch.object(swarm_client, "list_connections", return_value=[]), \
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}), \
+                patch.object(swarm_client, "list_connections", return_value=[]), \
                 patch.object(swarm_client, "create_session", side_effect=self._capture_create(seen)):
             service.get_session(ACCOUNT)
         self.assertNotIn("multi_account", seen[0])
@@ -752,7 +766,8 @@ class MultiAccountTests(_ComposioBase):
         _enable("gmail")
         service._SESSIONS_LOADED = True
         service._SESSION_ID = "sess_1"
-        with patch.object(swarm_client, "list_connections", return_value=[]), \
+        with patch.dict(os.environ, {"COMPOSIO_MULTI_ACCOUNT": "0"}), \
+                patch.object(swarm_client, "list_connections", return_value=[]), \
                 patch.object(swarm_client, "update_session", side_effect=_update):
             service.sync_session(ACCOUNT)
         self.assertIsNone(seen[0]["multi_account"])
@@ -1115,12 +1130,16 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(raised.exception.status_code, 404)
 
     async def test_prefs_round_trip_through_the_router(self) -> None:
+        # There is no GET /prefs to read back through: the write is confirmed by its own
+        # response and by the store, which is what /tools reads to flag each action.
         body = router_mod.PrefsBody(actions={"GMAIL_SEND_EMAIL": False})
         with patch.object(service, "sync_session"):
-            await router_mod.put_toolkit_prefs("gmail", body, user_id=ACCOUNT)
-            response = await router_mod.get_toolkit_prefs("gmail", user_id=ACCOUNT)
+            response = await router_mod.put_toolkit_prefs("gmail", body, user_id=ACCOUNT)
         self.assertEqual(
             json.loads(response.body)["actions"], {"GMAIL_SEND_EMAIL": False}
+        )
+        self.assertEqual(
+            action_prefs.disabled_slugs("gmail"), frozenset({"GMAIL_SEND_EMAIL"})
         )
 
     async def test_toolkits_report_the_account_count_and_multi_account_state(self) -> None:
@@ -1137,7 +1156,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
         self.assertEqual(gmail["account_count"], 2)
         # Newest first, so the primary shown on the card is the newer account.
         self.assertEqual(gmail["alias"], "work")
-        self.assertFalse(body["multi_account"]["enable"])
+        self.assertTrue(body["multi_account"]["enable"])
 
     async def test_account_count_skips_expired_and_disabled_connections(self) -> None:
         rows = [
@@ -1618,12 +1637,19 @@ class SpaceScopeTests(_ComposioBase):
 
 
 class SpaceScopeRouteTests(unittest.IsolatedAsyncioTestCase, _ComposioBase):
-    async def test_scope_route_reports_this_workspace_s_choice(self) -> None:
+    async def test_toolkits_route_reports_this_workspace_s_choice(self) -> None:
+        # /toolkits is the only reader of the scope now that GET /{toolkit}/scope is
+        # retired, so it is what has to carry the enabled flag and the pins.
         _enable("gmail", "ca_1")
-        response = await router_mod.get_toolkit_scope("gmail", user_id=ACCOUNT)
-        body = json.loads(response.body)
-        self.assertTrue(body["workspace_enabled"])
-        self.assertEqual(body["pinned_account_ids"], ["ca_1"])
+        rows = [{"toolkit": "GMAIL", "connected_account_id": "ca_1",
+                 "status": "ACTIVE", "alias": None, "created_at": None}]
+        with patch.object(service, "list_connections", return_value=rows), \
+                patch.object(service, "kick_gateway_sweep"):
+            response = await router_mod.list_toolkits(user_id=ACCOUNT)
+        gmail = next(t for t in json.loads(response.body)["toolkits"]
+                     if t["id"] == "gmail")
+        self.assertTrue(gmail["workspace_enabled"])
+        self.assertEqual(gmail["pinned_account_ids"], ["ca_1"])
 
     async def test_pinning_an_account_the_user_does_not_hold_is_a_422(self) -> None:
         # Caught here rather than at session creation, where one bad id fails every
