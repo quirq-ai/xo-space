@@ -203,6 +203,38 @@ def list_connections(*, statuses: Optional[list[str]] = None,
     return out
 
 
+def account_ids_in_project() -> list[str]:
+    """Every XO account id that has a connection in this key's Composio project.
+
+    Ordered by how much of the project each one holds: most connections first, ties
+    broken by the newest connection. Callers take the first.
+
+    This is the seam that makes a second Space seamless. The project is the thing two
+    Spaces share when they hold the same key, and Composio records the ``user_id`` on
+    every connection, so the project itself already knows the account — a Space with no
+    XO credential of its own can read it from here instead of asking xo-swarm-api.
+
+    Deliberately does **not** call :func:`byo_key.user_id`: this is what establishes
+    that id, so requiring it first would be circular. Only the key is required.
+    """
+    byo_key.require()
+    try:
+        page = _sdk().connected_accounts.list()
+    except Exception as exc:  # noqa: BLE001
+        raise _raise(exc) from exc
+    counts: dict[str, int] = {}
+    newest: dict[str, str] = {}
+    for it in (_attr(page, "items", default=page) or []):
+        uid = _attr(it, "user_id")
+        if not isinstance(uid, str) or not uid:
+            continue
+        counts[uid] = counts.get(uid, 0) + 1
+        created = str(_attr(it, "created_at", default="") or "")
+        if created > newest.get(uid, ""):
+            newest[uid] = created
+    return sorted(counts, key=lambda uid: (counts[uid], newest.get(uid, "")), reverse=True)
+
+
 def _owned_ids() -> set[str]:
     uid = byo_key.user_id()
     try:

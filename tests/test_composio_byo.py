@@ -618,6 +618,54 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
         self.assertTrue(json.loads((await r.get_backend(_req())).body)["signed_in"])
 
+    def _project_holding(self, *rows: tuple[str, str]) -> MagicMock:
+        """An SDK whose project holds these ``(user_id, created_at)`` connections."""
+        ca = MagicMock()
+        ca.list.return_value = SimpleNamespace(items=[
+            SimpleNamespace(id=f"ca_{n}", user_id=uid, created_at=created,
+                            toolkit=SimpleNamespace(slug="gmail"))
+            for n, (uid, created) in enumerate(rows)
+        ])
+        return ca
+
+    async def test_the_same_key_reflects_the_account_without_an_xo_credential(self):
+        # The second Space: the user pastes the key and nothing else. Composio records
+        # the account on every connection, so the project the key opens already knows
+        # who these connections belong to.
+        byo_key.save("sk_live")
+        ca = self._project_holding((ACCOUNT, "2026-01-02"), (ACCOUNT, "2026-01-01"))
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+        self.assertEqual(account_identity.account_id(), ACCOUNT)
+        self.assertTrue(self.identity_path.exists())
+        # Read without a user filter: the whole project, which is the shared thing.
+        self.assertEqual(ca.list.call_args.kwargs, {})
+
+    async def test_the_swarm_wins_over_the_project(self) -> None:
+        # Authoritative, and right even for a project that holds nothing yet.
+        byo_key.save("sk_live")
+        self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+        ca = self._project_holding(("user_STALE", "2026-01-01"))
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+        ca.list.assert_not_called()
+
+    async def test_the_busiest_account_wins_a_shared_project(self) -> None:
+        byo_key.save("sk_live")
+        ca = self._project_holding(
+            ("user_QUIET", "2026-09-01"), (ACCOUNT, "2026-01-01"), (ACCOUNT, "2026-01-02"))
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+
+    async def test_an_empty_project_stays_signed_out(self) -> None:
+        byo_key.save("sk_live")
+        ca = self._project_holding()
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            self.assertIsNone(await account_identity.resolve())
+
+    async def test_no_key_means_the_project_is_not_consulted(self) -> None:
+        self.assertIsNone(await account_identity.resolve())
+
     async def test_the_sweep_resolves_even_when_it_installs_nothing(self) -> None:
         # The gates that return early (no agent declares an mcp block, no key) must not
         # take the identity with them: the rest of the connector surface needs it.

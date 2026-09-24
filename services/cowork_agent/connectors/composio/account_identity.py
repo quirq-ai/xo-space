@@ -10,16 +10,23 @@ fresh session minted against the same connection. No second OAuth round.
 What a Space may *reach* stays local and opt-in, which is the half that must not be
 shared. Identity answers "whose?"; :mod:`.space_scope` answers "what, here?".
 
+**Two sources, so the second Space needs only the key** (:func:`resolve`): xo-swarm-api
+first, then the Composio project the key opens. Composio records the ``user_id`` on every
+connection, so a project that already holds connections already knows the account — which
+is how a Space with no XO credential of its own still lands on the same identity as the
+Space that made them. Paste the key, and the account reflects.
+
 **Resolved out of band, cached on disk.** Every reader here is synchronous and one of
 them (``account_for_proxy_token_local``) runs on the agent's MCP hot path, so nothing in
-this module fetches on read. :func:`resolve` is awaited where a round trip is free — the
-boot sweep, and the auth routes, which already hold the answer and just
-:func:`remember` it — and the result is written to ``identity.json`` beside the other
-Composio stores so a restart, and an xo-swarm-api outage, are both served from disk.
+this module fetches on read. :func:`resolve` is awaited where a round trip is affordable
+— the boot sweep, the connector routes on a cold cache, and the auth routes, which
+already hold the answer and just :func:`remember` it — and the result is written to
+``identity.json`` beside the other Composio stores so a restart, and an outage, are both
+served from disk.
 
-**Fails closed.** With no cached id and no credential there is no Composio user id, so
-nothing connects and no session is minted. There is deliberately no fall back to
-``XO_SPACE_ID``: a Space that quietly connected under its own id would file those
+**Fails closed.** With no cached id and neither source available there is no Composio
+user id, so nothing connects and no session is minted. There is deliberately no fall back
+to ``XO_SPACE_ID``: a Space that quietly connected under its own id would file those
 connections where no other Space could see them, which is the split this module exists
 to remove.
 """
@@ -165,18 +172,25 @@ def forget() -> None:
 
 
 async def resolve(*, force: bool = False) -> Optional[str]:
-    """Ask xo-swarm-api who this backend's credential belongs to, and cache the answer.
+    """Establish which XO account this backend acts for, and cache the answer.
 
-    ``GET /get-user-id`` — the route that already validates this backend's token, so
-    xo-swarm-api needs no change to serve connector identity. Returns the cached id
-    without a round trip unless ``force``.
+    Two sources, in order:
+
+    1. **xo-swarm-api** (:func:`_from_swarm`), ``GET /get-user-id`` — the route that
+       already validates this backend's token, so the swarm needs no change to serve
+       connector identity. Authoritative, and right even for an empty project.
+    2. **the Composio project** (:func:`_from_project`) — the connections the key's own
+       project holds record the account on them. This is what makes a second Space need
+       nothing but the same key: no XO credential, no swarm call.
+
+    Returns the cached id without any round trip unless ``force``.
 
     Rate-limited after a failure (:data:`RETRY_AFTER_SECONDS`), because the connector
-    routes call this on a cold cache: without the floor, a swarm outage would cost a
-    round trip on every page load. ``force`` ignores both the cache and the floor.
+    routes call this on a cold cache: without the floor, an outage would cost a round
+    trip on every page load. ``force`` ignores both the cache and the floor.
 
-    Never raises: a swarm that cannot be reached leaves whatever is cached in place and
-    returns it (None when nothing is cached), which is what lets the boot sweep treat
+    Never raises: with both sources unavailable, whatever is cached stays in place and
+    is returned (None when nothing is cached), which is what lets the boot sweep treat
     identity as retryable rather than fatal.
     """
     global _LAST_FAILURE
@@ -191,23 +205,69 @@ async def resolve(*, force: bool = False) -> Optional[str]:
             )
         if waiting:
             return None
-    from services.swarm_api import auth as swarm_auth
-
-    def _failed() -> None:
-        global _LAST_FAILURE
+    resolved = await _from_swarm()
+    if not resolved:
+        # No XO credential here, or the swarm is down. The Composio project the key
+        # opens already records the account on its connections, so a Space that was
+        # handed the same key can read the identity out of the project itself. This is
+        # what makes the second Space need nothing but the key.
+        resolved = await _from_project()
+    if not resolved:
         _LAST_FAILURE = time.monotonic()
+        return account_id()
+    _LAST_FAILURE = 0.0
+    return remember(resolved)
+
+
+async def _from_swarm() -> Optional[str]:
+    """The authoritative source: whoever this backend's XO credential belongs to.
+
+    Preferred over the project because it is right even when the project is empty, and
+    because it cannot be confused by a project holding more than one account.
+    """
+    from services.swarm_api import auth as swarm_auth
 
     res = await swarm_auth.get_user_id()
     if not res.ok:
         if not res.unauthenticated:
             log.info("composio: xo-swarm-api did not answer the account id: %s", res.detail)
-        _failed()
-        return account_id()
+        return None
     data = res.data if isinstance(res.data, dict) else {}
     resolved = str(data.get("user_id") or "").strip()
     if not resolved:
         log.warning("composio: xo-swarm-api returned no user_id for this credential.")
-        _failed()
-        return account_id()
-    _LAST_FAILURE = 0.0
-    return remember(resolved)
+    return resolved or None
+
+
+async def _from_project() -> Optional[str]:
+    """The account the Composio key's own project already has connections under.
+
+    Empty project, no key, or an unreachable Composio means None — this is a fallback,
+    so it degrades to the signed-out state rather than raising. Runs in a worker thread:
+    the SDK call is blocking and :func:`resolve` is awaited from request handlers.
+    """
+    import asyncio
+
+    from services.cowork_agent.connectors.composio import byo_key
+    from services.cowork_agent.connectors.composio import client
+
+    if not byo_key.configured():
+        return None
+    try:
+        candidates = await asyncio.to_thread(client.account_ids_in_project)
+    except Exception as exc:  # noqa: BLE001 — a fallback must not raise
+        log.info("composio: could not read the account id from the project: %s", exc)
+        return None
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        # One key, several accounts. Take the one holding most of the project and say
+        # so: it is a real ambiguity, and the log is how an operator sees it.
+        log.warning(
+            "composio: this Composio project holds connections for %d accounts (%s); "
+            "adopting %s. Set XO_ACCOUNT_ID to pin a different one.",
+            len(candidates), ", ".join(candidates[:4]), candidates[0],
+        )
+    log.info("composio: adopted the account id %s from the Composio project.",
+             candidates[0])
+    return candidates[0]
