@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
+
+from services.timestamps import iso
 
 OK, WARN, FAIL, ERROR = "OK", "WARN", "FAIL", "ERROR"
 LEVELS: tuple[str, ...] = (OK, WARN, FAIL, ERROR)
@@ -30,20 +33,49 @@ class Finding:
     why_it_matters: str
     details: dict[str, Any] = field(default_factory=dict)
     action: Optional[dict[str, Any]] = None
+    # #188: a plain headline, the evidence, and the three answers a person
+    # needs. Emitted only when set, so a v1 consumer sees the v1 shape plus
+    # problem_key.
+    title: str = ""
+    evidence: list[dict[str, str]] = field(default_factory=list)
+    consequence: str = ""
+    self_repair: str = ""
+    next_step: str = ""
+    related: list[dict[str, Any]] = field(default_factory=list)
+    problem_key: str = ""
+
+    def __post_init__(self) -> None:
+        # An old client reads only why_it_matters, so it carries the three
+        # answers whenever a check gave them instead of a single sentence.
+        if not self.why_it_matters:
+            self.why_it_matters = compose_why(self.consequence, self.self_repair, self.next_step)
 
     @property
     def key(self) -> str:
         """Stable across runs for the same problem, so a UI can keep a dialog open."""
         return f"{self.id}:{self.subject}"
 
+    @property
+    def stable_key(self) -> str:
+        """Stable even when the damage changes kind (empty → invalid → schema)."""
+        return self.problem_key or self.key
+
     def to_dict(self) -> dict[str, Any]:
         out = {
             "id": self.id, "key": self.key, "level": self.level, "subject": self.subject,
             "path": self.path, "observed": self.observed, "why_it_matters": self.why_it_matters,
-            "details": self.details,
+            "details": self.details, "problem_key": self.stable_key,
         }
         if self.action is not None:
             out["action"] = self.action
+        for name in ("title", "consequence", "self_repair", "next_step"):
+            value = getattr(self, name)
+            if value:
+                out[name] = value
+        if self.evidence:
+            out["evidence"] = [dict(item) for item in self.evidence]
+        if self.related:
+            out["related"] = list(self.related)
         return out
 
 
@@ -98,3 +130,22 @@ def size(n: int) -> str:
     if n < 1024 * 1024:
         return f"{n / 1024:.0f} KB"
     return f"{n / (1024 * 1024):.1f} MB"
+
+
+def compose_why(*parts: str) -> str:
+    """The non-blank parts, in order, as one paragraph."""
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def ev(label: str, value: object) -> dict[str, str]:
+    """One evidence row: a short label and its value as text."""
+    return {"label": label, "value": str(value)}
+
+
+def moment(ts: float, now: float) -> str:
+    """``2026-09-23T20:27:05Z (3 minutes ago)``; a time ahead of the clock
+    says so instead of claiming "0 seconds ago"."""
+    stamp = iso(datetime.fromtimestamp(ts, timezone.utc))
+    if ts > now + 1:
+        return f"{stamp} (in the future)"
+    return f"{stamp} ({ago(now - ts)} ago)"

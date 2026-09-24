@@ -79,6 +79,8 @@ def run_checks(*, now: float | None = None) -> dict:
     else:
         results = [_run_one(family, check, ctx) for family, check in CHECKS]
     levels = [result.level for result in results]
+    top = [finding for result in results for finding in result.findings]
+    finding_counts = {level: sum(1 for finding in top if finding.level == level) for level in LEVELS}
     # printable: file and project names reach the report verbatim, and one
     # that isn't valid UTF-8 would otherwise make the response unencodable.
     return printable({
@@ -87,6 +89,7 @@ def run_checks(*, now: float | None = None) -> dict:
         "duration_ms": round((time.monotonic() - started) * 1000),
         "level": worst(levels),
         "summary": {level: levels.count(level) for level in LEVELS},
+        "finding_counts": finding_counts,
         "roots": {"state": ctx.display(ctx.state_root), "projects": ctx.display(ctx.projects_root)},
         "checks": [result.to_dict() for result in results],
     })
