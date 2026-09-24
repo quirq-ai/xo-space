@@ -28,9 +28,10 @@ class PrivateSeamsTests(unittest.TestCase):
     def test_a_renamed_seam_does_not_stop_the_doctor_importing(self) -> None:
         import services.doctor.checks as checks
         import services.doctor.leftovers as leftovers
+        import services.doctor.liveness as liveness
         import services.doctor.projects as projects
 
-        for module in (checks, leftovers, projects):
+        for module in (checks, leftovers, liveness, projects):
             source = open(module.__file__, encoding="utf-8").read()
             for _, attribute in self.SEAMS:
                 with self.subTest(module=module.__name__, attribute=attribute):

@@ -5,16 +5,14 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import Optional
 
-from services.cowork_agent import runtime_config
-from services.cowork_agent.visualizer.state import watcher_heartbeat_path
-from services.doctor import inventory
+from services.doctor import catalog, inventory, liveness
 from services.doctor.context import Context
-from services.doctor.model import FAIL, OK, WARN, Finding, ago, size
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, size
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
 from services.storage import layout
 from services.timestamps import parse_ts
-from utils import runtime_env
 
 MAX_UNKNOWN_LISTED = 50
 
@@ -71,51 +69,102 @@ def disk_space(ctx: Context) -> list[Finding]:
     return out
 
 
-def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, result: ReadResult) -> Finding:
-    keep = spec.klass == inventory.KEEP
-    level = FAIL if keep else WARN
+_SCHEMA_OBSERVED = {
+    "newer": "Schema {n} was written by a newer xo-space than this one.",
+    "older": "Schema {n} is older than this xo-space reads.",
+    "missing": "The file has no schema number.",
+}
+_SCHEMA_NEXT = {
+    "newer": "Update xo-space on this machine; don't edit the file.",
+    "older": "Restore a copy written by this version of xo-space; don't edit the number by hand.",
+    "missing": "Restore the file from git or the last project sync; don't add the number by hand.",
+}
+
+
+def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec,
+                  result: ReadResult) -> Optional[Finding]:
+    """One file's problem, told from the catalog (#188 design §5)."""
+    about = catalog.about(spec)
+    values = catalog.labels(spec, subject, ctx.project_label)
+    name = catalog.fill(about.name, values)
+    evidence = catalog.read_evidence(about, result, inventory.accepted(spec), ctx.now, values)
+    shown = ctx.display(path)
+    details = {"class": spec.klass, "behaviour": spec.behaviour, "outcome": result.outcome}
+    stable = f"file:{subject}"
+    if result.outcome == "recent":
+        return Finding("read.recent", OK, subject, shown,
+                       "The file was being written while the checks ran, so it was not judged.",
+                       "It is checked again on the next run.", details=details,
+                       title=f"{name} was being written", evidence=evidence, problem_key=stable)
+    alive = liveness.watcher_alive(ctx) if spec.behaviour == inventory.READ_POSITION else True
+    keys = ("watcher_stopped", result.outcome) if not alive else (result.outcome,)
+
+    def text(part: str) -> str:
+        return catalog.fill(about.text(keys, part), values)
+
     if result.outcome == "schema_unsupported":
-        finding_id = "schema.unsupported"
-        observed, why = {
-            "newer": (f"Schema {result.schema} was written by a newer xo-space than this one.",
-                      "This xo-space refuses or ignores the file. Update xo-space on this machine."),
-            "older": (f"Schema {result.schema} is older than this xo-space reads.",
-                      "The store that owns this file refuses it, so what it holds is not in use."),
-        }.get(result.detail, ("The file has no schema number.",
-                              "The store that owns this file can't tell which version it is, so it refuses it."))
-    else:
-        finding_id = "read." + result.outcome
-        observed = {
-            "unreadable": f"The file can't be read ({result.detail}).",
-            "empty": "The file is empty.",
-            "invalid_json": f"The file is not valid JSON ({result.detail}).",
-            "wrong_type": f"The file holds a JSON {result.detail}, not an object.",
-            "special": f"This is {result.detail}, not a file.",
-            "file_too_large": f"The file is {result.detail}, too large to check.",
-        }[result.outcome]
-        if result.outcome == "unreadable":
-            why = "This is not corruption. Check the file's permissions and the disk; until then nothing can use it."
-        elif result.outcome == "special":
-            why = ("Reading it could wait or run forever, so it was not opened, and the store that owns this "
-                   "name can't use it either. Replace it with the real file.")
-        elif result.outcome == "file_too_large":
-            why = ("It was not read, so it was not checked. State files are small: something may be writing "
-                   "to this one without limit.")
-        elif keep:
-            why = "The store that owns it can't use it, and what it records exists nowhere else."
+        direction = result.detail if result.detail in ("newer", "older") else "missing"
+        policy = spec.schema_newer if direction == "newer" else spec.schema_older
+        if policy == inventory.IGNORED and direction != "newer":
+            return None  # the store reads it as it is
+        if policy == inventory.IGNORED:
+            level = WARN
+            consequence = ("This xo-space uses it anyway, but fields the newer version added may be dropped the "
+                           "next time this one writes the file.")
+            self_repair, next_step = "Nothing.", "Update xo-space on this machine to the version that wrote it."
+        elif policy == inventory.REPLACED:
+            level, consequence = WARN, "Its writer doesn't accept this format, so it replaces the file."
+            self_repair, next_step = text("self_repair"), "Nothing is needed."
         else:
-            why = ("It is rebuilt from other files, so deleting it is safe: the server writes it again, most "
-                   "within seconds, the GitHub issue mirror on its next poll, and xo.json when the server restarts.")
-    return Finding(finding_id, level, subject, ctx.display(path), observed, why,
-                   details={"class": spec.klass, "outcome": result.outcome})
+            level = catalog.level_for(spec, "invalid_json", watcher_alive=alive)
+            consequence = text("consequence")
+            self_repair = f"Nothing: {catalog.fill(about.owner, values)} refuses this format."
+            next_step = _SCHEMA_NEXT[direction]
+        return Finding("schema.unsupported", level, subject, shown,
+                       _SCHEMA_OBSERVED[direction].format(n=result.schema), "",
+                       details={**details, "schema": result.schema, "direction": direction},
+                       title=f"{name} {catalog.PHRASE[direction]}", evidence=evidence,
+                       consequence=consequence, self_repair=self_repair, next_step=next_step,
+                       problem_key=stable)
+
+    observed = {
+        "unreadable": f"The file can't be read ({result.detail}).",
+        "empty": "The file is empty.",
+        "invalid_json": f"The file is not valid JSON ({result.detail}).",
+        "wrong_type": f"The file holds a JSON {result.detail}, not an object.",
+        "special": f"This is {result.detail}, not a file.",
+        "file_too_large": f"The file is {result.detail}, too large to check.",
+    }[result.outcome]
+    if result.outcome in catalog.UNUSABLE:
+        consequence, self_repair, next_step = text("consequence"), text("self_repair"), text("next_step")
+    elif result.outcome == "unreadable":
+        consequence = text("consequence")
+        self_repair = "This isn't corruption: the file may be intact, but nothing can use it until it can be read."
+        next_step = "Check the file's permissions and the disk it's on."
+    elif result.outcome == "special":
+        consequence = text("consequence")
+        self_repair = "It was not opened, because reading it could wait or run forever; its store can't use it either."
+        next_step = "Replace it with the real file, or move it aside."
+    else:  # file_too_large
+        consequence = ("It was not read, so it was not checked. State files are small: something may be writing "
+                       "to it without limit.")
+        self_repair = "Nothing."
+        next_step = "Find what keeps writing to it before the disk fills; move it aside if it keeps growing."
+    return Finding("read." + result.outcome, catalog.level_for(spec, result.outcome, watcher_alive=alive),
+                   subject, shown, observed, "", details=details,
+                   title=f"{name} {catalog.PHRASE[result.outcome]}", evidence=evidence,
+                   consequence=consequence, self_repair=self_repair, next_step=next_step, problem_key=stable)
 
 
 def _judge(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inventory.Spec) -> None:
     if not spec.parsed:
         return
     result = ctx.read(path, spec)
-    if result.outcome not in ("ok", "absent", "recent"):
-        out.append(_read_finding(ctx, path, subject, spec, result))
+    if result.outcome in ("ok", "absent"):
+        return
+    finding = _read_finding(ctx, path, subject, spec, result)
+    if finding is not None:
+        out.append(finding)
 
 
 def _listing_error(path: Path) -> str:
@@ -138,6 +187,7 @@ def _unreadable_dir_finding(ctx: Context, path: Path, rel: str) -> Finding:
 def reads(ctx: Context) -> list[Finding]:
     out: list[Finding] = []
     unknown: list[tuple[str, Path]] = []
+    usage_path = liveness.usage_state_path(ctx)
     files, truncated, unreadable_dirs = ctx.state_files()
     # Path.relative_to(...).as_posix() is one of the two hot spots on a large
     # state root (F7); a plain string slice does the same job on Linux, where
@@ -160,6 +210,8 @@ def reads(ctx: Context) -> list[Finding]:
         if spec is None:
             unknown.append((rel, path))
             continue
+        if spec.pattern == "usage/*.json" and usage_path is not None and path != usage_path:
+            continue  # only the active agent's bookmark is ever read (investigation D6)
         _judge(ctx, out, path, rel, spec)
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
@@ -344,43 +396,16 @@ def _exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
-def _heartbeat_age(ctx: Context, path: Path, spec: inventory.Spec | None) -> float | None:
-    value = ctx.read(path, spec).value
-    stamp = parse_ts(value.get("last_tick_at")) if isinstance(value, dict) else None
-    return None if stamp is None else max(0.0, ctx.now - stamp.timestamp())
-
-
-def _watcher_enabled() -> bool:
-    """``QUIRQ_WATCHER_ENABLED`` (default true), parsed the same way
-    ``runtime_config.effective_settings`` does, but without resolving the
-    active agent: that also happens inside ``effective_settings`` and has
-    nothing to do with these two watcher env vars, so a broken agent setup
-    must not turn this or the layout check into ERROR."""
-    as_bool = getattr(runtime_config, "_as_bool", None)
-    if as_bool is None:  # pragma: no cover - defensive fallback only
-        def as_bool(value: str | None, *, default: bool) -> bool:
-            if value is None:
-                return default
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-    return as_bool(os.getenv("QUIRQ_WATCHER_ENABLED"), default=True)
-
-
-def _stale_after() -> float:
-    # Borrowed inside the function: a rename upstream must turn this one check
-    # into an ERROR result, not stop the server importing the doctor router.
-    from services.cowork_agent.quirq_catalog import _stale_after_seconds  # the Quirq view's liveness rule, shared
-
-    return _stale_after_seconds(runtime_env.watcher_tick_interval_seconds())
-
-
 def layout_moves(ctx: Context) -> list[Finding]:
     """Files still at a path from before the state root had folders (layout.MOVES)."""
+    from services.cowork_agent.visualizer.state import watcher_heartbeat_path
+
     old_heartbeat = next(
         (move.old() for move in layout.MOVES if move.new is not None and move.new() == watcher_heartbeat_path()),
         None,
     )
-    age = _heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
-    old_server_fresh = age is not None and age <= _stale_after()
+    age = liveness.heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
+    old_server_fresh = age is not None and age <= liveness.stale_after()
     if old_server_fresh:
         old_copy_why = "A server from an older xo-space still writes this old path. Update or stop that install before deleting anything here."
         not_migrated_why = "A server from an older xo-space is still running and writing the old layout. Update that install."
@@ -432,15 +457,17 @@ def legacy_pending(ctx: Context) -> list[Finding]:
 
 
 def heartbeat(ctx: Context) -> list[Finding]:
-    if not _watcher_enabled():
+    if not liveness.watcher_enabled():
         return []
+    from services.cowork_agent.visualizer.state import watcher_heartbeat_path
+
     path = watcher_heartbeat_path()
-    age = _heartbeat_age(ctx, path, inventory.spec_for(inventory.STATE, "cache/heartbeat.json"))
+    age = liveness.heartbeat_age(ctx, path, inventory.spec_for(inventory.STATE, "cache/heartbeat.json"))
     why = "Stats, timelines and the Inbox stop updating while the watcher isn't ticking."
     if age is None:
         return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
                         "The watcher is enabled but there is no readable heartbeat yet.", why)]
-    if age > _stale_after():
+    if age > liveness.stale_after():
         return [Finding("watcher.heartbeat", WARN, "watcher", ctx.display(path),
                         f"The watcher is enabled but last ticked {ago(age)} ago.", why)]
     return []
@@ -459,11 +486,27 @@ def _count_entries(path: Path, stop: int) -> int:
     return count
 
 
+_GROWTH_TEXT = {
+    "projects/timeline.jsonl": (
+        "The Space timeline",
+        "Nothing rotates or trims it, and every Space activity view and Inbox refresh reads the whole file, so they "
+        "get slower as it grows.",
+        "Nothing is needed yet; if it gets in the way, archive it while the server is stopped."),
+    "logs/quirq.log": (
+        "The server log", "Nothing rotates or trims it; it grows for as long as the server runs.",
+        "Truncate or rotate it while the server is stopped."),
+}
+_GROWTH_RUNS = ("A scheduled command's run history", "Nothing trims it; it grows with every run.",
+                "Delete it if the history isn't needed; the command keeps working.")
+_GROWTH_LOGS = ("A scheduled command's output log", "Nothing trims it; it grows with every run.",
+                "Delete it if the output isn't needed; the command keeps working.")
+
+
 def growth(ctx: Context) -> list[Finding]:
     """Things nothing trims (architecture §8.3). WARN only."""
     state = ctx.state_root
     out: list[Finding] = []
-    files = [state / "projects" / "timeline.jsonl",
+    files = [state / "projects" / "timeline.jsonl", state / "logs" / "quirq.log",
              *sorted((state / "scheduler" / "runs").glob("*.jsonl")),
              *sorted((state / "logs" / "scheduler").glob("*.log"))]
     for path in files:
@@ -472,8 +515,13 @@ def growth(ctx: Context) -> list[Finding]:
         except OSError:
             continue
         if nbytes > MAX_FILE_BYTES:
-            out.append(Finding("growth.file_size", WARN, path.relative_to(state).as_posix(), ctx.display(path),
-                               f"The file is {size(nbytes)}.", "Nothing rotates or trims this file; it only gets bigger."))
+            rel = path.relative_to(state).as_posix()
+            name, consequence, next_step = _GROWTH_TEXT.get(
+                rel, _GROWTH_RUNS if rel.startswith("scheduler/runs/") else _GROWTH_LOGS)
+            out.append(Finding("growth.file_size", WARN, rel, ctx.display(path), f"The file is {size(nbytes)}.", "",
+                               title=f"{name} keeps growing", evidence=[ev("Size", size(nbytes))],
+                               consequence=consequence, self_repair="Nothing.", next_step=next_step,
+                               problem_key=f"file:{rel}:growth"))
     quarantine = state / layout.quarantine_dir().name
     if quarantine.is_dir() and not quarantine.is_symlink():
         tree = measure_tree(quarantine)

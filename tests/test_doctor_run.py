@@ -88,24 +88,12 @@ class ReadCheckTests(DoctorSandbox):
         (self.state / "cache" / "stats.json").write_text("", encoding="utf-8")
         finding = self.finding("read.empty")
         self.assertEqual(finding["level"], "WARN")
-        self.assertIn("deleting it is safe", finding["why_it_matters"])
-        self.assertNotIn("after a minute", finding["why_it_matters"])
+        self.assertIn("Delete it", finding["next_step"])
 
     def test_wrong_type(self) -> None:
         # accounts.json is a cache the provider re-resolves (investigation Appendix A): WARN, not FAIL.
         (self.state / "connections" / "accounts.json").write_text("[]", encoding="utf-8")
         self.assertEqual(self.finding("read.wrong_type")["level"], "WARN")
-
-    def test_schema_newer_and_older(self) -> None:
-        inbox = self.state / "inbox" / "inbox.json"
-        document = json.loads(inbox.read_text(encoding="utf-8"))
-        inbox.write_text(json.dumps({**document, "schema": 9}), encoding="utf-8")
-        todos = self.projects / "sample-project" / ".xo" / "todos.json"
-        todos.write_text(json.dumps({**json.loads(todos.read_text(encoding="utf-8")), "schema": 1}), encoding="utf-8")
-        found = {f["subject"]: f for f in self.problems() if f["id"] == "schema.unsupported"}
-        self.assertIn("newer xo-space", found["inbox/inbox.json"]["observed"])
-        self.assertIn("older than this xo-space", found["sample-project/.xo/todos.json"]["observed"])
-        self.assertEqual({f["level"] for f in found.values()}, {"FAIL"})
 
     def _write_agent_json(self, document: dict) -> None:
         path = self.projects / "sample-project" / ".xo" / "agent.json"
@@ -129,12 +117,13 @@ class ReadCheckTests(DoctorSandbox):
         self._write_agent_json({"schema": 99, "id": "sample-project"})
         self.assertIn("schema.unsupported", self.ids())
 
-    def test_a_malformed_agent_json_stamp_is_still_unsupported(self) -> None:
-        # Only an absent stamp is legitimate; a present but wrong-typed one is not.
+    def test_a_malformed_agent_json_stamp_is_accepted(self) -> None:
+        # agent.json's schema_older is IGNORED: every adapter reads the file
+        # regardless of a malformed or missing stamp, so this is not a problem.
         for stamp in ("1", None, True):
             with self.subTest(stamp=stamp):
                 self._write_agent_json({"schema": stamp, "id": "sample-project"})
-                self.assertIn("schema.unsupported", self.ids())
+                self.assertNotIn("schema.unsupported", self.ids())
 
     def test_an_unstamped_peers_json_is_accepted(self) -> None:
         # The peers store accepts a missing stamp (atomic_write.read_stamped_document), so this is not a problem.

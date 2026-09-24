@@ -16,6 +16,17 @@ if TYPE_CHECKING:
     from services.doctor.projects import Project
 
 
+def _components_snapshot() -> dict:
+    """The in-process task record (services/background.py). Empty outside
+    the server, where there is no task to report on."""
+    try:
+        from services import background
+
+        return background.snapshot()
+    except Exception:  # noqa: BLE001 - the record must never cost a report
+        return {}
+
+
 def _root(variable: str, default: str) -> Path:
     # The same resolution project_layout._resolved_root applies, without the
     # mkdir xo_projects_root() performs. Inside the server, roots.env has
@@ -37,6 +48,8 @@ class Context:
     now: float
     host_state: str = ""
     host_projects: str = ""
+    #: services.background.snapshot() taken when the run started.
+    components: dict = field(default_factory=dict)
     _reads: dict = field(default_factory=dict, repr=False)
     _state_files: Optional[tuple[list[Path], bool, list[Path]]] = field(default=None, repr=False)
     _projects: Optional[list["Project"]] = field(default=None, repr=False)
@@ -49,6 +62,7 @@ class Context:
             now=time.time() if now is None else now,
             host_state=(os.getenv("QUIRQ_HOST_STATE_ROOT", "") or "").strip(),
             host_projects=(os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or "").strip(),
+            components=_components_snapshot(),
         )
 
     def read(self, path: Path, spec: Optional[inventory.Spec]) -> ReadResult:
@@ -71,6 +85,14 @@ class Context:
 
             self._projects = projects.scan(self)
         return self._projects
+
+    def project_label(self, key: str) -> str:
+        """The project folder name that uses runtime key ``key`` (a pid or a
+        folder key), else a short form of the key."""
+        for project in self.projects():
+            if key in project.keys_in_use:
+                return project.name
+        return f"{key[:8]}…" if len(key) > 12 else key
 
     def display(self, path: Path) -> str:
         """The host path in Docker, where container paths mean nothing to a

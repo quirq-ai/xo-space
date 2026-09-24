@@ -75,6 +75,11 @@ class DoctorSandbox(unittest.TestCase):
         disk = patch.object(os, "statvfs", return_value=ROOMY_DISK)
         disk.start()
         self.addCleanup(disk.stop)
+        # The sandbox is "outside the server": no background task record, so
+        # the in-process liveness layer stays silent unless a test sets one.
+        components = patch("services.doctor.context._components_snapshot", return_value={})
+        components.start()
+        self.addCleanup(components.stop)
 
     def report(self, now: float | None = None) -> dict:
         return run.run_checks(now=self.now if now is None else now)
