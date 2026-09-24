@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.doctor import model, reading
-from services.doctor.reading import ReadResult, Tree, classify, measure_tree, readable_dir
+from services.doctor.reading import ReadResult, Tree, classify, measure_tree, read_tail, readable_dir
 
 ONE = frozenset({1})
 
@@ -230,6 +230,34 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(model.ago(3 * 86400 + 5), "3 days")
         self.assertEqual(model.size(512), "512 B")
         self.assertEqual(model.size(42996121), "41.0 MB")
+
+
+class EvidenceAndTailTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def test_every_outcome_after_stat_carries_size_and_mtime(self) -> None:
+        path = self.dir / "a.json"
+        path.write_text("{bad", encoding="utf-8")
+        os.utime(path, (1_000_000_000, 1_000_000_000))
+        result = classify(path, now=2_000_000_000, accepted=None)
+        self.assertEqual((result.outcome, result.size, result.mtime), ("invalid_json", 4, 1_000_000_000))
+        self.assertIsNone(classify(self.dir / "absent.json", now=0, accepted=None).size)
+
+    def test_read_tail_is_bounded_and_says_whether_it_seeked(self) -> None:
+        path = self.dir / "t.jsonl"
+        path.write_bytes(b"0123456789")
+        self.assertEqual(read_tail(path, 4), (b"6789", True))
+        self.assertEqual(read_tail(path, 100), (b"0123456789", False))
+
+    def test_read_tail_refuses_what_is_not_a_regular_file(self) -> None:
+        fifo = self.dir / "pipe"
+        os.mkfifo(fifo)
+        self.assertIsNone(read_tail(fifo, 10))  # must return at once, never block
+        self.assertIsNone(read_tail(self.dir, 10))
+        self.assertIsNone(read_tail(self.dir / "absent", 10))
 
 
 if __name__ == "__main__":

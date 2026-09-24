@@ -92,8 +92,9 @@ class ReadCheckTests(DoctorSandbox):
         self.assertNotIn("after a minute", finding["why_it_matters"])
 
     def test_wrong_type(self) -> None:
+        # accounts.json is a cache the provider re-resolves (investigation Appendix A): WARN, not FAIL.
         (self.state / "connections" / "accounts.json").write_text("[]", encoding="utf-8")
-        self.assertEqual(self.finding("read.wrong_type")["level"], "FAIL")
+        self.assertEqual(self.finding("read.wrong_type")["level"], "WARN")
 
     def test_schema_newer_and_older(self) -> None:
         inbox = self.state / "inbox" / "inbox.json"
@@ -135,12 +136,13 @@ class ReadCheckTests(DoctorSandbox):
                 self._write_agent_json({"schema": stamp, "id": "sample-project"})
                 self.assertIn("schema.unsupported", self.ids())
 
-    def test_an_unstamped_peers_json_still_fails(self) -> None:
+    def test_an_unstamped_peers_json_is_accepted(self) -> None:
+        # The peers store accepts a missing stamp (atomic_write.read_stamped_document), so this is not a problem.
         path = self.projects / "sample-project" / ".xo" / "peers.json"
         path.write_text(json.dumps({"peers": []}), encoding="utf-8")
         old = self.now - 86400
         os.utime(path, (old, old))
-        self.assertIn("schema.unsupported", self.ids())
+        self.assertNotIn("schema.unsupported", self.ids())
 
     def test_private_files_are_never_opened(self) -> None:
         (self.state / "secrets" / "secrets.env").write_bytes(b"\xff not text, not json")

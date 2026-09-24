@@ -76,25 +76,42 @@ class StampRequiredTests(unittest.TestCase):
     """A document whose own schema leaves `schema` out of `required` is
     legitimate unstamped; every other one is not."""
 
-    def test_agent_json_is_the_only_unstamped_document(self) -> None:
-        optional = {spec.pattern for spec in inventory.SPECS
-                    if inventory.accepted(spec) is not None and not inventory.stamp_required(spec)}
-        self.assertEqual(optional, {"agent.json"})
-
-    def test_stamp_required_mirrors_each_schema_file(self) -> None:
+    def test_stamp_optional_files_are_exactly_those_whose_store_accepts_no_stamp(self) -> None:
+        optional = {spec.pattern for spec in inventory.SPECS if spec.stamp_optional}
+        self.assertEqual(optional, {
+            "inbox/inbox.json", "scheduler/jobs.json", "scheduler/state.json", "connections/accounts.json",
+            "connections/*/config.json", "connections/*/state.json", "sharing/*.json",
+            "settings/onboarding.json", "usage/*.json", "projects/offsets.json", "projects/*/stats.json",
+            "projects/*/workitems/claims.json", "projects/*/sessions/sessions-augment.json",
+            "cache/heartbeat.json", "cache/stats.json", "cache/sessions/sessions-augment.json",
+            "cache/activity/workspace.json", "cache/activity/projects/*.json",
+            "project.json", "todos.json", "workitems.json", "peers.json", "agent.json",
+        })
         for spec in inventory.SPECS:
-            if not spec.schema_file:
-                continue
-            document = json.loads((inventory.SCHEMA_DIR / spec.schema_file).read_text(encoding="utf-8"))
-            with self.subTest(schema=spec.schema_file):
-                self.assertEqual(inventory.stamp_required(spec),
-                                 "schema" in (document.get("required") or []))
+            if spec.stamp_optional:
+                self.assertFalse(inventory.stamp_required(spec), spec.pattern)
 
-    def test_the_inventory_version_table_always_requires_a_stamp(self) -> None:
+    def test_a_stamp_is_required_elsewhere_when_a_version_is_known(self) -> None:
         for spec in inventory.SPECS:
-            if spec.versions is not None:
-                with self.subTest(pattern=spec.pattern):
-                    self.assertTrue(inventory.stamp_required(spec))
+            if spec.parsed and not spec.stamp_optional and inventory.accepted(spec) is not None \
+                    and spec.schema_file is None:
+                self.assertTrue(inventory.stamp_required(spec), spec.pattern)
+
+    def test_markers_history_and_private_files_are_never_parsed(self) -> None:
+        for pattern in ("sharing/removed/*.json", "projects/timeline*.jsonl", "secrets/**", "logs/**"):
+            spec = inventory.spec_for(inventory.STATE, pattern.replace("*", "x").replace("/**", "/a"))
+            self.assertFalse(spec.parsed, pattern)
+            self.assertEqual(spec.klass, inventory.UNPARSED)
+
+    def test_theme_and_branding_are_known(self) -> None:
+        for name in ("settings/theme.json", "settings/branding.json"):
+            self.assertEqual(inventory.spec_for(inventory.STATE, name).behaviour, inventory.IRREPLACEABLE)
+
+    def test_legacy_class_follows_the_behaviour(self) -> None:
+        self.assertEqual(inventory.spec_for(inventory.STATE, "projects/p/stats.json").klass, inventory.KEEP)
+        self.assertEqual(inventory.spec_for(inventory.STATE, "cache/stats.json").klass, inventory.REBUILDABLE)
+        self.assertEqual(inventory.spec_for(inventory.STATE, "connections/gmail/state.json").klass,
+                         inventory.REBUILDABLE)
 
 
 class WalkFilesTests(unittest.TestCase):

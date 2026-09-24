@@ -111,7 +111,7 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, 
 
 
 def _judge(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inventory.Spec) -> None:
-    if spec.klass == inventory.UNPARSED:
+    if not spec.parsed:
         return
     result = ctx.read(path, spec)
     if result.outcome not in ("ok", "absent", "recent"):

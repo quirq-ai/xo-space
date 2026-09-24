@@ -8,6 +8,7 @@ never copy into a report beyond ids, schema numbers and sizes.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import stat
@@ -49,6 +50,10 @@ class ReadResult:
     detail: str = ""
     value: Optional[dict] = None
     schema: Any = None
+    #: Size in bytes and mtime of the file as stat'ed, for evidence; None when
+    #: the stat itself failed or the file is absent.
+    size: Optional[int] = None
+    mtime: Optional[float] = None
 
 
 def _read_regular(path: Path) -> "bytes | bytearray | ReadResult":
@@ -85,6 +90,13 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
     ``None`` for a file exempt from stamping. ``stamped`` is False for a
     document whose own schema leaves ``schema`` out of ``required``: an absent
     version there means the lowest accepted one, not a refused file."""
+    info = None
+
+    def stamped_result(result: ReadResult) -> ReadResult:
+        if info is None:
+            return result
+        return dataclasses.replace(result, size=info.st_size, mtime=info.st_mtime)
+
     try:
         # stat() never blocks and never reads; everything that could is
         # refused here, before any open(). A FIFO's open() waits for a writer
@@ -93,18 +105,18 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
         # server from both.
         info = os.stat(path)
         if stat.S_ISDIR(info.st_mode):
-            return ReadResult("unreadable", "Is a directory")
+            return stamped_result(ReadResult("unreadable", "Is a directory"))
         if not stat.S_ISREG(info.st_mode):
-            return ReadResult("special", _special_kind(info.st_mode))
+            return stamped_result(ReadResult("special", _special_kind(info.st_mode)))
         if info.st_size > MAX_READ_BYTES:
-            return ReadResult("file_too_large", size(info.st_size))
+            return stamped_result(ReadResult("file_too_large", size(info.st_size)))
         raw = _read_regular(path)
     except FileNotFoundError:
         return ReadResult("absent")
     except OSError as exc:
         return ReadResult("unreadable", exc.strerror or type(exc).__name__)
     if isinstance(raw, ReadResult):
-        return raw
+        return stamped_result(raw)
     mtime = info.st_mtime
     # A file dated AHEAD of the clock is not a write in progress: the negative
     # difference would otherwise make it "recent" forever, and a corrupt keep
@@ -114,37 +126,59 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return ReadResult("recent") if recent else ReadResult("invalid_json", "not UTF-8")
+        return stamped_result(ReadResult("recent") if recent else ReadResult("invalid_json", "not UTF-8"))
     if not text.strip():
-        return ReadResult("recent") if recent else ReadResult("empty")
+        return stamped_result(ReadResult("recent") if recent else ReadResult("empty"))
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
         # Position only: exc.msg is a fixed phrase, never the file's text.
         detail = f"{exc.msg} at line {exc.lineno} column {exc.colno}"
-        return ReadResult("recent") if recent else ReadResult("invalid_json", detail)
+        return stamped_result(ReadResult("recent") if recent else ReadResult("invalid_json", detail))
     except RecursionError:
         # Thousands of nested brackets exhaust the parser's recursion limit
         # instead of raising a decode error.
-        return ReadResult("recent") if recent else ReadResult("invalid_json", "nested too deeply to read")
+        return stamped_result(ReadResult("recent") if recent else ReadResult("invalid_json", "nested too deeply to read"))
     except ValueError:
         # int() refuses a number longer than sys.get_int_max_str_digits().
-        return ReadResult("recent") if recent else ReadResult("invalid_json", "holds a number too long to read")
+        return stamped_result(
+            ReadResult("recent") if recent else ReadResult("invalid_json", "holds a number too long to read"))
     if not isinstance(value, dict):
-        return ReadResult("wrong_type", type(value).__name__)
+        return stamped_result(ReadResult("wrong_type", type(value).__name__))
     if accepted is None:
-        return ReadResult("ok", value=value)
+        return stamped_result(ReadResult("ok", value=value))
     if not stamped and "schema" not in value:
         # Only an ABSENT key is legitimate; a present but malformed stamp
         # ("1", null, true) is still refused below.
-        return ReadResult("ok", value=value, schema=min(accepted))
+        return stamped_result(ReadResult("ok", value=value, schema=min(accepted)))
     found = value.get("schema")
     if isinstance(found, bool) or not isinstance(found, int):
-        return ReadResult("schema_unsupported", "missing", value=value, schema=None)
+        return stamped_result(ReadResult("schema_unsupported", "missing", value=value, schema=None))
     if found in accepted:
-        return ReadResult("ok", value=value, schema=found)
+        return stamped_result(ReadResult("ok", value=value, schema=found))
     direction = "newer" if found > max(accepted) else "older"
-    return ReadResult("schema_unsupported", direction, value=value, schema=found)
+    return stamped_result(ReadResult("schema_unsupported", direction, value=value, schema=found))
+
+
+def read_tail(path: Path, limit: int) -> Optional[tuple[bytes, bool]]:
+    """At most the last ``limit`` bytes of a regular file, and whether the
+    read started mid-file; None for anything else (absent, a folder, a FIFO,
+    a device, unreadable). Never blocks: the same stat + O_NONBLOCK + fstat
+    guard as classify, since a FIFO's open() waits for a writer forever."""
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            seeked = info.st_size > limit
+            if seeked:
+                handle.seek(info.st_size - limit)
+            return handle.read(limit), seeked
+    except OSError:
+        return None
 
 
 @dataclass(frozen=True)
