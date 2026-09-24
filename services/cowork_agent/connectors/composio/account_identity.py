@@ -24,6 +24,16 @@ already hold the answer and just :func:`remember` it — and the result is writt
 ``identity.json`` beside the other Composio stores so a restart, and an outage, are both
 served from disk.
 
+**Repairs itself.** A Space carried over from when Composio was addressed by
+``XO_SPACE_ID`` has its own UUID cached where the account id belongs, and its project
+holds connections filed under it. :func:`is_space_shaped` recognises both, so the cache
+is discarded on the first read and the project's legacy ids are never adopted — the
+account is then resolved afresh. The rest of the repair already follows on its own: the
+session stamped for the old id is dropped (its proxy tokens kept) by
+``service._ensure_sessions_loaded``, and the pins it owned are pruned by
+``service.prune_scope_to_live_accounts`` on the next session build. Nothing to run by
+hand.
+
 **Fails closed.** With no cached id and neither source available there is no Composio
 user id, so nothing connects and no session is minted. There is deliberately no fall back
 to ``XO_SPACE_ID``: a Space that quietly connected under its own id would file those
@@ -34,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -74,7 +85,34 @@ class XOAccountRequired(RuntimeError):
     authoritative = True
 
 
+#: A bare UUID is what a Space id looks like. An XO account id never is.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+
+
+def is_space_shaped(value: object) -> bool:
+    """Whether an id is really a *Space* id wearing the account's hat.
+
+    Composio used to be addressed by ``XO_SPACE_ID``, so a Space carried over from that
+    scheme has its own UUID cached here, and its project holds connections filed under
+    it. Both would otherwise be adopted forever: :func:`account_id` returns the cache
+    before anything else, and the project only hands the same value back.
+
+    Recognising the shape is what makes the repair automatic. It rejects the known-bad
+    shape rather than requiring a known-good one, so an XO id in some future format is
+    not refused along with it.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if _UUID_RE.match(value):
+        return True
+    space = (os.getenv("XO_SPACE_ID") or "").strip()
+    return bool(space) and value == space
+
+
 def _env() -> Optional[str]:
+    # Not shape-checked: an operator who pins XO_ACCOUNT_ID means it, whatever it is.
     return (os.getenv(ENV_VAR) or "").strip() or None
 
 
@@ -82,7 +120,20 @@ def _from_disk() -> Optional[str]:
     doc = read_json(_PATH)
     if not isinstance(doc, dict):
         return None
-    return str(doc.get("account_id") or "").strip() or None
+    stored = str(doc.get("account_id") or "").strip() or None
+    if stored and is_space_shaped(stored):
+        log.warning(
+            "composio: identity.json holds %s, which is a Space id, not an XO account "
+            "id — a leftover from when Composio was addressed by XO_SPACE_ID. "
+            "Discarding it and resolving the account afresh; the stale session is "
+            "dropped and dead pins are pruned on the next session build.", stored,
+        )
+        try:
+            _PATH.unlink()
+        except OSError:
+            pass
+        return None
+    return stored
 
 
 def account_id() -> Optional[str]:
@@ -136,6 +187,11 @@ def remember(value: Optional[str]) -> Optional[str]:
     global _CACHED, _LOADED
     value = (value or "").strip()
     if not value:
+        return account_id()
+    if is_space_shaped(value):
+        # Never write one back: it is what the automatic repair has just removed.
+        log.warning("composio: refusing to cache %s as the account id; it is a Space "
+                    "id, not an XO account id.", value)
         return account_id()
     with _LOCK:
         unchanged = _CACHED == value
@@ -258,6 +314,14 @@ async def _from_project() -> Optional[str]:
     except Exception as exc:  # noqa: BLE001 — a fallback must not raise
         log.info("composio: could not read the account id from the project: %s", exc)
         return None
+    # A project from before account-scoping still holds connections filed under a
+    # Space's UUID. Adopting one would put the Space id straight back where the account
+    # id belongs, undoing the repair on the very next resolve.
+    legacy = [uid for uid in candidates if is_space_shaped(uid)]
+    candidates = [uid for uid in candidates if not is_space_shaped(uid)]
+    if legacy:
+        log.info("composio: ignoring %d Space-scoped id(s) in this project (%s); they "
+                 "predate account-scoped connections.", len(legacy), ", ".join(legacy[:4]))
     if not candidates:
         return None
     if len(candidates) > 1:

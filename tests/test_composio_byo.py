@@ -25,6 +25,8 @@ from services.cowork_agent.connectors.composio import client as byo_client
 
 #: A stand-in for the id xo-swarm-api answers ``GET /get-user-id`` with.
 ACCOUNT = "user_3TESTACCOUNT"
+#: What a Space carried over from the XO_SPACE_ID era has where the account id belongs.
+LEGACY_SPACE = "f5484ec9-1acd-4f10-a6de-9f9882ff67b3"
 
 
 def _sdk_stub(**resources) -> SimpleNamespace:
@@ -657,19 +659,47 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
             self.assertEqual(await account_identity.resolve(), ACCOUNT)
 
-    async def test_a_legacy_space_scoped_id_never_wins(self) -> None:
+    async def test_a_legacy_space_scoped_id_is_never_adopted(self) -> None:
         # A project from before account-scoping still holds connections filed under a
         # Space's bare UUID. Adopting one would put the Space id back where the account
-        # id belongs, silently, on any Space whose cache was cleared.
+        # id belongs, undoing the repair on the very next resolve.
         byo_key.save("sk_live")
         ca = self._project_holding(
-            ("f5484ec9-1acd-4f10-a6de-9f9882ff67b3", "2026-09-01"),
-            ("f5484ec9-1acd-4f10-a6de-9f9882ff67b3", "2026-09-02"),
+            (LEGACY_SPACE, "2026-09-01"), (LEGACY_SPACE, "2026-09-02"),
             (ACCOUNT, "2026-01-01"),
         )
         with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
-            # Outnumbered two to one and older, and it still wins on shape.
+            # Outnumbered two to one and older, and it still wins.
             self.assertEqual(await account_identity.resolve(), ACCOUNT)
+
+    async def test_a_project_holding_only_legacy_ids_stays_signed_out(self) -> None:
+        byo_key.save("sk_live")
+        ca = self._project_holding((LEGACY_SPACE, "2026-09-01"))
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            self.assertIsNone(await account_identity.resolve())
+
+    async def test_a_cached_space_id_repairs_itself_on_the_next_read(self) -> None:
+        # The old Space, exactly as found: identity.json holding its own UUID. Nothing
+        # is run by hand — the next read discards it and the account resolves afresh.
+        self.identity_path.parent.mkdir(parents=True, exist_ok=True)
+        self.identity_path.write_text(
+            json.dumps({"version": 1, "account_id": LEGACY_SPACE}), encoding="utf-8")
+        account_identity._CACHED, account_identity._LOADED = None, False
+
+        with patch.dict(os.environ, {"XO_SPACE_ID": LEGACY_SPACE}):
+            self.assertIsNone(account_identity.account_id(), "the stale id was served")
+            self.assertFalse(self.identity_path.exists(), "the stale cache was kept")
+            self.swarm_user_id.return_value = _swarm_result(data={"user_id": ACCOUNT})
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+        self.assertEqual(
+            json.loads(self.identity_path.read_text(encoding="utf-8"))["account_id"],
+            ACCOUNT)
+
+    async def test_a_space_id_is_never_written_back(self) -> None:
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-42"}):
+            self.assertIsNone(account_identity.remember("space-42"))   # matches the Space
+        self.assertIsNone(account_identity.remember(LEGACY_SPACE))     # UUID-shaped
+        self.assertFalse(self.identity_path.exists())
 
     async def test_an_empty_project_stays_signed_out(self) -> None:
         byo_key.save("sk_live")
