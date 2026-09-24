@@ -293,6 +293,32 @@ class SchedulerTests(LivenessSandbox):
         with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
             self.assertEqual(self.of("scheduler."), [])
 
+    def two_jobs(self, *, running_since) -> None:
+        jobs = {
+            "running-job": {"id": "running-job", "name": "running job", "enabled": True, "every_seconds": 86400,
+                            "command": {"argv": ["true"], "timeout": 3600}},
+            "due-job": {"id": "due-job", "name": "due job", "enabled": True, "every_seconds": 86400,
+                        "command": {"argv": ["true"], "timeout": 3600}},
+        }
+        state = {
+            "running-job": {"next_run": None, "last_run": None, "running_since": running_since,
+                            "last_result": None},
+            "due-job": {"next_run": _stamp(self.now - 600), "last_run": None, "running_since": None,
+                        "last_result": None},
+        }
+        (self.state / "scheduler" / "jobs.json").write_text(
+            json.dumps({"schema": 1, "jobs": jobs}), encoding="utf-8")
+        (self.state / "scheduler" / "state.json").write_text(
+            json.dumps({"schema": 1, "jobs": state}), encoding="utf-8")
+
+    def test_a_due_job_waits_while_the_scheduler_is_at_capacity(self) -> None:
+        with patch.dict(os.environ, {"XO_SCHEDULER_MAX_CONCURRENT": "1"}):
+            self.two_jobs(running_since=_stamp(self.now - 10))
+            self.assertEqual(self.of("scheduler.overdue"), [])
+            self.two_jobs(running_since=None)
+            [finding] = self.of("scheduler.overdue")
+            self.assertEqual(finding["subject"], "due-job")
+
 
 class UsageTests(LivenessSandbox):
     def setUp(self) -> None:
