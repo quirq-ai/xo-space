@@ -39,6 +39,14 @@ def projects_dir() -> Path:
     return quirq_state_dir() / "projects"
 
 
+def sessions_dir() -> Path:
+    """``~/.quirq/sessions/``: the index of sessions started with no project
+    (they run in the projects root). Per-project indexes live under
+    ``projects/<key>/sessions/``; this is the Space's own, one level up, so no
+    project key can ever collide with it."""
+    return quirq_state_dir() / "sessions"
+
+
 def inbox_dir() -> Path:
     return quirq_state_dir() / "inbox"
 

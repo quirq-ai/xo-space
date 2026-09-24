@@ -278,6 +278,7 @@ class SpaceCommandsTests(unittest.TestCase):
         self.assertIn('/runs?limit=20', results)
         self.assertIn('esc(run.output_tail', results)
         self.assertIn('openCommandResults', card)
-        self.assertIn('No commands yet', card)
+        self.assertIn('No jobs yet', card)
+        self.assertIn("from '../core/jobs.js?v=", card)
         for action in ('run', 'runs', 'edit', 'delete'):
             self.assertIn(f'data-command-action="{action}"', card)

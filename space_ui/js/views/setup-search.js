@@ -3,6 +3,8 @@ import {esc} from '../core/ui.js';
 /* Search setting names, never form values or credentials. Results navigate to
    the existing controls without rebuilding forms or changing their drafts. */
 const SETTINGS=[
+  ['workspace','Theme','Workspace colors and typography','appearance theme green grove nature neon midnight graphite linen light white orange grey blue black cyberpunk space quirq fonts color','#theme-select'],
+  ['workspace','Branding','Workspace name and logo','branding brading customize rename space upload image','#branding-name'],
   ['workspace','Workspace identity','Space ID, owner and account connections','space user name xo github status','#setup-workspace-title'],
   ['workspace','Projects folder','Workspace · Folders','root directory path projects','#xo-root-input'],
   ['workspace','Space data folder','Workspace · Folders','quirq settings storage directory credentials','#quirq-root-input'],
@@ -11,7 +13,7 @@ const SETTINGS=[
   ['intelligence','Activity interval','Intelligence layer · Advanced','activity watcher polling seconds frequency','#runtime-interval'],
   ['connectors','Connectors','Connect apps and manage access','magicpath github vercel google drive onedrive gmail slack notion calendar outlook telegram oauth polling permissions','#setup-connectors-title'],
   ['secrets','Secrets','Add, replace or remove environment values','env environment key token credentials api password','#setup-secrets-title'],
-  ['commands','Commands','Run commands and view their results','jobs scheduled interval automation inbox output logs','#setup-commands-title'],
+  ['commands','Jobs','Schedule commands, or save them to run when you choose','jobs commands scheduled manual interval timeout automation results output logs','#setup-commands-title'],
   ['server','Restart server','Apply saved changes','restart apply runtime','#setup-server-title'],
   ['server','Updates','Check for a newer version of Space','update version upgrade','#update-check'],
 ];

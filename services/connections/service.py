@@ -13,8 +13,8 @@ account the toolkit's session is bound to as cached in ``accounts.json``
 one); :func:`refresh_account` resolves it live through the poller.
 
 Core code: names no agent and imports nothing from the adapters tree.
-``signed_in`` looks at the auth router lazily (inside the function) so
-importing this module never pulls a router in at load time. ``poll_now``
+``signed_in`` checks the Composio key lazily (inside the function) so
+importing this module never pulls the connector package in at load time. ``poll_now``
 tells the listeners registered through :func:`register_new_events_listener`
 when a poll collected something; the inbox registers one, this package
 never imports the inbox.
@@ -71,6 +71,28 @@ def _available(toolkit: str) -> list[dict]:
 _NULL_STATE = {"last_poll_at": None, "last_ok_at": None, "last_error": None, "events_total": 0}
 
 
+def _live_last_error(toolkit: str, stored: Optional[str]) -> Optional[str]:
+    """Suppress a *stale gating* error the live state no longer satisfies.
+
+    "No key" and "not turned on here" are live preconditions, but the poller
+    records them as ``last_error`` and they only clear on the next poll. Between
+    adding a key (or enabling a toolkit) and that poll, the drawer would show an
+    error that contradicts the card. Recompute the gate at read time so it never
+    does; a real poll failure (a provider/collector error) is always shown."""
+    if not stored:
+        return stored
+    from services.cowork_agent.connectors.composio import byo_key, space_scope
+    from .poller import NOT_SIGNED_IN, NO_TOOLKITS
+    try:
+        if stored == NOT_SIGNED_IN and byo_key.configured():
+            return None
+        if stored in (NO_TOOLKITS, f"{toolkit} is not turned on in this workspace")                 and space_scope.is_enabled(toolkit):
+            return None
+    except Exception:
+        return stored
+    return stored
+
+
 def _entry(toolkit: str, config: Optional[dict], accounts: dict) -> dict:
     """The connection dict for one toolkit; ``config`` is the normalised
     ``config.json`` or ``None`` when the folder holds none (then the poll
@@ -90,7 +112,7 @@ def _entry(toolkit: str, config: Optional[dict], accounts: dict) -> dict:
         "connected_here": _connected_here(toolkit),
         "last_poll_at": state_doc["last_poll_at"],
         "last_ok_at": state_doc["last_ok_at"],
-        "last_error": state_doc["last_error"],
+        "last_error": _live_last_error(toolkit, state_doc["last_error"]),
         "events_total": state_doc["events_total"],
         "account_label": account.get("label"),
         "account_checked_at": account.get("checked_at"),
@@ -220,11 +242,14 @@ async def _notify_new_events(toolkit: str) -> None:
 
 
 def signed_in() -> bool:
-    """Whether this workspace holds a token for the platform (the poller
-    needs one to resolve the account id). Imported lazily so this module
-    never loads a router at import time; any failure reads as ``False``."""
+    """Whether connectors can run: a Composio API key is configured.
+
+    In bring-your-own-key mode the poller reaches Composio with the user's own key
+    (not an XO token), so "signed in" means a key is present. Imported lazily so this
+    module never loads the connector package at import time; any failure reads as
+    ``False``."""
     try:
-        from routers.auth.auth import get_auth_token
-        return bool(get_auth_token())
+        from services.cowork_agent.connectors.composio import byo_key
+        return byo_key.configured()
     except Exception:
         return False

@@ -385,6 +385,8 @@ class InboxStoreTests(unittest.TestCase):
             self.assertEqual(doc["items"][0]["title"], f"Sharing: cloned for {repo}")
             self.assertEqual((doc["items"][0]["project_id"], doc["items"][0]["kind"], doc["items"][0]["body"]),
                              ("tp", "sharing.cloned", "cloned into tp"))
+            # Open lands on Inbox Sharing with the project selected (issue #142)
+            self.assertEqual(doc["items"][0]["link"], {"view": "sharing", "project": "tp"})
             self.assertEqual(doc["cursors"]["sharing"], "2026-09-10T12:00:00.000001+00:00")
             del doc["cursors"]["sharing"]   # an operator reset re-adds older entries once, no duplicates
             self.write(doc)

@@ -1,0 +1,46 @@
+name: Test Codex plugin
+
+on:
+  pull_request:
+    paths:
+      - '.agents/plugins/**'
+      - 'plugins/**'
+      - 'plugin/scripts/**'
+      - 'install.sh'
+      - 'utils/commands/**'
+      - 'utils/runtime_env.py'
+      - 'scripts/check_plugin_sync.sh'
+      - 'tests/test_codex_plugin_*.py'
+      - 'tests/test_plugin_discovery.py'
+      - '.github/workflows/test-codex-plugin.yml'
+  push:
+    branches: [main, development]
+    paths:
+      - '.agents/plugins/**'
+      - 'plugins/**'
+      - 'plugin/scripts/**'
+      - 'install.sh'
+      - 'utils/commands/**'
+      - 'utils/runtime_env.py'
+      - 'scripts/check_plugin_sync.sh'
+      - 'tests/test_codex_plugin_*.py'
+      - 'tests/test_plugin_discovery.py'
+      - '.github/workflows/test-codex-plugin.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare test environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install 'python-dotenv>=1.0.0'
+      - name: Validate package and lifecycle
+        run: |
+          bash -n plugins/quirq/scripts/space.sh plugin/scripts/discover.sh
+          bash scripts/check_plugin_sync.sh
+          .venv/bin/python -m unittest tests.test_codex_plugin_package tests.test_codex_plugin_runtime tests.test_plugin_discovery

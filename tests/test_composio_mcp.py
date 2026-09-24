@@ -31,7 +31,7 @@ from unittest.mock import patch
 
 from services.cowork_agent.connectors.composio import mcp
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.connectors.composio import state as composio_state
+from services.cowork_agent.connectors.composio import byo_key
 
 PROXY = "http://127.0.0.1:5002/mcp/composio-proxy/u/tok-1"
 
@@ -605,11 +605,12 @@ class GatewayWiringTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         tmp = Path(self._tmp.name)
 
-        # The session store is stamped with this install's space, so writing one
-        # requires XO_SPACE_ID to be set.
+        # The session store is stamped with the local user id and the key fingerprint;
+        # a configured key keeps proxy-token writes on the keyed path.
         env = patch.dict(os.environ, {
             "QUIRQ_STATE_ROOT": str(tmp / "quirq"),
-            composio_state.SPACE_ENV: "ws-test",
+            "XO_SPACE_ID": "ws-test",
+            byo_key.ENV_VAR: "sk_test",
         })
         env.start()
         self.addCleanup(env.stop)

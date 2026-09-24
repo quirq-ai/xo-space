@@ -259,7 +259,7 @@ def validate_definition(payload: Any) -> dict:
         raise ValueError("command.timeout is required: a scheduled job without one could run forever")
     every = payload.get("every_seconds")
     if every is not None and (isinstance(every, bool) or not isinstance(every, int) or every < 1):
-        raise ValueError("every_seconds must be a positive integer or null (manual only)")
+        raise ValueError("every_seconds must be a positive integer, or null for a job that does not repeat")
     tick = tick_interval_seconds()
     if every is not None and every < tick:
         # The scheduler looks once per tick; a shorter interval is polling,
@@ -271,10 +271,10 @@ def validate_definition(payload: Any) -> dict:
         )
     first_run_at = payload.get("first_run_at")
     if first_run_at is not None:
-        # Where the grid starts. Must carry a UTC offset: the server clock is
-        # UTC (Docker), so a naive "19:00" would silently mean the wrong hour.
-        # Stored normalised to UTC; a past anchor is fine (the first run is
-        # then the next slot on that grid after now — see _first_slot).
+        # Where the grid starts, or, with every_seconds null, the one instant a
+        # one-time job runs. Must carry a UTC offset: the server clock is UTC
+        # (Docker), so a naive "19:00" would silently mean the wrong hour.
+        # Stored normalised to UTC; a past anchor is fine (see _first_slot).
         if not isinstance(first_run_at, str) or not first_run_at.strip():
             raise ValueError(
                 "first_run_at must be an ISO-8601 timestamp string with a UTC offset, "
@@ -293,10 +293,6 @@ def validate_definition(payload: Any) -> dict:
                 "UTC and a naive time would mean the wrong hour"
             )
         first_run_at = stamp(anchor)
-        if every is None:
-            raise ValueError(
-                "first_run_at needs every_seconds: a manual-only job has no grid to anchor"
-            )
     project_id = payload.get("project_id")
     if project_id is not None and (not isinstance(project_id, str) or not project_id):
         raise ValueError("project_id must be a non-empty string when given")
@@ -328,17 +324,21 @@ def _new_id(name: str, taken: Mapping[str, Any]) -> str:
 
 
 def _first_slot(job: Mapping[str, Any], now: datetime) -> Optional[datetime]:
-    """Where this job's grid starts; ``None`` for a manual-only job.
+    """Where this job's grid starts.
 
-    With ``first_run_at``: that instant if it is still ahead (or exactly now),
-    else the first slot strictly after ``now`` on the grid it defines — so
-    "every Monday 19:00" can be anchored to *last* Monday and still land on
-    the coming one. Without it: one interval from now.
+    A job that does not repeat (``every_seconds`` null) is one-time when it
+    has ``first_run_at``: due at that instant, so a time already past is due
+    at once. Without it, it is manual only and has no slot (``None``).
+
+    A repeating job with ``first_run_at``: that instant if it is still ahead
+    (or exactly now), else the first slot strictly after ``now`` on the grid
+    it defines — so "every Monday 19:00" can be anchored to *last* Monday and
+    still land on the coming one. Without it: one interval from now.
     """
-    if job.get("every_seconds") is None:
-        return None
-    every = int(job["every_seconds"])
     anchor = job.get("first_run_at")
+    if job.get("every_seconds") is None:
+        return parse_stamp(anchor) if anchor else None
+    every = int(job["every_seconds"])
     if anchor:
         first = parse_stamp(anchor)
         return first if first >= now else advance(first, every, now)
@@ -634,13 +634,16 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
     needs writing (a launch writes the file itself, before the process
     exists, and returns False). Lock held."""
     job_id = str(job["id"])
-    if not job.get("enabled", True) or job.get("every_seconds") is None:
-        return False
+    once = job.get("every_seconds") is None
+    if not job.get("enabled", True) or (once and not job.get("first_run_at")):
+        return False  # disabled, or manual only
     entry = state["jobs"].get(job_id)
     if entry is None:
         # Added to jobs.json by hand: adopt it, first run one interval out.
         state["jobs"][job_id] = _initial_state(job, now)
         return True
+    if once and not entry.get("next_run"):
+        return False  # a one-time job that has run: it waits for Run now or a new time
     try:
         next_run = parse_stamp(entry["next_run"])
     except (KeyError, TypeError, ValueError):
@@ -648,23 +651,32 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
         return True
     if now < next_run:
         return False
-    every = int(job["every_seconds"])
-    if job_id in _running:
-        record = {
-            "started_at": stamp(now), "finished_at": stamp(now), "trigger": "schedule",
-            "status": "skipped", "returncode": None, "duration_seconds": None,
-            "output_tail": "", "reason": "previous run still in progress",
-        }
-        _append_run(job_id, record)
-        entry["last_result"] = record
-        entry["next_run"] = stamp(advance(next_run, every, now))
-        report.skipped.append(job_id)
-        return True
-    if len(_running) >= max_concurrent():
-        report.deferred.append(job_id)  # next_run untouched: still due next tick
-        return False
+    if once:
+        following = None
+        if job_id in _running or len(_running) >= max_concurrent():
+            # A one-time run is never skipped, only delayed: next_run stays
+            # due until a runner is free.
+            report.deferred.append(job_id)
+            return False
+    else:
+        every = int(job["every_seconds"])
+        if job_id in _running:
+            record = {
+                "started_at": stamp(now), "finished_at": stamp(now), "trigger": "schedule",
+                "status": "skipped", "returncode": None, "duration_seconds": None,
+                "output_tail": "", "reason": "previous run still in progress",
+            }
+            _append_run(job_id, record)
+            entry["last_result"] = record
+            entry["next_run"] = stamp(advance(next_run, every, now))
+            report.skipped.append(job_id)
+            return True
+        if len(_running) >= max_concurrent():
+            report.deferred.append(job_id)  # next_run untouched: still due next tick
+            return False
+        following = advance(next_run, every, now)
     entry["running_since"] = stamp(now)
-    entry["next_run"] = stamp(advance(next_run, every, now))
+    entry["next_run"] = stamp(following) if following is not None else None
     _write_doc(state_file(), state)  # on disk BEFORE the process exists (idempotency)
     try:
         _launch(job, "schedule", now)
@@ -673,6 +685,8 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
         report.errors.append(f"{job_id}: {exc}")
         return True
     report.started.append(job_id)
+    if once:
+        return False
     tick = tick_interval_seconds()
     if every < tick:
         # Registered under a faster tick, then the watcher was slowed down:

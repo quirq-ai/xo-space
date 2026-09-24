@@ -64,6 +64,12 @@ htmlcov/
 data/
 docs/
 
+# Appearance is machine-local, even when a custom state root is in this checkout.
+**/settings/branding.json
+**/settings/branding.json.tmp
+**/settings/theme.json
+**/settings/theme.json.tmp
+
 ARCHITECTURE.md
 SECURITY-AUDIT.md
 

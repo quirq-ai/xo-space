@@ -38,9 +38,12 @@ addEventListener('space:projects-changed',()=>{
   rootPicker?.invalidate();
   if(bootDataset||activeAtlasId)showProjectRefresh();
 });
+/* The picker caches flattened records separately from the canvas. Clear only
+   those records on a theme change; its selected roots and our datasets stay. */
+addEventListener('space:theme',()=>rootPicker?.invalidate());
 
-/* The atlas builds a simulation once. Offer its existing reload explicitly
-   so changing a project never discards unfinished Setup forms automatically. */
+/* The atlas builds a simulation once. Point to the global refresh instead
+   of discarding unfinished Setup forms automatically when projects change. */
 function showProjectRefresh(){
   if(!projectsDirty)return;
   for(const id of ['view-graph','view-time']){
@@ -48,14 +51,7 @@ function showProjectRefresh(){
     if(!view||view.querySelector('.atlas-project-refresh'))continue;
     const notice=document.createElement('div');
     notice.className='atlas-project-refresh';notice.setAttribute('role','status');
-    notice.innerHTML='<span>Projects changed.</span><button type="button">Refresh map</button>';
-    notice.querySelector('button').addEventListener('click',async()=>{
-      const page=activeAtlasId;if(!page)return;
-      const dataset=activeAtlasId==='dashboard'?'dashboard':'graph';
-      datasetReads.clear();
-      try{if(await ensureBoot(dataset,true)&&activeAtlasId===page){hooks.setActiveView?.(page==='time'?'time':'graph');refreshToolbar();}}
-      catch{if(activeAtlasId===page)renderNoData(view,dataset);}
-    });
+    notice.textContent='Projects changed. Use Refresh at the top of the page to reload the map.';
     view.appendChild(notice);
   }
 }
@@ -91,10 +87,21 @@ async function readDataset(dataset){
   return response.data;
 }
 
+/* Both the picker and atlas use the same category order and palette, while
+   the source dataset retains its original colors for the Space theme. */
+function themedCategories(categories={},css=getComputedStyle(document.documentElement)){
+  const quirq=['quirq','midnight','graphite','linen'].includes(document.documentElement.dataset.theme);
+  return Object.fromEntries(Object.entries(categories).map(([id,category],index)=>[id,{
+    ...category,
+    color:quirq?(css.getPropertyValue(`--chart-${index%7+1}`).trim()||category.color):category.color,
+  }]));
+}
+const pickerDataset=data=>({...data,categories:themedCategories(data.categories)});
+
 export function initProjectRootPicker({switchTo}){
   if(rootPicker)return;
   go=switchTo;
-  rootPicker=createProjectRootPicker({readDataset,onPick:({dataset,id})=>{
+  rootPicker=createProjectRootPicker({readDataset:async dataset=>pickerDataset(await readDataset(dataset)),onPick:({dataset,id})=>{
     pendingFocus=null;
     pendingRoot={dataset,id};
     const page=dataset==='dashboard'?'dashboard':'graph';
@@ -139,7 +146,7 @@ async function ensureBoot(dataset,force=false){
   bootDataset=dataset;rememberDataset(dataset);projectsDirty=false;
   document.getElementById('tclear').hidden=true;
   const mapSearch=document.getElementById('q');if(!force&&mapSearch)mapSearch.value='';
-  rootPicker?.setData(dataset,data);
+  rootPicker?.setData(dataset,pickerDataset(data));
   try{boot(data,source.label,dataset);}
   catch(error){hooks.dispose?.();hooks={};bootDataset=null;throw error;}
   return true;
@@ -254,8 +261,21 @@ hooks.dispose=()=>{
 /* ============================== MODEL FROM LOCAL DATA ==============================
    All graph content comes from .xo/space.json (GET /xo/space.json); nothing is
    embedded here. */
-const CAT=DATA.categories;
-const ACCENT='#a8d94f', ACCENT_DEEP='#83d63a';
+/* Canvas cannot resolve CSS variables itself. Read them at boot and when
+   the theme changes, without restarting the simulation or resetting its view.
+   Clone categories so changing a palette never mutates the cached dataset. */
+const CAT=Object.fromEntries(Object.entries(DATA.categories).map(([id,cat])=>[id,{...cat}]));
+let ACCENT,ACCENT_DEEP,INK,INK_MUTED,BACKGROUND,SANS,quirqTheme;
+function readPalette(){
+  const css=getComputedStyle(document.documentElement);
+  const token=(name,fallback)=>css.getPropertyValue(name).trim()||fallback;
+  ACCENT=token('--accent','#a8d94f');ACCENT_DEEP=token('--accent-deep','#83d63a');
+  INK=token('--ink','#e9e4d9');INK_MUTED=token('--ink-3','#a6a094');
+  BACKGROUND=token('--bg','#0b0c0f');SANS=token('--sans','Inter,system-ui,sans-serif');
+  quirqTheme=['quirq','midnight','graphite','linen'].includes(document.documentElement.dataset.theme);
+  for(const[id,category]of Object.entries(themedCategories(DATA.categories,css)))CAT[id].color=category.color;
+}
+readPalette();
 const graphRoute=bootDataset==='dashboard'?'dashboard':'graph';
 const hubLabel=DATA.meta.hubLabel||'Department';
 const NODES=[];
@@ -288,7 +308,7 @@ const collectionLabel=DATA.meta.collectionLabel||'clusters';
 document.getElementById('fmeta').textContent=
   `${LEAVES.length} ${noun} · ${GROUPS.length} ${collectionLabel} · ${EDGES.length} links · mapped ${DATA.meta.mappedOn} · data: ${DATA_SOURCE}`;
 
-const colorOf=n=>n.type==='root'?'#e9e4d9':CAT[n.cat].color;
+const colorOf=n=>n.type==='root'?INK:CAT[n.cat].color;
 function radiusOf(n){
   if(n.type==='root')return 17;
   if(n.type==='hub')return 13;
@@ -560,10 +580,10 @@ function drawGraph(now){
   gc.clearRect(0,0,GW,GH);
   /* ambient tints */
   let grd=gc.createRadialGradient(GW*.74,GH*.32,0,GW*.74,GH*.32,GW*.5);
-  grd.addColorStop(0,'rgba(168,217,79,.05)');grd.addColorStop(1,'rgba(0,0,0,0)');
+  grd.addColorStop(0,hexA(ACCENT,.05));grd.addColorStop(1,'rgba(0,0,0,0)');
   gc.fillStyle=grd;gc.fillRect(0,0,GW,GH);
   grd=gc.createRadialGradient(GW*.2,GH*.8,0,GW*.2,GH*.8,GW*.45);
-  grd.addColorStop(0,'rgba(111,147,173,.04)');grd.addColorStop(1,'rgba(0,0,0,0)');
+  grd.addColorStop(0,hexA(quirqTheme?INK:'#6f93ad',.04));grd.addColorStop(1,'rgba(0,0,0,0)');
   gc.fillStyle=grd;gc.fillRect(0,0,GW,GH);
 
   stepCam(now);
@@ -587,17 +607,17 @@ function drawGraph(now){
     if(pathIds){
       const idx=pathEdges?pathEdges.indexOf(e):-1;
       if(idx>=0&&idx<revealSeg){alpha=.85;width=2/k;color=ACCENT;}
-      else{alpha=.015;width=.7/k;color='#cfc9bb';}
+      else{alpha=.015;width=.7/k;color=quirqTheme?INK:'#cfc9bb';}
     }else if(focusSet){
       const lit=(e.s===selId||e.t===selId)&&inFocus(e.s)&&inFocus(e.t);
       const semi=inFocus(e.s)&&inFocus(e.t);
       if(lit){alpha=.42;width=1.4/k;color=ACCENT;}
-      else if(semi){alpha=.14;width=.8/k;color='#cfc9bb';}
-      else{alpha=.012;width=.7/k;color='#78746c';}
+      else if(semi){alpha=.14;width=.8/k;color=quirqTheme?INK:'#cfc9bb';}
+      else{alpha=.012;width=.7/k;color=quirqTheme?INK_MUTED:'#78746c';}
     }else{
       const fdim=dimByFilter(a)||dimByFilter(b);
       alpha=(e.kind==='x'?.10:e.kind==='root'?.07:.05)*(fdim?.25:1);
-      width=(e.kind==='x'?.9:.7)/k;color=e.kind==='x'?'#cfc9bb':'#b4afa4';
+      width=(e.kind==='x'?.9:.7)/k;color=quirqTheme?INK:(e.kind==='x'?'#cfc9bb':'#b4afa4');
     }
     gc.beginPath();
     if(e.kind==='x'){
@@ -623,8 +643,8 @@ function drawGraph(now){
       gc.lineWidth=2.4/Math.sqrt(k);gc.lineJoin='miter';gc.lineCap='butt';
       const sc=.075;
       const CHEV=[
-        ['#e9e4d9',[[37,166],[118,247],[31,335]]],
-        ['#e9e4d9',[[245,166],[163,247],[251,335]]],
+        [INK,[[37,166],[118,247],[31,335]]],
+        [INK,[[245,166],[163,247],[251,335]]],
         [ACCENT_DEEP,[[328,165],[247,247],[334,334]]],
         [ACCENT_DEEP,[[381,165],[462,247],[375,334]]],
       ];
@@ -663,7 +683,7 @@ function drawGraph(now){
         gc.strokeStyle=hexA(ACCENT,.8);gc.lineWidth=1.4/Math.sqrt(k);gc.stroke();
       }else if(hl){
         drawShape(gc,n.x,n.y,r+3/Math.sqrt(k),n.shape);
-        gc.strokeStyle='rgba(233,228,217,.9)';gc.lineWidth=1.2/Math.sqrt(k);gc.stroke();
+        gc.strokeStyle=hexA(INK,.9);gc.lineWidth=1.2/Math.sqrt(k);gc.stroke();
       }
     }
     if(n.id===rootId&&n.type!=='root'){
@@ -688,23 +708,23 @@ function drawGraph(now){
     if(sx<-100||sx>GW+100||sy<-50||sy>GH+50)continue;
     if(n.type==='hub'){
       gc.font='500 17px '+SANS;
-      halo(n.label,sx,sy-n.r*k-12,`rgba(233,228,217,${.94*a})`);
+      halo(n.label,sx,sy-n.r*k-12,hexA(INK,.94*a));
       gc.font='500 11px '+SANS;
       const hubCount=leafCountByCat.get(n.cat)||0;
       const hubNoun=hubCount===1?noun.replace(/s$/,''):noun;
-      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,`rgba(166,160,148,${a})`,.06);
+      halo(`${hubCount} ${hubNoun.toUpperCase()}`,sx,sy+n.r*k+16,hexA(INK_MUTED,a),.06);
     }else if(n.type==='group'){
       const on=n.id===hoverId||n.id===selId||(focusSet&&focusSet.has(n.id));
       if(!(on||k>.8))continue;
       const closed=!expanded.get(n.id);
       gc.font='500 11px '+SANS;
       const t=n.label.toUpperCase()+(closed?` +${leafCountByGroup.get(n.id)||0}`:'');
-      halo(t,sx,sy-n.r*k-7,`rgba(166,160,148,${a})`,.06);
+      halo(t,sx,sy-n.r*k-7,hexA(INK_MUTED,a),.06);
     }else if(n.type==='leaf'){
       const on=n.id===hoverId||n.id===selId||n.id===rootId||(focusSet&&focusSet.has(n.id))||(pathIds&&pathIds.includes(n.id));
       if(!(on||k>1.55||(k>1.05&&n.degree>=4)))continue;
       gc.font='400 11px '+SANS;
-      halo(n.label,sx,sy-n.r*k-7,on?`rgba(233,228,217,${.94*a})`:`rgba(166,160,148,${.9*a})`);
+      halo(n.label,sx,sy-n.r*k-7,on?hexA(INK,.94*a):hexA(INK_MUTED,.9*a));
     }
   }
   drawSatLabels(k);
@@ -723,12 +743,10 @@ function drawGraph(now){
   /* settling status */
   document.getElementById('simstat').style.opacity=simAlpha>.05?1:0;
 }
-/* Canvas text cannot read CSS variables: keep in step with --sans in base.css. */
-const SANS=`"Inter",system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif`;
 function halo(s,x,y,fill,tracking){
   if(tracking){gc.save();/* cheap letterspacing for tiny caps */
     gc.letterSpacing=(tracking*10)+'px';}
-  gc.lineWidth=3.5;gc.strokeStyle='rgba(11,12,15,.88)';gc.lineJoin='round';
+  gc.lineWidth=3.5;gc.strokeStyle=hexA(BACKGROUND,.88);gc.lineJoin='round';
   gc.strokeText(s,x,y);gc.fillStyle=fill;gc.fillText(s,x,y);
   if(tracking)gc.restore();
 }
@@ -913,7 +931,7 @@ function setRoot(id){
 hooks.setRoot=setRoot;
 
 /* legend + counts */
-{
+function renderLegend(){
   const lg=document.getElementById('legend');
   const glyph={
     disc:'<svg width="10" height="10"><circle cx="5" cy="5" r="3.6" fill="#b3ada0"/></svg>',
@@ -933,6 +951,7 @@ hooks.setRoot=setRoot;
     shapeDefs.map((d,i)=>`<span class="li"${i===0?' style="margin-left:6px"':''}>${glyph[d.shape]||glyph.disc}${esc(d.label)}</span>`).join('')+
     typeDefs.map((d,i)=>`<span class="li${d.weight==='dim'?' li-dim':''}"${i===0?' style="margin-left:6px"':''}><span class="sw sw-ring"></span>${esc(d.label.toLowerCase())}</span>`).join('');
 }
+renderLegend();
 
 /* ============================== HOVER CARD ============================== */
 const hc=document.getElementById('hc');
@@ -996,7 +1015,7 @@ function openPanel(n){
       if(e.kind==='x')rel=(e.s===n.id?'':'← ')+e.label;
       else rel=o.type==='group'||o.type==='hub'||o.type==='root'?'part of':'holds';
       return `<button class="conn" data-id="${o.id}">
-        <span class="cdot" style="background:${o.type==='root'?ACCENT_DEEP:CAT[o.cat]?.color||'#e9e4d9'}"></span>
+        <span class="cdot" style="background:${o.type==='root'?ACCENT_DEEP:CAT[o.cat]?.color||INK}"></span>
         <span>${esc(o.label)}</span>
         <span class="rel">${esc(rel)}</span>
         <span class="yr">${o.date?o.date.slice(0,7):''}</span>
@@ -1249,12 +1268,12 @@ function drawSatLabels(k){
      the orbit collides with the dots at the bottom of the constellation. */
   const shells=Math.max(...satDots.map(s=>satSlot(s.i).shell))+1;
   const out=(host.r+26+(shells-1)*19)*k+15;
-  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,'rgba(168,217,79,.9)',.06);
+  halo(`${total} TODO${total===1?'':'S'}`,sx,sy+out,hexA(ACCENT,.9),.06);
   const s=satDots.find(d=>d.key===satHover);
   if(!s||k<SAT_MIN_K)return;
   gc.font='400 11px '+SANS;
   const t=s.content.length>44?s.content.slice(0,43)+'…':s.content;
-  halo(t,(s.x-cam.x)*k+GW/2,(s.y-cam.y)*k+GH/2-s.r*k-7,'rgba(233,228,217,.95)');
+  halo(t,(s.x-cam.x)*k+GW/2,(s.y-cam.y)*k+GH/2-s.r*k-7,hexA(INK,.95));
 }
 function pickSat(mx,my){
   const host=satAnchor();
@@ -1340,7 +1359,7 @@ function rankMatches(q){
   return out.slice(0,8);
 }
 function acRow(n,idx,q){
-  const col=n.cat?CAT[n.cat].color:'#e9e4d9';
+  const col=n.cat?CAT[n.cat].color:INK;
   const name=idx>=0
     ?esc(n.label.slice(0,idx))+'<em>'+esc(n.label.slice(idx,idx+q.length))+'</em>'+esc(n.label.slice(idx+q.length))
     :esc(n.label);
@@ -1656,7 +1675,7 @@ function buildTimeline(){
   const plotG=document.createElementNS(SVGNS,'g');
   plotG.setAttribute('clip-path','url(#tclip)');
   const labelsG=document.createElementNS(SVGNS,'g');
-  labelsG.setAttribute('style','paint-order:stroke;stroke:rgba(11,13,16,.9);stroke-width:3px;stroke-linejoin:round');
+  labelsG.setAttribute('style',`paint-order:stroke;stroke:${hexA(quirqTheme?BACKGROUND:'#0b0d10',.9)};stroke-width:3px;stroke-linejoin:round`);
   const yOf=t=>M.t+(T1-t)/(T1-T0)*(H-M.t-M.b);
   /* column bands + headers */
   lanes.forEach((cat,i)=>{
@@ -1670,7 +1689,7 @@ function buildTimeline(){
     band.setAttribute('fill',live?hexA(CAT[cat].color,.04):'rgba(0,0,0,.22)');
     band.setAttribute('rx',8);
     if(!live){
-      band.setAttribute('stroke','rgba(233,228,217,.05)');
+      band.setAttribute('stroke',hexA(INK,.05));
       band.setAttribute('stroke-dasharray','2 4');
     }
     tsvg.appendChild(band);
@@ -1724,7 +1743,7 @@ function buildTimeline(){
       const ln=document.createElementNS(SVGNS,'line');
       ln.setAttribute('x1',M.l-6);ln.setAttribute('x2',SW-M.r);
       ln.setAttribute('y1',y);ln.setAttribute('y2',y);
-      ln.setAttribute('stroke',d.getMonth()===0?'rgba(233,228,217,.13)':'rgba(233,228,217,.05)');
+      ln.setAttribute('stroke',hexA(INK,d.getMonth()===0?.13:.05));
       ln.setAttribute('stroke-dasharray','1 4');
       tsvg.appendChild(ln);
       if(mi%labelEvery===0){
@@ -2073,6 +2092,15 @@ listen(tsvg,'click',e=>{
 });
 
 /* ============================== BOOT ============================== */
+listen(window,'space:theme',()=>{
+  readPalette();
+  ST_COLOR.in_progress=ACCENT;
+  renderLegend();hideHC();
+  if(selId&&panel.classList.contains('is-open'))openPanel(byId.get(selId));
+  if(view==='time')buildTimeline();
+  /* The graph's next animation frame uses the updated colors and font. A
+     hidden timeline rebuilds in setActiveView when the user returns to it. */
+});
 function resize(){
   dpr=Math.min(2,devicePixelRatio||1);
   const r=document.getElementById('view-graph').getBoundingClientRect();

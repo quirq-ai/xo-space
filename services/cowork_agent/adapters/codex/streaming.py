@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from services.cowork_agent.engine import stream_events as se
+
 
 def _extract_text_from_item(item: dict[str, Any]) -> str:
     """
@@ -69,9 +71,9 @@ def _error_text(event: dict[str, Any]) -> str:
 # --json run (blueprint §12.10) — only ``agent_message`` and ``error`` were seen
 # on the local (401'd) run. Unknown item types fall through to None below, safe.
 _TOOL_ITEM_LABELS = {
-    "command_execution": "running command",
-    "file_change": "editing files",
-    "mcp_tool_call": "calling tool",
+    "command_execution": se.RUNNING_COMMAND,
+    "file_change": se.EDITING_FILES,
+    "mcp_tool_call": se.CALLING_TOOL,
 }
 
 
@@ -129,7 +131,7 @@ def parse_stream_line(raw: bytes) -> dict | None:
     if etype == "thread.started":
         sid = event.get("thread_id")
         if sid:
-            return {"type": "session_id", "session_id": sid}
+            return se.session_id(sid)
         return None
 
     # ── item.started / item.updated / item.completed ───────────────────────────
@@ -151,17 +153,17 @@ def parse_stream_line(raw: bytes) -> dict | None:
         if item_type == "agent_message":
             text = _extract_text_from_item(item)
             if text:
-                return {"type": "token", "token": text}
+                return se.token(text)
             return None
 
         # reasoning → opaque/encrypted; NEVER surface as text (blueprint §1.3).
         # Optional progress ping; return None instead if "thinking" is too noisy.
         if item_type == "reasoning":
-            return {"type": "model-loading", "label": "thinking"}
+            return se.activity(se.THINKING)
 
         # tool/work items → progress ping only (label, never inputs = PII).
         if item_type in _TOOL_ITEM_LABELS:
-            return {"type": "model-loading", "label": _TOOL_ITEM_LABELS[item_type]}
+            return se.activity(_TOOL_ITEM_LABELS[item_type])
 
         # item.type == "error" or any unknown type → skip; the authoritative
         # failure text arrives via a top-level turn.failed/error event below.
@@ -173,11 +175,11 @@ def parse_stream_line(raw: bytes) -> dict | None:
     # so the adapter finally-block can roll it up (mirrors claude adapter.py:474
     # reading event.get("usage")).
     if etype == "turn.completed":
-        return {"type": "result", "usage": event.get("usage") or {}}
+        return se.result(usage=event.get("usage") or {})
 
     # ── turn.failed / transport error → error (dict AND str shapes) ────────────
     if etype in ("turn.failed", "error"):
-        return {"type": "error", "error": _error_text(event)}
+        return se.error(_error_text(event))
 
     # thread/turn.started and everything else → skip.
     return None

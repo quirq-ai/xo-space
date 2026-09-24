@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* Collapsible Manage details and migrated Issues use fictional reads only. */
 import assert from 'node:assert/strict';
+import {startDataRefresh,waitForDataRefresh} from './refresh-helpers.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -78,11 +79,11 @@ try{
       held.release.resolve();await issues('alpha').getByText(/No github.com remote/).waitFor();
       await page.waitForFunction(()=>!document.querySelector('[data-project-id="alpha"] [data-iss-refresh]').disabled);
       assert.equal(await (moveFocus?owner:refresh).evaluate(node=>node===document.activeElement),true,
-        moveFocus?'No-remote completion preserves a newly selected control':'No-remote completion focuses Refresh after it becomes enabled');
-      if(!moveFocus){await page.getByRole('tooltip').waitFor();assert.equal(await page.getByRole('tooltip').textContent(),await refresh.getAttribute('data-tip'),'Restored focus describes Refresh, not the removed repository control');}
+        moveFocus?'No-remote completion preserves a newly selected control':'No-remote completion focuses Check GitHub after it becomes enabled');
+      if(!moveFocus){await page.getByRole('tooltip').waitFor();assert.equal(await page.getByRole('tooltip').textContent(),await refresh.getAttribute('data-tip'),'Restored focus describes Check GitHub, not the removed repository control');}
       if(!moveFocus){await refresh.click();}
     }
-    checked('A held forced refresh that removes repository controls restores enabled Refresh focus, while preserving focus moved elsewhere by the user.');
+    checked('A held forced refresh that removes repository controls restores enabled Check GitHub focus, while preserving focus moved elsewhere by the user.');
     assert.deepEqual(report.errors,[]);assert.deepEqual(report.writes,[]);
   }else if(captureOnly){
     await page.goto(origin+'/space/#/projects/manage',{waitUntil:'networkidle'});await toggle('alpha').waitFor();
@@ -136,7 +137,7 @@ try{
   assert.equal(await toggle('alpha').getAttribute('aria-expanded'),'false');assert.equal(countIssues(),0);
   assert.equal(await cardNode.evaluate(node=>node===document.querySelector('.manage-project-row[data-project-id="alpha"]')),true);
   assert.deepEqual(await page.locator('.manage-project-row').evaluateAll(nodes=>nodes.map(node=>node.dataset.projectId)),order);
-  await page.locator('#project-refresh').click();await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);await waitForDataRefresh(page);
   assert.equal(await pinNode.evaluate(node=>node===document.querySelector('[data-project-pin="alpha"]')),true);
   await page.reload({waitUntil:'networkidle'});await pin.waitFor();
   assert.equal(await pin.getAttribute('aria-pressed'),'true','Manage pins persist across reload');
@@ -264,20 +265,20 @@ try{
   await page.waitForFunction(count=>window.fixtureCopies.length===count,beforeRepo+1);
   assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),'fictional/alpha');
   const repoCopyNode=await repoCopy.elementHandle();
-  await page.locator('#project-refresh').evaluate(button=>button.click());
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
-  assert.equal(await repoCopyNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Refreshing counts and time retains focused issue-repository copy control');
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);
+  assert.equal(await repoCopyNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Rereading counts and time retains focused issue-repository copy control');
   const owner=details('alpha').locator('[data-project-field="owner"] [data-copy-value]');
   const ownerNode=await owner.elementHandle();await owner.focus();
-  await page.locator('#project-refresh').evaluate(button=>button.click());
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);
   assert.equal(await ownerNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Metadata refresh retains the same focused copy button');
   const beforeDelayedCopy=await page.evaluate(()=>window.fixtureCopies.length),oldOwner=metadataFields.owner_user_id;
   await page.evaluate(()=>{window.fixtureCopyPause=true;window.fixtureReleaseCopy=null;});await owner.press('Enter');
   await page.waitForFunction(()=>typeof window.fixtureReleaseCopy==='function');
   metadataFields.owner_user_id='fictional-owner-updated-after-refresh';
-  await page.locator('#project-refresh').evaluate(button=>button.click());
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);
   assert.equal(await ownerNode.evaluate(node=>node.isConnected&&node===document.activeElement),true,'Changed metadata updates the value without replacing the focused button');
   assert.equal(await owner.getAttribute('data-copy-value'),metadataFields.owner_user_id);
   await page.evaluate(()=>{window.fixtureCopyPause=false;window.fixtureReleaseCopy();});
@@ -296,13 +297,13 @@ try{
   assert.equal(await page.evaluate(()=>window.fixtureCopies.at(-1)),metadataFields.owner_user_id);
   const savedOwner=metadataFields.owner_user_id;delete metadataFields.owner_user_id;
   await owner.focus();await page.getByRole('tooltip').waitFor();
-  await page.locator('#project-refresh').evaluate(button=>button.click());
-  await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);
+  await waitForDataRefresh(page);
   assert.equal(await ownerNode.evaluate(node=>node.isConnected),false);
   assert.equal(await toggle('alpha').evaluate(node=>node===document.activeElement),true,'Removing focused metadata returns focus to its card');
   await page.getByRole('tooltip').waitFor({state:'hidden'});
   metadataFields.owner_user_id=savedOwner;
-  await page.locator('#project-refresh').evaluate(button=>button.click());await page.waitForFunction(()=>!document.querySelector('#project-refresh').disabled);
+  await startDataRefresh(page);await waitForDataRefresh(page);
   checked('Exact metadata copies, tooltips and focused controls survive refresh; stale clipboard feedback and removed-field tooltips are suppressed.');
 
   await toggle('alpha').click();

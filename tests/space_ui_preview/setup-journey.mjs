@@ -1,6 +1,7 @@
 /* Guided Setup regression. All setting/credential/restart writes are handled
    in browser memory; this never changes an installation or executes commands. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,startDataRefresh,waitForSetup} from './refresh-helpers.mjs';
 import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -94,6 +95,7 @@ await context.route('**/*',async route=>{
   assert.equal(method,'GET','Unexpected writes never reach the fixture server');
   await route.continue();
 });
+await installRefreshProbes(context);
 const panel=id=>page.locator('#setup-panel-'+id);
 async function expectSection(id){
   await page.waitForURL('**/#/setup/'+id);await panel(id).waitFor();
@@ -117,8 +119,8 @@ async function expectManage(){
 async function manage(){await page.evaluate(()=>{location.hash='#/projects/manage';});await expectManage();}
 async function refresh(){
   const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/runtime-config'&&r.request().method()==='GET');
-  await page.locator('#setup-refresh').click();await response;
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await startDataRefresh(page,'setup');await response;
+  await waitForSetup(page);
 }
 async function save(selector,path,method='PUT'){
   const response=page.waitForResponse(r=>new URL(r.url()).pathname===path&&r.request().method()===method);
@@ -142,7 +144,7 @@ try{
   await initialRead.arrived.promise;
   await page.locator('#xo-root-input').fill('/demo/early-draft');
   initialRead.release.resolve();
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await waitForSetup(page);
   assert.equal(await page.locator('#xo-root-input').inputValue(),'/demo/early-draft','Typing before initial status arrives is safe and preserved');
   assert.equal(await page.locator('#quirq-root-input').inputValue(),'/demo/.quirq','Initial status still fills untouched fields');
   await page.locator('#xo-root-input').fill('/demo/projects');
@@ -201,7 +203,7 @@ try{
   assert.equal(await page.locator('#runtime-interval').isVisible(),true,'Search reveals the advanced activity control in Intelligence');
   assert.equal(await page.locator('#runtime-interval').evaluate(node=>node===document.activeElement),true);
   assert.equal(await page.locator('#view-search').inputValue(),'');
-  await choose('commands');assert.match(await page.locator('#command-list').textContent(),/No commands yet/);
+  await choose('commands');assert.match(await page.locator('#command-list').textContent(),/No jobs yet/);
   await choose('server');await choose('workspace');
   assert.deepEqual(writes,[],'Navigation and Next never save, run commands or restart');
 
@@ -226,7 +228,7 @@ try{
   assert.equal(await credentialNode.evaluate(node=>node.isConnected),true,'Section navigation retains the credential form');
   assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Section navigation retains the credential draft');
   await refresh();await drafts();
-  assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Refresh keeps the typed credential draft');
+  assert.equal(await page.locator('#secret-value').inputValue(),'fixture-value-not-a-real-secret','Internal rereads keep the typed credential draft');
   const pendingSecret=holdSecret=gate();
   const secretSave=save('#secret-save','/api/secrets/DEMO_CREATED_TOKEN','PATCH');
   await pendingSecret.arrived.promise;
@@ -236,7 +238,7 @@ try{
   assert.equal(await page.locator('#secret-key').inputValue(),'DEMO_CREATED_TOKEN','A pending save cannot replace its credential form');
   pendingSecret.release.resolve();await secretSave;
   await page.locator('#secret-form').waitFor({state:'hidden'});
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await waitForSetup(page);
   await drafts();
   assert.equal(await page.locator('#secret-value').inputValue(),'');
   assert.doesNotMatch(await page.locator('#secret-list').textContent(),/fixture-value-not-a-real-secret/);
@@ -256,10 +258,10 @@ try{
   await choose('intelligence');
 
   const staleRead=holdRead=gate();
-  await page.locator('#setup-refresh').click();await staleRead.arrived.promise;
+  await startDataRefresh(page,'setup');await staleRead.arrived.promise;
   await save('#runtime-save','/api/runtime-config');
   staleRead.release.resolve();
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await waitForSetup(page);
   const agentSave=writes.filter(write=>write.path==='/api/runtime-config').at(-1).body;
   assert.deepEqual(agentSave,{agent_name:'codex',watcher_enabled:true,watcher_interval_seconds:1,watcher_source_mode:'all'},
     'Agent Save retains the last saved activity settings, not its unsaved draft');

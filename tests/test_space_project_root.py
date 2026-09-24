@@ -26,9 +26,15 @@ class Element{
  querySelectorAll(){return[];}
  prepend(child){this.children.unshift(child);if(child.id)elements.set(child.id,child);}
 }
-const document={activeElement:null,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id);},
+const document={activeElement:null,documentElement:new Element('html'),
+ getElementById:id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id);},
  querySelectorAll:()=>[],createElement:()=>new Element('')};
-const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,dataViewControls,
+document.documentElement.dataset={};
+/* atlas.js recolours picker categories from CSS custom properties. The probe
+   runs headless, so serve an empty palette: every token falls back to the
+   colour the dataset already carries. */
+const getComputedStyle=()=>({getPropertyValue:()=>''});
+const context={document,console,Set,Map,setTimeout,clearTimeout,AbortController,dataViewControls,getComputedStyle,
  addEventListener:(name,handler)=>{if(!events.has(name))events.set(name,[]);events.get(name).push(handler);},
  esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
 };

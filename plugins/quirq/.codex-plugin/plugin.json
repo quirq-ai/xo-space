@@ -1,0 +1,26 @@
+{
+  "name": "quirq",
+  "version": "1.3.0",
+  "description": "Install, open and manage XO Space locally from Codex. Browse projects, agent sessions, todos and usage in your workspace.",
+  "author": {"name": "Quirq", "url": "https://github.com/quirq-ai"},
+  "homepage": "https://xo.builders",
+  "repository": "https://github.com/quirq-ai/xo-space",
+  "license": "MIT",
+  "keywords": ["xo-space", "quirq", "workspace", "coding-agents", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "XO Space",
+    "shortDescription": "Your local agent workspace, inside Codex",
+    "longDescription": "Open XO Space from Codex to browse projects, sessions, todos and usage. On first use, Codex installs the local server into a durable workspace and starts it with the Codex backend. Existing installations keep their settings. Requires a local macOS, Linux or WSL environment with git and an authenticated Codex CLI.",
+    "developerName": "Quirq",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": ["Open XO Space", "Install XO Space in ~/xo-workspace", "Check XO Space status"],
+    "websiteURL": "https://xo.builders",
+    "brandColor": "#7357FF",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/logo.svg",
+    "logoDark": "./assets/logo-dark.svg",
+    "screenshots": ["./assets/projects.png"]
+  }
+}

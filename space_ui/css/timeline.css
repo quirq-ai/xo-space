@@ -14,7 +14,7 @@
 #view-time .atlas-lens-switch{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:100%;padding:3px;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg-2)}
 #view-time .atlas-lens-switch button{display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:7px 13px;border:1px solid transparent;border-radius:7px;white-space:nowrap;color:var(--ink-3);font:500 12px var(--sans);transition:color .16s var(--ease),background .16s var(--ease);cursor:pointer}
 #view-time .atlas-lens-switch button:hover{color:var(--ink);background:var(--bg-3)}
-#view-time .atlas-lens-switch button.is-on{border-color:rgba(168,217,79,.2);background:rgba(168,217,79,.07);color:var(--accent)}
+#view-time .atlas-lens-switch button.is-on{border-color:rgba(var(--accent-rgb),.2);background:rgba(var(--accent-rgb),.07);color:var(--accent)}
 #view-time .thead .ghost{flex:none;min-height:38px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg-2);color:var(--ink-2);font:500 12px var(--sans);white-space:nowrap;transition:color .16s var(--ease),border-color .16s var(--ease);cursor:pointer}
 #view-time .thead .ghost:hover{color:var(--ink);border-color:var(--ink-3)}
 #view-time #tplay{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;min-height:38px;padding:8px 12px;border:1px solid var(--accent);border-radius:8px;background:var(--accent);color:var(--bg);font:500 12px var(--sans);white-space:nowrap;cursor:pointer}
@@ -23,16 +23,16 @@
 #view-time .scrubrow{flex:none;margin:12px 0 2px;min-width:0}
 #view-time #tscrub{display:block;width:100%;appearance:none;-webkit-appearance:none;height:20px;background:transparent;cursor:ew-resize}
 #view-time #tscrub::-webkit-slider-runnable-track{height:1px;background:var(--line)}
-#view-time #tscrub::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--accent);margin-top:-6px;box-shadow:0 0 0 4px rgba(168,217,79,.16)}
+#view-time #tscrub::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--accent);margin-top:-6px;box-shadow:0 0 0 4px rgba(var(--accent-rgb),.16)}
 #view-time #tscrub::-moz-range-track{height:1px;background:var(--line)}
-#view-time #tscrub::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(168,217,79,.16)}
+#view-time #tscrub::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(var(--accent-rgb),.16)}
 #view-time .ticks{display:flex;justify-content:space-between;gap:8px;min-width:0;margin-top:3px;color:var(--ink-3);font:400 11px/1.5 var(--sans);font-variant-numeric:tabular-nums}
 #view-time .ticks span{min-width:0;white-space:nowrap}
 #view-time .trange{display:flex;align-items:center;flex:none;flex-wrap:wrap;gap:8px 12px;min-width:0;min-height:30px;margin-top:8px}
 #view-time .tyears{display:flex;gap:4px;flex-wrap:wrap;min-width:0}
 #view-time .tyears button{min-height:30px;padding:5px 10px;border:1px solid var(--line-soft);border-radius:6px;background:transparent;color:var(--ink-3);font:400 11px var(--sans);cursor:pointer;transition:color .16s var(--ease),border-color .16s var(--ease)}
 #view-time .tyears button:hover{color:var(--ink);border-color:var(--ink-3)}
-#view-time .tyears button.is-on{color:var(--accent);background:rgba(168,217,79,.07);border-color:rgba(168,217,79,.2)}
+#view-time .tyears button.is-on{color:var(--accent);background:rgba(var(--accent-rgb),.07);border-color:rgba(var(--accent-rgb),.2)}
 #view-time .thint{margin-left:auto;color:var(--ink-3);font:400 12px/1.5 var(--sans);white-space:nowrap}
 #view-time #tmilestone{flex:none;min-height:18px;margin-top:8px;color:var(--ink-2);font:400 12px/1.5 var(--sans);overflow-wrap:anywhere;transition:opacity .4s var(--ease)}
 /* The SVG may be wider than the viewport. Keep wheel/drag panning local,

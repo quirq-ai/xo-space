@@ -1,6 +1,7 @@
 /* Native connector flow checks. Every provider/session request and mutation is
    intercepted in isolated browser memory; no real credential or login is used. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,refreshData} from './refresh-helpers.mjs';
 import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -108,6 +109,7 @@ async function fixture(signedIn=true){
     }
     return route.continue();
   });
+  await installRefreshProbes(context);
   const page=await context.newPage();
   page.on('pageerror',error=>report.errors.push(error.message));
   page.on('dialog',dialog=>dialog.accept());
@@ -137,7 +139,7 @@ try{
   assert.equal(await token.inputValue(),'fictional-rejected-token','Failed save preserves editable draft');
   await token.fill('fictional-valid-token');const tokenNode=await token.elementHandle();
   await page.locator('#view-search').fill('MagicPath');
-  await page.locator('#conn-refresh').click();
+  await refreshData(page,'connectors');
   await page.locator('#view-search').fill('GitHub');
   assert.equal(await tokenNode.evaluate(node=>node.isConnected),true);
   assert.equal(await token.inputValue(),'fictional-valid-token');
@@ -152,7 +154,7 @@ try{
   await page.locator('#view-search').fill('');
   assert.equal(await token.inputValue(),'','Successful save clears token from DOM');
   assert.match(await native(page,'github').textContent(),/@fixture-developer/);
-  checked('Token errors are sanitized; filtering, Refresh and navigation preserve drafts/pending saves; success clears credentials.');
+  checked('Token errors are sanitized; filtering, internal rereads and navigation preserve drafts/pending saves; success clears credentials.');
 
   await act(page,'github','disconnect').click();
   await native(page,'github').locator('.conn-state').filter({hasText:'Not connected'}).waitFor();
@@ -160,14 +162,14 @@ try{
   const device=holdDevicePoll=gate();await act(page,'github','browser').click();await device.arrived.promise;
   assert.equal(await native(page,'github').locator('[data-native-link]').getAttribute('href'),'https://github.com/login/device');
   assert.match(await native(page,'github').locator('[data-native-code]').textContent(),/TEST-CODE/);
-  await page.locator('#view-search').fill('magicpath');await page.locator('#conn-refresh').click();
+  await page.locator('#view-search').fill('magicpath');await refreshData(page,'connectors');
   await page.locator('#view-search').fill('github');
   assert.match(await native(page,'github').locator('.conn-state').textContent(),/pending/);
   await act(page,'github','cancel').click();
   device.release.resolve();
   await native(page,'github').locator('.conn-state').filter({hasText:'Not connected'}).waitFor();
   assert.equal(await native(page,'github').locator('[data-native-link]').isVisible(),false);
-  checked('GitHub device sign-in survives Refresh/filtering; cancel clears the pending flow and ignores late polling.');
+  checked('GitHub device sign-in survives internal rereads/filtering; cancel clears the pending flow and ignores late polling.');
 
   await page.locator('#view-search').fill('');
   await act(page,'magicpath','setup').click();
@@ -204,9 +206,9 @@ try{
     if(id==='gdrive'){
       await native(page,id).locator('input[name="code"]').fill('http://localhost/?code=fictional-drive-code');
       const codeNode=await native(page,id).locator('input[name="code"]').elementHandle();
-      await page.locator('#view-search').fill('magicpath');await page.locator('#conn-refresh').click();
+      await page.locator('#view-search').fill('magicpath');await refreshData(page,'connectors');
       await page.locator('#view-search').fill('Google Drive');
-      assert.equal(await codeNode.evaluate(node=>node.isConnected),true,'Drive redirect form remains mounted during refresh');
+      assert.equal(await codeNode.evaluate(node=>node.isConnected),true,'Drive redirect form remains mounted during an internal reread');
       assert.equal(await native(page,id).locator('input[name="code"]').inputValue(),'http://localhost/?code=fictional-drive-code');
       assert.match(await native(page,id).locator('.conn-state').textContent(),/pending/);
       await submit(page,id,'code');await connected(page,id);

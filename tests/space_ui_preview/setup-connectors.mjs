@@ -1,6 +1,7 @@
 /* Connectors inside guided Setup. Every connector/session response and write
    is fictional browser memory; no provider, local settings or jobs are changed. */
 import assert from 'node:assert/strict';
+import {installRefreshProbes,waitForSetup} from './refresh-helpers.mjs';
 import {openProjectList} from './routes.mjs';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -95,6 +96,7 @@ await context.route('**/*',async route=>{
   }
   return route.continue();
 });
+await installRefreshProbes(context);
 function observe(page){
   page.on('pageerror',error=>report.errors.push(error.message));
   page.on('console',message=>{if(message.type()==='error')report.errors.push(message.text());});
@@ -119,7 +121,7 @@ async function shot(name){
 try{
   await page.goto(origin+'/space/#/setup',{waitUntil:'networkidle'});
   await panel('workspace').waitFor();
-  await page.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await waitForSetup(page);
   assert.deepEqual(await page.locator('.tabs a').evaluateAll(nodes=>nodes.map(node=>node.id)),
     ['tab-projects','tab-agents','tab-inbox','tab-setup']);
   assert.deepEqual(await page.locator('#setup-nav [data-setup-go]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupGo)),
@@ -254,7 +256,7 @@ try{
   await openProjectList(direct);await direct.waitForURL('**/#/projects/data/list');
   const runtimeResponse=direct.waitForResponse(response=>new URL(response.url()).pathname==='/api/runtime-config');
   runtime.release.resolve();await runtimeResponse;
-  await direct.waitForFunction(()=>!document.querySelector('#setup-refresh').disabled);
+  await waitForSetup(direct);
   assert.equal(new URL(direct.url()).hash,'#/projects/data/list','A delayed initial Setup read cannot reclaim navigation');
   assert.equal(await direct.locator('#view-projects.is-active').count(),1);
   await direct.locator('#tab-setup').click();

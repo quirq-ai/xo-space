@@ -203,23 +203,17 @@ class SpaceWikiTests(unittest.TestCase):
         view = (
             ROOT / "space_ui" / "js" / "views" / "connectors.js"
         ).read_text(encoding="utf-8")
-        session = (
-            ROOT / "space_ui" / "js" / "core" / "session.js"
-        ).read_text(encoding="utf-8")
 
         self.assertIn("import connectorsView from './views/connectors.js?v=", app)
         self.assertIn("createSetupViews(connectorsView).forEach(registerView);", app)
         self.assertIn('href="css/connectors.css?v=', index)
         self.assertIn("id:'connectors',label:'Connectors'", view)
 
-        # The Composio routes 401 without an identity, so every call must carry
-        # the session header. A view that quietly stopped sending it would show
-        # "sign in" forever.
-        self.assertIn("sessionHeaders()", view)
-        self.assertIn("X-XO-Session", session)
-        # The opaque id is per-tab: persisting it would outlive the server-side
-        # session table, which is in-memory and dies with the process.
-        self.assertNotIn("localStorage", session)
+        # BYO key: connectors run on the user's own Composio key, with no XO session.
+        # The view reads the mode from /backend and sends no session header.
+        self.assertIn("'/backend'", view)
+        self.assertNotIn("sessionHeaders", view)
+        self.assertNotIn("core/session.js", view)
 
         # The callback page posts to "*", so the origin check is what stops any
         # other page forging a completion message.
@@ -565,7 +559,8 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn('id="prj-filter"', projects)
         self.assertNotIn("data-project-tab=", projects)
         self.assertIn('data-panel="files"', projects)
-        self.assertIn("Refresh files", projects)
+        self.assertNotIn("Refresh files", projects)
+        self.assertNotIn("prj-detail-refresh", projects)
         self.assertIn("if(expanded&&!items.some", projects)
         # Data rows have a single file-browser action; management lives in Manage.
         self.assertIn('<button class="prj-row-head"', projects)
@@ -644,10 +639,10 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("docker", code.lower())
         self.assertIn("uv venv", code)
         self.assertIn("uv pip install", code)
-        # venv/, not uv's default .venv/ — CLAUDE.md, DEVELOPING.md and
-        # compose.local.yml all document venv/bin/python.
+        # venv/, not uv's default .venv/ — CLAUDE.md and DEVELOPING.md
+        # both document venv/bin/python.
         self.assertNotIn(".venv", code)
-        # Root resolution must stay identical to the retired Docker installer.
+        # Root resolution must stay stable across installer rewrites.
         self.assertIn("saved_root_from_file", code)
         self.assertIn("validate_separate_roots", code)
         self.assertIn("prepare_state_root", code)
@@ -689,10 +684,12 @@ class SpaceWikiTests(unittest.TestCase):
         facts most likely to rot are pinned: the branch model, the four
         invariants, the validation commands, and the README pointing at it."""
         guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-        # Work lands on development; main is the release branch.
-        self.assertIn("target `development`", guide)
+        # Work lands on main; development is the maintainers' staging branch
+        # and never a PR target.
+        self.assertIn("Branch from `main`, target `main`", guide)
+        self.assertIn("Do not target it with a pull request", guide)
         self.assertIn("publish-container.yml", guide)
-        self.assertNotIn("Branch from and target **`main`**", guide)
+        self.assertNotIn("target `development`", guide)
         for invariant in (
             "modularity invariant", "Thin routers", "project folder is sacred",
             "belongs to the watcher",

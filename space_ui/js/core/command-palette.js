@@ -3,7 +3,7 @@
    the active page's own search.
 
    Shell chrome, like core/lens-switch.js: it never imports the view modules
-   and navigates through the switchTo (and refreshCurrentView) it is handed at
+   and navigates through the switchTo (and refreshPage) it is handed at
    init, the same instances app.js uses, so the no-bundler stamp split can
    never hand it an empty registry. The navigable destinations are kept here
    as route vocabulary, the same way the lens switch keeps its lens list.
@@ -33,7 +33,7 @@ const NAV=[
   ['agents/trends','Agent trends','Agents','trends usage'],
   ['inbox/items','Inbox','Inbox','inbox items notifications'],
   ['inbox/connections','Inbox connections','Inbox','connections polling'],
-  ['inbox/jobs','Jobs','Inbox','scheduled jobs commands'],
+  ['inbox/jobs','Inbox jobs','Inbox','scheduled manual jobs commands results'],
   ['inbox/activity','Activity','Inbox','activity feed'],
   ['inbox/sharing-activity','Sharing activity','Inbox','sharing activity'],
   ['sharing','Sharing','Inbox','sharing repos incoming'],
@@ -41,7 +41,7 @@ const NAV=[
   ['setup/intelligence','Intelligence layer','Setup','agent runtime watcher intelligence'],
   ['setup/connectors','Connectors','Setup','apps composio polling connectors'],
   ['setup/secrets','Secrets','Setup','environment credentials secrets'],
-  ['setup/commands','Commands','Setup','commands run schedule'],
+  ['setup/commands','Jobs','Setup','jobs commands run schedule manual timeout'],
   ['setup/server','Server','Setup','restart update server'],
   ['setup/server/details','Quirq state','Setup','quirq machine local state'],
   ['wiki','Wiki','Help','wiki docs help guide'],
@@ -62,7 +62,7 @@ function scoreEntry(tokens,label,keywords){
   return total;
 }
 
-export function initCommandPalette({switchTo,refreshCurrentView}={}){
+export function initCommandPalette({switchTo,refreshPage}={}){
   if(typeof switchTo!=='function')return;
   if(document.getElementById('cmdk'))return; /* idempotent: one palette only */
 
@@ -71,7 +71,7 @@ export function initCommandPalette({switchTo,refreshCurrentView}={}){
   /* Quick actions: safe, page-agnostic verbs. Navigation lives in NAV. */
   const ACTIONS=[
     {kind:'action',label:'Refresh this page',group:'Actions',keywords:'reload refresh update',
-     run:()=>{try{refreshCurrentView?.();}catch(err){console.error(err);}}},
+     run:()=>{try{refreshPage?.();}catch(err){console.error(err);}}},
     {kind:'action',label:'New project',group:'Actions',keywords:'create add project new',
      run:()=>go('projects/manage')},
     {kind:'action',label:'Copy link to this page',group:'Actions',keywords:'copy url share link',

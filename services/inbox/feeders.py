@@ -216,11 +216,15 @@ def sharing(doc: dict) -> FeedResult:
         if (cursor is not None and dt <= cursor) or not repo or not kind:
             continue
         project = (repos.get(repo) or {}).get("project") if isinstance(repos.get(repo), dict) else None
+        project = project if store.is_project_id(project) else None
         title = _SHARING_TITLES.get(kind, "Sharing: {kind} for {repo}").format(kind=kind, repo=repo)
+        # Open lands on Inbox Sharing with this project selected, where the
+        # fetched commits and Apply are; a repo not cloned here opens the page.
+        link = {"view": "sharing", "project": project} if project else {"view": "sharing"}
         items.append(_safe_item(
             title=_one_line(title, store.TITLE_MAX), body=str(e.get("detail") or "")[:store.BODY_MAX],
             kind="sharing." + re.sub(r"[^a-z0-9_.:-]", "-", kind.lower())[:50], source="sharing",
-            project_id=project if store.is_project_id(project) else None, link={"view": "projects"},
+            project_id=project, link=link,
             ts=e["at"], key=f"sharing:{kind}:{repo}:{e['at']}"))
     return FeedResult([it for it in items if it is not None], newest[1] if newest else None, None)
 

@@ -69,6 +69,20 @@ curl -fsSL https://quirq.ai/install | sh      # then open http://localhost:5002/
 
 ## Quick start
 
+### Install in Codex
+
+Add this repository to Codex once:
+
+```bash
+codex plugin marketplace add quirq-ai/xo-space
+```
+
+Open **Plugins → Quirq → XO Space → Install**, start a new task, and say
+**“Open XO Space.”** Codex installs and starts Space in `~/xo-workspace` (or the
+workspace you name), selects the Codex backend, and opens the UI. Existing
+installations keep their settings. The server runs while its task/terminal stays
+alive. [Plugin setup, prerequisites and development-branch installs](plugins/quirq/README.md).
+
 ### One-click setup
 
 Run this from the directory you want as your workspace — each sub-folder becomes a project:
@@ -210,7 +224,7 @@ To see what your install decided: open **Setup → Intelligence layer → Usage 
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
-Saved commands in Setup run locally with the server’s environment. Their definitions and results stay under `<quirq state>/scheduler/`, and their per-command output logs under `<quirq state>/logs/scheduler/`. The executor also writes its bounded, redacted shared `commands.log` unless disabled; the Commands card adds no reporting. A command you choose can make its own network requests.
+Saved jobs in Setup (scheduled or manual) run locally with the server’s environment. Their definitions and results stay under `<quirq state>/scheduler/`, and their per-command output logs under `<quirq state>/logs/scheduler/`. The executor also writes its bounded, redacted shared `commands.log` unless disabled; the Jobs card adds no reporting. A command you choose can make its own network requests.
 
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
@@ -227,7 +241,8 @@ Everything else on the network happens because you asked for it: `git fetch` whe
 | **In-app Wiki** — `/space/#/wiki` | Open Wiki at the top right for a compact offline overview; detailed online guides open in a new tab |
 | **`/docs`** on a running server | API reference (changes with the active agent) |
 | [space_ui/README.md](space_ui/README.md) | The browser UI |
-| [plugin/README.md](plugin/README.md) | Claude Code / Codex plugin |
+| [plugins/quirq/README.md](plugins/quirq/README.md) | Codex plugin: click install and open Space |
+| [plugin/README.md](plugin/README.md) | Claude Code plugin |
 | [AGENTS.md](AGENTS.md) | Rules for AI agents editing this repo |
 
 ---
@@ -284,7 +299,7 @@ We'd love your help. Found a bug 🐛, want a runtime that isn't here 🧩, or h
 - **Start with** [`good first issue`](https://github.com/quirq-ai/xo-space/labels/good%20first%20issue) or [`help wanted`](https://github.com/quirq-ai/xo-space/labels/help%20wanted).
 - **Small fix?** Just open the PR. **Bigger change?** Open an issue first so nobody duplicates the work.
 - **Adding an agent** is designed to be two folders and zero core edits — the best-paved path in the repo.
-- Branch from and target **`development`**; `main` is what the installer ships.
+- Branch from and target **`main`**; that is what the installer ships. `development` is the maintainers' staging branch, not a PR target.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the dev setup, the ground rules and the PR checklist. No CLA — contributions are MIT like the rest of the code.
 
