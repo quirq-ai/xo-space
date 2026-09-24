@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Reads no environment at import, so it is safe before the dotenv load below.
 from services.storage.layout import secrets_dir, settings_dir
+from services import background
 from pydantic import BaseModel
 from dotenv import dotenv_values, load_dotenv
 import httpx
@@ -733,6 +734,7 @@ async def lifespan(app: FastAPI):
     try:
         from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
         _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
+        background.register("gateway reconcile", _mcp_gateway_task, finishes_by_design=True)
         print("   Composio MCP: background gateway install + reconcile scheduled")
     except Exception as exc:
         print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
@@ -758,6 +760,7 @@ async def lifespan(app: FastAPI):
     if start_usage_sync_scheduler:
         try:
             _sync_task = asyncio.create_task(start_usage_sync_scheduler())
+            background.register("usage sync", _sync_task)
             print("   Usage sync: background task started")
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
@@ -782,6 +785,7 @@ async def lifespan(app: FastAPI):
         )
         if poller_enabled():
             _github_poll_task = asyncio.create_task(start_github_poller())
+            background.register("github poller", _github_poll_task)
             print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
         else:
             print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
@@ -800,6 +804,7 @@ async def lifespan(app: FastAPI):
         )
         if connections_poller_enabled():
             _connections_poll_task = asyncio.create_task(start_connections_poller())
+            background.register("connections poller", _connections_poll_task)
             print(f"   Connections poller: background task started ({connections_tick_seconds():.0f}s tick)")
         else:
             print("   Connections poller: disabled by XO_CONNECTIONS_POLL_ENABLED")
@@ -818,6 +823,7 @@ async def lifespan(app: FastAPI):
             from services.cowork_agent.visualizer.watcher import start_watcher
             _watcher_task = asyncio.create_task(start_watcher())
             _watcher_task.add_done_callback(_report_watcher_task_exit)
+            background.register("watcher", _watcher_task)
             print("   Watcher: background task started")
         except Exception as e:
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
@@ -831,6 +837,7 @@ async def lifespan(app: FastAPI):
     try:
         from services.cowork_agent.project_sharing.poller import run_relay_poller
         _relay_task = asyncio.create_task(run_relay_poller())
+        background.register("relay poller", _relay_task)
         print("   Relay: background task started")
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
