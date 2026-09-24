@@ -657,6 +657,20 @@ class AccountIdentityTests(unittest.IsolatedAsyncioTestCase, _KeyBase):
         with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
             self.assertEqual(await account_identity.resolve(), ACCOUNT)
 
+    async def test_a_legacy_space_scoped_id_never_wins(self) -> None:
+        # A project from before account-scoping still holds connections filed under a
+        # Space's bare UUID. Adopting one would put the Space id back where the account
+        # id belongs, silently, on any Space whose cache was cleared.
+        byo_key.save("sk_live")
+        ca = self._project_holding(
+            ("f5484ec9-1acd-4f10-a6de-9f9882ff67b3", "2026-09-01"),
+            ("f5484ec9-1acd-4f10-a6de-9f9882ff67b3", "2026-09-02"),
+            (ACCOUNT, "2026-01-01"),
+        )
+        with patch.object(byo_client, "_sdk", return_value=_sdk_stub(connected_accounts=ca)):
+            # Outnumbered two to one and older, and it still wins on shape.
+            self.assertEqual(await account_identity.resolve(), ACCOUNT)
+
     async def test_an_empty_project_stays_signed_out(self) -> None:
         byo_key.save("sk_live")
         ca = self._project_holding()
