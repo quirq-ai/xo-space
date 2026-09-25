@@ -18,7 +18,7 @@ Every project, session, todo and cost on one screen. Measure output, not just to
 [Quick start](#quick-start) · [Capabilities](#key-capabilities) · [Supported agents](#supported-agents) · [How it works](#how-it-works) · [Docs](https://docs.xo.builders) · [Contributing](#contributing)
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/github/license/quirq-ai/xo-space?style=flat-square)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/quirq-ai/xo-space?style=flat-square)](https://github.com/quirq-ai/xo-space/issues)
 [![Good first issues](https://img.shields.io/github/issues/quirq-ai/xo-space/good%20first%20issue?style=flat-square&label=good%20first%20issues)](https://github.com/quirq-ai/xo-space/labels/good%20first%20issue)
