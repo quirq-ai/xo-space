@@ -40,12 +40,6 @@ def current_turn_reply(
 ) -> tuple[str | None, str]:
     """Bind once by nonce, then retain the request ID if the window slides."""
     for entry in entries:
-        if entry.get("kind") == "message" and entry.get("role") == "user":
-            if not entry.get("clientNonce") or not entry.get("requestId"):
-                raise GrokbotGatewayError(
-                    "Grok Bot transcript prompt is missing clientNonce/requestId; "
-                    "cannot safely identify this turn. Check the host gateway version."
-                )
         if entry.get("clientNonce") == client_nonce:
             candidate = entry.get("requestId")
             if not isinstance(candidate, str) or not candidate:
@@ -59,10 +53,6 @@ def current_turn_reply(
         message = message_text(entry)
         if not message or message[0] != "assistant":
             continue
-        if not entry.get("requestId"):
-            raise GrokbotGatewayError(
-                "Grok Bot transcript reply is missing requestId; cannot safely identify this turn."
-            )
-        if request_id is not None and entry["requestId"] == request_id:
+        if request_id is not None and entry.get("requestId") == request_id:
             texts.append(message[1])
     return request_id, "\n\n".join(texts)

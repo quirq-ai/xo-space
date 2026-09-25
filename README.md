@@ -200,9 +200,9 @@ imported. Reopening a chat reads **text-only** history through
 needed if the URL and token are configured. Tool calls/results are absent
 from the observed host transcript. The amount of older history retained by
 the host remains unverified; pagination can only return what the host retains.
-Unavailable or incompatible history APIs fail rather than silently showing
-an empty conversation. Setup stores secrets in Space's
-`~/.quirq/secrets/secrets.env` (or `QUIRQ_SECRETS_FILE`), outside host data.
+Gateway history errors (including an unreachable host or missing token) are
+logged without the token and return empty history. Setup stores secrets in
+Space's `~/.quirq/secrets/secrets.env` (or `QUIRQ_SECRETS_FILE`), outside host data.
 
 New chats get separate retained host seats by default; the reviewer verified
 that separate seats run in parallel. These `xo-space-*`
@@ -218,10 +218,11 @@ Replies arrive as a single text block after polling (up to 600 seconds), with
 an initial waiting status and SSE heartbeats, but no live tokens, tool or
 thinking events. Completion requires both an idle seat (including tasks and
 subagents) and replies matched by `clientNonce` → `requestId`. Acceptance
-`not-found` does not block completion. Multiple reply messages are joined;
-missing correlation keys fail clearly instead of matching prompt text or an
-old answer. Cancellation and timeout attempt `interruptAgentRun`; if the host
-is unavailable or does not support it, stop the turn on the host.
+`not-found` does not block completion. Multiple reply messages are joined.
+The prompt matching this turn's nonce must have a valid `requestId`; unrelated
+entries without correlation keys are ignored. Cancellation and timeout
+attempt `interruptAgentRun`; if the host is unavailable or does not support
+it, stop the turn on the host.
 
 Project selection/`agent_id`, Space connections and per-user MCP configuration,
 and per-prompt `model` selection are not forwarded; the host controls its

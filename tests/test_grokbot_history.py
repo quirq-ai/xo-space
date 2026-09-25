@@ -9,9 +9,10 @@ from pathlib import Path
 from unittest import mock
 
 import httpx
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from services.cowork_agent.adapters.grokbot import session_seats, sessions
-from services.cowork_agent.adapters.grokbot.gateway import GrokbotGatewayError
 from services.cowork_agent.engine.sessions_io import load_all_sessions
 from tests.test_grokbot_adapter import _clear_grokbot_env
 
@@ -119,34 +120,62 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertTrue(all(p["data"]["type"] == "text" for m in messages for p in m["parts"]))
 
-    def test_unavailable_history_fails_instead_of_looking_empty_and_redacts_token(self):
+    def assert_empty_history_and_routes(self):
+        from routers.cowork_agent.sessions import router
+
+        self.assertEqual(sessions.get_messages("space"), [])
+        app = FastAPI()
+        app.include_router(router)
+        with TestClient(app) as client:
+            response = client.get("/api/messages/space")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"total": 0, "offset": 0, "messages": []})
+            response = client.get("/api/sessions/space/transcript")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"title": "first prompt", "messages": []})
+        self.assertTrue(all(client.is_closed for client in self.clients))
+
+    def test_unavailable_history_is_empty_and_logs_without_token(self):
         self.reply = lambda *_: httpx.Response(503, text="private-token unavailable")
-        with self.assertRaisesRegex(GrokbotGatewayError, "HTTP 503") as caught:
-            sessions.get_messages("space")
-        self.assertNotIn("private-token", str(caught.exception))
+        with self.assertLogs(sessions.__name__, level="WARNING") as logs:
+            self.assertEqual(sessions.get_messages("space"), [])
+        self.assertIn("HTTP 503", "\n".join(logs.output))
+        self.assertNotIn("private-token", "\n".join(logs.output))
         self.assertTrue(self.clients[0].is_closed)
 
-    def test_missing_token_fails_without_a_request(self):
+    def test_unreachable_gateway_returns_empty_history_and_http_200(self):
+        def unreachable(*_):
+            raise httpx.ConnectError("connection refused: private-token")
+
+        self.reply = unreachable
+        with self.assertLogs(sessions.__name__, level="WARNING") as logs:
+            self.assert_empty_history_and_routes()
+        self.assertIn("unreachable", "\n".join(logs.output))
+        self.assertNotIn("private-token", "\n".join(logs.output))
+
+    def test_missing_token_returns_empty_history_and_http_200_without_a_request(self):
         with mock.patch.dict(os.environ, {"SAND_GATEWAY_TOKEN": ""}):
-            with self.assertRaisesRegex(GrokbotGatewayError, "SAND_GATEWAY_TOKEN"):
-                sessions.get_messages("space")
+            with self.assertLogs(sessions.__name__, level="WARNING") as logs:
+                self.assert_empty_history_and_routes()
+        self.assertIn("SAND_GATEWAY_TOKEN", "\n".join(logs.output))
+        self.assertNotIn("private-token", "\n".join(logs.output))
         self.assertEqual(self.calls, [])
-        self.assertTrue(self.clients[0].is_closed)
 
-    def test_pagination_errors_are_not_silent_truncation(self):
+    def test_pagination_errors_are_logged_and_return_empty_history(self):
         for page in [httpx.Response(404), {"entries": [row(5)], "nextBeforeSeq": 5}]:
             with self.subTest(page=page):
                 self.reply = lambda name, body: [row(5), row(6)] if name == "getAgentTranscript" else page
-                with self.assertRaises(GrokbotGatewayError):
-                    sessions.get_messages("space")
+                with self.assertLogs(sessions.__name__, level="WARNING"):
+                    self.assertEqual(sessions.get_messages("space"), [])
         self.assertTrue(all(c.is_closed for c in self.clients))
 
-    def test_missing_sequence_is_an_explicit_compatibility_error(self):
+    def test_missing_sequence_logs_compatibility_error_and_returns_empty_history(self):
         entry = row(1)
         del entry["seq"]
         self.reply = lambda *_: [entry]
-        with self.assertRaisesRegex(GrokbotGatewayError, "missing seq"):
-            sessions.get_messages("space")
+        with self.assertLogs(sessions.__name__, level="WARNING") as logs:
+            self.assertEqual(sessions.get_messages("space"), [])
+        self.assertIn("missing seq", "\n".join(logs.output))
 
     def test_empty_host_history_is_empty(self):
         self.reply = lambda *_: []

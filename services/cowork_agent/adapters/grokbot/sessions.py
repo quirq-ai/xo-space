@@ -1,12 +1,15 @@
 """Space-indexed Grok Bot sessions with text history read from the gateway."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from services.cowork_agent.adapters.grokbot.gateway import GrokbotGatewayError, GrokbotHistoryGateway
 from services.cowork_agent.adapters.grokbot.session_seats import indexed_sessions, lookup_seat
 from services.cowork_agent.adapters.grokbot.transcript import message_text, transcript_entries
 from services.cowork_agent.helpers import iso_now, ms_to_iso, strip_workspace_preamble
+
+logger = logging.getLogger(__name__)
 
 USES_PROJECT_SESSIONS = True
 _BACKEND = "grokbot"
@@ -70,8 +73,13 @@ def get_messages(session_id: str) -> list:
         if not owns_session(session_id):
             return []
         agent_id = session_id
-    with GrokbotHistoryGateway() as gateway:
-        entries = _read_history(gateway, agent_id)
+    try:
+        with GrokbotHistoryGateway() as gateway:
+            entries = _read_history(gateway, agent_id)
+    except GrokbotGatewayError as exc:
+        # Gateway errors redact the token; omit the underlying HTTP traceback.
+        logger.warning("Could not read Grok Bot history for session %s: %s", session_id, exc)
+        return []
     return _convert_messages(session_id, entries)
 
 

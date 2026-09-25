@@ -337,13 +337,24 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(current_turn_reply(entries[:2], "nonce"), (None, ""))
         self.assertEqual(current_turn_reply(entries[2:], "nonce"), ("request", "first part\n\nsecond part"))
 
-    def test_missing_correlation_keys_fail_clearly(self):
+    def test_mixed_transcript_ignores_unrelated_entries_without_correlation_keys(self):
         from services.cowork_agent.adapters.grokbot.transcript import current_turn_reply
-        for index, key in [(0, "clientNonce"), (0, "requestId"), (1, "requestId")]:
-            with self.subTest(index=index, key=key):
-                entries = [entry("user", "ping"), entry("assistant", "PONG")]
-                del entries[index][key]
-                with self.assertRaisesRegex(GrokbotGatewayError, key):
+        old_prompt = {"kind": "message", "role": "user", "content": "ping"}
+        old_reply = {"kind": "send-message", "message": {"type": "text", "content": "unrelated"}}
+        entries = [old_prompt, old_reply, entry("user", "ping"), entry("assistant", "PONG")]
+        self.assertEqual(current_turn_reply(entries, "nonce"), ("request", "PONG"))
+        self.assertEqual(current_turn_reply(entries[:2], "nonce"), (None, ""))
+        self.assertEqual(current_turn_reply([old_reply], "nonce", "request"), ("request", ""))
+
+    def test_current_nonce_requires_a_valid_request_id(self):
+        from services.cowork_agent.adapters.grokbot.transcript import current_turn_reply
+        for request_id in (None, "", 123):
+            with self.subTest(request_id=request_id):
+                prompt = entry("user", "ping", request_id=request_id)
+                if request_id is None:
+                    del prompt["requestId"]
+                entries = [prompt, entry("assistant", "PONG")]
+                with self.assertRaisesRegex(GrokbotGatewayError, "missing requestId"):
                     current_turn_reply(entries, "nonce")
 
     def test_history_keeps_repeated_prompts_and_stable_ids(self):
