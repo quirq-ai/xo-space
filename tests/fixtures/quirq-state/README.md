@@ -19,6 +19,7 @@ into them.
 ├── secrets/       credentials (owner-only)
 ├── cache/         safe to delete: rebuilt automatically
 ├── logs/          safe to delete
+├── quarantine/    moved aside by a person; delete by hand
 └── .locks/        internal
 ```
 
@@ -37,6 +38,7 @@ into them.
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
 | `logs/` | `quirq.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only |
+| `quarantine/` | `runtime-leftovers/<key>-<UTC time>/`: a `projects/<key>/` folder a person moved aside from the Quirq view | xo-doctor, only when a person confirms | nothing the doctor could still find; move a folder back to `projects/<key>` to use it again |
 | `.locks/` | lock sentinels | `services/storage/flock.py` | nothing |
 
 A cursor lives next to the data it advances, so a reset wipes both or neither:

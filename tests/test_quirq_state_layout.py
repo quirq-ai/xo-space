@@ -75,6 +75,7 @@ class SampleTests(_Sandbox):
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
             layout.connections_dir(), layout.scheduler_dir(), layout.sessions_dir(),
+            layout.quarantine_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -103,6 +104,7 @@ class StorePathTests(_Sandbox):
             "the heartbeat": watcher_state.watcher_heartbeat_path(),
             "live presence": watcher_state.project_activity_path("demo"),
             "a lock": flock._lock_path_for(Path("/elsewhere/.xo/todos.json")),
+            "moved-aside runtime data": layout.quarantine_dir() / "runtime-leftovers",
         }
         folders = set(_sample_folders())
         for what, path in paths.items():
