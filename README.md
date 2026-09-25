@@ -117,7 +117,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 
 | Key | What it does | Default |
 |---|---|---|
-| `AGENT_NAME` | Which agent handles chat: `claude_code`, `codex`, `openclaw`, `hermes`, `antigravity` | `claude_code` |
+| `AGENT_NAME` | Which agent handles chat: `claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`, `fly` | `claude_code` |
 | `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | the directory you ran the installer from |
 | `QUIRQ_STATE_ROOT` | Machine-local state: runtime config, saved credentials, watcher cursors, logs. Must not be inside a project | `./.quirq` in that directory |
 | `AI_WORKSPACE_ROOT` | The directory the agent subprocess is started in and allowed to touch | same as `XO_PROJECTS_ROOT` |
@@ -169,6 +169,7 @@ Pick the active agent with `AGENT_NAME` (or from the Setup tab). Agents that exp
 | **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789`; the default when nothing is configured |
 | **Hermes** | `hermes` | ✅ | ✅ | HTTP gateway on `:8642`, one per profile |
 | **Antigravity** | `antigravity` | ✅ | ✅ | `agy` CLI subprocess + Google OAuth |
+| **Fly** | `fly` | ✅ | ✅ | Trained local JSON/CSV inspection policy; `/run` produces cited reports. [Setup and demo](services/cowork_agent/adapters/fly/README.md) |
 | **Cursor** | — | — | ✅ | Read-only: sessions appear in telemetry, cannot run a turn |
 | **Your own** | `<name>` | ✅ | ✅ | Drop `config/agents/<name>/` + `services/cowork_agent/adapters/<name>/` — auto-discovered, no core edits. Guide: [DEVELOPING.md §4](DEVELOPING.md) |
 

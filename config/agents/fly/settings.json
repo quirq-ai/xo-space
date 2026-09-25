@@ -1,0 +1,4 @@
+{
+  "cli_path_env": "FLY_NODE_PATH",
+  "timeout": 30
+}
