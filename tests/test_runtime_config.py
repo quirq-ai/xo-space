@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from services.cowork_agent import runtime_config
 from services.cowork_agent.visualizer import watcher
@@ -230,6 +234,21 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertIsNone(rows[0]["install_url"])
             self.assertFalse(rows[0]["binary_available"])
 
+    def test_source_without_binary_does_not_check_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = _manifest("remote", Path(tmp) / "absent")
+            manifest.binary = ""
+            with (
+                patch.object(runtime_config, "all_agents", return_value=[manifest]),
+                patch.object(runtime_config, "get_active_agent", return_value=manifest),
+                patch.object(runtime_config, "load_env_entries", return_value=[]),
+                patch.object(runtime_config.shutil, "which", return_value=None) as which,
+            ):
+                rows = runtime_config.runtime_sources()
+
+            self.assertIsNone(rows[0]["binary_available"])
+            which.assert_not_called()
+
     def test_applied_roots_come_from_the_shared_project_layout_helper(self) -> None:
         """Setup must report the root the rest of the app resolves, not a
         second copy of the env lookup."""
@@ -323,6 +342,104 @@ class RuntimeConfigTests(unittest.TestCase):
             [source.name for source in instance.sources],
             ["first", "second"],
         )
+
+
+class RuntimeHealthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from routers.cowork_agent.runtime_config import router
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = patch.dict(os.environ, {
+            "QUIRQ_STATE_ROOT": str(Path(temp.name) / "state"),
+            "XO_PROJECTS_ROOT": str(Path(temp.name) / "projects"),
+        })
+        env.start()
+        self.addCleanup(env.stop)
+        self.source = {"name": "remote", "active": True, "binary_available": None}
+        sources = patch.object(runtime_config, "runtime_sources", side_effect=lambda: [dict(self.source)])
+        sources.start()
+        self.addCleanup(sources.stop)
+        dispatcher = patch("services.cowork_agent.engine.dispatcher.AgentDispatcher")
+        self.dispatcher = dispatcher.start()
+        self.addCleanup(dispatcher.stop)
+        self.health = self.dispatcher.return_value.health = AsyncMock()
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app)
+        self.addCleanup(self.client.close)
+
+    def test_active_remote_health_is_public_only_as_a_boolean(self) -> None:
+        for ok in (True, False):
+            with self.subTest(ok=ok):
+                self.health.return_value = {"ok": ok, "private_detail": "do-not-expose"}
+                response = self.client.get("/api/runtime-config")
+                self.assertEqual(response.status_code, 200)
+                source = response.json()["agents"][0]
+                self.assertIsNone(source["binary_available"])
+                self.assertIs(source["health_ok"], ok)
+                self.assertNotIn("do-not-expose", response.text)
+        self.assertEqual(self.health.await_count, 2)
+        self.dispatcher.assert_called_with("remote")
+
+    def test_health_failure_keeps_setup_available(self) -> None:
+        for error in (TimeoutError("private timeout"), RuntimeError("private failure")):
+            with self.subTest(error=type(error)):
+                self.health.side_effect = error
+                response = self.client.get("/api/runtime-config")
+                self.assertEqual(response.status_code, 200)
+                self.assertIs(response.json()["agents"][0]["health_ok"], False)
+                self.assertNotIn(str(error), response.text)
+
+    def test_missing_health_result_is_not_success(self) -> None:
+        self.health.return_value = {}
+        response = self.client.get("/api/runtime-config")
+        self.assertIsNone(response.json()["agents"][0]["health_ok"])
+
+    def test_slow_health_check_is_cancelled_at_the_deadline(self) -> None:
+        cancelled = []
+
+        async def slow_health():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+        self.health.side_effect = slow_health
+        with patch.object(runtime_config, "_AGENT_HEALTH_TIMEOUT_SECONDS", 0.01):
+            response = self.client.get("/api/runtime-config")
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["agents"][0]["health_ok"], False)
+        self.assertEqual(cancelled, [True])
+
+    def test_cli_and_inactive_agents_are_not_probed(self) -> None:
+        for source in (
+            {"name": "local", "active": True, "binary_available": True},
+            {"name": "local", "active": True, "binary_available": False},
+            {"name": "remote", "active": False, "binary_available": None},
+        ):
+            with self.subTest(source=source):
+                self.source = source
+                response = self.client.get("/api/runtime-config")
+                self.assertEqual(response.status_code, 200)
+        self.dispatcher.assert_not_called()
+
+    def test_save_responses_include_health_of_the_applied_agent(self) -> None:
+        settings = {"agent_name": "next", "watcher_enabled": True,
+                    "watcher_interval_seconds": 1, "watcher_source_mode": "active"}
+        roots = {"xo_projects_root": "/tmp/projects", "quirq_state_root": "/tmp/state"}
+        self.health.return_value = {"ok": True}
+        for path, body, save in (
+            ("/api/runtime-config", settings, "save_settings"),
+            ("/api/runtime-config/roots", roots, "save_root_settings"),
+        ):
+            with self.subTest(path=path), patch(
+                f"routers.cowork_agent.runtime_config.{save}", return_value=body,
+            ):
+                response = self.client.put(path, json=body)
+                self.assertEqual(response.status_code, 200)
+                self.assertIs(response.json()["status"]["agents"][0]["health_ok"], True)
+        self.dispatcher.assert_called_with("remote")
 
 
 if __name__ == "__main__":

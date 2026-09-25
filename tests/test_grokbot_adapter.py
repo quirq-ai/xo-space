@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 import httpx
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from services.cowork_agent.adapters.grokbot.adapter import Adapter, GrokbotAdapter
 from services.cowork_agent.adapters.grokbot.gateway import (
@@ -161,6 +163,55 @@ class SessionSeatTests(unittest.TestCase):
                 agent_id, mint = resolve_target_agent("brand-new-uuid", is_new_session=True)
             self.assertIsNone(agent_id)
             self.assertTrue(mint)
+
+
+class SetupHealthTests(unittest.TestCase):
+    def test_setup_uses_gateway_health_without_local_host_files(self) -> None:
+        from routers.cowork_agent.runtime_config import router
+        from services.cowork_agent.registry import agent_registry
+
+        app = FastAPI()
+        app.include_router(router)
+        real_client = httpx.AsyncClient
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/health")
+            self.assertNotIn("authorization", request.headers)
+            if outcome == "unreachable":
+                raise httpx.ConnectError("private connection failure")
+            return httpx.Response(200, json={"ok": outcome})
+
+        def factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                **_clear_grokbot_env(), "AGENT_NAME": "grokbot",
+                "QUIRQ_STATE_ROOT": str(Path(tmp) / "state"),
+                "XO_PROJECTS_ROOT": str(Path(tmp) / "projects"),
+                "SAND_DATA_ROOT": str(Path(tmp) / "absent"),
+                "GROKBOT_GATEWAY_URL": "http://gateway.test:1340",
+            }
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(agent_registry, "_DEFAULT", agent_registry.get_agent("grokbot")),
+                mock.patch("httpx.AsyncClient", side_effect=factory),
+                TestClient(app) as client,
+            ):
+                for outcome in (True, False, "unreachable"):
+                    with self.subTest(outcome=outcome):
+                        response = client.get("/api/runtime-config")
+                        self.assertEqual(response.status_code, 200)
+                        source = next(row for row in response.json()["agents"] if row["active"])
+                        self.assertEqual(source["name"], "grokbot")
+                        self.assertIsNone(source["binary_available"])
+                        self.assertIs(source["health_ok"], outcome is True)
+                        self.assertNotIn("private connection failure", response.text)
+            self.assertFalse((Path(tmp) / "absent").exists())
+        self.assertEqual(len(seen), 3)
 
 
 class AdapterContractTests(unittest.IsolatedAsyncioTestCase):

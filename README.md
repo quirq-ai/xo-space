@@ -203,6 +203,9 @@ the host remains unverified; pagination can only return what the host retains.
 Gateway history errors (including an unreachable host or missing token) are
 logged without the token and return empty history. Setup stores secrets in
 Space's `~/.quirq/secrets/secrets.env` (or `QUIRQ_SECRETS_FILE`), outside host data.
+Setup checks the active gateway's unauthenticated health endpoint, with a
+five-second deadline. No local CLI or host data folder is required for that
+check; a reachable service does not verify credentials or activity collection.
 
 New chats get separate retained host seats by default; the reviewer verified
 that separate seats run in parallel. These `xo-space-*`
@@ -229,9 +232,16 @@ and per-prompt `model` selection are not forwarded; the host controls its
 workspace, tools and model. Usage accounting, model/provider/channel status,
 Agents management, session telemetry/presence/visualizer integration and
 prompt suggestions are out of scope (their capabilities return empty/501).
+The Chat tab is hidden in the current build, and the visible Agents, Inbox and
+Projects activity views do not show Grok Bot chats yet. A follow-up needs
+gateway-backed session telemetry, activity and presence; importing chats
+created outside Space also needs a policy. Session `updatedAt` currently
+advances only when Space sends a prompt.
 Regression tests use the reviewer's observed live-host message shapes with a
-mocked HTTP transport. The revised adapter still needs an end-to-end chat on
-the Grok Bot computer; no live host was available while making these fixes.
+mocked HTTP transport. The reviewer validated new chats, follow-ups, isolated
+seats and reopening four-message history through Space's HTTP/SSE endpoints
+on a live Grok Bot computer at `d57c2dc`. Long-chat retention and pagination
+remain unverified on a live host.
 
 ---
 

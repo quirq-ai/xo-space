@@ -14,6 +14,7 @@ pretending import-time configuration changed live.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -45,6 +46,7 @@ INSTALL_COMMAND = "curl -fsSL https://quirq.ai/install | sh"
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SESSION_SCAN_CAP = 10_000
+_AGENT_HEALTH_TIMEOUT_SECONDS = 5.0
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NATIVE_PID_FILE = Path("/tmp/xo-space.pid")  # cowork-api.sh's process manager
 
@@ -587,7 +589,8 @@ def runtime_sources() -> list[dict[str, Any]]:
                 "active": manifest.name == applied_agent,
                 "watched": source_mode == "all" or manifest.name == applied_agent,
                 "binary": manifest.binary,
-                "binary_available": shutil.which(manifest.binary) is not None,
+                # A gateway-only runtime has no local executable to install.
+                "binary_available": shutil.which(manifest.binary) is not None if manifest.binary else None,
                 "bootstrap_available": bool(setup.get("installs_cli")),
                 # Where to get the runtime, from its own manifest (core never
                 # knows an agent's URL). Absent → no link, nothing else changes.
@@ -604,7 +607,28 @@ def runtime_sources() -> list[dict[str, Any]]:
     return sources
 
 
-def runtime_status() -> dict[str, Any]:
+async def runtime_status() -> dict[str, Any]:
+    # Filesystem diagnostics stay off the event loop; only the applied,
+    # binary-less agent needs a live check. Inactive runtimes are not probed.
+    status = await asyncio.to_thread(_runtime_status)
+    for source in status["agents"]:
+        if not source["active"] or source["binary_available"] is not None:
+            continue
+        from services.cowork_agent.engine.dispatcher import AgentDispatcher
+
+        try:
+            async with asyncio.timeout(_AGENT_HEALTH_TIMEOUT_SECONDS):
+                health = await AgentDispatcher(source["name"]).health()
+            ok = health.get("ok") if isinstance(health, dict) else None
+            source["health_ok"] = ok if isinstance(ok, bool) else None
+        except Exception:
+            # Setup must remain usable when the runtime is down. Do not expose
+            # arbitrary adapter diagnostics or exception text (possibly secrets).
+            source["health_ok"] = False
+    return status
+
+
+def _runtime_status() -> dict[str, Any]:
     # One resolution for the whole app: the same helper the Files, Graph,
     # Timeline, Chat and Quirq data paths call.
     projects_root = xo_projects_root()
