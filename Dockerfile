@@ -6,6 +6,12 @@ LABEL org.opencontainers.image.source="https://github.com/quirq-ai/xo-space" \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Inside a container the server must listen on the container's own interfaces;
+# how far it reaches is decided where the port is published (publish it as
+# -p 127.0.0.1:5002:5002 to keep it on this machine). Outside a container
+# server.py defaults to loopback.
+ENV HOST=0.0.0.0
+
 WORKDIR /app
 
 RUN apt-get update \

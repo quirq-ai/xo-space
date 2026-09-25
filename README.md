@@ -121,7 +121,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 | `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | the directory you ran the installer from |
 | `QUIRQ_STATE_ROOT` | Machine-local state: runtime config, saved credentials, watcher cursors, logs. Must not be inside a project | `./.quirq` in that directory |
 | `AI_WORKSPACE_ROOT` | The directory the agent subprocess is started in and allowed to touch | same as `XO_PROJECTS_ROOT` |
-| `HOST`, `PORT` | Where the server listens. Loopback only by default; set `HOST=0.0.0.0` to reach it from another machine | `127.0.0.1`, `5002` |
+| `HOST`, `PORT` | Where the server listens. Loopback only by default. The API has no login, so `HOST=0.0.0.0` lets every device on your network read and change your files: use it only on a network you trust | `127.0.0.1`, `5002` |
 | `STAGE` | `local` finds agent CLIs with `which`; `beta` assumes the hosted container layout | `local` |
 | `QUIRQ_WATCHER_SOURCE_MODE` | `all` — the watcher reads every installed agent's session store, so Sessions shows all of them; `active` — only `AGENT_NAME`'s | `all` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | `1` — install nothing beyond `requirements.txt`. Set `0` to let boot hooks `apt`/`nvm`/`npm -g` the agent CLI for you | `1` |

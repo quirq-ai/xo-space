@@ -4,8 +4,10 @@ Workspace / filesystem endpoints under `/api/files/*`.
 Covers uploads, directory listing, text & binary content reads, and
 directory creation. When `scaffold:true` is passed to mkdir, the project is
 built using the canonical xo-projects layout (see
-``services.cowork_agent.project_layout``). All paths are clamped to the
-user's home dir for safety.
+``services.cowork_agent.project_layout``). Every path must resolve inside the
+user's home directory (an upload may also target the xo-projects root, which a
+Docker install keeps outside home). Containment is decided on resolved paths,
+never on string prefixes, and an upload keeps only the file's own name.
 """
 
 import hashlib
@@ -27,6 +29,26 @@ router = APIRouter()
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
+def _within(base: Path, target: Path) -> bool:
+    """``target`` is ``base`` or inside it, once both are resolved (``..``, symlinks).
+
+    A string prefix is not containment: ``/home/user-shared`` starts with
+    ``/home/user`` yet is outside it.
+    """
+    try:
+        target.resolve().relative_to(base.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _upload_name(raw: str | None) -> str:
+    """Only the file's own name. A client-sent ``../x`` or ``/abs/x`` must not
+    choose the folder: ``Path(dir) / "/abs/x"`` discards ``dir`` entirely."""
+    name = Path(raw or "").name
+    return name if name not in ("", ".", "..") else "upload"
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
@@ -41,14 +63,17 @@ async def upload_file(
         raise HTTPException(status_code=413, detail="File exceeds 100 MB limit")
     content_hash = hashlib.sha256(content).hexdigest()
 
-    if workspace:
-        dest_dir = Path(workspace).resolve()
-    else:
-        dest_dir = Path.home() / "uploads"
+    home = Path.home()
+    dest_dir = Path(workspace).resolve() if workspace else (home / "uploads").resolve()
+    if not (_within(home, dest_dir) or _within(xo_projects_root(), dest_dir)):
+        return JSONResponse(status_code=403, content={"detail": "Access denied"})
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = file.filename or "upload"
+    filename = _upload_name(file.filename)
     dest = dest_dir / filename
+    # A symlink already sitting at that name must not lead the read or write outside.
+    if not _within(dest_dir, dest):
+        return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     # Avoid overwriting — append hash suffix if name collides with different content
     if dest.exists():
@@ -57,6 +82,8 @@ async def upload_file(
             stem = dest.stem
             suffix = dest.suffix
             dest = dest_dir / f"{stem}_{content_hash[:8]}{suffix}"
+            if not _within(dest_dir, dest):
+                return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     dest.write_bytes(content)
 
@@ -83,7 +110,7 @@ async def list_directory(request: Request):
     if raw_path:
         target = Path(raw_path).resolve()
         # Prevent traversal outside home
-        if not str(target).startswith(str(base)):
+        if not _within(base, target):
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
     else:
         target = base
@@ -123,7 +150,7 @@ async def file_content(request: Request):
     base = Path.home()
     target = Path(raw_path).resolve()
 
-    if not str(target).startswith(str(base)):
+    if not _within(base, target):
         return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     if not target.is_file():
@@ -148,7 +175,7 @@ async def file_content_binary(request: Request):
     base = Path.home()
     target = Path(raw_path).resolve()
 
-    if not str(target).startswith(str(base)):
+    if not _within(base, target):
         return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     if not target.is_file():
@@ -183,7 +210,7 @@ async def file_save(request: Request):
     base = Path.home()
     target = Path(raw_path).resolve()
 
-    if not str(target).startswith(str(base)):
+    if not _within(base, target):
         return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     try:
@@ -229,7 +256,7 @@ async def make_directory(request: Request):
     base = Path.home()
     target = Path(raw_path).resolve()
 
-    if not str(target).startswith(str(base)):
+    if not _within(base, target):
         return JSONResponse(status_code=403, content={"detail": "Access denied"})
 
     if target.exists():
@@ -253,7 +280,7 @@ async def make_directory(request: Request):
     resolved_extras: list[Path] = []
     for raw_file in extra_files:
         fp = Path(raw_file).resolve()
-        if not str(fp).startswith(str(base)):
+        if not _within(base, fp):
             return JSONResponse(
                 status_code=403,
                 content={"detail": f"Access denied: {raw_file}"},
