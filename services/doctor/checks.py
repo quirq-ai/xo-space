@@ -11,7 +11,7 @@ from services.doctor import catalog, inventory, liveness
 from services.doctor.context import Context
 from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, size
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
-from services.storage import layout
+from services.storage import layout, migrations
 from services.timestamps import parse_ts
 
 MAX_UNKNOWN_LISTED = 50
@@ -460,11 +460,11 @@ def _exists(path: Path) -> bool:
 
 
 def layout_moves(ctx: Context) -> list[Finding]:
-    """Files still at a path from before the state root had folders (layout.MOVES)."""
+    """Files still at a path from before the state root had folders (migrations.MOVES)."""
     from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 
     old_heartbeat = next(
-        (move.old() for move in layout.MOVES if move.new is not None and move.new() == watcher_heartbeat_path()),
+        (move.old() for move in migrations.MOVES if move.new is not None and move.new() == watcher_heartbeat_path()),
         None,
     )
     age = liveness.heartbeat_age(ctx, old_heartbeat, None) if old_heartbeat is not None else None
@@ -484,7 +484,7 @@ def layout_moves(ctx: Context) -> list[Finding]:
 
     old_left: list[Finding] = []
     pending: list[str] = []
-    for move in layout.MOVES:
+    for move in migrations.MOVES:
         old = move.old()
         if old is None or not _exists(old):
             continue

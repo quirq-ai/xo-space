@@ -245,6 +245,34 @@ if sys.argv[1] == 'venv':
         self.assertIn("Codex CLI was not found", result.output)
         self.assertFalse(self.record.exists())
 
+    @unittest.skipUnless(HAS_DOTENV, "requires project python-dotenv dependency")
+    def test_codex_start_logs_its_check_without_choosing_the_servers_log(self):
+        """The CLI check is logged in the workspace's state root, by the
+        runner's own rules (an earlier release's log is still appended to until
+        the server moves it), and no log setting is passed on: the server
+        decides where its log lives, so its boot migration can move it."""
+        state = self.root / "state"
+        old = state / "logs" / "commands.log"
+        old.parent.mkdir(parents=True)
+        old.write_text("=== history ===\n")
+        repo = self.installed_repo(f"AGENT_NAME=codex\nQUIRQ_STATE_ROOT={state}\n")
+        result = self.invoke("start", repo, QUIRQ_COMMAND_LOG="")
+        self.assertTrue(result.ok, result.output)
+        self.assertIn("--version", old.read_text())
+        self.assertFalse((state / "inbox" / "activity" / "commands.log").exists())
+        env = json.loads(self.record.read_text())["env"]
+        self.assertNotIn("QUIRQ_COMMAND_LOG_PATH", env)
+        self.assertNotIn("QUIRQ_STATE_ROOT", env)
+
+        # A log path the user chose is theirs: the check follows it, and the
+        # server still receives it.
+        self.record.unlink()
+        chosen = self.root / "chosen.log"
+        result = self.invoke("start", repo, QUIRQ_COMMAND_LOG="", QUIRQ_COMMAND_LOG_PATH=str(chosen))
+        self.assertTrue(result.ok, result.output)
+        self.assertIn("--version", chosen.read_text())
+        self.assertEqual(json.loads(self.record.read_text())["env"]["QUIRQ_COMMAND_LOG_PATH"], str(chosen))
+
 
 if __name__ == "__main__":
     unittest.main()

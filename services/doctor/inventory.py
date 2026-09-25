@@ -106,6 +106,7 @@ def _s(pattern: str, behaviour: str, *, schema_file: str | None = None,
 #: First match wins, so specific patterns come before general ones.
 SPECS: tuple[Spec, ...] = (
     _s("inbox/inbox.json", IRREPLACEABLE, schema_file="inbox.schema.json", **_IGN),
+    _s("inbox/activity/**", OPAQUE),  # the command log and its archive
     _s("scheduler/jobs.json", IRREPLACEABLE, versions=V1, **_IGN),
     _s("scheduler/state.json", LIVE_STATE, versions=V1, **_IGN),
     _s("scheduler/runs/*.jsonl", OPAQUE),

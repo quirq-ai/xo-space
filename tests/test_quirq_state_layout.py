@@ -33,7 +33,7 @@ from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
 from services.inbox import store as inbox_store
-from services.storage import flock, layout
+from services.storage import flock, layout, migrations
 from utils import commands
 from utils.commands import scheduler
 
@@ -141,11 +141,11 @@ class MigrationTests(_Sandbox):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("{}\n", encoding="utf-8")
 
-        layout.migrate_layout()
+        migrations.migrate_layout()
 
         left = {p.name for p in self.root.iterdir()}
         self.assertLessEqual(left, set(_sample_folders()), sorted(left - set(_sample_folders())))
-        self.assertEqual(layout.migrate_layout(), [])
+        self.assertEqual(migrations.migrate_layout(), [])
 
 
 # ── The example files ─────────────────────────────────────────────────────────
@@ -276,7 +276,7 @@ class ExampleStoreTests(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def test_the_sample_needs_no_migration(self) -> None:
-        self.assertEqual(layout.migrate_layout(), [])
+        self.assertEqual(migrations.migrate_layout(), [])
 
     def test_the_inbox(self) -> None:
         document, ok = inbox_store.load_document()

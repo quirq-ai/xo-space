@@ -614,10 +614,10 @@ async def lifespan(app: FastAPI):
     _write_install_pointer()
 
     # Move machine-local files from where earlier releases kept them into the
-    # state root's folders (services/storage/layout.py), before agent setup,
-    # the watcher or any poller reads or writes one. Never raises.
+    # state root's folders (services/storage/migrations.py), before agent
+    # setup, the watcher or any poller reads or writes one. Never raises.
     try:
-        from services.storage.layout import migrate_layout
+        from services.storage.migrations import migrate_layout
         _layout_moves = migrate_layout()
         if _layout_moves:
             print(f"   State layout: moved {len(_layout_moves)} file(s) or folder(s) into place")
