@@ -1,7 +1,7 @@
 {
   "name": "grokbot",
   "binary": "",
-  "install_url": "https://github.com/adam91holt/grokbot-sdk",
+  "install_url": "",
   "home_dir": "/home/box/sand-data",
   "env_file": "/home/box/sand-data/.env",
   "config_file": "/home/box/sand-data/gateway.json",
@@ -50,7 +50,7 @@
       {
         "key": "GROKBOT_DEFAULT_AGENT_ID",
         "label": "Default Grok Bot agent id",
-        "description": "Optional durable host seat for new Space chats. When unset, Space mints a throwaway seat instead of broadcasting."
+        "description": "Optional shared host conversation for new Space chats: context is shared across those chats. Leave unset for an isolated seat per Space session. Retained seats must be removed on the host when no longer needed."
       }
     ]
   }

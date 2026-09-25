@@ -1,16 +1,12 @@
-"""Map Space session ids to Grok Bot host agent seats.
-
-``_dispatcher_sse`` always passes the Space-side UUID as ``our_session_id``,
-never the host agent id. This file remembers which throwaway (or default)
-seat belongs to that UUID so follow-up turns do not mint a new agent and
-do not broadcast.
-"""
+"""Persist Space-to-host identity in the shared, per-session index."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
-from services.storage.atomic_write import write_json_atomic
+from services.cowork_agent.adapters.grokbot.paths import resolve_sand_root
+from services.cowork_agent.engine import sessions_io
 from services.storage.reader import read_json
 from utils.runtime_env import quirq_state_dir
 
@@ -21,7 +17,7 @@ def _map_path() -> Path:
     return quirq_state_dir() / _MAP_REL
 
 
-def _load() -> dict[str, Any]:
+def _legacy_seats() -> dict[str, Any]:
     data = read_json(_map_path())
     if not isinstance(data, dict):
         return {}
@@ -29,18 +25,32 @@ def _load() -> dict[str, Any]:
     return seats if isinstance(seats, dict) else {}
 
 
+def indexed_sessions() -> dict[str, dict]:
+    return {
+        row["sessionId"]: row
+        for row in sessions_io.read_root_session_index().values()
+        if row.get("backend") == "grokbot" and row.get("sessionId")
+    }
+
+
 def lookup_seat(space_session_id: str | None) -> str | None:
     if not space_session_id:
         return None
-    value = _load().get(space_session_id)
+    row = indexed_sessions().get(space_session_id, {})
+    value = row.get("nativeSessionId") or _legacy_seats().get(space_session_id)
     return value if isinstance(value, str) and value.strip() else None
 
 
 def remember_seat(space_session_id: str | None, agent_id: str | None) -> None:
     if not space_session_id or not agent_id:
         return
-    seats = dict(_load())
-    if seats.get(space_session_id) == agent_id:
-        return
-    seats[space_session_id] = agent_id
-    write_json_atomic(_map_path(), {"seats": seats})
+    # One atomic shard per Space session: simultaneous new chats cannot
+    # overwrite each other's mapping. Old private maps are read-only fallback.
+    row = {
+        "sessionId": space_session_id,
+        "nativeSessionId": agent_id,
+        "directory": str(resolve_sand_root()),
+        "backend": "grokbot",
+        "updatedAt": int(time.time() * 1000),
+    }
+    sessions_io.write_session_row("", f"grokbot::web:{space_session_id}", row)

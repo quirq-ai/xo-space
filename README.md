@@ -169,9 +169,49 @@ Pick the active agent with `AGENT_NAME` (or from the Setup tab). Agents that exp
 | **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789`; the default when nothing is configured |
 | **Hermes** | `hermes` | ✅ | ✅ | HTTP gateway on `:8642`, one per profile |
 | **Antigravity** | `antigravity` | ✅ | ✅ | `agy` CLI subprocess + Google OAuth |
-| **Grok Bot** | `grokbot` | ✅ | partial | Chat via the local host gateway (`http://127.0.0.1:1340`, token from `SAND_GATEWAY_TOKEN` or `sand-data/gateway.json`). Sessions list on-disk `agent-transcripts/*/*.jsonl` when `SAND_DATA_ROOT` is readable; empty if sand-data is not mounted. Host must be running for chat. |
+| **Grok Bot** | `grokbot` | partial | partial | External host gateway on `:1340`; replies arrive after polling. History needs mounted sand-data. No Space project/MCP/model selection, usage, status integrations, Agents management, telemetry or prompt suggestions. See [Grok Bot limits](#grok-bot-limits). |
 | **Cursor** | — | — | ✅ | Read-only: sessions appear in telemetry, cannot run a turn |
 | **Your own** | `<name>` | ✅ | ✅ | Drop `config/agents/<name>/` + `services/cowork_agent/adapters/<name>/` — auto-discovered, no core edits. Guide: [DEVELOPING.md §4](DEVELOPING.md) |
+
+### Grok Bot limits
+
+Set `AGENT_NAME=grokbot` and run the host separately. The gateway defaults to
+`http://127.0.0.1:1340` (`GROKBOT_GATEWAY_URL`, alias `SAND_GATEWAY_URL`);
+chat needs `SAND_GATEWAY_TOKEN` or the token in `sand-data/gateway.json`.
+The [community SDK](https://github.com/adam91holt/grokbot-sdk) documents the
+gateway protocol; it is **not a host installer**. Space supplies no host
+installer, `setup.sh` or `troubleshoot.py`, and invokes no Grok Bot binary.
+
+Space saves each chat's UUID and host seat in its session index before sending
+the prompt. Follow-ups reuse that seat and the Sessions tab avoids a second
+row under its host ID. Reopening messages requires readable
+`SAND_DATA_ROOT/agent-transcripts/*/*.jsonl` (default `/home/box/sand-data`,
+alias `/home/box/agent-data`). Without that mount, indexed chats remain listed
+but message history is empty; replies still work through the gateway.
+
+New chats get separate retained host seats by default. These `xo-space-*`
+seats stay for follow-ups and must be deleted **on the host** when no longer
+needed; deleting a Space session does not delete its host seat. Standalone
+one-shot calls without a Space session delete their newly created seat after
+completion or failure. `GROKBOT_DEFAULT_AGENT_ID` explicitly opts into one
+**shared host conversation**: separate Space chats then share context and
+history. Leave it unset for isolation; avoid concurrent prompts on a shared
+seat, including prompts sent outside Space.
+
+Replies arrive as a single text block after polling (up to 600 seconds), with
+an initial waiting status and SSE heartbeats, but no live tokens, tool or
+thinking events. A reply must follow the newly recorded prompt in an unchanged
+transcript; an unreadable or rewritten transcript fails instead of returning
+an older answer. Cancellation and timeout attempt `interruptAgentRun`; if the
+host is unavailable or does not support it, stop the turn on the host.
+
+Project selection/`agent_id`, Space connections and per-user MCP configuration,
+and per-prompt `model` selection are not forwarded; the host controls its
+workspace, tools and model. Usage accounting, model/provider/channel status,
+Agents management, session telemetry/presence/visualizer integration and
+prompt suggestions are out of scope (their capabilities return empty/501).
+Tests cover a mocked HTTP host and documented transcript formats; this
+adapter has not been validated against a live host in this change.
 
 ---
 

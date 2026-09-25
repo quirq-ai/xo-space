@@ -2,16 +2,17 @@
 
 The host has no ``waitForCompletion`` API. After ``sendPrompt`` (which only
 returns ``{accepted: true}``) we poll roster + tasks + subagents until idle,
-then read the last assistant line from the transcript tail.
+then accept only assistant text following this turn's newly recorded prompt.
 
 Space never broadcasts. A durable seat is used when ``session_id`` or
-``GROKBOT_DEFAULT_AGENT_ID`` names one; otherwise a throwaway seat is minted
-and kept so follow-up turns can continue.
+``GROKBOT_DEFAULT_AGENT_ID`` names one; otherwise a session seat is minted
+and retained for follow-ups (only standalone one-shot seats are deleted).
 """
 from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import suppress
 from typing import Any
 
 from services.cowork_agent.adapters.grokbot.gateway import (
@@ -27,7 +28,8 @@ from services.cowork_agent.adapters.grokbot.session_seats import (
     remember_seat,
 )
 
-DEFAULT_WAIT_INTERVAL_S = 0.25
+DEFAULT_WAIT_INTERVAL_S = 1.0
+MAX_WAIT_INTERVAL_S = 5.0
 DEFAULT_WAIT_TIMEOUT_S = 600.0
 CREATE_NAME_PREFIX = "xo-space-"
 
@@ -151,29 +153,75 @@ def _running_subagent_count(subagents: list[Any]) -> int:
     )
 
 
+def _current_turn_entries(
+    before: list[Any], entries: list[Any], question: str,
+) -> list[Any] | None:
+    """Fence replies by the pre-send transcript AND the new user prompt.
+
+    Fail closed if the host rewrote/truncated history: array positions are
+    only safe while the snapshot remains a prefix. Repeated answer text is
+    valid; a repeated old answer entry is not.
+    """
+    if len(entries) < len(before) or entries[:len(before)] != before:
+        raise GrokbotGatewayError(
+            "Grok Bot transcript changed while waiting; cannot identify this turn's reply."
+        )
+    start = None
+    for index, raw in enumerate(entries[len(before):], start=len(before)):
+        entry = _unwrap_entry(raw)
+        if not isinstance(entry, dict) or entry.get("role") != "user":
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else entry.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(block.get("text") or "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        if not isinstance(content, str) or not content.strip():
+            continue  # User-envelope tool results are not a new prompt.
+        if start is not None:
+            # Another prompt has arrived on this seat; don't attribute its
+            # answer to our turn (especially on a shared default seat).
+            return entries[start:index]
+        if content.strip() == question.strip():
+            start = index + 1
+    return entries[start:] if start is not None else None
+
+
+async def _transcript(gateway: GrokbotGateway, agent_id: str) -> list[Any]:
+    payload = await gateway.get_agent_transcript(agent_id)
+    if not isinstance(payload, list) and not (
+        isinstance(payload, dict) and isinstance(payload.get("entries"), list)
+    ):
+        raise GrokbotGatewayError("Grok Bot host returned an invalid transcript.")
+    return _entries_from_transcript(payload)
+
+
 async def wait_for_idle(
     gateway: GrokbotGateway,
     agent_id: str,
     *,
-    client_nonce: str | None = None,
+    before: list[Any],
+    question: str,
+    client_nonce: str,
     timeout_s: float = DEFAULT_WAIT_TIMEOUT_S,
     interval_s: float = DEFAULT_WAIT_INTERVAL_S,
-) -> str:
-    """Poll until the seat is idle. Returns ``idle`` / ``awaiting-user`` / ``timeout``."""
+) -> tuple[str, str]:
+    """Wait for this prompt's reply, not merely an idle roster observation."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
-    while True:
+    while loop.time() < deadline:
         agents, tasks, subagents = await asyncio.gather(
             gateway.list_agents(),
             gateway.get_async_tasks(agent_id),
             gateway.get_subagents(agent_id),
         )
         acceptance: dict[str, Any] | None = None
-        if client_nonce:
-            try:
-                acceptance = await gateway.prompt_acceptance_status(client_nonce)
-            except GrokbotGatewayError:
-                acceptance = None
+        try:
+            acceptance = await gateway.prompt_acceptance_status(client_nonce)
+        except GrokbotGatewayError:
+            pass  # The newly appended prompt/reply must still prove freshness.
 
         agent = _find_agent(agents, agent_id)
         if agent is None:
@@ -181,21 +229,12 @@ async def wait_for_idle(
                 f"Grok Bot agent {agent_id!r} disappeared from the roster while waiting."
             )
 
-        if (
-            isinstance(acceptance, dict)
-            and acceptance.get("outcome") == "found"
-            and isinstance(acceptance.get("record"), dict)
-            and acceptance["record"].get("status") == "rejected"
-        ):
+        record = acceptance.get("record") if isinstance(acceptance, dict) else None
+        if isinstance(record, dict) and record.get("status") == "rejected":
             raise GrokbotGatewayError("Grok Bot host rejected the prompt.")
-
         acceptance_blocking = isinstance(acceptance, dict) and (
             acceptance.get("outcome") == "not-found"
-            or (
-                acceptance.get("outcome") == "found"
-                and isinstance(acceptance.get("record"), dict)
-                and acceptance["record"].get("status") == "pending"
-            )
+            or (isinstance(record, dict) and record.get("status") == "pending")
         )
         busy = bool(
             agent.get("isRunning")
@@ -204,35 +243,20 @@ async def wait_for_idle(
             or _running_subagent_count(subagents)
             or acceptance_blocking
         )
-        awaiting = agent.get("awaitingUserResponse")
-        if not busy and awaiting not in (None, False):
-            return "awaiting-user"
         if not busy:
-            return "idle"
+            entries = await _transcript(gateway, agent_id)
+            current = _current_turn_entries(before, entries, question)
+            reply = last_assistant_text(current or []) or ""
+            if loop.time() >= deadline:
+                return "timeout", ""
+            if reply:
+                return "idle", reply
+            if current is not None and agent.get("awaitingUserResponse") not in (None, False):
+                return "awaiting-user", "The Grok Bot host is waiting for user input on that seat."
         remaining = max(0.0, deadline - loop.time())
-        if remaining <= 0:
-            return "timeout"
         await asyncio.sleep(min(interval_s, remaining))
-        if loop.time() >= deadline:
-            return "timeout"
-
-
-async def _read_reply(gateway: GrokbotGateway, agent_id: str) -> str:
-    try:
-        tail = await gateway.get_agent_transcript_tail(agent_id, limit=50)
-        text = last_assistant_text(_entries_from_transcript(tail))
-        if text:
-            return text
-    except GrokbotGatewayError:
-        pass
-    try:
-        full = await gateway.get_agent_transcript(agent_id)
-        text = last_assistant_text(_entries_from_transcript(full))
-        if text:
-            return text
-    except GrokbotGatewayError:
-        pass
-    return ""
+        interval_s = min(interval_s * 1.5, MAX_WAIT_INTERVAL_S)
+    return "timeout", ""
 
 
 async def run_turn(
@@ -242,35 +266,61 @@ async def run_turn(
     is_new_session: bool = False,
     timeout_s: float = DEFAULT_WAIT_TIMEOUT_S,
 ) -> dict[str, str | None]:
-    """Send one Space turn. Returns ``message`` + ``native_session_id``."""
-    gateway = GrokbotGateway()
-    gateway.require_token()
+    """Send one Space turn, retaining its host seat for future follow-ups."""
+    async with GrokbotGateway() as gateway:
+        gateway.require_token()
+        agent_id, mint = resolve_target_agent(session_id, is_new_session=is_new_session)
+        if mint:
+            created = await gateway.create_agent(
+                name=f"{CREATE_NAME_PREFIX}{uuid.uuid4().hex[:12]}",
+                description="XO Space chat session",
+            )
+            agent_id = str(created.get("id") or "")
+            if not agent_id:
+                raise GrokbotGatewayError("Grok Bot createAgent did not return an agent id.")
 
-    agent_id, mint = resolve_target_agent(session_id, is_new_session=is_new_session)
-    if mint:
-        created = await gateway.create_agent(
-            name=f"{CREATE_NAME_PREFIX}{uuid.uuid4().hex[:12]}",
-            description="XO Space chat turn",
-        )
-        agent_id = str(created.get("id") or "")
-        if not agent_id:
-            raise GrokbotGatewayError("Grok Bot createAgent did not return an agent id.")
-
-    assert agent_id is not None
-    remember_seat(session_id, agent_id)
-    nonce = str(uuid.uuid4())
-    sent = await gateway.send_prompt(prompt=question, agent_id=agent_id, client_nonce=nonce)
-    if sent.get("accepted") is not True:
-        raise GrokbotGatewayError("Grok Bot host did not accept the prompt.")
-
-    status = await wait_for_idle(
-        gateway, agent_id, client_nonce=nonce, timeout_s=timeout_s
-    )
-    reply = await _read_reply(gateway, agent_id)
-    if not reply and status == "timeout":
-        raise GrokbotGatewayError(
-            f"Grok Bot host did not finish the turn within {int(timeout_s)}s."
-        )
-    if not reply and status == "awaiting-user":
-        reply = "The Grok Bot host is waiting for user input on that seat."
-    return {"message": reply, "native_session_id": agent_id}
+        assert agent_id is not None
+        retained = False
+        prompt_sent = False
+        try:
+            # Persist before sending: even a disconnect must leave a session
+            # that core can own and reopen under the original Space UUID.
+            remember_seat(session_id, agent_id)
+            retained = bool(session_id)
+            async with asyncio.timeout(timeout_s):
+                before = await _transcript(gateway, agent_id)
+                nonce = str(uuid.uuid4())
+                prompt_sent = True
+                sent = await gateway.send_prompt(prompt=question, agent_id=agent_id, client_nonce=nonce)
+                if sent.get("accepted") is not True:
+                    prompt_sent = False
+                    raise GrokbotGatewayError("Grok Bot host did not accept the prompt.")
+                status, reply = await wait_for_idle(
+                    gateway, agent_id, before=before, question=question,
+                    client_nonce=nonce, timeout_s=timeout_s,
+                )
+                if status == "timeout":
+                    raise TimeoutError
+                return {"message": reply, "native_session_id": agent_id}
+        except (asyncio.CancelledError, TimeoutError) as exc:
+            if prompt_sent:
+                # The host may not support interruption or may be unreachable.
+                # Bound cleanup and preserve cancellation/the timeout error.
+                with suppress(GrokbotGatewayError, TimeoutError):
+                    async with asyncio.timeout(5):
+                        await gateway.interrupt_agent(agent_id)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            hint = (
+                "An interrupt was attempted; check the host if it is still running."
+                if prompt_sent else "The prompt was not sent."
+            )
+            raise GrokbotGatewayError(
+                f"Grok Bot host did not finish the turn within {timeout_s:g}s. {hint}"
+            ) from exc
+        finally:
+            if mint and not retained:
+                # No Space session can resume a standalone one-shot seat.
+                with suppress(GrokbotGatewayError, TimeoutError):
+                    async with asyncio.timeout(5):
+                        await gateway.delete_agent(agent_id)

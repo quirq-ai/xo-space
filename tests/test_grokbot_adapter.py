@@ -291,8 +291,9 @@ class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SAND_GATEWAY_TOKEN", MISSING_TOKEN_HINT)
         self.assertIn("gateway.json", MISSING_TOKEN_HINT)
 
-    async def test_run_turn_mints_throwaway_and_returns_reply(self) -> None:
+    async def test_run_turn_retains_session_seat_and_returns_reply(self) -> None:
         calls: list[str] = []
+        transcript: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             path = request.url.path
@@ -303,6 +304,10 @@ class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
                 body = json.loads(request.content)
                 self.assertEqual(body["agentId"], "seat-1")
                 self.assertNotEqual(body["agentId"], "all")
+                transcript.extend([
+                    {"kind": "message", "role": "user", "content": body["prompt"]},
+                    {"kind": "message", "role": "assistant", "content": "PONG"},
+                ])
                 return httpx.Response(200, json={"accepted": True})
             if path == "/api/listAgents":
                 return httpx.Response(200, json=[{
@@ -318,10 +323,8 @@ class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
                     "outcome": "found",
                     "record": {"status": "accepted"},
                 })
-            if path == "/api/getAgentTranscriptTail":
-                return httpx.Response(200, json={
-                    "entries": [{"kind": "message", "role": "assistant", "content": "PONG"}],
-                })
+            if path == "/api/getAgentTranscript":
+                return httpx.Response(200, json=transcript)
             return httpx.Response(404, text="unexpected")
 
         transport = httpx.MockTransport(handler)

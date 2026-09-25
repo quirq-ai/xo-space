@@ -29,6 +29,7 @@ class GrokbotAdapter(BaseAgentAdapter):
             question,
             space_session_id,
             is_new_session=bool(kwargs.get("is_new_session", not session_id)),
+            timeout_s=float(self.config.get("timeout", 600)),
         )
 
     async def stream(
@@ -43,10 +44,12 @@ class GrokbotAdapter(BaseAgentAdapter):
         space_session_id = session_id or kwargs.get("our_session_id")
         is_new = bool(kwargs.get("is_new_session", not session_id))
         try:
+            yield {"type": "model-loading", "label": "Waiting for Grok Bot host"}
             result = await run_turn(
                 question,
                 space_session_id,
                 is_new_session=is_new,
+                timeout_s=float(self.config.get("timeout", 600)),
             )
         except GrokbotGatewayError as exc:
             yield {"type": "error", "error": str(exc)}

@@ -6,6 +6,7 @@ and ``POST /api/<command>`` with a Bearer token. Tokens are never logged.
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -57,6 +58,24 @@ class GrokbotGateway:
 
     def __init__(self, discovery: GatewayDiscovery | None = None):
         self.discovery = discovery or discover_gateway()
+        self._client: httpx.AsyncClient | None = None
+
+    async def __aenter__(self):
+        self._client = httpx.AsyncClient()
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    @asynccontextmanager
+    async def _http_client(self):
+        if self._client is not None:
+            yield self._client
+        else:
+            async with httpx.AsyncClient() as client:
+                yield client
 
     @property
     def base_url(self) -> str:
@@ -74,8 +93,11 @@ class GrokbotGateway:
     async def health(self, *, timeout: float = 5.0) -> dict[str, Any]:
         url = f"{self.base_url}{HEALTH_PATH}"
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=3.0)) as client:
-                resp = await client.get(url, headers=_headers(None, auth=False))
+            async with self._http_client() as client:
+                resp = await client.get(
+                    url, headers=_headers(None, auth=False),
+                    timeout=httpx.Timeout(timeout, connect=3.0),
+                )
         except httpx.HTTPError as exc:
             raise GrokbotGatewayError(
                 UNREACHABLE_HINT.format(url=self.base_url)
@@ -105,11 +127,12 @@ class GrokbotGateway:
         token = self.require_token()
         url = f"{self.base_url}{API_PREFIX}/{name}"
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+            async with self._http_client() as client:
                 resp = await client.post(
                     url,
                     headers={**_headers(token, auth=True), "Content-Type": "application/json"},
                     json=body if body is not None else {},
+                    timeout=httpx.Timeout(timeout, connect=10.0),
                 )
         except httpx.HTTPError as exc:
             raise GrokbotGatewayError(
@@ -190,3 +213,6 @@ class GrokbotGateway:
 
     async def delete_agent(self, agent_id: str) -> Any:
         return await self.command("deleteAgent", {"id": agent_id})
+
+    async def interrupt_agent(self, agent_id: str) -> Any:
+        return await self.command("interruptAgentRun", {"id": agent_id}, timeout=5.0)
