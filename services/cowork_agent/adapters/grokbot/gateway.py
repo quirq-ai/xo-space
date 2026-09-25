@@ -27,9 +27,10 @@ MISSING_TOKEN_HINT = (
     "agent-data/gateway.json)."
 )
 UNREACHABLE_HINT = (
-    "Grok Bot gateway is unreachable at {url}. The host must be running "
-    "(typical http://127.0.0.1:1340). Check GROKBOT_GATEWAY_URL / "
-    "SAND_GATEWAY_URL and that GET /health responds."
+    "Grok Bot gateway is unreachable at {url}. Run Space on the Grok Bot cloud "
+    "computer, where the host listens on 127.0.0.1:1340, or use a private "
+    "SSH/Tailscale tunnel. Check GROKBOT_GATEWAY_URL / SAND_GATEWAY_URL and "
+    "GET /health. Never expose port 1340 publicly; the token controls the host."
 )
 
 
@@ -51,6 +52,39 @@ def _raise_http(command: str, status: int, body: str, token: str | None) -> None
     raise GrokbotGatewayError(
         f"Grok Bot gateway {command} failed: HTTP {status} {snippet}".strip()
     )
+
+
+class GrokbotHistoryGateway:
+    """Short, synchronous requests for Space's synchronous session hooks."""
+
+    def __init__(self):
+        self.discovery = discover_gateway()
+        self.base_url = self.discovery.base_url.rstrip("/")
+
+    def __enter__(self):
+        self._client = httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0))
+        return self
+
+    def __exit__(self, *exc):
+        self._client.close()
+
+    def command(self, name: str, body: dict[str, Any]) -> Any:
+        token = self.discovery.token
+        headers = _headers(token, auth=True)
+        try:
+            resp = self._client.post(
+                f"{self.base_url}{API_PREFIX}/{name}", headers=headers, json=body,
+            )
+        except httpx.HTTPError as exc:
+            raise GrokbotGatewayError(
+                redact_secret(UNREACHABLE_HINT.format(url=self.base_url), token)
+            ) from exc
+        if resp.status_code >= 400:
+            _raise_http(name, resp.status_code, resp.text, token)
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise GrokbotGatewayError(f"Grok Bot gateway {name} returned non-JSON") from exc
 
 
 class GrokbotGateway:

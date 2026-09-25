@@ -17,7 +17,6 @@ from services.cowork_agent.adapters.grokbot.gateway import (
     MISSING_TOKEN_HINT,
 )
 from services.cowork_agent.adapters.grokbot.oneshot import (
-    last_assistant_text,
     resolve_target_agent,
     run_turn,
 )
@@ -27,9 +26,8 @@ from services.cowork_agent.adapters.grokbot.paths import (
     normalize_gateway_url,
     redact_secret,
     resolve_sand_root,
-    transcript_path,
 )
-from services.cowork_agent.adapters.grokbot import session_seats, sessions
+from services.cowork_agent.adapters.grokbot import session_seats
 
 
 def _clear_grokbot_env() -> dict[str, str]:
@@ -165,65 +163,6 @@ class SessionSeatTests(unittest.TestCase):
             self.assertTrue(mint)
 
 
-class SessionsDiskTests(unittest.TestCase):
-    def test_list_and_read_legacy_jsonl(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            transcript = root / "agent-transcripts" / "ada" / "ada.jsonl"
-            transcript.parent.mkdir(parents=True)
-            transcript.write_text(
-                "\n".join([
-                    json.dumps({"type": "metadata", "model": "x"}),
-                    json.dumps({
-                        "role": "user",
-                        "message": {"content": [{"type": "text", "text": "Hello from Space"}]},
-                    }),
-                    json.dumps({
-                        "role": "assistant",
-                        "message": {"content": [
-                            {"type": "text", "text": "Pong"},
-                            {"type": "tool_use", "name": "Read", "input": {"path": "a"}},
-                            {"type": "tool_result", "name": "Read", "result": "ok"},
-                        ]},
-                    }),
-                ]),
-                encoding="utf-8",
-            )
-            env = {**_clear_grokbot_env(), "SAND_DATA_ROOT": str(root)}
-            with mock.patch.dict(os.environ, env, clear=False):
-                rows = sessions.list_native_sessions()
-                self.assertEqual(len(rows), 1)
-                self.assertEqual(rows[0]["id"], "ada")
-                self.assertEqual(rows[0]["title"], "Hello from Space")
-                self.assertTrue(sessions.owns_session("ada"))
-                self.assertFalse(sessions.owns_session("missing"))
-                self.assertEqual(transcript_path("ada"), transcript)
-                messages = sessions.get_messages("ada")
-            self.assertEqual(len(messages), 2)
-            self.assertEqual(messages[0]["data"]["role"], "user")
-            self.assertEqual(messages[0]["parts"][0]["data"]["text"], "Hello from Space")
-            self.assertEqual(messages[1]["data"]["role"], "assistant")
-            tools = [p for p in messages[1]["parts"] if p["data"]["type"] == "tool"]
-            self.assertEqual(tools[0]["data"]["state"]["output"], "ok")
-
-    def test_missing_sand_data_is_empty_not_an_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            env = {**_clear_grokbot_env(), "SAND_DATA_ROOT": str(Path(tmp) / "absent")}
-            with mock.patch.dict(os.environ, env, clear=False):
-                self.assertEqual(sessions.list_native_sessions(), [])
-                self.assertEqual(sessions.get_messages("ada"), [])
-
-
-class TranscriptParseTests(unittest.TestCase):
-    def test_last_assistant_text_from_host_rows(self) -> None:
-        entries = [
-            {"kind": "message", "role": "user", "content": "hi"},
-            {"kind": "send-message", "message": {"type": "text", "content": "latest reply"}},
-            {"kind": "message", "role": "assistant", "content": "older", "streaming": True},
-        ]
-        self.assertEqual(last_assistant_text(entries), "latest reply")
-
-
 class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
     def test_adapter_name(self) -> None:
         self.assertIs(Adapter, GrokbotAdapter)
@@ -305,8 +244,10 @@ class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(body["agentId"], "seat-1")
                 self.assertNotEqual(body["agentId"], "all")
                 transcript.extend([
-                    {"kind": "message", "role": "user", "content": body["prompt"]},
-                    {"kind": "message", "role": "assistant", "content": "PONG"},
+                    {"kind": "message", "role": "user", "content": body["prompt"],
+                     "clientNonce": body["clientNonce"], "requestId": "req-1", "seq": 1},
+                    {"kind": "send-message", "message": {"type": "text", "content": "PONG"},
+                     "requestId": "req-1", "seq": 2},
                 ])
                 return httpx.Response(200, json={"accepted": True})
             if path == "/api/listAgents":
@@ -320,8 +261,7 @@ class AdapterContractTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, json=[])
             if path == "/api/promptAcceptanceStatus":
                 return httpx.Response(200, json={
-                    "outcome": "found",
-                    "record": {"status": "accepted"},
+                    "outcome": "not-found",
                 })
             if path == "/api/getAgentTranscript":
                 return httpx.Response(200, json=transcript)

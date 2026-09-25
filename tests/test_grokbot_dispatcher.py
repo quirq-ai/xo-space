@@ -1,7 +1,7 @@
 """Grok Bot regressions through the real dispatcher, SSE and session routes.
 
-Only the host HTTP transport is faked. Transcript fixtures use the public
-SDK's gateway and legacy JSONL envelopes; no live host transcript is bundled.
+Only the host HTTP transport is faked. Transcript fixtures follow the
+reviewer's live-host nonce/requestId and send-message observations.
 """
 from __future__ import annotations
 
@@ -25,8 +25,11 @@ from services.cowork_agent.engine.sessions_io import find_session_backend, find_
 from tests.test_grokbot_adapter import _clear_grokbot_env
 
 
-def entry(role: str, text: str) -> dict:
-    return {"kind": "message", "role": role, "content": text}
+def entry(role: str, text: str, *, nonce="nonce", request_id="request", seq=1) -> dict:
+    common = {"requestId": request_id, "seq": seq, "timestampMs": 1_700_000_000_000 + seq}
+    if role == "user":
+        return {**common, "kind": "message", "role": role, "content": text, "clientNonce": nonce}
+    return {**common, "kind": "send-message", "message": {"type": "text", "content": text}}
 
 
 class DispatcherTests(unittest.IsolatedAsyncioTestCase):
@@ -51,6 +54,10 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.busy = False
         self.auto_reply = True
         self.acceptance_available = True
+        self.acceptance = {"outcome": "not-found"}
+        self.on_poll = None
+        self.polls = 0
+        self.last_prompt = None
         self.interrupt_available = True
         self.sent = asyncio.Event()
         self.interrupted = asyncio.Event()
@@ -66,6 +73,19 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         patch = mock.patch("httpx.AsyncClient", side_effect=factory)
         patch.start()
         self.addCleanup(patch.stop)
+        real_sync_client = httpx.Client
+        sync_patch = mock.patch("httpx.Client", side_effect=lambda **kwargs: real_sync_client(
+            transport=httpx.MockTransport(self.handle), **kwargs,
+        ))
+        sync_patch.start()
+        self.addCleanup(sync_patch.stop)
+
+    def turn_entries(self, body):
+        start = len(self.entries[body["agentId"]]) + 1
+        return [
+            entry("user", body["prompt"], nonce=body["clientNonce"], request_id=f"req-{body['clientNonce']}", seq=start),
+            entry("assistant", "PONG", request_id=f"req-{body['clientNonce']}", seq=start + 1),
+        ]
 
     def handle(self, request):
         name = request.url.path.removeprefix("/api/")
@@ -79,14 +99,15 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         if name == "sendPrompt":
             if self.before_send:
                 self.before_send(body)
+            self.last_prompt = body
             if self.auto_reply:
-                self.entries[body["agentId"]].extend([
-                    entry("user", body["prompt"]), entry("assistant", "PONG"),
-                ])
-                self.write_disk(body["agentId"])
+                self.entries[body["agentId"]].extend(self.turn_entries(body))
             self.sent.set()
             return httpx.Response(200, json={"accepted": True})
         if name == "listAgents":
+            self.polls += 1
+            if self.on_poll:
+                self.on_poll(self.polls)
             return httpx.Response(200, json=[
                 {"id": seat, "isRunning": self.busy} for seat in self.entries
             ])
@@ -95,9 +116,9 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         if name == "promptAcceptanceStatus":
             if not self.acceptance_available:
                 return httpx.Response(503, text="unavailable")
-            return httpx.Response(200, json={"outcome": "found", "record": {"status": "accepted"}})
+            return httpx.Response(200, json=self.acceptance)
         if name == "getAgentTranscript":
-            return httpx.Response(200, json=self.entries[body["id"]])
+            return httpx.Response(200, json=self.entries.get(body["id"], []))
         if name == "interruptAgentRun":
             self.interrupted.set()
             return httpx.Response(200 if self.interrupt_available else 404, json={"hadActiveRun": True})
@@ -105,13 +126,6 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
             del self.entries[body["id"]]
             return httpx.Response(200, json={})
         raise AssertionError(f"Unexpected command: {name}")
-
-    def write_disk(self, seat):
-        path = self.root / "sand" / "agent-transcripts" / seat / f"{seat}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(json.dumps({
-            "role": row["role"], "message": {"content": row["content"]},
-        }) for row in self.entries[seat]), encoding="utf-8")
 
     async def sse(self, sid, question, is_new):
         from routers.cowork_agent.chat import _dispatcher_sse
@@ -134,7 +148,8 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"session_id": "space-uuid"', first)
         self.assertNotIn("event: agent-error", first)
         self.assertTrue(sessions.owns_session("space-uuid"))
-        self.assertEqual(find_session_file("space-uuid"), sessions.resolve_native_file({}, "space-uuid"))
+        self.assertIsNone(find_session_file("space-uuid"))
+        self.assertFalse((self.root / "sand" / "agent-transcripts").exists())
 
         # A new dispatcher/HTTP client must recover identity from disk.
         second = await self.sse("space-uuid", "ping again", False)
@@ -196,10 +211,10 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         async def advance(delay):
             delays.append(delay)
             if len(delays) == 1:
-                self.entries["seat-1"].append(entry("user", "second"))
+                self.entries["seat-1"].append(self.turn_entries(self.last_prompt)[0])
             else:
                 # Identical answer text is fine when it is a NEW entry.
-                self.entries["seat-1"].append(entry("assistant", "PONG"))
+                self.entries["seat-1"].append(self.turn_entries(self.last_prompt)[1])
 
         with mock.patch("services.cowork_agent.adapters.grokbot.oneshot.asyncio.sleep", side_effect=advance):
             result = await run_turn("second", "space-uuid")
@@ -263,55 +278,130 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         for n in range(32):
             self.assertEqual(session_seats.lookup_seat(f"space-{n}"), f"seat-{n}")
 
-    async def test_legacy_mapping_is_migrated_on_resume(self):
-        path = self.root / "state" / "grokbot" / "session-seats.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"seats": {"legacy": "seat-1"}}))
-        self.entries["seat-1"] = []
-        result = await run_turn("ping", "legacy")
-        self.assertEqual(result["native_session_id"], "seat-1")
-        self.assertEqual(find_session_backend("legacy"), "grokbot")
-        self.assertNotIn("createAgent", [name for name, _ in self.calls])
+    async def test_not_found_through_idle_running_reply_then_idle(self):
+        self.auto_reply = False
+        delays = []
+
+        def advance(poll):
+            # Live probe: initially idle; reply lands before the run ends.
+            self.busy = poll in (2, 3)
+            if poll == 2:
+                self.entries["seat-1"] = self.turn_entries(self.last_prompt)[:1]
+            if poll == 3:
+                self.entries["seat-1"].append(self.turn_entries(self.last_prompt)[1])
+
+        async def sleep(delay):
+            delays.append(delay)
+
+        self.on_poll = advance
+        with mock.patch("services.cowork_agent.adapters.grokbot.oneshot.asyncio.sleep", side_effect=sleep):
+            result = await AgentDispatcher("grokbot").ask("ping", "space-uuid", is_new_session=True)
+        self.assertIn("PONG", str(result))
+        self.assertEqual(self.polls, 4)
+        self.assertEqual(delays, [1.0, 1.5, 2.25])
+        self.assertFalse(self.interrupted.is_set())
+
+    async def test_nonce_is_retained_when_prompt_leaves_running_window(self):
+        def advance(poll):
+            self.busy = poll == 1
+            if poll == 2:
+                self.entries["seat-1"] = self.entries["seat-1"][1:]
+
+        self.on_poll = advance
+        with mock.patch("services.cowork_agent.adapters.grokbot.oneshot.asyncio.sleep", new_callable=mock.AsyncMock):
+            result = await run_turn("ping", "space-uuid", is_new_session=True)
+        self.assertEqual(result["message"], "PONG")
+        self.assertEqual(self.polls, 2)
+
+    async def test_pending_acceptance_does_not_block_but_rejected_fails(self):
+        self.acceptance = {"outcome": "found", "record": {"status": "pending"}}
+        self.assertEqual((await run_turn("ping"))["message"], "PONG")
+        self.acceptance["record"]["status"] = "rejected"
+        with self.assertRaisesRegex(GrokbotGatewayError, "rejected"):
+            await run_turn("ping")
 
 
 class TranscriptTests(unittest.TestCase):
-    def test_reply_fence_allows_user_envelope_tool_results(self):
-        from services.cowork_agent.adapters.grokbot.oneshot import _current_turn_entries, last_assistant_text
+    def test_nonce_matching_ignores_repeated_prompts_and_other_requests(self):
+        from services.cowork_agent.adapters.grokbot.transcript import current_turn_reply
         entries = [
-            {"role": "user", "message": {"content": [{"type": "text", "text": "ping"}]}},
-            {"role": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
-            {"entry": entry("assistant", "PONG")},
+            entry("user", "same", nonce="old", request_id="old"),
+            entry("assistant", "stale", request_id="old"),
+            entry("user", "same"),
+            entry("assistant", "first part"),
+            entry("user", "same", nonce="other", request_id="other"),
+            entry("assistant", "unrelated", request_id="other"),
+            entry("assistant", "second part"),
         ]
-        self.assertEqual(last_assistant_text(_current_turn_entries([], entries, "ping")), "PONG")
+        self.assertEqual(current_turn_reply(entries, "nonce"), ("request", "first part\n\nsecond part"))
+        self.assertEqual(current_turn_reply(entries[:2], "nonce"), (None, ""))
+        self.assertEqual(current_turn_reply(entries[2:], "nonce"), ("request", "first part\n\nsecond part"))
 
-    def test_user_tool_results_match_call_ids_even_out_of_order(self):
+    def test_missing_correlation_keys_fail_clearly(self):
+        from services.cowork_agent.adapters.grokbot.transcript import current_turn_reply
+        for index, key in [(0, "clientNonce"), (0, "requestId"), (1, "requestId")]:
+            with self.subTest(index=index, key=key):
+                entries = [entry("user", "ping"), entry("assistant", "PONG")]
+                del entries[index][key]
+                with self.assertRaisesRegex(GrokbotGatewayError, key):
+                    current_turn_reply(entries, "nonce")
+
+    def test_history_keeps_repeated_prompts_and_stable_ids(self):
         records = [
-            {"role": "assistant", "message": {"content": [
-                {"type": "tool_use", "id": "one", "name": "Read", "input": {}},
-                {"type": "tool_use", "id": "two", "name": "Read", "input": {}},
-            ]}},
-            {"role": "user", "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "unknown", "content": "ignore"},
-                {"type": "tool_result", "tool_use_id": "two", "content": "second"},
-                {"type": "tool_result", "tool_use_id": "one", "content": "first", "is_error": True},
-            ]}},
+            entry("user", "same", seq=1), entry("assistant", "reply", seq=2),
+            entry("user", "same", seq=3), entry("assistant", "reply", seq=4),
         ]
-        messages = sessions._convert_messages("space-uuid", records)
-        self.assertEqual(len(messages), 1)
-        states = [part["data"]["state"] for part in messages[0]["parts"]]
-        self.assertEqual([state["output"] for state in states], ["first", "second"])
-        self.assertEqual(states[0]["status"], "error")
+        messages = sessions._convert_messages("space", records)
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(messages, sessions._convert_messages("space", records))
+        self.assertEqual(len({row["id"] for row in messages}), 4)
 
-    def test_reply_fence_rejects_rewritten_history_and_unrelated_answers(self):
-        from services.cowork_agent.adapters.grokbot.oneshot import _current_turn_entries, last_assistant_text
-        before = [entry("user", "first"), entry("assistant", "old")]
-        with self.assertRaises(GrokbotGatewayError):
-            _current_turn_entries(before, [entry("assistant", "unrelated")], "second")
-        self.assertIsNone(_current_turn_entries(before, before + [entry("assistant", "late old reply")], "second"))
-        current = _current_turn_entries(before, before + [
-            entry("user", "second"), entry("user", "someone else's prompt"), entry("assistant", "unrelated"),
-        ], "second")
-        self.assertIsNone(last_assistant_text(current))
+
+class CompletionTests(unittest.IsolatedAsyncioTestCase):
+    def gateway(self):
+        gateway = mock.Mock()
+        gateway.list_agents = mock.AsyncMock(return_value=[{"id": "seat"}])
+        gateway.get_async_tasks = mock.AsyncMock(return_value=[])
+        gateway.get_subagents = mock.AsyncMock(return_value=[])
+        gateway.prompt_acceptance_status = mock.AsyncMock(return_value={"outcome": "not-found"})
+        gateway.get_agent_transcript = mock.AsyncMock(return_value=[
+            entry("user", "ping"), entry("assistant", "DONE", seq=2),
+        ])
+        return gateway
+
+    async def test_reply_needs_idle_roster_tasks_and_subagents(self):
+        from services.cowork_agent.adapters.grokbot.oneshot import wait_for_idle
+        for signal in ("isRunning", "isComposingMessage", "tasks", "subagents"):
+            with self.subTest(signal=signal):
+                gateway = self.gateway()
+                if signal == "tasks":
+                    gateway.get_async_tasks.side_effect = [[{"id": "task"}], []]
+                elif signal == "subagents":
+                    gateway.get_subagents.side_effect = [[{"status": "running"}], [{"status": "completed"}]]
+                else:
+                    gateway.list_agents.side_effect = [[{"id": "seat", signal: True}], [{"id": "seat"}]]
+                with mock.patch("services.cowork_agent.adapters.grokbot.oneshot.asyncio.sleep", new_callable=mock.AsyncMock) as sleep:
+                    result = await wait_for_idle(gateway, "seat", client_nonce="nonce")
+                self.assertEqual(result, ("idle", "DONE"))
+                self.assertEqual(gateway.list_agents.await_count, 2)
+                sleep.assert_awaited_once()
+
+    async def test_reply_observed_on_deadline_tick_is_returned(self):
+        from services.cowork_agent.adapters.grokbot.oneshot import wait_for_idle
+        gateway = self.gateway()
+        now = 0.0
+        clock = mock.Mock()
+        clock.time.side_effect = lambda: now
+
+        async def transcript(_):
+            nonlocal now
+            now = 1.0
+            return [entry("user", "ping"), entry("assistant", "DONE", seq=2)]
+
+        gateway.get_agent_transcript.side_effect = transcript
+        with mock.patch("services.cowork_agent.adapters.grokbot.oneshot.asyncio.get_running_loop", return_value=clock):
+            result = await wait_for_idle(gateway, "seat", client_nonce="nonce", timeout_s=1)
+        self.assertEqual(result, ("idle", "DONE"))
 
 
 if __name__ == "__main__":

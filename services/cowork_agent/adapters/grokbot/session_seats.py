@@ -2,27 +2,10 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from typing import Any
 
 from services.cowork_agent.adapters.grokbot.paths import resolve_sand_root
 from services.cowork_agent.engine import sessions_io
-from services.storage.reader import read_json
-from utils.runtime_env import quirq_state_dir
-
-_MAP_REL = Path("grokbot") / "session-seats.json"
-
-
-def _map_path() -> Path:
-    return quirq_state_dir() / _MAP_REL
-
-
-def _legacy_seats() -> dict[str, Any]:
-    data = read_json(_map_path())
-    if not isinstance(data, dict):
-        return {}
-    seats = data.get("seats")
-    return seats if isinstance(seats, dict) else {}
+from services.cowork_agent.helpers import strip_workspace_preamble
 
 
 def indexed_sessions() -> dict[str, dict]:
@@ -37,20 +20,29 @@ def lookup_seat(space_session_id: str | None) -> str | None:
     if not space_session_id:
         return None
     row = indexed_sessions().get(space_session_id, {})
-    value = row.get("nativeSessionId") or _legacy_seats().get(space_session_id)
+    value = row.get("nativeSessionId")
     return value if isinstance(value, str) and value.strip() else None
 
 
-def remember_seat(space_session_id: str | None, agent_id: str | None) -> None:
+def remember_seat(
+    space_session_id: str | None, agent_id: str | None, *, question: str = "",
+) -> None:
     if not space_session_id or not agent_id:
         return
     # One atomic shard per Space session: simultaneous new chats cannot
-    # overwrite each other's mapping. Old private maps are read-only fallback.
+    # overwrite each other's mapping.
+    previous = indexed_sessions().get(space_session_id, {})
+    now = int(time.time() * 1000)
+    title = strip_workspace_preamble(question).strip()
     row = {
+        **previous,
         "sessionId": space_session_id,
         "nativeSessionId": agent_id,
         "directory": str(resolve_sand_root()),
         "backend": "grokbot",
-        "updatedAt": int(time.time() * 1000),
+        "createdAt": previous.get("createdAt") or previous.get("updatedAt") or now,
+        "updatedAt": now,
+        "title": previous.get("title") or title[:80] or "Untitled Session",
     }
+    # Project selection is not forwarded; these seats use the project-less index.
     sessions_io.write_session_row("", f"grokbot::web:{space_session_id}", row)

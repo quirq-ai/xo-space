@@ -169,7 +169,7 @@ Pick the active agent with `AGENT_NAME` (or from the Setup tab). Agents that exp
 | **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789`; the default when nothing is configured |
 | **Hermes** | `hermes` | ✅ | ✅ | HTTP gateway on `:8642`, one per profile |
 | **Antigravity** | `antigravity` | ✅ | ✅ | `agy` CLI subprocess + Google OAuth |
-| **Grok Bot** | `grokbot` | partial | partial | External host gateway on `:1340`; replies arrive after polling. History needs mounted sand-data. No Space project/MCP/model selection, usage, status integrations, Agents management, telemetry or prompt suggestions. See [Grok Bot limits](#grok-bot-limits). |
+| **Grok Bot** | `grokbot` | partial | partial | External host gateway on `:1340`; replies arrive after polling. Text history comes from the gateway for Space-indexed chats. No Space project/MCP/model selection, usage, status integrations, Agents management, telemetry or prompt suggestions. See [Grok Bot limits](#grok-bot-limits). |
 | **Cursor** | — | — | ✅ | Read-only: sessions appear in telemetry, cannot run a turn |
 | **Your own** | `<name>` | ✅ | ✅ | Drop `config/agents/<name>/` + `services/cowork_agent/adapters/<name>/` — auto-discovered, no core edits. Guide: [DEVELOPING.md §4](DEVELOPING.md) |
 
@@ -182,14 +182,30 @@ The [community SDK](https://github.com/adam91holt/grokbot-sdk) documents the
 gateway protocol; it is **not a host installer**. Space supplies no host
 installer, `setup.sh` or `troubleshoot.py`, and invokes no Grok Bot binary.
 
-Space saves each chat's UUID and host seat in its session index before sending
-the prompt. Follow-ups reuse that seat and the Sessions tab avoids a second
-row under its host ID. Reopening messages requires readable
-`SAND_DATA_ROOT/agent-transcripts/*/*.jsonl` (default `/home/box/sand-data`,
-alias `/home/box/agent-data`). Without that mount, indexed chats remain listed
-but message history is empty; replies still work through the gateway.
+#### Where to run this
 
-New chats get separate retained host seats by default. These `xo-space-*`
+**Supported:** install Space on the Grok Bot cloud computer. The default
+`127.0.0.1:1340` address refers to that computer, not your laptop.
+**Advanced:** run Space elsewhere with a private SSH or Tailscale tunnel to
+port 1340 and set `GROKBOT_GATEWAY_URL` to the tunnel endpoint. The gateway has
+no public or tailnet route by default. **Never expose port 1340 publicly:**
+the token gives full control of the host.
+
+Space saves each chat's UUID, host seat, title and times in its session index
+before sending the prompt. Follow-ups reuse that seat. The Sessions tab lists
+Space-indexed chats without per-row gateway calls; host-created seats are not
+imported. Reopening a chat reads **text-only** history through
+`getAgentTranscript`, paging older entries with `getAgentTranscriptPage` and
+`beforeSeq` when the returned window starts later. No sand-data mount is
+needed if the URL and token are configured. Tool calls/results are absent
+from the observed host transcript. The amount of older history retained by
+the host remains unverified; pagination can only return what the host retains.
+Unavailable or incompatible history APIs fail rather than silently showing
+an empty conversation. Setup stores secrets in Space's
+`~/.quirq/secrets/secrets.env` (or `QUIRQ_SECRETS_FILE`), outside host data.
+
+New chats get separate retained host seats by default; the reviewer verified
+that separate seats run in parallel. These `xo-space-*`
 seats stay for follow-ups and must be deleted **on the host** when no longer
 needed; deleting a Space session does not delete its host seat. Standalone
 one-shot calls without a Space session delete their newly created seat after
@@ -200,18 +216,21 @@ seat, including prompts sent outside Space.
 
 Replies arrive as a single text block after polling (up to 600 seconds), with
 an initial waiting status and SSE heartbeats, but no live tokens, tool or
-thinking events. A reply must follow the newly recorded prompt in an unchanged
-transcript; an unreadable or rewritten transcript fails instead of returning
-an older answer. Cancellation and timeout attempt `interruptAgentRun`; if the
-host is unavailable or does not support it, stop the turn on the host.
+thinking events. Completion requires both an idle seat (including tasks and
+subagents) and replies matched by `clientNonce` → `requestId`. Acceptance
+`not-found` does not block completion. Multiple reply messages are joined;
+missing correlation keys fail clearly instead of matching prompt text or an
+old answer. Cancellation and timeout attempt `interruptAgentRun`; if the host
+is unavailable or does not support it, stop the turn on the host.
 
 Project selection/`agent_id`, Space connections and per-user MCP configuration,
 and per-prompt `model` selection are not forwarded; the host controls its
 workspace, tools and model. Usage accounting, model/provider/channel status,
 Agents management, session telemetry/presence/visualizer integration and
 prompt suggestions are out of scope (their capabilities return empty/501).
-Tests cover a mocked HTTP host and documented transcript formats; this
-adapter has not been validated against a live host in this change.
+Regression tests use the reviewer's observed live-host message shapes with a
+mocked HTTP transport. The revised adapter still needs an end-to-end chat on
+the Grok Bot computer; no live host was available while making these fixes.
 
 ---
 

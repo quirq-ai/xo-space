@@ -3,7 +3,7 @@
   "binary": "",
   "install_url": "",
   "home_dir": "/home/box/sand-data",
-  "env_file": "/home/box/sand-data/.env",
+  "env_file": "~/.quirq/secrets/secrets.env",
   "config_file": "/home/box/sand-data/gateway.json",
   "agents_dir": "/home/box/sand-data/agents",
   "workspace_dir": "/home/box/sand-data",
@@ -28,9 +28,7 @@
   },
   "runtime_setup": {
     "installs_cli": false,
-    "session_globs": [
-      "agent-transcripts/*/*.jsonl"
-    ],
+    "session_globs": [],
     "secrets": [
       {
         "key": "SAND_GATEWAY_TOKEN",
@@ -45,7 +43,7 @@
       {
         "key": "GROKBOT_GATEWAY_URL",
         "label": "Grok Bot gateway URL",
-        "description": "Optional full origin of the host gateway (alias SAND_GATEWAY_URL). Default http://127.0.0.1:1340."
+        "description": "Gateway on the Grok Bot cloud computer (alias SAND_GATEWAY_URL). Default http://127.0.0.1:1340 requires Space on that computer; elsewhere use a private tunnel. Never expose publicly."
       },
       {
         "key": "GROKBOT_DEFAULT_AGENT_ID",
