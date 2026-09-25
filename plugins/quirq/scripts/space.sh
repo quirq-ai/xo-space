@@ -138,8 +138,24 @@ if active_agent == "codex":
     executable = shutil.which(cli)
     if not executable:
         sys.exit("XO Space: Codex CLI was not found. Install it or set CODEX_CLI_PATH to its executable.")
-    os.environ.setdefault("QUIRQ_COMMAND_LOG_PATH", setting("QUIRQ_COMMAND_LOG_PATH", str(state / "inbox" / "activity" / "commands.log")))
-    result = run_sync([executable, "--version"], timeout=10)
+    # The check is logged in this state root, which this process knows only
+    # from .env and roots.env. Name it for the check alone, so the runner
+    # picks the log path by its own rules; the server finds its log itself,
+    # and a path passed on to it would read as the user's choice and pin it.
+    scoped = {"QUIRQ_STATE_ROOT": str(state)}
+    for name in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH"):
+        if setting(name):
+            scoped[name] = setting(name)
+    before = {name: os.environ.get(name) for name in scoped}
+    os.environ.update(scoped)
+    try:
+        result = run_sync([executable, "--version"], timeout=10)
+    finally:
+        for name, value in before.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     if not result.ok:
         sys.exit("XO Space: Codex CLI could not run. Check CODEX_CLI_PATH or repair the CLI installation.")
     os.environ["CODEX_CLI_PATH"] = executable

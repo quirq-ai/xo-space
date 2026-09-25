@@ -63,7 +63,10 @@ instead of replaying sessions onto surviving totals.
    (where it stopped), `events.jsonl` (what arrived).
 2. A new subject gets a folder: name it once in `services/storage/layout.py`
    and add it to this sample. The test fails until both agree.
-3. If existing files move, add a `Move` to `layout.MOVES`.
+3. If existing files move, add a block of `Move`s to `MOVES` in
+   `services/storage/migrations.py`. An old copy of a log or other history
+   moves into the archive rather than onto the live file, so it can never
+   find its new home already taken.
 
 ## Kept outside the state root on purpose
 
