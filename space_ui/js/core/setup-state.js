@@ -1,5 +1,5 @@
-/* Factual Setup summaries from /api/runtime-config. These describe settings
-   and filesystem checks, never verified authentication or watcher health. */
+/* Factual Setup summaries from /api/runtime-config. These describe settings,
+   local installation or remote health, never authentication or watcher health. */
 const summary=(label,tone='muted')=>({label,tone});
 const inaccessible=path=>path?.exists===false||path?.readable===false;
 const accessible=path=>path?.exists===true&&path?.readable===true;
@@ -22,9 +22,11 @@ export function setupSteps(runtimeData){
   const agentName=typeof configured.agent_name==='string'?configured.agent_name:'';
   const source=Array.isArray(runtimeData.agents)?runtimeData.agents.find(item=>item?.name===agentName):null;
   const agentPending=Boolean(agentName&&applied.agent_name&&agentName!==applied.agent_name);
-  const agentMissing=source?.binary_available===false||inaccessible(source?.home);
+  const remoteAgent=source?.binary_available===null;
+  const agentMissing=remoteAgent?source.health_ok===false
+    :source?.binary_available===false||inaccessible(source?.home);
   const agentChecked=Boolean(agentName&&agentName===applied.agent_name
-    &&source?.binary_available===true&&accessible(source?.home));
+    &&(remoteAgent?source.health_ok===true:source?.binary_available===true&&accessible(source?.home)));
 
   const activityPending=WATCHER_FIELDS.some(key=>configured[key]!==undefined&&applied[key]!==undefined
     &&configured[key]!==applied[key]);
@@ -43,6 +45,7 @@ export function setupSteps(runtimeData){
   else if(foldersBlocked)next={panel:'workspace',label:'Check folders',
     message:'Check that xo-space can read your projects and write to its state folder.'};
   else if(agentName&&agentMissing)next={panel:'intelligence',label:'Check agent',
-    message:'Install the agent or check access to its folder.'};
+    message:remoteAgent?'Check that the agent service is running and its connection settings are correct.'
+      :'Install the agent or check access to its folder.'};
   return{workspace,intelligence,next};
 }

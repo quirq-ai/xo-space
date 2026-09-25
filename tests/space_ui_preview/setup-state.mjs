@@ -57,6 +57,24 @@ assert.equal(setupSteps(missingAgent).intelligence.label,'Check agent');
 assert.equal(setupSteps(missingAgent).intelligence.tone,'error');
 const missingHome=fixture();missingHome.agents[0].home.exists=false;
 assert.equal(setupSteps(missingHome).next.panel,'intelligence');
+// Remote agents need a health check, not a local executable or data mount.
+const remote=fixture();
+remote.agents[0].binary_available=null;
+remote.agents[0].home={exists:false,readable:false};
+remote.agents[0].health_ok=true;
+assert.equal(setupSteps(remote).intelligence.tone,'good');
+assert.equal(setupSteps(remote).next,null);
+remote.agents[0].health_ok=false;
+assert.equal(setupSteps(remote).intelligence.tone,'error');
+assert.match(setupSteps(remote).next.message,/connection/);
+assert.doesNotMatch(setupSteps(remote).next.message,/Install|folder/);
+for(const health of [null,undefined]){
+  remote.agents[0].health_ok=health;
+  assert.equal(setupSteps(remote).intelligence.label,'Not checked');
+  assert.equal(setupSteps(remote).next,null);
+}
+remote.configured.agent_name='next_agent';
+assert.equal(setupSteps(remote).intelligence.tone,'pending');
 const unknownAgent=fixture();unknownAgent.agents=[];
 assert.equal(setupSteps(unknownAgent).next,null,'Missing source diagnostics are not missing installation');
 assert.equal(setupSteps(unknownAgent).intelligence.tone,'muted','Agent selection alone does not verify the executable or folder');
