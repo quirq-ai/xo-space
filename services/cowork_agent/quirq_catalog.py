@@ -242,6 +242,10 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
             return "Per-project history keyed by project.json:pid, the Space timeline, and the watcher's reading positions"
         if relative_path == "inbox":
             return "The Space Inbox"
+        if relative_path == "inbox/activity":
+            return "What the Space did: the command log and its archive"
+        if relative_path == "inbox/activity/archive":
+            return "Earlier command logs, one file per rotation; kept until you delete them"
         if relative_path == "sharing":
             return "Shared repositories this machine has seen: bookmarks and removal markers"
         if relative_path == "usage":
@@ -271,9 +275,7 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         if relative_path == "scheduler/runs":
             return "Append-only command run history, one JSONL file per command"
         if relative_path == "logs":
-            return "Safe to delete: server output, the command log, and saved command output"
-        if relative_path == "logs/archive":
-            return "Earlier command logs, one file per rotation; kept until you delete them"
+            return "Safe to delete: server output and saved command output"
         if relative_path in ("scheduler/logs", "logs/scheduler"):
             return "Full command output logs, retained when a definition is deleted"
         if (
@@ -293,9 +295,9 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Run timestamps, trigger, status, return code, duration, and output tail"
     if relative_path.startswith(("scheduler/logs/", "logs/scheduler/")):
         return "Appended command output through the command logger"
-    if relative_path.startswith("logs/archive/"):
+    if relative_path.startswith("inbox/activity/archive/"):
         return "An earlier command log, named for when it was archived"
-    if relative_path.startswith("logs/commands.log"):
+    if relative_path.startswith("inbox/activity/commands.log"):
         return "Every external command Quirq runs: redacted, each entry capped, archived at 5 MB"
     if relative_path == "logs/quirq.log":
         return "Server output from the installer"

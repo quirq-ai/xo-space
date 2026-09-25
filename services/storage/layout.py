@@ -4,7 +4,7 @@
 
     ~/.quirq/
     ├── projects/      one folder per project, named by pid
-    ├── inbox/         the Inbox
+    ├── inbox/         the Inbox; activity/ holds the command log
     ├── connections/   one folder per connection
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
@@ -16,8 +16,11 @@
     └── .locks/        internal
 
 Each folder is named here once, and every store asks for it through these
-functions. :func:`migrate_layout` moves files from where earlier releases
-kept them; it runs once at server start, before anything reads or writes.
+functions. A new store goes under the Space UI section and page that shows it
+(``<section>/<page>/``, e.g. ``inbox/activity/``); the older folders above keep
+their names until the layout as a whole follows the UI.
+:func:`migrate_layout` moves files from where earlier releases kept them; it
+runs once at server start, before anything reads or writes.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ from typing import Callable, Optional
 
 from services.storage.paths import quirq_state_dir
 from utils.commands import archive_path_for
-from utils.runtime_env import logs_dir, scheduler_dir  # noqa: F401  (defined below the services layer)
+from utils.runtime_env import inbox_activity_dir, logs_dir, scheduler_dir  # noqa: F401  (defined below the services layer)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,10 @@ def _in_state_root(*parts: str) -> Callable[[], Path]:
     return lambda: quirq_state_dir().joinpath(*parts)
 
 
+def _command_log() -> Path:
+    return inbox_activity_dir() / "commands.log"
+
+
 def _unless_overridden(variable: str, old_name: str, new: Callable[[], Path]) -> Callable[[], Optional[Path]]:
     """The old path, unless ``variable`` points the file somewhere other than its new home."""
     def old() -> Optional[Path]:
@@ -150,17 +157,23 @@ MOVES: list[Move] = [
          _unless_overridden("QUIRQ_SECRETS_FILE", "secrets.env", lambda: secrets_dir() / "secrets.env"),
          lambda: secrets_dir() / "secrets.env"),
     # Logs the state root already held. The installer's quirq.log is moved by
-    # install.sh itself, which holds it open for the server's whole run.
+    # install.sh itself, which holds it open for the server's whole run. The
+    # command log was at the top, then in logs/; it now lives under Inbox →
+    # Activity, with its archive. The newer copy moves first, so if both
+    # exist it is the one kept.
+    Move("the command log in logs/",
+         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "logs/commands.log", _command_log),
+         _command_log),
     Move("the command log",
-         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log", lambda: logs_dir() / "commands.log"),
-         lambda: logs_dir() / "commands.log"),
+         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log", _command_log),
+         _command_log),
     Move("the rotated command log",
-         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log.1", lambda: logs_dir() / "commands.log"),
+         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "commands.log.1", _command_log),
          lambda: logs_dir() / "commands.log.1"),
     # The one generation releases before the archive kept. It arrives here
     # either straight from logs/ or through the move above, in the same run.
     Move("the last rotated command log",
-         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "logs/commands.log.1", lambda: logs_dir() / "commands.log"),
+         _unless_overridden("QUIRQ_COMMAND_LOG_PATH", "logs/commands.log.1", _command_log),
          lambda: _archived_rotation()),
     Move("saved command output", _in_state_root("scheduler", "logs"), lambda: logs_dir() / "scheduler"),
 ]
@@ -174,7 +187,7 @@ def _archived_rotation() -> Path:
         at = datetime.fromtimestamp(rotated.stat().st_mtime, timezone.utc)
     except OSError:
         at = datetime.now(timezone.utc)
-    return archive_path_for(logs_dir() / "commands.log", at)
+    return archive_path_for(_command_log(), at)
 
 
 def migrate_layout(moves: Optional[list[Move]] = None) -> list[str]:

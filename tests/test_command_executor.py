@@ -163,7 +163,7 @@ class RunSpecTests(unittest.TestCase):
             with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(state_root)}, clear=False):
                 result = run_sync([sys.executable, "-c", f"print({payload!r})"], cwd=str(ROOT), timeout=30)
             self.assertTrue(result.ok)
-            text = (state_root / "logs" / "commands.log").read_text(encoding="utf-8")
+            text = (state_root / "inbox" / "activity" / "commands.log").read_text(encoding="utf-8")
         self.assertIn("$", text)
         self.assertIn(f"cwd: {ROOT}", text)
         self.assertRegex(text, r"\[0; \d+\.\d{3}s\]")
@@ -222,7 +222,7 @@ class RunSpecTests(unittest.TestCase):
                 second = run_sync([sys.executable, "-c", "print('second entry payload')"], timeout=30)
             self.assertTrue(first.ok)
             self.assertTrue(second.ok)
-            logs = state_root / "logs"
+            logs = state_root / "inbox" / "activity"
             current = (logs / "commands.log").read_text(encoding="utf-8")
             archives = sorted((logs / "archive").iterdir())
             self.assertEqual(len(archives), 1, archives)
@@ -236,29 +236,31 @@ class RunSpecTests(unittest.TestCase):
         """Nothing is deleted and nothing is reordered: reading the archives in
         name order and then the live file reproduces every entry, in the order
         it was written, byte for byte."""
-        target = self.state_root / "logs" / "commands.log"
+        target = self.state_root / "inbox" / "activity" / "commands.log"
         entries = [f"=== entry {i:03d} ===\n{'y' * 80}\n" for i in range(40)]
         with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
             for entry in entries:
                 commands._write_log(target, entry, rotate=True)
 
-        archives = sorted((self.state_root / "logs" / "archive").iterdir())
+        archives = sorted((self.state_root / "inbox" / "activity" / "archive").iterdir())
         self.assertGreater(len(archives), 5, archives)
         joined = "".join(p.read_text(encoding="utf-8") for p in [*archives, target])
         self.assertEqual(joined, "".join(entries))
 
-    def test_rotation_from_the_pre_folders_path_archives_inside_logs(self) -> None:
-        """A log still at the old top-level path (an older server sharing this
-        state root) must not scatter an archive/ folder across the root."""
-        legacy = self.state_root / "commands.log"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 100):
-            commands._write_log(legacy, "=== one ===\n" + "z" * 80 + "\n", rotate=True)
-            commands._write_log(legacy, "=== two ===\n", rotate=True)
-        self.assertFalse((self.state_root / "archive").exists())
-        archives = sorted((self.state_root / "logs" / "archive").iterdir())
-        self.assertEqual(len(archives), 1, archives)
-        self.assertIn("=== one ===", archives[0].read_text(encoding="utf-8"))
+    def test_rotation_from_an_old_path_archives_under_inbox_activity(self) -> None:
+        """A log still at an old path (an older server sharing this state root)
+        joins the one archive rather than starting another beside it."""
+        for old in ("commands.log", "logs/commands.log"):
+            with self.subTest(old=old):
+                legacy = self.state_root / old
+                legacy.parent.mkdir(parents=True, exist_ok=True)
+                with patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 100):
+                    commands._write_log(legacy, f"=== one {old} ===\n" + "z" * 80 + "\n", rotate=True)
+                    commands._write_log(legacy, "=== two ===\n", rotate=True)
+                self.assertFalse((legacy.parent / "archive").exists())
+                archived = [p.read_text(encoding="utf-8")
+                            for p in (self.state_root / "inbox" / "activity" / "archive").iterdir()]
+                self.assertTrue(any(f"=== one {old} ===" in text for text in archived), archived)
 
     def test_off_switch_disables_default_log_but_keeps_explicit_log_path(self) -> None:
         from utils.commands import run_sync
@@ -278,7 +280,7 @@ class RunSpecTests(unittest.TestCase):
             ):
                 result = run_sync([sys.executable, "-c", "print('ok')"], log_path=extra_log, timeout=30)
             self.assertTrue(result.ok)
-            self.assertFalse((state_root / "logs" / "commands.log").exists())
+            self.assertFalse((state_root / "inbox" / "activity" / "commands.log").exists())
             self.assertFalse(env_override_log.exists())
             self.assertIn("ok", extra_log.read_text(encoding="utf-8"))
 
@@ -336,7 +338,7 @@ class RunSpecTests(unittest.TestCase):
         # Built in the child, so the argv line (never capped) does not carry it.
         result = run_sync([sys.executable, "-c", "print('A' * 5000)"], log_path=job_log, timeout=30)
         self.assertTrue(result.ok)
-        shared = (self.state_root / "logs" / "commands.log").read_text(encoding="utf-8")
+        shared = (self.state_root / "inbox" / "activity" / "commands.log").read_text(encoding="utf-8")
         own = job_log.read_text(encoding="utf-8")
         self.assertIn("...[truncated ", shared)
         self.assertNotIn(payload, shared)
@@ -355,7 +357,7 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn("[REDACTED]", own)
         self.assertNotIn("ghp_secretvalue", own)
         self.assertFalse(job_log.with_name("archive").exists())
-        self.assertTrue(any((self.state_root / "logs" / "archive").iterdir()))
+        self.assertTrue(any((self.state_root / "inbox" / "activity" / "archive").iterdir()))
 
     def test_concurrent_writers_rotate_without_racing(self) -> None:
         """Scheduler jobs finish on threads while requests shell out on others;
@@ -363,7 +365,7 @@ class RunSpecTests(unittest.TestCase):
         a second writer renames a file the first already moved."""
         import threading
 
-        target = self.state_root / "logs" / "commands.log"
+        target = self.state_root / "inbox" / "activity" / "commands.log"
         entry = "x" * 64 + "\n"
         errors: list[BaseException] = []
 
@@ -384,7 +386,7 @@ class RunSpecTests(unittest.TestCase):
         self.assertTrue(target.exists())
         # Every entry survives the race: rotation moves a file aside, it never
         # drops what another thread already appended.
-        written = [target, *sorted((self.state_root / "logs" / "archive").iterdir())]
+        written = [target, *sorted((self.state_root / "inbox" / "activity" / "archive").iterdir())]
         kept = sum(p.read_text(encoding="utf-8").count(entry) for p in written)
         self.assertEqual(kept, 8 * 300)
 

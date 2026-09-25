@@ -138,7 +138,7 @@ if active_agent == "codex":
     executable = shutil.which(cli)
     if not executable:
         sys.exit("XO Space: Codex CLI was not found. Install it or set CODEX_CLI_PATH to its executable.")
-    os.environ.setdefault("QUIRQ_COMMAND_LOG_PATH", setting("QUIRQ_COMMAND_LOG_PATH", str(state / "logs" / "commands.log")))
+    os.environ.setdefault("QUIRQ_COMMAND_LOG_PATH", setting("QUIRQ_COMMAND_LOG_PATH", str(state / "inbox" / "activity" / "commands.log")))
     result = run_sync([executable, "--version"], timeout=10)
     if not result.ok:
         sys.exit("XO Space: Codex CLI could not run. Check CODEX_CLI_PATH or repair the CLI installation.")

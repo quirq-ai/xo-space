@@ -59,7 +59,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from utils.runtime_env import logs_dir, quirq_state_dir
+from utils.runtime_env import inbox_activity_dir, logs_dir, quirq_state_dir
 
 log = logging.getLogger(__name__)
 
@@ -197,12 +197,21 @@ def _default_command_log_path() -> Path | None:
     override = (os.getenv("QUIRQ_COMMAND_LOG_PATH", "") or "").strip()
     if override:
         return Path(override).expanduser()
-    # commands.log sat at the top of the state root before it had folders.
-    # Keep appending there until the server's boot migration moves it, so a
-    # command run before that, or by an older server sharing the root, never
-    # splits the log in two.
-    new, old = logs_dir() / "commands.log", quirq_state_dir() / "commands.log"
-    return old if old.is_file() and not new.exists() else new
+    # Earlier releases kept commands.log at the top of the state root, then in
+    # logs/. Keep appending to an old copy until the server's boot migration
+    # moves it, so a command run before that, or by an older server sharing
+    # the root, never splits the log in two.
+    new = inbox_activity_dir() / "commands.log"
+    if not new.exists():
+        for old in _legacy_command_log_paths():
+            if old.is_file():
+                return old
+    return new
+
+
+def _legacy_command_log_paths() -> tuple[Path, ...]:
+    """Where earlier releases kept the shared log, newest layout first."""
+    return logs_dir() / "commands.log", quirq_state_dir() / "commands.log"
 
 
 def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:
@@ -315,11 +324,11 @@ def spawn_detached(
 
 
 def _archive_dir_for(log_path: Path) -> Path:
-    """``<log folder>/archive/``, except for a log still at the pre-folders
-    top-level path: its archive belongs in ``logs/`` rather than loose in the
-    state root, where only known folders may appear."""
-    if log_path.parent == quirq_state_dir():
-        return logs_dir() / COMMAND_LOG_ARCHIVE_DIR
+    """``<log folder>/archive/``, except for a log still at an old path: its
+    archive goes to ``inbox/activity/archive/`` with the current log's, rather
+    than starting a second archive in ``logs/`` or loose in the state root."""
+    if log_path in _legacy_command_log_paths():
+        return inbox_activity_dir() / COMMAND_LOG_ARCHIVE_DIR
     return log_path.parent / COMMAND_LOG_ARCHIVE_DIR
 
 

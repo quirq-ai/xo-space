@@ -41,18 +41,26 @@ class FolderTests(_Sandbox):
         from utils.commands import scheduler
 
         self.assertIs(layout.logs_dir, runtime_env.logs_dir)
+        self.assertIs(layout.inbox_activity_dir, runtime_env.inbox_activity_dir)
+        self.assertEqual(layout.inbox_activity_dir(), layout.inbox_dir() / "activity")
         self.assertEqual(scheduler.log_file("job1"), self.root / "logs" / "scheduler" / "job1.log")
 
 
     def test_the_command_log_stays_at_its_old_path_until_moved(self) -> None:
         import utils.commands as commands
 
-        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG": "", "QUIRQ_COMMAND_LOG_PATH": ""}):
-            self.assertEqual(commands._default_command_log_path(), self.root / "logs" / "commands.log")
-            (self.root / "commands.log").write_text("old\n", encoding="utf-8")
-            self.assertEqual(commands._default_command_log_path(), self.root / "commands.log")
-            layout.migrate_layout()
-            self.assertEqual(commands._default_command_log_path(), self.root / "logs" / "commands.log")
+        new = self.root / "inbox" / "activity" / "commands.log"
+        for old in ("commands.log", "logs/commands.log"):
+            with self.subTest(old=old), \
+                 patch.dict(os.environ, {"QUIRQ_COMMAND_LOG": "", "QUIRQ_COMMAND_LOG_PATH": ""}):
+                new.unlink(missing_ok=True)
+                self.assertEqual(commands._default_command_log_path(), new)
+                (self.root / old).parent.mkdir(parents=True, exist_ok=True)
+                (self.root / old).write_text("old\n", encoding="utf-8")
+                self.assertEqual(commands._default_command_log_path(), self.root / old)
+                layout.migrate_layout()
+                self.assertEqual(commands._default_command_log_path(), new)
+                self.assertFalse((self.root / old).exists())
 
 
 class MigrateTests(_Sandbox):
@@ -168,15 +176,38 @@ class MigrateTests(_Sandbox):
         self.assertTrue((self.root / "runtime.env").is_file())
         self.assertFalse((self.root / "settings" / "runtime.env").exists())
 
-    def test_logs_move_into_the_logs_folder(self) -> None:
+    def test_logs_move_into_their_folders(self) -> None:
         (self.root / "commands.log").write_text("a", encoding="utf-8")
         (self.root / "scheduler" / "logs").mkdir(parents=True)
         (self.root / "scheduler" / "logs" / "job1.log").write_text("c", encoding="utf-8")
         with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}):
             layout.migrate_layout()
-        for path in ("logs/commands.log", "logs/scheduler/job1.log"):
+        for path in ("inbox/activity/commands.log", "logs/scheduler/job1.log"):
             self.assertTrue((self.root / path).is_file(), path)
         self.assertFalse((self.root / "scheduler" / "logs").exists())
+
+    def test_the_command_log_moves_from_logs_to_inbox_activity(self) -> None:
+        """Where the previous release kept it; when an even older top-level copy
+        is also there, the newer one in logs/ is the one kept."""
+        (self.root / "logs").mkdir()
+        (self.root / "logs" / "commands.log").write_text("newer", encoding="utf-8")
+        (self.root / "commands.log").write_text("older", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}), \
+             self.assertLogs("services.storage.layout", "WARNING"):
+            layout.migrate_layout()
+        moved = self.root / "inbox" / "activity" / "commands.log"
+        self.assertEqual(moved.read_text(encoding="utf-8"), "newer")
+        self.assertFalse((self.root / "logs" / "commands.log").exists())
+        self.assertEqual((self.root / "commands.log").read_text(encoding="utf-8"), "older")
+
+    def test_a_command_log_override_elsewhere_stays_put(self) -> None:
+        (self.root / "logs").mkdir()
+        kept = self.root / "logs" / "commands.log"
+        kept.write_text("a", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": str(kept)}):
+            layout.migrate_layout()
+        self.assertTrue(kept.is_file())
+        self.assertFalse((self.root / "inbox" / "activity" / "commands.log").exists())
 
     def test_the_last_rotated_command_log_becomes_the_first_archive(self) -> None:
         """The single `.1` generation earlier releases kept is adopted by the
@@ -186,7 +217,7 @@ class MigrateTests(_Sandbox):
         os.utime(rotated, (1767322445, 1767322445))     # 2026-01-02T02:54:05Z
         with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_PATH": ""}):
             layout.migrate_layout()
-        archived = self.root / "logs" / "archive" / "commands.20260102T025405Z.log"
+        archived = self.root / "inbox" / "activity" / "archive" / "commands.20260102T025405Z.log"
         self.assertEqual(archived.read_text(encoding="utf-8"), "b")
         self.assertFalse((self.root / "logs" / "commands.log.1").exists())
         self.assertEqual(layout.migrate_layout(), [])
