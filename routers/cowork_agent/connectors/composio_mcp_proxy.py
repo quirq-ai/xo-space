@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -59,7 +60,9 @@ async def _proxy(
         return JSONResponse(status_code=401, content=_IDENTITY_REQUIRED)
 
     try:
-        entry = composio_service.build_mcp_server_entry(user_id)
+        # Off the loop: past the 5 s session cache this is a blocking Composio round
+        # trip, and it runs on every agent tool call.
+        entry = await asyncio.to_thread(composio_service.build_mcp_server_entry, user_id)
     except composio_service.swarm_client.ComposioKeyRequired as exc:
         return JSONResponse(
             status_code=409,

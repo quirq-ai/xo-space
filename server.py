@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Reads no environment at import, so it is safe before the dotenv load below.
 from services.storage.layout import secrets_dir, settings_dir
+from services import background
 from pydantic import BaseModel
 from dotenv import dotenv_values, load_dotenv
 import httpx
@@ -613,10 +614,10 @@ async def lifespan(app: FastAPI):
     _write_install_pointer()
 
     # Move machine-local files from where earlier releases kept them into the
-    # state root's folders (services/storage/layout.py), before agent setup,
-    # the watcher or any poller reads or writes one. Never raises.
+    # state root's folders (services/storage/migrations.py), before agent
+    # setup, the watcher or any poller reads or writes one. Never raises.
     try:
-        from services.storage.layout import migrate_layout
+        from services.storage.migrations import migrate_layout
         _layout_moves = migrate_layout()
         if _layout_moves:
             print(f"   State layout: moved {len(_layout_moves)} file(s) or folder(s) into place")
@@ -733,6 +734,7 @@ async def lifespan(app: FastAPI):
     try:
         from services.cowork_agent.connectors.composio.service import gateway_reconcile_loop
         _mcp_gateway_task = asyncio.create_task(gateway_reconcile_loop())
+        background.register("gateway reconcile", _mcp_gateway_task, finishes_by_design=True)
         print("   Composio MCP: background gateway install + reconcile scheduled")
     except Exception as exc:
         print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
@@ -758,6 +760,7 @@ async def lifespan(app: FastAPI):
     if start_usage_sync_scheduler:
         try:
             _sync_task = asyncio.create_task(start_usage_sync_scheduler())
+            background.register("usage sync", _sync_task)
             print("   Usage sync: background task started")
         except Exception as e:
             print(f"⚠️ Usage sync failed to start (non-fatal): {e}")
@@ -782,6 +785,7 @@ async def lifespan(app: FastAPI):
         )
         if poller_enabled():
             _github_poll_task = asyncio.create_task(start_github_poller())
+            background.register("github poller", _github_poll_task)
             print(f"   GitHub poller: background task started ({poll_interval_seconds():.0f}s interval)")
         else:
             print("   GitHub poller: disabled by XO_GITHUB_POLL_ENABLED")
@@ -800,6 +804,7 @@ async def lifespan(app: FastAPI):
         )
         if connections_poller_enabled():
             _connections_poll_task = asyncio.create_task(start_connections_poller())
+            background.register("connections poller", _connections_poll_task)
             print(f"   Connections poller: background task started ({connections_tick_seconds():.0f}s tick)")
         else:
             print("   Connections poller: disabled by XO_CONNECTIONS_POLL_ENABLED")
@@ -818,6 +823,7 @@ async def lifespan(app: FastAPI):
             from services.cowork_agent.visualizer.watcher import start_watcher
             _watcher_task = asyncio.create_task(start_watcher())
             _watcher_task.add_done_callback(_report_watcher_task_exit)
+            background.register("watcher", _watcher_task)
             print("   Watcher: background task started")
         except Exception as e:
             print(f"⚠️ Watcher failed to start (non-fatal): {e}")
@@ -831,6 +837,7 @@ async def lifespan(app: FastAPI):
     try:
         from services.cowork_agent.project_sharing.poller import run_relay_poller
         _relay_task = asyncio.create_task(run_relay_poller())
+        background.register("relay poller", _relay_task)
         print("   Relay: background task started")
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
@@ -922,6 +929,12 @@ _CORS_ORIGINS = [
     if o.strip()
 ]
 
+# Every POST/PUT/PATCH/DELETE, on every route, is refused when a browser sent it
+# from another site; the CORS allow list names the other sites trusted to write.
+# Added before CORS so it runs inside it and a refusal still carries CORS headers.
+from routers.browser_guard import add_browser_write_guard, add_forwarding_middleware
+add_browser_write_guard(app, _CORS_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
@@ -931,7 +944,6 @@ app.add_middleware(
 )
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
-from routers.browser_guard import add_forwarding_middleware
 add_forwarding_middleware(app)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
@@ -1259,7 +1271,10 @@ async def ask_question_streaming(data: AskQuestionRequest):
 # =============================================================================
 
 if __name__ == "__main__":
-    host = os.getenv("HOST", "0.0.0.0")
+    # Loopback unless HOST says otherwise: the API has no login, so listening on
+    # every interface would expose the user's files to the whole network. The
+    # Docker image sets HOST=0.0.0.0 inside the container instead.
+    host = os.getenv("HOST", "127.0.0.1")
     requested_port = int(os.getenv("PORT", "5002"))
     try:
         port = resolve_server_port(

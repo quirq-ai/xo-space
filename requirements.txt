@@ -1,7 +1,12 @@
 # XO Space API Dependencies
 
 # Web Framework
-fastapi>=0.109.0
+# Floor at 0.141.1: up to 0.115 a request body with no Content-Type was still
+# parsed as JSON, so a route's own "send application/json" guard answered 415
+# where newer FastAPI refuses the body first with 422 (tests/test_doctor_routes.py
+# asserts the 422). An unpinned floor let two installs of the same commit
+# disagree about that. Bump deliberately; the suite runs on 0.141.1.
+fastapi>=0.141.1
 uvicorn[standard]>=0.27.0
 
 # Data Validation

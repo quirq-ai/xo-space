@@ -198,7 +198,7 @@ self-contained and you can move or delete it as one folder.
 | `.` | Your projects root — each project is a subdirectory with its own `.xo` |
 | `./xo-space` | The Quirq source checkout |
 | `./xo-space/venv` | Python environment, made by uv — it has no `pip`. To add packages (e.g. the test suite): `~/.local/bin/uv pip install --python ./xo-space/venv/bin/python -r <file>`; uv itself lives in `~/.local/bin`, which the installer does not add to your shell's PATH |
-| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state, including `logs/quirq.log` (server output) and `logs/commands.log` (every external command Quirq runs). If you move the Quirq state root from Setup, both logs move with it. |
+| `./.quirq` | Runtime configuration, saved credentials, watcher activity, cursors, locks, and other machine-local state, including `logs/quirq.log` (server output) and `inbox/activity/commands.log` (every external command Quirq runs; at 5 MB it becomes `inbox/activity/archive/commands.<stamp>.log`, which nothing deletes for you). If you move the Quirq state root from Setup, both logs move with it. |
 
 Open the **Setup** tab after installation. It shows the paths in use, CLI
 readiness, native session file counts, the active chat backend, and the watcher

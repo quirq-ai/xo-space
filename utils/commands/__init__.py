@@ -55,16 +55,19 @@ import signal
 import subprocess
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from utils.runtime_env import logs_dir, quirq_state_dir
+from utils.runtime_env import inbox_activity_dir, logs_dir, quirq_state_dir
 
 log = logging.getLogger(__name__)
 
 _COMMAND_LOG_MAX_BYTES = 5 * 1024 * 1024
 _COMMAND_LOG_ENTRY_CAP_CHARS = 4096
+#: Full generations of the shared log are kept here, one file per rotation,
+#: and nothing deletes them: disk use grows with how much the server runs.
+COMMAND_LOG_ARCHIVE_DIR = "archive"
 _REDACTED = "[REDACTED]"
 _SENSITIVE_FLAGS = frozenset({
     "--access-token",
@@ -194,20 +197,30 @@ def _default_command_log_path() -> Path | None:
     override = (os.getenv("QUIRQ_COMMAND_LOG_PATH", "") or "").strip()
     if override:
         return Path(override).expanduser()
-    # commands.log sat at the top of the state root before it had folders.
-    # Keep appending there until the server's boot migration moves it, so a
-    # command run before that, or by an older server sharing the root, never
-    # splits the log in two.
-    new, old = logs_dir() / "commands.log", quirq_state_dir() / "commands.log"
-    return old if old.is_file() and not new.exists() else new
+    # Earlier releases kept commands.log at the top of the state root, then in
+    # logs/. Keep appending to an old copy until the server's boot migration
+    # moves it, so a command run before that, or by an older server sharing
+    # the root, never splits the log in two.
+    new = inbox_activity_dir() / "commands.log"
+    if not new.exists():
+        for old in _legacy_command_log_paths():
+            if old.is_file():
+                return old
+    return new
+
+
+def _legacy_command_log_paths() -> tuple[Path, ...]:
+    """Where earlier releases kept the shared log, newest layout first."""
+    return logs_dir() / "commands.log", quirq_state_dir() / "commands.log"
 
 
 def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:
     """Destinations for one entry as (path, is_shared). The shared file is the
-    runner's own commands.log: bounded per entry and rotated, because every
-    command in the process feeds it. A caller's explicit `log_path` is that
-    caller's complete record (a scheduler job, a provisioning run): redacted,
-    but never capped or rotated — retention there is the caller's business."""
+    runner's own commands.log: capped per entry and rotated into `archive/`,
+    because every command in the process feeds it. A caller's explicit
+    `log_path` is that caller's complete record (a scheduler job, a
+    provisioning run): redacted, but never capped or rotated — retention there
+    is the caller's business."""
     paths: list[tuple[Path, bool]] = []
     default_path = _default_command_log_path()
     if default_path is not None:
@@ -310,15 +323,40 @@ def spawn_detached(
     return result
 
 
+def _archive_dir_for(log_path: Path) -> Path:
+    """``<log folder>/archive/``, except for a log still at an old path: its
+    archive goes to ``inbox/activity/archive/`` with the current log's, rather
+    than starting a second archive in ``logs/`` or loose in the state root."""
+    if log_path in _legacy_command_log_paths():
+        return inbox_activity_dir() / COMMAND_LOG_ARCHIVE_DIR
+    return log_path.parent / COMMAND_LOG_ARCHIVE_DIR
+
+
+def archive_path_for(log_path: Path, at: datetime) -> Path:
+    """``archive/commands.<stamp>.log``: the first free name at or after ``at``.
+
+    The stamp is UTC to the second, like the visualizer's rotated timeline
+    segments, so plain name order is chronological order. A stamp already taken
+    steps forward a second instead of gaining a suffix, which would sort before
+    the name it was meant to follow.
+    """
+    directory = _archive_dir_for(log_path)
+    when = at.astimezone(timezone.utc).replace(microsecond=0)
+    while True:
+        candidate = directory / f"{log_path.stem}.{when.strftime('%Y%m%dT%H%M%SZ')}{log_path.suffix}"
+        if not candidate.exists():
+            return candidate
+        when += timedelta(seconds=1)
+
+
 def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
     entry_bytes = entry.encode("utf-8")
     with _COMMAND_LOG_LOCK:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if rotate and log_path.exists() and log_path.stat().st_size + len(entry_bytes) > _COMMAND_LOG_MAX_BYTES:
-            rotated = log_path.with_name(f"{log_path.name}.1")
-            with contextlib.suppress(FileNotFoundError):
-                rotated.unlink()
-            log_path.replace(rotated)
+            archived = archive_path_for(log_path, datetime.now(timezone.utc))
+            archived.parent.mkdir(parents=True, exist_ok=True)
+            log_path.replace(archived)
         with log_path.open("ab") as f:
             f.write(entry_bytes)
 

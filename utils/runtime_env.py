@@ -30,10 +30,17 @@ def quirq_state_dir() -> Path:
 
 
 def logs_dir() -> Path:
-    """``<state root>/logs/``: the command log and every saved command's output.
+    """``<state root>/logs/``: every saved command's output.
     Defined here, below the services layer, because ``utils/commands`` writes
     there; ``services.storage.layout`` re-exports it."""
     return quirq_state_dir() / "logs"
+
+
+def inbox_activity_dir() -> Path:
+    """``<state root>/inbox/activity/``: the command log and its archive, stored
+    under the Space UI page they belong to (Inbox → Activity). Defined here for
+    the same reason as :func:`logs_dir`."""
+    return quirq_state_dir() / "inbox" / "activity"
 
 
 def scheduler_dir() -> Path:

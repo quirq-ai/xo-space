@@ -54,6 +54,8 @@ await context.route('**/*',async route=>{
     totals:{sessions:3,sessions_by_agent:{demo:3}},sessions,daily_models:[],daily_sessions:[],daily_tools:[]});
   if(url.pathname==='/api/quirq')return json(route,{root:{host_path:'/demo/.quirq',readable:true,writable:true},
     totals:{files:0,bytes:0},watcher:{enabled:false},activity:{},tree:[],project_outputs:{project_count:10}});
+  if(url.pathname==='/api/doctor')return json(route,{schema:1,checked_at:'2026-09-16T12:00:00Z',duration_ms:12,level:'OK',
+    summary:{OK:10,WARN:0,FAIL:0,ERROR:0},roots:{state:'/demo/.quirq',projects:'/demo/projects'},checks:[]});
   return route.continue();
 });
 const groups={projects:[['dashboard','overview','Overview'],['project-list','data/list','List'],['graph','data/graph','Graph'],

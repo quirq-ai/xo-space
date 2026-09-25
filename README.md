@@ -18,7 +18,7 @@ Every project, session, todo and cost on one screen. Measure output, not just to
 [Quick start](#quick-start) · [Capabilities](#key-capabilities) · [Supported agents](#supported-agents) · [How it works](#how-it-works) · [Docs](https://docs.xo.builders) · [Contributing](#contributing)
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/github/license/quirq-ai/xo-space?style=flat-square)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/quirq-ai/xo-space?style=flat-square)](https://github.com/quirq-ai/xo-space/issues)
 [![Good first issues](https://img.shields.io/github/issues/quirq-ai/xo-space/good%20first%20issue?style=flat-square&label=good%20first%20issues)](https://github.com/quirq-ai/xo-space/labels/good%20first%20issue)
@@ -93,7 +93,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Then open **http://localhost:5002/space/**.
 
-What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `logs/quirq.log` for server output and `logs/commands.log` for every external command Quirq runs in that state root — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
+What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `logs/quirq.log` for server output and `inbox/activity/commands.log` for every external command Quirq runs in that state root — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
 
 **Requirements:** `git`. Everything else is optional and only disables its own feature — `node`/`npm` for installing an agent CLI, `gh` for project backup, `rclone` for Drive/OneDrive. Windows runs under WSL ([details](INSTALLATION.md#windows)).
 
@@ -121,7 +121,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 | `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | the directory you ran the installer from |
 | `QUIRQ_STATE_ROOT` | Machine-local state: runtime config, saved credentials, watcher cursors, logs. Must not be inside a project | `./.quirq` in that directory |
 | `AI_WORKSPACE_ROOT` | The directory the agent subprocess is started in and allowed to touch | same as `XO_PROJECTS_ROOT` |
-| `HOST`, `PORT` | Where the server listens. Loopback only by default; set `HOST=0.0.0.0` to reach it from another machine | `127.0.0.1`, `5002` |
+| `HOST`, `PORT` | Where the server listens. Loopback only by default. The API has no login, so `HOST=0.0.0.0` lets every device on your network read and change your files: use it only on a network you trust | `127.0.0.1`, `5002` |
 | `STAGE` | `local` finds agent CLIs with `which`; `beta` assumes the hosted container layout | `local` |
 | `QUIRQ_WATCHER_SOURCE_MODE` | `all` — the watcher reads every installed agent's session store, so Sessions shows all of them; `active` — only `AGENT_NAME`'s | `all` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | `1` — install nothing beyond `requirements.txt`. Set `0` to let boot hooks `apt`/`nvm`/`npm -g` the agent CLI for you | `1` |
@@ -291,11 +291,11 @@ Nothing, by default. A self-hosted install binds to loopback, needs no account, 
 
 If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. Normal metric fields exclude prompts, responses and file contents; diagnostic error notes can include source filenames and raw error details. Leave the key unset to stay signed out.
 
-To see what your install decided: open **Setup → Intelligence layer → Usage reporting** (`/space/#/setup/intelligence`), the server's own decisions are in `<state root>/logs/quirq.log` (`grep usage_sync ~/.quirq/logs/quirq.log` on the default install), and every external command Quirq runs is recorded beside it in `<state root>/logs/commands.log`. The installer prints the log pointers on every run.
+To see what your install decided: open **Setup → Intelligence layer → Usage reporting** (`/space/#/setup/intelligence`), the server's own decisions are in `<state root>/logs/quirq.log` (`grep usage_sync ~/.quirq/logs/quirq.log` on the default install), and every external command Quirq runs is recorded in `<state root>/inbox/activity/commands.log`. The installer prints the log pointers on every run.
 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
-Saved jobs in Setup (scheduled or manual) run locally with the server’s environment. Their definitions and results stay under `<quirq state>/scheduler/`, and their per-command output logs under `<quirq state>/logs/scheduler/`. The executor also writes its bounded, redacted shared `commands.log` unless disabled; the Jobs card adds no reporting. A command you choose can make its own network requests.
+Saved jobs in Setup (scheduled or manual) run locally with the server’s environment. Their definitions and results stay under `<quirq state>/scheduler/`, and their per-command output logs under `<quirq state>/logs/scheduler/`. The executor also writes its redacted shared `<quirq state>/inbox/activity/commands.log` unless disabled; at 5 MB it moves to `<quirq state>/inbox/activity/archive/commands.<stamp>.log` (the first start after an update moves an earlier release's `logs/commands.log` there too) and nothing deletes it, so that history grows until you remove it. The Jobs card adds no reporting. A command you choose can make its own network requests.
 
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
