@@ -788,6 +788,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ GitHub poller failed to start (non-fatal): {e}")
 
+    # GitHub App token refresher: installation tokens last an hour, so an
+    # app-backed connection is renewed in place (idle for a PAT / gh session).
+    _github_app_refresh_task = None
+    try:
+        from services.cowork_agent.connectors.github.app_auth import start_app_token_refresher
+        _github_app_refresh_task = asyncio.create_task(start_app_token_refresher())
+    except Exception as e:
+        print(f"⚠️ GitHub App token refresher failed to start (non-fatal): {e}")
+
     # Connections poller: runs each due connection's collectors over the
     # Composio MCP upstream and appends to ~/.quirq/connections/<toolkit>/
     # events.jsonl, which the Inbox's connections feeder reads.
@@ -890,6 +899,13 @@ async def lifespan(app: FastAPI):
         _github_poll_task.cancel()
         try:
             await _github_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _github_app_refresh_task:
+        _github_app_refresh_task.cancel()
+        try:
+            await _github_app_refresh_task
         except asyncio.CancelledError:
             pass
 

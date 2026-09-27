@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.connectors.github.common import get_github_token
+from services.cowork_agent.connectors.github.common import get_entry, get_github_token
 from services.cowork_agent.connectors.github.issues import (
     IssuesResult,
     RateLimit,
@@ -330,6 +330,11 @@ def _auth_signature() -> tuple[bool, str]:
             material.append(f"env:{_digest(value)}")
     try:
         stored = get_github_token()
+        # A GitHub App token is replaced every hour by the refresher; the
+        # grant behind it is the identity, so routine renewal is no change.
+        entry = get_entry("github") if stored else None
+        if isinstance(entry, dict) and entry.get("auth_method") == "app" and entry.get("app_grant"):
+            stored = entry["app_grant"]
     except Exception:
         # An unreadable token store is not this loop's to report: it reads as
         # "no stored credential", which is what a poll would conclude too.

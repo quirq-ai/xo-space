@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 GITHUB_API = "https://api.github.com"
 
 GitHubStatus = Literal["connected", "needs_auth", "failed"]
-AuthMethod = Literal["pat", "cli"]
+AuthMethod = Literal["pat", "cli", "app"]
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ def get_github_token(*, read_only: bool = False) -> str | None:
 
 
 def get_github_auth_method() -> str | None:
-    """Return the auth method used for the stored token: "pat", "cli", or None."""
+    """Return the auth method used for the stored token: "pat", "cli", "app", or None."""
     entry = get_entry("github")
     if not entry:
         return None
@@ -183,8 +183,14 @@ async def get_status() -> dict[str, Any]:
     if not token:
         return {"status": "needs_auth"}
 
-    result = await validate_token(token)
     method = get_github_auth_method()
+    if method == "app":
+        # An installation token is not a user: GET /user answers 403, so the
+        # app method checks itself. Lazy import: app_auth imports this module.
+        from . import app_auth
+        return await app_auth.status()
+
+    result = await validate_token(token)
     if method:
         result["auth_method"] = method
     return result

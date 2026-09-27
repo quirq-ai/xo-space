@@ -77,8 +77,10 @@ async def enumerate_hashes(repo_dir, since_sha: str, head_sha: str) -> list[str]
     return [head_sha]
 
 
-async def fetch_origin(repo_dir) -> tuple[bool, str]:
-    code, _, err = await _run(repo_dir, "fetch", "origin", "--quiet")
+async def fetch_origin(repo_dir, *, config_args: list[str] | None = None) -> tuple[bool, str]:
+    """`config_args` are the same `-c` credential overrides `clone` takes, so a
+    private repo fetches with the connector token without it touching .git/config."""
+    code, _, err = await _run(repo_dir, *(config_args or []), "fetch", "origin", "--quiet")
     return code == 0, err.strip()
 
 

@@ -122,6 +122,7 @@ async def run_tick() -> float:
     member_counts: dict[str, int] = {}
     available_repos: list[str] = []
     drain = False
+    fetch_auth = None
     for entry in resp.get("repos") or []:
         repo = entry.get("repo")
         if not repo:
@@ -138,7 +139,12 @@ async def run_tick() -> float:
         if not events:
             status.record_synced(repo, d.name)
         else:
-            ok, err = await git_ops.fetch_origin(d)
+            if fetch_auth is None:
+                # Resolved once per tick and only when something needs
+                # fetching. A GitHub App token rotates hourly, so it is never
+                # left in a credential helper; it rides along like a clone's.
+                fetch_auth = await clone._github_auth()
+            ok, err = await git_ops.fetch_origin(d, config_args=clone._config_args(repo, fetch_auth[0]))
             if not ok:
                 status.record_repo_error(repo, d.name, err or "git fetch failed",
                                          pending_github=_looks_like_auth_failure(err))

@@ -3,6 +3,7 @@ REST routes for the GitHub connector — PAT method (paste a personal access tok
 
   POST /api/connectors/github/token       — receive & validate a PAT
   GET  /api/connectors/github/status      — current connection status
+  GET  /api/connectors/github/methods     — which connect methods are enabled
   POST /api/connectors/github/disconnect  — delete stored token
   POST /api/connectors/github/reconnect   — re-validate stored token
 
@@ -19,11 +20,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.github import (
+    app_auth,
     delete_github_token,
+    get_github_auth_method,
     get_github_token,
     get_status,
     validate_token,
 )
+from services.cowork_agent.connectors.github import flags as github_flags
 from services.cowork_agent.connectors.github import pat as github_pat
 
 log = logging.getLogger(__name__)
@@ -41,6 +45,9 @@ class TokenBody(BaseModel):
 @router.post("/api/connectors/github/token")
 async def submit_github_token(body: TokenBody) -> JSONResponse:
     """Validate a GitHub PAT, store it, and return the connection status."""
+    if not github_flags.pat_enabled():
+        raise HTTPException(
+            403, detail=f"Connecting GitHub with a token is disabled ({github_flags.ENV_PAT_ENABLED}).")
     token = body.token.strip()
     if not token:
         raise HTTPException(400, detail="Token cannot be empty.")
@@ -71,6 +78,16 @@ async def github_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/connectors/github/methods
+# ---------------------------------------------------------------------------
+
+@router.get("/api/connectors/github/methods")
+async def github_methods() -> JSONResponse:
+    """Which connect methods this workspace offers: `{"pat", "cli", "app"}` → bool."""
+    return JSONResponse(github_flags.enabled_methods())
+
+
+# ---------------------------------------------------------------------------
 # POST /api/connectors/github/disconnect
 # ---------------------------------------------------------------------------
 
@@ -91,6 +108,12 @@ async def reconnect_github() -> JSONResponse:
     token = get_github_token()
     if not token:
         return JSONResponse({"status": "needs_auth", "error": "No token stored."})
+
+    if get_github_auth_method() == app_auth.AUTH_METHOD:
+        # Installation tokens cannot call /user; mint a fresh one and check that.
+        await app_auth.refresh_if_needed(force=True)
+        result = await app_auth.status()
+        return JSONResponse(result, status_code=200 if result["status"] == "connected" else 502)
 
     result = await validate_token(token)
     if result.get("valid"):

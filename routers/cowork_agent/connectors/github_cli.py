@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.github import cli_auth as github_cli_auth
+from services.cowork_agent.connectors.github import flags as github_flags
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,6 +24,13 @@ router = APIRouter()
 
 class CliSessionBody(BaseModel):
     session_id: str
+
+
+def _require_enabled() -> None:
+    # `/cancel` deliberately skips this: aborting a login must always work.
+    if not github_flags.cli_auth_enabled():
+        raise HTTPException(
+            403, detail=f"Connecting GitHub with `gh auth login` is disabled ({github_flags.ENV_CLI_AUTH_ENABLED}).")
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +44,7 @@ async def cli_login_start() -> JSONResponse:
     The frontend should display `user_code` and a clickable link to
     `verification_uri`, then poll `/cli/poll` until status flips to `completed`.
     """
+    _require_enabled()
     try:
         info = await github_cli_auth.start_login()
     except RuntimeError as exc:
@@ -56,6 +65,7 @@ async def cli_login_poll(body: CliSessionBody) -> JSONResponse:
     token.json with `auth_method="cli"`, and the user profile is returned
     in the same shape as the PAT flow.
     """
+    _require_enabled()
     result = await github_cli_auth.connect(body.session_id)
 
     if result["ok"]:

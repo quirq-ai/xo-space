@@ -91,16 +91,20 @@ async def request(
     params: dict | None = None,
     auth: bool = True,
     timeout: httpx.Timeout | float = DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> SwarmResult:
     """One call to the swarm. `auth=True` (the default) attaches the bearer
     token and refuses to send at all when there is none, so an unauthenticated
     install can never leak a request; `auth=False` is for the browser-auth
-    handshake, which is how a token is obtained in the first place."""
-    headers: dict[str, str] = {}
+    handshake, which is how a token is obtained in the first place. `headers`
+    are extra request headers; they never override the bearer token."""
+    extra = dict(headers or {})
+    headers = {}
     if auth:
         headers = auth_headers()
         if not headers:
             return SwarmResult(ok=False, detail="not signed in to XO", unauthenticated=True)
+    headers = {**extra, **headers}
     url = f"{base_url()}{path}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

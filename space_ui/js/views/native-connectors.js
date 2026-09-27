@@ -33,6 +33,7 @@ function cardMarkup(app){
       +(id==='magicpath'?button('setup','Install skill &amp; CLI'):'')
       +(!app.drive?button('disconnect','Disconnect'):'')+'</div>'
     +'<div class="conn-native-form" id="native-'+id+'-form" hidden>'
+      +(id==='github'?'<p class="conn-native-note">Install the XO GitHub App on your account or organization and choose which repositories XO Space can use.</p>'+button('app','Install GitHub App',true):'')
       +(token?'<form data-native-form="token">'+field(id,'token',id==='github'?'Personal access token':'API token','password','required maxlength="4096"')+'<button class="conn-primary" type="submit">Save token</button></form>'+button('browser','Sign in with '+app.name):'')
       +(id==='magicpath'?'<p class="conn-native-note">Sign in, then paste the authorization code from MagicPath.</p>'+button('browser','Open MagicPath sign-in'):'')
       +(app.drive?'<form data-native-form="remote">'+field(id,'name','Account name','text','required pattern="[a-z0-9_-]{1,32}" maxlength="32" placeholder="my-drive"')+'<p class="conn-native-note">Use lowercase letters, numbers, - or _.</p><button class="conn-primary" type="submit">Start sign-in</button></form>':'')
@@ -53,6 +54,12 @@ function failure(res,action='complete this request'){
   return'Could not '+action+'. Check the connection and try again.';
 }
 
+/* The workspace answers 401 from the app route when no XO account is signed in. */
+function appFailure(res){
+  return res.status===401?'Sign in to your XO account in Setup, then try again.':failure(res,'start the GitHub App install');
+}
+const APP_COMPLETE_PATH='/api/connectors/github/app/complete';
+
 function loginURL(value){
   if(typeof value!=='string')return'';
   try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password?url.href:'';}catch{return'';}
@@ -63,6 +70,9 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
   let filter='';
   const states=new Map(APPS.map(app=>[app.id,{app,card:el.querySelector('[data-native-connector="'+app.id+'"]'),
     revision:0,busy:false,pending:null,status:null,statusError:false,timer:null,polling:false,refreshing:null,refreshAgain:false}]));
+  /* GitHub connect methods offered by this workspace. PAT and `gh auth login`
+     sit behind server feature flags (off by default); the app is always on. */
+  let githubMethods={pat:false,cli:false,app:true};
   const find=(state,selector)=>state.card.querySelector(selector);
   const action=(state,name)=>find(state,'[data-native-action="'+name+'"]');
   const error=(state,message)=>{const node=find(state,'.conn-card-error');node.textContent=message;node.hidden=!message;};
@@ -98,6 +108,10 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       connected=data.status==='connected';label=connected?'Connected':data.status==='failed'?'Unavailable':'Not connected';
       detail=connected?string(data.username)||string(data.email)||string(data.name)||'Account connected':'';
       if(app.id==='github'&&detail&&string(data.username))detail='@'+detail;
+      if(app.id==='github'&&connected&&data.auth_method==='app'){
+        const repos=Number.isInteger(data.repository_count)?data.repository_count:null;
+        detail+=' · GitHub App'+(repos===null?'':' · '+repos+' repositor'+(repos===1?'y':'ies'));
+      }
     }
     find(state,'.conn-state').textContent=state.pending?'Sign-in pending':label;
     find(state,'.conn-state').classList.toggle('is-connected',connected);
@@ -112,6 +126,12 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     if(!app.drive)action(state,'disconnect').disabled=state.busy||!!state.pending;
     if(app.id==='magicpath')action(state,'setup').disabled=state.busy||!!state.pending;
     const browserButton=action(state,'browser');
+    if(app.id==='github'){
+      browserButton.hidden=!githubMethods.cli;
+      const appButton=action(state,'app');
+      appButton.disabled=state.busy||!!state.pending;
+      appButton.textContent=connected&&data?.auth_method==='app'?'Change repository access':'Install GitHub App';
+    }
     if(browserButton){
       browserButton.disabled=state.busy||!!state.pending||app.id==='magicpath'&&!data?.cli_installed||app.id==='vercel'&&data?.status!=='needs_auth';
       if(app.id==='vercel')browserButton.textContent=connected?'Disconnect before browser sign-in':
@@ -120,7 +140,7 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     const remoteForm=find(state,'[data-native-form="remote"]');
     if(remoteForm)remoteForm.hidden=!!state.pending;
     const tokenForm=find(state,'[data-native-form="token"]');
-    if(tokenForm)tokenForm.hidden=!!state.pending;
+    if(tokenForm)tokenForm.hidden=!!state.pending||app.id==='github'&&!githubMethods.pat;
     applyFilter();onChange(count());
   }
 
@@ -148,8 +168,8 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
   function showForm(state){
     find(state,'.conn-native-form').hidden=false;action(state,'open').setAttribute('aria-expanded','true');
   }
-  function authLink(state,url){
-    const link=find(state,'[data-native-link]');
+  function authLink(state,url,label='Continue sign-in ↗'){
+    const link=find(state,'[data-native-link]');link.textContent=label;
     const safe=loginURL(url);link.hidden=!safe;
     if(safe)link.href=safe;else link.removeAttribute('href');
     find(state,'.conn-native-auth').hidden=false;
@@ -182,7 +202,8 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     if(!pending||state.polling||state.busy)return;
     state.polling=true;
     try{
-      const res=pending.kind==='github'
+      const res=pending.kind==='github-app'?await apiFetch(BASE+'github/status')
+        :pending.kind==='github'
         ?await apiFetch(BASE+'github/cli/poll',{method:'POST',body:{session_id:pending.id}})
         :pending.kind==='drive'?await apiFetch(BASE+state.app.id+'/sessions/'+encodeURIComponent(pending.id))
           :await apiFetch(BASE+'vercel/status');
@@ -190,6 +211,17 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       if(state.busy){state.timer=setTimeout(()=>poll(state),2000);return;}
       if(!res.ok){error(state,failure(res,'check sign-in'));return;}
       const data=res.data||{};
+      if(pending.kind==='github-app'){
+        /* Reconfiguring an existing install leaves /status connected
+           throughout, so that case finishes on Check connection only. */
+        if(data.status==='connected'&&data.auth_method==='app'&&(!pending.initialConnected||pending.checked)){
+          completed(state);await refreshOne(state);return;
+        }
+        if(pending.checked&&pending.initialConnected){notice(state,'GitHub is not connected through the app yet. Finish on GitHub, then check again.');}
+        if(Date.now()-pending.started>600000){notice(state,'Still waiting. Finish the install on GitHub, then choose Check connection.');return;}
+        if(!pending.initialConnected)state.timer=setTimeout(()=>poll(state),2000);
+        return;
+      }
       if(data.status==='connected'||data.status==='completed'){
         completed(state);await refreshOne(state);return;
       }
@@ -235,6 +267,26 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     if(state.pending&&state.app.id!=='magicpath')poll(state);
   }
 
+  async function appInstall(state){
+    showForm(state);
+    await run(state,async()=>{
+      /* Where xo-swarm-api sends the browser back with the grant. Built from
+         this page, because the server cannot see its public URL behind a proxy.
+         The page's query string (a proxy session token) is deliberately left
+         off: the URL travels through GitHub inside the install state. */
+      const returnTo=new URL(API_BASE+APP_COMPLETE_PATH,location.href).href;
+      const res=await apiFetch(BASE+'github/app/start',{method:'POST',body:{return_to:returnTo}});
+      if(!res.ok){error(state,appFailure(res));return;}
+      if(!authLink(state,res.data?.url,'Open GitHub ↗')){error(state,'The server returned an invalid install link. Try again.');return;}
+      const initialConnected=state.status?.status==='connected'&&state.status?.auth_method==='app';
+      state.pending={kind:'github-app',id:'',started:Date.now(),initialConnected};
+      notice(state,initialConnected
+        ?'Change which repositories the app can use on GitHub, then choose Check connection.'
+        :'Install the app on GitHub and pick repositories. This card updates when it finishes.');
+    });
+    if(state.pending)poll(state);
+  }
+
   async function submit(state,form){
     const kind=form.dataset.nativeForm;
     if(!form.reportValidity())return;
@@ -271,7 +323,8 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     if(name==='open'){showForm(state);return;}
     if(name==='close'){find(state,'.conn-native-form').hidden=true;action(state,'open').setAttribute('aria-expanded','false');return;}
     if(name==='browser'){await browser(state);return;}
-    if(name==='check'){if(state.pending&&state.pending.kind!=='magicpath')await poll(state);else await refreshOne(state);return;}
+    if(name==='app'){await appInstall(state);return;}
+    if(name==='check'){if(state.pending?.kind==='github-app')state.pending.checked=true;if(state.pending&&state.pending.kind!=='magicpath')await poll(state);else await refreshOne(state);return;}
     if(name==='cancel'){
       await run(state,async()=>{
         const pending=state.pending;if(!pending)return;
@@ -316,6 +369,11 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
     action(state,'open').setAttribute('aria-controls','native-'+state.app.id+'-form');
     action(state,'open').setAttribute('aria-expanded','false');paint(state);
   }
+  const github=states.get('github');
+  apiFetch(BASE+'github/methods').then(res=>{
+    if(res.ok&&res.data&&typeof res.data==='object')githubMethods={pat:res.data.pat===true,cli:res.data.cli===true,app:true};
+    paint(github);
+  });
   return{
     async refresh(){await Promise.all([...states.values()].map(refreshOne));return count();},
     setFilter(query){filter=String(query||'').trim().toLowerCase();return applyFilter();},

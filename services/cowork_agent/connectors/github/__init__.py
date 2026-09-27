@@ -1,18 +1,20 @@
 """
 GitHub connector.
 
-Two ways to acquire a token, one shared everything-else:
+Three ways to acquire a token, one shared everything-else:
 
   * ``pat``      — the user pastes a personal access token
   * ``cli_auth`` — the `gh auth login` device flow
-  * ``common``   — storage, validation and status, shared by both
+  * ``app_auth`` — the XO GitHub App (short-lived installation tokens, kept
+                   fresh by a background refresher)
+  * ``common``   — storage, validation and status, shared by all three
 
 Callers that only need the connected identity should import from this package
 (``from ...connectors.github import get_github_token``) and stay unaware of
 which method established it.
 """
 
-from . import cli_auth, pat
+from . import app_auth, cli_auth, pat
 from .common import (
     GITHUB_API,
     AuthMethod,
@@ -32,6 +34,7 @@ __all__ = [
     "GITHUB_API",
     "AuthMethod",
     "GitHubStatus",
+    "app_auth",
     "cli_auth",
     "commit_email",
     "configure_git_identity",
