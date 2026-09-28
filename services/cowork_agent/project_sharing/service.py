@@ -38,6 +38,22 @@ class ApplyFailed(RelayError):
     status, code, message = 409, "apply_failed", "Could not fast-forward: the branch has diverged or has local changes."
 
 
+class BadSha(RelayError):
+    status, code, message = 422, "bad_sha", "That is not a commit hash."
+
+
+class BadPath(RelayError):
+    status, code, message = 422, "bad_path", "That file is not part of this commit."
+
+
+class CommitNotFound(RelayError):
+    status, code, message = 404, "commit_not_found", "That commit is not on the shared branch here."
+
+
+class ChangesUnreadable(RelayError):
+    status, code, message = 409, "changes_unreadable", "Git could not read this commit's changes."
+
+
 class SwarmError(RelayError):
     """A swarm 4xx passes through; anything else (network, 5xx, 0) is a 502."""
 
@@ -94,6 +110,60 @@ async def project_commits(project_id: str, limit: int) -> dict:
     behind = await git_ops.behind_count(d, branch)
     return {"project_id": project_id, "branch": branch, "source": source,
             "behind": behind, "commits": commits, "path": str(d)}
+
+
+MAX_FILES = 200
+MAX_DIFF_LINES = 400
+MAX_DIFF_BYTES = 64 * 1024
+
+
+def _cap_diff(text: str) -> tuple[str, bool]:
+    """Hunks only (the file headers repeat what the UI already shows), cut at
+    MAX_DIFF_LINES lines or MAX_DIFF_BYTES bytes, whichever comes first."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
+    body = lines[start:]
+    cut = len(body) > MAX_DIFF_LINES
+    out = "\n".join(body[:MAX_DIFF_LINES])
+    raw = out.encode("utf-8")
+    if len(raw) > MAX_DIFF_BYTES:
+        out, cut = raw[:MAX_DIFF_BYTES].decode("utf-8", "ignore"), True
+    return out, cut
+
+
+async def commit_changes(project_id: str, sha: str, path: str | None = None) -> dict:
+    """Files and one file's diff for a commit on origin/<branch>: the Sharing
+    page's "What changed". Read-only. Only commits the relay fetched onto the
+    watched branch are readable, and only paths that commit touched."""
+    if not project_dir_exists(project_id):
+        raise ProjectNotFound()
+    sha = (sha or "").strip().lower()
+    if not git_ops.SHA_RE.fullmatch(sha):
+        raise BadSha()
+    d = project_dir(project_id)
+    branch = config.watch_branch()
+    full = await git_ops.resolve_commit(d, sha)
+    if not full or not await git_ops.on_branch(d, full, branch):
+        raise CommitNotFound()
+    parent = await git_ops.first_parent(d, full)
+    files = await git_ops.commit_files(d, full, parent)
+    if files is None:
+        raise ChangesUnreadable()
+    by_path = {f["path"]: f for f in files}
+    if path and path not in by_path:
+        raise BadPath()
+    target = by_path[path] if path else next((f for f in files if not f["binary"]), None)
+    diff = None
+    if target is not None and target["binary"]:
+        diff = {"path": target["path"], "text": "", "truncated": False, "binary": True}
+    elif target is not None:
+        raw = await git_ops.commit_diff(d, full, parent, target["path"])
+        if raw is None:
+            raise ChangesUnreadable()
+        text, cut = _cap_diff(raw)
+        diff = {"path": target["path"], "text": text, "truncated": cut, "binary": False}
+    return {"project_id": project_id, "hash": full, "branch": branch,
+            "files": files[:MAX_FILES], "files_truncated": len(files) > MAX_FILES, "diff": diff}
 
 
 async def apply(project_id: str) -> dict:

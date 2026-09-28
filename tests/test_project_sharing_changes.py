@@ -121,5 +121,66 @@ class GitOpsChangesTests(GitRepoCase):
         self.assertEqual(run(git_ops.resolve_commit(self.repo, self.second[:9])), self.second)
 
 
+class CommitChangesServiceTests(GitRepoCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._dir = patch.object(service, "project_dir", side_effect=lambda pid: self.repo)
+        self._exists = patch.object(service, "project_dir_exists", side_effect=lambda pid: pid == "trip-planner")
+        self._dir.start()
+        self._exists.start()
+
+    def tearDown(self) -> None:
+        self._exists.stop()
+        self._dir.stop()
+        super().tearDown()
+
+    def changes(self, sha: str, path: str | None = None) -> dict:
+        return run(service.commit_changes("trip-planner", sha, path))
+
+    def test_default_diff_is_the_first_text_file_hunks_only(self) -> None:
+        out = self.changes(self.second[:9])
+        self.assertEqual(out["hash"], self.second)
+        self.assertEqual(out["branch"], "main")
+        self.assertFalse(out["files_truncated"])
+        self.assertEqual(out["diff"]["path"], "README.md")
+        self.assertTrue(out["diff"]["text"].startswith("@@"))
+        self.assertIn("+world", out["diff"]["text"].splitlines())
+        self.assertNotIn("diff --git", out["diff"]["text"])
+        self.assertFalse(out["diff"]["truncated"])
+
+    def test_explicit_text_and_binary_paths(self) -> None:
+        self.assertEqual(self.changes(self.second, "notes with space.md")["diff"]["path"], "notes with space.md")
+        binary = self.changes(self.second, "logo.bin")["diff"]
+        self.assertEqual(binary, {"path": "logo.bin", "text": "", "truncated": False, "binary": True})
+
+    def test_path_outside_the_commit_is_refused(self) -> None:
+        for bad in ("../etc/passwd", "other.txt", "-p"):
+            with self.assertRaises(service.BadPath):
+                self.changes(self.second, bad)
+
+    def test_malformed_hashes_are_refused_before_git_runs(self) -> None:
+        for bad in ("zzz", "abc", "--output=x", "HEAD", ""):
+            with self.assertRaises(service.BadSha):
+                self.changes(bad)
+
+    def test_unknown_or_unfetched_commits_are_not_found(self) -> None:
+        with self.assertRaises(service.CommitNotFound):
+            self.changes("0" * 40)
+        local = self.commit({"local.txt": "x\n"}, "local only")   # never on origin/main
+        with self.assertRaises(service.CommitNotFound):
+            self.changes(local)
+
+    def test_long_diff_is_capped(self) -> None:
+        big = self.commit({"big.txt": "".join(f"line {i}\n" for i in range(600))}, "big")
+        self.publish()
+        diff = self.changes(big)["diff"]
+        self.assertTrue(diff["truncated"])
+        self.assertEqual(len(diff["text"].splitlines()), service.MAX_DIFF_LINES)
+
+    def test_unknown_project(self) -> None:
+        with self.assertRaises(service.ProjectNotFound):
+            run(service.commit_changes("nope", self.second))
+
+
 if __name__ == "__main__":
     unittest.main()
