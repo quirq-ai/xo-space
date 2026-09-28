@@ -7,6 +7,7 @@ notice its own push without a network call."""
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from utils.commands import run
@@ -105,6 +106,69 @@ async def recent_commits(repo_dir, branch: str, limit: int = 20) -> tuple[list[d
                                 "author": parts[2], "date": parts[3]})
         return commits, source
     return [], "none"
+
+
+SHA_RE = re.compile(r"[0-9a-f]{7,64}")
+
+# Repo content comes from other people: never run a diff driver or textconv
+# filter their .gitattributes might name, show renames as delete + add so
+# paths stay literal, and keep colour codes out of the text.
+_DIFF_FLAGS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-renames")
+
+
+async def resolve_commit(repo_dir, sha: str) -> str | None:
+    """Full hash when `sha` names a commit in this repo, else None."""
+    code, out, _ = await _run(repo_dir, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    out = out.strip()
+    return out if code == 0 and out else None
+
+
+async def on_branch(repo_dir, sha: str, branch: str) -> bool:
+    """True when `sha` is reachable from origin/<branch>: the Sharing page only
+    shows commits the relay fetched onto that ref."""
+    code, _, _ = await _run(repo_dir, "merge-base", "--is-ancestor", sha, f"origin/{branch}")
+    return code == 0
+
+
+async def first_parent(repo_dir, sha: str) -> str | None:
+    """None for a root commit. A merge is read against its first parent: what
+    the branch looked like before the merge landed."""
+    return await resolve_commit(repo_dir, f"{sha}^1")
+
+
+def _diff_argv(sha: str, parent: str | None, *extra: str) -> list[str]:
+    if parent:
+        return ["diff", *_DIFF_FLAGS, *extra, parent, sha]
+    return ["diff-tree", "-r", "--root", "--no-commit-id", *_DIFF_FLAGS, *extra, sha]
+
+
+def parse_numstat_z(out: str) -> list[dict]:
+    """`--numstat -z` records ("adds\\tdels\\tpath\\0"); binary files report
+    "-" for both counts."""
+    files: list[dict] = []
+    for record in out.split("\0"):
+        parts = record.lstrip("\n").split("\t", 2)
+        if len(parts) != 3 or not parts[2]:
+            continue
+        adds, dels, path = parts
+        binary = adds == "-" and dels == "-"
+        try:
+            additions = None if binary else int(adds)
+            deletions = None if binary else int(dels)
+        except ValueError:
+            continue
+        files.append({"path": path, "additions": additions, "deletions": deletions, "binary": binary})
+    return files
+
+
+async def commit_files(repo_dir, sha: str, parent: str | None) -> list[dict] | None:
+    code, out, _ = await _run(repo_dir, *_diff_argv(sha, parent, "--numstat", "-z"))
+    return parse_numstat_z(out) if code == 0 else None
+
+
+async def commit_diff(repo_dir, sha: str, parent: str | None, path: str) -> str | None:
+    code, out, _ = await _run(repo_dir, *_diff_argv(sha, parent, "-p"), "--", path)
+    return out if code == 0 else None
 
 
 async def clone(url: str, dest, *, config_args: list[str] | None = None,
