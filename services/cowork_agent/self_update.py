@@ -201,18 +201,14 @@ def check_update_status(fetch: bool = True) -> dict:
     if detached or branch == _RELEASE_BRANCH:
         tag, error = _latest_release_tag(fetch)
         if error:
-            # Offline: fall back to the release tags already fetched.
-            status["fetch_ok"] = False
-            status["message"] = error
-            tag, _ = _latest_release_tag(False)
-            fetch = False
+            # Offline: the current version only (apply refuses on fetch_ok false).
+            status.update({"fetch_ok": False, "message": error, "latest": None,
+                           "behind": 0, "ahead": 0, "up_to_date": None})
+            return status
         if tag:
             status["channel"] = "release"
             return _release_status(status, tag, fetch)
         if detached:
-            if not status["fetch_ok"]:
-                status.update({"latest": None, "behind": 0, "ahead": 0, "up_to_date": None})
-                return status
             return {
                 "supported": False,
                 "reason": "detached_head",
@@ -287,6 +283,6 @@ def apply_update() -> dict:
         "restart_required": True,
         "message": f"Updated {status['behind']} commit(s) to {version}. "
                    "Restart the server to run it"
-                   + ("; requirements.txt changed, so its new dependencies "
-                      "must be installed first." if requirements_changed else "."),
+                   + ("; requirements.txt changed, and its new dependencies "
+                      "are installed when the server starts." if requirements_changed else "."),
     }

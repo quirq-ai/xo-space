@@ -219,8 +219,6 @@ function bindEvents(){
    POST /space/update/apply moves forward to it, never back. The server keeps
    running the old code until restarted. */
 let updateStatus=null;
-// Set when an applied update needs the installer before any restart can work.
-let updateNeedsInstaller=false;
 
 function renderUpdateState(html,badge){
   root.querySelector('#update-state').innerHTML=html;
@@ -259,9 +257,7 @@ async function checkForUpdate(){
     return;
   }
   if(s.up_to_date){
-    rows.push(release&&s.ahead
-      ?`<p>You are ahead of the latest release, ${esc(s.latest_tag)}. Updates follow releases, so there is nothing to install until a newer one is published.</p>`
-      :'<p>You have the latest version.</p>');
+    rows.push('<p>You have the latest version.</p>');
     renderUpdateState(rows.join(''),'Up to date');
   }else{
     rows.push(`<p><b>Latest${release?` release ${esc(s.latest_tag)}`:''}</b> ${commitLine(s.latest)}</p>`);
@@ -290,22 +286,15 @@ async function applyUpdate(){
     return;
   }
   toast(`Updated to ${r.tag||r.to?.sha||'latest'}`);
-  // New dependencies decide whether Restart can work (#184). The native
-  // runner (cowork-api.sh) installs them on start; a container's are baked
-  // into its image, so a restart there would boot the new code on the old
-  // environment and never come back.
-  const mode=serverData?.restart_mode;
-  const next=!r.requirements_changed?'<p>Restart to load the new version.</p>'
-    :mode==='native'?'<p>New dependencies: Restart installs them before starting the new version.</p>'
-    :mode==='managed'?'<p>New dependencies: this container cannot install them itself. Re-run the installer (or rebuild the image) to start the new version; Restart alone would fail.</p>'
-    :'<p>New dependencies: stop the server with Ctrl-C and run the installer again. It installs them and starts the new version.</p>';
+  // New dependencies need nothing extra: cowork-api.sh (Restart) and
+  // install.sh both install requirements.txt on start (#184).
   renderUpdateState(
     `<p><b>Updated</b> ${r.tag?`to ${esc(r.tag)} `:''}${commitLine(r.to)} (${r.commits} commit${r.commits===1?'':'s'}).</p>`
-    +`<p>${esc(r.message)}</p>`+next,
+    +`<p>${esc(r.message)}</p>`
+    +'<p>Restart to load the new version.</p>',
     'Restart needed'
   );
-  updateNeedsInstaller=Boolean(r.requirements_changed)&&mode==='managed';
-  root.querySelector('#update-restart').hidden=updateNeedsInstaller;
+  root.querySelector('#update-restart').hidden=false;
   renderRestartButtons();
 }
 
@@ -649,7 +638,7 @@ function renderRestartButtons(){
   root.querySelector('#setup-restart-hint').textContent=restarting?'Restarting…':[pendingHint,hint].filter(Boolean).join(' ');
   const installerNeeded=runtimeData?.managed_container&&runtimeData?.roots?.change_required;
   const pending=Boolean(runtimeData?.restart_required)&&!installerNeeded;
-  const updatePending=!root.querySelector('#update-restart').hidden||updateNeedsInstaller;
+  const updatePending=!root.querySelector('#update-restart').hidden;
   root.querySelector('#runtime-restart').hidden=!pending||updatePending;
   root.querySelector('#setup-restart').hidden=pending||updatePending;
   root.querySelectorAll('[data-restart]').forEach(button=>{

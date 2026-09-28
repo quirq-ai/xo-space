@@ -17,10 +17,9 @@ Pre-release tags (`v2.0.0-rc1`) are ignored. A checkout on another branch
 (`QUIRQ_SOURCE_REF=development`, say) keeps following that branch's tip.
 
 When a release changes `requirements.txt`, users pick the new dependencies up
-on their next start: `install.sh` always syncs them, and `cowork-api.sh`
-syncs them whenever `requirements.txt` changed since the last sync. A managed
-container cannot install them; the Setup tab tells its user to re-run the
-installer instead of offering Restart.
+on their next start: both `install.sh` and `cowork-api.sh start` (which the
+Setup tab's Restart uses) install `requirements.txt` before starting the
+server. A launcher that runs `venv/bin/python server.py` directly does not.
 
 ## Version numbers
 

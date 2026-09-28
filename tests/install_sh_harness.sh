@@ -169,15 +169,6 @@ mkdir -p "$W/tipws"
 rel "$W/tipws/xo-space" main >/dev/null
 check "QUIRQ_SOURCE_REF=main -> the main tip, as before" "$(at "$W/tipws/xo-space")" "$(git -C "$R" rev-parse main)"
 
-# ---- 2d. the dependency stamp cowork-api.sh compares on start (#184) -------
-mkdir -p "$W/deps/venv/bin" && echo fastapi > "$W/deps/requirements.txt"
-printf '#!/bin/sh\n' > "$W/deps/venv/bin/python" && chmod +x "$W/deps/venv/bin/python"
-( cd "$W"; source "$W/lib.sh" 2>/dev/null; uv(){ :; }; REPO_DIR="$W/deps"
-  VENV_DIR="$W/deps/venv"; VENV_PYTHON="$W/deps/venv/bin/python"; sync_dependencies ) >/dev/null
-check "sync_dependencies stamps the venv with the requirements.txt hash" \
-      "$(cat "$W/deps/venv/.requirements.sha256" 2>/dev/null)" \
-      "$(sha256sum "$W/deps/requirements.txt" | cut -d' ' -f1)"
-
 # ---- 3. banner -------------------------------------------------------------
 hint(){ ( cd "$W"; source "$W/lib.sh" 2>/dev/null; MANAGED_CHECKOUT="$1"; REPO_DIR="$2"; LAUNCH_DIR="$3"; SOURCE_REF="${4-}"; print_restart_hint ); }
 m="$(hint 1 "$W/ws/xo-space" "$W/ws")"

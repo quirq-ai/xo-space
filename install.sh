@@ -299,17 +299,6 @@ sync_dependencies() {
     printf 'Installing dependencies...\n'
     uv pip install --quiet --python "$VENV_PYTHON" --requirement "${REPO_DIR}/requirements.txt" ||
         fail "Could not install the dependencies in requirements.txt."
-    # What cowork-api.sh compares on start: the requirements.txt this venv was
-    # last synced to. Same file, same hash as its sync_requirements_if_changed.
-    requirements_hash "${REPO_DIR}/requirements.txt" > "${VENV_DIR}/.requirements.sha256" || true
-}
-
-requirements_hash() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
-    else
-        shasum -a 256 "$1" | cut -d' ' -f1
-    fi
 }
 
 # ==============================================================
