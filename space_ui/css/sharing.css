@@ -121,7 +121,7 @@
   .shl-commit.is-sel{background:var(--bg-3);color:var(--ink);border-left-color:var(--ink-3)}
   .shl-commit.is-new{border-left-color:var(--accent)}
   .shl-commit .shr-subject{white-space:normal;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
-  .shl-commit .tmuted{font-size:11.5px}
+  .shl-commit .tmuted{font-size:11.5px;margin-left:0}
   .shl-commit:focus-visible,.shl-file:focus-visible,.shl-card:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .shl-files{display:flex;flex-direction:column;gap:2px;margin-bottom:10px}
   .shl-file{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:7px;font:12px var(--mono);
@@ -213,4 +213,10 @@
     .shl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
     .shl-axis .prj-ptitle,.shl-lane-name{width:150px}
     .shl-ticks,.shl-track{left:180px;right:110px}
+  }
+  /* phones: the axis keeps its two ends, the lane keeps its name and state */
+  @media (max-width:640px){
+    .shl-axis .prj-ptitle,.shl-lane-name{width:112px}
+    .shl-ticks,.shl-track{left:136px;right:92px}
+    .shl-ticks span:not(:first-child):not(.is-now),.shl-axis .shl-axis-end{display:none}
   }

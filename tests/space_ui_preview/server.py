@@ -65,6 +65,10 @@ class Handler(SimpleHTTPRequestHandler):
         if route:
             self.json_response(route())
             return
+        changes = re.fullmatch(r"/api/xo-projects/([^/]+)/commits/([0-9a-f]{7,64})/changes", path)
+        if changes and changes[1] in {p[0] for p in fixtures.PROJECTS}:
+            self.json_response(fixtures.commit_changes(changes[1], changes[2], query.get("path", [""])[0]))
+            return
         match = re.fullmatch(r"/api/xo-projects/([^/]+)/(tree|todos|activity|timeline|file|file-history|commits|members|removal|github/issues)", path)
         if match and match[1] in {p[0] for p in fixtures.PROJECTS}:
             pid, operation = match.groups()

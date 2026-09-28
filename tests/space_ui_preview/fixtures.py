@@ -203,6 +203,23 @@ def commits(pid):
                 {"hash": "d4e5f6a" + "0" * 33, "short_hash": "d4e5f6a", "subject": "Record the first milestone", "author": "Sam Example", "date": stamp(180), "path": "README.md"}]}
 
 
+def commit_changes(pid, sha, path=""):
+    files = [
+        {"path": "README.md", "additions": 4, "deletions": 1, "binary": False},
+        {"path": "docs/review checklist.md", "additions": 12, "deletions": 0, "binary": False},
+        {"path": "assets/overview.png", "additions": None, "deletions": None, "binary": True},
+    ]
+    target = next((f for f in files if f["path"] == path), files[0])
+    if target["binary"]:
+        diff = {"path": target["path"], "text": "", "truncated": False, "binary": True}
+    else:
+        text = ("@@ -1,5 +1,8 @@\n # Project brief\n \n-A fictional workspace project.\n"
+                "+A fictional workspace project used for reviewing Space UI.\n+\n+## Review checklist\n"
+                "+- Open a file once, then move between lenses.\n+- Keep context across views.\n \n ## Notes")
+        diff = {"path": target["path"], "text": text, "truncated": False, "binary": False}
+    return {"project_id": pid, "hash": sha, "branch": "main", "files": files, "files_truncated": False, "diff": diff}
+
+
 def sharing():
     return {"cadence": "active", "last_poll_ok": True, "last_poll_at": stamp(1), "watch_branch": "main",
             "own_workspace_id": WORKSPACE_ID, "projects_root": WORKSPACE, "recent": [],
