@@ -8,14 +8,13 @@ import {setSectionActions} from '../core/section-nav.js?v=20260921-refresh1';
                   copy invite).
      Lanes        every project shared from here on a 30-day axis, one dot
                   per commit on origin/<branch>; unapplied ones glow. Work
-                  waiting first. Incoming repos ("shared with you", not
+                  waiting first; clicking one zooms it and scrolls to it. Incoming repos ("shared with you", not
                   cloned yet) sit above them with their one thing to click.
      Zoom         the selected lane: commits (pick one), what changed in it
                   (files, +/-, a diff preview), who has been pushing,
                   members + share/revoke, recent sharing events. Apply lives
                   on its header; a refused apply shows git's reason and the
                   by-hand command in place.
-     Cards        the other projects; clicking one zooms it.
      Composer     "+ Share a project" swaps into the zoom's place.
 
    Data comes through views/sharing_data.js (one status poll, the BFF
@@ -99,7 +98,7 @@ const skeleton=()=>'<div class="prj-head"></div><div class="prj-rows">'
 /* ── loads ────────────────────────────────────────────────────────────── */
 async function loadCatalog(){
   const res=await fetchCatalog();
-  if(!res.ok)return; /* cards fall back to the id; the pane still works */
+  if(!res.ok)return; /* lanes fall back to the id; the pane still works */
   catalog=res.data.items||[];
   names=new Map(catalog.map(p=>[p.id,p.display_name||p.id]));
 }
@@ -230,7 +229,7 @@ function render(){
 function focusKey(){
   const el=document.activeElement;
   if(!el||!root.contains(el)||!el.dataset||!el.dataset.act)return null;
-  const scope=el.closest('#shl-detail')?'#shl-detail ':el.closest('.shl-lanes')?'.shl-lanes ':el.closest('.shl-cards')?'.shl-cards ':'';
+  const scope=el.closest('#shl-detail')?'#shl-detail ':el.closest('.shl-lanes')?'.shl-lanes ':'';
   return scope+'[data-act="'+CSS.escape(el.dataset.act)+'"]'+(el.dataset.id?'[data-id="'+CSS.escape(el.dataset.id)+'"]':'');
 }
 function revealSelected(){
@@ -289,7 +288,7 @@ function headHTML(m){
     +'<div class="shl-live"><span class="'+pulse+'" aria-hidden="true"></span><span>'+line+'</span>'+right+'</div></div>';
 }
 
-/* ── incoming + lanes + cards ────────────────────────────────────────── */
+/* ── incoming + lanes ────────────────────────────────────────────────── */
 /* An incoming repo's row says where the clone stands and, when only a
    person can move it on, offers the one thing to click. */
 function inboxRow(r){
@@ -328,11 +327,6 @@ function inboxRow(r){
 function incomingHTML(inbox){
   return'<div class="shl-inbox"><div class="prj-ptitle">Shared with you · not on this machine yet</div>'
     +inbox.map(inboxRow).join('')+'</div>';
-}
-function railMeta(r){
-  if(r.lastError)return'<span class="is-warn" title="'+esc(r.lastError)+'">fetch failed'+(r.lastFetchAt?' · '+esc(rel(r.lastFetchAt)):'')+'</span>';
-  const shared=r.others===0?'only you':'shared'+(r.others?' with '+r.others:'');
-  return shared+(r.lastFetchAt?' · '+esc(rel(r.lastFetchAt)):'');
 }
 const ageDays=(k,now)=>{const t=Date.parse(k.date);return Number.isFinite(t)?(now-t)/DAY:Infinity;};
 /* commits shown for a project: the 30-day window as a prefix of the list
@@ -375,16 +369,6 @@ function lanesHTML(mine){
       +'<span class="shl-ticks" aria-hidden="true"><span>30d</span><span>3w</span><span>2w</span><span>1w</span><span class="is-now">now</span></span>'
       +'<span class="prj-ptitle shl-axis-end">Your copy</span></div>'
     +'<div class="shl-lanes-body">'+mine.map(r=>laneRow(r,now)).join('')+'</div></div>';
-}
-function cardsHTML(rest){
-  if(!rest.length)return'';
-  return'<div class="shl-cards">'+rest.map(r=>{
-    const k=r.c&&r.c.ok&&r.c.commits[0];
-    return'<button class="shl-card" type="button" data-act="select" data-id="'+esc(r.project)+'">'
-      +'<span class="shl-card-top"><b>'+esc(r.name)+'</b><span class="prj-spacer"></span>'+stateChip(r)+'</span>'
-      +'<span class="shl-card-last">'+(k?esc(k.subject):'no commits read yet')+'</span>'
-      +'<span class="shr-muted">'+(k?[esc(k.author),rel(k.date)].filter(Boolean).join(' · '):railMeta(r))+'</span></button>';
-  }).join('')+'</div>';
 }
 
 /* ── zoom ─────────────────────────────────────────────────────────────── */
@@ -612,8 +596,7 @@ function bodyHTML(m){
     +'<div class="shl-main">'+(composer?composerHTML():r?detailHTML(r)
       :mine.length?'<div class="shl-detail"><div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div></div>'
       :'<div class="prj-empty"><b>Nothing shared from this machine yet</b><p>Use “+ Share a project” above, or wait for an incoming repo to finish cloning.</p></div>')
-    +'</div>'
-    +(composer?'':cardsHTML(mine.filter(x=>x.project!==open)));
+    +'</div>';
 }
 
 /* ── composer ─────────────────────────────────────────────────────────── */
@@ -683,18 +666,14 @@ async function onClick(e){
       return;
     case'select':{
       if(sharePending)return;
-      const fromCard=!!b.closest('.shl-cards');
       open=id;focusReq=null;focusNow=false;
       confirmRevoke=null;
       pickedCommit.delete(id);
       composer=null; /* picking a project answers "what do you want to see" */
       render();
-      /* the clicked card is gone after the repaint: keep keyboard focus on
-         the project's lane, and bring the zoom into view */
-      if(fromCard){
-        const lane=root.querySelector('#shl-row-'+CSS.escape(id));if(lane)lane.focus({preventScroll:true});
-        const d=root.querySelector('#shl-detail');if(d)d.scrollIntoView({block:'start',behavior:'smooth'});
-      }
+      /* the lane chose what to look at: bring its zoom into view */
+      const d=root.querySelector('#shl-detail');
+      if(d)d.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
       return;
     }
     case'commit':

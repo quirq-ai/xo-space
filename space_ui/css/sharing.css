@@ -2,7 +2,7 @@
      Overview first, then details on demand: a head (one sentence + the
      live line), 30-day lanes for every project shared from here, the
      selected project zoomed below (commits, what changed, people and
-     history), the other projects as cards. The "shared with you" inbox sits
+     history); a lane click scrolls to it. The "shared with you" inbox sits
      above the lanes and the share composer swaps into the zoom's place.
      Reuses the Files tab's .tchip / .prj-note / .prj-empty vocabulary so it
      reads as the same surface. */
@@ -86,6 +86,7 @@
   /* zoom: the selected project */
   .shl-detail{display:flex;flex-direction:column;gap:16px;padding:20px 22px 22px;
     background:var(--bg-2);border:1px solid var(--row-hover-line);border-radius:14px}
+  .shl-detail{scroll-margin-top:12px}   /* a lane click scrolls here; leave a sliver above */
   .shl-detail.is-rise{animation:shlrise .28s var(--ease)}
   @keyframes shlrise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .shl-detail-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
@@ -127,7 +128,7 @@
   .shl-commit.is-new{border-left-color:var(--accent)}
   .shl-commit .shr-subject{white-space:normal;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
   .shl-commit .tmuted{font-size:11.5px;margin-left:0}
-  .shl-commit:focus-visible,.shl-file:focus-visible,.shl-card:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .shl-commit:focus-visible,.shl-file:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   /* the file list takes at most 40% of the column, the diff the rest; with
      no diff below it (binary, empty) the list gets the whole column */
   .shl-files{display:flex;flex-direction:column;gap:2px;flex:0 1 auto;max-height:40%;overflow-y:auto;margin-bottom:2px}
@@ -178,14 +179,6 @@
   .shr-form button[disabled]{opacity:.5;cursor:default}
   .prj-skel.is-sm.is-short{max-width:min(100%,300px)}
 
-  /* the other projects: a click zooms one */
-  .shl-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:18px}
-  .shl-card{display:flex;flex-direction:column;gap:8px;padding:14px 16px;background:var(--bg-2);border:1px solid var(--line-soft);
-    border-radius:14px;text-align:left;color:var(--ink);min-width:0;transition:border-color .16s var(--ease)}
-  .shl-card:hover{border-color:var(--line)}
-  .shl-card-top{display:flex;align-items:center;gap:8px;min-width:0}
-  .shl-card-top b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shl-card-last{font-size:12.5px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* composer: swaps into the zoom's place */
   .shl-composer{display:flex;flex-direction:column;gap:18px;padding:18px 20px 20px;
@@ -224,7 +217,6 @@
     .shl-commits{max-height:360px}
     .shl-files{max-height:240px}
     .shl-diff{max-height:420px}
-    .shl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
     .shl-axis .prj-ptitle,.shl-lane-name{width:150px}
     .shl-ticks,.shl-track{left:180px;right:110px}
   }

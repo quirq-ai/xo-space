@@ -62,17 +62,17 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
         self.assertIn("if(st!=='live')return", pane)
 
     def test_pane_is_lanes_then_zoom_with_the_composer_swapped_in(self) -> None:
-        """Lanes (30-day overview, work waiting first), the selected project
-        zoomed below, the others as cards; the composer takes the zoom's place."""
+        """Lanes (30-day overview, work waiting first) pick the project; it is
+        zoomed below them; the composer takes the zoom's place."""
         pane = read("js/views/sharing.js")
         css = read("css/sharing.css")
-        for fn in ("function lanesHTML", "function laneRow", "function cardsHTML", "function inboxRow",
+        for fn in ("function lanesHTML", "function laneRow", "function inboxRow",
                    "function detailHTML", "function changesHTML", "function composerHTML", "function emptyCardsHTML"):
             self.assertIn(fn, pane)
         self.assertIn("composer?composerHTML():r?detailHTML(r)", pane)
         self.assertIn("data-act=\"select\"", pane)
         self.assertIn("urgency(b)-urgency(a)", pane)   # work waiting first
-        for cls in (".shl-lanes", ".shl-lane.is-sel", ".shl-dot.is-new", ".shl-cards", ".shl-inbox",
+        for cls in (".shl-lanes", ".shl-lane.is-sel", ".shl-dot.is-new", ".shl-inbox",
                     ".shl-detail", ".shl-diff", ".shl-composer", ".shl-pick", ".shl-empty-card"):
             self.assertIn(cls, css)
         # every state the inbox can be in has a row
