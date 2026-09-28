@@ -1,21 +1,22 @@
 import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
 import {setSectionActions} from '../core/section-nav.js?v=20260921-refresh1';
-/* Sharing: the project-sharing page in the
-   Space UI (issue #83). Designed around the loop, not a layout: share once,
-   then commits flow and each side applies.
+/* Sharing: the project-sharing page in the Space UI (issue #83; redesign
+   2026-09-28). Overview first, then details on demand:
 
-     Rail         the "shared with you" inbox (clone state, and the one
-                  thing to click when only a person can move it on), then
-                  every project shared from this machine, work waiting
-                  first, each with a single sync state (N new / in sync /
-                  fetch failed) and an Apply button when it is behind.
-     Detail       the selected project: commits on origin/<branch> with
-                  Apply (fast-forward) and the by-hand command, members
-                  (owner first, short ids, inline revoke confirm), share.
-     Composer     "+ Share a project" swaps into the detail panel: pick a
-                  project, paste the recipient's workspace id. "Copy
-                  invite" turns the id exchange into one paste. "Check
-                  now" nudges the relay instead of waiting out the minute.
+     Head         one sentence on what needs you, then the live line (on /
+                  parked / failed, last check, watched branch, your id,
+                  copy invite).
+     Lanes        every project shared from here on a 30-day axis, one dot
+                  per commit on origin/<branch>; unapplied ones glow. Work
+                  waiting first. Incoming repos ("shared with you", not
+                  cloned yet) sit above them with their one thing to click.
+     Zoom         the selected lane: commits (pick one), what changed in it
+                  (files, +/-, a diff preview), who has been pushing,
+                  members + share/revoke, recent sharing events. Apply lives
+                  on its header; a refused apply shows git's reason and the
+                  by-hand command in place.
+     Cards        the other projects; clicking one zooms it.
+     Composer     "+ Share a project" swaps into the zoom's place.
 
    Data comes through views/sharing_data.js (one status poll, the BFF
    calls); this file only paints and handles events. One delegated click /
@@ -25,10 +26,11 @@ import {openProjectAdd} from '../core/project-actions.js?v=20260914-details1';
 import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
-  cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchMembers,share,revoke,apply,
-  checkNow,failText} from './sharing_data.js?v=20260914-inboxshare1';
+  cloneCmd,applyCmd,inviteText,fetchCatalog,fetchCommits,fetchChanges,fetchMembers,share,revoke,apply,
+  checkNow,failText,recentFor} from './sharing_data.js?v=20260928-lanes1';
 
 const plural=(n,word)=>n.toLocaleString()+' '+word+(n===1?'':'s');
+const DAY=864e5,WINDOW_DAYS=30,COMMIT_LIMIT=50,MINUS='−';
 
 let root=null;
 let pageActions=null,shareButton=null,checkButton=null,checking=false;
@@ -37,16 +39,22 @@ let names=new Map();      /* project id -> display name, from the catalog */
 let catalog=[];           /* every project, for the composer's picker */
 let commits=new Map();    /* project id -> {ok,behind,branch,path,commits,error} */
 let members=new Map();    /* project id -> {ok,own,members,error} */
-let open=null;            /* the expanded card's project id */
+let open=null;            /* the zoomed project's id */
 let composer=null;        /* null | {pick,filter,ws} */
 let sharePending=false;   /* keep the active share form until its request settles */
 let busy=new Set();       /* project ids with a write in flight */
 let confirmRevoke=null;   /* {id,ws} while a revoke waits for Confirm */
 let renderedAt=0;
 let catalogDirty=false;
+let changes=new Map();    /* 'id\nsha\npath' -> {ok,data}|{ok:false,error}; commits never change */
+let changesInFlight=new Set();
+let pickedCommit=new Map(); /* project id -> sha the person clicked */
+let pickedFile=new Map();   /* 'id\nsha' -> path the person clicked */
+let applyErr=new Map();     /* project id -> git's reason for the last refused apply */
+let lastOpen=null;          /* the zoom rises only when the selection changes */
 /* Inbox hands off here ("show this project", issue #142). The request is
-   parked until the rail lists the project; once selected, focus moves to
-   its Apply button (or the row) as soon as its commits are in. */
+   parked until the lanes list the project; once selected, focus moves to
+   its Apply button (or the lane) as soon as its commits are in. */
 let focusReq=null,focusNow=false;
 addEventListener('space:sharing-focus',e=>{
   focusReq=String(e.detail||'')||null;
@@ -97,12 +105,12 @@ async function loadCatalog(){
 }
 /* One small request per project cloned here, no barrier: the behind count
    and branch are not in the status snapshot. Re-run on every poll tick so
-   "N new" tracks the relay's fetches. */
+   "N waiting" tracks the relay's fetches. */
 let commitsReady=false;   /* the first behind counts are in: safe to pick a default row */
 async function loadCommits(){
   const mine=repos().filter(r=>r.mine);
   await Promise.all(mine.map(async r=>{
-    const res=await fetchCommits(r.project,5);
+    const res=await fetchCommits(r.project,COMMIT_LIMIT);
     commits.set(r.project,res.ok
       ?{ok:true,behind:res.data.behind,branch:res.data.branch,path:res.data.path,commits:res.data.commits||[]}
       :{ok:false,error:failText(res)});
@@ -123,11 +131,13 @@ async function refresh(){
   await loadCommits();
 }
 /* A poll tick repaints everything unless the person is mid-edit (composer
-   open, a revoke waiting for Confirm): then only the strip and the eyebrow
-   move, so a keystroke or a pending question is never wiped. */
+   open, a revoke waiting for Confirm): then only the head moves, so a
+   keystroke or a pending question is never wiped. */
 function onStatus(){
   if(!root)return;
   if(consumeNewClone())loadCatalog().then(()=>{if(!editing())render();});
+  /* a failed changes read is retried on the next tick, never in a loop */
+  for(const [k,v] of changes)if(!v.ok)changes.delete(k);
   paintSnapshot();
   loadCommits();
 }
@@ -135,10 +145,8 @@ function paintSnapshot(){
   if(!root)return;
   renderActions();
   if(editing()){
-    const strip=root.querySelector('#prj-sharing-strip');
-    if(strip)strip.outerHTML=stripHTML();
-    const count=root.querySelector('#shl-count');
-    if(count)count.textContent=summary(model());
+    const head=root.querySelector('#shl-head');
+    if(head)head.outerHTML=headHTML(model());
   }else render();
 }
 function editing(){
@@ -146,10 +154,28 @@ function editing(){
   return !!composer||!!confirmRevoke||sharePending
     ||!!recipient&&(!!recipient.value||document.activeElement===recipient);
 }
-/* the open card's detail: commits are already loading; members only when
-   the relay says the repo is live */
+/* the zoomed project's detail: commits are already loading; members only
+   when the relay says the repo is live */
 function ensureDetail(id){
   if(memberState(id)==='live'&&!members.has(id))loadMembers(id);
+}
+/* the zoom's "what changed": one read per (commit, file), cached for the page */
+function ensureChanges(r){
+  const sha=selectedSha(r);
+  if(!sha)return;
+  const path=pickedFile.get(r.project+'\n'+sha)||'';
+  const k=r.project+'\n'+sha+'\n'+path;
+  if(changes.has(k)||changesInFlight.has(k))return;
+  changesInFlight.add(k);
+  fetchChanges(r.project,sha,path).then(res=>{
+    changesInFlight.delete(k);
+    changes.set(k,res.ok?{ok:true,data:res.data}:{ok:false,error:failText(res)});
+    if(root&&open===r.project&&!composer){
+      const box=root.querySelector('#shl-changes');
+      const now=model().find(x=>x.mine&&x.project===r.project);
+      if(box&&now)box.outerHTML=changesHTML(now);
+    }
+  });
 }
 
 /* ── model ────────────────────────────────────────────────────────────── */
@@ -186,10 +212,14 @@ function render(){
   renderActions();
   const m=model();
   const again=focusKey();
-  root.querySelector('.prj').innerHTML=headHTML(m)+stripHTML()+bodyHTML(m);
+  root.querySelector('.prj').innerHTML=headHTML(m)+bodyHTML(m);
   if(again){const el=root.querySelector(again);if(el)el.focus({preventScroll:true});}
   renderedAt=Date.now();
-  if(open&&!composer)ensureDetail(open);
+  if(open&&!composer){
+    ensureDetail(open);
+    const r=m.find(x=>x.mine&&x.project===open);
+    if(r&&r.c&&r.c.ok)ensureChanges(r);
+  }
   if(focusNow&&!composer&&root.classList.contains('is-active')){
     const r=m.find(x=>x.mine&&x.project===open);
     if(r&&r.c){focusNow=false;revealSelected();}
@@ -200,7 +230,7 @@ function render(){
 function focusKey(){
   const el=document.activeElement;
   if(!el||!root.contains(el)||!el.dataset||!el.dataset.act)return null;
-  const scope=el.closest('#shl-detail')?'#shl-detail ':el.closest('.shl-rail')?'.shl-rail ':'';
+  const scope=el.closest('#shl-detail')?'#shl-detail ':el.closest('.shl-lanes')?'.shl-lanes ':el.closest('.shl-cards')?'.shl-cards ':'';
   return scope+'[data-act="'+CSS.escape(el.dataset.act)+'"]'+(el.dataset.id?'[data-id="'+CSS.escape(el.dataset.id)+'"]':'');
 }
 function revealSelected(){
@@ -211,22 +241,8 @@ function revealSelected(){
     detail.scrollIntoView({block:'start',behavior:'smooth'});
     detail.classList.add('is-flash');
   }
-  const target=root.querySelector('#shl-detail [data-act="apply"]')||(row&&row.querySelector('.shl-row-head'));
+  const target=root.querySelector('#shl-detail [data-act="apply"]')||row;
   if(target)target.focus({preventScroll:true});
-}
-function summary(m){
-  const res=sharingStatusRes();
-  if(!res)return'checking…';
-  if(!res.ok)return'sharing status unavailable';
-  if(parked())return'sharing parked';
-  const mine=m.filter(r=>r.mine).length,inc=m.filter(r=>r.incoming).length,need=actionable(m).length;
-  if(!m.length)return'nothing shared yet';
-  return mine+' shared'+(inc?' · '+inc+' incoming':'')+(need?' · '+need+' need you':' · all in sync');
-}
-function headHTML(m){
-  return'<div class="prj-head">'
-    +'<span class="prj-eyebrow" id="shl-count">'+esc(summary(m))+'</span>'
-  +'</div>';
 }
 function renderActions(){
   if(!pageActions)return;
@@ -236,31 +252,44 @@ function renderActions(){
   checkButton.disabled=off||checking;checkButton.textContent=checking?'Checking…':'Check now';
   if(checking)checkButton.setAttribute('aria-busy','true');else checkButton.removeAttribute('aria-busy');
 }
-function stripHTML(){
+
+/* ── head: one sentence, then the live line ──────────────────────────── */
+function headline(m){
+  const res=sharingStatusRes();
+  if(!res)return'Checking sharing…';
+  if(!res.ok)return'Sharing status is unavailable.';
+  if(parked())return'Sharing is parked.';
+  if(!m.length)return'Nothing is shared yet.';
+  const news=m.filter(r=>r.need==='apply').length;
+  if(news===1)return'One project has news for you.';
+  if(news>1)return news+' projects have news for you.';
+  if(actionable(m).length)return'A shared project needs you.';
+  return'Everything is in sync.';
+}
+function headHTML(m){
   const status=sharingStatus(),res=sharingStatusRes();
-  let left;
-  if(!res)left='<span class="tchip">sharing</span><span class="shr-muted">checking…</span>';
-  else if(!res.ok)left='<span class="tchip st-blocked">sharing</span><span class="shr-muted">'+esc(failText(res))+'</span>';
-  else if(status.cadence==='parked')left='<span class="tchip st-blocked">sharing parked</span>'
-    +'<span class="shr-muted">'+esc(REASON[status.reason]||'parked')+'</span>';
+  let pulse='shl-pulse is-off',line;
+  if(!res)line='checking…';
+  else if(!res.ok){pulse='shl-pulse is-bad';line=esc(failText(res));}
+  else if(status.cadence==='parked')line=esc(REASON[status.reason]||'parked');
   else{
-    const ok=status.last_poll_ok;
-    left='<span class="tchip'+(ok===false?' st-blocked':' st-shared')+'">sharing '+(ok===false?'check failed':'on')+'</span>'
-      +'<span class="shr-muted">last check '+(status.last_poll_at?esc(rel(status.last_poll_at)):'pending')
-      +' · every minute · watching '+esc(status.watch_branch||'main')+'</span>';
+    const ok=status.last_poll_ok!==false;
+    pulse=ok?'shl-pulse':'shl-pulse is-bad';
+    line=(ok?'live':'last check failed')+' · last check '+(status.last_poll_at?esc(rel(status.last_poll_at)):'pending')
+      +' · every minute · watching '+esc(status.watch_branch||'main');
   }
   const ws=status&&status.own_workspace_id;
   const right=ws
-    ?'<span class="shr-muted">your id</span><code class="shr-id" title="'+esc(ws)+'">'+esc(ws)+'</code>'
+    ?'<span class="shr-right"><span class="shr-muted">your id</span><code class="shr-id" title="'+esc(ws)+'">'+esc(shortId(ws))+'</code>'
       +'<button class="shr-copy" type="button" data-act="copy" data-copy="'+esc(ws)+'" title="Copy workspace id">copy</button>'
       +'<button class="shr-copy is-accent" type="button" data-act="copy" data-copy="'+esc(inviteText())+'" '
-        +'title="Copy a one-line invite: what to click and your id">copy invite</button>'
+        +'title="Copy a one-line invite: what to click and your id">copy invite</button></span>'
     :'';
-  return'<div class="shr-strip" id="prj-sharing-strip"><span class="shr-left">'+left+'</span>'
-    +'<span class="prj-spacer"></span><span class="shr-right">'+right+'</span></div>';
+  return'<div class="shl-head" id="shl-head"><h2 class="shl-headline">'+esc(headline(m))+'</h2>'
+    +'<div class="shl-live"><span class="'+pulse+'" aria-hidden="true"></span><span>'+line+'</span>'+right+'</div></div>';
 }
 
-/* ── rail: inbox + shared projects ───────────────────────────────────── */
+/* ── incoming + lanes + cards ────────────────────────────────────────── */
 /* An incoming repo's row says where the clone stands and, when only a
    person can move it on, offers the one thing to click. */
 function inboxRow(r){
@@ -283,7 +312,7 @@ function inboxRow(r){
     acts='<button class="shr-copy" type="button" data-act="copy" data-copy="'+esc(cloneCmd(r.repo))+'" title="Copy the clone command">clone by hand</button>';
   }else if(r.need==='cloning'){
     what='cloning into '+esc((sharingStatus()&&sharingStatus().projects_root)||'your XO root');
-    why='nothing to do · it joins the list below when done';
+    why='nothing to do · it joins the lanes below when done';
     acts='<span class="shl-prog" aria-label="cloning"><i></i></span>';
   }else{
     what='XO Space clones it on the next check';
@@ -296,35 +325,69 @@ function inboxRow(r){
     +'<span class="shl-inbox-acts">'+acts+'</span>'
     +'</div>';
 }
-function railRow(r){
-  const sel=open===r.project;
-  return'<div class="shl-row'+(sel?' is-sel':'')+(r.need==='apply'?' is-need':'')+'" id="shl-row-'+esc(r.project)+'">'
-    +'<button class="shl-row-head" type="button" data-act="select" data-id="'+esc(r.project)+'" aria-pressed="'+(sel?'true':'false')+'">'
-      +'<span class="shl-row-top"><b>'+esc(r.name)+'</b><span class="prj-spacer"></span>'+stateChip(r)+'</span>'
-      +'<span class="shl-row-sub"><em>'+esc(r.repo)+'</em><span class="prj-spacer"></span><span class="shr-muted">'+railMeta(r)+'</span></span>'
-    +'</button>'
-    +(r.need==='apply'?'<span class="shl-row-acts"><button class="sess-refresh is-sm" type="button" data-act="apply" data-id="'+esc(r.project)+'"'
-        +(busy.has(r.project)?' disabled':'')+' title="Fast-forward to origin/'+esc(r.c.branch||'main')+'">'+(busy.has(r.project)?'Applying…':'Apply')+'</button></span>':'')
-    +'</div>';
+function incomingHTML(inbox){
+  return'<div class="shl-inbox"><div class="prj-ptitle">Shared with you · not on this machine yet</div>'
+    +inbox.map(inboxRow).join('')+'</div>';
 }
 function railMeta(r){
   if(r.lastError)return'<span class="is-warn" title="'+esc(r.lastError)+'">fetch failed'+(r.lastFetchAt?' · '+esc(rel(r.lastFetchAt)):'')+'</span>';
   const shared=r.others===0?'only you':'shared'+(r.others?' with '+r.others:'');
   return shared+(r.lastFetchAt?' · '+esc(rel(r.lastFetchAt)):'');
 }
-function railHTML(m){
-  const inbox=m.filter(r=>r.incoming),mine=m.filter(r=>r.mine);
-  return'<div class="shl-rail">'
-    +(inbox.length?'<div class="shl-inbox"><div class="prj-ptitle">Shared with you · not on this machine yet</div>'
-      +inbox.map(inboxRow).join('')+'</div>':'')
-    +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Shared projects</span>'
-      +'<span class="prj-spacer"></span><span class="shr-muted">'+(actionable(m).filter(r=>r.mine).length?'work waiting first':plural(mine.length,'project'))+'</span></div>'
-      +(mine.length?'<div class="shl-rows">'+mine.map(railRow).join('')+'</div>'
-        :'<div class="prj-note">nothing shared from this machine yet: “+ Share a project” above.</div>')
-    +'</div></div>';
+const ageDays=(k,now)=>{const t=Date.parse(k.date);return Number.isFinite(t)?(now-t)/DAY:Infinity;};
+/* commits shown for a project: the 30-day window as a prefix of the list
+   (index < behind stays "new"), never fewer than 5 or than the unapplied */
+function windowed(c,now=Date.now()){
+  if(!c||!c.ok)return[];
+  let n=0;
+  while(n<c.commits.length&&ageDays(c.commits[n],now)<=WINDOW_DAYS)n++;
+  return c.commits.slice(0,Math.max(n,Math.min(5,c.commits.length),c.behind|0));
+}
+function laneState(r,dots){
+  switch(r.state){
+    case'behind':return'<span class="is-accent">'+r.behind+' waiting</span>';
+    case'sync':return dots?'in sync':'quiet';
+    case'fetchfail':return'<span class="is-warn" title="'+esc(r.lastError)+'">fetch failed</span>';
+    case'error':return'<span class="is-warn" title="'+esc(r.c.error)+'">no commits read</span>';
+    default:return'checking…';
+  }
+}
+function laneRow(r,now){
+  const sel=open===r.project,behind=r.behind|0;
+  const list=r.c&&r.c.ok?r.c.commits:[];
+  let dots=0;
+  const marks=list.map((k,i)=>{
+    const age=ageDays(k,now);
+    if(age<0||age>WINDOW_DAYS)return'';
+    dots++;
+    return'<i class="shl-dot'+(i<behind?' is-new':'')+'" style="left:'+(100-age/WINDOW_DAYS*100).toFixed(2)+'%" title="'+esc(k.subject)+'"></i>';
+  }).join('');
+  return'<button class="shl-lane'+(sel?' is-sel':'')+(r.need==='apply'?' is-need':'')+'" id="shl-row-'+esc(r.project)+'" type="button" '
+    +'data-act="select" data-id="'+esc(r.project)+'" aria-pressed="'+(sel?'true':'false')+'">'
+    +'<span class="shl-lane-name">'+esc(r.name)+'</span>'
+    +'<span class="shl-track" aria-hidden="true">'+marks+'</span>'
+    +'<span class="shl-lane-state">'+laneState(r,dots)+'</span></button>';
+}
+function lanesHTML(mine){
+  const now=Date.now();
+  return'<div class="shl-lanes" role="group" aria-label="Shared projects, last 30 days">'
+    +'<div class="shl-axis"><span class="prj-ptitle">Last 30 days</span>'
+      +'<span class="shl-ticks" aria-hidden="true"><span>30d</span><span>3w</span><span>2w</span><span>1w</span><span class="is-now">now</span></span>'
+      +'<span class="prj-ptitle shl-axis-end">Your copy</span></div>'
+    +'<div class="shl-lanes-body">'+mine.map(r=>laneRow(r,now)).join('')+'</div></div>';
+}
+function cardsHTML(rest){
+  if(!rest.length)return'';
+  return'<div class="shl-cards">'+rest.map(r=>{
+    const k=r.c&&r.c.ok&&r.c.commits[0];
+    return'<button class="shl-card" type="button" data-act="select" data-id="'+esc(r.project)+'">'
+      +'<span class="shl-card-top"><b>'+esc(r.name)+'</b><span class="prj-spacer"></span>'+stateChip(r)+'</span>'
+      +'<span class="shl-card-last">'+(k?esc(k.subject):'no commits read yet')+'</span>'
+      +'<span class="shr-muted">'+(k?[esc(k.author),rel(k.date)].filter(Boolean).join(' · '):railMeta(r))+'</span></button>';
+  }).join('')+'</div>';
 }
 
-/* ── detail ───────────────────────────────────────────────────────────── */
+/* ── zoom ─────────────────────────────────────────────────────────────── */
 function stateChip(r){
   switch(r.state){
     case'behind':return'<span class="tchip st-shared">'+r.behind+' new · not applied</span>';
@@ -344,8 +407,8 @@ function sharedChip(r){
   if(r.others===0)return'<span class="tchip" title="you own this; nobody else can see it">only you</span>';
   return'<span class="tchip st-shared">shared'+(r.others?' with '+r.others:'')+'</span>';
 }
-/* the rail's selection, defaulting to the first row (work waiting first) so
-   the panel is never blank while there is something to show. The default
+/* the lanes' selection, defaulting to the first lane (work waiting first) so
+   the zoom is never blank while there is something to show. The default
    waits for the behind counts: before them every row sorts by name, and a
    selection made then would land on the wrong project and stick. */
 function selected(m){
@@ -362,48 +425,107 @@ function selected(m){
   }
   return mine.find(r=>r.project===open);
 }
+function selectedSha(r){
+  const list=windowed(r.c);
+  if(!list.length)return null;
+  const want=pickedCommit.get(r.project);
+  return list.some(k=>k.hash===want)?want:list[0].hash;
+}
 function detailHTML(r){
   const id=r.project,c=r.c;
-  let commitsBody;
-  if(!c)commitsBody='<div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div>';
-  else if(!c.ok)commitsBody='<div class="prj-note">'+esc(c.error)+'</div>';
-  else if(!c.commits.length)commitsBody='<div class="prj-note">no commits on origin/'+esc(c.branch||'main')+' yet</div>';
-  else{
-    const behind=c.behind|0;
-    commitsBody='<div class="prj-list">'+c.commits.slice(0,5).map((k,i)=>'<div class="prj-li'+(i<behind?' is-new':'')+'">'
-      +'<code class="shr-hash">'+esc(shortHash(k.hash))+'</code>'
-      +'<span class="shr-subject">'+esc(k.subject)+'</span>'
-      +(i<behind?'<span class="tchip st-shared shr-newtag">new</span>':'')
-      /* rel() is '' for a commit with no date: no dangling separator then */
-      +'<span class="tmuted">'+[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')+'</span>'
-      +'</div>').join('')+'</div>'
-      +(behind>0?'<div class="shr-apply"><span class="shr-muted">or by hand</span><code>'+esc(applyCmd(c.path,c.branch))+'</code>'
-        +'<button class="shr-copy" type="button" data-act="copy" data-copy="'+esc(applyCmd(c.path,c.branch))+'" title="Copy merge command">copy</button>'
-        +'<span class="shr-muted">XO Space fetches; nothing is merged until you apply.</span></div>':'');
-  }
-  const behind=c&&c.ok?(c.behind|0):0;
-  return'<div class="shl-detail" id="shl-detail">'
+  const behind=c&&c.ok?(c.behind|0):0,branch=c&&c.ok&&c.branch||'main';
+  const err=applyErr.get(id);
+  const rise=lastOpen!==id;lastOpen=id;
+  return'<div class="shl-detail'+(rise?' is-rise':'')+'" id="shl-detail">'
     +'<div class="shl-detail-head">'
       +'<div class="shl-detail-title"><span class="shl-name">'+esc(r.name)+'</span>'
         +'<span class="shl-detail-meta"><em>'+esc(r.repo)+'</em>'
-          +(c&&c.ok?'<span class="tchip">'+esc(c.branch||'main')+'</span>':'')+sharedChip(r)
+          +(c&&c.ok?'<span class="tchip">'+esc(branch)+'</span>':'')+sharedChip(r)
           +(r.lastFetchAt?'<span class="shr-muted">checked '+esc(rel(r.lastFetchAt))+'</span>':'')
           +(r.lastError?'<span class="shr-muted is-warn" title="'+esc(r.lastError)+'">fetch failed</span>':'')
           +(r.autoClonedAt?'<span class="shr-muted">cloned by XO Space '+esc(rel(r.autoClonedAt))+'</span>':'')
         +'</span></div>'
       +'<span class="prj-spacer"></span>'
       +(behind>0?'<button class="sess-refresh shl-primary" type="button" data-act="apply" data-id="'+esc(id)+'"'
-        +(busy.has(id)?' disabled':'')+'>'+(busy.has(id)?'Applying…':'Apply '+plural(behind,'commit'))+'</button>':'')
+        +(busy.has(id)?' disabled':'')+'>'+(busy.has(id)?'Applying…':'Apply '+plural(behind,'commit'))+'</button>'
+        :(c&&c.ok?'<span class="shl-uptodate">Your copy is up to date</span>':''))
       +'<button class="sess-refresh" type="button" data-act="list" data-id="'+esc(id)+'">Open in List</button>'
     +'</div>'
-    /* say what to do, not only that something changed: fetched is not applied */
-    +(behind>0?'<div class="shl-callout"><b>'+plural(behind,'new commit')+' fetched from origin/'+esc(c.branch||'main')+'</b>'
-      +'<span>They are not in your local copy yet. Apply fast-forwards '+esc(r.name)+' to include them; nothing changes until you do.</span></div>':'')
-    +'<div class="shl-rule"></div>'
-    +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Commits on origin/'+esc(c&&c.branch||'main')+'</span>'
-      +(behind>0?'<span class="tchip st-shared">'+behind+' new · not applied</span>':(c&&c.ok?'<span class="tchip st-quiet">up to date</span>':''))
-      +'</div>'+commitsBody+'</div>'
-    +'<div class="shl-rule"></div>'
+    /* a refused apply is when the by-hand command matters: say why, in place */
+    +(err&&c&&c.ok?'<div class="shl-callout is-warn"><b>Apply was refused</b><span>'+esc(err)+'</span>'
+      +'<span class="shr-apply"><span class="shr-muted">or by hand</span><code>'+esc(applyCmd(c.path,c.branch))+'</code>'
+      +'<button class="shr-copy" type="button" data-act="copy" data-copy="'+esc(applyCmd(c.path,c.branch))+'" title="Copy merge command">copy</button></span></div>':'')
+    +'<div class="shl-cols">'+commitsHTML(r)+changesHTML(r)+sideHTML(r)+'</div>'
+  +'</div>';
+}
+function commitsHTML(r){
+  const id=r.project,c=r.c,branch=c&&c.ok&&c.branch||'main',behind=c&&c.ok?(c.behind|0):0;
+  let body;
+  if(!c)body='<div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div>';
+  else if(!c.ok)body='<div class="prj-note">'+esc(c.error)+'</div>';
+  else if(!c.commits.length)body='<div class="prj-note">no commits on origin/'+esc(branch)+' yet</div>';
+  else{
+    const cur=selectedSha(r);
+    body='<div class="shl-commits">'+windowed(c).map((k,i)=>'<button class="shl-commit'+(k.hash===cur?' is-sel':'')+(i<behind?' is-new':'')+'" type="button" '
+      +'data-act="commit" data-id="'+esc(id)+'" data-sha="'+esc(k.hash)+'" aria-pressed="'+(k.hash===cur?'true':'false')+'">'
+      +'<span class="shr-subject">'+esc(k.subject)+(i<behind?'<span class="tchip st-shared shr-newtag">new</span>':'')+'</span>'
+      /* rel() is '' for a commit with no date: no dangling separator then */
+      +'<span class="tmuted"><code class="shr-hash">'+esc(shortHash(k.hash))+'</code> '+[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')+'</span>'
+      +'</button>').join('')+'</div>';
+  }
+  return'<div class="shl-sec shl-col"><div class="shl-sec-head"><span class="prj-ptitle">Commits on origin/'+esc(branch)+'</span>'
+    +(behind>0?'<span class="tchip st-shared">'+behind+' new</span>':(c&&c.ok?'<span class="tchip st-quiet">up to date</span>':''))
+    +'</div>'+body+'</div>';
+}
+function changesHTML(r){
+  const id=r.project,c=r.c,sha=selectedSha(r);
+  const byHand=c&&c.ok&&(c.behind|0)>0
+    ?'<button class="shr-link" type="button" data-act="copy" data-copy="'+esc(applyCmd(c.path,c.branch))+'">or by hand: copy the git command</button>':'';
+  let body,sum='';
+  if(!sha)body='<div class="prj-note">pick a commit to see what it changed</div>';
+  else{
+    const path=pickedFile.get(id+'\n'+sha)||'';
+    const ch=changes.get(id+'\n'+sha+'\n'+path);
+    if(!ch)body='<div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div>';
+    else if(!ch.ok)body='<div class="prj-note">could not read this commit’s changes: '+esc(ch.error)+'</div>';
+    else{
+      const d=ch.data,files=d.files||[],shown=d.diff&&d.diff.path;
+      const adds=files.reduce((s,f)=>s+(f.additions||0),0),dels=files.reduce((s,f)=>s+(f.deletions||0),0);
+      sum='<span class="shr-muted">'+plural(files.length,'file')+(d.files_truncated?'+':'')
+        +' · <span class="shl-add">+'+adds+'</span> <span class="shl-del">'+MINUS+dels+'</span></span>';
+      const list=files.map(f=>'<button class="shl-file'+(f.path===shown?' is-sel':'')+'" type="button" data-act="file" '
+        +'data-id="'+esc(id)+'" data-sha="'+esc(sha)+'" data-path="'+esc(f.path)+'" aria-pressed="'+(f.path===shown?'true':'false')+'">'
+        +'<span>'+esc(f.path)+'</span><span class="prj-spacer"></span>'
+        +(f.binary?'<span class="shr-muted">binary</span>':'<span class="shl-add">+'+f.additions+'</span><span class="shl-del">'+MINUS+f.deletions+'</span>')
+        +'</button>').join('');
+      let diff='';
+      if(d.diff&&d.diff.binary)diff='<div class="prj-note">'+esc(d.diff.path)+' is a binary file: no text diff</div>';
+      else if(d.diff)diff='<div class="shl-diffbox"><div class="shl-diffname">'+esc(d.diff.path)+'</div><pre class="shl-diff">'
+        +d.diff.text.split('\n').map(l=>'<span class="'+(l[0]==='+'?'is-add':l[0]==='-'?'is-del':l.startsWith('@@')?'is-hunk':'')+'">'+esc(l)+'</span>').join('')
+        +'</pre>'+(d.diff.truncated?'<div class="prj-note">preview cut at 400 lines</div>':'')+'</div>';
+      body=(files.length?'<div class="shl-files">'+list+'</div>':'<div class="prj-note">this commit changed no files</div>')+diff;
+    }
+  }
+  return'<div class="shl-sec shl-col" id="shl-changes"><div class="shl-sec-head"><span class="prj-ptitle">What changed</span>'+sum
+    +'<span class="prj-spacer"></span>'+byHand+'</div>'+body+'</div>';
+}
+function sideHTML(r){
+  const id=r.project;
+  const counts=new Map();
+  for(const k of windowed(r.c))counts.set(k.author,(counts.get(k.author)||0)+1);
+  const top=[...counts].sort((a,b)=>b[1]-a[1]),max=top.length?top[0][1]:1;
+  const authors=top.length
+    ?'<div class="shl-authors">'+top.map(([name,n])=>'<div class="shl-author"><span class="shl-author-top"><span>'+esc(name||'unknown')+'</span>'
+      +'<span class="prj-spacer"></span><span class="shr-muted">'+plural(n,'commit')+'</span></span>'
+      +'<span class="shl-bar" style="width:'+Math.round(n/max*100)+'%"></span></div>').join('')+'</div>'
+    :'<div class="prj-note">no commits in the last 30 days</div>';
+  const events=recentFor(r.repo).slice(0,5);
+  const history=events.length
+    ?events.map(e=>'<div class="shl-event"><span>'+esc(e.label)+(e.detail?' · '+esc(e.detail):'')+'</span>'
+      +'<span class="shr-muted">'+esc(rel(e.at))+'</span></div>').join('')
+    :'<div class="prj-note">No recent sharing events</div>';
+  return'<div class="shl-col shl-side">'
+    +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Who’s been pushing</span></div>'+authors+'</div>'
     +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Members</span>'+sharedChip(r)+'</div>'
       +'<div class="shr-members" id="shl-members-'+esc(id)+'">'+membersHTML(id)+'</div>'
       +'<form class="shr-form" data-form="share" data-id="'+esc(id)+'">'
@@ -411,8 +533,9 @@ function detailHTML(r){
           +'autocomplete="off" spellcheck="false" aria-label="Recipient workspace id">'
         +'<button class="sess-refresh shl-primary is-sm" type="submit"'+(busy.has(id)?' disabled':'')+'>Share</button>'
       +'</form>'
-      +'<span class="shr-muted">They copy their id from the strip at the top of their own Sharing pane, or send yours with “copy invite”.</span>'
+      +'<span class="shr-muted">They copy their id from the top of their own Sharing page, or send yours with “copy invite”.</span>'
     +'</div>'
+    +'<div class="shl-sec"><div class="shl-sec-head"><span class="prj-ptitle">Recent sharing events</span></div>'+history+'</div>'
   +'</div>';
 }
 const IDLE_NOTE={
@@ -454,7 +577,7 @@ function membersHTML(id){
   const shown=others.length?ms:ms.filter(x=>x.status==='revoked');
   shown.sort((a,b)=>memberRank(a)-memberRank(b));
   return(others.length?'':'<div class="shr-empty"><b>Not shared with anyone yet</b>'
-      +'<p>Paste another workspace’s id below, or send them your invite from the strip.</p></div>')
+      +'<p>Paste another workspace’s id below, or send them your invite from the top of this page.</p></div>')
     +(shown.length?'<div class="shr-rows">'+shown.map(x=>memberRow(x,own,iOwn,id)).join('')+'</div>':'');
 }
 function paintMembers(id){
@@ -483,11 +606,14 @@ function bodyHTML(m){
   if(parked())return emptyCardsHTML();
   if(!m.length)return(composer?composerHTML():'')+emptyCardsHTML();
   const r=selected(m);
-  return'<div class="shl-split">'+railHTML(m)
+  const inbox=m.filter(x=>x.incoming),mine=m.filter(x=>x.mine);
+  return(inbox.length?incomingHTML(inbox):'')
+    +(mine.length?lanesHTML(mine):'')
     +'<div class="shl-main">'+(composer?composerHTML():r?detailHTML(r)
-      :m.some(x=>x.mine)?'<div class="shl-detail"><div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div></div>'
+      :mine.length?'<div class="shl-detail"><div class="prj-skel is-sm"></div><div class="prj-skel is-sm is-short"></div></div>'
       :'<div class="prj-empty"><b>Nothing shared from this machine yet</b><p>Use “+ Share a project” above, or wait for an incoming repo to finish cloning.</p></div>')
-    +'</div></div>';
+    +'</div>'
+    +(composer?'':cardsHTML(mine.filter(x=>x.project!==open)));
 }
 
 /* ── composer ─────────────────────────────────────────────────────────── */
@@ -508,7 +634,7 @@ function picksHTML(){
   if(!list.length)return'<div class="prj-note">no project matches “'+esc(composer.filter)+'”</div>';
   return list.map(p=>'<button class="shl-pick'+(composer.pick===p.id?' is-sel':'')+'" type="button" data-act="pick" data-id="'+esc(p.id)+'" '
     +'aria-pressed="'+(composer.pick===p.id?'true':'false')+'">'
-    +'<span class="shl-dot"></span><b>'+esc(p.display_name||p.id)+'</b>'
+    +'<span class="shl-dot-pick"></span><b>'+esc(p.display_name||p.id)+'</b>'
     +(p.id!==p.display_name&&p.display_name?'<em>'+esc(p.id)+'</em>':'')
     +'<span class="prj-spacer"></span>'+pickChip(p)+'</button>').join('');
 }
@@ -528,7 +654,7 @@ function composerHTML(){
         +'<button class="sess-refresh shl-primary" type="submit" id="shl-composer-go"'+(composer.pick&&!sharePending?'':' disabled')+'>'
           +(name?'Share '+esc(name):'Share')+'</button>'
       +'</div>'
-      +'<span class="shr-muted">Ask them for the id from the strip on their own Sharing pane, or send them your invite and let them share with you. Sharing again with someone who already has it does nothing.</span>'
+      +'<span class="shr-muted">Ask them for the id from the top of their own Sharing page, or send them your invite and let them share with you. Sharing again with someone who already has it does nothing.</span>'
     +'</form>'
   +'</div>';
 }
@@ -555,11 +681,23 @@ async function onClick(e){
       try{await navigator.clipboard.writeText(b.dataset.copy);toast(b.textContent.trim()==='copy invite'?'invite copied':'copied');}
       catch(err){toast('copy failed: select and copy by hand');}
       return;
-    case'select':
+    case'select':{
       if(sharePending)return;
+      const fromCard=!!b.closest('.shl-cards');
       open=id;focusReq=null;focusNow=false;
       confirmRevoke=null;
+      pickedCommit.delete(id);
       composer=null; /* picking a project answers "what do you want to see" */
+      render();
+      if(fromCard){const d=root.querySelector('#shl-detail');if(d)d.scrollIntoView({block:'start',behavior:'smooth'});}
+      return;
+    }
+    case'commit':
+      pickedCommit.set(id,b.dataset.sha);
+      render();
+      return;
+    case'file':
+      pickedFile.set(id+'\n'+b.dataset.sha,b.dataset.path);
       render();
       return;
     case'apply':return doApply(id);
@@ -663,10 +801,11 @@ async function doApply(id){
   render();
   const res=await apply(id);
   busy.delete(id);
-  if(!res.ok){toast('apply failed: '+failText(res));render();return;}
+  if(!res.ok){applyErr.set(id,failText(res));toast('apply failed: '+failText(res));render();return;}
+  applyErr.delete(id);
   const n=res.data.applied|0;
   toast(n?'applied '+plural(n,'commit')+' to '+(names.get(id)||id):'already up to date');
-  const c=await fetchCommits(id,5);
+  const c=await fetchCommits(id,COMMIT_LIMIT);
   commits.set(id,c.ok?{ok:true,behind:c.data.behind,branch:c.data.branch,path:c.data.path,commits:c.data.commits||[]}
     :{ok:false,error:failText(c)});
   render();

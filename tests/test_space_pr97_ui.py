@@ -885,7 +885,7 @@ class SharingViewTests(unittest.TestCase):
         self.assertIn("[esc(k.author),rel(k.date)].filter(Boolean).join(' · ')", pane)
         self.assertNotIn("' · '+rel(k.date)", pane)
         self.assertNotIn("const dtfmt=", pane)  # was unused
-        self.assertIn("from './sharing_data.js?v=20260914-inboxshare1';", pane)
+        self.assertIn("from './sharing_data.js?v=20260928-lanes1';", pane)
 
 
 class ShellTests(unittest.TestCase):

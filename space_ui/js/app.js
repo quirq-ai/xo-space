@@ -17,7 +17,7 @@ import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2'
 import projectsView from './views/projects.js?v=20260921-refresh1';
 import projectManageView from './views/project-manage.js?v=20260921-refresh1';
 import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260921-refresh1';
+import sharingView from './views/sharing.js?v=20260928-lanes1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';

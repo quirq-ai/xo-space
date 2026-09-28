@@ -1,16 +1,13 @@
-  /* ---------------- project sharing (Files → Sharing lens) ----------------
-     The whole of project sharing lives on this lens: a status strip, a rail
-     (the "shared with you" inbox + every project shared from here) and a
-     detail panel (commits + apply, members + share/revoke) that the share
-     composer swaps into. Reuses the Files tab's .tchip / .prj-note /
-     .prj-list / .prj-empty vocabulary so it reads as the same surface. */
+  /* ---------------- project sharing (Inbox → Sharing) ----------------
+     Overview first, then details on demand: a head (one sentence + the
+     live line), 30-day lanes for every project shared from here, the
+     selected project zoomed below (commits, what changed, people and
+     history), the other projects as cards. The "shared with you" inbox sits
+     above the lanes and the share composer swaps into the zoom's place.
+     Reuses the Files tab's .tchip / .prj-note / .prj-empty vocabulary so it
+     reads as the same surface. */
   #view-sharing{overflow-y:auto}
 
-  /* strip: parked reason or on/last check · your id + copy + copy invite */
-  .shr-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    margin:-6px 0 18px;padding:8px 12px;background:var(--bg-2);
-    border:1px solid var(--line-soft);border-radius:10px;font-size:12px}
-  .shr-left,.shr-right{display:flex;align-items:center;gap:8px;min-width:0}
   .shr-muted{color:var(--ink-3);font-size:12px}
   .shr-muted.is-warn,.is-warn{color:var(--warning-text,#e0b04c)}
   .shr-id{font:500 11px var(--mono);color:var(--ink-2);background:var(--bg-3);
@@ -36,16 +33,23 @@
   .tchip.st-available{color:var(--warning-text,#e0b04c);border-color:var(--warning-text,#e0b04c)}
   .tchip.st-quiet{color:var(--ink-3)}
 
-  /* rail | detail */
-  .shl-split{display:grid;grid-template-columns:372px minmax(0,1fr);gap:18px;align-items:start}
-  .shl-rail{display:flex;flex-direction:column;gap:16px;min-width:0}
+  /* head: one sentence, then the live line */
+  .shl-head{display:flex;flex-direction:column;gap:8px;margin:-4px 0 20px}
+  .shl-headline{margin:0;font:700 30px/1.15 var(--sans);letter-spacing:-.02em;color:var(--ink)}
+  .shl-live{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)}
+  .shl-live .shr-right{display:flex;align-items:center;gap:8px;margin-left:auto}
+  .shl-pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none;animation:shlpulse 2.2s var(--ease) infinite}
+  .shl-pulse.is-off{background:var(--ink-4);animation:none}
+  .shl-pulse.is-bad{background:var(--warning-text,#e0b04c);animation:none}
+  @keyframes shlpulse{0%,100%{opacity:1}50%{opacity:.4}}
+
   .shl-main{min-width:0}
   .shl-sec{display:flex;flex-direction:column;gap:8px}
   .shl-sec-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 2px}
   .shl-sec-head .prj-ptitle{margin-bottom:0}
 
   /* inbox: repos shared with this workspace, not cloned here */
-  .shl-inbox{display:flex;flex-direction:column;gap:8px;padding:12px 14px;
+  .shl-inbox{display:flex;flex-direction:column;gap:8px;padding:12px 14px;margin-bottom:18px;
     background:var(--bg-2);border:1px dashed var(--line);border-radius:12px}
   .shl-inbox .prj-ptitle{margin-bottom:2px}
   .shl-inbox-row{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-top:1px solid var(--line-soft)}
@@ -56,54 +60,90 @@
   .shl-prog{display:block;height:3px;width:120px;border-radius:2px;background:var(--line-soft);overflow:hidden}
   .shl-prog i{display:block;height:100%;width:38%;background:var(--accent);animation:shlprog 1.4s var(--ease) infinite}
   @keyframes shlprog{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
-  @media (prefers-reduced-motion:reduce){.shl-prog i{animation:none}}
 
-  /* rail rows: same 12px cards as the List; the selected one is lit and
-     work waiting carries the accent bar the drawer used for new commits */
-  .shl-rows{display:flex;flex-direction:column;gap:8px}
-  .shl-row{display:flex;align-items:stretch;background:var(--bg-2);border:1px solid var(--line-soft);
-    border-radius:12px;transition:border-color .16s var(--ease),background .16s var(--ease)}
-  .shl-row:hover{border-color:var(--line)}
-  .shl-row.is-need{box-shadow:inset 2px 0 0 var(--accent)}
-  .shl-row.is-sel{background:var(--bg-3);border-color:var(--row-hover-line);box-shadow:inset 2px 0 0 var(--accent)}
-  .shl-row-head{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;text-align:left;
-    padding:12px 17px;border-radius:12px;color:var(--ink)}
-  .shl-row-head:hover .shl-row-top b{color:var(--accent)}
-  .shl-row-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  .shl-row-top,.shl-row-sub{display:flex;align-items:center;gap:8px;min-width:0}
-  .shl-row-top b{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shl-row-sub em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3);
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-  .shl-row-sub .shr-muted{white-space:nowrap}
-  .shl-row-acts{display:flex;align-items:center;padding-right:12px;flex:none}
+  /* lanes: every project on one 30-day axis; the right edge is "your copy" */
+  .shl-lanes{background:var(--bg-2);border:1px solid var(--line-soft);border-radius:14px;overflow:hidden;margin-bottom:18px}
+  .shl-lanes-body{max-height:352px;overflow-y:auto}
+  .shl-axis{position:relative;display:flex;align-items:center;height:32px;padding:0 16px}
+  .shl-axis .prj-ptitle{margin:0;width:220px}
+  .shl-axis .shl-axis-end{position:absolute;right:16px;width:auto;text-align:right}
+  .shl-ticks{position:absolute;left:252px;right:150px;display:flex;justify-content:space-between;font-size:11px;color:var(--ink-4)}
+  .shl-ticks .is-now{color:var(--accent)}
+  .shl-lane{position:relative;display:flex;align-items:center;width:100%;height:44px;padding:0 16px;
+    border-top:1px solid var(--line-soft);text-align:left;color:var(--ink-2);font-size:13px;transition:background .16s var(--ease)}
+  .shl-lane:hover{background:var(--bg-3)}
+  .shl-lane.is-sel{background:var(--bg-3);color:var(--ink);box-shadow:inset 2px 0 0 var(--accent)}
+  .shl-lane:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .shl-lane-name{width:220px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-lane.is-sel .shl-lane-name{font-weight:600}
+  .shl-track{position:absolute;left:252px;right:150px;top:21px;height:2px;background:var(--line)}
+  .shl-dot{position:absolute;top:-4px;width:10px;height:10px;margin-left:-5px;border-radius:50%;background:rgba(var(--accent-rgb),.35)}
+  .shl-dot.is-new{background:var(--accent);box-shadow:0 0 0 4px rgba(var(--accent-rgb),.18),0 0 14px rgba(var(--accent-rgb),.55);
+    animation:shlpulse 2.2s var(--ease) infinite}
+  .shl-lane-state{position:absolute;right:16px;font-size:12px;color:var(--ink-3)}
+  .shl-lane-state .is-accent{color:var(--accent);font-weight:600}
 
-  /* detail panel */
-  .shl-detail{display:flex;flex-direction:column;gap:14px;padding:18px 20px 20px;
-    background:var(--bg-2);border:1px solid var(--line-soft);border-radius:12px}
+  /* zoom: the selected project */
+  .shl-detail{display:flex;flex-direction:column;gap:16px;padding:20px 22px 22px;
+    background:var(--bg-2);border:1px solid var(--row-hover-line);border-radius:14px}
+  .shl-detail.is-rise{animation:shlrise .28s var(--ease)}
+  @keyframes shlrise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .shl-detail-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
   .shl-detail-title{display:flex;flex-direction:column;gap:4px;min-width:0}
   .shl-name{font:600 22px/1.15 var(--sans);color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .shl-detail-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .shl-detail-meta em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3)}
-  .shl-rule{height:1px;background:var(--line-soft)}
-  /* commits fetched but not applied: what to do next, above the list */
+  .shl-uptodate{align-self:center;font-size:13px;color:var(--ink-3)}
+  /* a refused apply: git's reason and the by-hand command, in place */
   .shl-callout{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border:1px solid var(--accent);
     border-radius:8px;background:rgba(var(--accent-rgb),.08);font:400 12px/1.5 var(--sans);color:var(--ink-2)}
   .shl-callout b{font-weight:600;color:var(--accent)}
+  .shl-callout.is-warn{border-color:var(--warning-text,#e0b04c);background:rgba(224,176,76,.08)}
+  .shl-callout.is-warn b{color:var(--warning-text,#e0b04c)}
   /* an Inbox hand-off lands here: one brief ring so the eye finds the panel */
   .shl-detail.is-flash{animation:shlflash 1.6s var(--ease) 1}
   @keyframes shlflash{0%,40%{box-shadow:0 0 0 2px var(--accent)}100%{box-shadow:0 0 0 2px transparent}}
-  @media (prefers-reduced-motion:reduce){.shl-detail.is-flash{animation:none}}
   .shr-hash{font:500 12px var(--mono);color:var(--ink-3);flex:none}
   .shr-subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* unapplied commits: accent bar + tag; the rest read as history */
-  .shl-detail .prj-li{padding:5px 8px;border-left:2px solid transparent;border-radius:0 6px 6px 0}
-  .shl-detail .prj-li.is-new{border-left-color:var(--accent);background:var(--bg-3);color:var(--ink)}
-  .shl-detail .prj-li:not(.is-new) .shr-subject{color:var(--ink-2)}
   .shr-newtag{flex:none}
-  .shr-apply{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .shr-apply{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
   .shr-apply code{font:500 11.5px var(--mono);color:var(--ink-2);background:var(--bg-3);
     border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;overflow-x:auto;max-width:100%}
+
+  /* commits | what changed | people and history */
+  .shl-cols{display:grid;grid-template-columns:320px minmax(0,1fr) 270px;gap:22px;align-items:start}
+  .shl-col{min-width:0}
+  .shl-side{display:flex;flex-direction:column;gap:20px}
+  .shl-commits{display:flex;flex-direction:column;gap:2px;max-height:520px;overflow-y:auto}
+  .shl-commit{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-left:2px solid transparent;
+    border-radius:0 8px 8px 0;text-align:left;color:var(--ink-2);font-size:13px}
+  .shl-commit:hover{background:var(--bg-3)}
+  .shl-commit.is-sel{background:var(--bg-3);color:var(--ink);border-left-color:var(--ink-3)}
+  .shl-commit.is-new{border-left-color:var(--accent)}
+  .shl-commit .shr-subject{white-space:normal;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+  .shl-commit .tmuted{font-size:11.5px}
+  .shl-commit:focus-visible,.shl-file:focus-visible,.shl-card:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .shl-files{display:flex;flex-direction:column;gap:2px;margin-bottom:10px}
+  .shl-file{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:7px;font:12px var(--mono);
+    color:var(--ink);text-align:left;min-width:0}
+  .shl-file span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .shl-file:hover,.shl-file.is-sel{background:var(--bg-3)}
+  .shl-add{color:var(--accent)}
+  .shl-del{color:var(--danger-text,#e1937d)}
+  .shl-diffbox{border:1px solid var(--line-soft);border-radius:10px;background:var(--bg);overflow:hidden}
+  .shl-diffname{padding:7px 12px;border-bottom:1px solid var(--line-soft);font:12px var(--mono);color:var(--ink-3)}
+  .shl-diff{margin:0;padding:8px 0;max-height:420px;overflow:auto;font:12px/20px var(--mono);color:var(--ink-3)}
+  .shl-diff span{display:block;padding:0 12px;white-space:pre}
+  .shl-diff .is-add{background:rgba(var(--accent-rgb),.08);color:var(--ink)}
+  .shl-diff .is-del{background:rgba(224,122,95,.1);color:var(--ink)}
+  .shl-diff .is-hunk{color:var(--ink-4)}
+  .shr-link{font-size:12px;color:var(--ink-3);text-decoration:underline;text-underline-offset:2px}
+  .shr-link:hover{color:var(--accent)}
+  .shl-authors{display:flex;flex-direction:column;gap:12px}
+  .shl-author{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--ink)}
+  .shl-author-top{display:flex;align-items:center;gap:8px}
+  .shl-bar{display:block;height:6px;border-radius:3px;background:rgba(var(--accent-rgb),.45)}
+  .shl-event{display:flex;flex-direction:column;gap:2px;font-size:12.5px;color:var(--ink-2);line-height:1.45}
 
   /* members */
   .shr-rows{display:flex;flex-direction:column;gap:6px}
@@ -130,7 +170,16 @@
   .shr-form button[disabled]{opacity:.5;cursor:default}
   .prj-skel.is-sm.is-short{max-width:min(100%,300px)}
 
-  /* composer: swaps into the detail panel */
+  /* the other projects: a click zooms one */
+  .shl-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:18px}
+  .shl-card{display:flex;flex-direction:column;gap:8px;padding:14px 16px;background:var(--bg-2);border:1px solid var(--line-soft);
+    border-radius:14px;text-align:left;color:var(--ink);min-width:0;transition:border-color .16s var(--ease)}
+  .shl-card:hover{border-color:var(--line)}
+  .shl-card-top{display:flex;align-items:center;gap:8px;min-width:0}
+  .shl-card-top b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .shl-card-last{font-size:12.5px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* composer: swaps into the zoom's place */
   .shl-composer{display:flex;flex-direction:column;gap:18px;padding:18px 20px 20px;
     background:var(--bg-3);border:1px solid var(--row-hover-line);border-radius:12px}
   .shl-composer-title{display:flex;flex-direction:column;gap:4px}
@@ -145,8 +194,8 @@
   .shl-pick.is-sel{border-color:var(--accent);background:var(--bg-2)}
   .shl-pick b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .shl-pick em{font:400 12px var(--sans);font-style:normal;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .shl-dot{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ink-4);flex:none;transition:all .16s var(--ease)}
-  .shl-pick.is-sel .shl-dot{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
+  .shl-dot-pick{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ink-4);flex:none;transition:all .16s var(--ease)}
+  .shl-pick.is-sel .shl-dot-pick{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.14)}
 
   /* nothing shared yet: two ways in, side by side */
   .shl-empty{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
@@ -156,6 +205,12 @@
   .shl-empty-card p{font-size:12.5px;color:var(--ink-3);line-height:1.6;margin:0;max-width:52ch}
   .shl-empty-card>div{display:flex;align-items:center;gap:8px;margin-top:6px}
 
+  @media (prefers-reduced-motion:reduce){
+    .shl-pulse,.shl-dot.is-new,.shl-detail.is-rise,.shl-detail.is-flash,.shl-prog i{animation:none}
+  }
   @media (max-width:1000px){
-    .shl-split,.shl-empty,.shl-picks{grid-template-columns:minmax(0,1fr)}
+    .shl-cols,.shl-empty,.shl-picks{grid-template-columns:minmax(0,1fr)}
+    .shl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .shl-axis .prj-ptitle,.shl-lane-name{width:150px}
+    .shl-ticks,.shl-track{left:180px;right:110px}
   }
