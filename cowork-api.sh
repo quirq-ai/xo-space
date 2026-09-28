@@ -301,17 +301,14 @@ sync_requirements() {
     local uv_bin
     [ -x "$venv_python" ] && [ -f "$req" ] || return 0
 
-    # Not quiet: after a requirements change the resolve can take minutes on
-    # a slow network, and a silent terminal reads as a hang.
-    log "Installing requirements.txt..."
     uv_bin="$(command -v uv 2>/dev/null || true)"
     if [ -z "$uv_bin" ] && [ -x "${HOME:-}/.local/bin/uv" ]; then
         uv_bin="$HOME/.local/bin/uv"
     fi
     if [ -n "$uv_bin" ]; then
-        "$uv_bin" pip install --python "$venv_python" --requirement "$req"
+        "$uv_bin" pip install --quiet --python "$venv_python" --requirement "$req"
     else
-        "$venv_python" -m pip install -r "$req"
+        "$venv_python" -m pip install --quiet -r "$req"
     fi || log_warn "Installing requirements.txt failed; starting with the current venv. Run ./cowork-api.sh install to retry."
 }
 
