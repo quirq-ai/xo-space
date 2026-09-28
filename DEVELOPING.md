@@ -707,7 +707,10 @@ origin that will connect must be registered as an allowed callback on them in th
 dashboard; miss that and `/connect` succeeds while the OAuth redirect fails, which
 surfaces late, in the popup. It is **required and has no default**: unset,
 `_callback_url()` raises before any network call and `/connect` returns a 422 whose
-detail names the variable, which the Connectors tab matches on.
+detail names the variable, which the Connectors tab matches on. The service stays
+fail-closed; the default lives in `install.sh` (`export_connector_defaults`), which
+knows it is a local install and exports the loopback callback on the resolved `PORT`
+(also written to the first-run `.env`). An explicit value always wins.
 
 Degradation is per-scope, and worth knowing when reading a bug report:
 

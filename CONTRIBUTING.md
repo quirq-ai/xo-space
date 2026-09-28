@@ -272,11 +272,11 @@ quotes (route counts, test counts).
 ## Branches, commits, pull requests
 
 **Branch from `main`, target `main`.** `main` is where every change lands and
-what users run: it is what the public one-liner installs, what the container
-image is built from (`.github/workflows/publish-container.yml` runs on push to
-`main`), and what `install.sh` fast-forwards a managed checkout to. A merge into
-`main` is not a release by itself; releases are tagged on `main` when the
-maintainers decide ([RELEASING.md](RELEASING.md)).
+what the container image is built from (`.github/workflows/publish-container.yml`
+runs on push to `main`). A merge into `main` is not a release by itself:
+releases are tags on `main`, cut when the maintainers decide
+([RELEASING.md](RELEASING.md)), and the public one-liner and every update
+(installer re-run, Setup tab) install the newest release tag, not the `main` tip.
 
 `development` is the maintainers' staging branch: it is where the internal
 team tests `main` before a release, and it is kept in step with `main` by the

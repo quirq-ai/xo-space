@@ -7,10 +7,20 @@ every merge is a release, and a release is not cut right after a merge. The
 tag gives that version a name, a changelog and something to quote in a bug
 report.
 
-Know what that means for users: installs follow the `main` tip (the installer
-clones it and the Setup tab's Update fast-forwards to it), not the latest
-tag. A change merged into `main` reaches new installs and updates before it
-is part of a named release. Keep that in mind when deciding what merges.
+Know what that means for users: **pushing a tag is what ships.** Installs
+follow release tags, not the `main` tip. The installer clones the newest
+`vX.Y.Z` tag, and both the Setup tab's Update and a re-run of the installer
+move a checkout on `main` or on a tag forward to the newest tag, never back
+(a checkout already past it, such as the `main` tip, stays put). A change
+merged into `main` reaches users only when a tag that contains it is pushed.
+Pre-release tags (`v2.0.0-rc1`) are ignored. A checkout on another branch
+(`QUIRQ_SOURCE_REF=development`, say) keeps following that branch's tip.
+
+When a release changes `requirements.txt`, users pick the new dependencies up
+on their next start: `install.sh` always syncs them, and `cowork-api.sh`
+syncs them whenever `requirements.txt` changed since the last sync. A managed
+container cannot install them; the Setup tab tells its user to re-run the
+installer instead of offering Restart.
 
 ## Version numbers
 

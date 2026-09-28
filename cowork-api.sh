@@ -289,6 +289,52 @@ kill_hindering_processes() {
     fi
 }
 
+# The requirements.txt the venv was last synced to, as a hash. install.sh
+# writes the same file after its own sync, so a start right after an install
+# does nothing extra.
+REQUIREMENTS_STAMP="$SCRIPT_DIR/venv/.requirements.sha256"
+
+requirements_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# An update (Setup tab, git pull) changes code, not the venv. Every start
+# converges the venv on requirements.txt when it changed since the last sync,
+# so a restart after an update that added a dependency still boots. uv first:
+# a venv made by install.sh has no pip. A failed sync is reported and the
+# start goes ahead; the stamp is not written, so the next start retries.
+sync_requirements_if_changed() {
+    local venv_python="$SCRIPT_DIR/venv/bin/python"
+    local req="$SCRIPT_DIR/requirements.txt"
+    local want
+    local uv_bin
+    local synced=1
+    [ -x "$venv_python" ] && [ -f "$req" ] || return 0
+    want="$(requirements_hash "$req")" || return 0
+    [ "$(cat "$REQUIREMENTS_STAMP" 2>/dev/null)" != "$want" ] || return 0
+
+    log "requirements.txt changed since the last install; syncing the venv..."
+    uv_bin="$(command -v uv 2>/dev/null || true)"
+    if [ -z "$uv_bin" ] && [ -x "${HOME:-}/.local/bin/uv" ]; then
+        uv_bin="$HOME/.local/bin/uv"
+    fi
+    if [ -n "$uv_bin" ]; then
+        "$uv_bin" pip install --quiet --python "$venv_python" --requirement "$req" && synced=0
+    else
+        "$venv_python" -m pip install --quiet -r "$req" && synced=0
+    fi
+    if [ "$synced" -eq 0 ]; then
+        printf '%s\n' "$want" > "$REQUIREMENTS_STAMP"
+        log_success "Dependencies synced"
+    else
+        log_warn "Dependency sync failed; starting with the current venv. Run ./cowork-api.sh install to retry."
+    fi
+}
+
 start_api() {
     acquire_lock
     if is_running; then
@@ -313,6 +359,8 @@ start_api() {
         log_error "No Python interpreter found (tried: venv/bin/python, python3, python)"
         return 1
     fi
+
+    sync_requirements_if_changed
 
     log "Starting XO Space API on ${HOST}:${PORT}..."
     nohup bash -c '
@@ -480,6 +528,7 @@ install_deps() {
         log_error "pip install -r requirements.txt failed"
         return 1
     fi
+    requirements_hash "$req" > "$REQUIREMENTS_STAMP" || true
     log_success "Dependencies installed (venv: $venv_dir)"
 }
 
