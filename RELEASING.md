@@ -24,8 +24,8 @@ is part of a named release. Keep that in mind when deciding what merges.
 ## Cutting a release
 
 1. Decide that `main` is ready: the changes since the last tag have been
-   tested on `development` (`git merge --ff-only main` into it, or a merge
-   commit if it has diverged) and validated there. Verify `main` itself:
+   tested on `development` (fast-forwarded to `main` automatically; see
+   below) and validated there. Verify `main` itself:
    `venv/bin/python scripts/check_route_parity.py` and the test suite.
 2. Tag the `main` commit (annotated):
 
@@ -57,7 +57,15 @@ To see what the next release contains before choosing its number:
 1. Branch from `main`, fix, PR to `main`, merge.
 2. When validated, tag the PATCH bump on `main` and publish it (steps 2-4
    above).
-3. Bring `development` up to date with `main` so staging has the fix.
+3. Deploy staging so it runs the fix (`development` already follows `main`).
+
+## Keeping `development` in step
+
+Every push to `main` runs `.github/workflows/sync-development.yml`, which
+fast-forwards `development` to the `main` tip (also runnable by hand from the
+Actions tab). It never merges or force-pushes: if `development` has commits
+that are not on `main`, the run fails and someone merges `main` into it by
+hand. Deploying staging from `development` is still a manual step.
 
 ## Side effects of pushing a tag
 

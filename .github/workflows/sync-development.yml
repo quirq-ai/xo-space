@@ -1,0 +1,37 @@
+name: Sync development to main
+
+# Keeps the `development` staging branch in step with `main` by moving its
+# pointer forward (fast-forward only, never a merge commit or a force push).
+# If `development` has commits that are not on `main`, the job fails instead
+# of overwriting them; reconcile by hand. Deploying staging stays manual.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-development
+  cancel-in-progress: false
+
+jobs:
+  fast-forward:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward development to main
+        run: |
+          if git merge-base --is-ancestor origin/development origin/main; then
+            git push origin origin/main:refs/heads/development
+          else
+            echo "::error::development has commits that are not on main; refusing to fast-forward. Merge main into development by hand."
+            exit 1
+          fi

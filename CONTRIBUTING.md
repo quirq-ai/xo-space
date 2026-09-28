@@ -279,8 +279,9 @@ image is built from (`.github/workflows/publish-container.yml` runs on push to
 maintainers decide ([RELEASING.md](RELEASING.md)).
 
 `development` is the maintainers' staging branch: it is where the internal
-team tests `main` before a release, and it is kept in step with `main` by the
-maintainers. Do not target it with a pull request.
+team tests `main` before a release, and a workflow fast-forwards it to `main`
+on every push ([RELEASING.md](RELEASING.md#keeping-development-in-step)). Do not
+target it with a pull request or commit to it directly.
 
 Name branches by intent: `fix/…`, `feat/…`, `docs/…`, `chore/…`.
 
