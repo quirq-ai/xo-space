@@ -689,7 +689,12 @@ async function onClick(e){
       pickedCommit.delete(id);
       composer=null; /* picking a project answers "what do you want to see" */
       render();
-      if(fromCard){const d=root.querySelector('#shl-detail');if(d)d.scrollIntoView({block:'start',behavior:'smooth'});}
+      /* the clicked card is gone after the repaint: keep keyboard focus on
+         the project's lane, and bring the zoom into view */
+      if(fromCard){
+        const lane=root.querySelector('#shl-row-'+CSS.escape(id));if(lane)lane.focus({preventScroll:true});
+        const d=root.querySelector('#shl-detail');if(d)d.scrollIntoView({block:'start',behavior:'smooth'});
+      }
       return;
     }
     case'commit':
