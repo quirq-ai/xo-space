@@ -2,6 +2,7 @@
 
   GET  /api/project-sharing/status                      window into the poller
   GET  /api/xo-projects/{id}/commits          local git read (origin/<branch>, behind count)
+  GET  /api/xo-projects/{id}/commits/{sha}/changes  one fetched commit's files + a diff preview
   GET  /api/xo-projects/{id}/members          proxy to swarm
   POST /api/xo-projects/{id}/share            proxy to swarm, body {workspace_id}
   POST /api/xo-projects/{id}/revoke           proxy to swarm, body {workspace_id}
@@ -62,6 +63,14 @@ async def apply_project(project_id: str) -> dict:
 async def project_commits(project_id: str, limit: int = 20) -> dict:
     try:
         return await service.project_commits(project_id, max(1, min(int(limit), MAX_COMMITS)))
+    except service.RelayError as exc:
+        raise _http(exc)
+
+
+@router.get("/api/xo-projects/{project_id}/commits/{sha}/changes")
+async def commit_changes(project_id: str, sha: str, path: str | None = None) -> dict:
+    try:
+        return await service.commit_changes(project_id, sha, path or None)
     except service.RelayError as exc:
         raise _http(exc)
 

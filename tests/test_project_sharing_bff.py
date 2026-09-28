@@ -46,6 +46,29 @@ class RelayRoutesTests(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.json()["detail"]["code"], "project_not_found")
 
+    def test_changes_passes_sha_and_path_and_treats_empty_path_as_none(self) -> None:
+        payload = {"project_id": "p", "hash": "a" * 40, "files": [], "diff": None}
+        with patch.object(service, "commit_changes", new=AsyncMock(return_value=payload)) as cc:
+            r = client().get("/api/xo-projects/p/commits/abc1234/changes?path=docs/a%20b.md")
+            self.assertEqual(r.status_code, 200)
+            cc.assert_awaited_once_with("p", "abc1234", "docs/a b.md")
+            client().get("/api/xo-projects/p/commits/abc1234/changes?path=")
+            self.assertEqual(cc.await_args.args, ("p", "abc1234", None))
+
+    def test_changes_maps_typed_errors(self) -> None:
+        cases = [
+            (service.ProjectNotFound(), 404, "project_not_found"),
+            (service.BadSha(), 422, "bad_sha"),
+            (service.BadPath(), 422, "bad_path"),
+            (service.CommitNotFound(), 404, "commit_not_found"),
+            (service.ChangesUnreadable(), 409, "changes_unreadable"),
+        ]
+        for exc, status, code in cases:
+            with patch.object(service, "commit_changes", new=AsyncMock(side_effect=exc)):
+                r = client().get("/api/xo-projects/p/commits/abc1234/changes")
+            self.assertEqual(r.status_code, status, code)
+            self.assertEqual(r.json()["detail"]["code"], code)
+
     def test_share_validates_body_before_calling_service(self) -> None:
         with patch.object(service, "share", new=AsyncMock()) as sh:
             r = client().post("/api/xo-projects/p/share", json={"workspace_id": "   "})
