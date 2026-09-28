@@ -209,6 +209,9 @@ def commit_changes(pid, sha, path=""):
         {"path": "docs/review checklist.md", "additions": 12, "deletions": 0, "binary": False},
         {"path": "assets/overview.png", "additions": None, "deletions": None, "binary": True},
     ]
+    if pid == "retrieval-lab":   # a build-output commit: the long-list case
+        files += [{"path": f"dist/assets/chunk-{i:03d}.js", "additions": i % 3, "deletions": (i + 1) % 2, "binary": False}
+                  for i in range(120)]
     target = next((f for f in files if f["path"] == path), files[0])
     if target["binary"]:
         diff = {"path": target["path"], "text": "", "truncated": False, "binary": True}

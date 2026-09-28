@@ -111,10 +111,15 @@
     border:1px solid var(--line-soft);border-radius:6px;padding:4px 8px;overflow-x:auto;max-width:100%}
 
   /* commits | what changed | people and history */
-  .shl-cols{display:grid;grid-template-columns:320px minmax(0,1fr) 270px;gap:22px;align-items:start}
-  .shl-col{min-width:0}
+  /* one fixed-size panel whatever the commit holds: each column scrolls on
+     its own, so a 300-file commit never stretches the page */
+  .shl-cols{display:grid;grid-template-columns:320px minmax(0,1fr) 270px;gap:22px;height:clamp(420px,62vh,640px)}
+  .shl-col{min-width:0;min-height:0}
+  .shl-cols>.shl-col{overflow:hidden}
+  .shl-cols>.shl-side{overflow-y:auto;padding-right:4px}
+  .shl-sec-head{flex:none}
   .shl-side{display:flex;flex-direction:column;gap:20px}
-  .shl-commits{display:flex;flex-direction:column;gap:2px;max-height:520px;overflow-y:auto}
+  .shl-commits{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0;overflow-y:auto}
   .shl-commit{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-left:2px solid transparent;
     border-radius:0 8px 8px 0;text-align:left;color:var(--ink-2);font-size:13px}
   .shl-commit:hover{background:var(--bg-3)}
@@ -123,16 +128,19 @@
   .shl-commit .shr-subject{white-space:normal;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
   .shl-commit .tmuted{font-size:11.5px;margin-left:0}
   .shl-commit:focus-visible,.shl-file:focus-visible,.shl-card:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  .shl-files{display:flex;flex-direction:column;gap:2px;margin-bottom:10px}
+  /* the file list takes at most 40% of the column, the diff the rest; with
+     no diff below it (binary, empty) the list gets the whole column */
+  .shl-files{display:flex;flex-direction:column;gap:2px;flex:0 1 auto;max-height:40%;overflow-y:auto;margin-bottom:2px}
+  .shl-files:not(:has(~ .shl-diffbox)){flex:1;max-height:none}
   .shl-file{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:7px;font:12px var(--mono);
     color:var(--ink);text-align:left;min-width:0}
   .shl-file span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
   .shl-file:hover,.shl-file.is-sel{background:var(--bg-3)}
   .shl-add{color:var(--accent)}
   .shl-del{color:var(--danger-text,#e1937d)}
-  .shl-diffbox{border:1px solid var(--line-soft);border-radius:10px;background:var(--bg);overflow:hidden}
+  .shl-diffbox{display:flex;flex-direction:column;flex:1;min-height:0;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg);overflow:hidden}
   .shl-diffname{padding:7px 12px;border-bottom:1px solid var(--line-soft);font:12px var(--mono);color:var(--ink-3)}
-  .shl-diff{margin:0;padding:8px 0;max-height:420px;overflow:auto;font:12px/20px var(--mono);color:var(--ink-3)}
+  .shl-diff{flex:1;min-height:0;margin:0;padding:8px 0;overflow:auto;font:12px/20px var(--mono);color:var(--ink-3)}
   .shl-diff span{display:block;padding:0 12px;white-space:pre}
   .shl-diff .is-add{background:rgba(var(--accent-rgb),.08);color:var(--ink)}
   .shl-diff .is-del{background:rgba(224,122,95,.1);color:var(--ink)}
@@ -210,6 +218,12 @@
   }
   @media (max-width:1000px){
     .shl-cols,.shl-empty,.shl-picks{grid-template-columns:minmax(0,1fr)}
+    /* stacked: no shared height, each part keeps its own cap */
+    .shl-cols{height:auto}
+    .shl-cols>.shl-col,.shl-cols>.shl-side{overflow:visible}
+    .shl-commits{max-height:360px}
+    .shl-files{max-height:240px}
+    .shl-diff{max-height:420px}
     .shl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
     .shl-axis .prj-ptitle,.shl-lane-name{width:150px}
     .shl-ticks,.shl-track{left:180px;right:110px}
