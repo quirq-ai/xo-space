@@ -91,6 +91,19 @@ export function consumeNewClone(){
   seenCloned=n;
   return fresh;
 }
+/* The relay's recent events for one repo, newest first. `recent` is the
+   server's in-memory ring (latest 50, cleared on restart), so callers say
+   "recent". The labels repeat inbox-activity.js SHARING_LABELS on purpose:
+   that module is tested with its imports stripped. */
+const EVENT_LABELS={shared_with_you:'Shared with this Space',fetched:'Commits fetched',revoked:'Sharing access removed',
+  cloned:'Project cloned',clone_failed:'Clone failed',error:'Sync failed'};
+export function recentFor(repo){
+  if(!status||!Array.isArray(status.recent))return[];
+  return status.recent.filter(e=>e&&e.repo===repo&&typeof e.kind==='string'&&e.kind)
+    .map(e=>({kind:e.kind,label:EVENT_LABELS[e.kind]||e.kind.replace(/[._]/g,' '),
+      detail:typeof e.detail==='string'?e.detail:'',at:typeof e.at==='string'?e.at:''}))
+    .sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0));
+}
 
 export const REASON={
   disabled:'sharing is switched off (PROJECT_SHARING_ENABLED=false)',
@@ -166,6 +179,10 @@ export function inviteText(){
 const P=id=>API_BASE+'/api/xo-projects/'+encodeURIComponent(id);
 export const fetchCatalog=()=>apiFetch(API_BASE+'/api/xo-projects');
 export const fetchCommits=(id,limit=5)=>apiFetch(P(id)+'/commits?limit='+limit);
+/* one fetched commit's files and a diff preview (path optional: the server
+   picks the first text file) */
+export const fetchChanges=(id,sha,path)=>apiFetch(P(id)+'/commits/'+encodeURIComponent(sha)+'/changes'
+  +(path?'?path='+encodeURIComponent(path):''));
 export const fetchMembers=id=>apiFetch(P(id)+'/members');
 export const share=(id,ws)=>apiFetch(P(id)+'/share',{method:'POST',body:{workspace_id:ws}});
 export const revoke=(id,ws)=>apiFetch(P(id)+'/revoke',{method:'POST',body:{workspace_id:ws}});
