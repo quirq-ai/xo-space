@@ -22,6 +22,7 @@ from services.cowork_agent.connectors.github import (
     delete_github_token,
     get_github_token,
     get_status,
+    remove_pat_credential_helper,
     validate_token,
 )
 from services.cowork_agent.connectors.github import pat as github_pat
@@ -78,6 +79,7 @@ async def github_status() -> JSONResponse:
 async def disconnect_github() -> JSONResponse:
     """Delete the stored GitHub token and clear the connection."""
     delete_github_token()
+    await remove_pat_credential_helper()
     return JSONResponse({"status": "needs_auth"})
 
 

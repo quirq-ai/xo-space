@@ -18,6 +18,7 @@ Token file: ~/.quirq/secrets/token.json  (see connectors/token_store.py)
 """
 
 import logging
+import shlex
 import shutil
 from typing import Any, Literal
 
@@ -281,6 +282,86 @@ async def configure_git_identity(
         rc, out = await _run(GH_BIN, "auth", "setup-git", "--hostname", "github.com")
         if rc != 0:
             log.warning("`gh auth setup-git` failed: %s", out)
+
+
+# ---------------------------------------------------------------------------
+# Git credential helper for a pasted PAT
+# ---------------------------------------------------------------------------
+#
+# A pasted PAT leaves no `gh` session behind, so `gh auth setup-git` has
+# nothing to point git at, and HTTPS clones of private repos fall through to
+# whatever GIT_ASKPASS the host provides (on Coder, an external-auth prompt that
+# never completes in a terminal). Instead we register a helper, scoped to
+# github.com, that reads the token out of token.json *at request time*: the
+# secret itself never lands in ~/.gitconfig, and a rotated or deleted token is
+# picked up without touching git config again.
+
+GITHUB_CREDENTIAL_KEY = "credential.https://github.com.helper"
+
+# A no-op `:` command carrying a fixed tag, so we can tell our entry apart from
+# one the user or `gh` wrote, and remove exactly ours on disconnect.
+PAT_HELPER_MARKER = "xo-space-github-pat"
+
+# Prints nothing unless token.json holds a GitHub token, so git moves on to the
+# next helper (or its prompt) instead of failing on a missing/empty entry.
+_READ_TOKEN_PY = (
+    "import json,sys;"
+    't=(json.load(open(sys.argv[1])).get("github") or {}).get("access_token");'
+    't and print("username=x-access-token");'
+    't and print("password="+t)'
+)
+
+
+def pat_credential_helper() -> str:
+    """The git credential helper value that serves the stored GitHub token."""
+    return (
+        f"!f() {{ : {PAT_HELPER_MARKER}; "
+        f'[ "$1" = get ] || return 0; '
+        f"python3 -c {shlex.quote(_READ_TOKEN_PY)} {shlex.quote(str(TOKEN_FILE))} 2>/dev/null; "
+        f"}}; f"
+    )
+
+
+async def configure_pat_credential_helper() -> None:
+    """Point git's github.com credentials at the stored PAT. Never raises.
+
+    Leaves an existing github.com helper alone unless it is ours — a user's own
+    setup, or a `gh auth setup-git` from an earlier CLI sign-in, wins.
+    """
+    if shutil.which(GIT_BIN) is None:
+        log.warning("git is not installed; skipping credential helper setup")
+        return
+
+    rc, existing = await _run(GIT_BIN, "config", "--global", "--get-all", GITHUB_CREDENTIAL_KEY)
+    foreign = [
+        line for line in existing.splitlines()
+        if line.strip() and PAT_HELPER_MARKER not in line
+    ] if rc == 0 else []
+    if foreign:
+        log.info("A github.com credential helper is already configured; leaving it alone")
+        return
+
+    rc, out = await _run(
+        GIT_BIN, "config", "--global", "--replace-all",
+        GITHUB_CREDENTIAL_KEY, pat_credential_helper(),
+    )
+    if rc != 0:
+        log.warning("Could not set the github.com credential helper: %s", out)
+    else:
+        log.info("git credential helper for github.com now reads %s", TOKEN_FILE)
+
+
+async def remove_pat_credential_helper() -> None:
+    """Remove the helper written by configure_pat_credential_helper. Never raises."""
+    if shutil.which(GIT_BIN) is None:
+        return
+    # rc 5 means there was nothing of ours to unset — not an error.
+    rc, out = await _run(
+        GIT_BIN, "config", "--global", "--unset-all",
+        GITHUB_CREDENTIAL_KEY, PAT_HELPER_MARKER,
+    )
+    if rc not in (0, 5):
+        log.warning("Could not remove the github.com credential helper: %s", out)
 
 
 def connection_payload(validation: dict[str, Any], auth_method: str) -> dict[str, Any]:

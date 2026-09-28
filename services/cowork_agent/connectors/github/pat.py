@@ -15,6 +15,7 @@ from typing import Any
 
 from .common import (
     configure_git_identity,
+    configure_pat_credential_helper,
     connection_payload,
     save_github_token,
     validate_token,
@@ -53,7 +54,9 @@ async def connect(token: str) -> dict[str, Any]:
         }
 
     save_github_token(token, auth_method=AUTH_METHOD)
-    # Identity only — a pasted PAT leaves no `gh` session for git to borrow.
+    # A pasted PAT leaves no `gh` session for git to borrow, so instead of
+    # `gh auth setup-git` point git at the token we just stored.
     await configure_git_identity(result, setup_credential_helper=False)
+    await configure_pat_credential_helper()
     log.info("GitHub connected as @%s (via PAT)", result.get("username"))
     return {"ok": True, "payload": connection_payload(result, AUTH_METHOD)}
