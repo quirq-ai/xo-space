@@ -34,7 +34,7 @@ VALID = {
 # PAT without `read:org`.
 FAKE_GH = textwrap.dedent("""\
     #!{python}
-    import json, os, sys
+    import json, os, sys, time
     args = sys.argv[1:]
     cfg = os.environ["GH_CONFIG_DIR"]
     hosts = os.path.join(cfg, "hosts.yml")
@@ -52,7 +52,9 @@ FAKE_GH = textwrap.dedent("""\
         if not os.path.exists(hosts):
             sys.stderr.write("no oauth token found for github.com\\n")
             sys.exit(1)
-        print(open(hosts).read())
+        print(open(hosts).read(), flush=True)
+        if os.path.exists(os.path.join(cfg, "hang")):
+            time.sleep(60)
     elif args[:2] == ["auth", "status"]:
         accounts = [{{"login": "octo", "active": True}}] if os.path.exists(hosts) else []
         print(json.dumps({{"hosts": {{"github.com": accounts}}}}))
@@ -169,6 +171,20 @@ class GhCredentialStoreTests(unittest.TestCase):
         # Signing out in a terminal rewrites gh's state, and the connector sees it.
         (self.gh_config / "hosts.yml").unlink()
         self.assertIsNone(common.get_github_token())
+
+    def test_a_gh_that_hangs_after_printing_the_token_leaks_it_nowhere(self) -> None:
+        # The runner kills gh on the timeout but keeps what it already printed.
+        (self.gh_config / "hosts.yml").write_text(TOKEN, encoding="utf-8")
+        (self.gh_config / "hang").touch()
+        with patch.object(common, "_GH_TOKEN_TIMEOUT_SECONDS", 0.5):
+            with self.assertRaises(RuntimeError) as raised:
+                common.get_github_token(read_only=True)
+            with self.assertLogs(common.log, "WARNING") as logged:
+                self.assertIsNone(common.get_github_token())
+
+        self.assertIn("timed out", str(raised.exception))
+        self.assertNotIn(TOKEN, str(raised.exception))
+        self.assertNotIn(TOKEN, "\n".join(logged.output))
 
     def test_device_flow_leaves_the_token_with_gh(self) -> None:
         (self.gh_config / "hosts.yml").write_text("gho_devicecode0123456789", encoding="utf-8")
