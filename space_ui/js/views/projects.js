@@ -437,6 +437,11 @@ function liveCell(p){
 function filesCell(p){
   const c=counts.get(p.id);
   if(!c||c.known===false)return'<span class="prj-cell prj-num is-none">'+(feeds.counts==='loading'?'…':'Not indexed')+'</span>';
+  /* zero + per-project scan cap: the graph may simply not have mapped this
+     project, so don't claim the folder is empty — the drawer lists it live */
+  if(!c.files)return c.capped
+    ?'<span class="prj-cell prj-num is-none" title="This project&#39;s scan hit its cap, so its files may not be fully mapped. Open the row — the drawer lists the folder live.">no files mapped</span>'
+    :'<span class="prj-cell prj-num is-none">no files yet</span>';
   return'<span class="prj-cell prj-num" title="Indexed file count'+(c.capped?' (partial)':'')+'">'+c.files.toLocaleString()+(c.capped?'+':'')+' '+(c.files===1?'file':'files')
     +(c.folders?'<em>'+c.folders.toLocaleString()+' '+(c.folders===1?'folder':'folders')+'</em>':'')+'</span>';
 }
