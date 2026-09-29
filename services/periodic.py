@@ -3,7 +3,8 @@
 :func:`run_forever` is the shape the GitHub and the connections pollers
 share: an optional enabled gate, a startup delay, then tick, log a failure
 and go on, sleep, forever, until the task is cancelled. Space-level: any
-package may use it.
+package may use it. Each tick is recorded in :mod:`services.background`
+under ``name``.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Awaitable, Callable, Optional
+
+from services import background
 
 _module_logger = logging.getLogger(__name__)
 
@@ -39,10 +42,14 @@ async def run_forever(
         return
     await asyncio.sleep(startup_delay_s)
     while True:
+        background.tick_started(name)
         try:
             await tick()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            background.tick_failed(name, exc)
             log.warning("%s: tick failed (non-fatal)", name, exc_info=True)
+        else:
+            background.tick_succeeded(name)
         await asyncio.sleep(interval_s())

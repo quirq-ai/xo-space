@@ -98,6 +98,33 @@ class RunForeverTests(_Loop):
         tick.assert_awaited_once()
 
 
+class RunForeverRecordsTests(_Loop):
+    def setUp(self) -> None:
+        super().setUp()
+        from services import background
+        self.background = background
+        background.reset_for_tests()
+        self.addCleanup(background.reset_for_tests)
+
+    def test_each_tick_is_recorded_under_the_loop_name(self) -> None:
+        results = iter([RuntimeError("boom"), None, RuntimeError("again")])
+
+        async def tick():
+            outcome = next(results)
+            if outcome is not None:
+                raise outcome
+
+        calls, fake_sleep = _sleeps(4)
+        self.background.register("demo", self.loop.create_future())
+        with patch.object(periodic.asyncio, "sleep", fake_sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                self.run_(periodic.run_forever("demo", tick, interval_s=lambda: 1.0))
+        record = self.background.snapshot()["demo"]
+        self.assertEqual(record["ticks"], 3)
+        self.assertEqual(record["consecutive_failures"], 1)
+        self.assertEqual(record["last_failure"], "RuntimeError: again")
+
+
 class ConnectionsPollerLoopTests(_Loop):
     SUMMARY = {"configured": 1, "polled": 1, "skipped": 0, "errors": 0}
 

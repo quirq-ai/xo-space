@@ -8,7 +8,7 @@ import {apiFetch} from '../core/api.js';
 import {toast} from '../core/ui.js';
 import {pollServer} from '../core/server-widget.js?v=20260914-commands2';
 import {mountCommands} from './setup-commands.js?v=20260921-refresh1';
-import {setupSteps} from '../core/setup-state.js?v=20260914-manage1';
+import {setupSteps} from '../core/setup-state.js?v=20260925-health1';
 import {mountIdentity} from './setup-identity.js?v=20260915-typesync1';
 import {mountBranding} from './setup-branding.js?v=20260921-branding2';
 import {mountTheme} from './setup-theme.js?v=20260922-theme4';
@@ -470,6 +470,7 @@ function renderSources(){
   const detailsOpen=new Set([...target.querySelectorAll('.source-details[open]')].map(el=>el.dataset.source));
   const row=source=>{
     const selected=source.name===selectedName;
+    const remoteAgent=source.binary_available===null;
     const keys=source.secrets||[];
     // The runtime scans manifest session globs, stopping at 10,000 files.
     // A count describes discovered files, not sign-in or watcher health.
@@ -485,15 +486,18 @@ function renderSources(){
       +'<div class="source-title"><b>'+esc(prettyName(source.name))+'</b>'
         +(source.active?'<span>In use</span>':selected?'<span class="is-pending">'+(formDrafts.agent?'Selected':'Restart to apply')+'</span>':'')
         +(runtimeData.applied.watcher_enabled&&source.watched?'<span class="is-watched">Included in activity</span>':'')+'</div>'
-      +'<div class="source-facts">'+fact(source.binary_available?'Installed':'Not installed',source.binary_available?'good':'muted')
+      +'<div class="source-facts">'+(remoteAgent
+        ?fact(source.health_ok===true?'Service reachable':source.health_ok===false?'Service unavailable':'Service not checked',
+          source.health_ok===true?'good':source.health_ok===false?'bad':'muted')
+        :fact(source.binary_available?'Installed':'Not installed',source.binary_available?'good':'muted')
         +fact(source.home?.exists?'Agent folder found':'Agent folder missing',source.home?.exists?'good':'bad')
-        +((!source.home?.exists||!source.binary_available)&&source.install_url?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">Install '+esc(prettyName(source.name))+' ↗</a>':'')+'</div>'
+        +((!source.home?.exists||!source.binary_available)&&source.install_url?'<a class="source-install" href="'+esc(source.install_url)+'" target="_blank" rel="noopener noreferrer">Install '+esc(prettyName(source.name))+' ↗</a>':''))+'</div>'
       +secretButtons
       +'<details class="source-details" data-source="'+esc(source.name)+'"'+(detailsOpen.has(source.name)?' open':'')+'><summary>Agent details</summary>'
         +'<div class="source-path"><span>Host</span><code>'+esc(source.home?.host_path||'Not reported')+'</code></div>'
         +'<div class="source-path"><span>Server</span><code>'+esc(source.home?.container_path||'Not reported')+'</code></div>'
         +'<p class="source-note">'+esc(sessionNote)+'</p>'
-        +(!source.binary_available&&source.bootstrap_available
+        +(source.binary_available===false&&source.bootstrap_available
           ?'<p class="source-note">Setup can install the CLI when this agent is selected and the server restarts.</p>':'')
       +'</details></article>';
   };

@@ -333,12 +333,17 @@ root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
 watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
 `usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
-`.locks/` (internal). `services/storage/layout.py` names each folder once, and
-its `MOVES` list is how files get there from where earlier releases kept them:
+`.locks/` (internal). `services/storage/layout.py` names each folder once.
+`services/storage/migrations.py` is how files get there from where earlier
+releases kept them: its `MOVES` list holds one block per layout change, and
 `migrate_layout()` runs first in the server lifespan, moves a file only when its
-new home is empty, and never raises. A new store puts its files in its
-subject's folder (a new data source copies `connections/<toolkit>/`:
-`config.json`, `state.json`, `events.jsonl`) and, if files move, adds a `Move`.
+new home is empty, and never raises: when both exist, the new copy wins and
+the old one stays with a warning. Old copies of history (the command log) are
+not moved onto the live file but each into its own archive name, which is
+always free, so that case cannot arise for them. A new store puts its files under the Space UI section and page that shows them
+(`<section>/<page>/`, e.g. `inbox/activity/`; a new data source copies
+`connections/<toolkit>/`: `config.json`, `state.json`, `events.jsonl`) and, if
+files move, adds a block of `Move`s.
 The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
 fails until the code and the sample agree. Records inside follow four rules:
 project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines

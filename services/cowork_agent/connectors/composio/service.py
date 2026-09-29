@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -375,6 +376,12 @@ _SESSIONS_LOADED = False
 # the store first: that is the MCP hot path and it must not touch the network.
 _ORPHANED_SESSION_IDS: list[str] = []
 
+# The router and the MCP proxy run the session functions on worker threads (the SDK
+# blocks), so they can overlap. Each one reads the session id, calls Composio, then
+# writes it back; unguarded, two callers finding no session would both mint one and one
+# would leak. Re-entrant because sync_session falls back to invalidate_session.
+_SESSION_LOCK = threading.RLock()
+
 
 class NoToolkitsEnabled(RuntimeError):
     """This workspace has not enabled any toolkit, so it has no session.
@@ -727,10 +734,11 @@ def _session_config(user_id: str) -> dict[str, Any]:
 
 def invalidate_session() -> None:
     global _SESSION_ID, _session_mcp_cache
-    _ensure_sessions_loaded()
-    session_id, _SESSION_ID = _SESSION_ID, None
-    _session_mcp_cache = None
-    _persist_session_id(None)
+    with _SESSION_LOCK:
+        _ensure_sessions_loaded()
+        session_id, _SESSION_ID = _SESSION_ID, None
+        _session_mcp_cache = None
+        _persist_session_id(None)
     if session_id:
         _delete_remote_session(session_id)
 
@@ -742,6 +750,14 @@ def invalidate_session() -> None:
 # DEVELOPING.md §10.3.
 _SESSION_MCP_CACHE_TTL = float(os.getenv("COMPOSIO_SESSION_MCP_CACHE_TTL", "5"))
 _session_mcp_cache: Optional[tuple[str, dict[str, Any], float]] = None  # (sid, session, expires_at)
+
+
+def _cached_session() -> Optional[dict[str, Any]]:
+    """The live session's cached response, or None once it is stale or superseded."""
+    cached = _session_mcp_cache     # one read: another thread may rebind the global
+    if cached and cached[0] == _SESSION_ID and cached[2] > time.monotonic():
+        return cached[1]
+    return None
 
 
 def _update_payload(config: dict[str, Any]) -> dict[str, Any]:
@@ -767,26 +783,27 @@ def sync_session(user_id: str) -> None:
     global _session_mcp_cache
     if not user_id:
         return
-    _ensure_sessions_loaded()
-    sid = _SESSION_ID
-    if not sid:
-        return
-    try:
-        config = _session_config(user_id)
-    except NoToolkitsEnabled:
-        # Nothing left enabled here. Drop the session rather than leaving one behind
-        # that still reaches whatever it was last configured with.
-        invalidate_session()
-        return
-    try:
-        session = swarm_client.update_session(sid, _update_payload(config))
-        _session_mcp_cache = (sid, session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
-        log.info("composio: updated session %s", sid)
-    except Exception as exc:
-        log.warning(
-            "composio: session update failed, falling back to re-mint: %s", exc,
-        )
-        invalidate_session()
+    with _SESSION_LOCK:
+        _ensure_sessions_loaded()
+        sid = _SESSION_ID
+        if not sid:
+            return
+        try:
+            config = _session_config(user_id)
+        except NoToolkitsEnabled:
+            # Nothing left enabled here. Drop the session rather than leaving one behind
+            # that still reaches whatever it was last configured with.
+            invalidate_session()
+            return
+        try:
+            session = swarm_client.update_session(sid, _update_payload(config))
+            _session_mcp_cache = (sid, session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
+            log.info("composio: updated session %s", sid)
+        except Exception as exc:
+            log.warning(
+                "composio: session update failed, falling back to re-mint: %s", exc,
+            )
+            invalidate_session()
 
 
 def get_session(user_id: str) -> dict[str, Any]:
@@ -808,30 +825,43 @@ def get_session(user_id: str) -> dict[str, Any]:
     user_id = _require_user_id(user_id, "get_session")
     _ensure_sessions_loaded()
 
-    sid = _SESSION_ID
-    now = time.monotonic()
-    if sid and _session_mcp_cache and _session_mcp_cache[0] == sid and _session_mcp_cache[2] > now:
-        return _session_mcp_cache[1]
+    # Checked before the lock as well as under it: a cached tool call must not queue
+    # behind another caller's network round trip.
+    cached = _cached_session()
+    if cached is not None:
+        return cached
 
-    config = _session_config(user_id)          # raises before any network call
+    with _SESSION_LOCK:
+        cached = _cached_session()
+        if cached is not None:
+            return cached
+        sid = _SESSION_ID
+        now = time.monotonic()
 
-    if sid:
-        try:
-            session = swarm_client.update_session(sid, _update_payload(config))
-            _session_mcp_cache = (sid, session, now + _SESSION_MCP_CACHE_TTL)
-            return session
-        except swarm_client.ComposioError as exc:
-            log.debug("composio: update_session(%s) failed: %s", sid, exc)
-            _SESSION_ID = None
-            _persist_session_id(None)
+        config = _session_config(user_id)          # raises before any network call
 
-    session = swarm_client.create_session(config)
-    new_id = session.get("session_id")
-    if new_id:
-        _SESSION_ID = str(new_id)
-        _persist_session_id(str(new_id))
-        _session_mcp_cache = (str(new_id), session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
-    return session
+        if sid:
+            try:
+                session = swarm_client.update_session(sid, _update_payload(config))
+                _session_mcp_cache = (sid, session, now + _SESSION_MCP_CACHE_TTL)
+                return session
+            except swarm_client.ComposioError as exc:
+                log.debug("composio: update_session(%s) failed: %s", sid, exc)
+                _SESSION_ID = None
+                _persist_session_id(None)
+                # The session may well still exist (a timeout looks the same as a 404
+                # here). Queue it for the sweep; deleting now would add a second
+                # network wait to the agent's tool call.
+                if sid not in _ORPHANED_SESSION_IDS:
+                    _ORPHANED_SESSION_IDS.append(sid)
+
+        session = swarm_client.create_session(config)
+        new_id = session.get("session_id")
+        if new_id:
+            _SESSION_ID = str(new_id)
+            _persist_session_id(str(new_id))
+            _session_mcp_cache = (str(new_id), session, time.monotonic() + _SESSION_MCP_CACHE_TTL)
+        return session
 
 
 def build_mcp_server_entry(user_id: str) -> dict[str, Any]:

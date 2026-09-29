@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -27,33 +29,33 @@ class RootConfigRequest(BaseModel):
 
 
 @router.get("/api/runtime-config")
-def get_runtime_config() -> dict:
-    return runtime_status()
+async def get_runtime_config() -> dict:
+    return await runtime_status()
 
 
 @router.put("/api/runtime-config")
-def put_runtime_config(body: RuntimeConfigRequest) -> dict:
+async def put_runtime_config(body: RuntimeConfigRequest) -> dict:
     try:
-        saved = save_settings(body.model_dump())
+        saved = await asyncio.to_thread(save_settings, body.model_dump())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
         "saved": saved,
-        "status": runtime_status(),
+        "status": await runtime_status(),
     }
 
 
 @router.put("/api/runtime-config/roots")
-def put_runtime_roots(body: RootConfigRequest) -> dict:
+async def put_runtime_roots(body: RootConfigRequest) -> dict:
     try:
-        saved = save_root_settings(body.model_dump())
+        saved = await asyncio.to_thread(save_root_settings, body.model_dump())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
         "saved": saved,
-        "status": runtime_status(),
+        "status": await runtime_status(),
     }
 
 

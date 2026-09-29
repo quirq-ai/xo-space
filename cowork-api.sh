@@ -44,7 +44,8 @@ read_dotenv_value() {
 
 CONFIGURED_HOST="${HOST:-$(read_dotenv_value HOST)}"
 CONFIGURED_PORT="${PORT:-$(read_dotenv_value PORT)}"
-HOST="${CONFIGURED_HOST:-0.0.0.0}"
+# Loopback unless HOST (shell or .env) says otherwise: the API has no login.
+HOST="${CONFIGURED_HOST:-127.0.0.1}"
 PORT="${CONFIGURED_PORT:-5002}"
 
 RED='\033[0;31m'

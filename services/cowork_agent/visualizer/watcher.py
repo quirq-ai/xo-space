@@ -21,7 +21,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from services import xo_structure
+from services import background, xo_structure
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
 from services.cowork_agent.project_layout import runtime_dir_for_project, xo_dir
@@ -80,6 +80,8 @@ _poll_interval_seconds = watcher_tick_interval_seconds
 
 POLL_INTERVAL_S = _poll_interval_seconds()
 
+WATCHER_COMPONENT = "watcher"
+
 
 def _sink_events(events: list) -> list:
     """Drop the task family before the sinks see it."""
@@ -135,8 +137,16 @@ class Watcher:
         # What the command scheduler did on the last tick (ids only), or
         # None before the first tick; published in the heartbeat.
         self.last_scheduler_report: Optional[dict] = None
+        # What failed inside the last tick, one line per failed step
+        # ("workspace tier: ValueError: …"); published in the heartbeat and
+        # to services.background, so a loop that turns while its work fails
+        # is visible (the heartbeat alone looks healthy then).
+        self.step_errors: list[str] = []
 
     # ── One tick ────────────────────────────────────────────────────────
+
+    def _step_failed(self, step: str, exc: BaseException) -> None:
+        self.step_errors.append(f"{step}: {background.describe(exc)}")
 
     def tick(self) -> None:
         """
@@ -147,6 +157,7 @@ class Watcher:
             self._tick_body()
 
     def _tick_body(self) -> None:
+        self.step_errors = []
         tick_started = time.monotonic()
 
         # 1. Drain every source.
@@ -154,7 +165,8 @@ class Watcher:
         for src in self.sources:
             try:
                 events.extend(src.poll_events())
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"source {src.name}", exc)
                 logger.exception("source %s failed; continuing with others", src.name)
 
         # 2. Maintain the model cache from UsageObserved (model id is
@@ -186,7 +198,8 @@ class Watcher:
                 stats.apply(rt, sink_events, legacy_root=x)
                 # The Space timeline gets the same rendered lines, tagged.
                 timeline.apply(rt, sink_events, project_id=project_id)
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"sinks for {project_id}", exc)
                 logger.exception("sink batch failed for project %s", project_id)
                 continue
 
@@ -198,7 +211,8 @@ class Watcher:
         for src in self.sources:
             try:
                 presence.extend(src.poll_presence())
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"presence {src.name}", exc)
                 logger.exception("presence poll failed for %s", src.name)
         presence_by_project: dict[str, list] = defaultdict(list)
         for row in presence:
@@ -217,7 +231,8 @@ class Watcher:
             # never raises, and one lstat while the folder's .xo/ is unchanged.
             try:
                 xo_structure.ensure_xo_structure_if_changed(pid)
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"xo structure {pid}", exc)
                 logger.exception("xo structure check failed for %s", pid)
             # Identity fill is idempotent (no-ops once _template is cleared).
             # Running it here — alongside the per-project activity sink that
@@ -227,7 +242,8 @@ class Watcher:
             # documented intent of the project_json sink (see its docstring).
             try:
                 project_json.fill_identity(xo_dir(pid), pid)
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"identity {pid}", exc)
                 logger.exception("identity fill failed for %s", pid)
             try:
                 activity.apply(
@@ -235,7 +251,8 @@ class Watcher:
                     presence_by_project.get(pid, []),
                     model_by_session=self.model_by_session,
                 )
-            except Exception:
+            except Exception as exc:
+                self._step_failed(f"activity {pid}", exc)
                 logger.exception("activity sink failed for %s", pid)
 
         # 6. Workspace tier — re-aggregated every tick. All of these are
@@ -250,7 +267,8 @@ class Watcher:
             ws_activity.apply(project_ids)
             ws_sessionslist.apply(project_ids)
             ws_sessions_augment.apply(project_ids)
-        except Exception:
+        except Exception as exc:
+            self._step_failed("workspace tier", exc)
             logger.exception("workspace tier failed")
 
         # 7. Scheduled commands. This loop is only the scheduler's clock:
@@ -267,7 +285,8 @@ class Watcher:
         a scheduler bug must not stop telemetry ingestion."""
         try:
             report = scheduler.tick()
-        except Exception:
+        except Exception as exc:
+            self._step_failed("scheduler", exc)
             logger.exception("scheduler tick failed (non-fatal)")
             self.last_scheduler_report = {"error": "scheduler tick raised; see log"}
             return
@@ -289,6 +308,7 @@ class Watcher:
                         round((time.monotonic() - tick_started) * 1000)
                     ),
                     "scheduler": self.last_scheduler_report,
+                    "step_errors": len(self.step_errors),
                 },
             )
         except Exception:
@@ -307,10 +327,19 @@ class Watcher:
         logger.info("Watcher started; polling every %.1fs", POLL_INTERVAL_S)
         try:
             while True:
+                background.tick_started(WATCHER_COMPONENT)
                 try:
                     await asyncio.to_thread(self.tick)
-                except Exception:
+                except Exception as exc:
+                    background.tick_failed(WATCHER_COMPONENT, exc)
                     logger.exception("watcher tick failed (non-fatal)")
+                else:
+                    if self.step_errors:
+                        background.tick_failed(
+                            WATCHER_COMPONENT,
+                            f"{len(self.step_errors)} step(s) failed; first: {self.step_errors[0]}")
+                    else:
+                        background.tick_succeeded(WATCHER_COMPONENT)
                 await asyncio.sleep(POLL_INTERVAL_S)
         except asyncio.CancelledError:
             logger.info("Watcher shutting down")

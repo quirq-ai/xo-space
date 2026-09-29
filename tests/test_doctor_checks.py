@@ -1,0 +1,313 @@
+"""One breakage on top of the healthy samples gives the expected finding."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+from services.doctor import checks, inventory
+from services.doctor.context import Context
+from services.timestamps import iso
+from tests.doctor_sandbox import DoctorSandbox, _Statvfs
+
+#: Captured before DoctorSandbox.setUp() ever patches os.statvfs, so a test
+#: can run a check against whatever this machine's real filesystem reports.
+_REAL_STATVFS = os.statvfs
+
+
+class SpaceIdentityTests(DoctorSandbox):
+    def write_space(self, xo_space_id, *, age_s: float = 3600, roots: dict | None = None) -> None:
+        xo = self.projects / ".xo"
+        xo.mkdir(exist_ok=True)
+        updated = iso(datetime.fromtimestamp(self.now - age_s, timezone.utc))
+        document = {"$schema": "xo/space.schema.json", "schema": 2, "xo_space_id": xo_space_id,
+                    "updated_at": updated,
+                    "roots": roots or {"projects_root": str(self.projects), "state_root": str(self.state)}}
+        (xo / "space.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def identity(self) -> list[dict]:
+        return [f for f in self.problems() if f["id"] == "space.identity"]
+
+    def test_null_id_while_the_environment_has_one_fails(self) -> None:
+        self.write_space(None)
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-1"}):
+            [finding] = self.identity()
+        self.assertEqual(finding["level"], "FAIL")
+
+    def test_a_different_id_fails(self) -> None:
+        self.write_space("space-2")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-1"}):
+            [finding] = self.identity()
+        self.assertEqual(finding["level"], "FAIL")
+        self.assertIn("space-2", finding["observed"])
+
+    def test_an_id_with_no_environment_value_warns(self) -> None:
+        self.write_space("space-1")
+        [finding] = self.identity()
+        self.assertEqual(finding["level"], "WARN")
+
+    def test_matching_id_is_healthy(self) -> None:
+        self.write_space("space-1")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-1"}):
+            self.assertEqual(self.problems(), [])
+
+    def test_stale_roots_warn_but_not_right_after_a_write(self) -> None:
+        other = {"projects_root": "/elsewhere/projects", "state_root": str(self.state)}
+        self.write_space("space-1", roots=other, age_s=3600)
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-1"}):
+            self.assertEqual([f["subject"] for f in self.identity()], ["space.json roots"])
+            self.write_space("space-1", roots=other, age_s=10)
+            self.assertEqual(self.identity(), [])
+
+    def test_roots_that_cannot_be_resolved_are_reported_not_an_error(self) -> None:
+        # Before: a NUL, an unknown ~user or a symlink loop in a recorded root
+        # raised from Path.resolve() and put the whole space check into ERROR.
+        loop = self.state.parent / "loop"
+        loop.symlink_to(loop)
+        for bad in ("bad\x00path", "~no-such-user-xo-doctor/projects", str(loop)):
+            with self.subTest(root=bad):
+                self.write_space(None, roots={"projects_root": bad, "state_root": str(self.state)})
+                report = self.report()
+                space = [c for c in report["checks"] if c["id"] == "space"][0]
+                self.assertEqual(space["level"], "WARN", space)
+                self.assertIn("projects_root", space["findings"][0]["observed"])
+
+    def test_an_unreadable_space_json_is_left_to_the_read_check(self) -> None:
+        (self.projects / ".xo").mkdir()
+        (self.projects / ".xo" / "space.json").write_text("{", encoding="utf-8")
+        with patch.dict(os.environ, {"XO_SPACE_ID": "space-1"}):
+            self.assertEqual(self.ids(), {"read.invalid_json"})
+
+
+class DuplicateIdTests(DoctorSandbox):
+    def test_two_folders_with_one_pid_warn(self) -> None:
+        shutil.copytree(self.projects / "sample-project", self.projects / "copy")
+        [finding] = [f for f in self.problems() if f["id"] == "projects.duplicate_id"]
+        self.assertEqual(finding["level"], "WARN")
+        self.assertIn("copy", finding["observed"])
+        self.assertIn("sample-project", finding["observed"])
+        self.assertIn('delete the "pid" line', finding["why_it_matters"])
+
+
+class StaleTempTests(DoctorSandbox):
+    def temps(self, now=None) -> list[str]:
+        return sorted(f["subject"] for f in self.problems(self.report(now)) if f["id"] == "tmp.stale")
+
+    def test_old_temp_files_warn(self) -> None:
+        (self.state / "inbox" / "inbox.json.tmp").write_text("{}", encoding="utf-8")
+        (self.state / "projects" / "p").mkdir()
+        (self.state / "projects" / "p" / "shard.json.tmp.123.abcdef12").write_text("{}", encoding="utf-8")
+        (self.state / "settings" / ".state-abc12345.json").write_text("{}", encoding="utf-8")
+        (self.projects / "sample-project" / ".xo" / "todos.json.tmp").write_text("{}", encoding="utf-8")
+        self.assertEqual(self.temps(), [
+            "inbox/inbox.json.tmp", "projects/p/shard.json.tmp.123.abcdef12",
+            "sample-project/.xo/todos.json.tmp", "settings/.state-abc12345.json"])
+
+    def test_young_temp_files_and_hidden_project_files_are_ignored(self) -> None:
+        tmp = self.state / "inbox" / "inbox.json.tmp"
+        tmp.write_text("{}", encoding="utf-8")
+        (self.projects / "sample-project" / ".xo" / ".gitkeep").write_text("", encoding="utf-8")
+        self.assertEqual(self.temps(now=tmp.stat().st_mtime + 60), [])
+        tmp.unlink()
+        self.assertEqual(self.temps(), [])
+
+    def test_inert_hidden_files_are_not_interrupted_writes(self) -> None:
+        old = self.now - 86400
+        for name in sorted(checks.INERT_HIDDEN_NAMES):
+            path = self.state / name
+            path.write_bytes(b"\x00" * 8)
+            os.utime(path, (old, old))
+        self.assertNotIn("tmp.stale", self.ids())
+
+    def test_an_mkstemp_name_is_still_reported(self) -> None:
+        path = self.state / "settings" / ".state-ab12cd.json"
+        path.write_text("{}", encoding="utf-8")
+        old = self.now - 86400
+        os.utime(path, (old, old))
+        self.assertIn("tmp.stale", self.ids())
+
+
+class LayoutTests(DoctorSandbox):
+    def test_an_old_copy_beside_the_new_one_warns(self) -> None:
+        (self.state / "inbox.json").write_text("{}", encoding="utf-8")
+        [finding] = [f for f in self.problems() if f["id"] == "layout.old_copy_left"]
+        self.assertIn("the Inbox", finding["observed"])
+
+    def test_not_migrated_advice_depends_on_an_old_server_heartbeat(self) -> None:
+        (self.state / "commands.log.1").write_text("old", encoding="utf-8")
+        [finding] = [f for f in self.problems() if f["id"] == "layout.not_migrated"]
+        self.assertIn("Restart the server once to move or clear these files.", finding["why_it_matters"])
+        (self.state / "watcher").mkdir()
+        beat = {"schema": 1, "last_tick_at": iso(datetime.fromtimestamp(self.now, timezone.utc))}
+        (self.state / "watcher" / "heartbeat.json").write_text(json.dumps(beat), encoding="utf-8")
+        [finding] = [f for f in self.problems() if f["id"] == "layout.not_migrated"]
+        self.assertIn("older xo-space is still running", finding["why_it_matters"])
+
+    def test_old_copy_left_warns_about_an_older_server_instead_of_delete_when_its_heartbeat_is_fresh(self) -> None:
+        (self.state / "inbox.json").write_text("{}", encoding="utf-8")
+        (self.state / "watcher").mkdir()
+        beat = {"schema": 1, "last_tick_at": iso(datetime.fromtimestamp(self.now, timezone.utc))}
+        (self.state / "watcher" / "heartbeat.json").write_text(json.dumps(beat), encoding="utf-8")
+        [finding] = [f for f in self.problems()
+                     if f["id"] == "layout.old_copy_left" and f["subject"] == "the Inbox"]
+        self.assertIn("older xo-space", finding["why_it_matters"])
+        self.assertNotIn("Delete it", finding["why_it_matters"])
+
+
+class LegacyTests(DoctorSandbox):
+    def test_pre_move_runtime_files_in_a_project_xo_warn(self) -> None:
+        (self.projects / "sample-project" / ".xo" / "stats.json").write_text("{}", encoding="utf-8")
+        [finding] = [f for f in self.problems() if f["id"] == "legacy.pending"]
+        self.assertEqual(finding["subject"], "sample-project")
+        self.assertIn("stats.json", finding["observed"])
+        self.assertIn("Restart the server once to move them into the state folder.", finding["why_it_matters"])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    def test_a_project_that_cannot_be_reached_is_not_an_error(self) -> None:
+        # Found by the live smoke test: a project behind a folder this user
+        # can't enter made the legacy check raise PermissionError (ERROR).
+        # runtime.keys_unknown already reports that project; skip it here.
+        external = self.state.parent / "ext"
+        (external / "gamma" / ".xo").mkdir(parents=True)
+        (self.projects / "gamma").symlink_to(external / "gamma")
+        external.chmod(0)
+        self.addCleanup(external.chmod, 0o755)
+        report = self.report()
+        legacy = [c for c in report["checks"] if c["id"] == "legacy"][0]
+        self.assertEqual((legacy["level"], legacy.get("error")), ("OK", None))
+
+
+class HeartbeatTests(DoctorSandbox):
+    def beats(self) -> list[dict]:
+        return [f for f in self.problems() if f["id"] == "watcher.heartbeat"]
+
+    def test_disabled_watcher_is_not_checked(self) -> None:
+        self.assertEqual(self.beats(), [])
+
+    def test_a_stale_or_missing_heartbeat_warns_when_enabled(self) -> None:
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}):
+            [stale] = self.beats()
+            self.assertIn("last ticked", stale["observed"])
+            (self.state / "cache" / "heartbeat.json").unlink()
+            [missing] = self.beats()
+            self.assertIn("no readable heartbeat yet", missing["observed"])
+
+    def test_a_fresh_heartbeat_is_healthy(self) -> None:
+        beat = {"schema": 1, "last_tick_at": iso(datetime.fromtimestamp(self.now - 1, timezone.utc))}
+        (self.state / "cache" / "heartbeat.json").write_text(json.dumps(beat), encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}):
+            self.assertEqual(self.beats(), [])
+
+
+class NoActiveAgentResolutionTests(DoctorSandbox):
+    """The watcher and layout checks must not resolve the active agent (that's
+    Plane B config, unrelated to reading two watcher env vars), so a broken
+    agent setup doesn't turn them into ERROR."""
+
+    def test_heartbeat_and_layout_checks_survive_a_broken_active_agent(self) -> None:
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}), \
+             patch("services.cowork_agent.runtime_config.get_active_agent",
+                   side_effect=RuntimeError("broken agent setup")):
+            report = self.report()
+        by_id = {c["id"]: c for c in report["checks"]}
+        self.assertNotEqual(by_id["watcher"]["level"], "ERROR")
+        self.assertNotEqual(by_id["layout"]["level"], "ERROR")
+
+
+class GrowthTests(DoctorSandbox):
+    def test_large_files_quarantine_locks_and_offsets_warn(self) -> None:
+        (self.state / "projects" / "timeline.jsonl").write_bytes(b"x" * 64)
+        (self.state / ".locks" / "extra.lock").write_text("", encoding="utf-8")
+        offsets = self.state / "projects" / "offsets.json"
+        document = json.loads(offsets.read_text(encoding="utf-8"))
+        document["offsets"].update({f"/s/{i}.jsonl": {"offset": 0, "inode": i} for i in range(3)})
+        offsets.write_text(json.dumps(document), encoding="utf-8")
+        with patch.object(checks, "MAX_FILE_BYTES", 32), patch.object(checks, "MAX_ENTRIES", 1):
+            found = {f["id"] for f in self.problems()}
+        self.assertTrue({"growth.file_size", "growth.quarantine", "growth.locks", "growth.offsets"} <= found, found)
+
+
+class PrivatePermissionTests(DoctorSandbox):
+    def perms(self) -> list[dict]:
+        return [f for f in self.problems() if f["id"] == "perms.too_open"]
+
+    def test_the_samples_are_private(self) -> None:
+        self.assertEqual(self.perms(), [])
+
+    def test_a_world_readable_secret_warns(self) -> None:
+        (self.state / "secrets" / "secrets.env").chmod(0o644)
+        found = self.perms()
+        self.assertEqual([f["subject"] for f in found], ["secrets/secrets.env"])
+        self.assertNotIn("=", found[0]["observed"], "a finding never carries what is inside")
+
+    def test_a_world_readable_secrets_content_never_appears_in_the_report(self) -> None:
+        secret_path = self.state / "secrets" / "secrets.env"
+        secret_path.write_text("TOKEN=SENTINEL-do-not-leak\n", encoding="utf-8")
+        secret_path.chmod(0o644)
+        report = self.report()
+        self.assertNotIn("SENTINEL-do-not-leak", json.dumps(report))
+
+    def test_a_world_readable_env_warns(self) -> None:
+        (self.state / "settings" / "runtime.env").chmod(0o666)
+        self.assertEqual([f["subject"] for f in self.perms()], ["settings/runtime.env"])
+
+    def test_a_group_readable_file_warns(self) -> None:
+        (self.state / "secrets" / "token.json").chmod(0o640)
+        self.assertEqual([f["subject"] for f in self.perms()], ["secrets/token.json"])
+
+    def test_a_parsed_state_file_is_not_judged_on_permissions(self) -> None:
+        (self.state / "settings" / "onboarding.json").chmod(0o644)
+        self.assertEqual(self.perms(), [])
+
+    def test_the_private_patterns_are_in_the_inventory(self) -> None:
+        patterns = {spec.pattern for spec in inventory.SPECS if spec.klass == inventory.UNPARSED}
+        self.assertTrue(set(checks.PRIVATE_PATTERNS) <= patterns)
+
+
+class DiskSpaceTests(DoctorSandbox):
+    def disk(self, *, free_bytes: int, files: int = 1_000_000, favail: int = 900_000) -> list[dict]:
+        info = _Statvfs(f_frsize=4096, f_bavail=free_bytes // 4096, f_files=files, f_favail=favail)
+        with patch.object(os, "statvfs", return_value=info):
+            return [f for f in self.problems() if f["id"].startswith("disk.")]
+
+    def test_plenty_of_room_is_healthy(self) -> None:
+        self.assertEqual(self.disk(free_bytes=20 * 1024**3), [])
+
+    def test_a_nearly_full_disk_warns(self) -> None:
+        found = self.disk(free_bytes=100 * 1024 * 1024)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_space", "WARN")])
+
+    def test_a_full_disk_fails(self) -> None:
+        found = self.disk(free_bytes=10 * 1024 * 1024)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_space", "FAIL")])
+
+    def test_exhausted_inodes_warn(self) -> None:
+        found = self.disk(free_bytes=20 * 1024**3, favail=100)
+        self.assertEqual([(f["id"], f["level"]) for f in found], [("disk.low_inodes", "WARN")])
+
+    def test_a_filesystem_that_reports_no_inodes_is_not_judged(self) -> None:
+        # Several filesystems (many FUSE mounts, some network mounts) report
+        # f_files == 0 rather than a real count.
+        self.assertEqual(self.disk(free_bytes=20 * 1024**3, files=0, favail=0), [])
+
+    def test_a_statvfs_that_raises_is_not_an_error(self) -> None:
+        with patch.object(os, "statvfs", side_effect=OSError(5, "I/O error")):
+            report = self.report()
+        disk = [c for c in report["checks"] if c["id"] == "disk"][0]
+        self.assertEqual((disk["level"], disk["findings"]), ("OK", []))
+
+    def test_the_real_statvfs_is_exercised_at_least_once(self) -> None:
+        # Every other test in this class stubs os.statvfs; run disk_space
+        # against whatever this machine's real filesystem actually reports.
+        ctx = Context(state_root=self.state, projects_root=self.projects, now=self.now)
+        with patch.object(os, "statvfs", _REAL_STATVFS):
+            findings = checks.disk_space(ctx)
+        self.assertIsInstance(findings, list)
+
+
+if __name__ == "__main__":
+    unittest.main()

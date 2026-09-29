@@ -3,7 +3,8 @@
    The API returns operational summaries and a filesystem catalog only. Secret
    values, source cursor paths, and raw native-session data never reach this
    view. */
-import {apiFetch} from '../core/api.js';
+import {apiFetch,failText} from '../core/api.js';
+import {toast} from '../core/ui.js';
 
 const esc=value=>String(value??'').replace(
   /[&<>"]/g,
@@ -14,6 +15,12 @@ let root=null;
 let timer=null;
 let loading=false;
 let go=()=>{};
+let healthLoading=false;
+let lastHealth=null;
+let pendingMove=null;
+let movingKey=null;
+let previousFindings=null;
+let goneFindings=[];
 
 /* No top-level tab: Quirq opens from the Technical details button in Setup's Server section (and stays
    deep-linkable at #/quirq); Setup's tab lights up while it is open. It stays
@@ -27,13 +34,17 @@ export default {
     root=el;
     go=ctx.switchTo;
     renderShell();
+    root.querySelector('#quirq-health-run').addEventListener('click',()=>loadHealth());
+    root.querySelector('#quirq-health').addEventListener('click',handleHealthClick);
     root.addEventListener('click',handleCrossViewNavigation);
-    await loadCatalog();
+    await Promise.all([loadCatalog(),loadHealth()]);
   },
   show(){
     if(root){
       loadCatalog();
+      loadHealth();
     }
+    /* Only the catalog polls. Health checks run on open and on "Run checks". */
     if(root&&!timer){
       timer=setInterval(loadCatalog,10000);
     }
@@ -59,6 +70,13 @@ function renderShell(){
           +'<button id="quirq-back" type="button" data-go-view="setup/server">&#8592; Setup</button>'
         +'</div>'
       +'</header>'
+      +'<section class="quirq-panel quirq-health" id="quirq-health">'
+        +'<header><div><span>State health</span><h2>Health checks</h2></div>'
+          +'<div class="quirq-health-actions"><small id="quirq-health-checked"></small><b id="quirq-health-level">—</b>'
+          +'<button id="quirq-health-run" type="button">Run checks</button></div>'
+        +'</header>'
+        +'<div id="quirq-health-list"><div class="quirq-empty">Checking state…</div></div>'
+      +'</section>'
       +'<section class="quirq-path" id="quirq-path"><div class="quirq-skeleton"></div></section>'
       +'<section class="quirq-metrics" id="quirq-metrics" aria-label="Quirq state metrics"></section>'
       +'<section class="quirq-panel quirq-storage-map">'
@@ -368,4 +386,134 @@ function pretty(value){
   return String(value||'Not configured').split('_').map(
     part=>part?part[0].toUpperCase()+part.slice(1):''
   ).join(' ');
+}
+
+/* Health: GET /api/doctor (services/doctor). One finding kind carries an
+   action: moving a leftover runtime folder into quarantine/, confirmed inline. */
+async function loadHealth(){
+  if(healthLoading||!root)return;
+  healthLoading=true;
+  const button=root.querySelector('#quirq-health-run');
+  button.disabled=true;
+  button.textContent='Checking…';
+  const response=await apiFetch('/api/doctor');
+  healthLoading=false;
+  button.disabled=false;
+  button.textContent='Run checks';
+  if(!response.ok){
+    renderHealthFailure(failText(response));
+    return;
+  }
+  previousFindings=lastHealth?new Map(flattenFindings(lastHealth).map(finding=>[stableKey(finding),finding])):null;
+  lastHealth=response.data;
+  goneFindings=vanished(previousFindings,lastHealth);
+  renderHealth(lastHealth);
+}
+
+/* A finding's identity across runs: problem_key when the server sends one
+   (stable even when the damage changes kind), else the v1 key. */
+function stableKey(finding){return finding.problem_key||finding.key;}
+
+function flattenFindings(report){
+  return (report.checks||[]).flatMap(check=>check.error
+    ?[{id:check.id,key:'error:'+check.id,level:'ERROR',subject:check.id,path:'',
+       observed:'This check could not run: '+check.error,why_it_matters:'This part of the state was not checked.'}]
+    :(check.findings||[]).filter(finding=>finding.level!=='OK'));
+}
+
+/* What the previous run showed that this one doesn't: fixed, no longer
+   checked, or now folded under another entry. Kept in memory only. */
+function vanished(previous,report){
+  if(!previous)return [];
+  const current=flattenFindings(report);
+  const present=new Set(current.map(stableKey));
+  const parentOf=new Map();
+  current.forEach(finding=>(finding.related||[]).forEach(item=>parentOf.set(stableKey(item),finding.title||finding.observed)));
+  return [...previous.values()].filter(finding=>!present.has(stableKey(finding)))
+    .map(finding=>({title:finding.title||finding.observed,parent:parentOf.get(stableKey(finding))||''}));
+}
+
+function renderHealth(report){
+  const level=report.level||'OK';
+  const badge=root.querySelector('#quirq-health-level');
+  badge.textContent=level==='OK'?'Healthy':level;
+  badge.className='is-'+level.toLowerCase();
+  root.querySelector('#quirq-health-checked').textContent='Checked '+relativeTime(report.checked_at);
+  const findings=flattenFindings(report);
+  const gone=goneFindings.length
+    ?'<div class="quirq-health-gone" id="quirq-health-gone"><span>No longer seen since the previous check</span>'
+      +goneFindings.map(g=>'<p>'+esc(g.title)+' — '+(g.parent?'now part of: '+esc(g.parent):'fixed, or no longer checked')+'</p>').join('')
+    +'</div>'
+    :'';
+  root.querySelector('#quirq-health-list').innerHTML=(findings.length
+    ?findings.map(healthRow).join('')
+    :'<div class="quirq-empty">No problems found. Checked '+esc(relativeTime(report.checked_at))+'.</div>')+gone;
+}
+
+function healthRow(finding){
+  const confirming=finding.action&&pendingMove===finding.subject;
+  const disabled=movingKey?' disabled':'';
+  const action=!finding.action?''
+    :confirming
+      ?'<div class="quirq-health-confirm"><p>Move this folder into quarantine? You can move it back by hand.</p>'
+        +'<button type="button" data-move-confirm="'+esc(finding.subject)+'"'+disabled+'>Move aside</button>'
+        +'<button type="button" data-move-cancel'+disabled+'>Cancel</button>'
+        +'<em id="quirq-health-move-error"></em></div>'
+      :'<button type="button" data-move-aside="'+esc(finding.subject)+'"'+disabled+'>Move aside…</button>';
+  const headline=finding.title||finding.observed;
+  const observed=finding.title?'<p class="quirq-health-observed">'+esc(finding.observed)+'</p>':'';
+  const evidence=(finding.evidence||[]).length
+    ?'<dl class="quirq-health-evidence">'
+      +finding.evidence.map(item=>'<dt>'+esc(item.label)+'</dt><dd>'+esc(item.value)+'</dd>').join('')
+    +'</dl>'
+    :'';
+  const answers=[['What stops working',finding.consequence],['What the Space does by itself',finding.self_repair],
+                 ['What you can do',finding.next_step]].filter(([,text])=>text);
+  const explain=answers.length
+    ?answers.map(([label,text])=>'<p><em>'+esc(label)+':</em> '+esc(text)+'</p>').join('')
+    :'<p>'+esc(finding.why_it_matters)+'</p>';
+  const related=(finding.related||[]).length
+    ?'<details class="quirq-health-related"><summary>'+esc(finding.related.length)+' related</summary>'
+      +finding.related.map(item=>'<div><b>'+esc(item.title||item.observed)+'</b>'
+        +(item.path?'<code>'+esc(item.path)+'</code>':'')+'</div>').join('')
+    +'</details>'
+    :'';
+  return '<div class="quirq-health-row is-'+esc(String(finding.level).toLowerCase())+'" data-finding="'+esc(stableKey(finding))+'">'
+    +'<div><span>'+esc(finding.level)+' · '+esc(finding.id)+'</span>'
+      +'<b>'+esc(headline)+'</b>'+observed+evidence+explain
+      +(finding.path?'<code>'+esc(finding.path)+'</code>':'')
+      +related
+    +'</div>'+action
+  +'</div>';
+}
+
+async function handleHealthClick(event){
+  if(movingKey)return;
+  const start=event.target.closest('[data-move-aside]');
+  if(start){pendingMove=start.dataset.moveAside;renderHealth(lastHealth);return;}
+  if(event.target.closest('[data-move-cancel]')){pendingMove=null;renderHealth(lastHealth);return;}
+  const confirm=event.target.closest('[data-move-confirm]');
+  if(!confirm||confirm.disabled)return;
+  const key=confirm.dataset.moveConfirm;
+  movingKey=key;
+  renderHealth(lastHealth);
+  const response=await apiFetch('/api/doctor/runtime-leftovers/'+encodeURIComponent(key)+'/move-aside',{method:'POST',body:{}});
+  movingKey=null;
+  if(response.ok&&response.data?.moved===true&&response.data?.key===key){
+    pendingMove=null;
+    toast('Moved to '+response.data.to);
+    await loadHealth();
+    return;
+  }
+  renderHealth(lastHealth);
+  const error=root.querySelector('#quirq-health-move-error');
+  if(error)error.textContent=response.ok?'The move could not be confirmed. Run checks again.':failText(response);
+}
+
+function renderHealthFailure(message){
+  const badge=root.querySelector('#quirq-health-level');
+  badge.textContent='—';
+  badge.className='';
+  root.querySelector('#quirq-health-checked').textContent='';
+  root.querySelector('#quirq-health-list').innerHTML='<div class="quirq-empty">Health checks unavailable: '+esc(message)+'</div>';
 }
