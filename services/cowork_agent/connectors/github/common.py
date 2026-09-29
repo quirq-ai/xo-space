@@ -110,18 +110,24 @@ def get_github_token(*, read_only: bool = False) -> str | None:
 
     res = run_sync(
         [GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME],
-        env=_gh_env(), timeout=_GH_TOKEN_TIMEOUT_SECONDS, separate_stderr=True,
+        env=_gh_env(), timeout=_GH_TOKEN_TIMEOUT_SECONDS, separate_stderr=True, log_output=False,
     )
     if res.binary_missing:
         return None
     if res.timed_out or res.exception is not None:
-        return _gh_unreadable(res.output.strip(), read_only=read_only)
+        # Never res.output: on a timeout it keeps what gh printed before the
+        # kill, which can be the token itself.
+        detail = (f"`gh auth token` timed out after {_GH_TOKEN_TIMEOUT_SECONDS}s" if res.timed_out
+                  else f"`gh auth token` could not run: {res.exception}")
+        return _gh_unreadable(detail, read_only=read_only)
     token = (res.output.strip() if res.returncode == 0 else "") or None
     _gh_token_cache = (stamp, token)
     return token
 
 
 def _gh_unreadable(detail: str, *, read_only: bool) -> None:
+    """``detail`` ends up in logs, tracebacks and error responses: it must
+    never carry anything gh printed."""
     if read_only:
         raise RuntimeError(f"Could not read the GitHub token from gh: {detail}")
     log.warning("Could not read the GitHub token from gh: %s", detail)
