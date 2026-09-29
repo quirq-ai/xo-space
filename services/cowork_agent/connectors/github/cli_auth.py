@@ -4,7 +4,8 @@ GitHub connector — `gh auth login` (CLI device-flow) acquisition.
 Spawns `gh auth login --web` as a subprocess, parses the one-time device code
 from its output, and waits asynchronously for the user to authorize on
 github.com. Once `gh` exits successfully, the resulting token is read with
-`gh auth token` and exported into token.json by `connect()`.
+`gh auth token` and validated by `connect()`; it stays in gh's own store,
+the only place the connector keeps a GitHub token.
 
 This sits alongside the PAT flow (github_pat.py) — the two methods share the
 same storage and validation (common.py); only the *acquisition* differs.
@@ -32,7 +33,7 @@ from utils.commands import run
 from .common import (
     configure_git_identity,
     connection_payload,
-    save_github_token,
+    note_github_connected,
     validate_token,
 )
 
@@ -207,7 +208,7 @@ async def start_login() -> dict[str, Any]:
     if not _gh_available():
         raise RuntimeError(
             "GitHub CLI (`gh`) is not installed on the server. "
-            "Install it from https://cli.github.com/ or use the PAT method instead."
+            "Install it from https://cli.github.com/."
         )
 
     # Hold the lock for the whole start so two concurrent /cli/start calls
@@ -231,9 +232,10 @@ async def start_login() -> dict[str, Any]:
         # Errors here are non-fatal (e.g. "not logged in" exits non-zero).
         await run([GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME], env=env, timeout=5)
 
-        # `--insecure-storage` writes the token to a plain file under
-        # ~/.config/gh — fine here because we immediately export it into
-        # token.json and never depend on gh's local store after that.
+        # `--insecure-storage` writes the token to a plain (0600) file under
+        # ~/.config/gh, where the connector and `gh auth git-credential` read
+        # it from then on — no keyring prompt can stall this non-interactive
+        # login.
         proc = await asyncio.create_subprocess_exec(
             GH_BIN, "auth", "login",
             "--web",
@@ -334,7 +336,7 @@ async def connect(session_id: str) -> dict[str, Any]:
             ),
         }
 
-    save_github_token(token, auth_method=AUTH_METHOD)
+    note_github_connected()
     # This flow leaves a live `gh` session behind, so git can borrow it for
     # HTTPS auth as well as take its identity from it.
     await configure_git_identity(validation, setup_credential_helper=True)

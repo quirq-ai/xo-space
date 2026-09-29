@@ -1,8 +1,9 @@
 """
 token_store — the single owner of token.json.
 
-Every connector (github, vercel, ...) persists its credentials as a
+Connectors that keep their own credentials (vercel, ...) persist them as a
 provider-keyed entry in one shared JSON file at ``~/.quirq/secrets/token.json``.
+GitHub is not one of them: its token lives in the ``gh`` CLI's store.
 This module is the ONLY place that knows the file's location, its on-disk
 shape, and its read/write semantics. Connectors get/set/delete by provider key
 and never touch the format — so locking or a format migration can later be

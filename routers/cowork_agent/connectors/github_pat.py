@@ -3,7 +3,7 @@ REST routes for the GitHub connector — PAT method (paste a personal access tok
 
   POST /api/connectors/github/token       — receive & validate a PAT
   GET  /api/connectors/github/status      — current connection status
-  POST /api/connectors/github/disconnect  — delete stored token
+  POST /api/connectors/github/disconnect  — forget the connection, sign gh out
   POST /api/connectors/github/reconnect   — re-validate stored token
 
 Only one GitHub identity is connected at a time; the `gh auth login` device
@@ -19,10 +19,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.github import (
-    delete_github_token,
+    disconnect_github_account,
     get_github_token,
     get_status,
-    remove_pat_credential_helper,
     validate_token,
 )
 from services.cowork_agent.connectors.github import pat as github_pat
@@ -77,9 +76,8 @@ async def github_status() -> JSONResponse:
 
 @router.post("/api/connectors/github/disconnect")
 async def disconnect_github() -> JSONResponse:
-    """Delete the stored GitHub token and clear the connection."""
-    delete_github_token()
-    await remove_pat_credential_helper()
+    """Clear the connection and remove its token from gh's credential store."""
+    await disconnect_github_account()
     return JSONResponse({"status": "needs_auth"})
 
 

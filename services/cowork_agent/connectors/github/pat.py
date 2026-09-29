@@ -1,9 +1,15 @@
 """
 GitHub connector — PAT (Personal Access Token) acquisition.
 
-No environment variables. No OAuth app. The user generates a fine-grained PAT
-on GitHub, pastes it into the UI, and this module validates it and hands it to
-the shared core for storage.
+No environment variables. No OAuth app. The user generates a PAT on GitHub,
+pastes it into the UI, and this module validates it and signs the GitHub CLI
+in with it — the non-interactive equivalent of:
+
+    gh auth login --with-token < token.txt
+    gh auth setup-git
+
+so the token lives in gh's credential store and git borrows it through
+`gh auth git-credential`, exactly as after the device flow.
 
 This is one of two acquisition methods; the other is the `gh auth login` device
 flow in ``cli_auth.py``. Everything the two share — storage, validation,
@@ -15,9 +21,10 @@ from typing import Any
 
 from .common import (
     configure_git_identity,
-    configure_pat_credential_helper,
     connection_payload,
-    save_github_token,
+    gh_available,
+    login_gh_with_token,
+    note_github_connected,
     validate_token,
 )
 
@@ -38,12 +45,20 @@ def looks_like_token(token: str) -> bool:
 
 async def connect(token: str) -> dict[str, Any]:
     """
-    Validate a pasted PAT and, if it is good, store it.
+    Validate a pasted PAT and, if it is good, hand it to gh's credential store.
 
     Returns:
         {"ok": True,  "payload": <connection body>}                on success
         {"ok": False, "status": "needs_auth"|"failed", "error": ...} otherwise
     """
+    if not gh_available():
+        return {
+            "ok": False,
+            "status": "failed",
+            "error": "GitHub CLI (`gh`) is not installed on the server, and it holds "
+                     "the token. Install it from https://cli.github.com/.",
+        }
+
     result = await validate_token(token)
 
     if not result.get("valid"):
@@ -53,10 +68,11 @@ async def connect(token: str) -> dict[str, Any]:
             "error": result.get("error", "Validation failed."),
         }
 
-    save_github_token(token, auth_method=AUTH_METHOD)
-    # A pasted PAT leaves no `gh` session for git to borrow, so instead of
-    # `gh auth setup-git` point git at the token we just stored.
-    await configure_git_identity(result, setup_credential_helper=False)
-    await configure_pat_credential_helper()
+    failure = await login_gh_with_token(token)
+    if failure:
+        return {"ok": False, **failure}
+
+    note_github_connected()
+    await configure_git_identity(result, setup_credential_helper=True)
     log.info("GitHub connected as @%s (via PAT)", result.get("username"))
     return {"ok": True, "payload": connection_payload(result, AUTH_METHOD)}

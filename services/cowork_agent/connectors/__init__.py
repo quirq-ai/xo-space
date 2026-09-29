@@ -23,7 +23,8 @@ Two shared pieces sit alongside them, deliberately not connectors:
 
 Credential stores never live in the checkout: ``~/.quirq/secrets/token.json``
 (token_store, kept by uninstall), ``~/.config/rclone/rclone.conf`` (rclone's
-own default), and ``~/.config/composio/{sessions,action_prefs}.json`` (see
+own default), GitHub's token in the ``gh`` CLI's own credential store, and
+``~/.config/composio/{sessions,action_prefs}.json`` (see
 ``composio/paths.py``). Files left at the old ``services/`` and ``data/``
 locations are moved into place on first access.
 

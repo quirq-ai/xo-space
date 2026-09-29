@@ -10,11 +10,10 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional, Sequence
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.connectors.github.common import get_github_token
+from services.cowork_agent.connectors.github.common import get_github_token, gh_hosts_file
 from services.cowork_agent.connectors.github.issues import (
     IssuesResult,
     RateLimit,
@@ -300,16 +299,6 @@ def _digest(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _gh_hosts_file() -> Path:
-    """Where ``gh`` keeps its own session, honouring its config-dir overrides."""
-    override = (os.getenv("GH_CONFIG_DIR", "") or "").strip()
-    if override:
-        return Path(override) / "hosts.yml"
-    xdg = (os.getenv("XDG_CONFIG_HOME", "") or "").strip()
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "gh" / "hosts.yml"
-
-
 def _auth_signature() -> tuple[bool, str]:
     """``(a credential exists, a non-secret digest of it)``.
 
@@ -342,7 +331,7 @@ def _auth_signature() -> tuple[bool, str]:
         # creating it, and that re-login is exactly the event worth catching.
         # gh rewriting it for its own reasons costs one extra poll, which is
         # the cheaper side of the trade.
-        stamp = _gh_hosts_file().stat().st_mtime_ns
+        stamp = gh_hosts_file().stat().st_mtime_ns
         material.append(f"cli:{stamp}")
     except OSError:
         # Absent, or unreadable: either way there is no session to report.
@@ -374,7 +363,7 @@ def detect_auth_change() -> bool:
 
     This is the half that covers a sign-in the API never saw: ``gh auth login``
     run in a terminal. A sign-in *through* the connector does not wait for it:
-    ``save_github_token`` calls :func:`note_auth_change` directly.
+    ``note_github_connected`` calls :func:`note_auth_change` directly.
     """
     global _auth_state
     if not auth_detect_enabled():
