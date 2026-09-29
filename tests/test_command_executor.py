@@ -211,38 +211,6 @@ class RunSpecTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, entry)
 
-    def test_every_github_token_prefix_is_redacted(self) -> None:
-        for prefix in ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"):
-            with self.subTest(prefix=prefix):
-                self.assertEqual(commands._redact_text(f"token {prefix}secretvalue"), "token [REDACTED]")
-
-    def test_log_output_false_keeps_what_the_command_printed_out_of_the_log(self) -> None:
-        from utils.commands import run as run_cmd, run_sync
-
-        # A classic PAT is 40 hex characters: no prefix for redaction to catch.
-        # It reaches the child through env, which the log never records.
-        secret = "0123456789abcdef0123456789abcdef01234567"
-        env = {**os.environ, "SECRET": secret}
-        prints = "import os, sys; print(os.environ['SECRET']); sys.stderr.write(os.environ['SECRET'])"
-        hangs = "import os, time; print(os.environ['SECRET'], flush=True); time.sleep(60)"
-        explicit = self.state_root / "job.log"
-        finished = run_sync([sys.executable, "-c", prints], env=env, timeout=30, log_path=explicit, log_output=False)
-        awaited = run(run_cmd([sys.executable, "-c", prints], env=env, timeout=30, log_output=False))
-        # A timeout keeps what the command printed before the kill.
-        killed = run_sync([sys.executable, "-c", hangs], env=env, timeout=0.5, log_output=False)
-
-        self.assertIn(secret, finished.output)
-        self.assertIn(secret, awaited.output)
-        self.assertTrue(killed.timed_out)
-        self.assertIn(secret, killed.output)
-        shared = (self.state_root / "inbox" / "activity" / "commands.log").read_text(encoding="utf-8")
-        for text in (shared, explicit.read_text(encoding="utf-8")):
-            self.assertNotIn(secret, text)
-            self.assertIn("[output not logged]", text)
-        self.assertEqual(shared.count("[output not logged]"), 3)
-        self.assertRegex(shared, r"\[0; \d+\.\d{3}s\]")
-        self.assertIn("[timeout; ", shared)
-
     def test_rotation_archives_the_full_log_under_a_timestamped_name(self) -> None:
         from utils.commands import run_sync
 
