@@ -2,81 +2,180 @@
 GitHub connector — shared core, common to every auth method.
 
 Both acquisition methods (a pasted PAT via ``github_pat.py``, and the
-``gh auth login`` device flow via ``cli_auth.py``) end up with a bearer
-token for github.com. Everything *after* that point is identical, and lives
+``gh auth login`` device flow via ``cli_auth.py``) end with the GitHub CLI
+signed in to github.com. Everything *after* that point is identical, and lives
 here:
 
-  - persistence  — provider key "github" in token.json (owned by token_store)
+  - persistence  — gh's own credential store; the connector keeps no copy
   - validation   — GET /user
   - status       — what the UI shows for the current connection
-  - git identity — seed the workspace's global user.name / user.email
+  - git identity — seed the workspace's global user.name / user.email, and
+                   `gh auth setup-git` for HTTPS credentials; disconnecting
+                   removes both, so the next account starts clean
+  - one identity — gh keeps several accounts per host; connecting signs it
+                   out of the others, disconnecting out of all of them
 
 Nothing in this module knows how the token was obtained; the only trace of
-that is the ``auth_method`` field carried alongside it for display purposes.
-
-Token file: ~/.quirq/secrets/token.json  (see connectors/token_store.py)
+that is ``auth_method``, read off the token's prefix for display purposes.
 """
 
+import asyncio
+import json
 import logging
+import os
 import shutil
+import time
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 
-from utils.commands import run
-
-from ..token_store import TOKEN_FILE, delete_entry, get_entry, set_entry
+from utils.commands import run, run_sync
 
 log = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
+GITHUB_HOSTNAME = "github.com"
 
 GitHubStatus = Literal["connected", "needs_auth", "failed"]
 AuthMethod = Literal["pat", "cli"]
 
 
 # ---------------------------------------------------------------------------
-# Token storage (provider key "github" in token.json)
+# Token storage: gh's credential store
 # ---------------------------------------------------------------------------
+#
+# The token lives where `gh auth login` puts it: the system credential store,
+# or ~/.config/gh/hosts.yml on a host without one. GitHub is connected exactly
+# when gh holds a token for github.com, whether the connector or a terminal
+# signed it in.
+
+GH_BIN = "gh"
+# Covers gh's own round-trip to GitHub to check the token and its scopes.
+_GH_LOGIN_TIMEOUT_SECONDS = 30
+_GH_TOKEN_TIMEOUT_SECONDS = 5
+_GH_STATUS_TIMEOUT_SECONDS = 10
+# How long a failed `gh auth token` is remembered before gh is asked again.
+_GH_TOKEN_RETRY_SECONDS = 60
+
+# `gh auth token` is a process spawn, and the issue poller asks for the token on
+# every `gh` call it makes. gh rewrites hosts.yml on every login, logout and
+# account switch — even when the secret itself sits in the system keyring — so
+# its mtime says when the answer may have changed. (mtime_ns, token or None)
+_gh_token_cache: tuple[int, str | None] | None = None
+# A read that failed (gh hung, or could not run) is remembered too, until gh's
+# state changes or the retry window passes. Callers are synchronous, some on
+# the event loop: asking a hung gh again on every call would stall the server
+# for the whole timeout, once per call. (mtime_ns, monotonic deadline, reason)
+_gh_token_failure: tuple[int, float, str] | None = None
+
+
+def gh_available() -> bool:
+    return shutil.which(GH_BIN) is not None
+
+
+def gh_hosts_file() -> Path:
+    """Where ``gh`` keeps its own session, honouring its config-dir overrides."""
+    override = (os.getenv("GH_CONFIG_DIR", "") or "").strip()
+    if override:
+        return Path(override) / "hosts.yml"
+    xdg = (os.getenv("XDG_CONFIG_HOME", "") or "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "gh" / "hosts.yml"
+
+
+def _gh_env() -> dict[str, str]:
+    """The environment for `gh auth`, minus the variables that bypass its store.
+
+    With GH_TOKEN or GITHUB_TOKEN set, `gh auth login` refuses to run and
+    `gh auth token` echoes the variable instead of the stored token.
+    """
+    env = os.environ.copy()
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
+def _forget_gh_token() -> None:
+    global _gh_token_cache, _gh_token_failure
+    _gh_token_cache = None
+    _gh_token_failure = None
+
 
 def get_github_token(*, read_only: bool = False) -> str | None:
-    """Return the stored GitHub access token, or None."""
-    entry = get_entry("github", read_only=True) if read_only else get_entry("github")
-    if not entry:
+    """Return the token gh holds for github.com, or None when it is signed out.
+
+    Synchronous, so the first read after gh's state changes blocks on one
+    `gh auth token`; the cache answers the rest. Callers on a hot async path
+    run it in a worker thread (``asyncio.to_thread``). When gh cannot be asked
+    (it hangs, or its config is unreadable) ``read_only`` callers — status
+    checks — get an exception, so a failed read cannot pass for "not
+    connected"; the rest get None. A hung gh is asked again only once
+    ``_GH_TOKEN_RETRY_SECONDS`` pass or its state changes.
+    """
+    global _gh_token_cache, _gh_token_failure
+    try:
+        stamp = gh_hosts_file().stat().st_mtime_ns
+    except FileNotFoundError:
+        return None  # gh has never been signed in here
+    except OSError as exc:
+        return _gh_unreadable(str(exc), read_only=read_only)
+    # Read once each: callers in worker threads can race _forget_gh_token.
+    cached, failed = _gh_token_cache, _gh_token_failure
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    if failed is not None and failed[0] == stamp and time.monotonic() < failed[1]:
+        # Already warned about when it happened.
+        return _gh_unreadable(failed[2], read_only=read_only, warn=False)
+
+    res = run_sync(
+        [GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME],
+        env=_gh_env(), timeout=_GH_TOKEN_TIMEOUT_SECONDS, separate_stderr=True, log_output=False,
+    )
+    if res.binary_missing:
         return None
-    token = entry.get("access_token")
-    if read_only and token is not None and not isinstance(token, str):
-        raise ValueError("GitHub credential must be a string")
-    return token or None
+    if res.timed_out or res.exception is not None:
+        # Never res.output: on a timeout it keeps what gh printed before the
+        # kill, which can be the token itself.
+        detail = (f"`gh auth token` timed out after {_GH_TOKEN_TIMEOUT_SECONDS}s" if res.timed_out
+                  else f"`gh auth token` could not run: {res.exception}")
+        _gh_token_failure = (stamp, time.monotonic() + _GH_TOKEN_RETRY_SECONDS, detail)
+        return _gh_unreadable(detail, read_only=read_only)
+    token = (res.output.strip() if res.returncode == 0 else "") or None
+    _gh_token_cache = (stamp, token)
+    _gh_token_failure = None
+    return token
+
+
+def _gh_unreadable(detail: str, *, read_only: bool, warn: bool = True) -> None:
+    """``detail`` ends up in logs, tracebacks and error responses: it must
+    never carry anything gh printed."""
+    if read_only:
+        raise RuntimeError(f"Could not read the GitHub token from gh: {detail}")
+    if warn:
+        log.warning("Could not read the GitHub token from gh: %s", detail)
+    return None
+
+
+def auth_method_for(token: str) -> str:
+    """"cli" for the OAuth token gh's device flow mints (gho_), else "pat"."""
+    return "cli" if token.startswith("gho_") else "pat"
 
 
 def get_github_auth_method() -> str | None:
-    """Return the auth method used for the stored token: "pat", "cli", or None."""
-    entry = get_entry("github")
-    if not entry:
-        return None
-    # Pre-existing tokens (no auth_method field) are PATs.
-    return entry.get("auth_method") or "pat"
+    """Return the auth method behind the connected token: "pat", "cli", or None."""
+    token = get_github_token()
+    return auth_method_for(token) if token else None
 
 
-def save_github_token(token: str, *, auth_method: str = "pat") -> None:
-    """Save a GitHub access token to token.json.
+def note_github_connected() -> None:
+    """Both acquisition flows end here, once gh holds the new token.
 
-    auth_method is "pat" (user-pasted PAT) or "cli" (from `gh auth login`).
-
-    Both acquisition flows converge here, so this is also where the issue
-    poller learns its backoff is stale: a poller resting ten minutes on
-    ``not_authenticated`` must not outlive the sign-in that fixed it.
+    This is where the issue poller learns its backoff is stale: a poller
+    resting ten minutes on ``not_authenticated`` must not outlive the sign-in
+    that fixed it.
     """
-    set_entry("github", {
-        "access_token": token,
-        "refresh_token": None,
-        "expires_at": 0,
-        "token_type": "Bearer",
-        "scope": "",
-        "auth_method": auth_method,
-    })
-    log.info("GitHub token saved to %s (method=%s)", TOKEN_FILE, auth_method)
+    _forget_gh_token()
     _notify_issue_poller()
 
 
@@ -94,10 +193,97 @@ def _notify_issue_poller() -> None:
         log.debug("could not notify the GitHub issue poller", exc_info=True)
 
 
-def delete_github_token() -> None:
-    """Remove the GitHub entry from token.json."""
-    delete_entry("github")
-    log.info("GitHub token removed from %s", TOKEN_FILE)
+async def login_gh_with_token(token: str) -> dict[str, str] | None:
+    """`gh auth login --with-token`: put the token in gh's credential store.
+
+    The token goes in on stdin, never argv or a file on disk. Returns None on
+    success, else ``{"status", "error"}`` carrying gh's reason, typically a
+    classic PAT without the ``repo`` and ``read:org`` scopes gh insists on.
+    """
+    res = await run(
+        [GH_BIN, "auth", "login", "--hostname", GITHUB_HOSTNAME,
+         "--git-protocol", "https", "--with-token"],
+        input=token.encode(), env=_gh_env(), timeout=_GH_LOGIN_TIMEOUT_SECONDS,
+    )
+    _forget_gh_token()
+    if res.ok:
+        return None
+    if res.timed_out or res.binary_missing or res.exception is not None:
+        return {"status": "failed", "error": f"GitHub CLI could not sign in: {res.output.strip()}"}
+    reason = res.output.strip() or f"`gh auth login` exited with status {res.returncode}."
+    return {"status": "needs_auth", "error": f"GitHub CLI rejected this token: {reason}"}
+
+
+async def disconnect_github_account() -> bool:
+    """Sign gh out of every github.com account and remove what connecting
+    wrote to the global gitconfig. Never raises.
+
+    Returns whether gh is left without a github.com token. Logging out only
+    the active account is not enough: gh keeps several per host, and makes
+    the next one active, so its token would still answer every `gh` call.
+    """
+    await sign_gh_out()
+    await _clear_git_config()
+    try:
+        return await asyncio.to_thread(get_github_token, read_only=True) is None
+    except Exception:
+        log.warning("Could not confirm gh is signed out of github.com", exc_info=True)
+        return False
+
+
+async def sign_gh_out() -> None:
+    """Sign gh out of every github.com account it holds. Never raises."""
+    accounts = await _gh_accounts()
+    if accounts is None:
+        # gh cannot list its accounts: the bare logout, which covers one.
+        await _logout_gh(None)
+        return
+    for login in accounts[0]:
+        await _logout_gh(login)
+
+
+async def sign_gh_out_of_other_accounts() -> None:
+    """After a sign-in: sign gh out of every github.com account but the one
+    just made active, since `gh auth login` adds an account rather than
+    replacing the last. The connector holds one identity. Never raises."""
+    accounts = await _gh_accounts()
+    if accounts is None:
+        log.warning("Could not list gh's github.com accounts; an earlier one may still be signed in")
+        return
+    logins, active = accounts
+    for login in logins:
+        # No active account named: nothing tells the new one apart, so keep all.
+        if active is not None and login != active:
+            await _logout_gh(login)
+
+
+async def _gh_accounts() -> tuple[list[str], str | None] | None:
+    """``(every github.com login gh holds, the active one)``, or None when gh
+    cannot tell."""
+    res = await run(
+        [GH_BIN, "auth", "status", "--hostname", GITHUB_HOSTNAME, "--json", "hosts"],
+        env=_gh_env(), timeout=_GH_STATUS_TIMEOUT_SECONDS, separate_stderr=True,
+    )
+    if not res.ok:
+        return None
+    try:
+        entries = json.loads(res.output)["hosts"].get(GITHUB_HOSTNAME) or []
+        logins = [e["login"] for e in entries if isinstance(e.get("login"), str) and e["login"]]
+        active = next((e["login"] for e in entries if e.get("active") and e.get("login") in logins), None)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return logins, active
+
+
+async def _logout_gh(username: str | None) -> None:
+    """Sign gh out of github.com (one account of it, when named). Never raises."""
+    argv = [GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME]
+    if username:
+        argv += ["--user", username]
+    res = await run(argv, env=_gh_env(), timeout=_SUBPROCESS_TIMEOUT_SECONDS)
+    _forget_gh_token()
+    if not res.ok:
+        log.warning("`gh auth logout` failed: %s", res.output.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +370,7 @@ async def get_status() -> dict[str, Any]:
         return {"status": "needs_auth"}
 
     result = await validate_token(token)
-    method = get_github_auth_method()
-    if method:
-        result["auth_method"] = method
+    result["auth_method"] = auth_method_for(token)
     return result
 
 
@@ -207,7 +391,6 @@ async def get_status() -> dict[str, Any]:
 # seed the global config here so every repo in the workspace can commit.
 
 GIT_BIN = "git"
-GH_BIN = "gh"
 _SUBPROCESS_TIMEOUT_SECONDS = 10
 
 
@@ -253,9 +436,11 @@ async def configure_git_identity(
     without `git`, or with a read-only HOME. Never overwrites values the user
     has already set — an explicitly configured identity wins over ours.
 
-    When ``setup_credential_helper`` is set (the `gh auth login` flow, which
-    leaves a real `gh` session behind), also runs `gh auth setup-git` so HTTPS
-    pushes authenticate through that session instead of prompting.
+    When ``setup_credential_helper`` is set (the token is in gh's credential
+    store), also runs `gh auth setup-git` so HTTPS clones and pushes to
+    github.com authenticate through `gh auth git-credential` instead of
+    prompting (on Coder, an external-auth GIT_ASKPASS that never completes in
+    a terminal).
     """
     if shutil.which(GIT_BIN) is None:
         log.warning("git is not installed; skipping git identity setup")
@@ -277,10 +462,35 @@ async def configure_git_identity(
         else:
             log.info("git %s set to %r", key, value)
 
-    if setup_credential_helper and shutil.which(GH_BIN) is not None:
-        rc, out = await _run(GH_BIN, "auth", "setup-git", "--hostname", "github.com")
+    if setup_credential_helper and gh_available():
+        rc, out = await _run(GH_BIN, "auth", "setup-git", "--hostname", GITHUB_HOSTNAME)
         if rc != 0:
             log.warning("`gh auth setup-git` failed: %s", out)
+
+
+# What connecting writes to the global gitconfig: the identity above, and the
+# credential helpers `gh auth setup-git` points at gh.
+_GIT_KEYS_SET_ON_CONNECT = (
+    "user.name",
+    "user.email",
+    f"credential.https://{GITHUB_HOSTNAME}.helper",
+    "credential.https://gist.github.com.helper",
+)
+
+
+async def _clear_git_config() -> None:
+    """Remove what connecting wrote to the global gitconfig. Never raises.
+
+    The identity goes even when the user set it by hand: the next account to
+    connect, the same or another, seeds its own. Other settings stay, and git
+    drops a section once its last key is gone.
+    """
+    if shutil.which(GIT_BIN) is None:
+        return
+    for key in _GIT_KEYS_SET_ON_CONNECT:
+        rc, out = await _run(GIT_BIN, "config", "--global", "--unset-all", key)
+        if rc not in (0, 5):  # 5: the key was not set
+            log.warning("Could not remove git %s: %s", key, out)
 
 
 def connection_payload(validation: dict[str, Any], auth_method: str) -> dict[str, Any]:
