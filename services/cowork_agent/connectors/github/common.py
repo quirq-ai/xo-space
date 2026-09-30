@@ -10,7 +10,8 @@ here:
   - validation   — GET /user
   - status       — what the UI shows for the current connection
   - git identity — seed the workspace's global user.name / user.email, and
-                   `gh auth setup-git` for HTTPS credentials
+                   `gh auth setup-git` for HTTPS credentials; disconnecting
+                   removes both, so the next account starts clean
 
 Nothing in this module knows how the token was obtained; the only trace of
 that is ``auth_method``, read off the token's prefix for display purposes.
@@ -192,8 +193,10 @@ async def login_gh_with_token(token: str) -> dict[str, str] | None:
 
 
 async def disconnect_github_account() -> None:
-    """Sign gh out of its active github.com account. Never raises."""
+    """Sign gh out of its active github.com account and remove what connecting
+    wrote to the global gitconfig. Never raises."""
     await _logout_gh(await _gh_active_login())
+    await _clear_git_config()
 
 
 async def _gh_active_login() -> str | None:
@@ -402,6 +405,31 @@ async def configure_git_identity(
         rc, out = await _run(GH_BIN, "auth", "setup-git", "--hostname", GITHUB_HOSTNAME)
         if rc != 0:
             log.warning("`gh auth setup-git` failed: %s", out)
+
+
+# What connecting writes to the global gitconfig: the identity above, and the
+# credential helpers `gh auth setup-git` points at gh.
+_GIT_KEYS_SET_ON_CONNECT = (
+    "user.name",
+    "user.email",
+    f"credential.https://{GITHUB_HOSTNAME}.helper",
+    "credential.https://gist.github.com.helper",
+)
+
+
+async def _clear_git_config() -> None:
+    """Remove what connecting wrote to the global gitconfig. Never raises.
+
+    The identity goes even when the user set it by hand: the next account to
+    connect, the same or another, seeds its own. Other settings stay, and git
+    drops a section once its last key is gone.
+    """
+    if shutil.which(GIT_BIN) is None:
+        return
+    for key in _GIT_KEYS_SET_ON_CONNECT:
+        rc, out = await _run(GIT_BIN, "config", "--global", "--unset-all", key)
+        if rc not in (0, 5):  # 5: the key was not set
+            log.warning("Could not remove git %s: %s", key, out)
 
 
 def connection_payload(validation: dict[str, Any], auth_method: str) -> dict[str, Any]:

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -34,12 +35,13 @@ VALID = {
     "valid": True, "status": "connected", "username": "octo", "name": "Octo Cat",
     "avatar_url": "", "scopes": "", "user_id": 1, "email": "",
 }
+OTHER = {**VALID, "username": "hubot", "name": "Hubot", "user_id": 2, "email": "hubot@example.com"}
 
 # Tokens starting with "ghp_noscope" are refused the way gh refuses a classic
 # PAT without `read:org`.
 FAKE_GH = textwrap.dedent("""\
     #!{python}
-    import json, os, sys, time
+    import json, os, subprocess, sys, time
     args = sys.argv[1:]
     cfg = os.environ["GH_CONFIG_DIR"]
     hosts = os.path.join(cfg, "hosts.yml")
@@ -66,6 +68,11 @@ FAKE_GH = textwrap.dedent("""\
     elif args[:2] == ["auth", "logout"]:
         if os.path.exists(hosts):
             os.remove(hosts)
+    elif args[:2] == ["auth", "setup-git"]:
+        for host in ("github.com", "gist.github.com"):
+            key = "credential.https://" + host + ".helper"
+            subprocess.run(["git", "config", "--global", "--replace-all", key, ""], check=True)
+            subprocess.run(["git", "config", "--global", "--add", key, "!gh auth git-credential"], check=True)
 """)
 
 
@@ -126,6 +133,9 @@ class GhCredentialStoreTests(unittest.TestCase):
 
     def commands(self) -> list[list[str]]:
         return [c["args"][:2] for c in self.calls()]
+
+    def gitconfig_text(self) -> str:
+        return self.gitconfig.read_text(encoding="utf-8")
 
     def test_pat_is_handed_to_gh_on_stdin_and_nowhere_else(self) -> None:
         result = run(pat.connect(TOKEN))
@@ -266,6 +276,34 @@ class GhCredentialStoreTests(unittest.TestCase):
         self.assertIsNone(logout["env_token"])
         self.assertIsNone(common.get_github_token())
         self.assertFalse(self.token_file.exists())
+
+    def test_disconnect_removes_what_connecting_wrote_to_gitconfig(self) -> None:
+        subprocess.run(["git", "config", "--global", "alias.co", "checkout"], check=True)
+        run(pat.connect(TOKEN))
+        self.assertIn("name = Octo Cat", self.gitconfig_text())
+        self.assertIn("helper = !gh auth git-credential", self.gitconfig_text())
+
+        run(common.disconnect_github_account())
+
+        # The user's own settings stay; no empty section is left behind.
+        self.assertEqual(self.gitconfig_text(), "[alias]\n\tco = checkout\n")
+
+    def test_the_next_account_to_connect_writes_its_own_identity(self) -> None:
+        run(pat.connect(TOKEN))
+        run(common.disconnect_github_account())
+        pat.validate_token.return_value = dict(OTHER)
+        run(pat.connect(TOKEN))
+
+        text = self.gitconfig_text()
+        self.assertIn("name = Hubot", text)
+        self.assertIn("email = hubot@example.com", text)
+        self.assertNotIn("Octo", text)
+        self.assertIn("helper = !gh auth git-credential", text)
+
+    def test_disconnecting_with_nothing_in_gitconfig_is_quiet(self) -> None:
+        with self.assertNoLogs(common.log, "WARNING"):
+            run(common.disconnect_github_account())
+        self.assertEqual(self.gitconfig_text(), "")
 
 
 class TokenRouteTests(unittest.TestCase):

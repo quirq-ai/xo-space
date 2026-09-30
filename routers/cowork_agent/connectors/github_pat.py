@@ -78,7 +78,8 @@ async def github_status() -> JSONResponse:
 
 @router.post("/api/connectors/github/disconnect")
 async def disconnect_github() -> JSONResponse:
-    """Clear the connection and remove its token from gh's credential store."""
+    """Clear the connection: remove its token from gh's credential store, and
+    the git identity and credential helper connecting set up."""
     await disconnect_github_account()
     return JSONResponse({"status": "needs_auth"})
 
