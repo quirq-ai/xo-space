@@ -21,8 +21,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from routers.cowork_agent.connectors import github_pat as github_pat_routes
 from services.cowork_agent.connectors import token_store
 from services.cowork_agent.connectors.github import cli_auth, common, pat
+from utils.commands import CommandResult
 
 TOKEN = "github_pat_test0123456789abcdefghij"
 VALID = {
@@ -138,6 +143,8 @@ class GhCredentialStoreTests(unittest.TestCase):
         self.assertEqual(common.get_github_auth_method(), "pat")
 
     def test_token_gh_rejects_is_stored_nowhere(self) -> None:
+        # Scopes that pass the connector's own check, so this is gh refusing.
+        pat.validate_token.return_value = {**VALID, "scopes": "repo, read:org"}
         result = run(pat.connect("ghp_noscope0123456789012345678901234"))
 
         self.assertFalse(result["ok"])
@@ -145,6 +152,37 @@ class GhCredentialStoreTests(unittest.TestCase):
         self.assertIn("read:org", result["error"])
         self.assertNotIn(["auth", "setup-git"], self.commands())
         self.assertIsNone(common.get_github_token())
+
+    def test_a_classic_token_without_the_scopes_gh_needs_is_refused_before_gh(self) -> None:
+        classic = "ghp_classic0123456789012345678901234567"
+        pat.validate_token.return_value = {**VALID, "scopes": "gist, workflow"}
+        result = run(pat.connect(classic))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "needs_auth")
+        self.assertEqual(result["code"], pat.MISSING_SCOPES)
+        self.assertEqual(result["missing_scopes"], ["repo", "read:org"])
+        self.assertIn("`repo` and `read:org` scopes", result["error"])
+        self.assertIn(pat.TOKENS_PAGE, result["error"])
+        self.assertNotIn(classic, result["error"])
+        self.assertEqual(self.calls(), [])  # gh never saw it
+        self.assertIsNone(common.get_github_token())
+
+    def test_only_tokens_with_scopes_are_checked_and_org_scopes_include_read_org(self) -> None:
+        classic = "ghp_" + "a" * 36
+        cases = [
+            (classic, "repo, read:org, gist", []),
+            (classic, "repo, write:org", []),
+            (classic, "repo, admin:org", []),
+            (classic, "repo", ["read:org"]),
+            (classic, "", ["repo", "read:org"]),
+            ("0123456789abcdef0123456789abcdef01234567", "read:org", ["repo"]),  # old 40-hex classic
+            ("gho_" + "a" * 36, "gist", ["repo", "read:org"]),
+            ("github_pat_" + "a" * 40, "", []),  # fine-grained: no scopes to check
+        ]
+        for token, scopes, missing in cases:
+            with self.subTest(token=token[:11], scopes=scopes):
+                self.assertEqual(pat.missing_required_scopes(token, scopes), missing)
 
     def test_without_gh_the_pat_is_refused_before_validation(self) -> None:
         with patch.object(pat, "gh_available", return_value=False):
@@ -186,6 +224,29 @@ class GhCredentialStoreTests(unittest.TestCase):
         self.assertNotIn(TOKEN, str(raised.exception))
         self.assertNotIn(TOKEN, "\n".join(logged.output))
 
+    def test_a_timed_out_login_read_keeps_the_token_out_of_the_warning(self) -> None:
+        # The runner kills gh on the timeout but keeps what it already printed.
+        killed = CommandResult(argv=["gh"], returncode=-9, output=TOKEN, duration_seconds=10.0, timed_out=True)
+        with patch.object(cli_auth, "run", AsyncMock(return_value=killed)), \
+             self.assertLogs(cli_auth.log, "WARNING") as logged:
+            self.assertIsNone(run(cli_auth._read_gh_token()))
+
+        self.assertIn("timed out", "\n".join(logged.output))
+        self.assertNotIn(TOKEN, "\n".join(logged.output))
+
+    def test_the_token_gh_prints_never_reaches_the_command_log(self) -> None:
+        # A classic PAT is 40 hex characters: no prefix for redaction to catch.
+        classic = "0123456789abcdef0123456789abcdef01234567"
+        (self.gh_config / "hosts.yml").write_text(classic, encoding="utf-8")
+        command_log = self.tmp / "commands.log"
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG": "", "QUIRQ_COMMAND_LOG_PATH": str(command_log)}):
+            self.assertEqual(common.get_github_token(), classic)
+            self.assertEqual(run(cli_auth._read_gh_token()), classic)
+
+        text = command_log.read_text(encoding="utf-8")
+        self.assertEqual(text.count("gh auth token --hostname github.com"), 2)
+        self.assertNotIn(classic, text)
+
     def test_device_flow_leaves_the_token_with_gh(self) -> None:
         (self.gh_config / "hosts.yml").write_text("gho_devicecode0123456789", encoding="utf-8")
         completed = {"status": "completed", "token": "gho_devicecode0123456789"}
@@ -205,6 +266,28 @@ class GhCredentialStoreTests(unittest.TestCase):
         self.assertIsNone(logout["env_token"])
         self.assertIsNone(common.get_github_token())
         self.assertFalse(self.token_file.exists())
+
+
+class TokenRouteTests(unittest.TestCase):
+    def post(self, refusal: dict):
+        app = FastAPI()
+        app.include_router(github_pat_routes.router)
+        with patch.object(github_pat_routes.github_pat, "connect", AsyncMock(return_value=refusal)):
+            return TestClient(app).post("/api/connectors/github/token", json={"token": "ghp_" + "a" * 36})
+
+    def test_a_missing_scopes_refusal_reaches_the_client_as_a_code(self) -> None:
+        res = self.post({"ok": False, "status": "needs_auth", "code": pat.MISSING_SCOPES,
+                         "missing_scopes": ["read:org"], "error": "missing read:org"})
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json(), {"status": "needs_auth", "error": "missing read:org",
+                                      "code": "missing_scopes", "missing_scopes": ["read:org"]})
+
+    def test_other_refusals_keep_their_body(self) -> None:
+        res = self.post({"ok": False, "status": "needs_auth", "error": "Token is invalid or revoked."})
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json(), {"status": "needs_auth", "error": "Token is invalid or revoked."})
 
 
 if __name__ == "__main__":

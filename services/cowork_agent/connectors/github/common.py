@@ -110,7 +110,7 @@ def get_github_token(*, read_only: bool = False) -> str | None:
 
     res = run_sync(
         [GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME],
-        env=_gh_env(), timeout=_GH_TOKEN_TIMEOUT_SECONDS, separate_stderr=True,
+        env=_gh_env(), timeout=_GH_TOKEN_TIMEOUT_SECONDS, separate_stderr=True, log_output=False,
     )
     if res.binary_missing:
         return None

@@ -53,10 +53,12 @@ async def submit_github_token(body: TokenBody) -> JSONResponse:
     if result["ok"]:
         return JSONResponse(result["payload"])
 
-    return JSONResponse(
-        {"status": result["status"], "error": result.get("error", "Validation failed.")},
-        status_code=400 if result["status"] == "needs_auth" else 502,
-    )
+    body = {"status": result["status"], "error": result.get("error", "Validation failed.")}
+    # A categorical failure the UI can name without rendering our text.
+    for key in ("code", "missing_scopes"):
+        if key in result:
+            body[key] = result[key]
+    return JSONResponse(body, status_code=400 if result["status"] == "needs_auth" else 502)
 
 
 # ---------------------------------------------------------------------------

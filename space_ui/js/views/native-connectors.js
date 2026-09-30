@@ -46,6 +46,7 @@ function cardMarkup(app){
    pasted token/code. Only known categorical failures become user-facing text. */
 function failure(res,action='complete this request'){
   if(res.offline)return'Workspace is unreachable. Try again when it is back online.';
+  if(res.code==='missing_scopes')return'This token is missing scopes GitHub CLI needs. A classic token needs repo and read:org: edit it at github.com/settings/tokens, tick both, and save it again.';
   if(res.status===409)return'Another sign-in is running. Finish or cancel it, then try again.';
   if(res.status===401||res.status===403)return'Authorization was rejected. Sign in again.';
   if(res.status===404)return'This connector or sign-in is unavailable. Refresh and try again.';

@@ -14,6 +14,9 @@
        error          : the API's own explanation when it sent one (a JSON
                         body with detail.message / detail.error / detail), else
                         "http NNN".
+       code           : on an HTTP error, the body's categorical `code` when
+                        it sent one (e.g. "missing_scopes"), else null. Views
+                        match it to their own wording; it is never rendered.
    - failText(res) turns that split into the one wording every view shows.
    - Concurrent GETs for the same path share one in-flight request
      (single-flight); sequential calls always hit the network fresh.
@@ -56,14 +59,15 @@ async function doFetch(path,method,body,headers,signal){
     if(Object.keys(h).length)opts.headers=h;
     const r=await fetch(withPageQuery(path),opts);
     if(!r.ok){
-      let message='http '+r.status;
+      let message='http '+r.status,code=null;
       try{
         const j=await r.json();
         if(j.detail&&j.detail.message)message=j.detail.message;
         else if(j.detail&&j.detail.error)message=j.detail.error; /* the auth and connector routes' shape */
         else if(typeof j.detail==='string')message=j.detail;
+        if(typeof j.code==='string')code=j.code; /* a categorical failure, e.g. the GitHub token's missing_scopes */
       }catch(e){}
-      return{ok:false,status:r.status,data:null,offline:false,notImplemented:r.status===501,error:message};
+      return{ok:false,status:r.status,data:null,offline:false,notImplemented:r.status===501,error:message,code};
     }
     let data=null;
     try{data=await r.json();}

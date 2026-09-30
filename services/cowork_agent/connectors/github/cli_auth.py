@@ -185,9 +185,14 @@ async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
 
 async def _read_gh_token() -> str | None:
     """Fetch the active github.com token via `gh auth token`."""
-    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], timeout=10, separate_stderr=True)
+    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], timeout=10,
+                    separate_stderr=True, log_output=False)
     if res.timed_out or res.binary_missing or res.exception is not None:
-        log.warning("Failed to read gh token: %s", res.output.strip())
+        # Never res.output: on a timeout it keeps what gh printed before the
+        # kill, which can be the token itself.
+        reason = ("timed out" if res.timed_out else "gh is not installed" if res.binary_missing
+                  else f"could not run: {res.exception}")
+        log.warning("Failed to read gh token: %s", reason)
         return None
     if res.returncode != 0:
         return None
