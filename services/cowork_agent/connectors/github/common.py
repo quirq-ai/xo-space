@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,12 +52,19 @@ GH_BIN = "gh"
 _GH_LOGIN_TIMEOUT_SECONDS = 30
 _GH_TOKEN_TIMEOUT_SECONDS = 5
 _GH_STATUS_TIMEOUT_SECONDS = 10
+# How long a failed `gh auth token` is remembered before gh is asked again.
+_GH_TOKEN_RETRY_SECONDS = 60
 
 # `gh auth token` is a process spawn, and the issue poller asks for the token on
 # every `gh` call it makes. gh rewrites hosts.yml on every login, logout and
 # account switch — even when the secret itself sits in the system keyring — so
 # its mtime says when the answer may have changed. (mtime_ns, token or None)
 _gh_token_cache: tuple[int, str | None] | None = None
+# A read that failed (gh hung, or could not run) is remembered too, until gh's
+# state changes or the retry window passes. Callers are synchronous, some on
+# the event loop: asking a hung gh again on every call would stall the server
+# for the whole timeout, once per call. (mtime_ns, monotonic deadline, reason)
+_gh_token_failure: tuple[int, float, str] | None = None
 
 
 def gh_available() -> bool:
@@ -86,28 +94,36 @@ def _gh_env() -> dict[str, str]:
 
 
 def _forget_gh_token() -> None:
-    global _gh_token_cache
+    global _gh_token_cache, _gh_token_failure
     _gh_token_cache = None
+    _gh_token_failure = None
 
 
 def get_github_token(*, read_only: bool = False) -> str | None:
     """Return the token gh holds for github.com, or None when it is signed out.
 
     Synchronous, so the first read after gh's state changes blocks on one
-    `gh auth token`; the cache answers the rest. When gh cannot be asked (it
-    hangs, or its config is unreadable) ``read_only`` callers — status checks —
-    get an exception, so a failed read cannot pass for "not connected"; the
-    rest get None.
+    `gh auth token`; the cache answers the rest. Callers on a hot async path
+    run it in a worker thread (``asyncio.to_thread``). When gh cannot be asked
+    (it hangs, or its config is unreadable) ``read_only`` callers — status
+    checks — get an exception, so a failed read cannot pass for "not
+    connected"; the rest get None. A hung gh is asked again only once
+    ``_GH_TOKEN_RETRY_SECONDS`` pass or its state changes.
     """
-    global _gh_token_cache
+    global _gh_token_cache, _gh_token_failure
     try:
         stamp = gh_hosts_file().stat().st_mtime_ns
     except FileNotFoundError:
         return None  # gh has never been signed in here
     except OSError as exc:
         return _gh_unreadable(str(exc), read_only=read_only)
-    if _gh_token_cache is not None and _gh_token_cache[0] == stamp:
-        return _gh_token_cache[1]
+    # Read once each: callers in worker threads can race _forget_gh_token.
+    cached, failed = _gh_token_cache, _gh_token_failure
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    if failed is not None and failed[0] == stamp and time.monotonic() < failed[1]:
+        # Already warned about when it happened.
+        return _gh_unreadable(failed[2], read_only=read_only, warn=False)
 
     res = run_sync(
         [GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME],
@@ -120,18 +136,21 @@ def get_github_token(*, read_only: bool = False) -> str | None:
         # kill, which can be the token itself.
         detail = (f"`gh auth token` timed out after {_GH_TOKEN_TIMEOUT_SECONDS}s" if res.timed_out
                   else f"`gh auth token` could not run: {res.exception}")
+        _gh_token_failure = (stamp, time.monotonic() + _GH_TOKEN_RETRY_SECONDS, detail)
         return _gh_unreadable(detail, read_only=read_only)
     token = (res.output.strip() if res.returncode == 0 else "") or None
     _gh_token_cache = (stamp, token)
+    _gh_token_failure = None
     return token
 
 
-def _gh_unreadable(detail: str, *, read_only: bool) -> None:
+def _gh_unreadable(detail: str, *, read_only: bool, warn: bool = True) -> None:
     """``detail`` ends up in logs, tracebacks and error responses: it must
     never carry anything gh printed."""
     if read_only:
         raise RuntimeError(f"Could not read the GitHub token from gh: {detail}")
-    log.warning("Could not read the GitHub token from gh: %s", detail)
+    if warn:
+        log.warning("Could not read the GitHub token from gh: %s", detail)
     return None
 
 

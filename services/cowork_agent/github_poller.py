@@ -358,18 +358,21 @@ def note_auth_change() -> bool:
     return lifted
 
 
-def detect_auth_change() -> bool:
+async def detect_auth_change() -> bool:
     """Notice a credential that appeared or changed since the last tick.
 
     This is the half that covers a sign-in the API never saw: ``gh auth login``
     run in a terminal. A sign-in *through* the connector does not wait for it:
     ``note_github_connected`` calls :func:`note_auth_change` directly.
+
+    The signature is read in a worker thread, since reading the stored token
+    can wait on `gh auth token`; the state it updates stays on the event loop.
     """
     global _auth_state
     if not auth_detect_enabled():
         return False
     try:
-        current = _auth_signature()
+        current = await asyncio.to_thread(_auth_signature)
     except Exception:  # pragma: no cover - reading the state must not end a tick
         logger.debug(
             "github poller: could not read the credential state", exc_info=True
@@ -641,7 +644,7 @@ async def poll_once() -> dict:
 
     # Ahead of the pause check, not after it: a credential that arrived during
     # the backoff is precisely what makes that backoff stale.
-    detect_auth_change()
+    await detect_auth_change()
 
     if _budget.paused:
         summary["paused"] = True

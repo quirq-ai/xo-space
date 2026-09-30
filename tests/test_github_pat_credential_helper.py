@@ -225,14 +225,44 @@ class GhCredentialStoreTests(unittest.TestCase):
         (self.gh_config / "hosts.yml").write_text(TOKEN, encoding="utf-8")
         (self.gh_config / "hang").touch()
         with patch.object(common, "_GH_TOKEN_TIMEOUT_SECONDS", 0.5):
-            with self.assertRaises(RuntimeError) as raised:
-                common.get_github_token(read_only=True)
             with self.assertLogs(common.log, "WARNING") as logged:
                 self.assertIsNone(common.get_github_token())
+            with self.assertRaises(RuntimeError) as raised:
+                common.get_github_token(read_only=True)
 
         self.assertIn("timed out", str(raised.exception))
         self.assertNotIn(TOKEN, str(raised.exception))
         self.assertNotIn(TOKEN, "\n".join(logged.output))
+
+    def test_a_hung_gh_is_asked_once_until_its_state_changes(self) -> None:
+        (self.gh_config / "hosts.yml").write_text(TOKEN, encoding="utf-8")
+        (self.gh_config / "hang").touch()
+        with patch.object(common, "_GH_TOKEN_TIMEOUT_SECONDS", 0.5):
+            with self.assertLogs(common.log, "WARNING") as logged:
+                self.assertIsNone(common.get_github_token())
+                self.assertIsNone(common.get_github_token())
+            # Remembering the failure must not turn it into "not connected".
+            with self.assertRaises(RuntimeError):
+                common.get_github_token(read_only=True)
+        self.assertEqual(self.commands().count(["auth", "token"]), 1)
+        self.assertEqual(len(logged.output), 1)
+
+        # A new sign-in is worth asking about at once, retry window or not.
+        (self.gh_config / "hang").unlink()
+        (self.gh_config / "hosts.yml").write_text(TOKEN, encoding="utf-8")
+        self.assertEqual(common.get_github_token(), TOKEN)
+
+    def test_a_hung_gh_is_asked_again_once_the_retry_window_passes(self) -> None:
+        (self.gh_config / "hosts.yml").write_text(TOKEN, encoding="utf-8")
+        (self.gh_config / "hang").touch()
+        with patch.object(common, "_GH_TOKEN_TIMEOUT_SECONDS", 0.5), \
+             patch.object(common, "_GH_TOKEN_RETRY_SECONDS", 0), \
+             self.assertLogs(common.log, "WARNING"):
+            self.assertIsNone(common.get_github_token())
+
+        (self.gh_config / "hang").unlink()
+        self.assertEqual(common.get_github_token(), TOKEN)
+        self.assertEqual(self.commands().count(["auth", "token"]), 2)
 
     def test_a_timed_out_login_read_keeps_the_token_out_of_the_warning(self) -> None:
         # The runner kills gh on the timeout but keeps what it already printed.
