@@ -78,10 +78,20 @@ async def github_status() -> JSONResponse:
 
 @router.post("/api/connectors/github/disconnect")
 async def disconnect_github() -> JSONResponse:
-    """Clear the connection: remove its token from gh's credential store, and
-    the git identity and credential helper connecting set up."""
-    await disconnect_github_account()
-    return JSONResponse({"status": "needs_auth"})
+    """Clear the connection: remove every github.com token from gh's credential
+    store, and the git identity and credential helper connecting set up.
+
+    Answers ``needs_auth`` only once gh holds no token: while it still does,
+    every `gh` call keeps working, and the UI must not show signed out.
+    """
+    if await disconnect_github_account():
+        return JSONResponse({"status": "needs_auth"})
+    return JSONResponse(
+        {"status": "failed",
+         "error": "GitHub CLI is still signed in to github.com. Run `gh auth status` to see "
+                  "which account, then `gh auth logout --hostname github.com --user <login>`."},
+        status_code=502,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from services.cowork_agent.connectors.github import cli_auth, common, pat
 from utils.commands import CommandResult
 
 TOKEN = "github_pat_test0123456789abcdefghij"
+HUBOT_TOKEN = "github_pat_hubot0123456789abcdefghi"
 VALID = {
     "valid": True, "status": "connected", "username": "octo", "name": "Octo Cat",
     "avatar_url": "", "scopes": "", "user_id": 1, "email": "",
@@ -38,23 +39,47 @@ VALID = {
 OTHER = {**VALID, "username": "hubot", "name": "Hubot", "user_id": 2, "email": "hubot@example.com"}
 
 # Tokens starting with "ghp_noscope" are refused the way gh refuses a classic
-# PAT without `read:org`.
+# PAT without `read:org`. Like gh, it keeps several accounts per host (a token
+# containing "hubot" signs in as hubot, any other as octo): login adds one and
+# makes it active, logging out the active one makes another active, and a
+# logout that names no user fails once there are two. hosts.yml holds the
+# active token; a bare one, with no accounts.json, is a single account.
 FAKE_GH = textwrap.dedent("""\
     #!{python}
     import json, os, subprocess, sys, time
     args = sys.argv[1:]
     cfg = os.environ["GH_CONFIG_DIR"]
     hosts = os.path.join(cfg, "hosts.yml")
+    accounts = os.path.join(cfg, "accounts.json")
     stdin = sys.stdin.read() if "--with-token" in args else None
     with open(os.path.join(cfg, "calls.jsonl"), "a") as f:
         f.write(json.dumps({{"args": args, "stdin": stdin,
                              "env_token": os.environ.get("GH_TOKEN")}}) + "\\n")
+
+    def load():
+        if os.path.exists(accounts):
+            return json.load(open(accounts))
+        if os.path.exists(hosts):
+            return {{"active": "octo", "users": {{"octo": open(hosts).read()}}}}
+        return {{"active": None, "users": {{}}}}
+
+    def save(state):
+        json.dump(state, open(accounts, "w"))
+        if state["active"]:
+            open(hosts, "w").write(state["users"][state["active"]])
+        elif os.path.exists(hosts):
+            os.remove(hosts)
+
     if args[:2] == ["auth", "login"]:
         token = stdin.strip()
         if token.startswith("ghp_noscope"):
             sys.stderr.write("error validating token: missing required scope 'read:org'\\n")
             sys.exit(1)
-        open(hosts, "w").write(token)
+        state = load()
+        login = "hubot" if "hubot" in token else "octo"
+        state["users"][login] = token
+        state["active"] = login
+        save(state)
     elif args[:2] == ["auth", "token"]:
         if not os.path.exists(hosts):
             sys.stderr.write("no oauth token found for github.com\\n")
@@ -63,11 +88,24 @@ FAKE_GH = textwrap.dedent("""\
         if os.path.exists(os.path.join(cfg, "hang")):
             time.sleep(60)
     elif args[:2] == ["auth", "status"]:
-        accounts = [{{"login": "octo", "active": True}}] if os.path.exists(hosts) else []
-        print(json.dumps({{"hosts": {{"github.com": accounts}}}}))
+        state = load()
+        listed = [{{"login": login, "active": login == state["active"]}} for login in state["users"]]
+        print(json.dumps({{"hosts": {{"github.com": listed}}}}))
     elif args[:2] == ["auth", "logout"]:
-        if os.path.exists(hosts):
-            os.remove(hosts)
+        state = load()
+        user = args[args.index("--user") + 1] if "--user" in args else None
+        if user is None:
+            if len(state["users"]) > 1:
+                sys.stderr.write("unable to determine which account to log out of\\n")
+                sys.exit(1)
+            user = next(iter(state["users"]), None)
+        if user not in state["users"] or os.path.exists(os.path.join(cfg, "stuck")):
+            sys.stderr.write("not logged in\\n")
+            sys.exit(1)
+        del state["users"][user]
+        if state["active"] == user:
+            state["active"] = next(iter(state["users"]), None)
+        save(state)
     elif args[:2] == ["auth", "setup-git"]:
         for host in ("github.com", "gist.github.com"):
             key = "credential.https://" + host + ".helper"
@@ -136,6 +174,18 @@ class GhCredentialStoreTests(unittest.TestCase):
 
     def gitconfig_text(self) -> str:
         return self.gitconfig.read_text(encoding="utf-8")
+
+    def accounts(self) -> set[str]:
+        """The github.com accounts the fake gh holds."""
+        path = self.gh_config / "accounts.json"
+        return set(json.loads(path.read_text(encoding="utf-8"))["users"]) if path.exists() else set()
+
+    def logouts(self) -> list[list[str]]:
+        return [c["args"][2:] for c in self.calls() if c["args"][:2] == ["auth", "logout"]]
+
+    def terminal_login(self, token: str) -> None:
+        """`gh auth login` run by hand, next to the connector."""
+        subprocess.run(["gh", "auth", "login", "--with-token"], input=token, text=True, check=True)
 
     def test_pat_is_handed_to_gh_on_stdin_and_nowhere_else(self) -> None:
         result = run(pat.connect(TOKEN))
@@ -332,8 +382,72 @@ class GhCredentialStoreTests(unittest.TestCase):
 
     def test_disconnecting_with_nothing_in_gitconfig_is_quiet(self) -> None:
         with self.assertNoLogs(common.log, "WARNING"):
-            run(common.disconnect_github_account())
+            self.assertTrue(run(common.disconnect_github_account()))
         self.assertEqual(self.gitconfig_text(), "")
+
+    # gh keeps several accounts per host: the connector must hold exactly one.
+
+    def test_connecting_another_account_signs_gh_out_of_the_first(self) -> None:
+        run(pat.connect(TOKEN))
+        pat.validate_token.return_value = dict(OTHER)
+        result = run(pat.connect(HUBOT_TOKEN))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.accounts(), {"hubot"})
+        self.assertEqual(self.logouts(), [["--hostname", "github.com", "--user", "octo"]])
+        self.assertEqual(common.get_github_token(), HUBOT_TOKEN)
+
+    def test_a_rejected_replacement_keeps_the_current_connection(self) -> None:
+        run(pat.connect(TOKEN))
+        pat.validate_token.return_value = {**VALID, "scopes": "repo, read:org"}
+        result = run(pat.connect("ghp_noscope0123456789012345678901234"))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.logouts(), [])
+        self.assertEqual(common.get_github_token(), TOKEN)
+
+    def test_device_flow_signs_gh_out_of_the_account_it_replaced(self) -> None:
+        run(pat.connect(TOKEN))
+        self.terminal_login(HUBOT_TOKEN)  # what the device flow leaves behind
+        completed = {"status": "completed", "token": HUBOT_TOKEN}
+        with patch.object(cli_auth, "poll_login", AsyncMock(return_value=completed)):
+            result = run(cli_auth.connect("session"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.accounts(), {"hubot"})
+        self.assertEqual(common.get_github_token(), HUBOT_TOKEN)
+
+    def test_disconnect_signs_gh_out_of_every_account(self) -> None:
+        run(pat.connect(TOKEN))
+        self.terminal_login(HUBOT_TOKEN)
+        self.assertEqual(self.accounts(), {"octo", "hubot"})
+
+        self.assertTrue(run(common.disconnect_github_account()))
+
+        # Logging out only the active account would have made octo active again.
+        self.assertEqual(self.accounts(), set())
+        self.assertEqual(sorted(u[-1] for u in self.logouts()), ["hubot", "octo"])
+        self.assertIsNone(common.get_github_token())
+
+    def test_disconnect_reports_a_token_gh_keeps(self) -> None:
+        run(pat.connect(TOKEN))
+        (self.gh_config / "stuck").touch()  # gh refuses to log out
+        with self.assertLogs(common.log, "WARNING"):
+            self.assertFalse(run(common.disconnect_github_account()))
+        self.assertEqual(common.get_github_token(), TOKEN)
+
+    def test_without_an_account_list_gh_gets_the_bare_logout(self) -> None:
+        # An older gh without `auth status --json`: one account still goes.
+        run(pat.connect(TOKEN))
+        failed = CommandResult(argv=["gh"], returncode=1, output="unknown flag: --json", duration_seconds=0.0)
+        real_run = common.run
+
+        async def no_json(argv, **kwargs):
+            return failed if argv[1:3] == ["auth", "status"] else await real_run(argv, **kwargs)
+
+        with patch.object(common, "run", no_json):
+            self.assertTrue(run(common.disconnect_github_account()))
+        self.assertEqual(self.logouts(), [["--hostname", "github.com"]])
 
 
 class TokenRouteTests(unittest.TestCase):
@@ -356,6 +470,27 @@ class TokenRouteTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.json(), {"status": "needs_auth", "error": "Token is invalid or revoked."})
+
+
+class DisconnectRouteTests(unittest.TestCase):
+    def post(self, signed_out: bool):
+        app = FastAPI()
+        app.include_router(github_pat_routes.router)
+        with patch.object(github_pat_routes, "disconnect_github_account", AsyncMock(return_value=signed_out)):
+            return TestClient(app).post("/api/connectors/github/disconnect")
+
+    def test_signed_out_answers_needs_auth(self) -> None:
+        res = self.post(True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"status": "needs_auth"})
+
+    def test_a_token_gh_still_holds_is_not_reported_as_signed_out(self) -> None:
+        res = self.post(False)
+
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.json()["status"], "failed")
+        self.assertIn("gh auth logout", res.json()["error"])
 
 
 if __name__ == "__main__":

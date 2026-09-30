@@ -34,6 +34,8 @@ from .common import (
     configure_git_identity,
     connection_payload,
     note_github_connected,
+    sign_gh_out,
+    sign_gh_out_of_other_accounts,
     validate_token,
 )
 
@@ -234,8 +236,9 @@ async def start_login() -> dict[str, Any]:
 
         # Clear any prior `gh` session for github.com — `gh auth login` refuses
         # to start a fresh device flow when an account is already logged in.
-        # Errors here are non-fatal (e.g. "not logged in" exits non-zero).
-        await run([GH_BIN, "auth", "logout", "--hostname", GITHUB_HOSTNAME], env=env, timeout=5)
+        # Every account, named: a bare `gh auth logout` fails outright once gh
+        # holds more than one. Errors here are non-fatal.
+        await sign_gh_out()
 
         # `--insecure-storage` writes the token to a plain (0600) file under
         # ~/.config/gh, where the connector and `gh auth git-credential` read
@@ -341,6 +344,7 @@ async def connect(session_id: str) -> dict[str, Any]:
             ),
         }
 
+    await sign_gh_out_of_other_accounts()
     note_github_connected()
     # This flow leaves a live `gh` session behind, so git can borrow it for
     # HTTPS auth as well as take its identity from it.

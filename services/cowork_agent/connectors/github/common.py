@@ -12,11 +12,14 @@ here:
   - git identity — seed the workspace's global user.name / user.email, and
                    `gh auth setup-git` for HTTPS credentials; disconnecting
                    removes both, so the next account starts clean
+  - one identity — gh keeps several accounts per host; connecting signs it
+                   out of the others, disconnecting out of all of them
 
 Nothing in this module knows how the token was obtained; the only trace of
 that is ``auth_method``, read off the token's prefix for display purposes.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -211,26 +214,65 @@ async def login_gh_with_token(token: str) -> dict[str, str] | None:
     return {"status": "needs_auth", "error": f"GitHub CLI rejected this token: {reason}"}
 
 
-async def disconnect_github_account() -> None:
-    """Sign gh out of its active github.com account and remove what connecting
-    wrote to the global gitconfig. Never raises."""
-    await _logout_gh(await _gh_active_login())
+async def disconnect_github_account() -> bool:
+    """Sign gh out of every github.com account and remove what connecting
+    wrote to the global gitconfig. Never raises.
+
+    Returns whether gh is left without a github.com token. Logging out only
+    the active account is not enough: gh keeps several per host, and makes
+    the next one active, so its token would still answer every `gh` call.
+    """
+    await sign_gh_out()
     await _clear_git_config()
+    try:
+        return await asyncio.to_thread(get_github_token, read_only=True) is None
+    except Exception:
+        log.warning("Could not confirm gh is signed out of github.com", exc_info=True)
+        return False
 
 
-async def _gh_active_login() -> str | None:
-    """The account gh uses for github.com. `gh auth logout` needs it named
-    once gh holds several; None when it cannot tell."""
+async def sign_gh_out() -> None:
+    """Sign gh out of every github.com account it holds. Never raises."""
+    accounts = await _gh_accounts()
+    if accounts is None:
+        # gh cannot list its accounts: the bare logout, which covers one.
+        await _logout_gh(None)
+        return
+    for login in accounts[0]:
+        await _logout_gh(login)
+
+
+async def sign_gh_out_of_other_accounts() -> None:
+    """After a sign-in: sign gh out of every github.com account but the one
+    just made active, since `gh auth login` adds an account rather than
+    replacing the last. The connector holds one identity. Never raises."""
+    accounts = await _gh_accounts()
+    if accounts is None:
+        log.warning("Could not list gh's github.com accounts; an earlier one may still be signed in")
+        return
+    logins, active = accounts
+    for login in logins:
+        # No active account named: nothing tells the new one apart, so keep all.
+        if active is not None and login != active:
+            await _logout_gh(login)
+
+
+async def _gh_accounts() -> tuple[list[str], str | None] | None:
+    """``(every github.com login gh holds, the active one)``, or None when gh
+    cannot tell."""
     res = await run(
-        [GH_BIN, "auth", "status", "--hostname", GITHUB_HOSTNAME, "--active", "--json", "hosts"],
+        [GH_BIN, "auth", "status", "--hostname", GITHUB_HOSTNAME, "--json", "hosts"],
         env=_gh_env(), timeout=_GH_STATUS_TIMEOUT_SECONDS, separate_stderr=True,
     )
     if not res.ok:
         return None
     try:
-        return json.loads(res.output)["hosts"][GITHUB_HOSTNAME][0]["login"] or None
-    except (ValueError, KeyError, IndexError, TypeError):
+        entries = json.loads(res.output)["hosts"].get(GITHUB_HOSTNAME) or []
+        logins = [e["login"] for e in entries if isinstance(e.get("login"), str) and e["login"]]
+        active = next((e["login"] for e in entries if e.get("active") and e.get("login") in logins), None)
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
+    return logins, active
 
 
 async def _logout_gh(username: str | None) -> None:

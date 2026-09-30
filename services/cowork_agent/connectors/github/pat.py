@@ -26,6 +26,7 @@ from .common import (
     gh_available,
     login_gh_with_token,
     note_github_connected,
+    sign_gh_out_of_other_accounts,
     validate_token,
 )
 
@@ -115,6 +116,9 @@ async def connect(token: str) -> dict[str, Any]:
     if failure:
         return {"ok": False, **failure}
 
+    # Only once gh has accepted the new token: a rejected replacement leaves
+    # the current connection as it was.
+    await sign_gh_out_of_other_accounts()
     note_github_connected()
     await configure_git_identity(result, setup_credential_helper=True)
     log.info("GitHub connected as @%s (via PAT)", result.get("username"))
