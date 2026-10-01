@@ -1,7 +1,11 @@
-"""Clone and remove local projects, with fresh sharing checks before removal.
+"""Clone and remove local projects.
 
-Remote repositories and their memberships are never deleted or revoked here.
-The local peer roster and the relay membership ledger are independent checks.
+Removal deletes only this Space's local copy, so it never consults project
+sharing: the swarm membership of the repo is neither checked nor changed, and
+other Spaces keep their own clones. What removal does check is local: the
+folder's safety (worktrees, nested repositories, mounts, symlinks) and the
+local collaborator roster. For a git project it writes the relay's removal
+marker first, so the sharing relay does not clone the folder back.
 """
 from __future__ import annotations
 
@@ -17,11 +21,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.project_sharing import config
 from services.cowork_agent.project_sharing.repo_identity import normalize_repo
 from services.cowork_agent.visualizer import peers_store
 from services.errors import ServiceError
-from services.swarm_api import auth, project_sharing as swarm
+from services.swarm_api import auth
 from services.xo_structure import ensure_xo_structure
 from utils.commands import run
 
@@ -148,33 +151,6 @@ async def _origin(path: Path) -> str | None:
     return repo
 
 
-async def _member_rows(repo: str) -> list[dict]:
-    try:
-        ok, _, payload = await asyncio.wait_for(swarm.members(repo), CHECK_TIMEOUT)
-        if not ok or not isinstance(payload, dict) or not isinstance(payload.get("members"), list):
-            raise ValueError()
-        rows = payload["members"]
-        seen = set()
-        own = config.workspace_id()
-        for row in rows:
-            if (not isinstance(row, dict) or not isinstance(row.get("workspace_id"), str)
-                    or not row["workspace_id"].strip() or row["workspace_id"] in seen
-                    or row.get("role") not in ("owner", "member")
-                    or row.get("status") not in ("active", "revoked")):
-                raise ValueError()
-            seen.add(row["workspace_id"])
-        owners = [row for row in rows if row["role"] == "owner" and row["status"] == "active"]
-        if rows and len(owners) != 1:
-            raise ValueError()
-        i_own = any(row["workspace_id"] == own for row in owners)
-        return [{"workspace_id": row["workspace_id"], "role": row["role"], "status": row["status"],
-                 "is_self": bool(own and row["workspace_id"] == own),
-                 "can_revoke": i_own and row["role"] != "owner" and row["status"] == "active"}
-                for row in rows]
-    except Exception as exc:
-        raise _error("sharing_unavailable", "Sharing could not be verified. Reconnect to XO and try again.") from exc
-
-
 async def _other_peers(rows: list[dict]) -> list[dict]:
     own = None
     if rows:
@@ -196,15 +172,10 @@ async def _inspect(project_id: str, path: Path, project_fd: int, audit: dict | N
         if audit is not None:
             audit.update(peers=rows, has_git=has_git, git_config=_git_config_stamp(path))
         result["peers"] = await _other_peers(rows)
+        # The origin names the removal marker; "members" stays [] so the
+        # response keeps its shape.
         if has_git:
             result["repo"] = await _origin(path)
-        if result["repo"]:
-            result["members"] = await _member_rows(result["repo"])
-        if any(row["status"] == "active" and not row["is_self"] for row in result["members"]):
-            owner = any(row["role"] == "owner" and row["is_self"] for row in result["members"])
-            message = ("Revoke access for every other Space before removing this project." if owner else
-                       "Ask the sharing owner to revoke the remaining access before removing this local project.")
-            result["blockers"].append({"code": "shared_project", "message": message})
         if result["peers"]:
             result["blockers"].append({"code": "project_collaborators", "message": "Remove each other collaborator from the local roster before removing this project."})
     except ServiceError as exc:
@@ -251,10 +222,6 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
         _unchanged(root, path, root_fd, project_fd)
         if audit["has_git"] and await _origin(path) != result["repo"]:
             raise _error("project_changed", "The repository origin changed. Refresh and try again.")
-        if result["repo"]:
-            current_members = await _member_rows(result["repo"])
-            if any(row["status"] == "active" and not row["is_self"] for row in current_members):
-                raise _error("shared_project", "Sharing changed. Revoke each remaining user's access before removing the project.")
         # No await between this second local read and deletion: a newly added
         # roster entry, worktree or nested repository must not slip through.
         current_rows, has_git = _local_checks(path, project_fd)

@@ -1,4 +1,5 @@
-"""Project management is local-only and fails closed on uncertain sharing."""
+"""Project management is local-only: removal never consults sharing, and it
+fails closed on uncertain local state."""
 import asyncio
 import json
 import os
@@ -15,6 +16,7 @@ from services import project_management as service
 from services.cowork_agent.project_sharing import state
 from services.cowork_agent.xo_projects_sync import github
 from services.errors import ServiceError
+from services.swarm_api import project_sharing as swarm_sharing
 from services.swarm_api._http import SwarmResult
 from utils.commands import CommandResult, run as execute
 
@@ -36,11 +38,11 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         self.env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.root), "QUIRQ_STATE_ROOT": str(self.base / "state"), "XO_SPACE_ID": "ws-own"})
         self.env.start()
         self.addCleanup(self.env.stop)
-        self.member_rows = [{"workspace_id": "ws-own", "role": "owner", "status": "active"}]
-        self.members = AsyncMock(side_effect=lambda repo: (True, 200, {"members": self.member_rows}))
+        # Removal must never ask the swarm; any call is a test failure.
+        self.members = AsyncMock(return_value=(True, 200, {"members": []}))
         self.user = AsyncMock(return_value=SwarmResult(ok=True, status=200, data={"user_id": "user-own"}))
         self.run = AsyncMock(return_value=command(out="https://example.com/org/repo.git\n"))
-        for obj, attr, value in ((service.swarm, "members", self.members), (service.auth, "get_user_id", self.user), (service, "run", self.run)):
+        for obj, attr, value in ((swarm_sharing, "members", self.members), (service.auth, "get_user_id", self.user), (service, "run", self.run)):
             p = patch.object(obj, attr, value)
             p.start()
             self.addCleanup(p.stop)
@@ -70,46 +72,19 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(other.exists())
         self.members.assert_not_awaited()
 
-    async def test_shared_project_needs_every_member_revoked_then_is_removed(self):
+    async def test_git_project_is_removed_without_asking_the_swarm_and_marked(self):
+        # Shared from here, received from someone, or shared only among other
+        # Spaces: deleting this local copy affects no one, so sharing is not
+        # consulted. The removal marker keeps the relay from cloning it back.
         self.git()
-        self.member_rows.append({"workspace_id": "ws-other", "role": "member", "status": "active"})
-        await self.assert_blocked("shared_project")
         status = await service.removal_status("demo")
-        self.assertTrue(status["members"][1]["can_revoke"])
-        self.member_rows[1]["status"] = "revoked"
+        self.assertTrue(status["can_remove"])
+        self.assertEqual(status["members"], [])
+        self.assertEqual(status["repo"], "example.com/org/repo")
         await service.remove_project("demo", "demo")
+        self.assertFalse(self.project.exists())
         self.assertTrue(state.is_removed("example.com/org/repo", self.root))
-
-    async def test_delete_refreshes_members_even_after_clear_preflight(self):
-        self.git()
-        self.assertTrue((await service.removal_status("demo"))["can_remove"])
-        self.member_rows.append({"workspace_id": "new-user", "role": "member", "status": "active"})
-        with self.assertRaisesRegex(ServiceError, "Revoke access"):
-            await service.remove_project("demo", "demo")
-        self.assertTrue(self.project.exists())
-
-    async def test_incoming_project_is_blocked_and_cannot_revoke_owner(self):
-        self.git()
-        self.member_rows[0]["workspace_id"] = "someone-else"
-        await self.assert_blocked("shared_project")
-        self.assertFalse((await service.removal_status("demo"))["members"][0]["can_revoke"])
-
-    async def test_remote_malformed_failures_do_not_mean_unshared(self):
-        self.git()
-        cases = [(False, 404, "private path and token"), (False, 401, "secret"), (True, 200, {}),
-                 (True, 200, {"members": None}), (True, 200, {"members": [{}]}),
-                 (True, 200, {"members": [{"workspace_id": "x", "role": "owner", "status": "unknown"}]}),
-                 (True, 200, {"members": self.member_rows * 2})]
-        self.members.side_effect = None
-        for response in cases:
-            self.members.return_value = response
-            await self.assert_blocked("sharing_unavailable")
-            self.assertNotIn("secret", json.dumps(await service.removal_status("demo")))
-
-    async def test_authoritative_empty_members_allows_unshared_repository(self):
-        self.git()
-        self.member_rows.clear()
-        self.assertTrue((await service.removal_status("demo"))["can_remove"])
+        self.members.assert_not_awaited()
 
     async def test_git_error_or_unknown_origin_is_not_no_origin(self):
         self.git()
@@ -121,7 +96,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_local_git_configuration_and_broken_config(self):
         # Real git, entirely inside this test's temporary directory; no remote
-        # operation or credential lookup. Membership remains a fake transport.
+        # operation or credential lookup.
         with patch.object(service, "run", execute):
             self.assertTrue((await execute(["git", "init", "--", str(self.project)], timeout=10)).ok)
             self.assertTrue((await service.removal_status("demo"))["can_remove"])
@@ -145,34 +120,34 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         (self.project / ".xo" / "peers.json").write_text("broken")
         await self.assert_blocked("peers_unavailable")
 
-    async def test_peer_added_while_remote_check_is_in_flight_blocks_removal(self):
+    async def test_peer_added_while_origin_check_is_in_flight_blocks_removal(self):
         self.git()
         self.peers([])
-        async def change(repo):
+        async def change(*args, **kwargs):
             self.peers([{"user_id": "late-peer", "role": "viewer"}])
-            return True, 200, {"members": self.member_rows}
-        self.members.side_effect = change
+            return command(out="https://example.com/org/repo.git\n")
+        self.run.side_effect = change
         with self.assertRaisesRegex(ServiceError, "roster changed"):
             await service.remove_project("demo", "demo")
         self.assertTrue(self.project.exists())
 
-    async def test_origin_changed_during_members_check_blocks_removal(self):
+    async def test_origin_changed_between_checks_blocks_removal(self):
         self.git()
         self.run.side_effect = [command(out="https://example.com/org/one"), command(out="https://example.com/org/two")]
         with self.assertRaisesRegex(ServiceError, "origin changed"):
             await service.remove_project("demo", "demo")
         self.assertTrue(self.project.exists())
 
-    async def test_origin_changed_during_final_members_check_blocks_removal(self):
+    async def test_git_config_changed_during_final_origin_check_blocks_removal(self):
         self.git()
         count = 0
-        async def change(repo):
+        async def change(*args, **kwargs):
             nonlocal count
             count += 1
             if count == 2:
                 (self.project / ".git" / "config").write_text('[remote "origin"]\nurl=https://example.com/org/different\n')
-            return True, 200, {"members": self.member_rows}
-        self.members.side_effect = change
+            return command(out="https://example.com/org/repo.git\n")
+        self.run.side_effect = change
         with self.assertRaisesRegex(ServiceError, "configuration changed"):
             await service.remove_project("demo", "demo")
         self.assertTrue(self.project.exists())
@@ -215,14 +190,14 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         (nested / "peers.json").write_text('{"schema":1,"peers":[{"user_id":"other","role":"viewer"}]}')
         await self.assert_blocked("nested_project")
 
-    async def test_replaced_directory_during_network_check_is_preserved(self):
+    async def test_replaced_directory_during_origin_check_is_preserved(self):
         self.git()
-        async def replace(repo):
+        async def replace(*args, **kwargs):
             self.project.rename(self.root / "old-demo")
             self.project.mkdir()
             (self.project / "new.txt").write_text("new")
-            return True, 200, {"members": self.member_rows}
-        self.members.side_effect = replace
+            return command(out="https://example.com/org/repo.git\n")
+        self.run.side_effect = replace
         with self.assertRaises(ServiceError):
             await service.remove_project("demo", "demo")
         self.assertTrue((self.project / "new.txt").exists())
