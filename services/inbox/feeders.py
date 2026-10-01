@@ -25,6 +25,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple, Optional
 
+from services.brain import service as brain_service
 from services.connections import store as connections_store
 from services.cowork_agent.project_layout import xo_dir
 from services.cowork_agent.project_sharing import status as sharing_status
@@ -37,10 +38,11 @@ from . import store
 
 logger = logging.getLogger(__name__)
 
-FEEDER_NAMES = ("timeline", "todos", "sharing", "issues", "connections")
+FEEDER_NAMES = ("timeline", "todos", "sharing", "issues", "connections", "brain")
 TIMELINE_FETCH_LIMIT = 500
 TODO_KEY_PREFIX = "todo."   # keys the todos feeder owns; only these are ever auto-closed
 ISSUE_KEY_PREFIX = "issue:"   # keys the issues feeder owns; only these are ever auto-closed
+BRAIN_KEY_PREFIX = "brain:"   # keys the brain feeder owns; only these are ever auto-closed
 BOOTSTRAP_WINDOW = timedelta(hours=24)   # no cursor: only the last day, never the whole history
 ISSUES_BOOTSTRAP_WINDOW = timedelta(days=7)   # issues move slower than the timeline; a week is the first read
 CONNECTIONS_FETCH_LIMIT = 200   # newest events read per toolkit per run
@@ -383,6 +385,29 @@ def connections(doc: dict) -> FeedResult:
     kept.sort(key=lambda entry: entry[0])   # read_events is newest-first; ingest chronologically
     items = [it for it in (_connection_item(tk, ev) for _dt, tk, ev in kept) if it is not None]
     return FeedResult(items, newest[1] if newest else None, None)
+
+
+# ── brain ────────────────────────────────────────────────────────────────────
+
+
+def brain(doc: dict) -> FeedResult:
+    """Open findings of the knowledge brain (``services/brain``): designs
+    awaiting approval, recurring patterns, analogies, novel concepts, and
+    gaps asked about more than once. Keyed by finding, so a repeat updates
+    the item; a finding closed in the brain (a design approved, a finding
+    marked done) closes its item here too."""
+    items: list[dict] = []
+    keys: set[str] = set()
+    for f in brain_service.inbox_findings():
+        key = f"{BRAIN_KEY_PREFIX}{f['kind']}:{f['ref']}"
+        keys.add(key)
+        project = f.get("project") if store.is_project_id(f.get("project")) else None
+        item = _safe_item(title=_one_line(f["title"], store.TITLE_MAX), body=str(f.get("body") or "")[:store.BODY_MAX],
+                          kind=f"brain.{f['kind']}", source="brain", project_id=project,
+                          link={"view": "brain"}, ts=f["updated_at"], key=key)
+        if item is not None:
+            items.append(item)
+    return FeedResult(items, None, Watched(BRAIN_KEY_PREFIX, frozenset(keys)))
 
 
 def feeder(name: str) -> Callable[[dict], FeedResult]:

@@ -7,7 +7,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 | Section | Default route | Pages |
 |---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
+| Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Brain, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Jobs, Server |
@@ -334,6 +334,41 @@ scheduler/
 Deleting a command keeps its history and logs on disk and does not cancel an active process. Commands run locally with
 the server's environment, including when the watcher is disabled for manual runs.
 
+## Brain page
+
+`#/projects/brain` (`js/views/brain.js`, `css/brain.css`) is the knowledge
+brain's page over `/api/brain/*` (engineering contract: DEVELOPING.md §12).
+The header shows counts (pieces, shared pieces, links, patterns, open
+findings) and which model is connected. Four panels behind one pill strip:
+
+- **Recall**: a cue, a context (all sources or one), "Write an answer" (shown
+  when a model is connected) and "Include guesses". With a model, the answer
+  comes first, written from the recalled evidence with numbered references
+  that open the cited lines, plus what the brain does not know; the pieces
+  behind it fold away under "How the brain found this". A project named in
+  the cue becomes the context when none is chosen.
+  Each answer shows its score, the note for the chosen context, the path that
+  reached it ("cue matched X → X uses Y → boosted by the active source") and
+  its evidence; evidence opens the file in the Data previewer. Guesses reached
+  through hypothesis links are listed apart with dashed borders. Ticking two
+  or more answers and **Mark used together** strengthens their links. A cue
+  nothing matches says so and is recorded as missing knowledge.
+- **Sources**: every project, whether the brain learns it, and its files,
+  chunks, pieces and shared pieces. **Learn** adds a project and learns it;
+  **Learn again** re-reads it; **Forget** removes it (shared pieces keep the
+  other projects' notes). A project without a project id yet cannot be added.
+- **Discoveries**: open findings (Done closes one, and its Inbox item),
+  recurring patterns with their members per project, analogies ("B could
+  learn from A") and hypotheses, always marked as guesses. **Run discovery**
+  runs it now.
+- **Create**: a goal becomes two or three ranked designs (needs a model),
+  each with its scores, what it reuses, what is new, its risks and the test
+  command it will run. **Approve**, then **Build** in a new project; the build
+  record shows the outcome and test runs. Experiences can be recorded by hand.
+
+A piece opens in a side panel: its notes per project, evidence, links,
+guesses, patterns and similar pieces.
+
 ## Agents tab
 
 The second topbar tab (`Projects | Agents | Inbox | Setup`)
@@ -437,9 +472,9 @@ visible with an error; malformed records are reported rather than shown as an em
   `url` is an http or https address, checked in JS before it reaches an
   href; a new tab with `rel="noopener noreferrer"`), Done or Reopen,
   Delete. Filter pills Open (new plus seen) | Done | All; source pills
-  All | Issues | Connections | Workspace | Sharing | Agents narrow the
-  loaded page on the client and never fetch (Workspace is `timeline` plus
-  `todos`, Agents is every source that is not a feeder); "Mark all seen"
+  All | Issues | Connections | Workspace | Sharing | Brain | Agents narrow
+  the loaded page on the client and never fetch (Workspace is `timeline`
+  plus `todos`, Agents is every source that is not a feeder); "Mark all seen"
   shows only while there are new items; Refresh re-fetches.
 - Connections section: between the header strip and the rows, one line per
   toolkit from `GET /api/connections` that is configured for polling or
@@ -524,6 +559,7 @@ run while the others still run. A source with `enabled: false` is never read.
 | `sharing` | the in-memory relay status (the `recent` list of `GET /api/project-sharing/status`) | on | `cursors.sharing` | `Repo shared with this workspace: <repo>`, `New commits fetched: <repo>`, `Sharing error: <repo>`, `Sharing access revoked: <repo>`, with the relay detail as body, linking to Inbox Sharing |
 | `issues` | every project's GitHub issue mirror, `~/.quirq/projects/<pid>/github/issues.json` (written by the GitHub issue poller) | `states: ["open"]`; `closed` can be added | `cursors.issues`, the newest `updated_at` seen across every readable mirror; with no cursor only the last 7 days are taken | `Issue #<number> in <project>: <title>` (kind `issue.<state>`, key `issue:<project>:<number>`, labels and assignees as body, the issue URL as `url`, linking to Projects); the item is set to done by itself (flagged `auto_closed`) once the issue leaves a watched state, but only on a run where every mirror was readable, so a transient read failure never closes real issues; a reopened issue comes back as new once its `updated_at` passes the cursor |
 | `connections` | the newest 200 lines of `~/.quirq/connections/<toolkit>/events.jsonl` for every polled toolkit (see Connections polling below) | on | `cursors.connections`, one cursor across every toolkit, the newest event `ts` seen; with no cursor only the last 24 hours are taken | one item per event: the event title, body, and `url`, kind `<toolkit>.<collector>`, key `connection:<toolkit>:<collector>:<id>`, linking to Connectors |
+| `brain` | the knowledge brain's open findings in `~/.quirq/brain/brain.db` (see Brain below) | on | none: every open finding is reported on each run | one item per finding: designs awaiting approval, recurring patterns, analogies, novel concepts, and gaps asked about more than once; kind `brain.<kind>`, key `brain:<kind>:<ref>`, linking to the Brain page; a finding the brain closes (a design approved, a finding marked done there) is set to done here too (flagged `auto_closed`) |
 
 The relay list restarts empty with the server, so a persisted sharing cursor
 never re-ingests old events. The connections cursor is shared across

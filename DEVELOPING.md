@@ -66,9 +66,14 @@ services/                         Placement rule: only what is specific to runni
   timestamps.py errors.py         parse_ts, now_iso, iso (one time parser for every Space package);
   periodic.py                       ServiceError, the base of every typed service failure;
                                     run_forever, the loop under the GitHub and connections pollers
+  brain/                          the knowledge brain (a property of the Space): store (SQLite,
+                                    ~/.quirq/brain/brain.db) learn recall discover create, the
+                                    pluggable model/ (BRAIN_MODEL), loop (the background tick) and
+                                    service (the router-facing surface); routes in
+                                    routers/cowork_agent/bff/brain.py; see §12
   inbox/                          the Space Inbox (a property of the Space, not of any agent): store
                                     (~/.quirq/inbox/inbox.json read/write, retention) feeders (timeline,
-                                    todos, sharing, issues, connections) service (the router-facing
+                                    todos, sharing, issues, connections, brain) service (the router-facing
                                     surface); routes in routers/cowork_agent/bff/inbox.py
   connections/                    connections polling for the Inbox (a property of the Space): store
                                     (~/.quirq/connections/<toolkit>/ config, state, events)
@@ -952,7 +957,144 @@ only as the literal `true`; the schema is
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. The knowledge brain
+
+`services/brain/` (routes in `routers/cowork_agent/bff/brain.py`, page at
+`#/projects/brain`) learns from the projects a person opts in, remembers what
+it read as a graph, recalls by meaning and context, discovers patterns across
+projects and builds new projects from what it knows. A property of the Space
+(§7): a person uses it from the Brain page, an agent over `/api/brain/*`.
+
+**The cycle, one module per step.** `learn.py` (Learn → Remember, with
+`chunker.py`, `extract.py`, `text.py`), `recall.py` (Recall and the
+strengthening use brings), `discover.py` (patterns, missing links, analogies),
+`create.py` (goal → designs → approval → build → test → experience). Around
+them: `store.py` (the SQLite file), `files.py` (what is read), `graph.py`
+(links and relation types), `vectors.py` (meaning vectors), `model/` (the
+pluggable model), `reasoning.py` (every prompt), `config.py` (the only env
+reader), `loop.py` (the background tick) and `service.py` (the one surface the
+routes use). `services/inbox` imports the brain for its `brain` feeder; the
+brain never imports the Inbox.
+
+**Building blocks and where they live.**
+
+| Block | Table(s) | Notes |
+|---|---|---|
+| Source | `sources`, `files` | a project, keyed by its pid; `kind` is `project` or `built` (made by Create) |
+| Chunk | `chunks` | file, line range and text, split at headings, paragraphs or top-level definitions |
+| Piece | `pieces`, `piece_terms` | name, description, level, keywords; `piece_terms` is the TF-IDF meaning vector, `embedding` the model's |
+| Source note | `notes` | how one source uses a piece: its usage sentence, mention count, strength |
+| Link | `links`, `link_evidence`, `relations` | typed, directed, weighted; `kind` is `evidence`, `hypothesis`, `learned` or `generated`; `signal` says where it came from |
+| Pattern | `patterns`, `pattern_members` | a recurring group, members per source; `analogies` read it across two sources |
+| Experience | `experiences`, `goals`, `designs` | what a build reused and whether it worked |
+| (gaps, novelty, …) | `findings` | what needs a person; the Inbox feeder reads the open ones |
+
+**Nothing is hardcoded.** Concepts are TF-IDF keyphrases (or the model's), so
+a word common to everything scores low without a list naming it; categories
+are the "is a kind of" hierarchy read from phrases; relation types are phrases
+from the text, grouped when they share content words (a model merges
+synonyms). The only word lists are English function words (where a phrase
+ends), definition keywords (which identifier a code block defines) and the
+file-skip rules.
+
+**Evidence first, guesses apart.** Every piece has mentions (chunk, lines)
+and every `evidence` link has `link_evidence` rows; `learn._cleanup` drops
+whatever loses its evidence. Predicted links are `hypothesis` links: recall
+walks them only with `explore`, and returns what they reach under
+`hypotheses`, never under `results`. A hypothesis that evidence later supports
+is deleted by the next discovery run.
+
+**Answers.** `POST /api/brain/recall` with `answer: true` and a model that
+reasons also returns `answer`: `{text, citations, missing, model, evidence}`.
+`recall.answer_material` numbers up to 12 evidence excerpts (the top pieces'
+chunks; a project's overview files first when the cue only names that
+project) and `reasoning.answer` asks the model to answer from them alone,
+citing `[n]`; a citation that is not in the evidence is dropped. A failed
+answer is `{error}` beside an intact recall. The flag defaults to off, so an
+agent's recalls do not each cost a model turn; the Brain page turns it on.
+A project named in the cue ("forge ai" for `FORGE-AI-0.3`) becomes the
+context when none is given (`context_detected`).
+
+**Weights.** A link's `base_weight` is what the evidence says and is
+recomputed on every learn; `weight` is that plus what use added and time took
+away (`graph.upsert_link` moves `weight` by the change in base only).
+Co-recall (`recall.recall(reinforce=True)`, the top three results) and
+explicit co-use (`POST /api/brain/use`) grow links by `amount × (1 − weight)`
+or create a weak `learned` one. `graph.fade` takes `BRAIN_FADE_PER_DAY` off
+links unused since the last fade; evidence never drops below half its base,
+learned and hypothesis links under 0.02 are removed. Experience adds +1
+(worked), +0.25 (partial) or −1 (failed) to the reused pieces' and patterns'
+`score`; recall scales by `1 + 0.25·tanh(score)` and says why.
+
+**Store.** SQLite (`sqlite3`, standard library) at `<state root>/brain/brain.db`,
+its own folder in the state root (not `projects/brain/`: `projects/` holds one
+folder per project key). Chosen over JSON documents because each learn and
+recall changes a few rows of a large graph. The schema number is
+`PRAGMA user_version` plus a `meta` row; a file from a newer release is
+refused (`store_newer`, 409), never rewritten. One writer per process
+(`store.write` holds a lock across `BEGIN IMMEDIATE … COMMIT`); learning runs in
+three phases so the database is never held across a model call.
+
+**What is read.** In a git repository, tracked and unignored files only
+(`git ls-files` through `utils/commands`); never hidden paths (so never
+`.xo/`), dependency or build folders, lockfiles, credential-looking files,
+binaries, minified files or files over `BRAIN_MAX_FILE_BYTES`. Secret-looking
+values are replaced by `[redacted]` before any text is stored. Chunk text is
+copied into the state root, never into a project. Chat transcripts are not
+read.
+
+**The model** (`services/brain/model/__init__.py`). `BRAIN_MODEL=none` (the
+default) runs everything statistically; designing answers 501
+`model_required`. `agent` reasons with the active agent through the
+dispatcher, and `agent:<name>` with any installed agent (a folder under
+`config/agents/`; an unknown name is reported with the installed ones), so the
+brain is not tied to the harness you chat with; every call is an agent turn
+recorded in that agent's sessions. Anything
+else is an import path to a `BrainModel` subclass with one coroutine,
+`complete(prompt, system=...)`, and optionally `embed(texts)`. A module that
+fails to load is reported by `/api/brain/status` and the brain runs without a
+model rather than falling back to another. `BRAIN_MODEL_MAX_CALLS` caps the
+calls one learn run spends on extraction. With a model, the chunk text it
+reads leaves the machine for wherever that model runs.
+
+**Create.** `POST /api/brain/goals` recalls (with guesses), gathers the
+patterns, analogies and similar past experiences, asks the model for two or
+three designs and ranks them by proven reuse (0.35), experience (0.2), fit
+(0.25) and inverse risk (0.2); a reference to an unknown piece is dropped.
+Nothing is built until `POST /api/brain/designs/{id}/approve`. `…/build`
+scaffolds a new project (`scaffold_project`, never a source), runs an agent in
+it (`agent_id` = the new folder; `BRAIN_BUILD_AGENT` names any installed one,
+default the active agent, and the build record keeps which), then runs the design's
+`test_command` (argv, no shell, `BRAIN_TEST_TIMEOUT_S`; shown to the person
+before approval) and asks the agent to fix a failure up to
+`BRAIN_FIX_ATTEMPTS` times. The result is learned as a `built` source, an
+experience is recorded, and an episode is written to the new project's
+`memory/episodic/`. A build interrupted by a restart is marked failed.
+
+**Agents use it too.** The bundled `xo-projects` skill, which
+`skill_installer.install_xo_skills` installs into every agent harness, points
+at `references/brain-http-api.md`: any agent can recall over HTTP, mark pieces
+used together and record experiences, whichever harness it is.
+
+**Routes.** `/api/brain/status`, `sources`, `learn`, `runs`, `pieces`,
+`pieces/{id}`, `pieces/{id}/similar`, `relations`, `recall`, `use`, `graph`,
+`patterns`, `analogies`, `hypotheses`, `findings`, `discover`, `goals`,
+`designs/{id}/approve`, `designs/{id}/build`, `experiences`; the module
+docstring lists methods and bodies. Bodies are strict (`ForbidExtra`); errors
+are `BrainError` (a `ServiceError`) through `http_error`. Adding or removing a
+source, learning, discovery, approving and building also require a local
+client (`is_local_mutation`), like the scheduler's routes.
+
+**Background.** `loop.start_brain_loop` on `periodic.run_forever`, off unless
+`BRAIN_ENABLED`; each `BRAIN_TICK_S` it re-learns sources whose signature
+changed (git HEAD, status and the dirty files' stamps; file stamps outside
+git), fades, and discovers when anything was learned or a day has passed.
+
+Tests: `tests/test_brain_{reading,memory,discover,model_create,bff,loop}.py`,
+support in `tests/_brain_support.py`; the fixture is
+`tests/fixtures/quirq-state/brain/brain.db`.
+
+## 13. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand every time `main`
 moves. The runbook, the numbering rules and the hotfix flow are in

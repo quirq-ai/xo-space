@@ -15,6 +15,7 @@ into them.
 ├── scheduler/     saved commands and their run history
 ├── sharing/       shared repositories this machine has already seen
 ├── usage/         how far usage has been reported to XO
+├── brain/         the knowledge brain: what it learned from the projects
 ├── settings/      Space-wide choices
 ├── secrets/       credentials (owner-only)
 ├── cache/         safe to delete: rebuilt automatically
@@ -34,6 +35,7 @@ into them.
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |
 | `usage/` | `<agent>.json` | `services/usage_sync.py` | how far usage was reported, so it would be sent again |
+| `brain/` | `brain.db` (SQLite: sources, chunks, pieces, notes, links, patterns, findings, designs, experiences) | `services/brain/` | what the brain learned (relearnable from the projects) and what it cannot relearn: link weights use changed, experiences, designs and findings |
 | `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
@@ -52,7 +54,8 @@ instead of replaying sessions onto surviving totals.
 3. Every event line starts with `ts` and `type`.
 4. Every data file carries a `schema` number. Exempt: rebuilt views in
    `cache/`, and files keyed by name, where an extra key would read as an entry
-   (`secrets/token.json` by provider, session-index shards by session).
+   (`secrets/token.json` by provider, session-index shards by session). The
+   brain's SQLite file carries it as `PRAGMA user_version` and a `meta` row.
 
 ## Adding a store
 
@@ -86,6 +89,10 @@ same pid (`00000000-0000-4000-8000-000000000000`) as the `.xo/` sample in
 `/home/you`, credentials read `replace-with-...`, and the agent is
 `sample_agent`. Names the code derives (session-index shards, sharing bookmarks
 and removal markers, lock sentinels) are the names it would give.
+
+`brain/brain.db` was made by learning the first lines of
+`tests/fixtures/xo-project/README.md` as `sample-project`, with every time set to
+`2026-01-01T09:00:00Z` and the location to `/home/you/xo-projects/sample-project`.
 
 Three kinds of file have no example, on purpose:
 

@@ -6,18 +6,19 @@ import {initPageRefresh,refreshPage} from './core/page-refresh.js?v=20260921-ref
 import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
-import {initSectionNav} from './core/section-nav.js?v=20260921-refresh1';
-import {PRIMARY_TABS} from './core/navigation.js?v=20260915-agents2';
-import {initPreview} from './core/preview.js?v=20260915-agents2';
+import {initSectionNav} from './core/section-nav.js?v=20260930-brain1';
+import {PRIMARY_TABS} from './core/navigation.js?v=20260930-brain1';
+import {initPreview} from './core/preview.js?v=20260930-brain1';
 import {initCommandPalette} from './core/command-palette.js?v=20260921-refresh1';
-import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260922-theme5';
-import {createAgentViews} from './views/sessions.js?v=20260915-footer1';
-import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260921-refresh1';
-import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
-import projectsView from './views/projects.js?v=20260921-refresh1';
-import projectManageView from './views/project-manage.js?v=20260921-refresh1';
-import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260921-refresh1';
+import {dashboardView,graphView,timeView,initProjectRootPicker} from './views/atlas.js?v=20260930-brain1';
+import {createAgentViews} from './views/sessions.js?v=20260930-brain1';
+import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260930-brain1';
+import {createActivityViews} from './views/inbox-activity.js?v=20260930-brain1';
+import projectsView from './views/projects.js?v=20260930-brain1';
+import projectManageView from './views/project-manage.js?v=20260930-brain1';
+import brainView from './views/brain.js?v=20261001-harness1';
+import treeView from './views/tree.js?v=20260930-brain1';
+import sharingView from './views/sharing.js?v=20260930-brain1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';
@@ -82,6 +83,7 @@ try{
   createActivityViews().forEach(registerView);
   registerView(projectsView);
   registerView(projectManageView);
+  registerView(brainView);
   registerView(treeView);
   registerView(sharingView);
   registerView(wikiView);

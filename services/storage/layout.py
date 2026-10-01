@@ -9,6 +9,7 @@
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
     ├── usage/         how far usage has been reported to XO
+    ├── brain/         the knowledge brain: what it learned from the projects
     ├── settings/      Space-wide choices
     ├── secrets/       credentials
     ├── cache/         safe to delete: rebuilt automatically
@@ -60,6 +61,13 @@ def sharing_dir() -> Path:
 
 def usage_dir() -> Path:
     return quirq_state_dir() / "usage"
+
+
+def brain_dir() -> Path:
+    """``~/.quirq/brain/``: the knowledge brain's store. Its own folder, not
+    ``projects/brain/``: ``projects/`` holds one folder per project key, and a
+    folder there that is not a project reads as a leftover."""
+    return quirq_state_dir() / "brain"
 
 
 def settings_dir() -> Path:

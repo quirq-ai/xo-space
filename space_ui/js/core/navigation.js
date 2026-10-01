@@ -10,6 +10,7 @@ export const PROJECT_PAGES=pages('projects',[
   ['graph','data/graph','Graph',['graph','projects/graph','projects/files/graph']],
   ['tree','data/tree','Tree',['tree','projects/tree','projects/files/tree']],
   ['time','timeline','Timeline',['time','timeline']],
+  ['brain','brain','Brain'],
   ['project-manage','manage','Manage',['setup/projects']],
 ]);
 export const DATA_VIEWS=Object.freeze(PROJECT_PAGES.filter(page=>['project-list','graph','tree'].includes(page.id)));
@@ -17,6 +18,7 @@ export const PROJECT_SECTIONS=Object.freeze([
   PROJECT_PAGES.find(page=>page.id==='dashboard'),
   Object.freeze({id:'data',route:'projects/data',label:'Data',parent:'projects'}),
   PROJECT_PAGES.find(page=>page.id==='time'),
+  PROJECT_PAGES.find(page=>page.id==='brain'),
   PROJECT_PAGES.find(page=>page.id==='project-manage'),
 ]);
 /* Trends absorbed the former Tools and Models pages; their routes stay

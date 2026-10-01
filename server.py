@@ -811,6 +811,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Connections poller failed to start (non-fatal): {e}")
 
+    # Knowledge brain: re-learns changed sources, fades unused links and runs
+    # discovery on a tick. Off unless BRAIN_ENABLED; /api/brain/* works either way.
+    _brain_task = None
+    try:
+        from services.brain import config as brain_config
+        from services.brain.loop import start_brain_loop
+        if brain_config.loop_enabled():
+            _brain_task = asyncio.create_task(start_brain_loop())
+            background.register("brain", _brain_task)
+            print(f"   Brain: background task started ({brain_config.tick_seconds():.0f}s tick, "
+                  f"model={brain_config.model_name()})")
+        else:
+            print("   Brain: background learning off (BRAIN_ENABLED)")
+    except Exception as e:
+        print(f"⚠️ Brain loop failed to start (non-fatal): {e}")
+
     # Visualizer watcher: materialises portable project metadata from the
     # active runtime's native session store. Non-fatal: BFF endpoints keep
     # serving whatever is already on disk.
@@ -904,6 +920,13 @@ async def lifespan(app: FastAPI):
         _connections_poll_task.cancel()
         try:
             await _connections_poll_task
+        except asyncio.CancelledError:
+            pass
+
+    if _brain_task:
+        _brain_task.cancel()
+        try:
+            await _brain_task
         except asyncio.CancelledError:
             pass
 

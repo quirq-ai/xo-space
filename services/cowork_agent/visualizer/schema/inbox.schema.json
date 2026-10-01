@@ -54,6 +54,14 @@
           "properties": {
             "enabled": { "type": "boolean", "default": true }
           }
+        },
+        "brain": {
+          "type": "object",
+          "description": "Open findings of the knowledge brain (~/.quirq/brain/brain.db): designs awaiting approval, recurring patterns, analogies, novel concepts and repeated gaps. No cursor: every open finding is reported, and one the brain closed is marked done here.",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true }
+          }
         }
       }
     },

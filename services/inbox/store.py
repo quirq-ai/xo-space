@@ -61,6 +61,7 @@ DEFAULT_SOURCES: dict = {
     "sharing": {"enabled": True},
     "issues": {"enabled": True, "states": ["open"]},
     "connections": {"enabled": True},
+    "brain": {"enabled": True},
 }
 
 ID_RE = re.compile(r"[0-9a-f]{8}")

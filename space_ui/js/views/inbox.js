@@ -17,7 +17,7 @@ import {collectorLabels,every,pollLine} from '../core/connections.js';
 import {accountLabel} from '../core/connections.js';
 import {openCommandResults} from '../core/command-results.js?v=20260921-refresh1';
 import {describeOnce,describeSchedule,isScheduled,statusText} from '../core/jobs.js?v=20260916-jobs3';
-import {INBOX_PAGES} from '../core/navigation.js?v=20260915-agents2';
+import {INBOX_PAGES} from '../core/navigation.js?v=20260930-brain1';
 
 const dtfmt=iso=>{
   const t=iso?new Date(iso).getTime():NaN;
@@ -100,6 +100,7 @@ const SOURCES=[
   {id:'connections',label:'Connections',sources:['connections']},
   {id:'workspace',label:'Workspace',sources:['timeline','todos']},
   {id:'sharing',label:'Sharing',sources:['sharing']},
+  {id:'brain',label:'Brain',sources:['brain']},
   {id:'agents',label:'Agents',sources:[]},
 ];
 const SOURCE_PILLS=SOURCES.map(s=>[s.id,s.label]);

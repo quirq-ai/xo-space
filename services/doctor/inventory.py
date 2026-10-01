@@ -124,6 +124,9 @@ SPECS: tuple[Spec, ...] = (
     _s("settings/*.env", PRIVATE),
     _s("secrets/**", PRIVATE),
     _s("usage/*.json", SELF_OVERWRITING, versions=V1, **_IGN),
+    # SQLite with its -wal/-shm siblings; its schema is PRAGMA user_version,
+    # which services/brain/store.py checks itself. Never opened here.
+    _s("brain/brain.db*", OPAQUE),
     _s("projects/offsets.json", READ_POSITION, versions=V1, **_IGN),
     _s("projects/*-offsets.json", READ_POSITION),  # an adapter's own shape; exempt
     _s("projects/timeline*.jsonl", HISTORY),

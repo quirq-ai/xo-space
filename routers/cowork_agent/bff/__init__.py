@@ -12,6 +12,7 @@ below is consumed by the parent package's ``all_routers`` so
 
 from fastapi import APIRouter
 
+from .brain import router as brain_router
 from .connections import router as connections_router
 from .inbox import router as inbox_router
 from .project_sharing import router as project_sharing_router
@@ -27,6 +28,7 @@ bff_routers: list[APIRouter] = [
     project_sharing_router,
     inbox_router,
     connections_router,
+    brain_router,
     secrets_router,
     visualizer_router,
     workspace_visualizer_router,

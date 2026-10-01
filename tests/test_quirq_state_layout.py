@@ -32,6 +32,8 @@ from services.cowork_agent.visualizer import workitem_claims
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
+from services.brain import service as brain_service
+from services.brain import store as brain_store
 from services.inbox import store as inbox_store
 from services.storage import flock, layout, migrations
 from utils import commands
@@ -75,7 +77,7 @@ class SampleTests(_Sandbox):
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
             layout.connections_dir(), layout.scheduler_dir(), layout.sessions_dir(),
-            layout.quarantine_dir(),
+            layout.quarantine_dir(), layout.brain_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -93,6 +95,7 @@ class StorePathTests(_Sandbox):
             "the Space timeline": project_layout.workspace_timeline_path(),
             "watcher reading positions": watcher_state.watcher_state_dir(),
             "the Inbox": inbox_store.inbox_path(),
+            "the knowledge brain": brain_store.db_path(),
             "a connection": connections_store.connection_dir("gmail"),
             "saved commands": scheduler.scheduler_dir(),
             "a command's output": scheduler.log_file("job1"),
@@ -277,6 +280,15 @@ class ExampleStoreTests(unittest.TestCase):
 
     def test_the_sample_needs_no_migration(self) -> None:
         self.assertEqual(migrations.migrate_layout(), [])
+
+    def test_the_brain(self) -> None:
+        # SQLite, not JSON: the schema number is PRAGMA user_version plus a meta row.
+        with brain_store.connect() as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], brain_store.SCHEMA)
+            self.assertEqual(brain_store.meta_get(conn, "schema"), str(brain_store.SCHEMA))
+        [source] = brain_service.list_sources()["sources"]
+        self.assertEqual((source["id"], source["name"], source["status"]), (EXAMPLE_PID, EXAMPLE_PROJECT, "ready"))
+        self.assertGreater(brain_service.status()["counts"]["pieces"], 0)
 
     def test_the_inbox(self) -> None:
         document, ok = inbox_store.load_document()

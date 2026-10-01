@@ -370,7 +370,8 @@ class InboxUrlFieldTests(_Base):
         self.assertEqual(doc["items"][0]["url"], "https://ok/2")
 
     def test_defaults_feeder_names_and_schema(self) -> None:
-        self.assertEqual(feeders.FEEDER_NAMES, ("timeline", "todos", "sharing", "issues", "connections"))
+        self.assertEqual(feeders.FEEDER_NAMES, ("timeline", "todos", "sharing", "issues", "connections", "brain"))
+        self.assertEqual(store.DEFAULT_SOURCES["brain"], {"enabled": True})
         self.assertEqual(store.DEFAULT_SOURCES["issues"], {"enabled": True, "states": ["open"]})
         self.assertEqual(store.DEFAULT_SOURCES["connections"], {"enabled": True})
         self.assertEqual(store.source_config({}, "issues")["states"], ["open"])
@@ -378,6 +379,7 @@ class InboxUrlFieldTests(_Base):
                             .read_text(encoding="utf-8"))
         self.assertIn("issues", schema["properties"]["sources"]["properties"])
         self.assertIn("connections", schema["properties"]["sources"]["properties"])
+        self.assertIn("brain", schema["properties"]["sources"]["properties"])
         self.assertIn("issues", schema["properties"]["cursors"]["properties"])
         self.assertIn("connections", schema["properties"]["cursors"]["properties"])
         url = schema["definitions"]["item"]["properties"]["url"]

@@ -25,7 +25,7 @@ DASHES = re.compile("[\\u2013\\u2014]")  # en dash, em dash: banned in new docs
 AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
 #: Documented link.view targets accepted by the Inbox API and resolved by the
 #: UI, including stable aliases whose canonical browser routes contain '/'.
-INBOX_VIEW_TARGETS = ("dashboard", "projects", "graph", "tree", "time", "agents",
+INBOX_VIEW_TARGETS = ("dashboard", "projects", "graph", "tree", "time", "brain", "agents",
                       "inbox", "sharing", "wiki", "quirq", "setup", "secrets", "connectors")
 
 
@@ -201,8 +201,8 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
                 store.validate_link({"view": route}, strict=True)
         feeders = read("services/inbox/feeders.py")
         self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))),
-                         ["agents", "connectors", "projects", "sharing"])
-        self.assertIn("the feeders themselves use `agents`, `projects`, `sharing` and `connectors`", text)
+                         ["agents", "brain", "connectors", "projects", "sharing"])
+        self.assertIn("the feeders themselves use `agents`, `projects`, `sharing`, `connectors` and `brain`", text)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_documented_view_names_resolve_in_the_registered_ui(self) -> None:
@@ -227,6 +227,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         expected = {name: name for name in INBOX_VIEW_TARGETS}
         expected.update(dashboard="projects/overview", projects="projects/overview", graph="projects/data/graph",
                         tree="projects/data/tree", sharing="inbox/sharing", time="projects/timeline",
+                        brain="projects/brain",
                         agents="agents/overview", inbox="inbox/items", quirq="setup/server/details",
                         setup="setup/workspace", secrets="setup/secrets", connectors="setup/connectors")
         self.assertEqual(json.loads(result.stdout), expected)

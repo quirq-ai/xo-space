@@ -96,7 +96,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         # the UI
         self.assertIn("Open link (only when `url` is an http or https address", flat)
         self.assertIn('`rel="noopener noreferrer"`', section)
-        self.assertIn("All | Issues | Connections | Workspace | Sharing | Agents", section)
+        self.assertIn("All | Issues | Connections | Workspace | Sharing | Brain | Agents", section)
         self.assertIn("- Connections section:", section)
         self.assertIn(
             "No connections polled yet. Connect a toolkit on the Connectors tab and turn on polling.",
@@ -140,7 +140,7 @@ class ConnectionsDocsTests(unittest.TestCase):
         dev = read("DEVELOPING.md")
         layout = dev[dev.index("## 2. Repository layout"): dev.index("## 3. How dispatch works")]
         self.assertIn("project_sharing, inbox.py, connections.py)", layout)
-        self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections) service", layout)
+        self.assertIn("feeders (timeline,\n                                    todos, sharing, issues, connections, brain) service", layout)
         # top level under services/, beside inbox/ and swarm_api/, never under cowork_agent/
         start = layout.index("services/  ")
         services_block = layout[start:layout.index("  cowork_agent/  ", start)]
