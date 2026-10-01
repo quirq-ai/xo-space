@@ -1,8 +1,11 @@
 /* Cross-page actions go through the registry. Only a completed, still-current
-   navigation may open a form; a slow mount must not overwrite a later choice. */
-export async function openProjectAdd(switchTo){
+   navigation may open a form; a slow mount must not overwrite a later choice.
+   `prefill.repository` fills the Add form's URL, for example when the Sharing
+   page restores a repo that was removed from this Space. */
+export async function openProjectAdd(switchTo,prefill){
   if((await switchTo('projects/manage'))===true&&location.hash==='#/projects/manage'){
-    dispatchEvent(new CustomEvent('space:add-project'));
+    const repository=typeof prefill?.repository==='string'?prefill.repository.trim():'';
+    dispatchEvent(repository?new CustomEvent('space:add-project',{detail:{repository}}):new CustomEvent('space:add-project'));
   }
 }
 

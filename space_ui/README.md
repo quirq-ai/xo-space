@@ -247,7 +247,8 @@ roster or git configuration blocks removal. The server repeats its
 checks when Delete is pressed, regardless of the earlier preview. Deletion
 removes local files; it does not delete the remote repository or backups.
 Automatic sharing clones remember the local removal so they do not recreate
-the folder. Explicitly cloning it again restores it. Projects List, Tree and
+the folder. Explicitly cloning it again restores it; **Clone project** on
+Inbox → Sharing opens Manage's Add form with the repository URL filled in. Projects List, Tree and
 Sharing refresh on return. Project changes invalidate cached map data; a map
 still showing earlier data directs you to the global **Refresh** button. Changing
 projections preserves the document and unfinished Setup forms; Refresh reloads it.

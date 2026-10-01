@@ -396,25 +396,31 @@ export function mountProjectManagement(el,{onChange=()=>{},onDraftChange=()=>{},
     else{error('#manage-project-remove-error',res.ok?'Removal could not be confirmed. Refresh the project list before retrying.':failText(res));await refreshDetail();}
     updateControls();
   }
-  function openAdd(){
+  function openAdd(prefill){
+    // A handoff fills only an empty form: a draft someone is typing wins.
+    const repository=typeof prefill?.repository==='string'?prefill.repository.trim():'';
+    if(repository&&!creating&&!repositoryInput.value.trim()&&!idInput.value.trim()){
+      repositoryInput.value=repository;folderEdited=false;suggestFolder();
+    }
     form.hidden=false;
     draftChanged();
     form.scrollIntoView({block:'nearest'});
     if(creating)return;
     repositoryInput.focus({preventScroll:true});
   }
-  $('#manage-project-add').addEventListener('click',openAdd);
+  $('#manage-project-add').addEventListener('click',()=>openAdd());
   $('#manage-project-cancel').addEventListener('click',()=>{if(creating)return;form.hidden=true;form.reset();folderEdited=false;error('#manage-project-add-error','');draftChanged();});
   $('#manage-project-close').addEventListener('click',closeRemoval);
   $('#manage-project-recheck').addEventListener('click',()=>refreshDetail());
   form.addEventListener('submit',create);form.addEventListener('input',draftChanged);
   idInput.addEventListener('input',()=>{folderEdited=true;});
-  repositoryInput.addEventListener('input',()=>{
+  function suggestFolder(){
     if(folderEdited)return;
     const repository=repositoryInput.value.trim().replace(/[?#].*$/,'').replace(/\/+$/,'');
     const name=repository.split(/[/:]/).pop()?.replace(/\.git$/i,'')||'';
     idInput.value=PROJECT_ID.test(name)?name:'';
-  });
+  }
+  repositoryInput.addEventListener('input',suggestFolder);
   $('#manage-project-remove-form').addEventListener('submit',remove);
   confirmInput.addEventListener('input',updateControls);
   el.addEventListener('click',event=>{
