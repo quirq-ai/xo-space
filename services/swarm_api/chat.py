@@ -42,7 +42,3 @@ class ChatAPIClient:
         else:
             print(f"⚠️ Failed to fetch messages: {res.status} - {res.text}")
         return None
-
-    async def get_message_count(self, project_id: str) -> int:
-        messages = await self.fetch_messages(project_id, limit=100)
-        return len(messages) if messages else 0
