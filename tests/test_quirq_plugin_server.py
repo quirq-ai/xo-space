@@ -135,6 +135,12 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             redirected = await bridge.space_api_read('/api/redirect')
             refused = await bridge.space_api_read('/etc/passwd')
             restart = await bridge.space_api_write('/space/server/restart', 'POST')
+            # The server enforces the policy for any caller (visibility is only a host
+            # hint), on the decoded route: secrets, commands and encoded variants.
+            denied = [await bridge.space_api_read('/api/secrets/env'),
+                      await bridge.space_api_write('/api/schedules', 'POST'),
+                      await bridge.space_api_write('/space/server/re%73tart', 'POST')]
+        self.assertEqual([d.structuredContent['status'] for d in denied], [403, 403, 403])
         self.assertEqual(written.structuredContent['status'], 201)
         self.assertEqual(json.loads(written.structuredContent['body']), {'ok': True})
         request = seen[0]

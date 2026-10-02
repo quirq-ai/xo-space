@@ -455,15 +455,54 @@ def app_resource() -> str:
 # Paths the Space UI calls (space_ui/js): its API, its own /space routes and
 # the generated /xo data files. Nothing else on the server is reachable.
 _PROXY_PREFIXES = ("/api/", "/space/", "/xo/")
-# Controls that stop or replace the server under the bridge's feet; the UI
-# shows the message and the user can do it from Space in the browser.
-_PROXY_DENIED_WRITES = {
-    "/space/server/stop": "Stop Space from Space in your browser or with ./cowork-api.sh stop.",
-    "/space/server/restart": "Restart Space from Space in your browser; the ChatGPT view would lose its connection.",
-    "/space/update/apply": "Update Space from Space in your browser; the ChatGPT view would lose its connection.",
-}
 _FORWARD_HEADERS = {"content-type", "accept", "x-xo-session"}
 _SEGMENT = re.compile(r"(^|/)\.\.?(/|$)")
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# What the bridge never forwards, whoever calls it. `_meta.ui.visibility:
+# ["app"]` only asks the host to hide the proxy tools from the model; hosts may
+# ignore it (Codex CLI, other MCP clients), and the requests reach Space as a
+# trusted local client. So anything that leaks secrets, runs local commands,
+# shares data with other people or controls the server is refused here; the
+# user does it from Space in the browser. Rules match the canonical route
+# (decoded once, as Space's server decodes it). (methods, pattern, reason)
+_ANY = frozenset({"GET", "HEAD"}) | _WRITE_METHODS
+_PROXY_DENY: tuple[tuple[frozenset, re.Pattern, str], ...] = tuple(
+    (methods, re.compile(pattern), reason) for methods, pattern, reason in (
+        (_ANY, r"^/api/secrets/env$", "Secret values are not available from ChatGPT."),
+        (_ANY, r"^/api/secrets/[^/]+/reveal$", "Secret values are not available from ChatGPT."),
+        (_WRITE_METHODS, r"^/api/secrets(/.*)?$", "Change secrets from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/config(/.*)?$", "Change provider keys from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/connectors/composio/api-key$", "Change the Composio key from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/schedules(/.*)?$", "Jobs run local commands; manage them from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/chat(/.*)?$", "Space chat is not available from ChatGPT."),
+        (_WRITE_METHODS, r"^/api/runtime-config(/.*)?$", "Change workspace settings from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/doctor(/.*)?$", "Run doctor actions from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/project-sharing(/.*)?$", "Manage sharing from Space in your browser."),
+        (_WRITE_METHODS, r"^/api/xo-projects/[^/]+/(share|revoke|apply|peers)(/.*)?$",
+         "Manage sharing from Space in your browser."),
+        (frozenset({"DELETE"}), r"^/api/xo-projects/[^/]+$", "Delete projects from Space in your browser."),
+        (_WRITE_METHODS, r"^/space/server/(stop|restart)$",
+         "Stop or restart Space from Space in your browser; the ChatGPT view would lose its connection."),
+        (_WRITE_METHODS, r"^/space/update/apply$",
+         "Update Space from Space in your browser; the ChatGPT view would lose its connection."),
+    ))
+
+
+def canonical_route(path: str) -> str:
+    """The route Space will act on: decoded once (as its server decodes the
+    request path), repeated slashes collapsed, no trailing slash."""
+    route = re.sub(r"/{2,}", "/", unquote(urlsplit(path).path))
+    return route.rstrip("/") or "/"
+
+
+def proxy_denial(method: str, path: str) -> str | None:
+    """Why the bridge refuses this request, or None when it may be forwarded."""
+    route = canonical_route(path)
+    for methods, pattern, reason in _PROXY_DENY:
+        if method in methods and pattern.match(route):
+            return reason
+    return None
 
 
 def proxy_path(path: str) -> str:
@@ -475,7 +514,8 @@ def proxy_path(path: str) -> str:
     route = urlsplit(path).path
     if _SEGMENT.search(unquote(route)):
         raise ValueError("The Space path may not contain . or .. segments")
-    if not route.startswith(_PROXY_PREFIXES):
+    # Both the raw and the decoded route must stay inside the allowed prefixes.
+    if not route.startswith(_PROXY_PREFIXES) or not canonical_route(path).startswith(_PROXY_PREFIXES):
         raise ValueError("Only Space API, /space and /xo paths are available from ChatGPT")
     return path
 
@@ -493,6 +533,10 @@ def proxy_headers(headers: dict | None) -> dict[str, str]:
 async def forward(method: str, path: str, headers: dict | None, body: str | None) -> CallToolResult:
     try:
         target = proxy_path(path)
+        denied = proxy_denial(method, target)
+        if denied:
+            return result({"status": 403, "contentType": "application/json",
+                           "body": json.dumps({"detail": denied})}, text=f"HTTP 403 {method}")
         forwarded = proxy_headers(headers)
         if body is not None and len(body.encode("utf-8")) > PROXY_MAX_BODY:
             raise ValueError("Request body exceeds 1 MiB")
@@ -535,10 +579,6 @@ async def space_api_read(path: str, method: Literal["GET", "HEAD"] = "GET",
 async def space_api_write(path: str, method: Literal["POST", "PUT", "PATCH", "DELETE"],
                           headers: dict[str, str] | None = None, body: str | None = None) -> CallToolResult:
     """Space UI transport (app-only): send a change the user made in the Space UI to local Space."""
-    route = urlsplit(path).path if isinstance(path, str) else ""
-    if route in _PROXY_DENIED_WRITES:
-        return result({"status": 403, "contentType": "application/json",
-                       "body": json.dumps({"detail": _PROXY_DENIED_WRITES[route]})}, text="HTTP 403")
     return await forward(method, path, headers, body)
 
 # ---------------------------------------------------------------- @-mentions and resources
