@@ -1,4 +1,12 @@
-"""Hermetic bridge validation and real stdio MCP handshake; no backend boot."""
+"""The quirq plugin's MCP server (plugins/quirq/mcp/server.py): proxy policy,
+settings, mentions, views and a real stdio MCP handshake. No backend boot.
+
+The server pins mcp 1.x (see its inline script header); the repo venv may have
+mcp 2.x, so these tests skip there. Run them with the plugin's own deps:
+
+    uv run --no-project --with 'mcp==1.28.1' --with 'httpx>=0.28,<1' \
+        python -m unittest tests.test_quirq_plugin_server
+"""
 from __future__ import annotations
 import importlib.util
 import json
@@ -8,13 +16,20 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from zipfile import ZipFile
 
-import httpx
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+# A class-level skip, not a module-level SkipTest: unittest only honours the
+# latter during discovery, and loading this module by name would then abort the run.
+try:
+    import httpx
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.server.fastmcp import FastMCP  # noqa: F401  (mcp 1.x API the server uses)
+    MISSING = ""
+except ImportError as exc:  # depends on the environment
+    MISSING = (f"needs mcp 1.x and httpx ({str(exc).splitlines()[0][:80]}). Run: uv run --no-project "
+               "--with 'mcp==1.28.1' --with 'httpx>=0.28,<1' python -m unittest tests.test_quirq_plugin_server")
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "plugins" / "quirq"
 
 
 def load(name, path):
@@ -24,11 +39,10 @@ def load(name, path):
     return module
 
 
-bridge = load('space_bridge', ROOT / 'mcp/server.py')
-packager = load('space_packager', ROOT / 'scripts/package_plugin.py')
-builder = load('space_builder', ROOT / 'scripts/build_space_app.py')
+bridge = None if MISSING else load('quirq_space_bridge', ROOT / 'mcp/server.py')
 
 
+@unittest.skipIf(MISSING, MISSING)
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
     def test_origin_and_project_validation(self):
         for value in ('https://127.0.0.1:5002', 'http://example.com:5002',
@@ -223,39 +237,6 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 result = await session.call_tool('space_dashboard', {})
                 self.assertTrue(result.structuredContent['demo'])
                 self.assertTrue((await session.call_tool('space_project_details', {'project_id': '..'})).isError)
-
-    def test_committed_space_view_is_fresh(self):
-        # The GitHub marketplace installs this folder from git, so the built
-        # Space view is committed. Rebuild after space_ui/ or bridge changes:
-        #   python plugins/quirq/scripts/build_space_app.py
-        stamped = builder.built_digest()
-        self.assertIsNotNone(stamped, 'ui/space-app.html is missing; run scripts/build_space_app.py')
-        self.assertEqual(stamped, builder.source_digest(),
-                         'ui/space-app.html is stale: run plugins/quirq/scripts/build_space_app.py and commit it')
-        self.assertNotIn('AGENTS.md', {p.name for p in builder.source_files()})
-
-    def test_archive_is_relocatable_and_excludes_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            archive = Path(tmp) / 'plugin.zip'
-            packager.package(archive)
-            with ZipFile(archive) as zipped:
-                self.assertIsNone(zipped.testzip())
-                names = zipped.namelist()
-                self.assertIn('.codex-plugin/plugin.json', names)
-                self.assertEqual(zipped.read('plugin.json'), zipped.read('.codex-plugin/plugin.json'))
-                self.assertIn('.mcp.json', names)
-                self.assertIn('ui/dashboard.html', names)
-                self.assertIn('ui/space-bridge.js', names)
-                self.assertIn('ui/space-app.html', names)
-                self.assertIn('skills/quirq-onboarding/SKILL.md', names)
-                self.assertNotIn('.agents/plugins/marketplace.json', names)
-                self.assertFalse(any(n.startswith('plugins/') for n in names))
-                self.assertFalse(any('.xo/' in n or '__pycache__' in n or n.endswith(('AGENTS.md', '.pyc', '.env')) for n in names))
-            packager.package(archive, marketplace=True)
-            with ZipFile(archive) as zipped:
-                marketplace = json.loads(zipped.read('.agents/plugins/marketplace.json'))
-                source = marketplace['plugins'][0]['source']['path'][2:]
-                self.assertIn(source + '/.codex-plugin/plugin.json', zipped.namelist())
 
 
 if __name__ == '__main__':

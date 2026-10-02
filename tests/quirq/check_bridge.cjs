@@ -1,4 +1,4 @@
-// Hermetic check of ui/space-bridge.js: no browser, no dependencies (Node 18+).
+// Hermetic check of plugins/quirq/ui/space-bridge.js (run by tests/test_quirq_bridge.py): no browser, no dependencies (Node 18+).
 // Loads the bridge into a fake window, plays the MCP Apps host and asserts the
 // handshake, deep link routing, fetch → tool mapping, links and model context.
 const assert = require('node:assert/strict');
@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'ui', 'space-bridge.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', '..', 'plugins', 'quirq', 'ui', 'space-bridge.js'), 'utf8');
 const listeners = {};
 const posted = [];
 const external = [];

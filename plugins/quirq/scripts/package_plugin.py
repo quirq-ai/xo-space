@@ -27,7 +27,7 @@ def package(destination: Path, *, marketplace: bool = False) -> list[str]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     included = []
     with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
-        for name in ("plugin.json", ".codex-plugin", ".mcp.json", "README.md", "EXTENSIONS.md", "assets", "skills", "scripts", "mcp", "ui", "tests"):
+        for name in ("plugin.json", ".codex-plugin", ".mcp.json", "README.md", "EXTENSIONS.md", "assets", "skills", "scripts", "mcp", "ui"):
             source = ROOT / name
             files = sorted(source.rglob("*")) if source.is_dir() else [source]
             for path in files:

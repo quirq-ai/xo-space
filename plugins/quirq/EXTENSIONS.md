@@ -43,7 +43,7 @@ fetch('/api/…')  ── space-bridge.js ─▶ tools/call space_api_* ─▶ p
   **committed**, because the GitHub marketplace installs this folder from git.
   It contains no workspace data; everything is fetched at run time. After any
   change to `space_ui/` or `ui/space-bridge.js`, rerun the build and commit the
-  result: `tests/test_extensions.py` fails while the committed view is stale
+  result: `tests/test_quirq_space_view.py` fails while the committed view is stale
   (it compares the fingerprint stamped in the file with the current sources).
   Without the file, every view falls back to the compact dashboard.
 - The proxy tools are app-only (`_meta.ui.visibility: ["app"]`): the model
@@ -90,13 +90,19 @@ since demo mode only covers the project, session and inbox endpoints.
 
 ## Validate
 
-```powershell
-uv run --no-project --with 'mcp==1.28.1' --with 'httpx>=0.28,<1' python -m unittest discover -s plugins/quirq/tests -v
-node plugins/quirq/tests/check_bridge.cjs
-```
+The tests live in the repository's `tests/`, not in the plugin, so they never
+ship to users:
 
-`tests/check_ui.cjs` (Playwright) and `tests/check_http.py` are optional smoke
-checks for the compact dashboard and the HTTP transport.
+- `tests/test_quirq_space_view.py`: committed view is fresh; upload ZIP
+  contents. Standard library only; runs in every test run.
+- `tests/test_quirq_bridge.py`: runs `tests/quirq/check_bridge.cjs` against
+  `ui/space-bridge.js` (skipped without Node.js).
+- `tests/test_quirq_plugin_server.py`: the MCP server. It needs the plugin's
+  pinned mcp 1.x, so it skips in a venv with mcp 2.x; run it with:
+
+```powershell
+uv run --no-project --with 'mcp==1.28.1' --with 'httpx>=0.28,<1' python -m unittest tests.test_quirq_plugin_server
+```
 
 ## Known limits
 

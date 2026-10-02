@@ -10,7 +10,7 @@ front so the UI's requests reach Space through the plugin's MCP tools.
 Requires Node.js (npx) for esbuild. The output is generated but committed:
 the GitHub marketplace installs this folder straight from git. After any
 change to space_ui/ or ui/space-bridge.js, rebuild and commit it;
-tests/test_extensions.py fails while the committed view is stale.
+tests/test_quirq_space_view.py fails while the committed view is stale.
 """
 from __future__ import annotations
 
