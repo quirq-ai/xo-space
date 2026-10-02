@@ -1,5 +1,9 @@
 # XO Space for Codex
 
+**Local extensions prototype:** see [EXTENSIONS.md](EXTENSIONS.md) for the new
+read-only MCP dashboard, demo mode, local testing and ZIP installation. This
+working-tree build is not published. The original skills remain available.
+
 Install this plugin, then ask Codex **“Open XO Space.”** Codex installs the local
 server on first use, starts it and opens the Space UI in its browser when
 available. Projects, agent activity, todos and usage stay in your local workspace.

@@ -47,7 +47,10 @@ class CodexPluginPackageTests(unittest.TestCase):
                 self.assertTrue((cached / 'scripts' / script).is_file())
             # Merely installing the package must not start a server in its cache.
             self.assertFalse((cached / 'hooks').exists())
-            self.assertFalse((cached / '.mcp.json').exists())
+            self.assertTrue((cached / '.mcp.json').is_file())
+            self.assertEqual(manifest['mcpServers'], './.mcp.json')
+            self.assertTrue((cached / 'mcp/server.py').is_file())
+            self.assertTrue((cached / 'ui/dashboard.html').is_file())
             self.assertFalse((cached / 'server.py').exists())
 
     def test_claude_marketplace_still_resolves_its_original_bundle(self):
