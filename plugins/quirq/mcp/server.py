@@ -160,29 +160,6 @@ def project_segment(project_id: str) -> str:
     return quote(project_id, safe="")
 
 
-def demo_data(path: str) -> dict:
-    projects = [
-        {"id": "sample-app", "display_name": "Sample app", "description": "A demo project; no real workspace data.", "unscaffolded": False},
-        {"id": "research", "display_name": "Research", "description": "Notes and experiments", "unscaffolded": False},
-    ]
-    if path == "/api/xo-projects":
-        return {"items": projects, "total": len(projects)}
-    if path == "/api/xo-projects/activity":
-        return {"open_sessions": [{"project_id": "sample-app", "session_id": "demo-session", "runtime": "demo", "opened_at": "2026-09-30T09:00:00Z"}]}
-    if path.endswith("/todos"):
-        return {"sessions": {"_project": {"runtime": "demo", "todos": [
-            {"id": "demo1", "content": "Try the extension dashboard", "status": "in_progress"},
-            {"id": "demo2", "content": "Review the project notes", "status": "pending"},
-        ]}}}
-    if path.startswith("/api/inbox"):
-        return {"items": [{"id": "demo-item", "title": "Welcome to the demo inbox", "kind": "note", "status": "open"}]}
-    raise ValueError("Unsupported demo endpoint")
-
-
-def demo_mode() -> bool:
-    return os.environ.get("QUIRQ_EXTENSION_DEMO") == "1"
-
-
 def client(timeout: float = 8) -> httpx.AsyncClient:
     # No redirects (a redirect could leave loopback) and no proxy env (a
     # corporate HTTP_PROXY must never see local Space traffic).
@@ -200,8 +177,6 @@ async def read_capped(response: httpx.Response, limit: int) -> bytes:
 
 async def read_api(path: str) -> dict:
     origin = base_url()
-    if demo_mode():
-        return demo_data(path)
     async with client() as http:
         async with http.stream("GET", origin + path) as response:
             response.raise_for_status()
@@ -242,7 +217,7 @@ async def projects() -> dict:
             raise ValueError("Expected project IDs")
         items.append({k: row[k] for k in ("id", "display_name", "description", "unscaffolded") if k in row})
     return {"items": items, "total": len(raw["items"]), "truncated": len(raw["items"]) > 500,
-            "space_url": base_url() + "/space/", "demo": demo_mode()}
+            "space_url": base_url() + "/space/"}
 
 
 async def active_sessions(project_id: str = "") -> dict:
@@ -276,7 +251,7 @@ async def project_details(project_id: str) -> dict:
             if isinstance(row, dict) and not row.get("deleted_at"):
                 todos.append({k: row[k] for k in ("id", "content", "status") if k in row})
     data = {"project": project, "todos": todos[:200], "todo_total": len(todos),
-            "truncated": len(todos) > 200, "space_url": catalog["space_url"], "demo": catalog["demo"]}
+            "truncated": len(todos) > 200, "space_url": catalog["space_url"]}
     try:
         data.update(await active_sessions(project_id))
     except (httpx.HTTPError, ValueError):
@@ -553,10 +528,6 @@ async def forward(method: str, path: str, headers: dict | None, body: str | None
         forwarded = proxy_headers(headers)
         if body is not None and len(body.encode("utf-8")) > PROXY_MAX_BODY:
             raise ValueError("Request body exceeds 1 MiB")
-        if demo_mode():
-            data = demo_data(urlsplit(target).path)
-            return result({"status": 200, "contentType": "application/json", "body": json.dumps(data)},
-                          text=f"HTTP 200 {method} {urlsplit(target).path}")
         # No Origin header: Space's browser guard treats this as a local
         # server-side client (routers/browser_guard.py), like the CLI.
         async with client(timeout=30) as http:

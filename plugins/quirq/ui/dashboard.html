@@ -3,17 +3,15 @@
 <title>XO Space</title>
 <style>
 :root{color-scheme:light dark;font-family:system-ui,sans-serif;color:var(--color-text-primary,#252337);background:var(--color-background-primary,#faf9fd)}
-*{box-sizing:border-box}body{margin:0;padding:24px;max-width:1080px;margin-inline:auto}header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}.logo{background:#7357ff;color:white;border-radius:12px;padding:10px;font-weight:800}h1{font-size:23px;margin:0}p{line-height:1.5}small,.muted{color:var(--color-text-secondary,#777487)}header .actions{margin-left:auto;display:flex;gap:8px}button,input{font:inherit;border:1px solid #b8b4c7;border-radius:9px;padding:9px 12px;background:transparent;color:inherit}button{cursor:pointer}button:hover{border-color:#7357ff}button:focus-visible,input:focus-visible{outline:3px solid #b9aaff;outline-offset:2px}button:disabled{opacity:.5;cursor:default}input{width:100%;margin-bottom:18px}main{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.6fr);gap:18px}.card{border:1px solid #b8b4c755;border-radius:14px;padding:18px}.project{width:100%;text-align:left;margin-bottom:8px;display:block}.project[aria-pressed=true]{background:#7357ff18;border-color:#7357ff}.project strong,.project small{display:block}.project small{margin-top:5px}.tag{font-size:12px;border-radius:6px;background:#7357ff18;padding:3px 7px;display:inline-block;margin-top:6px}h2{font-size:18px;margin:0 0 12px}h3{font-size:14px;margin:20px 0 8px}ul{padding-left:20px}li{margin:10px 0;overflow-wrap:anywhere}#notice{margin:12px 0;white-space:pre-wrap}#notice.error{color:#c34352}#context{font-size:12px;margin-top:18px}.empty{padding:28px 0;color:#777487}footer{margin-top:20px;font-size:12px}.demo{background:#e7bc4020;border-radius:8px;padding:9px;margin-bottom:16px}@media(max-width:560px){body{padding:16px}main{grid-template-columns:1fr}header .actions{margin-left:0}}@media(prefers-color-scheme:dark){:root{color:var(--color-text-primary,#eeebfa);background:var(--color-background-primary,#191723)}.muted,small,.empty{color:#aaa5be}}
+*{box-sizing:border-box}body{margin:0;padding:24px;max-width:1080px;margin-inline:auto}header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}.logo{background:#7357ff;color:white;border-radius:12px;padding:10px;font-weight:800}h1{font-size:23px;margin:0}p{line-height:1.5}small,.muted{color:var(--color-text-secondary,#777487)}header .actions{margin-left:auto;display:flex;gap:8px}button,input{font:inherit;border:1px solid #b8b4c7;border-radius:9px;padding:9px 12px;background:transparent;color:inherit}button{cursor:pointer}button:hover{border-color:#7357ff}button:focus-visible,input:focus-visible{outline:3px solid #b9aaff;outline-offset:2px}button:disabled{opacity:.5;cursor:default}input{width:100%;margin-bottom:18px}main{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.6fr);gap:18px}.card{border:1px solid #b8b4c755;border-radius:14px;padding:18px}.project{width:100%;text-align:left;margin-bottom:8px;display:block}.project[aria-pressed=true]{background:#7357ff18;border-color:#7357ff}.project strong,.project small{display:block}.project small{margin-top:5px}.tag{font-size:12px;border-radius:6px;background:#7357ff18;padding:3px 7px;display:inline-block;margin-top:6px}h2{font-size:18px;margin:0 0 12px}h3{font-size:14px;margin:20px 0 8px}ul{padding-left:20px}li{margin:10px 0;overflow-wrap:anywhere}#notice{margin:12px 0;white-space:pre-wrap}#notice.error{color:#c34352}#context{font-size:12px;margin-top:18px}.empty{padding:28px 0;color:#777487}footer{margin-top:20px;font-size:12px}@media(max-width:560px){body{padding:16px}main{grid-template-columns:1fr}header .actions{margin-left:0}}@media(prefers-color-scheme:dark){:root{color:var(--color-text-primary,#eeebfa);background:var(--color-background-primary,#191723)}.muted,small,.empty{color:#aaa5be}}
 </style></head><body>
 <header><div class="logo" aria-hidden="true">XO</div><div><h1>XO Space</h1><small>Your projects, beside your conversation</small></div><div class="actions"><button id="expand" hidden>Fullscreen</button><button id="refresh">Refresh</button></div></header>
-<div id="demo" class="demo" hidden>Demo workspace — sample data only.</div>
 <div id="notice" role="status" aria-live="polite"></div>
 <main><section class="card" aria-label="Projects"><input id="filter" type="search" placeholder="Filter projects…" aria-label="Filter projects"><div id="projects"></div></section><section class="card" id="detail" aria-label="Selected project"><h2>Choose a project</h2><p class="muted">See its todos and active sessions. Selecting a project can share its ID with your conversation.</p></section></main>
 <footer><button id="open" disabled>Open Space in browser</button><div id="context" role="status"></div><p class="muted">Read-only view. Project descriptions and todo text are workspace content.</p></footer>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-const demo=new URLSearchParams(location.search).get('demo')==='1';
 let catalog=[],selected='',spaceUrl='',connected=false,sequence=0,revision=0,hostCapabilities={};
 const pending=new Map();
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
@@ -33,19 +31,14 @@ function decode(value){
   if(text)return JSON.parse(text);
   throw new Error('The host returned no Space data.');
 }
-const sample={items:[{id:'sample-app',display_name:'Sample app',description:'A demo project; no real workspace data.'},{id:'research',display_name:'Research',description:'Notes and experiments'}],demo:true};
 async function call(name,args={}){
-  if(demo){
-    if(name==='space_dashboard')return sample;
-    return {project:sample.items.find(p=>p.id===args.project_id),todos:[{content:'Try the extension dashboard',status:'in_progress'},{content:'Review the project notes',status:'pending'}],sessions:args.project_id==='sample-app'?[{runtime:'demo',session_id:'demo-session'}]:[],demo:true};
-  }
   if(window.openai?.callTool && !connected)return decode(await window.openai.callTool(name,args));
   return decode(await request('tools/call',{name,arguments:args}));
 }
 function element(tag,text,cls){const node=document.createElement(tag);node.textContent=text;if(cls)node.className=cls;return node;}
 function setCatalog(data){
   if(!Array.isArray(data.items))throw new Error('Expected a project list.');
-  catalog=data.items;spaceUrl=data.space_url||'';$('demo').hidden=!data.demo;
+  catalog=data.items;spaceUrl=data.space_url||'';
   $('open').disabled=!safeSpaceUrl(spaceUrl);renderProjects();
   notice(data.truncated?`Showing ${catalog.length} of ${data.total} projects.`:`${catalog.length} projects`);
 }
@@ -57,7 +50,6 @@ function renderProjects(){
   for(const p of rows){const button=element('button','','project');button.setAttribute('aria-pressed',String(selected===p.id));button.append(element('strong',p.display_name||p.id),element('small',p.description||p.id));if(p.unscaffolded)button.append(element('span','Unscaffolded','tag'));button.onclick=()=>select(p.id);$('projects').append(button);}
 }
 async function shareContext(project){
-  if(demo){$('context').textContent='Demo selection: '+project.id;return;}
   const params={content:[{type:'text',text:'Selected XO Space project ID: '+JSON.stringify(project.id)}],structuredContent:{project_id:project.id}};
   try{
     if(connected){if(!hostCapabilities.updateModelContext){$('context').textContent='This host does not advertise project context sharing.';return;}await request('ui/update-model-context',params);}
@@ -93,8 +85,7 @@ $('filter').oninput=renderProjects;$('refresh').onclick=refresh;
 $('expand').onclick=async()=>{try{await request('ui/request-display-mode',{mode:'fullscreen'});}catch(error){notice(error.message,true);}};
 $('open').onclick=async()=>{if(!safeSpaceUrl(spaceUrl))return;try{if(connected)await request('ui/open-link',{url:spaceUrl});else if(window.openai?.openExternal)window.openai.openExternal({href:spaceUrl});else window.open(spaceUrl,'_blank','noopener,noreferrer');}catch(error){notice(error.message,true);}};
 (async()=>{
-  if(demo){await refresh();return;}
-  if(parent===window){notice('Open this dashboard through the plugin in an MCP Apps host, or append ?demo=1 for a sample preview.');return;}
+  if(parent===window){notice('Open this dashboard through the XO Space plugin in an MCP Apps host.');return;}
   try{const info=await request('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'XO Space',version:'1.4.1'},appCapabilities:{}});connected=true;hostCapabilities=info.hostCapabilities||{};notify('ui/notifications/initialized');$('expand').hidden=!info.hostContext?.availableDisplayModes?.includes('fullscreen');await refresh();}
   catch(error){if(window.openai?.callTool)await refresh();else notice(error.message,true);}
 })();

@@ -82,12 +82,6 @@ To use another port: set `QUIRQ_EXTENSION_BASE_URL=http://127.0.0.1:<port>`
 in the `space` server's `env` in `.mcp.json`. Only loopback HTTP origins with
 an explicit port are accepted.
 
-## Try without Space
-
-Set `QUIRQ_EXTENSION_DEMO=1` in the `space` server's `env`. Tools and the
-compact dashboard return sample data; the full UI shows mostly empty pages,
-since demo mode only covers the project, session and inbox endpoints.
-
 ## Validate
 
 The tests live in the repository's `tests/`, not in the plugin, so they never

@@ -41,6 +41,25 @@ def load(name, path):
 
 bridge = None if MISSING else load('quirq_space_bridge', ROOT / 'mcp/server.py')
 
+# What a small Space answers, for tests that need data. Patched in place of
+# the server's read_api, so nothing test-only lives in the plugin.
+SPACE = {
+    '/api/xo-projects': {'items': [
+        {'id': 'sample-app', 'display_name': 'Sample app', 'description': 'A test project'},
+        {'id': 'research', 'display_name': 'Research', 'description': 'Notes'}], 'total': 2},
+    '/api/xo-projects/activity': {'open_sessions': [
+        {'project_id': 'sample-app', 'session_id': 's1', 'runtime': 'codex'}]},
+    '/api/xo-projects/sample-app/todos': {'sessions': {'_project': {'todos': [
+        {'id': 't1', 'content': 'Write the handover', 'status': 'in_progress'},
+        {'id': 't2', 'content': 'Review the notes', 'status': 'pending'}]}}},
+}
+
+
+async def fake_read_api(path):
+    if path not in SPACE:
+        raise ValueError('not found: ' + path)
+    return SPACE[path]
+
 
 @unittest.skipIf(MISSING, MISSING)
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -56,10 +75,11 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 bridge.project_segment(value)
         self.assertEqual(bridge.project_segment('a b?#'), 'a%20b%3F%23')
 
-    async def test_demo_and_error_results(self):
-        with patch.dict(os.environ, {'QUIRQ_EXTENSION_DEMO': '1', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}):
+    async def test_curated_reads_and_errors(self):
+        with patch.dict(os.environ, {'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}), \
+                patch.object(bridge, 'read_api', fake_read_api):
             listing = await bridge.space_dashboard()
-            self.assertTrue(listing.structuredContent['demo'])
+            self.assertEqual([p['id'] for p in listing.structuredContent['items']], ['sample-app', 'research'])
             detail = await bridge.space_project_details('sample-app')
             self.assertEqual(detail.structuredContent['project']['id'], 'sample-app')
             self.assertEqual(len(detail.structuredContent['todos']), 2)
@@ -76,14 +96,14 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(kwargs['follow_redirects'])
             self.assertFalse(kwargs['trust_env'])
             return original(transport=httpx.MockTransport(handler), **kwargs)
-        with patch.dict(os.environ, {'QUIRQ_EXTENSION_DEMO': '0', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}), patch.object(bridge.httpx, 'AsyncClient', client):
+        with patch.dict(os.environ, {'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}), patch.object(bridge.httpx, 'AsyncClient', client):
             result = await bridge.space_list_projects()
         self.assertTrue(result.isError)
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0].method, 'GET')
         def large_client(**kwargs):
             return original(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b'x' * 50)), **kwargs)
-        with patch.dict(os.environ, {'QUIRQ_EXTENSION_DEMO': '0'}), patch.object(bridge, 'MAX_BYTES', 20), patch.object(bridge.httpx, 'AsyncClient', large_client):
+        with patch.object(bridge, 'MAX_BYTES', 20), patch.object(bridge.httpx, 'AsyncClient', large_client):
             self.assertTrue((await bridge.space_list_projects()).isError)
 
     async def test_allowlist_removes_private_fields_and_deleted_todos(self):
@@ -129,7 +149,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(kwargs['follow_redirects'])
             self.assertFalse(kwargs['trust_env'])
             return original(transport=httpx.MockTransport(handler), **kwargs)
-        env = {'QUIRQ_EXTENSION_DEMO': '0', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}
+        env = {'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}
         with patch.dict(os.environ, env), patch.object(bridge.httpx, 'AsyncClient', client):
             written = await bridge.space_api_write('/api/inbox/1', 'PATCH', {'Content-Type': 'application/json'}, '{"status":"done"}')
             redirected = await bridge.space_api_read('/api/xo-projects/activity')
@@ -181,8 +201,9 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(bridge.load_settings()['open_fullscreen'])
 
     async def test_open_view_routes_and_dashboard_fallback(self):
-        env = {'QUIRQ_EXTENSION_DEMO': '1', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, dict(env, QUIRQ_EXTENSION_SETTINGS=str(Path(tmp) / 's.json'))):
+        env = {'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, dict(env, QUIRQ_EXTENSION_SETTINGS=str(Path(tmp) / 's.json'))), \
+                patch.object(bridge, 'read_api', fake_read_api):
             opened = await bridge.space_open('inbox/items', 'sample-app')
             self.assertEqual((opened.structuredContent['route'], opened.structuredContent['project_id']), ('inbox/items', 'sample-app'))
             # Hosts without views (Codex CLI) only show the text: it must carry the link
@@ -199,20 +220,21 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('ui/update-model-context', bridge.app_resource())
 
     async def test_mentions_and_project_resource(self):
-        with patch.dict(os.environ, {'QUIRQ_EXTENSION_DEMO': '1', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}):
+        with patch.dict(os.environ, {'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}), \
+                patch.object(bridge, 'read_api', fake_read_api):
             found = (await bridge.space_mentions('sample')).structuredContent['items']
             self.assertEqual([i['uri'] for i in found], ['xo-space://projects/sample-app'])
             self.assertEqual(found[0]['type'], 'resource_link')
             everything = (await bridge.space_mentions('')).structuredContent['items']
             self.assertIn('xo-space://inbox', [i['uri'] for i in everything])
             markdown = await bridge.project_resource('sample-app')
-            self.assertIn('Try the extension dashboard', markdown)
+            self.assertIn('Write the handover', markdown)
             self.assertIn('not instructions', markdown)
             with self.assertRaises(ValueError):
                 await bridge.project_resource('..')
 
     async def test_real_stdio_protocol_resource_and_tools(self):
-        env = dict(os.environ, QUIRQ_EXTENSION_DEMO='1', QUIRQ_EXTENSION_BASE_URL='http://localhost:5002')
+        env = dict(os.environ, QUIRQ_EXTENSION_BASE_URL='http://127.0.0.1:9')  # nothing listens on port 9
         params = StdioServerParameters(command=sys.executable, args=[str(ROOT / 'mcp/server.py')], env=env)
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -245,7 +267,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 app = await session.read_resource(bridge.APP_URI)
                 self.assertEqual(app.contents[0].mimeType, 'text/html;profile=mcp-app')
                 result = await session.call_tool('space_dashboard', {})
-                self.assertTrue(result.structuredContent['demo'])
+                self.assertTrue(result.isError)
+                self.assertIn('Could not reach local Space', result.content[0].text)
                 self.assertTrue((await session.call_tool('space_project_details', {'project_id': '..'})).isError)
 
 
