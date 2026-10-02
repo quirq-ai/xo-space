@@ -239,23 +239,19 @@ No installation or sign-in starts from a native status refresh.
 Project management uses `POST /api/xo-projects` with `repository_url` and
 `project_id`, `GET /api/xo-projects/{id}/removal`, and `DELETE /api/xo-projects/{id}`
 with `confirm_project_id`. Existing folders are never overwritten. Removal
-checks both workspace sharing grants and the local collaborator roster; each
-grant must be revoked individually, and each other collaborator removed.
-Unavailable or malformed access checks block removal. The server repeats its
+deletes only this Space's local copy, so it does not check or change project
+sharing (`members` in the removal response is always empty; revoke access from
+Inbox → Sharing). It checks the folder's safety and the local collaborator
+roster: each other collaborator must be removed first, and an unreadable
+roster or git configuration blocks removal. The server repeats its
 checks when Delete is pressed, regardless of the earlier preview. Deletion
 removes local files; it does not delete the remote repository or backups.
 Automatic sharing clones remember the local removal so they do not recreate
-the folder. Explicitly cloning it again restores it. Projects List, Tree and
+the folder. Explicitly cloning it again restores it; **Clone project** on
+Inbox → Sharing opens Manage's Add form with the repository URL filled in. Projects List, Tree and
 Sharing refresh on return. Project changes invalidate cached map data; a map
 still showing earlier data directs you to the global **Refresh** button. Changing
 projections preserves the document and unfinished Setup forms; Refresh reloads it.
-
-For never-shared Git repositories, XO Swarm must support `GET /commits/members`
-returning `200` with `members: []` when its sharing ledger has no rows. Older
-versions return the same `403` as an inaccessible shared repository; Space
-keeps removal blocked in that case. Deploy the companion `members_for_user`
-change before enabling removal of never-shared repositories. Existing shared
-repositories still require an active, bound caller and individual revocation.
 
 **Restart server**, **Apply & restart** and the update action appear in Server,
 with only the relevant restart button visible. They use `/space/server/restart`. Restart takes
