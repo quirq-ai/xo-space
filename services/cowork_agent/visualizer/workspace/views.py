@@ -61,11 +61,6 @@ def view_path(name: str) -> Path:
     return workspace_runtime_dir() / _VIEW_FILENAMES.get(name, f"{name}.json")
 
 
-def graph_path() -> Path:
-    """``~/.quirq/cache/graph.json`` — the derived d3 graph."""
-    return view_path("space")
-
-
 # ── The T20 sweep of the abandoned workspace views ────────────────────────────
 # Snapshots are deleted, history is moved. Everything below is derived state
 # the next tick rebuilds in the runtime tier — except the timeline, which is

@@ -51,10 +51,6 @@ def path() -> Path:
     return workspace_xo_dir() / FILENAME
 
 
-def legacy_path() -> Path:
-    return workspace_xo_dir() / LEGACY_FILENAME
-
-
 def git_refresh_seconds() -> float:
     """How long a project's git block is reused before it is re-read."""
     raw = os.getenv("XO_GIT_PROVENANCE_REFRESH_S", "")
