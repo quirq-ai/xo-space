@@ -1,0 +1,29 @@
+{
+  "models": {
+    "enabled": true,
+    "oauth": {
+      "claude_code": { "enabled": false },
+      "codex": { "enabled": false }
+    },
+    "api_keys": {
+      "enabled": true,
+      "anthropic": { "enabled": true },
+      "openai": { "enabled": false },
+      "openrouter": { "enabled": false }
+    }
+  },
+  "data": {
+    "enabled": false,
+    "google_drive": { "enabled": false },
+    "one_drive": { "enabled": false },
+    "github": { "enabled": false },
+    "vercel": { "enabled": false }
+  },
+  "channels": {
+    "enabled": false,
+    "telegram": { "enabled": false },
+    "slack": { "enabled": false }
+  },
+  "secrets": { "enabled": true },
+  "remote_control": { "enabled": false }
+}

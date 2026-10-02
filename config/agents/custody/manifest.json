@@ -1,0 +1,22 @@
+{
+  "name": "custody",
+  "binary": "custody",
+  "install_url": "https://github.com/vilka-9999/custody",
+  "home_dir": "~/.custody-agent",
+  "env_file": "~/.custody-agent/.env",
+  "config_file": "~/.custody-agent/settings.json",
+  "agents_dir": "~/.custody-agent/agents",
+  "cwd": "~",
+  "cli_timeout_seconds": 900,
+  "runtime_setup": {
+    "installs_cli": false,
+    "session_globs": ["**/.custody/ledger.jsonl"],
+    "secrets": [
+      {
+        "key": "ANTHROPIC_API_KEY",
+        "label": "Anthropic API key",
+        "description": "Used by custody's model-backed remediator and reviewer. The audited project's test suite runs with this key stripped from its environment."
+      }
+    ]
+  }
+}
