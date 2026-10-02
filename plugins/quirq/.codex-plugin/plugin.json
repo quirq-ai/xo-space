@@ -1,27 +1,51 @@
 {
   "name": "quirq",
-  "version": "1.4.1+local.extensions",
-  "description": "Install, open and manage XO Space locally from Codex. Browse projects, agent sessions, todos and usage in your workspace.",
-  "author": {"name": "Quirq", "url": "https://github.com/quirq-ai"},
+  "version": "1.5.0",
+  "description": "XO Space inside Codex and ChatGPT: the full Space UI in the sidebar and beside conversations, plus install, start and status for the local server.",
+  "author": {
+    "name": "Quirq",
+    "url": "https://github.com/quirq-ai"
+  },
   "homepage": "https://xo.builders",
   "repository": "https://github.com/quirq-ai/xo-space",
   "license": "MIT",
-  "keywords": ["xo-space", "quirq", "workspace", "coding-agents", "codex"],
+  "keywords": [
+    "xo-space",
+    "quirq",
+    "workspace",
+    "coding-agents",
+    "codex"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/quirq-onboarding/SKILL.md"
+    }
+  },
   "interface": {
     "displayName": "XO Space",
     "shortDescription": "Your local agent workspace, inside Codex",
-    "longDescription": "Open XO Space from Codex to browse projects, sessions, todos and usage. On first use, Codex installs the local server into a durable workspace and starts it with the Codex backend. Existing installations keep their settings. Requires a local macOS, Linux or WSL environment with git and an authenticated Codex CLI.",
+    "longDescription": "Open XO Space in the sidebar or beside a conversation: projects, agent sessions, inbox and setup, fully interactive. Mention projects with @, and let the assistant open any Space page for you. Space runs locally (macOS, Linux or WSL); on first use the plugin can install and start it.",
     "developerName": "Quirq",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Read"],
-    "defaultPrompt": ["Open XO Space", "Install XO Space in ~/xo-workspace", "Check XO Space status"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Open XO Space",
+      "Show my agent sessions in Space",
+      "Check XO Space status"
+    ],
     "websiteURL": "https://xo.builders",
     "brandColor": "#7357FF",
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/logo.svg",
     "logoDark": "./assets/logo-dark.svg",
-    "screenshots": ["./assets/projects.png"]
+    "screenshots": [
+      "./assets/projects.png"
+    ]
   }
 }

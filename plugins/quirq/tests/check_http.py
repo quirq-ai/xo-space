@@ -9,7 +9,8 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
-            assert len(tools.tools) == 6
+            names = {t.name for t in tools.tools}
+            assert {'space_home', 'space_panel', 'space_open', 'space_dashboard', 'space_api_read'} <= names, names
             result = await session.call_tool("space_dashboard", {})
             assert result.structuredContent["demo"] is True
             resource = await session.read_resource("ui://xo-space/dashboard")

@@ -1,11 +1,23 @@
-"""Create a plugin-root upload ZIP or an optional local marketplace archive."""
+"""Create a plugin-root upload ZIP or an optional local marketplace archive.
+
+Builds the full Space view (ui/space-app.html, via build_space_app.py) first,
+so an archive never ships without it; --no-build packages what is on disk.
+"""
 from __future__ import annotations
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def build_space_app() -> Path:
+    spec = importlib.util.spec_from_file_location("build_space_app", ROOT / "scripts/build_space_app.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build()
 
 
 def package(destination: Path, *, marketplace: bool = False) -> list[str]:
@@ -42,5 +54,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--marketplace", action="store_true", help="Include the local marketplace wrapper; do not upload this variant")
+    parser.add_argument("--no-build", action="store_true", help="Skip rebuilding ui/space-app.html (needs Node.js)")
     args = parser.parse_args()
+    if not args.no_build:
+        print(f"Built {build_space_app()}")
     print(f"Packaged {len(package(args.destination, marketplace=args.marketplace))} files into {args.destination.resolve()}")

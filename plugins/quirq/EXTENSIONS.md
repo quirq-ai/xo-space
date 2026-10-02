@@ -1,137 +1,109 @@
-# Try the local XO Space extensions
+# XO Space inside ChatGPT / Codex
 
-This local prototype adds a read-only MCP App to the existing `quirq` plugin.
-Nothing is published. It includes separate `space_home` sidebar and
-`space_panel` conversation-panel tools, a searchable project dashboard, project todos, active sessions,
-selected-project context sharing, and fullscreen where the host supports it.
-It does not implement composer mentions, registered deep links, native plugin
-settings, file editors, or rich forms. These can be added separately.
+The `quirq` plugin shows **the real Space UI** inside the ChatGPT desktop app
+(Chat, Work and the Codex tab): in the sidebar, beside a conversation, and
+inline whenever the assistant opens a Space page. It is the same `space_ui/`
+the browser serves, bundled into one MCP App view; no second UI to maintain.
+It runs on the desktop app only: the plugin's server and Space are local.
 
-## Upload in the desktop New Plugin dialog
+## What the user gets
 
-Select `dist/quirq-extensions-local.zip`. This variant puts
-`plugin.json`, `.codex-plugin/plugin.json`, `.mcp.json`, `skills/`, `mcp/` and `ui/` directly
-at the archive root. Do not upload the marketplace variant below: its nested
-plugin and sibling marketplace files do not meet the single-plugin-root layout.
-Archive integrity and root layout are verified locally; acceptance by the
-desktop importer and its support for bundled stdio MCP remain unverified.
-The public submission portal's skills-only path excludes MCP configuration;
-do not assume that uploading skills alone enables the dashboard extensions.
-If the desktop importer requires a registered MCP App, use its Create MCP App
-flow with a supported connection, rather than claiming this ZIP supplies one.
+| Surface | How it appears | Backed by |
+|---|---|---|
+| Sidebar app | **XO Space** in the sidebar, opens fullscreen; quick action **Space inbox** | `space_home` (global entrypoint) |
+| Conversation panel | **Space projects** tab beside a thread | `space_panel` (thread entrypoint) |
+| Inline pages | The assistant opens any Space page: projects, sessions, inbox, setup, wiki | `space_open`, `space_open_inbox`, `space_open_sessions`, `space_open_setup` |
+| Deep links | `codex://plugins/quirq@<marketplace>/app/space_home?path=%2Fagents%2Fsessions`; `/project/<id>` focuses a project | `hostContext["openai/deepLink"]` |
+| @-mentions | Type **@** to attach a project, the inbox or active sessions | `space_mentions` + `xo-space://` resources |
+| Chat context | The open page and project are shared with the assistant (background), or attached explicitly with **+ Chat** | `ui/update-model-context` |
+| Settings | Plugin page: start page, fullscreen, context sharing, control bar; buttons to check the connection and open Setup/Inbox | `space_settings_read` / `space_settings_update` |
+| Onboarding | After install: check/start Space, open it, explain the sidebar and @ | `skills/quirq-onboarding` |
+| Compact dashboard | Read-only project list; works without the full UI build | `space_dashboard` |
 
-## Install the marketplace ZIP locally
+Everything in the Space UI is interactive, including changes (todos, inbox,
+connectors, secrets, jobs). Stopping, restarting and updating the server are
+refused inside ChatGPT; do those from Space in the browser.
 
-Use `dist/quirq-extensions-marketplace.zip` for the following extraction steps.
+## How it works
 
-1. Extract the ZIP into a durable folder, for example `C:\xo-space-extensions`.
-   Keep the hidden `.agents` and `.codex-plugin` folders. The extracted root
-   contains `TRY-ME.md`, `.agents/plugins/marketplace.json` and `plugins/quirq/`.
-2. Add the extracted folder as a local marketplace:
-   `codex plugin marketplace add C:\xo-space-extensions`
-   (On Linux/macOS use the corresponding absolute path.)
-3. Restart the desktop app, open Plugins, select **XO Space Extensions (local)**,
-   and install **XO Space**. Disable the original Quirq plugin while testing
-   this copy to avoid duplicate skills/tools. Start a fresh chat and ask:
-   **Open the XO Space dashboard using the Space MCP tool.**
-
-`uv` must be on the host's PATH. The MCP process runs through `uv run --script`,
-which resolves Python 3.11+ and the script's declared SDK dependencies on first
-use. No global Python package installation is needed. The launch configuration
-uses `./mcp/server.py` with `cwd: .`, matching the locally working xo-spike
-plugin. The host must resolve these relative to the installed plugin root.
-Use the explicit launch command below for standalone/manual connections.
-
-For this checkout, the existing repo marketplace already points to the edited
-`plugins/quirq/`. Refresh/reinstall its cached plugin and restart the app to
-load the local files; installing from the GitHub URL would load the published
-version instead of these changes.
-
-## Try without a running Space server
-
-Set `QUIRQ_EXTENSION_DEMO=1` in the environment of the plugin host before
-launching it. Alternatively, add `"env": {"QUIRQ_EXTENSION_DEMO": "1"}` inside
-the `space` server object in the extracted plugin's `.mcp.json`, then reinstall
-or refresh the local cached plugin. The dashboard displays a demo banner.
-Remove this setting to switch to real projects.
-
-For a standalone visual preview (no plugin host required):
-
-```powershell
-python -m http.server 5014 --bind 127.0.0.1 --directory plugins/quirq/ui
+```
+Space UI (unchanged, bundled)          ChatGPT host              MCP server (mcp/server.py)        Space
+fetch('/api/…')  ── space-bridge.js ─▶ tools/call space_api_* ─▶ path policy, no Origin ─────────▶ 127.0.0.1:5002
 ```
 
-Open `http://127.0.0.1:5014/dashboard.html?demo=1`. This previews the UI only;
-host entrypoints and conversation context require a compatible MCP Apps host.
+- `ui/space-bridge.js` runs before the Space UI. It performs the MCP Apps
+  handshake and replaces `fetch` for Space URLs: reads become
+  `space_api_read`, changes become `space_api_write`. Space's own `api.js` is
+  untouched and still sees normal `Response`s, including "offline" when Space
+  is down. Links and popups go through `ui/open-link`; deep links and tool
+  results become Space hash routes; a small control bar adds fullscreen,
+  **+ Chat** and open-in-browser.
+- `scripts/build_space_app.py` inlines `space_ui`'s CSS, fonts and ES modules
+  (esbuild) plus the bridge into `ui/space-app.html`. The file is generated but
+  **committed**, because the GitHub marketplace installs this folder from git.
+  It contains no workspace data; everything is fetched at run time. After any
+  change to `space_ui/` or `ui/space-bridge.js`, rerun the build and commit the
+  result: `tests/test_extensions.py` fails while the committed view is stale
+  (it compares the fingerprint stamped in the file with the current sources).
+  Without the file, every view falls back to the compact dashboard.
+- The proxy tools are app-only (`_meta.ui.visibility: ["app"]`): the model
+  cannot call them. Paths must be `/api/`, `/space/` or `/xo/`, without `..`,
+  `//`, backslashes or fragments; only `Content-Type`, `Accept` and
+  `X-XO-Session` are forwarded; redirects are not followed; responses are
+  capped at 8 MiB and request bodies at 1 MiB. Requests carry no `Origin`, so
+  Space's browser guard treats the bridge like the CLI (a local client); the
+  guard still protects Space from other websites.
+- Settings are stored in `~/.quirq/setup/extension/settings.json` (or
+  `$PLUGIN_DATA/settings.json`, or `QUIRQ_EXTENSION_SETTINGS`).
 
-## Use real workspace data
+## Build and install
 
-Start the existing Space backend on Linux/macOS/WSL as usual. The bridge defaults
-to `http://127.0.0.1:5002`. For port 5003 or another loopback port, set
-`QUIRQ_EXTENSION_BASE_URL=http://127.0.0.1:5003` in the plugin host environment
-or the MCP server's `env` object. The bridge can run on native Windows; the
-Space backend still requires Linux/macOS/WSL. Windows-to-WSL localhost forwarding
-must work if they run in different environments.
-
-Only loopback HTTP origins with an explicit port are accepted. The UI calls
-MCP tools through the host bridge; it never fetches localhost directly. Tools
-use GET only, never follow redirects, ignore proxy environment variables, bound
-response sizes and omit credentials, absolute paths and session transcripts.
-Project descriptions and todo text are returned to the host when read; use demo
-mode if you do not want real workspace content sent to your conversation.
-
-Explicit stdio launch for MCP Inspector or another local MCP host:
-
-```powershell
-uv run --script C:\xo-space-extensions\plugins\quirq\mcp\server.py
-```
-
-For a local Streamable HTTP test, use:
-
-```powershell
-$env:QUIRQ_EXTENSION_DEMO = '1'
-uv run --script plugins/quirq/mcp/server.py --http --port 5004
-```
-
-The endpoint is `http://127.0.0.1:5004/mcp`. It binds to loopback, has no remote
-authentication, and is intended only for local testing. Do not expose it via
-a tunnel. ChatGPT web cannot use a server on your computer's loopback. A remote
-integration needs authenticated hosting and a registered MCP connection; this
-prototype does not create one or invent an `.app.json` registration ID.
-
-## Host support and fallback
-
-The server advertises a `global` entrypoint on `space_home` and a `thread`
-entrypoint on `space_panel`, using `openai/ui` metadata. `space_dashboard` remains
-the inline tool. The package mirrors installed xo-spike 0.3.2: identical root
-and compatibility manifests, `Interactive`/`Read` capabilities, icons,
-widget-access compatibility metadata, and UI resource display modes. Local
-plugins can expose native entrypoints without a remote app registration, as
-the user's working xo-spike installation demonstrates. Quirq's host display
-still needs verification after reinstall/refresh.
-
-The UI uses MCP Apps initialization, tool calls, and model-context
-updates. It requests fullscreen only when the host advertises that display
-mode, and reports when project context is unsupported. Legacy `window.openai`
-tool calls/widget state are fallback paths. Generic MCP hosts can use all six
-tools without rendering HTML. The supplied Space URL opens the existing UI.
-
-These declarations do not guarantee that your Codex build exposes native
-sidebar/panel entries for bundled local MCP servers. Test in your host. The
-official extension guide currently describes ChatGPT surfaces:
-https://developers.openai.com/plugins/build/extensions
-
-## Validate and rebuild
-
-From the repository or extracted marketplace root:
+Needs Node.js (npx) to build, `uv` on the host's PATH to run, and Space running
+on Linux/macOS/WSL (default `http://127.0.0.1:5002`).
 
 ```powershell
-uv run --with 'mcp==1.28.1' python -m unittest discover -s plugins/quirq/tests -v
 python plugins/quirq/scripts/package_plugin.py dist/quirq-extensions-local.zip
-python plugins/quirq/scripts/package_plugin.py dist/quirq-extensions-marketplace.zip --marketplace
 ```
 
-The upload ZIP contains only the plugin. The marketplace variant adds a local
-marketplace wrapper. Both exclude
-instruction files, Python caches, backend source, `.xo/`, `.env` and user state.
-It is a plugin distribution archive, not a project-state backup.
+This builds `ui/space-app.html`, then writes the upload ZIP (plugin at the
+archive root). In the desktop app: **Plugins → New plugin**, select the ZIP,
+install it, then start a new chat.
+
+Uploading again over an existing upload of the same plugin name can fail with
+only "Couldn't add plugin". The desktop app cannot delete uploaded plugins;
+delete the old one from its page on chatgpt.com (**Copy link**), or test under a
+temporary manifest `name`. Keep only one XO Space installed so the tools are
+not duplicated.
+
+`--marketplace` writes a local-marketplace variant instead; `--no-build`
+packages the files already on disk.
+
+To use another port: set `QUIRQ_EXTENSION_BASE_URL=http://127.0.0.1:<port>`
+in the `space` server's `env` in `.mcp.json`. Only loopback HTTP origins with
+an explicit port are accepted.
+
+## Try without Space
+
+Set `QUIRQ_EXTENSION_DEMO=1` in the `space` server's `env`. Tools and the
+compact dashboard return sample data; the full UI shows mostly empty pages,
+since demo mode only covers the project, session and inbox endpoints.
+
+## Validate
+
+```powershell
+uv run --no-project --with 'mcp==1.28.1' --with 'httpx>=0.28,<1' python -m unittest discover -s plugins/quirq/tests -v
+node plugins/quirq/tests/check_bridge.cjs
+```
+
+`tests/check_ui.cjs` (Playwright) and `tests/check_http.py` are optional smoke
+checks for the compact dashboard and the HTTP transport.
+
+## Known limits
+
+- File uploads from the Space UI (multipart) are refused inside ChatGPT; use
+  Space in the browser.
+- Images Space links by URL (custom branding logos) do not load in the sandbox.
+- The bundle is a snapshot of `space_ui` at build time: rebuild the plugin
+  after Space UI changes.
+- ChatGPT on the web cannot reach a server on your computer; this is a
+  desktop-only, local integration.
