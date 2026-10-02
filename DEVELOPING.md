@@ -26,8 +26,10 @@ There are two deliberately separate execution **planes**. Keep them apart.
 | Instantiated | once as `ai_client` in `server.py` | per request via the capability loader |
 | Status | frozen, backward-compatible | where all new work happens |
 
-Codex is **only** a Plane-A model client (no adapter). Plane A never routes
-through the dispatcher; Plane B never touches `/ask_question`.
+Codex is both: `config/models/codex/client.py` is the Plane-A client
+(`AI_PROVIDER=codex`), and `adapters/codex/` is the Plane-B adapter
+(`AGENT_NAME=codex`). Plane A never routes through the dispatcher; Plane B
+never touches `/ask_question`.
 
 ---
 
@@ -43,10 +45,14 @@ config/
                                     setup.sh  agent.sh  troubleshoot.py
 
 routers/                          broker routes only, NO agent branching
+  browser_guard.py                refuses cross-site browser POST/PUT/PATCH/DELETE
+  branding.py theme.py            workspace name/logo and theme palettes
+  telemetry_sources.py            Agents Configure: GET/PUT /api/telemetry/sources
   auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
-    chat.py sessions.py agents.py config.py channels.py usage.py files.py …
+    chat.py sessions.py agents.py config.py channels.py usage.py files.py
+    doctor.py opentelemetry.py    state health report; OTel GenAI export
     connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
                                     project_sharing, inbox.py, connections.py); errors.py is the
@@ -78,6 +84,10 @@ services/                         Placement rule: only what is specific to runni
                                     service (the router-facing surface; the inbox registers a
                                     new-events listener here, never the other way round); routes in
                                     routers/cowork_agent/bff/connections.py
+  doctor/                         read-only health checks over the state root (GET /api/doctor);
+                                    one action moves leftover runtime folders into quarantine/
+  telemetry_sources.py            Agents Configure: collection paths and per-source switches
+  branding.py theme.py            persisted workspace name/logo and colour palettes
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
@@ -143,23 +153,27 @@ and is raised rather than being misreported as unsupported.
 
 Capabilities in use today:
 
-| capability | what it provides | openclaw | claude_code | hermes | antigravity |
-|---|---|:--:|:--:|:--:|:--:|
-| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ |
-| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ |
-| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ |
-| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ |
-| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ |
-| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ |
-| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ |
-| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | ✓ | no |
-| `streaming` | SSE shaping | ✓ | ✓ | ✓ | no |
-| `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ |
-| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ |
+| capability | what it provides | openclaw | claude_code | hermes | antigravity | codex | grokbot |
+|---|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `channels_status` | `/channels/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | ✓ | no | no | no |
+| `streaming` | SSE shaping | ✓ | ✓ | ✓ | no | ✓ | no |
+| `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ | ✓ | no |
+| `routes` | agent-owned `APIRouter` (active-only) | ✓ | no | ✓ | ✓ | no | no |
 
-`claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
-falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
-absent. "Capability absent ⇒ graceful default" is the whole design.
+`claude_code`, `codex` and `grokbot` have no `chat` capability on purpose:
+`routers/cowork_agent/chat.py` falls through to the shared `AgentDispatcher`
+when `chat`/`handle_prompt` is absent. Grok Bot still streams through
+`adapter.stream` (one `token` after the host replies; no native SSE). Cursor
+ships only `session_telemetry` (Agents tab, cannot run a turn). "Capability
+absent ⇒ graceful default" is the whole design. Product limits for Grok Bot
+are in the [README](README.md#grok-bot-limits).
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
@@ -274,7 +288,9 @@ registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
 `services/`: the Inbox (`services/inbox/`), connections polling
-(`services/connections/`), the swarm client (`services/swarm_api/`). The
+(`services/connections/`), the swarm client (`services/swarm_api/`),
+state health (`services/doctor/`), and telemetry-source Configure
+(`services/telemetry_sources.py`). The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
 from the Connectors and Inbox tabs, so it is Space code. By the same test
@@ -307,7 +323,12 @@ the inbox.
 
 Every xo-project carries the same `.xo/`, defined once in
 `services/xo_structure.py` (`CANONICAL_FILES`): `project.json`, `todos.json`,
-`workitems.json` and `peers.json`. `.xo/` is committed with the project and
+`workitems.json` and `peers.json`. HTTP contracts for the last two live next
+to the xo-projects skill:
+[`.agents/skills/xo-projects/references/workitems-http-api.md`](.agents/skills/xo-projects/references/workitems-http-api.md)
+and
+[`.agents/skills/xo-projects/references/peers-http-api.md`](.agents/skills/xo-projects/references/peers-http-api.md)
+(`docs/` is gitignored). `.xo/` is committed with the project and
 travels through git as well as backups; nothing ignores it, because git treats
 an ignored file as disposable and a merge would overwrite it silently. The three
 store documents start empty, exactly as their owning store first writes them
@@ -331,9 +352,12 @@ module and the sample together.
 What XO Space keeps on one machine, outside every project, lives in the state
 root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
-watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
-`usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
-`.locks/` (internal). `services/storage/layout.py` names each folder once.
+watcher stopped reading), `sessions/` (index of chats started with no project,
+so a project key can never collide with it), `inbox/`, `connections/`,
+`scheduler/`, `sharing/`, `usage/`, `settings/`, `secrets/`, plus `cache/` and
+`logs/` (safe to delete), `quarantine/` (runtime leftovers a person moved aside
+from the doctor's one action) and `.locks/` (internal).
+`services/storage/layout.py` names each folder once.
 `services/storage/migrations.py` is how files get there from where earlier
 releases kept them: its `MOVES` list holds one block per layout change, and
 `migrate_layout()` runs first in the server lifespan, moves a file only when its
@@ -502,7 +526,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
-| `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it and every Composio route 401s | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/state.py` |
+| `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Composio uses it as a local `user_id` (else `xo-space-default`); missing it no longer 401s Composio | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
 | `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
@@ -619,10 +643,12 @@ config file**. `_forwarded_headers` strips the client's `authorization` on the w
 out. `service.install_gateways()` installs that URL into every agent whose manifest
 declares an enabled `mcp` block, and nothing else does: there is no manual endpoint
 and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
-boot, retries with backoff (5 s → 300 s) while xo-swarm-api cannot provide the
-principal, stops after one console line for a gate that cannot open without a restart
-(no XO credential, no `XO_SPACE_ID`, credential rejected), and then sweeps
-every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
+boot. With no Composio key it prints one console line and stops (`skipped=
+"no_key"`, not retryable). Saving a key on the Connectors tab runs
+`install_gateways` on the request path so agents can reach Composio without
+a restart; later `kick_gateway_sweep()` calls from the tab are fire-and-forget
+and rate-limited. After a successful boot sweep the loop continues every
+`COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
 `GET /api/connectors/composio/toolkits` also kicks a rate-limited background sweep, so
 opening the Connectors tab is what pressing "Reinstall MCP gateway" used to be.
 
@@ -672,61 +698,42 @@ re-add an entry removed by hand); nothing already written is removed.
 
 ### 10.4 Operator setup, and full containment
 
-Two things must be created **by hand** in the Composio dashboard; nothing in this
-repo (or xo-swarm-api) creates them (`auth_configs.create` is never called):
+**Composio runs only when the user supplies their own API key.** There is no
+swarm fallback and no XO sign-in. Two things must exist:
 
-1. an API key → `COMPOSIO_API_KEY`
-2. one *auth config* per toolkit → `COMPOSIO_AUTH_CONFIG_<TOOLKIT>`
+1. a Composio API key, from `COMPOSIO_BYO_API_KEY` or
+   `~/.config/composio/api_key.json` (see 10.1). The env var wins.
+2. `COMPOSIO_CALLBACK_URL` set to this deployment's public origin, and that
+   origin registered as an allowed callback on the Composio auth configs
+   (created automatically on first connect).
 
-**Both live only in xo-swarm-api's environment, and never leave it.** This repo holds
-no Composio credential of any kind and never has one in memory: every Composio SDK call
-(`connected_accounts.link/get/list/update/delete`, `tools.get_raw_composio_tools`,
-`composio.create`/`.use`/`session.update`, `sessions.delete`) runs inside xo-swarm-api
-(`routes/composio_connections.py`, backed by `utils/composio_client.py`), authenticated
-as the caller by `Depends(get_current_user)` there, never by a `user_id` this repo
-sends it. `services/cowork_agent/connectors/composio/swarm_client.py` is the one place
-in this repo that calls those routes; `service.py` no longer imports the `composio`
-package at all, and there is no local Composio client to point at another project. The
-retired `credentials.py` (which used to fetch `{api_key, auth_configs}` verbatim over
-`GET ${CHAT_API_BASE_URL}/connectors/composio/credentials` and hand the raw key to a
-local SDK client) is gone, and with it the `COMPOSIO_CREDENTIALS_SOURCE=env` escape
-hatch (a self-hosted install with its own Composio project now needs its own
-xo-swarm-api, not a local override).
+The key is never sent to XO and never returned in any response. Auth configs
+are created for the user (`client.auth_config_for`); `COMPOSIO_AUTH_CONFIG_*`
+env vars are not used. `services/cowork_agent/connectors/composio/swarm_client.py`
+and `tests/test_composio_swarm_client.py` are gone; `service.py` imports
+`connectors/composio/client.py` as `swarm_client` only as a back-compat alias.
+Route handlers run every SDK call in `asyncio.to_thread`, so a slow Composio
+answer cannot freeze the rest of the server.
 
-> Earlier revisions of this section noted that xo-space handed the org-wide API key to
-> any authenticated workspace, and called moving the SDK calls into xo-swarm-api "a
-> design change, not done here." That move is what §10 now describes throughout: a
-> leaked or misused credential from one workspace can no longer read or write another
-> account's Composio connections, because no workspace ever holds the credential at all.
-
-`COMPOSIO_CALLBACK_URL` **stays here**: it is this deployment's public origin, and
-`initiate_connection` resolves it locally before calling xo-swarm-api's `/connect`
-route (`redirect_uri` is a required field on that call; xo-swarm-api never guesses a
-callback for a deployment it doesn't run). Since the auth configs are org-wide, every
-origin that will connect must be registered as an allowed callback on them in the
-dashboard; miss that and `/connect` succeeds while the OAuth redirect fails, which
-surfaces late, in the popup. It is **required and has no default**: unset,
-`_callback_url()` raises before any network call and `/connect` returns a 422 whose
-detail names the variable, which the Connectors tab matches on.
+`COMPOSIO_CALLBACK_URL` **stays here**: it is this deployment's public origin.
+Unset, `_callback_url()` raises before any network call and `/connect` returns
+a 422 whose detail names the variable, which the Connectors tab matches on.
 
 Degradation is per-scope, and worth knowing when reading a bug report:
 
 | Missing / broken | Effect |
 |---|---|
-| `COMPOSIO_API_KEY` on xo-swarm-api (503) | every Composio route on this repo fails: `/connect` 422s (the retired-`_composio()` message shape, reproduced by `swarm_client`'s classification), `/toolkits` and the MCP proxy hot path 500 |
-| one `COMPOSIO_AUTH_CONFIG_<TOOLKIT>` on xo-swarm-api | that toolkit is listed but 422s on `/connect` (resolved entirely on xo-swarm-api now); others work |
-| xo-swarm-api unreachable | every Composio operation fails immediately: there is no local credential left to fall back to, so an outage here is visible for its full duration, including the MCP proxy hot path (mitigated only by `service.py`'s short-TTL in-process session/MCP-url cache, seconds, not the old hour-scale stale-credential window) |
-| xo-swarm-api rejects the XO credential (401/403) | authoritative, same as a missing key. In practice `/xo-auth/session/self` fails first, so the UI shows the signed-out state |
-| `XO_SPACE_ID` | every Composio route 401s: `/xo-auth/session/self` refuses to mint without a space identity, and the identity lookup cannot name this install to the swarm. `sessions.json` is not written until it is set |
-| XO credential | `/xo-auth/session/self` 401s, so the UI shows a signed-out state |
+| no key | `/backend` is `inactive`; `/toolkits` reports `key_configured: false` and each toolkit `NEEDS_KEY`; action routes 409 `composio_key_required`; the MCP boot loop prints one line and stops. Saving a key on the Connectors tab installs the gateway without a restart |
+| key set by env | `PUT`/`DELETE /api/connectors/composio/api-key` 409; edit `COMPOSIO_BYO_API_KEY` instead |
+| `COMPOSIO_CALLBACK_URL` unset | `/connect` 422 naming the variable |
+| Composio rejects the key | 422 on save; later SDK calls surface an authoritative "Composio rejected your API key" |
+| Composio unreachable | connect/list 502; MCP proxy hot path 502 `composio_unreachable` |
+| no toolkit enabled in this workspace | 409 `composio_no_toolkits_enabled` |
+| token not in this pod's store | 401 `composio_identity_required`: the agent's config is stale; the sweep rewrites it |
 
-Every authoritative failure raised from `swarm_client.py` carries the literal string
-`COMPOSIO_API_KEY`, reproduced from the identical wording xo-swarm-api's own
-`utils/composio_client.py` uses for its 503: one classification rule applies across
-every route (`/connect`, `/connections`, `/toolkits/.../tools`, `/sessions`), not one
-per endpoint. That string is load-bearing, not decoration: `connectors.js` matches on
-it to show "Composio is not configured" instead of a raw error, and
-`tests/test_composio_swarm_client.py` pins it from the Python side.
+The Connectors tab shows "add your Composio API key" rather than a raw error
+when the key is missing. `XO_SPACE_ID` is only the local Composio `user_id`
+(else `xo-space-default`); it does not 401 any Composio route.
 
 ### 10.5 State: a local store
 
@@ -739,25 +746,29 @@ old `data/composio_*.json` location is moved into place on first access.
 
 | file | holds |
 |---|---|
-| `sessions.json` (0600) | the `space_id` stamp, the account id, this install's Composio session id, and the **plaintext** MCP proxy tokens. A store stamped for another space, or with the retired `workspace_id` key only, is not adopted; see §10.1 |
+| `sessions.json` (0600) | `version` (live is 5), `backend` (`local:` plus the key fingerprint), `account_id` (the local `user_id`), this install's Composio session id, and the **plaintext** MCP proxy tokens |
 | `action_prefs.json` | disabled actions: only *disabled* slugs, so an action added to a toolkit later defaults to enabled |
-| `space_scope.json` | the `space_id` stamp, which toolkits this workspace has turned on, and which connected accounts back them. Formerly `workspace_scope.json`, which is moved here on first access |
+| `space_scope.json` | which toolkits this workspace has turned on, and which connected accounts back them. Formerly `workspace_scope.json`, which is moved here on first access |
+| `api_key.json` (0600) | the BYO key when it is not coming from the environment |
 
-All three are flat: a pod is one space, so there is no user or space level to key on.
-`sessions.json` carries the `space_id` stamp that proves it, and comparing it needs no
-network, which is what keeps `account_for_proxy_token` a set lookup on the MCP hot path
-(`initialize`, `tools/list` and *every* `tools/call`). A token this pod cannot place is
+All three session files are flat: a pod is one space, so there is no user or
+space level to key on. `sessions.json` is stamped with the live key's
+fingerprint, and comparing it needs no network, which is what keeps
+`account_for_proxy_token` a set lookup on the MCP hot path (`initialize`,
+`tools/list` and *every* `tools/call`). A token this pod cannot place is
 simply unknown.
 
-A store below v4 is **discarded, not upgraded**: its rows are keyed by the retired tenant
-key and its session was minted against it, so it addresses a Composio user that is no
-longer ours. The abandoned session id is queued and deleted by the next boot sweep
-(`drain_orphaned_sessions`): Composio sessions never expire, so nothing else would clean
-it up. A v4 store stamped for another space is not adopted: its session id is queued for
-the same boot sweep and the next write replaces the document. A v4 store the previous
-build stamped with `workspace_id` and no `space_id` is treated the same way
-(`service.LEGACY_STAMP`), since which space wrote it is unknown. Only a store with no
-stamp at all is adopted, and it is stamped on its next write.
+A store below v5 is **discarded, not upgraded**: its session was minted in the
+shared org project and cannot be used with this key. The abandoned session id is
+queued and deleted by the next boot sweep (`drain_orphaned_sessions`): Composio
+sessions never expire, so nothing else would clean it up. Proxy tokens are
+kept, so agents' MCP URLs survive. A v5 store whose `backend` fingerprint does
+not match the live key is treated the same way: tokens stay, session is dropped,
+and the next write re-stamps the document.
+
+Identity is local. `connectors/composio/state.py` is gone.
+`byo_key.user_id()` is `XO_SPACE_ID` or `xo-space-default`;
+`account_for_proxy_token` never calls xo-swarm-api.
 
 **The store does not survive a pod recreation.** The published container mounts no volume,
 so losing it loses every agent's proxy token: the next reconcile sweep mints a fresh one
@@ -769,18 +780,7 @@ path, which is why tests must point `QUIRQ_STATE_ROOT` at a temp dir; see
 
 **Scope is pod-local, and therefore not durable.** A rebuilt workspace comes back with
 nothing enabled and the user re-picks. That is the safe direction (the alternative is a
-workspace silently regaining reach it was never granted), but making it durable means a
-table in xo-swarm-api, and that is a deliberate follow-up rather than an oversight.
-
-The one thing xo-swarm-api still answers is this pod's **identity**:
-`GET /auth/workspace-principal?space_id=` returns `{account_id, space_id}`
-(`{account_id, workspace_id}` from a swarm before xo-swarm-api #41; only `account_id` is
-read; §10.1). That is a pure identity lookup (it reads no database), and
-`connectors/composio/state.py` is its client. It caches the answer for the life of the
-pod, serves a stale one during a transient outage, and falls back to the account recorded
-in `sessions.json` when the swarm cannot be reached at all. A deploy gap (404 on the route,
-or a 422 saying the identity field is unknown) falls back the same way; an *authoritative*
-refusal (a rejected XO credential, or a 422 rejecting the id's value) never falls back.
+workspace silently regaining reach it was never granted).
 
 | MCP proxy case | returns |
 |---|---|
@@ -817,9 +817,10 @@ against a session that has not seen the rename gets nothing.
 
 ### 10.7 The UI
 
-`space_ui/js/views/connectors.js` renders the toolkits. It is the only view that
-authenticates: `js/core/session.js` mints the session id and `apiFetch`'s
-`headers` option carries it. The OAuth popup's callback posts back to its opener
+`space_ui/js/views/connectors.js` renders the toolkits. There is no XO
+session header: a missing key is a first-class `NEEDS_KEY` state from
+`GET /api/connectors/composio/backend`, and `js/core/session.js` is gone.
+The OAuth popup's callback posts back to its opener
 with `"*"` as the target origin, so **the listener validates `event.origin`**; the
 `…/status?connection_request_id=` poll, not the message, is what decides success.
 
@@ -952,7 +953,123 @@ only as the literal `true`; the schema is
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. Browser write guard
+
+Every `POST`/`PUT`/`PATCH`/`DELETE` passes `BrowserWriteGuard` (installed in
+`server.py` through `add_browser_write_guard`) **before the route runs**. Another
+website cannot use the user's browser to write files, secrets or settings. The
+module is `routers/browser_guard.py`. A write is accepted when:
+
+- it carries no `Origin` and no cross-site `Sec-Fetch-Site`: a CLI, an agent,
+  or another app's server-side proxy; or
+- its `Origin` is an entry of `ALLOWED_ORIGINS` (a `*` entry never counts); or
+- its `Origin` is the address the request was sent to (`origin_allowed`); or
+- it came through a proxy on this machine (TCP peer is loopback) and its
+  `Origin` is the address in `X-Forwarded-Host`.
+
+"The address it was sent to" must also be one DNS rebinding cannot reach:
+`localhost` or an IP literal, compared by scheme, host and port; or an `https`
+hostname (the server listens on plain http, so an https Origin means a
+TLS-terminating proxy answered for that name). uvicorn starts with
+`proxy_headers=False`; `add_forwarding_middleware` records the TCP peer first,
+then applies forwarding, so a loopback Coder agent is still a loopback peer.
+
+A refused write is **403** with
+`"This change came from another website, so Space refused it..."`. Add a trusted
+frontend to `ALLOWED_ORIGINS`, or open Space's own pages. Local CLI clients may
+omit Origin.
+
+Routes that run programs or control the server additionally require
+`is_local_mutation` (loopback peer **and** `origin_allowed`): restart,
+schedules, and similar. Doctor's one action, branding, theme, Composio writes
+and project-management writes also call `origin_allowed` in the handler, so a
+cross-site browser request is refused even if the middleware were bypassed.
+
+Tests: `tests/test_browser_guard.py`.
+
+## 13. xo-doctor
+
+`services/doctor/` is a Space-level package (no agent names, no FastAPI). It
+tells a person when Quirq's on-disk state stopped being consistent. A check
+run **only reads**. The one action, `leftovers.move_aside`, renames a leftover
+runtime folder into `quarantine/runtime-leftovers/<key>-<UTC>/` when a person
+confirms it. It never copies and never deletes. Moving the folder back to
+`projects/<key>/` restores it.
+
+**Routes** (`routers/cowork_agent/doctor.py`):
+`GET /api/doctor` and
+`POST /api/doctor/runtime-leftovers/{key}/move-aside`.
+
+`GET` runs every check in a worker thread. Concurrent callers share one in-flight
+run. After 60 s the caller gets 503 `doctor_timeout`; the run itself stays
+shared. `POST` requires `application/json` and `origin_allowed` (403
+`same_origin_required` otherwise). It re-evaluates every leftover rule and
+refuses if the folder is still in use, too recent (written in the last 10
+minutes), or leftover checks are paused.
+
+**Where to look.** Setup → Server → Technical details (`#/setup/server/details`;
+`#/quirq` remains an alias). `js/views/quirq.js` calls `GET /api/doctor` and
+offers **Move aside** only on leftover findings that carry
+`action.kind = move_runtime_leftover_aside`.
+
+**Checks**, in report order (`services/doctor/run.py` `CHECKS`; no auto-discovery):
+`roots`, `disk`, `read`, `history`, `perms`, `space`, `projects`, `runtime`,
+`tmp`, `layout`, `legacy`, `watcher`, `components`, `connections`, `github`,
+`scheduler`, `usage`, `relay`, `growth`. One broken check becomes an `ERROR` row
+and does not hide the others. A family is capped at `MAX_FINDINGS_PER_CHECK`
+(100) so a 3,000-shard corrupt session index cannot produce a 1.9 MB report.
+
+Each finding answers three questions (`catalog.py`, one `About` per inventory
+pattern): what stops working, what the Space does by itself, what you can do.
+Levels are `OK` / `WARN` / `FAIL` / `ERROR`. Relating (`relate.py`) folds
+follow-on damage under a parent so the UI can keep a dialog open across runs
+(`problem_key`).
+
+Pitfalls:
+
+- Do not restart the server while a watcher read-position file is damaged and
+  the watcher is still alive: it will rewrite it. Restarting first double-counts
+  usage and timelines.
+- Do not delete a damaged `project.json`: a new pid orphans that project's
+  history. Restore it from git or the last project sync.
+- Leftover checks pause when `project.json` is unreadable, the projects root
+  looks empty, or more folders look abandoned than there are projects.
+
+Tests: `tests/test_doctor_*.py`, `tests/test_space_doctor_ui.py`. Golden sample:
+`tests/fixtures/quirq-state/` (includes `quarantine/`).
+
+## 14. Observability: OpenTelemetry and telemetry sources
+
+### OpenTelemetry GenAI export
+
+`services/cowork_agent/opentelemetry_exporter.py` maps a session's messages into
+OTLP HTTP JSON spans (GenAI semantic conventions: `gen_ai.provider.name`,
+token usage, tool calls). Routes in `routers/cowork_agent/opentelemetry.py`:
+
+```
+GET  /api/sessions/{session_id}/otel
+POST /api/sessions/{session_id}/otel/export
+     { "endpoint": "http://localhost:4318", "headers": { ... } }
+```
+
+`GET` returns the payload. `POST` posts it to `endpoint`, else
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`, appending
+`/v1/traces` when missing. Extra headers come from the body or
+`OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k=v`). 404 if the session is unknown; 502 if
+the collector refuses. This is opt-in and leaves the machine: see README
+"What leaves your machine".
+
+### Telemetry sources (Agents → Configure)
+
+`GET /api/telemetry/sources` lists every adapter that ships `session_telemetry`,
+with its effective data path and whether collection is on.
+`PUT /api/telemetry/sources/{id}` saves a path (empty clears the override)
+and/or flips collection (`QUIRQ_TELEMETRY_DISABLED`, comma-separated ids).
+Core never names an agent: each provider describes itself with `SOURCE_CONFIG`.
+A save kicks a background rebuild of `sessions.json`. Service:
+`services/telemetry_sources.py`. Tests: `tests/test_telemetry_sources.py`.
+
+## 15. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand every time `main`
 moves. The runbook, the numbering rules and the hotfix flow are in
