@@ -63,6 +63,10 @@ agent CLIs. Check `codex login status` and use `codex login` if needed. No XO
 account is required for local browsing. Remote tasks need their host's supported
 port forwarding to expose the UI.
 
+The plugin's MCP server (the Space sidebar, panel and tools) needs
+[`uv`](https://docs.astral.sh/uv/) on PATH; `uv` fetches the server's Python and
+dependencies on first start. Space's `install.sh` installs it.
+
 The plugin installation itself only loads its skills and assets. Downloading the
 server and dependencies happens when you ask Codex to open/install Space. Runtime
 sandbox or network permission prompts may still apply.
