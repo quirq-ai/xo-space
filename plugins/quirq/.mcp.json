@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "space": {
+      "command": "uv",
+      "args": ["run", "--script", "./mcp/server.py"],
+      "cwd": "."
+    }
+  }
+}

@@ -34,9 +34,15 @@ Resolve `<plugin-root>` as two directories above this skill directory.
    `paths.state.container_path` to match its effective roots. The runtime API
    does not expose repo_dir. If another server answers or this task exits, report
    that instead of success.
-4. Open `<base_url>/space/` with the Codex browser tool when available, otherwise
-   provide the link. Report the log path and task/terminal to keep alive. Starting
-   preserves the active backend; change it through Space Setup only when asked.
+4. Show Space: when the Space MCP tools are available, call `space_open` (the
+   desktop app displays Space in the conversation; a terminal such as Codex CLI
+   displays nothing). Always also give the link `<base_url>/space/`; without the
+   MCP tools, open it with the Codex browser tool when available. Report the log
+   path and task/terminal to keep alive. Starting preserves the active backend;
+   change it through Space Setup only when asked.
+5. Tell the user in one sentence: Space keeps running while this task is open;
+   if XO Space later says it is unreachable, ask "start XO Space" to start it
+   again.
 
 To stop a server this session launched, stop its owning task/terminal when the
 user requests it. Never kill unrelated listeners or processes to reclaim a port.
