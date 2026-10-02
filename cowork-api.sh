@@ -289,6 +289,29 @@ kill_hindering_processes() {
     fi
 }
 
+# An update (Setup tab, git pull) changes code, not the venv, so every start
+# installs requirements.txt first: a restart after an update that added a
+# dependency still boots. Idempotent, and quick when nothing changed. uv
+# first (a venv made by install.sh has no pip; uv lives in ~/.local/bin when
+# that is not on PATH), else the venv's own pip. A failure is reported and
+# the start goes ahead on the current venv.
+sync_requirements() {
+    local venv_python="$SCRIPT_DIR/venv/bin/python"
+    local req="$SCRIPT_DIR/requirements.txt"
+    local uv_bin
+    [ -x "$venv_python" ] && [ -f "$req" ] || return 0
+
+    uv_bin="$(command -v uv 2>/dev/null || true)"
+    if [ -z "$uv_bin" ] && [ -x "${HOME:-}/.local/bin/uv" ]; then
+        uv_bin="$HOME/.local/bin/uv"
+    fi
+    if [ -n "$uv_bin" ]; then
+        "$uv_bin" pip install --quiet --python "$venv_python" --requirement "$req"
+    else
+        "$venv_python" -m pip install --quiet -r "$req"
+    fi || log_warn "Installing requirements.txt failed; starting with the current venv. Run ./cowork-api.sh install to retry."
+}
+
 start_api() {
     acquire_lock
     if is_running; then
@@ -313,6 +336,8 @@ start_api() {
         log_error "No Python interpreter found (tried: venv/bin/python, python3, python)"
         return 1
     fi
+
+    sync_requirements
 
     log "Starting XO Space API on ${HOST}:${PORT}..."
     nohup bash -c '

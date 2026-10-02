@@ -214,9 +214,10 @@ function bindEvents(){
 }
 
 /* ── Server updates ──────────────────────────────────────────────────────
-   Git-backed: GET /space/update/status fetches the checkout's remote and
-   reports how far HEAD is behind; POST /space/update/apply fast-forwards.
-   The server keeps running the old code until restarted. */
+   Git-backed: GET /space/update/status compares HEAD with the newest release
+   tag (on main or a tag install) or with origin/<branch> (any other branch);
+   POST /space/update/apply moves forward to it, never back. The server keeps
+   running the old code until restarted. */
 let updateStatus=null;
 
 function renderUpdateState(html,badge){
@@ -247,7 +248,9 @@ async function checkForUpdate(){
     renderUpdateState(`<p>${esc(s.message)}</p>`,'Unavailable');
     return;
   }
-  const rows=[`<p><b>Installed</b> ${commitLine(s.current)} <span class="setup-version-branch">on ${esc(s.branch)}</span></p>`];
+  const release=s.channel==='release';
+  const where=s.current_tag||s.branch||'a detached HEAD';
+  const rows=[`<p><b>Installed</b> ${commitLine(s.current)} <span class="setup-version-branch">on ${esc(where)}</span></p>`];
   if(!s.fetch_ok){
     rows.push(`<p>${esc(s.message)}</p>`);
     renderUpdateState(rows.join(''),'Offline');
@@ -257,7 +260,7 @@ async function checkForUpdate(){
     rows.push('<p>You have the latest version.</p>');
     renderUpdateState(rows.join(''),'Up to date');
   }else{
-    rows.push(`<p><b>Latest</b> ${commitLine(s.latest)}</p>`);
+    rows.push(`<p><b>Latest${release?` release ${esc(s.latest_tag)}`:''}</b> ${commitLine(s.latest)}</p>`);
     rows.push(`<p>${s.behind} commit${s.behind===1?'':'s'} behind${s.ahead?` · ${s.ahead} local commit${s.ahead===1?'':'s'} not on the remote`:''}${s.dirty?' · local changes present':''}.</p>`);
     if(s.dirty)rows.push('<p>Save your local changes before updating.</p>');
     else if(s.ahead)rows.push('<p>Local and remote changes need to be merged before updating.</p>');
@@ -282,11 +285,13 @@ async function applyUpdate(){
     renderUpdateState(`<p>${esc(r.message)}</p>`,r.reason==='up_to_date'?'Up to date':'Blocked');
     return;
   }
-  toast(`Updated to ${r.to?.sha||'latest'}`);
+  toast(`Updated to ${r.tag||r.to?.sha||'latest'}`);
+  // New dependencies need nothing extra: cowork-api.sh (Restart) and
+  // install.sh both install requirements.txt on start (#184).
   renderUpdateState(
-    `<p><b>Updated</b> ${commitLine(r.to)} (${r.commits} commit${r.commits===1?'':'s'}).</p>`
+    `<p><b>Updated</b> ${r.tag?`to ${esc(r.tag)} `:''}${commitLine(r.to)} (${r.commits} commit${r.commits===1?'':'s'}).</p>`
     +`<p>${esc(r.message)}</p>`
-    +(r.requirements_changed?'':'<p>Restart to load the new version.</p>'),
+    +'<p>Restart to load the new version.</p>',
     'Restart needed'
   );
   root.querySelector('#update-restart').hidden=false;

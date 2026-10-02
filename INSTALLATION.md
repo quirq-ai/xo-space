@@ -27,7 +27,8 @@ Open <http://localhost:5002/space/>.
 The command:
 
 1. installs [uv](https://docs.astral.sh/uv/) if it is missing;
-2. clones Quirq into `./xo-space`, named after the repository;
+2. clones the latest Quirq release (the newest `vX.Y.Z` tag) into
+   `./xo-space`, named after the repository;
 3. creates `./xo-space/venv` with Python 3.12, downloading an interpreter if
    the host has none, and installs `requirements.txt`;
 4. creates `./.quirq`, and treats the current directory as your projects root;
@@ -107,15 +108,22 @@ startup banner prints both ways back, from the directory you installed in:
 
 ```bash
 ./xo-space/install.sh                      # start again, no update
-curl -fsSL https://quirq.ai/install | sh   # update to the latest main, then start
+curl -fsSL https://quirq.ai/install | sh   # update to the latest release, then start
 ```
+
+Updates follow releases, not the `main` tip, and only move forward: a
+checkout already at or past the newest release tag is left where it is.
+Setup → Server → Updates applies the same rule. Every start through the
+installer installs `requirements.txt`, so an update that adds a dependency
+needs nothing extra.
 
 Running the one-liner from *inside* `./xo-space` is fine: the installer
 notices it is standing in a checkout and uses that one, with the directory
 above as the workspace, rather than cloning a second copy into it. It also
 leaves a checkout alone when it has local changes, or when it is on a branch
-other than the one it tracks (`main`, or `QUIRQ_SOURCE_REF`), so a
-development clone is never silently reset.
+other than the one it tracks (`main` for releases, or `QUIRQ_SOURCE_REF`), so
+a development clone is never silently reset. Setting `QUIRQ_SOURCE_REF` to a
+branch (`main`, `development`) follows that branch's tip instead of releases.
 
 The short URL serves a small POSIX-sh bootstrap that downloads `install.sh`
 to a temporary file and runs it under `bash`, which is why `| sh` works. If
@@ -235,7 +243,8 @@ Every value is overridable from the environment:
 | `XO_PROJECTS_ROOT` | the launch directory |
 | `QUIRQ_STATE_ROOT` | `./.quirq` |
 | `QUIRQ_APP_DIR` | `./xo-space` |
-| `QUIRQ_SOURCE_REF` | `main` |
+| `QUIRQ_SOURCE_REF` | unset: the latest release tag |
+| `COMPOSIO_CALLBACK_URL` | `http://127.0.0.1:<PORT>/api/connectors/composio/callback` |
 | `AGENT_NAME` | `claude_code` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | `1` |
 

@@ -44,9 +44,14 @@
 set -Eeuo pipefail
 
 SOURCE_REPO="${QUIRQ_SOURCE_REPO:-https://github.com/quirq-ai/xo-space.git}"
-# main, not development: this is what the public one-liner clones, so it must
-# be the reviewed branch. Set QUIRQ_SOURCE_REF=development to track dev.
-SOURCE_REF="${QUIRQ_SOURCE_REF:-main}"
+# Unset (the default) means releases: a fresh install clones the newest
+# vX.Y.Z tag and an update moves to a newer one, never to the main tip. Set
+# QUIRQ_SOURCE_REF to a branch (main, development) to follow that branch's
+# tip instead.
+SOURCE_REF="${QUIRQ_SOURCE_REF:-}"
+# Tags are cut on this branch (RELEASING.md). A managed checkout on it follows
+# releases; on any other branch it was put there on purpose and is left alone.
+RELEASE_BRANCH="main"
 # Captured before anything cd's. Everything Quirq creates hangs off this, so
 # a run is self-contained in the directory you launched it from.
 LAUNCH_DIR="$PWD"
@@ -133,7 +138,64 @@ resolve_repo_dir() {
     MANAGED_CHECKOUT=1
 }
 
-# Clone on first run, fast-forward afterwards. Only ever called in
+# The newest release tag (vX.Y.Z, no pre-releases) on a remote, or nothing
+# when it has none. Fails only when the remote cannot be reached. Arguments
+# go to `git ls-remote`; run it inside the checkout to name `origin`.
+latest_release_tag() {
+    local refs
+    refs="$(git ls-remote --tags --refs "$@")" || return 1
+    printf '%s\n' "$refs" |
+        sed -n 's#^.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' |
+        sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1
+}
+
+# Move a managed checkout to the newest release, only ever forward. When the
+# checkout already contains that tag's commit (it is on the main tip, or on a
+# newer build) it stays where it is, so an update never moves it backwards.
+# On main it fast-forwards the branch; a tag install is a detached HEAD and
+# checks the new tag out.
+update_to_latest_release() {
+    local branch="$1"
+    local tag
+    local target
+
+    tag="$(cd "$REPO_DIR" && latest_release_tag origin)" ||
+        fail "Could not reach the origin of ${REPO_DIR} to look for a new release."
+    if [ -z "$tag" ]; then
+        # A remote with no releases (a fork, say) keeps following its main.
+        printf 'No releases on its origin. Updating it to the latest %s...\n' "$RELEASE_BRANCH"
+        git -C "$REPO_DIR" fetch --quiet --depth 1 origin "$RELEASE_BRANCH" ||
+            fail "Could not fetch ${RELEASE_BRANCH} from the origin of ${REPO_DIR}."
+        git -C "$REPO_DIR" reset --hard --quiet FETCH_HEAD ||
+            fail "Could not update the checkout in ${REPO_DIR}."
+        return
+    fi
+
+    # No --depth: a shallow checkout then receives the commits between its
+    # HEAD and the tag, which the ancestry check below needs.
+    git -C "$REPO_DIR" fetch --quiet --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}" ||
+        fail "Could not fetch release ${tag} into ${REPO_DIR}."
+    target="$(git -C "$REPO_DIR" rev-parse "${tag}^{commit}")" ||
+        fail "Could not read release ${tag} in ${REPO_DIR}."
+
+    if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" = "$target" ]; then
+        printf 'It is on the latest release, %s.\n' "$tag"
+        return
+    fi
+    if ! git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$target"; then
+        printf 'It is not behind the latest release (%s), leaving it as is.\n' "$tag"
+        return
+    fi
+
+    printf 'Updating it to release %s...\n' "$tag"
+    if [ "$branch" = "HEAD" ]; then
+        git -C "$REPO_DIR" checkout --quiet --detach "$target"
+    else
+        git -C "$REPO_DIR" merge --quiet --ff-only "$target"
+    fi || fail "Could not update the checkout in ${REPO_DIR} to ${tag}."
+}
+
+# Clone on first run, move forward afterwards. Only ever called in
 # managed mode. A dirty tree stops the update instead of discarding
 # work: an installer that silently resets someone's edits is worse
 # than one that is a version behind.
@@ -145,14 +207,19 @@ fetch_repo() {
             return
         fi
         # A checkout on some other branch was put there on purpose (a
-        # development clone, say); resetting it to SOURCE_REF would silently
-        # move it. Managed clones are made with --branch SOURCE_REF, so they
-        # always pass this and keep updating.
+        # development clone, say); moving it would be a surprise. Managed
+        # clones are a release tag (detached HEAD), main, or --branch
+        # SOURCE_REF, so they always pass this and keep updating.
         local branch
+        local tracked="${SOURCE_REF:-$RELEASE_BRANCH}"
         branch="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-        if [ -n "$branch" ] && [ "$branch" != "HEAD" ] && [ "$branch" != "$SOURCE_REF" ]; then
+        if [ -n "$branch" ] && [ "$branch" != "HEAD" ] && [ "$branch" != "$tracked" ]; then
             printf 'It is on branch %s, not %s — leaving it as is. Set QUIRQ_SOURCE_REF=%s to track that branch instead.\n' \
-                "$branch" "$SOURCE_REF" "$branch"
+                "$branch" "$tracked" "$branch"
+            return
+        fi
+        if [ -z "$SOURCE_REF" ]; then
+            update_to_latest_release "${branch:-HEAD}"
             return
         fi
         printf 'Updating it to the latest %s...\n' "$SOURCE_REF"
@@ -166,9 +233,21 @@ fetch_repo() {
     [ ! -e "$REPO_DIR" ] || fail \
         "${REPO_DIR} already exists and is not a Quirq checkout. Move it aside, or set QUIRQ_APP_DIR to another path."
 
-    printf 'Downloading Quirq into %s...\n' "$REPO_DIR"
-    git clone --quiet --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPO" "$REPO_DIR" ||
-        fail "Could not clone ${SOURCE_REPO} (${SOURCE_REF})."
+    local ref="$SOURCE_REF"
+    if [ -z "$ref" ]; then
+        ref="$(latest_release_tag "$SOURCE_REPO")" ||
+            fail "Could not reach ${SOURCE_REPO} to look for the latest release."
+        if [ -z "$ref" ]; then
+            printf 'No releases on %s yet; installing its %s branch.\n' "$SOURCE_REPO" "$RELEASE_BRANCH"
+            ref="$RELEASE_BRANCH"
+        fi
+    fi
+
+    printf 'Downloading Quirq %s into %s...\n' "$ref" "$REPO_DIR"
+    # A tag clone is a detached HEAD at that release; the advice setting keeps
+    # git's long explanation of detached HEADs off the screen.
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "$SOURCE_REPO" "$REPO_DIR" ||
+        fail "Could not clone ${SOURCE_REPO} (${ref})."
 }
 
 # ==============================================================
@@ -432,7 +511,8 @@ PY
 # untouched through load_dotenv().
 ENV_KEYS="HOST PORT STAGE AGENT_NAME UVICORN_RELOAD QUIRQ_SKIP_BOOT_INSTALL
 XO_PROJECTS_ROOT AI_WORKSPACE_ROOT QUIRQ_STATE_ROOT QUIRQ_WATCHER_SOURCE_MODE
-QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE STARTUP_WARMUP_URL"
+QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE STARTUP_WARMUP_URL
+COMPOSIO_CALLBACK_URL"
 
 read_env_value() {
     local key="$1"
@@ -514,6 +594,12 @@ AI_WORKSPACE_ROOT=${AI_WORKSPACE_ROOT}
 QUIRQ_STATE_ROOT=${QUIRQ_STATE_ROOT}
 QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 
+# --- Connectors ---
+# Where Composio sends the browser back after OAuth. Must be this server's
+# public origin and be registered as an allowed callback on your Composio
+# auth configs. Change it when the server is reached from another host.
+COMPOSIO_CALLBACK_URL=${COMPOSIO_CALLBACK_URL}
+
 # --- Credentials ---
 # Uncomment and fill in, or configure them through the Setup tab instead.
 # Leave them commented rather than blank: an empty value overrides the
@@ -529,6 +615,15 @@ QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 ENVEOF
     chmod 600 "$env_file"
     printf 'Wrote %s (mode 600) — edit it to change this install.\n' "$env_file"
+}
+
+# The Composio service has no callback default on purpose (a wrong origin only
+# fails later, inside the OAuth popup). The installer does know it is a local
+# install, so it supplies the loopback callback on the resolved port. This is
+# what reaches installs whose .env predates the key, since .env is never
+# rewritten. An explicit value (shell, .env, runtime.env) still wins.
+export_connector_defaults() {
+    export COMPOSIO_CALLBACK_URL="${COMPOSIO_CALLBACK_URL:-http://127.0.0.1:${PORT}/api/connectors/composio/callback}"
 }
 
 start_server() {
@@ -553,6 +648,7 @@ start_server() {
     export QUIRQ_SECRETS_FILE="${QUIRQ_SECRETS_FILE:-${state_root}/secrets/secrets.env}"
     export QUIRQ_WATCHER_SOURCE_MODE="${QUIRQ_WATCHER_SOURCE_MODE:-all}"
     export QUIRQ_PUBLIC_URL="${QUIRQ_PUBLIC_URL:-http://localhost:${PORT}}"
+    export_connector_defaults
 
     # Written here, after every value is resolved, so the file records the
     # configuration this install actually ran with.
@@ -593,7 +689,7 @@ print_restart_hint() {
     # The ref goes on `sh`, not on `curl`: it is the bootstrap that reads it,
     # and with a pipe an assignment binds to the command it precedes.
     local ref_prefix=""
-    [ "$SOURCE_REF" = "main" ] || ref_prefix="QUIRQ_SOURCE_REF=${SOURCE_REF} "
+    [ -z "$SOURCE_REF" ] || ref_prefix="QUIRQ_SOURCE_REF=${SOURCE_REF} "
 
     if [ "$MANAGED_CHECKOUT" -eq 1 ]; then
         printf '    Start again later:  cd %s && %s/install.sh\n' "$LAUNCH_DIR" "$REPO_DIR"
@@ -601,7 +697,7 @@ print_restart_hint() {
             "$LAUNCH_DIR" "$INSTALL_URL" "$ref_prefix"
     else
         printf '    Start again later:  cd %s && ./install.sh\n' "$REPO_DIR"
-        printf '    Update:             Setup tab → Update, or git pull --ff-only, then start again\n\n'
+        printf '    Update:             Setup tab → Update, then start again (it installs new dependencies)\n\n'
     fi
 }
 
