@@ -457,36 +457,50 @@ def app_resource() -> str:
 _PROXY_PREFIXES = ("/api/", "/space/", "/xo/")
 _FORWARD_HEADERS = {"content-type", "accept", "x-xo-session"}
 _SEGMENT = re.compile(r"(^|/)\.\.?(/|$)")
-_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_READ = frozenset({"GET", "HEAD"})
 
-# What the bridge never forwards, whoever calls it. `_meta.ui.visibility:
-# ["app"]` only asks the host to hide the proxy tools from the model; hosts may
-# ignore it (Codex CLI, other MCP clients), and the requests reach Space as a
-# trusted local client. So anything that leaks secrets, runs local commands,
-# shares data with other people or controls the server is refused here; the
-# user does it from Space in the browser. Rules match the canonical route
-# (decoded once, as Space's server decodes it). (methods, pattern, reason)
-_ANY = frozenset({"GET", "HEAD"}) | _WRITE_METHODS
-_PROXY_DENY: tuple[tuple[frozenset, re.Pattern, str], ...] = tuple(
-    (methods, re.compile(pattern), reason) for methods, pattern, reason in (
-        (_ANY, r"^/api/secrets/env$", "Secret values are not available from ChatGPT."),
-        (_ANY, r"^/api/secrets/[^/]+/reveal$", "Secret values are not available from ChatGPT."),
-        (_WRITE_METHODS, r"^/api/secrets(/.*)?$", "Change secrets from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/config(/.*)?$", "Change provider keys from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/connectors/composio/api-key$", "Change the Composio key from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/schedules(/.*)?$", "Jobs run local commands; manage them from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/chat(/.*)?$", "Space chat is not available from ChatGPT."),
-        (_WRITE_METHODS, r"^/api/runtime-config(/.*)?$", "Change workspace settings from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/doctor(/.*)?$", "Run doctor actions from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/project-sharing(/.*)?$", "Manage sharing from Space in your browser."),
-        (_WRITE_METHODS, r"^/api/xo-projects/[^/]+/(share|revoke|apply|peers)(/.*)?$",
-         "Manage sharing from Space in your browser."),
-        (frozenset({"DELETE"}), r"^/api/xo-projects/[^/]+$", "Delete projects from Space in your browser."),
-        (_WRITE_METHODS, r"^/space/server/(stop|restart)$",
-         "Stop or restart Space from Space in your browser; the ChatGPT view would lose its connection."),
-        (_WRITE_METHODS, r"^/space/update/apply$",
-         "Update Space from Space in your browser; the ChatGPT view would lose its connection."),
+# What the bridge forwards: an allowlist (default deny) of exactly the routes
+# the Space UI calls (space_ui/js), matched on the canonical route.
+# `_meta.ui.visibility: ["app"]` only asks the host to hide the proxy tools
+# from the model; a host may ignore it (Codex CLI, other MCP clients), and the
+# requests reach Space as a trusted local client. So the bridge offers what
+# the Space UI needs to browse and make everyday changes, nothing more: no
+# secret values, file access, jobs (local commands), sharing, project
+# deletion, connector credentials, workspace config or server control. Those
+# stay in Space in the browser. A Space UI change that calls a new route must
+# add it here. (methods, pattern)
+_SEG = r"[^/]+"
+_PROXY_ALLOW: tuple[tuple[frozenset, re.Pattern], ...] = tuple(
+    (frozenset(methods), re.compile("^" + pattern + "$")) for methods, pattern in (
+        # Space shell, theme and status
+        (_READ, r"/space/(branding|theme|server/status|setup/status|update/status)"),
+        ({"PUT"}, r"/space/(branding|theme)"),
+        (_READ, r"/space/data/session_prompts\.json"),
+        (_READ, r"/xo/(space|dashboard|sessions)\.json"),
+        # Projects: catalog, activity, timeline and per-project views
+        (_READ, r"/api/xo-projects(/(activity|timeline))?"),
+        (_READ, rf"/api/xo-projects/{_SEG}/(todos|tree|file|file-history|github/issues|timeline|activity|commits|members|removal)"),
+        ({"POST"}, r"/api/xo-projects"),
+        (_READ, r"/api/project-sharing/status"),
+        # Inbox and connection polling
+        (_READ, r"/api/inbox"),
+        ({"PATCH"}, r"/api/inbox"),
+        ({"PATCH", "DELETE"}, rf"/api/inbox/{_SEG}"),
+        (_READ, rf"/api/connections(/{_SEG})?"),
+        ({"PUT"}, rf"/api/connections/{_SEG}"),
+        ({"POST"}, rf"/api/connections/{_SEG}/poll"),
+        # Agents
+        (_READ, rf"/api/telemetry/sources"),
+        ({"PUT"}, rf"/api/telemetry/sources/{_SEG}"),
+        # Setup pages, read-only (secrets: names only, never values)
+        (_READ, r"/api/(runtime-config|secrets|quirq|doctor|schedules)"),
+        (_READ, rf"/api/schedules/{_SEG}(/runs)?"),
+        (_READ, r"/api/connectors/composio/(backend|toolkits)"),
+        (_READ, rf"/api/connectors/composio/{_SEG}/(status|tools)"),
+        (_READ, rf"/api/connectors/{_SEG}/(status|remotes)"),
+        (_READ, rf"/api/connectors/{_SEG}/sessions/{_SEG}"),
     ))
+_NOT_FROM_CHATGPT = "This action is not available from ChatGPT. Open Space in your browser for it."
 
 
 def canonical_route(path: str) -> str:
@@ -497,12 +511,11 @@ def canonical_route(path: str) -> str:
 
 
 def proxy_denial(method: str, path: str) -> str | None:
-    """Why the bridge refuses this request, or None when it may be forwarded."""
+    """Why the bridge refuses this request, or None when the allowlist permits it."""
     route = canonical_route(path)
-    for methods, pattern, reason in _PROXY_DENY:
-        if method in methods and pattern.match(route):
-            return reason
-    return None
+    if any(method in methods and pattern.match(route) for methods, pattern in _PROXY_ALLOW):
+        return None
+    return _NOT_FROM_CHATGPT
 
 
 def proxy_path(path: str) -> str:

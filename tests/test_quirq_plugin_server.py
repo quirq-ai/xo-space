@@ -122,7 +122,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         seen = []
         def handler(request):
             seen.append(request)
-            if request.url.path == '/api/redirect':
+            if request.url.path == '/api/xo-projects/activity':
                 return httpx.Response(307, headers={'Location': 'http://example.com/'})
             return httpx.Response(201, json={'ok': True})
         def client(**kwargs):
@@ -132,15 +132,19 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         env = {'QUIRQ_EXTENSION_DEMO': '0', 'QUIRQ_EXTENSION_BASE_URL': 'http://localhost:5002'}
         with patch.dict(os.environ, env), patch.object(bridge.httpx, 'AsyncClient', client):
             written = await bridge.space_api_write('/api/inbox/1', 'PATCH', {'Content-Type': 'application/json'}, '{"status":"done"}')
-            redirected = await bridge.space_api_read('/api/redirect')
+            redirected = await bridge.space_api_read('/api/xo-projects/activity')
             refused = await bridge.space_api_read('/etc/passwd')
             restart = await bridge.space_api_write('/space/server/restart', 'POST')
-            # The server enforces the policy for any caller (visibility is only a host
-            # hint), on the decoded route: secrets, commands and encoded variants.
+            # Default deny for any caller (visibility is only a host hint), on the
+            # decoded route: only routes the Space UI uses are forwarded.
             denied = [await bridge.space_api_read('/api/secrets/env'),
+                      await bridge.space_api_read('/api/xo-projects-sync/status'),
+                      await bridge.space_api_write('/api/files/content', 'POST'),
+                      await bridge.space_api_write('/api/skills/install', 'POST'),
+                      await bridge.space_api_write('/api/connectors/github/token', 'POST'),
                       await bridge.space_api_write('/api/schedules', 'POST'),
                       await bridge.space_api_write('/space/server/re%73tart', 'POST')]
-        self.assertEqual([d.structuredContent['status'] for d in denied], [403, 403, 403])
+        self.assertEqual({d.structuredContent['status'] for d in denied}, {403})
         self.assertEqual(written.structuredContent['status'], 201)
         self.assertEqual(json.loads(written.structuredContent['body']), {'ok': True})
         request = seen[0]
