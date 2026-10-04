@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class CommandSpecTests(unittest.TestCase):
@@ -126,6 +126,19 @@ class RunSpecTests(unittest.TestCase):
         self.assertEqual(merged.stderr, "")
         sync = run_sync([sys.executable, "-c", code], separate_stderr=True, timeout=30)
         self.assertEqual((sync.output, sync.stderr), ("out", "err"))
+
+    def test_sensitive_output_is_returned_but_never_logged(self) -> None:
+        from utils.commands import run as run_cmd
+        output = run(run_cmd(
+            [sys.executable, "-c", "import sys; secret = sys.stdin.read(); print(secret); print(secret, file=sys.stderr)"],
+            input=b"ABCD-EFGH",
+            separate_stderr=True, sensitive_output=True, timeout=30,
+        ))
+        self.assertIn("ABCD-EFGH", output.output)
+        self.assertIn("ABCD-EFGH", output.stderr)
+        log = next(self.state_root.rglob("commands.log")).read_text()
+        self.assertIn("[REDACTED]", log)
+        self.assertNotIn("ABCD-EFGH", log)
 
     def test_stdin_input_reaches_the_child(self) -> None:
         from utils.commands import run as run_cmd, run_sync

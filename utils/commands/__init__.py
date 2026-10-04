@@ -54,7 +54,7 @@ import shlex
 import signal
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -249,7 +249,10 @@ def _emit_logs(
     cwd: str | Path | None,
     result: CommandResult,
     log_path: str | Path | None,
+    sensitive_output: bool = False,
 ) -> None:
+    if sensitive_output:
+        result = replace(result, output=_REDACTED, stderr="", exception=None)
     for path, shared in _iter_log_paths(log_path):
         try:
             entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared)
@@ -390,6 +393,7 @@ async def run(
     input: bytes | None = None,
     separate_stderr: bool = False,
     inherit_output: bool = False,
+    sensitive_output: bool = False,
 ) -> CommandResult:
     """Run a command asynchronously and return a `CommandResult`.
 
@@ -405,12 +409,16 @@ async def run(
                 without it stdin is /dev/null so nothing can hang on a prompt.
     separate_stderr:  keep stderr apart (`result.stderr`) instead of merging it
                 into `output`. For callers that parse stdout.
-    inherit_output:   do not capture at all — the child writes straight to
+    inherit_output:   do not capture at all - the child writes straight to
                 this process's stdout/stderr (long setup scripts whose progress
                 must be visible live). `output` is then empty.
+    sensitive_output: redact captured output from every log, preserving the
+                returned result for callers handling credentials in memory.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
+    if sensitive_output and inherit_output:
+        raise ValueError("sensitive output must be captured")
 
     argv_list = [str(a) for a in argv]
     ts = datetime.now(timezone.utc).isoformat()
@@ -439,7 +447,7 @@ async def run(
             duration_seconds=0.0,
             binary_missing=True,
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path, sensitive_output=sensitive_output)
         return result
     except Exception as e:  # noqa: BLE001 — surface as CommandResult, never raise
         result = CommandResult(
@@ -449,7 +457,7 @@ async def run(
             duration_seconds=0.0,
             exception=str(e),
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path, sensitive_output=sensitive_output)
         return result
 
     try:
@@ -470,7 +478,7 @@ async def run(
             duration_seconds=asyncio.get_event_loop().time() - started,
             timed_out=True,
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path, sensitive_output=sensitive_output)
         return result
 
     duration = asyncio.get_event_loop().time() - started
@@ -481,7 +489,7 @@ async def run(
         duration_seconds=duration,
         stderr=(stderr or b"").decode(errors="replace") if separate_stderr else "",
     )
-    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path, sensitive_output=sensitive_output)
     return result
 
 

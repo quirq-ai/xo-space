@@ -299,6 +299,12 @@ Saved jobs in Setup (scheduled or manual) run locally with the server’s enviro
 
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
+Starting [Codex remote control](services/cowork_agent/adapters/codex/REMOTE_CONTROL.md)
+explicitly enables Codex's managed daemon and its connection to OpenAI, using
+the workspace's ChatGPT login. Devices you pair can operate that Codex host.
+Stopping remote control stops the daemon. XO Space does not persist or log
+pairing codes, and reading status does not enable the connection.
+
 ---
 
 ## Documentation

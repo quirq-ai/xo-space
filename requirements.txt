@@ -8,6 +8,8 @@
 # disagree about that. Bump deliberately; the suite runs on 0.141.1.
 fastapi>=0.141.1
 uvicorn[standard]>=0.27.0
+# Codex's read-only remote-control status over its private Unix WebSocket.
+websockets>=15,<17
 
 # Data Validation
 pydantic>=2.5.0

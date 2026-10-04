@@ -22,15 +22,19 @@ import os
 from typing import Any
 
 from services.cowork_agent.providers_status_lib import build_providers_status
+from .auth import chatgpt_connected
 
 
 async def get_providers_status() -> dict[str, Any]:
-    return await build_providers_status(
+    result = await build_providers_status(
         "codex",
         anthropic_key_present=lambda: bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip()),
         openai_key_present=lambda: bool((os.environ.get("OPENAI_API_KEY") or "").strip()),
         openrouter_key_present=lambda: False,
     )
+    if "codex" in result.get("oauth", {}):
+        result["oauth"]["codex"]["connected"] = chatgpt_connected()
+    return result
 
 
 __all__ = ["get_providers_status"]
