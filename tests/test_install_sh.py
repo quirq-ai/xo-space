@@ -16,28 +16,27 @@ per case, so a failure names the case directly.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
-from tests.required_tools import require_tools
+from tests.required_tools import clean_env, require_tools
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "tests" / "install_sh_harness.sh"
-BASH = shutil.which("bash") if os.name == "posix" else None
 
 
 class InstallShTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "needs a POSIX host (Windows is WSL-only)")
     def test_harness_passes(self) -> None:
-        require_tools(self, "bash", "git")
+        bash = require_tools(self, "bash", "git")["bash"]
         result = subprocess.run(
-            [BASH, str(HARNESS)],
+            [bash, str(HARNESS)],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
             timeout=120,
+            env=clean_env(),
         )
         self.assertEqual(
             result.returncode, 0,

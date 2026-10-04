@@ -1,0 +1,54 @@
+name: Test Codex plugin
+
+on:
+  pull_request:
+    paths:
+      - '.agents/plugins/**'
+      - 'plugins/**'
+      - 'plugin/scripts/**'
+      - 'install.sh'
+      - 'utils/commands/**'
+      - 'utils/runtime_env.py'
+      - 'scripts/check_plugin_sync.sh'
+      - 'tests/test_codex_plugin_*.py'
+      - 'tests/test_plugin_discovery.py'
+      - '.github/workflows/test-codex-plugin.yml'
+  push:
+    branches: [main, development]
+    paths:
+      - '.agents/plugins/**'
+      - 'plugins/**'
+      - 'plugin/scripts/**'
+      - 'install.sh'
+      - 'utils/commands/**'
+      - 'utils/runtime_env.py'
+      - 'scripts/check_plugin_sync.sh'
+      - 'tests/test_codex_plugin_*.py'
+      - 'tests/test_plugin_discovery.py'
+      - '.github/workflows/test-codex-plugin.yml'
+
+# Runs on plugin-path PRs into any branch, with the system Python (3.12 on
+# ubuntu-24.04) and python-dotenv alone: the environment the plugin launcher
+# needs, not the repo's full requirements.
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare test environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install 'python-dotenv>=1.0.0'
+      - name: Validate package and lifecycle
+        run: |
+          # One file per `bash -n`: given several, bash parses only the first.
+          bash -n plugins/quirq/scripts/space.sh
+          bash -n plugin/scripts/discover.sh
+          bash scripts/check_plugin_sync.sh
+          .venv/bin/python -m unittest tests.test_codex_plugin_package tests.test_codex_plugin_runtime tests.test_plugin_discovery

@@ -315,10 +315,15 @@ A maintainer reviews every PR. We look at, in this order: does it break an
 invariant; is it verified the way it claims; does it change a contract; are
 the docs and tests in the same PR; then style. Expect questions rather than
 silent edits. We try to respond within a few days; nudge the thread if a week
-passes. Approval plus green checks is the bar to merge. CI runs the quirq
-infra presubmit (`xo-space-presubmit`, generated from quirq-ai/infra-config;
-targets in `infra/repo.toml`) on every PR, but "how you verified it" in the
-description still carries real weight.
+passes. Approval plus green checks is the bar to merge. On PRs into `main`, CI
+runs the quirq infra presubmit (`xo-space-presubmit`, generated from
+quirq-ai/infra-config): the full pytest suite on the org's pinned Python 3.14.
+On PRs into `main` or `development`, `python-3.12` runs the same suite plus the
+standalone repo checks on Python 3.12, which is what the container and
+installer ship. A PR that touches the Codex plugin, into any branch, also runs
+`Test Codex plugin` with only python-dotenv installed. Green checks don't
+replace "how you verified it" in the description; it still carries real
+weight.
 
 ## Windows
 
