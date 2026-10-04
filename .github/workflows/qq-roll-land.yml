@@ -5,7 +5,8 @@
 # below) requires all of: Dependabot opened and last triggered the PR; exactly one commit, made by
 # GitHub for Dependabot; only modified dependency files whose changed lines are version lines of the
 # bumped dependency, changing only its version numbers (no scripts, index options, URLs, extras or
-# non-registry resolutions); a patch or minor bump of one dependency,
+# non-registry resolutions), and in pnpm-lock.yaml no change outside the resolved tree but the bumped
+# dependency's importer entries; a patch or minor bump of one dependency,
 # where a 0.x minor counts as major; a gate on the base branch no workflow can fake (a required
 # workflow pinned by sha, or a required check bound to an app other than GitHub Actions); and rules on
 # the head branch that stop pushes to it after this check (update and non_fast_forward).
@@ -17,7 +18,7 @@
 # TODO(expert): merges made with GITHUB_TOKEN do not trigger push workflows (post-submit); switch to
 # the quirq rollers App's token once it exists. Dependabot PRs only see Dependabot secrets.
 # TODO(expert): once owner review is required (V0-GAT-03), decide with gate how dependency-roll skips it.
-# qq-digest: sha256:7366e72a40afd085a6a3f2db6ba69cfb92a909c6c60d4e1ce6713a0fabac74ae
+# qq-digest: sha256:3b53dcb09588dcea75642d9d1cfdac31ad28c6850ba2ed536fab6378ba44832d
 name: qq-roll-land
 on:
   pull_request:
@@ -48,8 +49,11 @@ jobs:
           CHANGED: ${{ github.event.pull_request.changed_files }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
           PREV_VERSION: ${{ steps.meta.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
           DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
           QQ_ALLOWED: '[["requirements*.txt","pip-requirements"]]'
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           export QQ_DIR=$(mktemp -d)
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$PR/files" > "$QQ_DIR/files.json"
@@ -66,7 +70,9 @@ jobs:
               QQ_DIR        directory holding files.json, commits.json, rules.json (base branch) and head_rules.json
                             (head branch), each from `gh api --paginate --slurp`
               QQ_ALLOWED    JSON list of [glob, kind]: the files a roll may modify and how their lines are checked
-              SENDER, TRIGGER, CHANGED, UPDATE_TYPE, PREV_VERSION, DEP_NAMES, GITHUB_OUTPUT
+              BASE_SHA, HEAD_SHA  the PR's base and head commits; changed lockfiles are read whole at the merge base
+                            and the head with `gh api` (GH_TOKEN, GITHUB_REPOSITORY)
+              SENDER, TRIGGER, CHANGED, UPDATE_TYPE, PREV_VERSION, NEW_VERSION, DEP_NAMES, GITHUB_OUTPUT
 
           A PR is clean only when every rule holds; anything else goes to a human. It fails closed: missing
           or unexpected data is "not clean", never "clean".
@@ -75,7 +81,9 @@ jobs:
           import json
           import os
           import re
+          import subprocess
           import sys
+          import urllib.parse
 
           DEPENDABOT = "dependabot[bot]"
           MAX_FILES = 20
@@ -100,8 +108,9 @@ jobs:
           CONTROL = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
           # A version where one starts: right after an operator, a range prefix or the opening quote.
           _PLACED_VERSION = re.compile(r'(?<=[=<>~!^"])\s*' + _VERSION)
+          _BARE_VERSION = re.compile(_VERSION)
           # Added lockfile lines may not point anywhere but the registry.
-          LOCK_FORBIDDEN = re.compile(r"tarball:|://|git\+|git@|\bfile:|\blink:|\bgithub:|\brepo:|\bdirectory:|"
+          LOCK_FORBIDDEN = re.compile(r"tarball|://|git\+|git@|\bfile:|\blink:|\bgithub:|\brepo:|\bdirectory:|"
                                       r"\btype:\s*(git|directory)\b")
 
 
@@ -148,7 +157,620 @@ jobs:
               return dep_name(kind, m["key"]), " ".join(_PLACED_VERSION.sub("V", rest).split())
 
 
-          def problems(env, files, commits, rules, allowed, head_rules):
+          # pnpm-lock.yaml: the importers section says which version of each direct dependency is installed, and
+          # settings (and any other top-level section) how. A roll of one dependency may change only that
+          # dependency's specifier and version there, plus the same version where it appears in other entries'
+          # peer suffixes. packages and snapshots hold the resolved tree, which a bump legitimately reshapes; they
+          # are checked against the npm registry (tree_problems).
+          LOCK_TREE = {"packages", "snapshots"}
+          LOCK_DEP_TYPES = {"dependencies", "devDependencies", "optionalDependencies"}
+          # pnpm writes block mappings and lists of plain or single-quoted scalars, one per line, with no comments.
+          # Everything else YAML allows (comments, double quotes and their escapes, block scalars, anchors,
+          # aliases, tags, values continued on the next line, quotes in the middle of a word) could make YAML read
+          # the file differently from this parser, so it is refused.
+          _LOCK_REFUSED = re.compile(r'["\\`#]')
+          _LOCK_VALUE_START = re.compile(r"[|>&*!%@`?-]")
+
+
+          def _closed(text, n):
+              """`text`, checked to be one-line flow YAML as pnpm writes it: a single quote only opens a token
+              (at the start, or after `[`, `{`, `, ` in brackets, or `: `) and closes before `,`, `]`, `}`, `:` or
+              the end, with '' escaping one; and brackets balance."""
+              def bad(why):
+                  return ValueError(f"line {n}: {why}")
+              depth, token_start, i = 0, True, 0
+              while i < len(text):
+                  c = text[i]
+                  if c in "&*!" and token_start:
+                      raise bad("an anchor, alias or tag")
+                  if c == "'":
+                      if not token_start:
+                          raise bad("a quote inside a word")
+                      j = i + 1
+                      while True:
+                          k = text.find("'", j)
+                          if k < 0:
+                              raise bad("a quote left open (multi-line values are refused)")
+                          if text[k + 1:k + 2] != "'":
+                              break
+                          j = k + 2
+                      i = k + 1
+                      after = text[i:].lstrip(" ")
+                      if after and after[0] not in ",]}:":
+                          raise bad("text after a quoted scalar")
+                      token_start = False
+                      continue
+                  if c in "{[":
+                      depth, token_start = depth + 1, True
+                  elif c in "}]":
+                      depth, token_start = depth - 1, False
+                      if depth < 0:
+                          raise bad("unbalanced brackets")
+                  elif c == "," and depth:
+                      token_start = True
+                  elif c == ":" and text[i + 1:i + 2] in (" ", ""):
+                      token_start = True
+                  elif c != " ":
+                      token_start = False
+                  i += 1
+              if depth:
+                  raise bad("a bracket left open (multi-line values are refused)")
+              return text
+
+
+          def lock_leaves(text):
+              """pnpm-lock.yaml as {key path: scalar}, for the subset of YAML pnpm writes: block mappings and block
+              lists of one-line scalars (a list is one leaf under the key "-"); flow values stay text. Children of
+              a key share one indent, deeper than the key's, and are all keys or all list items.
+
+              Anything outside that subset raises ValueError, so an odd lockfile fails closed.
+              """
+              leaves = {}
+              # Open containers: [indent, key, indent of their children (once seen), "map" or "list"].
+              stack = [[-1, None, None, None]]
+              for n, line in enumerate(text.split("\n"), 1):
+                  line = line.removesuffix("\r")
+                  body = line.strip(" ")
+                  if not body:
+                      continue
+                  if CONTROL.search(line) or "\t" in line or _LOCK_REFUSED.search(line):
+                      raise ValueError(f"line {n}: a control character, #, double quote, backslash or backtick")
+                  indent = len(line) - len(line.lstrip(" "))
+                  is_item = body == "-" or body.startswith("- ")
+                  while stack[-1][0] >= indent:
+                      stack.pop()
+                  parent = stack[-1]
+                  if parent[2] is None:
+                      parent[2], parent[3] = indent, "list" if is_item else "map"
+                  elif parent[2] != indent or parent[3] != ("list" if is_item else "map"):
+                      raise ValueError(f"line {n}: indentation or a mix of keys and list items YAML would read differently")
+                  if is_item:
+                      item = _closed(body[1:].strip(), n)
+                      if not item or _LOCK_VALUE_START.match(item):
+                          raise ValueError(f"line {n}: a list item pnpm does not write")
+                      if parent[1] is None:
+                          raise ValueError(f"line {n}: list item outside a mapping")
+                      path = tuple(k for _, k, _, _ in stack[1:]) + ("-",)
+                      leaves[path] = (leaves.get(path) or "") + item + "\n"
+                      stack.append([indent, None, -2, "scalar"])  # nothing may nest under an item
+                      continue
+                  if body.startswith("'"):
+                      m = re.match(r"'((?:[^']|'')*)':( |$)", body)
+                      if not m:
+                          raise ValueError(f"line {n}: not a quoted key")
+                      key, rest = m[1].replace("''", "'"), body[m.end():]
+                  elif ": " in body or body.endswith(":"):
+                      key, _, rest = body.partition(":")
+                      if not re.fullmatch(r"[^'{}\[\],&*!|>%@?<-][^'{}\[\],]*", key) or key != key.strip() \
+                              or (rest and not rest.startswith(" ")):
+                          raise ValueError(f"line {n}: not a plain key")
+                  else:
+                      raise ValueError(f"line {n}: not a mapping entry")
+                  rest = _closed(rest.strip(), n)
+                  if _LOCK_VALUE_START.match(rest) and not re.match(r"-[0-9]", rest):
+                      raise ValueError(f"line {n}: a YAML indicator pnpm does not write")
+                  path = tuple(k for _, k, _, _ in stack[1:]) + (key,)
+                  if path in leaves:
+                      raise ValueError(f"line {n}: duplicate key {'/'.join(path)}")
+                  leaves[path] = rest or None
+                  # A key with a value takes no children; one without opens a container.
+                  stack.append([indent, key, None, None] if not rest else [indent, key, -2, "scalar"])
+              return leaves
+
+
+          def _split_version(value):
+              """An importer version, `16.3.8(react@19.3.0)`, as ("16.3.8", "(react@19.3.0)"), or None."""
+              m = re.fullmatch(r"(" + _VERSION + r")(\(.*\))?", value or "")
+              return (m[1], m[2] or "") if m else None
+
+
+          def lock_problems(shown, base, head, dep, prev, new_version, registry=None):
+              """What a roll of `dep` from `prev` to `new_version` changes in pnpm-lock.yaml beyond that
+              dependency's importer entries and its version in other entries' peer suffixes."""
+              try:
+                  old, new = lock_leaves(base), lock_leaves(head)
+              except ValueError as e:
+                  return [f"{shown}: not a lockfile this check can read ({e})"]
+              # The bumped dependency's own version inside a peer suffix, e.g. (react@19.3.0), may move.
+              peer = re.compile(r"(?<=\()" + re.escape(dep) + "@" + _VERSION)
+
+              def unpeered(suffix):
+                  return peer.sub(dep + "@V", suffix)
+
+              def peers_moved_to_new(was, now):
+                  """Every version of `dep` in the new suffix is the new version or one the old suffix had."""
+                  kept = set(peer.findall(was))
+                  return all(v in kept or v == f"{dep}@{new_version}" for v in peer.findall(now))
+              out = []
+              for path in sorted(set(old) | set(new)):
+                  before, after = old.get(path), new.get(path)
+                  if (path in old and path in new and before == after) or path[0] in LOCK_TREE:
+                      continue
+                  entry_field = (len(path) == 5 and path[0] == "importers" and path[2] in LOCK_DEP_TYPES
+                                 and path in old and path in new and path[4] in ("specifier", "version"))
+                  if entry_field and path[3] == dep:
+                      if path[4] == "specifier" and before and after and new_version in _BARE_VERSION.findall(after) \
+                              and _BARE_VERSION.sub("V", before) == _BARE_VERSION.sub("V", after):
+                          continue
+                      was, now = _split_version(before), _split_version(after)
+                      if path[4] == "version" and was and now and was[0] == prev and now[0] == new_version \
+                              and unpeered(was[1]) == unpeered(now[1]) and peers_moved_to_new(was[1], now[1]):
+                          continue
+                  elif entry_field and path[4] == "version":
+                      was, now = _split_version(before), _split_version(after)
+                      if was and now and was[0] == now[0] and unpeered(was[1]) == unpeered(now[1]) \
+                              and peers_moved_to_new(was[1], now[1]):
+                          continue
+                  out.append(f"{shown}: changes {json.dumps('/'.join(path))[:100]}, which a roll of "
+                             f"{json.dumps(dep)} from {json.dumps(prev)} to {json.dumps(new_version)} may not")
+              if any(path[0] in LOCK_TREE and old.get(path, ()) != new.get(path, ()) for path in set(old) | set(new)):
+                  roots = [f"{path[3]}@{new[path]}" for path in new
+                           if len(path) == 5 and path[0] == "importers" and path[4] == "version" and old.get(path) != new[path]]
+                  if registry is None:
+                      out.append(f"{shown}: the resolved tree changed and the registry was not consulted")
+                  else:
+                      out += tree_problems(shown, old, new, dep, prev, new_version, roots, registry)
+              return out[:10]
+
+
+          # --- the resolved tree (ROL-R6) -----------------------------------------------------------------
+          # A roll may change the packages and snapshots sections only by the bumped dependency's new transitive
+          # closure. Entries already there stay byte for byte, except an existing snapshot's edge to the bumped
+          # dependency, which may move only from the previous to the new version. Every added package is the
+          # registry's own: its integrity is the registry's dist.integrity, nothing else says where it comes from,
+          # and every other field it has (engines, os, cpu, libc, hasBin, deprecated, peers, bundled dependencies)
+          # is what pnpm writes from the registry manifest. Every added or changed snapshot's edges are dependencies
+          # its registry manifest declares, of the same kind (optional or not), at versions its ranges allow; it is
+          # marked optional only if it is reached through an optional edge. Every added entry is reachable from an
+          # importer entry the roll changed, and nothing removed is still reachable from any importer. Anything
+          # this cannot verify (an unreadable range, a registry error, an alias, a non-registry edge, more added
+          # entries than MAX_ADDED) is refused.
+          # Not checked: which in-range version a new transitive edge picks. pnpm picks the newest, but a lockfile
+          # may pin any version the range allows; every such version is registry code its dependent accepts.
+          PACKAGE_FIELDS = {"resolution", "engines", "cpu", "os", "libc", "hasBin", "deprecated", "peerDependencies",
+                            "peerDependenciesMeta", "bundledDependencies"}
+          SNAPSHOT_FIELDS = {"dependencies", "optionalDependencies", "transitivePeerDependencies", "optional"}
+          REQUIRED_FIELDS = {"engines", "os", "cpu", "hasBin"}
+          MAX_ADDED = 400  # added packages plus snapshots; each costs a registry request
+          _PKG_NAME = r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*"
+          _PKG_KEY = re.compile(r"(" + _PKG_NAME + r")@(" + _VERSION + r")")
+          _SNAPSHOT_KEY = re.compile(r"(" + _PKG_NAME + r")@(" + _VERSION + r")(\(.*\))?")
+          _RESOLUTION = re.compile(r"\{integrity: (sha512-[A-Za-z0-9+/]+={0,2})\}")
+
+
+          def _prerelease(text):
+              """A prerelease's identifiers, ("pre", 1), or None if one is empty or a number with a leading zero."""
+              if not text:
+                  return ()
+              ids = text.split(".")
+              if any(not i or (i.isdigit() and len(i) > 1 and i[0] == "0") for i in ids):
+                  return None
+              return tuple(int(i) if i.isdigit() else i for i in ids)
+
+
+          def _semver(v):
+              """1.2.3-pre.1+build as ((1, 2, 3), ("pre", 1)), or None. Build metadata is ignored, as npm does."""
+              m = re.fullmatch(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+                               v.strip())
+              pre = _prerelease(m[4]) if m else None
+              if pre is None:
+                  return None
+              return (int(m[1]), int(m[2]), int(m[3])), pre
+
+
+          def _cmp(a, b):
+              """Compare two _semver values the way semver orders them: a release sorts after its prereleases."""
+              if a[0] != b[0]:
+                  return -1 if a[0] < b[0] else 1
+              if a[1] == b[1]:
+                  return 0
+              if not a[1] or not b[1]:
+                  return -1 if a[1] else 1
+              for x, y in zip(a[1], b[1]):
+                  if x != y:
+                      if type(x) is not type(y):
+                          return -1 if isinstance(x, int) else 1
+                      return -1 if x < y else 1
+              return -1 if len(a[1]) < len(b[1]) else 1
+
+
+          def _partial(v):
+              """A range operand, 1, 1.2, 1.2.x or 1.2.3-pre: (numbers given, prerelease), or None."""
+              n = r"(0|[1-9][0-9]*|[xX*])"
+              m = re.fullmatch(r"v?(?:" + n + r"(?:\." + n + r")?(?:\." + n + r")?)(?:-([0-9A-Za-z.-]+))?"
+                               r"(\+[0-9A-Za-z.-]+)?", v)
+              if not m:
+                  return None
+              if m[5] and not all(p and p not in "xX*" for p in m.groups()[:3]):  # build metadata on a partial
+                  return None
+              nums = []
+              for part in m.groups()[:3]:
+                  if part is None or part in "xX*":
+                      break
+                  nums.append(int(part))
+              pre = _prerelease(m[4])
+              if pre is None or (pre and len(nums) < 3):
+                  return None
+              return nums, pre
+
+
+          def _comparators(op, nums, pre):
+              """[(op, version, named)] for one operand, desugaring ^, ~ and partial versions as npm does; `named`
+              says the range itself names that version's prerelease (not a bound added here)."""
+              lo = (tuple(nums + [0] * (3 - len(nums))), pre)
+              return [(o, v, v is lo and bool(pre)) for o, v in _desugar(op, nums, lo)]
+
+
+          def _desugar(op, nums, lo):
+              """_comparators without the `named` flag."""
+              if not nums:  # *, x or empty: > and < match nothing, everything else anything
+                  return [("<", ((0, 0, 0), (0,)))] if op in (">", "<") else [(">=", lo)]
+
+              def bump(i, pre=(0,)):
+                  n = nums[:i + 1]
+                  n[i] += 1
+                  return (tuple(n + [0] * (3 - len(n))), pre)  # (0,), the lowest prerelease: excludes all of it
+              if op in ("", "="):
+                  if len(nums) == 3:
+                      return [("=", lo)]
+                  return [(">=", lo)] + ([("<", bump(len(nums) - 1))] if nums else [])
+              if op == "~":
+                  return [(">=", lo)] + ([("<", bump(min(1, len(nums) - 1)))] if nums else [])
+              if op == "^":
+                  if not nums:
+                      return [(">=", lo)]
+                  first = next((i for i, n in enumerate(nums) if n), None)
+                  if first is None:  # ^0, ^0.0, ^0.0.0
+                      return [(">=", lo), ("<", bump(len(nums) - 1))]
+                  return [(">=", lo), ("<", bump(first))]
+              if op == ">":  # >1.2 is >=1.3.0, the release
+                  return [(">=", bump(len(nums) - 1, ()))] if len(nums) < 3 else [(">", lo)]
+              if op == "<=":
+                  return [("<", bump(len(nums) - 1))] if len(nums) < 3 else [("<=", lo)]
+              if op == "<" and len(nums) < 3:  # <1.2 is <1.2.0-0, below its prereleases too
+                  return [("<", (lo[0], (0,)))]
+              return [(op, lo)]  # >= and <
+
+
+          def satisfies(version, rng):
+              """Whether npm would resolve `rng` to `version`, for the range forms npm documents. Anything else
+              (dist-tags, aliases, URLs, git, file:) raises ValueError, so the caller refuses it."""
+              v = _semver(version)
+              if v is None:
+                  raise ValueError(f"not a version: {version!r}")
+              found = False
+              for alt in rng.split("||"):
+                  alt = alt.strip()
+                  m = re.fullmatch(r"(\S+)\s+-\s+(\S+)", alt)
+                  if m:
+                      a, b = _partial(m[1]), _partial(m[2])
+                      if not a or not b:
+                          raise ValueError(f"not a range npm documents: {rng!r}")
+                      comps = _comparators(">=", *a) + _comparators("<=", *b)
+                  else:
+                      comps = []
+                      for tok in re.sub(r"(\^|~|>=|<=|>|<|=)\s+(?=[0-9vxX*])", r"\1", alt).split() or ["*"]:
+                          m = re.fullmatch(r"(\^|~|>=|<=|>|<|=)?\s*(.+)", tok)
+                          operand = _partial(m[2]) if m else None
+                          if operand is None:
+                              raise ValueError(f"not a range npm documents: {rng!r}")
+                          comps += _comparators(m[1] or "", *operand)
+                  ok = all({"=": c == 0, ">": c > 0, ">=": c >= 0, "<": c < 0, "<=": c <= 0}[op]
+                           for op, cv, _ in comps for c in [_cmp(v, cv)])
+                  # A prerelease satisfies a range only if a comparator names a prerelease of the same version.
+                  if ok and v[1] and not any(named and cv[0] == v[0] for _, cv, named in comps):
+                      ok = False
+                  found = found or ok
+                  # npm reads a range with an any-version alternative as plain *, which excludes prereleases.
+                  if v[1] and all(c[:2] == (">=", ((0, 0, 0), ())) for c in comps):
+                      return False
+              return found
+
+
+          def _section(leaves, name):
+              """{entry key: {path below the entry: value}} for one top-level section. The entry's own value is
+              kept under (), so an entry written as one flow mapping ({dependencies: {...}}) is not lost."""
+              out = {}
+              for path, value in leaves.items():
+                  if path[0] == name and len(path) > 1:
+                      out.setdefault(path[1], {})[path[2:]] = value
+              return out
+
+
+          def _odd_entry(entry):
+              """Whether an entry is written other than as pnpm writes it: a block mapping, or {} when empty."""
+              return entry.get(()) not in (None, "{}") or (entry.get(()) == "{}" and len(entry) > 1)
+
+
+          def _flow(text):
+              """pnpm's flow values ({k: v, ...}, [a, ...], 'quoted' and plain scalars) as dicts, lists and
+              strings. Raises ValueError on anything else."""
+              text, pos, depth = text.strip(), 0, 0
+
+              def ws():
+                  nonlocal pos
+                  while text.startswith(" ", pos):
+                      pos += 1
+
+              def value(stop):
+                  nonlocal pos, depth
+                  ws()
+                  if text.startswith(("{", "["), pos):
+                      depth += 1
+                      if depth > 8:
+                          raise ValueError("nested too deep")
+                  for open_, close in (("{", "}"), ("[", "]")):
+                      if text.startswith(open_, pos):
+                          pos += 1
+                          out = {} if open_ == "{" else []
+                          ws()
+                          if text.startswith(close, pos):
+                              pos += 1
+                              depth -= 1
+                              return out
+                          while True:
+                              if open_ == "{":
+                                  key = value(":")
+                                  if not isinstance(key, str) or not text.startswith(": ", pos) or key in out:
+                                      raise ValueError("not a flow mapping")
+                                  pos += 1
+                                  out[key] = value(",}")
+                              else:
+                                  out.append(value(",]"))
+                              ws()
+                              if text.startswith(close, pos):
+                                  pos += 1
+                                  depth -= 1
+                                  return out
+                              if not text.startswith(",", pos):
+                                  raise ValueError("not a flow collection")
+                              pos += 1
+                  if text.startswith("'", pos):
+                      m = re.compile(r"'((?:[^']|'')*)'").match(text, pos)
+                      if not m:
+                          raise ValueError("unterminated quote")
+                      pos = m.end()
+                      return m[1].replace("''", "'")
+                  start = pos
+                  while pos < len(text) and text[pos] not in stop:
+                      pos += 1
+                  if not text[start:pos].strip():
+                      raise ValueError("empty value")
+                  return text[start:pos].strip()
+
+              out = value("")
+              if pos != len(text):
+                  raise ValueError("trailing text")
+              return out
+
+
+          def _package_fields(entry):
+              """An added package entry's fields other than resolution, as pnpm-written values."""
+              out = {}
+              for path, value in entry.items():
+                  if not path or path[0] == "resolution" or value is None:
+                      continue
+                  if path[0] == "bundledDependencies" and path[1:] == ("-",):
+                      out[path[0]] = [_flow(line) for line in value.splitlines()]
+                  elif len(path) == 1:
+                      out[path[0]] = _flow(value)
+                  else:
+                      out.setdefault(path[0], {})
+                      node = out[path[0]]
+                      for part in path[1:-1]:
+                          node = node.setdefault(part, {})
+                      node[path[-1]] = _flow(value)
+              return out
+
+
+          def _expected_fields(meta):
+              """What pnpm writes in a package entry for a registry manifest, beside resolution."""
+              out = {f: meta[f] for f in ("engines", "os", "cpu", "libc", "deprecated") if meta.get(f)}
+              if meta.get("bin") or (meta.get("directories") or {}).get("bin"):
+                  out["hasBin"] = "true"
+              peers = dict(meta.get("peerDependencies") or {})
+              for name in meta.get("peerDependenciesMeta") or {}:  # an optional peer with no range is any version
+                  peers.setdefault(name, "*")
+              if peers:
+                  out["peerDependencies"] = peers
+              if meta.get("peerDependenciesMeta"):
+                  out["peerDependenciesMeta"] = {n: {k: json.dumps(v) if isinstance(v, bool) else v for k, v in d.items()}
+                                                 for n, d in meta["peerDependenciesMeta"].items()}
+              bundled = meta.get("bundleDependencies") or meta.get("bundledDependencies")
+              if bundled:
+                  out["bundledDependencies"] = bundled
+              return out
+
+
+          def _edges(entry):
+              """(kind, name, value) for a snapshot's plain edges; kind is dependencies or optionalDependencies."""
+              return [(path[0], path[1], value) for path, value in entry.items()
+                      if len(path) == 2 and path[0] in ("dependencies", "optionalDependencies")]
+
+
+          def _target(name, value):
+              """The snapshot key an edge or importer version points at: `name@value`, or the value itself for an
+              alias (pnpm writes `foo: is-number@7.0.0` for "foo": "npm:is-number@7.0.0")."""
+              return value if _SNAPSHOT_KEY.fullmatch(value) and not _split_version(value) else f"{name}@{value}"
+
+
+          def _walk(snapshots, starts, required_only=False):
+              """Snapshot keys reachable from `starts` (following only non-optional edges if asked)."""
+              seen, todo = set(), list(starts)
+              while todo:
+                  key = todo.pop()
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  for kind, name, value in _edges(snapshots.get(key, {})):
+                      if not (required_only and kind == "optionalDependencies"):
+                          todo.append(_target(name, value))
+              return seen
+
+
+          def _package_of(snapshot_key):
+              m = _SNAPSHOT_KEY.fullmatch(snapshot_key)
+              return f"{m[1]}@{m[2]}" if m else None
+
+
+          def tree_problems(shown, old, new, dep, prev, new_version, roots, registry):
+              """What the packages and snapshots sections change beyond `dep`'s new closure (see above).
+              `old` and `new` are lock_leaves results; `roots` the snapshot keys of importer entries the roll
+              changed; `registry(name, version)` returns that version's registry manifest or raises."""
+              out = []
+              old_p, new_p = _section(old, "packages"), _section(new, "packages")
+              old_s, new_s = _section(old, "snapshots"), _section(new, "snapshots")
+              added_p = sorted(set(new_p) - set(old_p))
+              added_s = sorted(set(new_s) - set(old_s))
+              if len(added_p) + len(added_s) > MAX_ADDED:
+                  return [f"{shown}: adds {len(added_p) + len(added_s)} lockfile entries, more than {MAX_ADDED} checked"]
+
+              # Reachability first, so nothing unreachable costs a registry request.
+              starts = [_target(path[3], value) for path, value in new.items()
+                        if len(path) == 5 and path[0] == "importers" and path[4] == "version" and value]
+              seen = _walk(new_s, [r for r in roots if r in new_s])
+              required = _walk(new_s, [_target(path[3], value) for path, value in new.items()
+                                       if len(path) == 5 and path[0] == "importers" and path[2] != "optionalDependencies"
+                                       and path[4] == "version" and value], required_only=True)
+              reached = {_package_of(k) for k in seen} - {None}
+              unreachable = {k for k in added_p if k not in reached} | {k for k in added_s if k not in seen}
+              for key in sorted(unreachable):
+                  out.append(f"{shown}: added entry {json.dumps(key)} is not in the bumped dependency's closure")
+
+              # Nothing removed may still be in use: walk from every importer entry of the new lockfile.
+              in_use = _walk(new_s, starts)
+              for key in sorted(set(old_s) - set(new_s)):
+                  if key in in_use:
+                      out.append(f"{shown}: removes the snapshot {json.dumps(key)}, which is still in use")
+              in_use_p = {_package_of(k) for k in in_use}
+              for key in sorted(set(old_p) - set(new_p)):
+                  if key in in_use_p:
+                      out.append(f"{shown}: removes the package {json.dumps(key)}, which is still in use")
+
+              manifests = {}
+
+              def manifest(name, version):
+                  if (name, version) not in manifests:
+                      try:
+                          manifests[(name, version)] = registry(name, version)
+                      except Exception as e:
+                          manifests[(name, version)] = e
+                  found = manifests[(name, version)]
+                  if isinstance(found, Exception):
+                      raise found
+                  return found
+
+              for key in sorted(set(old_p) & set(new_p)):
+                  if old_p[key] != new_p[key]:
+                      out.append(f"{shown}: changes the existing package {json.dumps(key)}")
+              for key in added_p:
+                  if key in unreachable:
+                      continue
+                  m = _PKG_KEY.fullmatch(key)
+                  fields = {path[0] for path in new_p[key] if path}
+                  resolution = _RESOLUTION.fullmatch(new_p[key].get(("resolution",)) or "")
+                  if not m or _odd_entry(new_p[key]) or not fields <= PACKAGE_FIELDS or not resolution:
+                      out.append(f"{shown}: added package {json.dumps(key)} is not a registry package entry")
+                      continue
+                  try:
+                      meta = manifest(m[1], m[2])
+                  except Exception as e:
+                      out.append(f"{shown}: could not check {json.dumps(key)} against the registry ({type(e).__name__})")
+                      continue
+                  if (meta.get("dist") or {}).get("integrity") != resolution[1]:
+                      out.append(f"{shown}: added package {json.dumps(key)} does not have the registry's integrity")
+                      continue
+                  # A field written must say what the registry says. pnpm may leave out libc, deprecated and the
+                  # peer fields (some versions drop libc), but not what decides whether and how it installs.
+                  try:
+                      expected, written = _expected_fields(meta), _package_fields(new_p[key])
+                      same = all(expected.get(f) == v for f, v in written.items()) and \
+                          all(f in written for f in REQUIRED_FIELDS & set(expected))
+                  except Exception:  # a field this cannot read is refused, never a crash
+                      same = False
+                  if not same:
+                      out.append(f"{shown}: added package {json.dumps(key)} has fields its registry manifest does not")
+
+              for key in sorted(k for k in new_s if k not in unreachable and (k not in old_s or old_s[k] != new_s[k])):
+                  m = _SNAPSHOT_KEY.fullmatch(key)
+                  fields = {path[0] for path in new_s[key] if path}
+                  if not m or _odd_entry(new_s[key]) or not fields <= SNAPSHOT_FIELDS or f"{m[1]}@{m[2]}" not in new_p:
+                      out.append(f"{shown}: snapshot {json.dumps(key)} is not a snapshot of a package in the lockfile")
+                      continue
+                  if key in old_s:
+                      moved = {path for path in set(old_s[key]) | set(new_s[key])
+                               if old_s[key].get(path) != new_s[key].get(path)}
+                      was = {path: _split_version(old_s[key].get(path)) for path in moved}
+                      now = {path: _split_version(new_s[key].get(path)) for path in moved}
+                      if any(len(path) != 2 or path[0] not in ("dependencies", "optionalDependencies") or path[1] != dep
+                             or not was[path] or not now[path] or was[path][0] != prev or now[path][0] != new_version
+                             for path in moved):
+                          out.append(f"{shown}: changes the existing snapshot {json.dumps(key)} beyond moving its edge to "
+                                     f"{json.dumps(dep)} from {json.dumps(prev)} to {json.dumps(new_version)}")
+                          continue
+                  elif new_s[key].get(("optional",)) is not None and (new_s[key][("optional",)] != "true" or key in required):
+                      out.append(f"{shown}: snapshot {json.dumps(key)} is marked optional but is not an optional dependency")
+                      continue
+                  try:
+                      meta = manifest(m[1], m[2])
+                  except Exception as e:
+                      out.append(f"{shown}: could not check {json.dumps(key)} against the registry ({type(e).__name__})")
+                      continue
+                  optional = meta.get("optionalDependencies") or {}
+                  declared = {"dependencies": {}, "optionalDependencies": {}}
+                  for name, rng in (meta.get("dependencies") or {}).items():
+                      if name not in optional:  # npm also lists optional dependencies under dependencies
+                          declared["dependencies"].setdefault(name, []).append(rng)
+                  for name, rng in optional.items():
+                      declared["optionalDependencies"].setdefault(name, []).append(rng)
+                  for name, rng in (meta.get("peerDependencies") or {}).items():
+                      declared["dependencies"].setdefault(name, []).append(rng)
+                  for name, info in (meta.get("peerDependenciesMeta") or {}).items():
+                      # An optional peer with no range is any version; pnpm lists a resolved optional peer under
+                      # dependencies or optionalDependencies, depending on its version.
+                      rng = (meta.get("peerDependencies") or {}).get(name, "*")
+                      if name not in (meta.get("peerDependencies") or {}):
+                          declared["dependencies"].setdefault(name, []).append(rng)
+                      if (info or {}).get("optional") is True:
+                          declared["optionalDependencies"].setdefault(name, []).append(rng)
+                  for path, value in new_s[key].items():
+                      if not path or path[0] not in ("dependencies", "optionalDependencies") or (len(path) == 1 and value is None):
+                          continue
+                      target = _split_version(value) if len(path) == 2 else None
+                      ranges = declared[path[0]].get(path[-1], [])
+                      try:
+                          fits = target and any(satisfies(target[0], r) for r in ranges)
+                      except Exception:  # a range this cannot read is refused, never a crash
+                          fits = False
+                      if not fits or f"{path[1]}@{value}" not in new_s:
+                          out.append(f"{shown}: snapshot {json.dumps(key)} has an edge {json.dumps(path[-1])}: "
+                                     f"{json.dumps(value)} its registry manifest does not allow")
+              return out
+
+
+          def problems(env, files, commits, rules, allowed, head_rules, locks, registry=None):
+              """Why the roll is not clean; empty when it is. `locks` maps each changed npm-lock file to its
+              (merge base, head) contents."""
               out = []
               if env.get("SENDER") != DEPENDABOT or env.get("TRIGGER") != DEPENDABOT:
                   out.append(f"triggered by {env.get('SENDER')!r}/{env.get('TRIGGER')!r}, not Dependabot")
@@ -195,7 +817,7 @@ jobs:
                                      f"{json.dumps(line.strip())[:100]}")
                           continue
                       if kinds[0] == "npm-lock":
-                          if sign == "+" and LOCK_FORBIDDEN.search(line):
+                          if sign == "+" and LOCK_FORBIDDEN.search(line.replace("'", "")):  # quoted keys too
                               out.append(f"{shown}: non-registry resolution: {json.dumps(line.strip())[:100]}")
                           continue
                       m = LINE_RULES[kinds[0]].match(line)
@@ -207,6 +829,14 @@ jobs:
                   # their version numbers changed, and only for the dependency the PR says it bumps.
                   if sorted(keys["+"]) != sorted(keys["-"]):
                       out.append(f"{shown}: adds, removes or reshapes entries, not only versions")
+                  if kinds[0] == "npm-lock":
+                      if filename not in locks:
+                          out.append(f"{shown}: lockfile contents were not read")
+                      elif len(dep_names) != 1:
+                          out.append(f"{shown}: a lockfile is checked only for a roll of exactly one dependency")
+                      else:
+                          out += lock_problems(shown, *locks[filename], dep_names[0], env.get("PREV_VERSION", "").strip(),
+                                               env.get("NEW_VERSION", "").strip(), registry)
                   others = sorted({n for n, _ in keys["+"] + keys["-"]} - deps.get(kinds[0], set()))
                   if others:
                       out.append(f"{shown}: changes {json.dumps(others)[:100]}, not the bumped dependency")
@@ -249,11 +879,52 @@ jobs:
               return out
 
 
+          def gh(*args):
+              return subprocess.run(["gh", "api", *args], check=True, capture_output=True, text=True).stdout
+
+
+          def read_locks(env, files, allowed):
+              """(merge base, head) contents of each changed npm-lock file, read whole through the contents API."""
+              names = [f.get("filename", "") for f in files
+                       if any(kind == "npm-lock" and matches(f.get("filename", ""), glob) for glob, kind in allowed)]
+              if not names:
+                  return {}
+              repo, head = env["GITHUB_REPOSITORY"], env["HEAD_SHA"]
+              base = gh(f"repos/{repo}/compare/{env['BASE_SHA']}...{head}", "--jq", ".merge_base_commit.sha").strip()
+              for sha in (base, head):
+                  if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                      raise ValueError(f"not a commit sha: {sha!r}")
+              raw = ("-H", "Accept: application/vnd.github.raw+json")
+              return {name: tuple(gh(*raw, f"repos/{repo}/contents/{urllib.parse.quote(name)}?ref={sha}")
+                                  for sha in (base, head)) for name in names}
+
+
+          def npm_registry(name, version):
+              """A version's manifest from the public npm registry. Raises on any error, so the roll is refused."""
+              import urllib.request
+              if not (re.fullmatch(_PKG_NAME, name) and re.fullmatch(_VERSION, version)):
+                  raise ValueError("not a package name and version")
+              url = "https://registry.npmjs.org/" + urllib.parse.quote(name, safe="@") + "/" + urllib.parse.quote(version)
+              class NoRedirects(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, *args, **kwargs):
+                      raise ValueError("the registry redirected")
+
+              req = urllib.request.Request(url, headers={"Accept": "application/json"})
+              with urllib.request.build_opener(NoRedirects).open(req, timeout=30) as resp:
+                  if resp.geturl() != url:
+                      raise ValueError("the registry redirected")
+                  data = json.load(resp)
+              if data.get("name") != name or data.get("version") != version:
+                  raise ValueError("the registry answered for another package")
+              return data
+
+
           def main():
               env = os.environ
               d = env["QQ_DIR"]
-              found = problems(env, pages(f"{d}/files.json"), pages(f"{d}/commits.json"), pages(f"{d}/rules.json"),
-                               json.loads(env["QQ_ALLOWED"]), pages(f"{d}/head_rules.json"))
+              files, allowed = pages(f"{d}/files.json"), json.loads(env["QQ_ALLOWED"])
+              found = problems(env, files, pages(f"{d}/commits.json"), pages(f"{d}/rules.json"),
+                               allowed, pages(f"{d}/head_rules.json"), read_locks(env, files, allowed), npm_registry)
               for p in found:
                   print(f"not clean: {p}")
               if not found:
