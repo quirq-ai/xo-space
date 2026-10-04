@@ -1,8 +1,8 @@
-"""The repo-wide checks that used to live only in .github/workflows/tests.yml.
+"""The repo-wide checks that the old .github/workflows/tests.yml ran by hand.
 
 quirq infra's generated presubmit runs this suite with plain ``pytest``, and
 ``infra/repo.toml`` names each class below as its own target, so these checks
-keep gating every change once the hand-written workflow is gone:
+run in the quirq infra presubmit as well as in python-3.12.yml:
 
 - route parity: ``scripts/check_route_parity.py`` (import gate + every agent
   runtime is the shared core plus exactly its own routes.py)
@@ -17,8 +17,9 @@ keep gating every change once the hand-written workflow is gone:
 The install.sh and uninstall.sh harnesses already run from
 tests/test_install_sh.py and tests/test_uninstall_sh.py.
 
-A missing bash or node fails these checks (see tests/required_tools.py), so
-no runner can report them green by skipping them.
+A missing bash or node fails these checks, and every subprocess runs with
+the environment captured before any .env was loaded (see
+tests/required_tools.py), so no runner or data file can report them green.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from tests.required_tools import require_tools
+from tests.required_tools import clean_env, require_tools
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,7 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class RepoCheckCase(unittest.TestCase):
     def run_check(self, argv: list[str], timeout: int = 300, stdin: Path | None = None) -> None:
         source = stdin.read_text(encoding="utf-8") if stdin is not None else None
-        proc = subprocess.run(argv, cwd=ROOT, input=source, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(argv, cwd=ROOT, input=source, env=clean_env(), capture_output=True, text=True,
+                              timeout=timeout)
         if proc.returncode != 0:
             self.fail(f"{' '.join(argv)} exited {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
 
