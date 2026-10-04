@@ -16,6 +16,7 @@
 # TODO(expert): merges made with GITHUB_TOKEN do not trigger push workflows (post-submit); switch to
 # the quirq infra bot's token once it exists. Dependabot PRs only see Dependabot secrets.
 # TODO(expert): once owner review is required (V0-GAT-03), decide with gate how dependency-roll skips it.
+# qq-digest: sha256:0aae11f537f4a6cd1ea8009f19fa3fffa8277876f22e471f88b0dbe6fd4b646a
 name: qq-roll-land
 on:
   pull_request:
