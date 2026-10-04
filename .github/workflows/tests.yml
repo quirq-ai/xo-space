@@ -18,6 +18,8 @@ name: tests
 on:
   pull_request:
     branches: [main, development]
+  # The merge queue (quirq infra gate, V0-ORG-03) runs required checks on the exact merge result.
+  merge_group:
   push:
     branches: [main, development]
   workflow_dispatch:
