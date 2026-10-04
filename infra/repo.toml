@@ -1,0 +1,51 @@
+# quirq infra manifest for xo-space (schema quirq-repo/1, owned by quirq-ai/sync).
+# Read and edit it only through qqsync (`qqsync show`, `qqsync pin`, qqsync.manifest.Manifest):
+# no other parser. The builders that run these targets are generated from quirq-ai/infra-config.
+schema = "quirq-repo/1"
+
+[qq]
+version = "0.1.0"
+
+# From quirq-ai/toolchains promoted.toml at d020ec6 (python 3.14.8, revision 1). Only linux-x86_64
+# is built so far. Rollers move this pin; never edit the digest by hand.
+[toolchains.python]
+version = "3.14.8"
+platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/python", digest = "sha256:32c0b762db5ec5453e63cf057ab4fa072751a19f1af70f08c07ac4f5fb70a716" }
+
+# The FastAPI server. `qq run` / deploy start server.py on $PORT and wait for /health.
+[[targets]]
+name = "server"
+kind = "python-service"
+srcs = ["server.py", "requirements.txt", "config/**", "routers/**", "services/**", "utils/**", "space_ui/**"]
+params = { entry = "server.py", port_env = "PORT", ready_path = "/health" }
+
+# The full pytest suite. It reads scripts, docs and plugin bundles across the repo, so it is never
+# reused from cache. TODO(expert): narrow srcs and make it cacheable once the inputs are pinned down.
+[[targets]]
+name = "tests"
+kind = "pytest"
+srcs = ["tests/**", "pytest.ini", "requirements-dev.txt", "*.sh", "*.md", "scripts/**", "plugin/**", "plugins/**", ".agents/**", ".claude-plugin/**", ".github/**", "brand/**", ".env.example", "Dockerfile"]
+deps = ["server"]
+cacheable = false
+params = { shards = "auto", args = ["--ignore=tests/test_repo_checks.py"] }
+
+# The checks the hand-written tests.yml and test-codex-plugin.yml ran besides pytest, one target
+# each (tests/test_repo_checks.py). The install.sh and uninstall.sh harnesses run inside `tests`.
+[[targets]]
+name = "route-parity"
+kind = "pytest"
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "scripts/check_route_parity.py"]
+deps = ["server"]
+params = { args = ["tests/test_repo_checks.py::RouteParity"] }
+
+[[targets]]
+name = "plugin-bundles"
+kind = "pytest"
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "scripts/check_plugin_sync.sh", "plugin/**", "plugins/**"]
+params = { args = ["tests/test_repo_checks.py::PluginBundles"] }
+
+[[targets]]
+name = "space-ui-syntax"
+kind = "pytest"
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "space_ui/js/**"]
+params = { args = ["tests/test_repo_checks.py::SpaceUiSyntax"] }
