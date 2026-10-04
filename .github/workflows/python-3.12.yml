@@ -17,8 +17,11 @@ name: python-3.12
 on:
   pull_request:
     branches: [main, development]
+  # The merge queue's merge result, and every commit that lands, also get a
+  # 3.12 run, not only the PR heads.
+  merge_group:
   push:
-    branches: [development]
+    branches: [main, development]
   workflow_dispatch:
 
 permissions:
@@ -26,7 +29,8 @@ permissions:
 
 concurrency:
   group: python-3.12-${{ github.ref }}
-  cancel-in-progress: true
+  # Only superseded PR runs are cancelled; each landed commit keeps its run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   suite-on-python-3-12:

@@ -318,9 +318,9 @@ silent edits. We try to respond within a few days; nudge the thread if a week
 passes. Approval plus green checks is the bar to merge. On PRs into `main`, CI
 runs the quirq infra presubmit (`xo-space-presubmit`, generated from
 quirq-ai/infra-config): the full pytest suite on the org's pinned Python 3.14.
-On PRs into `main` or `development`, `python-3.12` runs the same suite plus the
-standalone repo checks on Python 3.12, which is what the container and
-installer ship. A PR that touches the Codex plugin, into any branch, also runs
+On PRs into `main` or `development`, in the merge queue and on every push to
+those branches, `python-3.12` runs the same suite plus the standalone repo
+checks on Python 3.12, which is what the container and installer ship. A PR that touches the Codex plugin, into any branch, also runs
 `Test Codex plugin` with only python-dotenv installed. Green checks don't
 replace "how you verified it" in the description; it still carries real
 weight.
