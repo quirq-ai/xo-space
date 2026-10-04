@@ -28,8 +28,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: python-3.12-${{ github.ref }}
-  # Only superseded PR runs are cancelled; each landed commit keeps its run.
+  # A PR's runs share a group, so a new push cancels the superseded run. Every
+  # other run gets a group of its own: a shared group keeps only one pending
+  # run, so commits landing in a burst would otherwise skip theirs.
+  group: python-3.12-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
