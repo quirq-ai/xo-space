@@ -31,6 +31,8 @@ params = { shards = "auto", args = ["--ignore=tests/test_repo_checks.py"] }
 
 # The checks the hand-written tests.yml and test-codex-plugin.yml ran besides pytest, one target
 # each (tests/test_repo_checks.py). The install.sh and uninstall.sh harnesses run inside `tests`.
+# plugin-bundles and space-ui-syntax use the runner's bash and node, which no pin covers, so they
+# are never reused from cache. TODO(expert): pin node (quirq-ai/toolchains has it) and cache them.
 [[targets]]
 name = "route-parity"
 kind = "pytest"
@@ -43,9 +45,11 @@ name = "plugin-bundles"
 kind = "pytest"
 srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "scripts/check_plugin_sync.sh", "plugin/**", "plugins/**"]
 params = { args = ["tests/test_repo_checks.py::PluginBundles"] }
+cacheable = false
 
 [[targets]]
 name = "space-ui-syntax"
 kind = "pytest"
 srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "space_ui/js/**"]
 params = { args = ["tests/test_repo_checks.py::SpaceUiSyntax"] }
+cacheable = false

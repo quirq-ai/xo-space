@@ -17,8 +17,9 @@ keep gating every change once the hand-written workflow is gone:
 The install.sh and uninstall.sh harnesses already run from
 tests/test_install_sh.py and tests/test_uninstall_sh.py.
 
-A missing tool skips a check on a contributor's machine, but fails it in CI
-(``CI`` set), so a runner without bash or node can never pass by skipping.
+A missing bash or node skips these checks on a contributor's machine, but
+fails them in CI (``CI`` set), so a runner without them cannot pass here by
+skipping.
 """
 
 from __future__ import annotations
@@ -66,7 +67,11 @@ class PluginBundles(RepoCheckCase):
         bash = _tool("bash")
         if bash is None:
             self.skipTest("bash is not installed")
-        self.run_check([bash, "-n", "plugins/quirq/scripts/space.sh", "plugin/scripts/discover.sh"])
+        # One file per `bash -n`: given several, bash parses only the first and
+        # passes the rest to it as arguments.
+        for script in ("plugins/quirq/scripts/space.sh", "plugin/scripts/discover.sh"):
+            with self.subTest(script=script):
+                self.run_check([bash, "-n", script])
 
 
 class SpaceUiSyntax(RepoCheckCase):
