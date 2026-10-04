@@ -6,11 +6,12 @@ schema = "quirq-repo/1"
 [qq]
 version = "0.1.0"
 
-# From quirq-ai/toolchains promoted.toml at d020ec6 (python 3.14.8, revision 1). Only linux-x86_64
-# is built so far. Rollers move this pin; never edit the digest by hand.
+# From quirq-ai/toolchains promoted.toml (python 3.14.8, revision 1), in sync's OCI form: the source
+# names the image manifest by digest, and the digest pins the toolchain layer's bytes. Only
+# linux-x86_64 is built so far. Rollers move this pin; never edit it by hand.
 [toolchains.python]
 version = "3.14.8"
-platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/python", digest = "sha256:32c0b762db5ec5453e63cf057ab4fa072751a19f1af70f08c07ac4f5fb70a716" }
+platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/python@sha256:32c0b762db5ec5453e63cf057ab4fa072751a19f1af70f08c07ac4f5fb70a716", digest = "sha256:230c6677ccbaba9043c810b9c4a6096ed354c8a981bb62ea90bd059b12d1b03c" }
 
 # The FastAPI server. `qq run` / deploy start server.py on $PORT and wait for /health.
 [[targets]]

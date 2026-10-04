@@ -17,30 +17,20 @@ keep gating every change once the hand-written workflow is gone:
 The install.sh and uninstall.sh harnesses already run from
 tests/test_install_sh.py and tests/test_uninstall_sh.py.
 
-A missing bash or node skips these checks on a contributor's machine, but
-fails them in CI (``CI`` set), so a runner without them cannot pass here by
-skipping.
+A missing bash or node fails these checks (see tests/required_tools.py), so
+no runner can report them green by skipping them.
 """
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
+from tests.required_tools import require_tools
+
 ROOT = Path(__file__).resolve().parents[1]
-IN_CI = bool(os.environ.get("CI"))
-
-
-def _tool(name: str) -> str | None:
-    """The path of ``name``; in CI a missing tool is a failure, not a skip."""
-    path = shutil.which(name)
-    if path is None and IN_CI:
-        raise AssertionError(f"{name} is not on PATH in CI; this check cannot be skipped there")
-    return path
 
 
 class RepoCheckCase(unittest.TestCase):
@@ -58,15 +48,11 @@ class RouteParity(RepoCheckCase):
 
 class PluginBundles(RepoCheckCase):
     def test_bundles_in_sync(self) -> None:
-        bash = _tool("bash")
-        if bash is None:
-            self.skipTest("bash is not installed")
+        bash = require_tools(self, "bash")["bash"]
         self.run_check([bash, "scripts/check_plugin_sync.sh"])
 
     def test_plugin_scripts_parse(self) -> None:
-        bash = _tool("bash")
-        if bash is None:
-            self.skipTest("bash is not installed")
+        bash = require_tools(self, "bash")["bash"]
         # One file per `bash -n`: given several, bash parses only the first and
         # passes the rest to it as arguments.
         for script in ("plugins/quirq/scripts/space.sh", "plugin/scripts/discover.sh"):
@@ -76,9 +62,7 @@ class PluginBundles(RepoCheckCase):
 
 class SpaceUiSyntax(RepoCheckCase):
     def test_every_module_parses(self) -> None:
-        node = _tool("node")
-        if node is None:
-            self.skipTest("node is not installed")
+        node = require_tools(self, "node")["node"]
         modules = sorted((ROOT / "space_ui" / "js").rglob("*.js"))
         self.assertTrue(modules, "no space_ui/js modules found")
         for module in modules:
