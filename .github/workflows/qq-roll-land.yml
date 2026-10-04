@@ -3,8 +3,9 @@
 # Do not edit here: change rollers.toml, regenerate in quirq-ai/rollers, and copy.
 # Lands a clean Dependabot roll with no human (D4). The check (quirq-ai/rollers land_check.py, embedded
 # below) requires all of: Dependabot opened and last triggered the PR; exactly one commit, made by
-# GitHub for Dependabot; only modified dependency files whose changed lines are version lines (no
-# scripts, index options, URLs or non-registry resolutions); a patch or minor bump of one dependency,
+# GitHub for Dependabot; only modified dependency files whose changed lines are version lines of the
+# bumped dependency, changing only its version numbers (no scripts, index options, URLs, extras or
+# non-registry resolutions); a patch or minor bump of one dependency,
 # where a 0.x minor counts as major; a gate on the base branch no workflow can fake (a required
 # workflow pinned by sha, or a required check bound to an app other than GitHub Actions); and rules on
 # the head branch that stop pushes to it after this check (update and non_fast_forward).
@@ -14,9 +15,9 @@
 # does not turn them on), "Allow auto-merge", a ruleset that requires the gate on main (V0-ORG-03),
 # and a ruleset restricting updates and force pushes to dependabot/** with only Dependabot exempt.
 # TODO(expert): merges made with GITHUB_TOKEN do not trigger push workflows (post-submit); switch to
-# the quirq infra bot's token once it exists. Dependabot PRs only see Dependabot secrets.
+# the quirq rollers App's token once it exists. Dependabot PRs only see Dependabot secrets.
 # TODO(expert): once owner review is required (V0-GAT-03), decide with gate how dependency-roll skips it.
-# qq-digest: sha256:0aae11f537f4a6cd1ea8009f19fa3fffa8277876f22e471f88b0dbe6fd4b646a
+# qq-digest: sha256:7366e72a40afd085a6a3f2db6ba69cfb92a909c6c60d4e1ce6713a0fabac74ae
 name: qq-roll-land
 on:
   pull_request:
@@ -89,10 +90,16 @@ jobs:
           LINE_RULES = {
               # "name": "^1.2.3", in package.json dependency maps; removed and added lines alike
               "npm-manifest": re.compile(r'^\s*"(?P<key>(@[a-z0-9._-]+/)?[a-z0-9._-]+)":\s*"[\^~]?' + _VERSION + r'",?\s*$'),
-              # name==1.2.3 or name>=1.2,<2 with an optional trailing comment; no options, URLs or markers
-              "pip-requirements": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?\s*" + _OP + r"\s*"
-                                             + _VERSION + r"(\s*,\s*" + _OP + r"\s*" + _VERSION + r")*\s*(#.*)?$"),
+              # name==1.2.3 or name>=1.2,<2 with an optional trailing comment; no options, URLs or markers. A
+              # backslash in the comment is refused: pip would join the next line into it and drop that pin.
+              "pip-requirements": re.compile(r"^(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)(\[[A-Za-z0-9._,-]+\])?\s*" + _OP + r"\s*"
+                                             + _VERSION + r"(\s*,\s*" + _OP + r"\s*" + _VERSION + r")*(\s+#[^\\]*)?\s*$"),
           }
+          # Characters that are not printable on one line: C0 controls but tab, DEL, C1 controls and the Unicode
+          # line and paragraph separators.
+          CONTROL = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+          # A version where one starts: right after an operator, a range prefix or the opening quote.
+          _PLACED_VERSION = re.compile(r'(?<=[=<>~!^"])\s*' + _VERSION)
           # Added lockfile lines may not point anywhere but the registry.
           LOCK_FORBIDDEN = re.compile(r"tarball:|://|git\+|git@|\bfile:|\blink:|\bgithub:|\brepo:|\bdirectory:|"
                                       r"\btype:\s*(git|directory)\b")
@@ -107,17 +114,38 @@ jobs:
               return [item for page in data for item in page]
 
 
-          def matches(name, glob):
+          def matches(path, glob):
               """fnmatch, but `*` never crosses a directory: the slash counts must agree."""
-              return fnmatch.fnmatchcase(name, glob) and name.count("/") == glob.count("/")
+              return fnmatch.fnmatchcase(path, glob) and path.count("/") == glob.count("/")
 
 
           def changed_lines(patch):
-              for line in patch.splitlines():
-                  if line.startswith(("+++", "---")):
+              """The +/- lines of a patch. File headers can only come before the first hunk: after it, a line
+              starting with --- is a removed line that starts with --, such as a pip --index-url option."""
+              in_hunk = False
+              # Split on \n alone, as GitHub does: str.splitlines also splits on \r, \f, \x85 and more, which
+              # would turn the rest of a changed line into an unchecked context line.
+              for line in patch.split("\n"):
+                  line = line.removesuffix("\r")
+                  if line.startswith("@@"):
+                      in_hunk = True
+                  elif not in_hunk and line.startswith(("+++", "---")):
                       continue
-                  if line[:1] in ("+", "-"):
+                  elif line[:1] in ("+", "-"):
                       yield line[0], line[1:]
+
+
+          def dep_name(kind, key):
+              """The name a dependency is known by: PEP 503 normalized for pip, as written for npm."""
+              return re.sub(r"[-_.]+", "-", key).lower() if kind == "pip-requirements" else key
+
+
+          def entry(kind, m):
+              """A changed line with its version numbers blanked: a bump changes the numbers and nothing else,
+              so the removed and added lines of a bump have equal entries (same name, extras, operators, range
+              prefix and comment)."""
+              rest = m.string[m.end("key"):]
+              return dep_name(kind, m["key"]), " ".join(_PLACED_VERSION.sub("V", rest).split())
 
 
           def problems(env, files, commits, rules, allowed, head_rules):
@@ -143,13 +171,15 @@ jobs:
                   changed = -1
               if changed != len(files) or not 0 < changed <= MAX_FILES:
                   out.append(f"the PR changes {changed} files and {len(files)} were listed (at most {MAX_FILES})")
+              dep_names = [d.strip() for d in env.get("DEP_NAMES", "").split(",") if d.strip()]
+              deps = {kind: {dep_name(kind, d) for d in dep_names} for kind in LINE_RULES}
               for f in files:
-                  name = f.get("filename", "")
-                  shown = json.dumps(name)
+                  filename = f.get("filename", "")
+                  shown = json.dumps(filename)
                   if f.get("status") != "modified" or f.get("previous_filename"):
                       out.append(f"{shown}: {f.get('status')} (only modified files, no renames)")
                       continue
-                  kinds = [kind for glob, kind in allowed if matches(name, glob)]
+                  kinds = [kind for glob, kind in allowed if matches(filename, glob)]
                   if not kinds:
                       out.append(f"{shown}: not a dependency file")
                       continue
@@ -159,6 +189,11 @@ jobs:
                       continue
                   keys = {"+": [], "-": []}
                   for sign, line in changed_lines(patch):
+                      # pip and other readers split lines on these too, so one could hide a second line in this one.
+                      if CONTROL.search(line):
+                          out.append(f"{shown}: control or line-separator character in a changed line: "
+                                     f"{json.dumps(line.strip())[:100]}")
+                          continue
                       if kinds[0] == "npm-lock":
                           if sign == "+" and LOCK_FORBIDDEN.search(line):
                               out.append(f"{shown}: non-registry resolution: {json.dumps(line.strip())[:100]}")
@@ -166,11 +201,15 @@ jobs:
                       m = LINE_RULES[kinds[0]].match(line)
                       if not m:
                           out.append(f"{shown}: not a version line: {json.dumps(line.strip())[:100]}")
-                      elif kinds[0] == "npm-manifest":
-                          keys[sign].append(m["key"])
-                  # A bump rewrites existing entries in place: the same keys go out and come back in.
+                      else:
+                          keys[sign].append(entry(kinds[0], m))
+                  # A bump rewrites existing entries in place: the same entries go out and come back in, with only
+                  # their version numbers changed, and only for the dependency the PR says it bumps.
                   if sorted(keys["+"]) != sorted(keys["-"]):
-                      out.append(f"{shown}: adds or removes entries, not only versions")
+                      out.append(f"{shown}: adds, removes or reshapes entries, not only versions")
+                  others = sorted({n for n, _ in keys["+"] + keys["-"]} - deps.get(kinds[0], set()))
+                  if others:
+                      out.append(f"{shown}: changes {json.dumps(others)[:100]}, not the bumped dependency")
 
               # Only patch and minor bumps of one dependency; a 0.x minor bump can break, so it counts as major.
               update = env.get("UPDATE_TYPE", "")
