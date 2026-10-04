@@ -315,8 +315,10 @@ A maintainer reviews every PR. We look at, in this order: does it break an
 invariant; is it verified the way it claims; does it change a contract; are
 the docs and tests in the same PR; then style. Expect questions rather than
 silent edits. We try to respond within a few days; nudge the thread if a week
-passes. Approval plus green checks is the bar to merge — there is no CI test
-run yet, so "how you verified it" in the description carries real weight.
+passes. Approval plus green checks is the bar to merge. CI runs the quirq
+infra presubmit (`xo-space-presubmit`, generated from quirq-ai/infra-config;
+targets in `infra/repo.toml`) on every PR, but "how you verified it" in the
+description still carries real weight.
 
 ## Windows
 

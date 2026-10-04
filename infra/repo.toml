@@ -37,20 +37,20 @@ params = { shards = "auto", args = ["--ignore=tests/test_repo_checks.py"] }
 [[targets]]
 name = "route-parity"
 kind = "pytest"
-srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "scripts/check_route_parity.py"]
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "tests/required_tools.py", "scripts/check_route_parity.py"]
 deps = ["server"]
 params = { args = ["tests/test_repo_checks.py::RouteParity"] }
 
 [[targets]]
 name = "plugin-bundles"
 kind = "pytest"
-srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "scripts/check_plugin_sync.sh", "plugin/**", "plugins/**"]
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "tests/required_tools.py", "scripts/check_plugin_sync.sh", "plugin/**", "plugins/**"]
 params = { args = ["tests/test_repo_checks.py::PluginBundles"] }
 cacheable = false
 
 [[targets]]
 name = "space-ui-syntax"
 kind = "pytest"
-srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "space_ui/js/**"]
+srcs = ["pytest.ini", "requirements-dev.txt", "tests/__init__.py", "tests/test_repo_checks.py", "tests/required_tools.py", "space_ui/js/**"]
 params = { args = ["tests/test_repo_checks.py::SpaceUiSyntax"] }
 cacheable = false

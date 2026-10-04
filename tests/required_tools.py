@@ -4,6 +4,11 @@ A missing tool fails the check by default, so no runner (CI, the quirq infra
 presubmit, a `qq test` run) can report one of these checks green by skipping
 it. A contributor without node, say, can set XO_ALLOW_MISSING_TOOLS=1 to skip
 those checks instead; that opt-out is ignored when CI is set.
+
+The flags and PATH are read once, when the tests package is first imported
+(tests/__init__.py imports this module) and before any test imports
+server.py, which loads .env files with override=True. A data file in a PR
+therefore cannot switch the opt-out on, turn CI off, or hide a tool.
 """
 
 from __future__ import annotations
@@ -19,12 +24,16 @@ def _flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() not in FALSE_VALUES
 
 
+ALLOW_MISSING = _flag("XO_ALLOW_MISSING_TOOLS") and not _flag("CI")
+SEARCH_PATH = os.environ.get("PATH", os.defpath)
+
+
 def require_tools(test: unittest.TestCase, *names: str) -> dict[str, str]:
     """Each tool's path; fail (or, when allowed, skip) the test if one is missing."""
-    paths = {name: shutil.which(name) for name in names}
+    paths = {name: shutil.which(name, path=SEARCH_PATH) for name in names}
     missing = sorted(name for name, path in paths.items() if path is None)
     if missing:
-        if _flag("XO_ALLOW_MISSING_TOOLS") and not _flag("CI"):
+        if ALLOW_MISSING:
             test.skipTest(f"{', '.join(missing)} not installed (XO_ALLOW_MISSING_TOOLS is set)")
         test.fail(f"{', '.join(missing)} not on PATH; install it, or set XO_ALLOW_MISSING_TOOLS=1 "
                   "to skip this check on a machine without it (ignored when CI is set)")

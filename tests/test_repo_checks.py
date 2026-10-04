@@ -23,12 +23,13 @@ no runner can report them green by skipping them.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
-from tests.required_tools import require_tools
+from tests.required_tools import SEARCH_PATH, require_tools
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,7 +37,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class RepoCheckCase(unittest.TestCase):
     def run_check(self, argv: list[str], timeout: int = 300, stdin: Path | None = None) -> None:
         source = stdin.read_text(encoding="utf-8") if stdin is not None else None
-        proc = subprocess.run(argv, cwd=ROOT, input=source, capture_output=True, text=True, timeout=timeout)
+        env = {**os.environ, "PATH": SEARCH_PATH}  # the PATH from before any .env was loaded
+        proc = subprocess.run(argv, cwd=ROOT, input=source, env=env, capture_output=True, text=True,
+                              timeout=timeout)
         if proc.returncode != 0:
             self.fail(f"{' '.join(argv)} exited {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
 
