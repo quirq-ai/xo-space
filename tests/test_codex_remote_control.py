@@ -112,6 +112,7 @@ class RemoteControlTests(unittest.IsolatedAsyncioTestCase):
         methods = []
 
         async def handler(ws):
+            self.assertNotIn("Sec-WebSocket-Extensions", ws.request.headers)
             async for raw in ws:
                 request = json.loads(raw)
                 methods.append(request["method"])

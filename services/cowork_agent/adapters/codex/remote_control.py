@@ -82,7 +82,10 @@ async def _read_status() -> dict:
     # Initializing with the experimental capability is required for status/read.
     path = codex_home() / "app-server-control" / "app-server-control.sock"
     async with asyncio.timeout(5):
-        async with unix_connect(str(path), uri="ws://localhost/", max_size=1_048_576) as ws:
+        # Codex's tungstenite server rejects extension negotiation, including
+        # websockets' default permessage-deflate offer.
+        async with unix_connect(str(path), uri="ws://localhost/", compression=None,
+                                max_size=1_048_576) as ws:
             async def request(request_id: int, method: str, params=None):
                 await ws.send(json.dumps({"id": request_id, "method": method, "params": params}))
                 while True:
