@@ -412,10 +412,8 @@ async def run(
     inherit_output:   do not capture at all — the child writes straight to
                 this process's stdout/stderr (long setup scripts whose progress
                 must be visible live). `output` is then empty.
-    log_output: False keeps the command's output out of every log entry
-                (the shared commands.log and `log_path`); the entry still
-                records the command, cwd and exit status. For commands that
-                print a credential, which the log redaction cannot recognise.
+    log_output: False keeps the output out of every log entry (the command
+                and exit status are still logged). For output with credentials.
     """
     if not argv:
         raise ValueError("argv must be non-empty")

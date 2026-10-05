@@ -1,23 +1,5 @@
-"""codex adapter-owned Remote Control routes.
-
-Remote Control lifecycle endpoints — start/pair/stop/status the codex
-app-server daemon in remote-control mode so this machine can be driven from
-the ChatGPT app. Mounted only when codex is the active agent (the router
-aggregation resolves the active agent's ``routes`` module via
-``try_load_capability('routes')``), so they never collide with claude_code's
-own ``/api/remote-control/*`` routes.
-
-Same paths and response contract as ``adapters/claude_code/routes.py`` so one
-frontend button drives either runtime, plus the codex-only pairing step:
-  * ``GET  /api/remote-control/status`` → daemon/enrollment state (read-only)
-  * ``POST /api/remote-control/start``  → start the daemon (idempotent)
-  * ``POST /api/remote-control/pair``   → mint a short-lived pairing code
-  * ``POST /api/remote-control/stop``   → stop the daemon (idempotent)
-
-Expected failures come back as ``{ok: False, error, detail}`` with HTTP 200,
-as claude_code's do. Pairing codes are credentials: returned once, never
-logged.
-"""
+"""codex Remote Control routes: the same ``/api/remote-control/*`` paths and
+contract as ``adapters/claude_code/routes.py``, plus ``pair``."""
 from __future__ import annotations
 
 from typing import Any
@@ -36,8 +18,7 @@ class RemoteControlStartBody(BaseModel):
 
 @router.get("/api/remote-control/status")
 async def remote_control_status() -> dict[str, Any]:
-    """Whether the remote-control daemon is running, plus CLI, login and
-    enrollment facts. Never starts anything."""
+    """Daemon, CLI, login and enrollment state (read-only)."""
     return await remote_control.get_status()
 
 

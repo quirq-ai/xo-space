@@ -1,13 +1,4 @@
-"""Codex Remote Control: lifecycle service + adapter-owned routes.
-
-Pins ``adapters/codex/remote_control.py`` (CLI output parsing, binary lookup,
-failure classification, the status/start/pair/stop responses) and
-``adapters/codex/routes/`` (the four ``/api/remote-control/*`` endpoints the
-loader mounts while codex is the active agent). The CLI is never run: ``_run``
-is replaced by a fake that answers with the shapes codex-cli 0.152.x prints.
-
-Pairing codes are credentials, so failures are checked to never echo one.
-"""
+"""Codex Remote Control service and routes, against fake codex-cli 0.152.x output."""
 from __future__ import annotations
 
 import json
@@ -69,9 +60,8 @@ def _json(payload: dict) -> CommandResult:
 
 
 class FakeCli:
-    """Stands in for ``rc._run``: answers by the args after the binary, keyed
-    as identifiers (``remote-control start --json`` → ``remote_control_start``,
-    ``--version`` → ``version``)."""
+    """Stands in for ``rc._run``, keyed by the args (``remote-control start --json``
+    → ``remote_control_start``)."""
 
     def __init__(self, **by_args: CommandResult) -> None:
         self.by_args = by_args
@@ -444,8 +434,7 @@ class PairTests(_ApiCase):
         self.assertEqual(cli.unlogged, ["remote-control pair --json"])
 
     async def test_code_never_reaches_the_command_log(self) -> None:
-        """Through the real runner: Inbox Activity's commands.log records that
-        pair ran, never the code it printed."""
+        """Through the real runner: commands.log records pair, never the code."""
         script = self.home / "bin" / "codex"
         script.parent.mkdir(parents=True)
         script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(PAIR_PAYLOAD)}\nEOF\n", encoding="utf-8")

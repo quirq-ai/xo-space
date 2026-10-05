@@ -346,9 +346,7 @@ class RunSpecTests(unittest.TestCase):
         self.assertNotIn("...[truncated ", own)
 
     def test_log_output_off_keeps_output_out_of_every_log(self) -> None:
-        """A credential the redaction cannot recognise (a JSON pairing code)
-        never reaches a log; the entry still says what ran and how it ended,
-        and the caller still gets the output."""
+        """The output never reaches a log; the entry and the caller still get the rest."""
         from utils.commands import run as run_async, run_sync
 
         secret = "PAIR-ABCD-1234"

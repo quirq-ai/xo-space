@@ -1,54 +1,14 @@
 """
-Codex Remote Control lifecycle.
+Codex Remote Control lifecycle: start / pair / stop / inspect the codex
+app-server daemon so the ChatGPT app can drive this machine. Codex counterpart
+of ``adapters/claude_code/remote_control.py``, with the same response contract
+plus ``pair`` (the ChatGPT app pairs by short-lived code, not by link).
 
-Start / pair / stop / inspect the codex app-server daemon in remote-control
-mode so this machine can be driven from the ChatGPT app — the codex
-counterpart of ``adapters/claude_code/remote_control.py``. Served by
-``adapters/codex/routes/remote_control.py`` at the same ``/api/remote-control/*`` paths
-(mounted only while codex is the active agent) plus ``pair``, which codex
-needs because the ChatGPT app pairs by short-lived code, not by link.
+The CLI owns the daemon; this module runs the commands in ``_COMMANDS``
+(codex-cli 0.152.x) and normalises their ``--json`` output.
 
-The CLI owns the daemon (pid file, socket, enrollment); this module only
-drives it and normalises its ``--json`` output:
-
-    codex remote-control start --json    start the daemon with remote control
-                                         enabled (idempotent; returns once up)
-    codex remote-control pair  --json    mint a single-use manual pairing code
-    codex remote-control stop  --json    stop the daemon (idempotent)
-    codex app-server daemon version      read-only "is it running" probe
-    codex --version                      CLI version for the status card
-
-Argv shapes are fixed in ``_COMMANDS`` below (the codex adapter hardcodes its
-own CLI shapes the same way); only the binary is resolved
-(``CODEX_CLI_PATH`` → PATH → the standalone installer's known locations).
-
-Verified against codex-cli 0.152.x on 2026-09-02:
-
-    start   → {"mode":"daemon","status":"connected"|"connecting"|"errored"|"disabled",
-               "serverName":…,"environmentId":"env_…","timedOut":false,
-               "daemon":{"status":"bootstrapped"|"alreadyRunning","backend":"pid",
-               "remoteControlEnabled":true,"managedCodexPath":…,"managedCodexVersion":…,
-               "socketPath":…,"cliVersion":…,"appServerVersion":…}}      exit 0 both times
-    pair    → {"pairingCode":…,"manualPairingCode":…,"environmentId":…,
-               "expiresAt":<unix seconds, about ten minutes out>}
-              exit 1 + "failed to connect to …/app-server-control.sock" when the
-              daemon is down — it does NOT start one
-    stop    → {"status":"stopped"|"notRunning",…}                          exit 0
-    version → {"status":"running",…,"appServerVersion":…}, or exit 1 with the
-              same "failed to connect" text when stopped
-
-Response contract mirrors claude_code's so the frontend's one Remote Control
-button reads both: ``running`` / ``login_present`` / ``session_url`` (always
-None here — codex has no deep link) / ``pid`` / ``name`` on status, ``ok`` +
-``already_running`` on start, ``ok`` on stop, and ``{ok: False, error, detail}``
-(HTTP 200) for expected failures. Codex adds ``cli``, ``daemon``,
-``enrollment`` and ``pairing``.
-
-Pairing codes are credentials: returned to the caller once, never logged.
-``utils.commands.run`` records every command's output in the shared Inbox
-Activity ``commands.log``, and its redaction does not recognise a pairing
-code, so ``pair`` runs with ``log_output=False``: the log keeps the command
-and its exit status, never the JSON that carries the code.
+Pairing codes are credentials: ``pair`` runs with ``log_output=False``, since
+the command-log redaction cannot recognise them.
 """
 from __future__ import annotations
 
@@ -70,9 +30,8 @@ from .paths import codex_home
 
 AGENT = "codex"
 
-# `start` enrolls with the remote-control service and boots the daemon, so it
-# gets the long budget (CODEX_REMOTE_CONTROL_TIMEOUT overrides it). Probes
-# stay short because frontends poll status on every load.
+# `start` enrolls and boots the daemon, so actions get the long budget
+# (CODEX_REMOTE_CONTROL_TIMEOUT); probes stay short because status is polled.
 DEFAULT_ACTION_TIMEOUT_SECONDS = 90.0
 PROBE_TIMEOUT_SECONDS = 15.0
 _MAX_DETAIL_CHARS = 400
@@ -82,22 +41,15 @@ PAIRING_INSTRUCTIONS = (
     "and enter this code before it expires. Each code works once."
 )
 
-# The last successful `start` in this process: the only place the server
-# name and environment id are reported, so status keeps them while the
-# daemon stays up. Cleared by `stop` or when a probe finds the daemon gone.
+# Server name / environment id from the last `start` (nothing else reports them).
 _last_enrollment: Optional[dict[str, Any]] = None
-# Serialise lifecycle actions within this process; the CLI has its own
-# startup lock, but two overlapping starts would still confuse the caller.
+# Serialise lifecycle actions within this process.
 _action_lock = asyncio.Lock()
 
 
 class RemoteControlError(Exception):
-    """An expected failure, reported to callers as ``{ok: False, error, detail}``.
-
-    ``code``: ``cli_missing`` | ``unsupported_platform`` | ``daemon_not_running``
-    | ``timeout`` | ``bad_output`` | ``cli_error``. ``message`` is safe to show;
-    ``cli_output`` is the CLI's own text. Neither may ever carry a pairing code.
-    """
+    """An expected failure, reported as ``{ok: False, error, detail}``.
+    Neither ``message`` nor ``cli_output`` may ever carry a pairing code."""
 
     def __init__(self, code: str, message: str, *, cli_output: Optional[str] = None):
         super().__init__(message)
@@ -117,12 +69,8 @@ class RemoteControlError(Exception):
 # ── CLI output helpers ───────────────────────────────────────────────────
 
 def parse_json_object(output: str) -> Optional[dict[str, Any]]:
-    """The last line of ``output`` that parses as a JSON object, or ``None``.
-
-    ``utils.commands.run`` merges stdout and stderr, so the ``--json`` payload
-    may sit among warnings. The CLI prints exactly one object per run; taking
-    the last parseable line keeps a stray earlier brace from winning.
-    """
+    """The last line of ``output`` that parses as a JSON object (stdout and
+    stderr are merged, so warnings may surround it), or ``None``."""
     found: Optional[dict[str, Any]] = None
     for raw in output.splitlines():
         line = raw.strip()
@@ -138,9 +86,7 @@ def parse_json_object(output: str) -> Optional[dict[str, Any]]:
 
 
 def collapse_cli_error(output: str, *, fallback: str) -> str:
-    """One line of readable error text from a failed CLI run: JSON lines
-    dropped, the ``Error:`` prefix stripped, an anyhow ``Caused by:`` block
-    folded onto the same line, and the length capped."""
+    """A failed CLI run's error text on one capped line, without JSON lines."""
     lines = []
     for raw in output.splitlines():
         line = raw.strip()
@@ -162,10 +108,7 @@ def collapse_cli_error(output: str, *, fallback: str) -> str:
 # ── Binary + argv ────────────────────────────────────────────────────────
 
 def _standalone_candidates(home: Path) -> list[Path]:
-    """Where the CLI lives when the server's PATH cannot see it: the
-    standalone installer links ``~/.local/bin/codex`` (absent from a
-    systemd- or coder-launched PATH) and keeps the real binary under
-    ``$CODEX_HOME/packages/standalone/current/``."""
+    """The standalone installer's locations, for when PATH cannot see the CLI."""
     return [
         Path.home() / ".local" / "bin" / "codex",
         home / "packages" / "standalone" / "current" / "codex",
@@ -174,11 +117,7 @@ def _standalone_candidates(home: Path) -> list[Path]:
 
 def resolve_binary() -> Optional[str]:
     """``CODEX_CLI_PATH`` → PATH → standalone locations; ``None`` when absent.
-
-    An absolute ``CODEX_CLI_PATH`` is authoritative (missing file → None, no
-    silent fallback to a different install). A bare name that PATH cannot
-    resolve behaves as if unset.
-    """
+    An absolute ``CODEX_CLI_PATH`` is authoritative (no fallback)."""
     configured = (os.getenv("CODEX_CLI_PATH") or "").strip()
     if configured and os.path.isabs(configured):
         return configured if os.path.isfile(configured) else None
@@ -285,9 +224,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _live_pid() -> Optional[int]:
-    """The pid recorded in ``app-server.pid``, only while that process exists.
-    The CLI leaves a stale file behind after a crash, so the file alone is
-    never taken as proof of life."""
+    """The pid in ``app-server.pid``, only while that process exists."""
     record = _read_json_file(_daemon_dir() / "app-server.pid") or {}
     pid = record.get("pid")
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
@@ -339,8 +276,7 @@ def _unknown_daemon(reason: str) -> dict[str, Any]:
 
 
 def _interpret_probe(result: CommandResult) -> dict[str, Any]:
-    """``codex app-server daemon version`` → daemon view. A refused socket
-    connection is the normal "stopped" answer, not an error."""
+    """Probe result → daemon view; a refused socket means stopped, not error."""
     if result.ok:
         payload = parse_json_object(result.output) or {}
         return _daemon_view(payload, running=payload.get("status") == "running")
@@ -452,13 +388,8 @@ async def get_status() -> dict[str, Any]:
 
 
 async def start(name: Optional[str] = None) -> dict[str, Any]:
-    """``codex remote-control start --json`` (idempotent; returns once the
-    daemon is up and enrolled, or says why the connection is not).
-
-    ``name`` is accepted for parity with claude_code's ``start`` and ignored:
-    codex labels the server after the host, and the label comes back as
-    ``name`` / ``enrollment.server_name``.
-    """
+    """Start the daemon (idempotent). ``name`` is accepted for parity with
+    claude_code and ignored: codex names the server itself."""
     global _last_enrollment
     try:
         binary = _require_binary()
@@ -499,13 +430,12 @@ async def start(name: Optional[str] = None) -> dict[str, Any]:
 
 
 async def pair() -> dict[str, Any]:
-    """``codex remote-control pair --json``: a fresh single-use code. Needs the
-    daemon running (``{ok: False, error: "daemon_not_running"}`` otherwise)."""
+    """A fresh single-use pairing code; needs the daemon running."""
     try:
         binary = _require_binary()
         timeout = _action_timeout()
         async with _action_lock:
-            # The output carries the pairing code: keep it out of commands.log.
+            # The output carries the code: keep it out of commands.log.
             result = await _run(_argv("remote_control_pair", binary), timeout=timeout, log_output=False)
         _raise_for_failure(result, "remote-control pair", timeout)
         payload = parse_json_object(result.output) or {}
@@ -513,7 +443,7 @@ async def pair() -> dict[str, Any]:
         raw_code = _text(payload.get("pairingCode"))
         code = manual_code or raw_code
         if not code:
-            # Deliberately no CLI output attached: nothing here may echo a code.
+            # No CLI output attached: it may carry a code.
             raise RemoteControlError(
                 "bad_output", "codex did not return a pairing code; try again."
             )
