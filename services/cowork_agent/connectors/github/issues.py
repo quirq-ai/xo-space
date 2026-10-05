@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -366,10 +367,12 @@ async def _run_gh(argv: list[str], timeout_s: float) -> CommandResult:
     ``separate_stderr`` because this parses stdout as JSON while gh writes its
     warnings to stderr. The runner closes stdin, so gh can never block on a
     prompt, and a timeout kills the whole process group.
+
+    The environment is built in a worker thread: reading the stored token can
+    wait on `gh auth token`, and that wait must not hold the event loop.
     """
-    return await run(
-        argv, timeout=timeout_s, env=_subprocess_env(), separate_stderr=True,
-    )
+    env = await asyncio.to_thread(_subprocess_env)
+    return await run(argv, timeout=timeout_s, env=env, separate_stderr=True)
 
 
 def _parse_rate(payload: Any) -> RateLimit:

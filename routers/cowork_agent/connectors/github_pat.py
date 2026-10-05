@@ -3,7 +3,7 @@ REST routes for the GitHub connector — PAT method (paste a personal access tok
 
   POST /api/connectors/github/token       — receive & validate a PAT
   GET  /api/connectors/github/status      — current connection status
-  POST /api/connectors/github/disconnect  — delete stored token
+  POST /api/connectors/github/disconnect  — forget the connection, sign gh out
   POST /api/connectors/github/reconnect   — re-validate stored token
 
 Only one GitHub identity is connected at a time; the `gh auth login` device
@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.cowork_agent.connectors.github import (
-    delete_github_token,
+    disconnect_github_account,
     get_github_token,
     get_status,
     validate_token,
@@ -53,10 +53,12 @@ async def submit_github_token(body: TokenBody) -> JSONResponse:
     if result["ok"]:
         return JSONResponse(result["payload"])
 
-    return JSONResponse(
-        {"status": result["status"], "error": result.get("error", "Validation failed.")},
-        status_code=400 if result["status"] == "needs_auth" else 502,
-    )
+    body = {"status": result["status"], "error": result.get("error", "Validation failed.")}
+    # A categorical failure the UI can name without rendering our text.
+    for key in ("code", "missing_scopes"):
+        if key in result:
+            body[key] = result[key]
+    return JSONResponse(body, status_code=400 if result["status"] == "needs_auth" else 502)
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +78,20 @@ async def github_status() -> JSONResponse:
 
 @router.post("/api/connectors/github/disconnect")
 async def disconnect_github() -> JSONResponse:
-    """Delete the stored GitHub token and clear the connection."""
-    delete_github_token()
-    return JSONResponse({"status": "needs_auth"})
+    """Clear the connection: remove every github.com token from gh's credential
+    store, and the git identity and credential helper connecting set up.
+
+    Answers ``needs_auth`` only once gh holds no token: while it still does,
+    every `gh` call keeps working, and the UI must not show signed out.
+    """
+    if await disconnect_github_account():
+        return JSONResponse({"status": "needs_auth"})
+    return JSONResponse(
+        {"status": "failed",
+         "error": "GitHub CLI is still signed in to github.com. Run `gh auth status` to see "
+                  "which account, then `gh auth logout --hostname github.com --user <login>`."},
+        status_code=502,
+    )
 
 
 # ---------------------------------------------------------------------------

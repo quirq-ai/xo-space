@@ -83,8 +83,10 @@ _INLINE_SECRET_RE = re.compile(
     r"(?i)(--(?:access-token|api-key|auth-token|code|password|secret|token)\b\s*[=:]\s*)(\S+)"
 )
 _TOKEN_PREFIX_RE = re.compile(
-    r"\b(?:ghp_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b"
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|ak_[A-Za-z0-9_-]+)\b"
 )
+# In place of the output of a command run with log_output=False.
+_OUTPUT_NOT_LOGGED = "[output not logged]"
 # One lock for everything the log writer touches: the size check, the
 # rotation rename and the append happen as one step, so two threads finishing
 # commands together (scheduler jobs, a request shelling out) cannot both
@@ -249,10 +251,11 @@ def _emit_logs(
     cwd: str | Path | None,
     result: CommandResult,
     log_path: str | Path | None,
+    log_output: bool = True,
 ) -> None:
     for path, shared in _iter_log_paths(log_path):
         try:
-            entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared)
+            entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared, log_output=log_output)
             _write_log(path, entry, rotate=shared)
         except Exception as exc:  # noqa: BLE001 - logging must never affect command execution
             _warn_logging_failed(path, exc)
@@ -266,10 +269,11 @@ def _render_log_entry(
     *,
     cwd: str | Path | None = None,
     cap: bool = True,
+    log_output: bool = True,
 ) -> str:
     header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
     cmdline = " ".join(repr(a) if " " in a else a for a in _redact_argv(argv))
-    output = _render_output(result, cap=cap)
+    output = _render_output(result, cap=cap) if log_output else _OUTPUT_NOT_LOGGED
     if output and not output.endswith("\n"):
         output += "\n"
     where = str(Path(cwd).expanduser()) if cwd is not None else os.getcwd()
@@ -390,6 +394,7 @@ async def run(
     input: bytes | None = None,
     separate_stderr: bool = False,
     inherit_output: bool = False,
+    log_output: bool = True,
 ) -> CommandResult:
     """Run a command asynchronously and return a `CommandResult`.
 
@@ -408,6 +413,11 @@ async def run(
     inherit_output:   do not capture at all — the child writes straight to
                 this process's stdout/stderr (long setup scripts whose progress
                 must be visible live). `output` is then empty.
+    log_output: False keeps the output out of every log entry; the command
+                line, status and duration are still recorded. For commands
+                whose output *is* a secret (`gh auth token`): redaction only
+                knows some secret shapes, and a classic 40-hex GitHub token
+                is not one of them.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -439,7 +449,8 @@ async def run(
             duration_seconds=0.0,
             binary_missing=True,
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+                   log_output=log_output)
         return result
     except Exception as e:  # noqa: BLE001 — surface as CommandResult, never raise
         result = CommandResult(
@@ -449,7 +460,8 @@ async def run(
             duration_seconds=0.0,
             exception=str(e),
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+                   log_output=log_output)
         return result
 
     try:
@@ -470,7 +482,8 @@ async def run(
             duration_seconds=asyncio.get_event_loop().time() - started,
             timed_out=True,
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+                   log_output=log_output)
         return result
 
     duration = asyncio.get_event_loop().time() - started
@@ -481,7 +494,8 @@ async def run(
         duration_seconds=duration,
         stderr=(stderr or b"").decode(errors="replace") if separate_stderr else "",
     )
-    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+               log_output=log_output)
     return result
 
 
@@ -496,6 +510,7 @@ def run_sync(
     input: bytes | None = None,
     separate_stderr: bool = False,
     inherit_output: bool = False,
+    log_output: bool = True,
 ) -> CommandResult:
     """Synchronous sibling of `run` — for scripts, startup probes, or tests.
     Same options as `run`.
@@ -543,7 +558,8 @@ def run_sync(
             duration_seconds=0.0,
             binary_missing=True,
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+                   log_output=log_output)
         return result
     except Exception as e:  # noqa: BLE001
         result = CommandResult(
@@ -553,7 +569,8 @@ def run_sync(
             duration_seconds=time.monotonic() - started,
             exception=str(e),
         )
-        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+                   log_output=log_output)
         return result
 
     out = _text(completed.stdout)
@@ -566,7 +583,8 @@ def run_sync(
         timed_out=timed_out,
         stderr=err if separate_stderr else "",
     )
-    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path)
+    _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
+               log_output=log_output)
     return result
 
 

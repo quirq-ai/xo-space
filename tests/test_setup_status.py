@@ -7,16 +7,17 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from fastapi import FastAPI
 
 from routers.space import router
 from services import setup_status
-from services.cowork_agent.connectors import token_store
+from services.cowork_agent.connectors.github import common
 from services.cowork_agent.xo_projects_sync import github
 from services.swarm_api._http import SwarmResult
+from utils.commands import CommandResult
 
 _RESOLVE_AUTH = github.resolve_auth
 _DISCOVER_OWNER = github.discover_owner
@@ -172,70 +173,46 @@ class SetupStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["github"]["status"], "unavailable")
         self.assertIsNone(result["github"]["username"])
 
-    async def test_current_store_is_read_without_modifying_it_or_legacy_files(self):
+    def _gh_store(self, hosts_file: Path, answer: CommandResult):
+        """Point the connector at a gh whose `gh auth token` gives ``answer``."""
+        common._forget_gh_token()
+        self.addCleanup(common._forget_gh_token)
+        self.gh_token = Mock(return_value=answer)
+        return patch.multiple(common, gh_hosts_file=lambda: hosts_file, run_sync=self.gh_token)
+
+    async def test_connector_token_is_read_from_gh(self):
         with tempfile.TemporaryDirectory() as directory:
-            current = Path(directory) / "token.json"
-            legacy = Path(directory) / "mcp-tokens.json"
-            current.write_text(json.dumps({"github": {"access_token": _SECRET}}))
-            legacy.write_text(json.dumps({"github": {"access_token": "old-private-token"}}))
-            before = (current.read_bytes(), legacy.read_bytes(), current.stat().st_mtime_ns)
-            with patch.object(token_store, "TOKEN_FILE", current), \
-                    patch.object(token_store, "_LEGACY_TOKEN_FILES", (legacy,)), \
-                    patch.object(token_store, "_migrate_legacy_file") as migrate, \
+            hosts = Path(directory) / "hosts.yml"
+            hosts.write_text("github.com: {}\n")
+            answer = CommandResult(argv=["gh"], returncode=0, output=_SECRET + "\n", duration_seconds=0.0)
+            with self._gh_store(hosts, answer), patch.object(github, "resolve_auth", _RESOLVE_AUTH):
+                result = await setup_status.snapshot()
+        self.assertEqual(result["github"]["status"], "connected")
+        self.owner.assert_awaited_once_with(github.GitHubAuth(token=_SECRET, source="connector"))
+        self.assertNotIn(_SECRET, json.dumps(result))
+
+    async def test_signed_out_gh_is_not_configured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            answer = CommandResult(argv=["gh"], returncode=0, output=_SECRET, duration_seconds=0.0)
+            with self._gh_store(Path(directory) / "hosts.yml", answer), \
+                    patch.dict(os.environ, {"GITHUB_PAT": ""}), \
                     patch.object(github, "resolve_auth", _RESOLVE_AUTH):
                 result = await setup_status.snapshot()
-            self.assertEqual(result["github"]["status"], "connected")
-            self.owner.assert_awaited_once_with(github.GitHubAuth(token=_SECRET, source="connector"))
-            migrate.assert_not_called()
-            self.assertEqual(before, (current.read_bytes(), legacy.read_bytes(), current.stat().st_mtime_ns))
-            self.assertNotIn(_SECRET, json.dumps(result))
+        self.assertEqual(result["github"]["status"], "not_configured")
+        self.gh_token.assert_not_called()  # no hosts.yml: gh was never signed in
 
-    async def test_legacy_store_is_checked_in_place_but_default_read_still_migrates(self):
+    async def test_gh_that_cannot_be_asked_is_unavailable_instead_of_not_configured(self):
         with tempfile.TemporaryDirectory() as directory:
-            current = Path(directory) / "new-location" / "token.json"
-            legacy = Path(directory) / "mcp-tokens.json"
-            legacy.write_text(json.dumps({"github": {"access_token": _SECRET}}))
-            before = legacy.read_bytes()
-            with patch.object(token_store, "TOKEN_FILE", current), \
-                    patch.object(token_store, "_LEGACY_TOKEN_FILES", (legacy,)), \
+            hosts = Path(directory) / "hosts.yml"
+            hosts.write_text("github.com: {}\n")
+            answer = CommandResult(argv=["gh"], returncode=-9, output="[timed out after 5s]",
+                                   duration_seconds=5.0, timed_out=True)
+            with self._gh_store(hosts, answer), \
+                    patch.dict(os.environ, {"GITHUB_PAT": ""}), \
                     patch.object(github, "resolve_auth", _RESOLVE_AUTH):
                 result = await setup_status.snapshot()
-                self.assertEqual(result["github"]["status"], "connected")
-                self.assertEqual(legacy.read_bytes(), before)
-                self.assertFalse(current.parent.exists())
-                self.assertEqual(github.github_connector.get_github_token(), _SECRET)
-                self.assertFalse(legacy.exists())
-                self.assertEqual(current.read_bytes(), before)
-
-    async def test_bad_current_or_legacy_store_is_unavailable_and_never_rewritten(self):
-        for use_legacy in (False, True):
-            for body in ("{invalid", "[]", '{"github": "invalid"}', '{"github":{"access_token":17}}'):
-                with self.subTest(legacy=use_legacy, body=body), tempfile.TemporaryDirectory() as directory:
-                    current = Path(directory) / "new" / "token.json"
-                    legacy = Path(directory) / "mcp-tokens.json"
-                    source = legacy if use_legacy else current
-                    source.parent.mkdir(exist_ok=True)
-                    source.write_text(body)
-                    with patch.object(token_store, "TOKEN_FILE", current), \
-                            patch.object(token_store, "_LEGACY_TOKEN_FILES", (legacy,)), \
-                            patch.object(github, "resolve_auth", _RESOLVE_AUTH):
-                        result = await setup_status.snapshot()
-                    self.assertEqual(result["github"]["status"], "unavailable")
-                    self.assertEqual(source.read_text(), body)
-                    if use_legacy:
-                        self.assertFalse(current.parent.exists())
-                    self.assertEqual(result["xo"]["status"], "connected")
-
-    async def test_unreadable_store_is_unavailable_instead_of_not_configured(self):
-        with tempfile.TemporaryDirectory() as directory:
-            current = Path(directory) / "token.json"
-            current.mkdir()  # A real read failure on every platform, including privileged test users.
-            with patch.object(token_store, "TOKEN_FILE", current), \
-                    patch.object(token_store, "_LEGACY_TOKEN_FILES", ()), \
-                    patch.object(github, "resolve_auth", _RESOLVE_AUTH):
-                result = await setup_status.snapshot()
-            self.assertEqual(result["github"]["status"], "unavailable")
-            self.assertTrue(current.is_dir())
+        self.assertEqual(result["github"]["status"], "unavailable")
+        self.assertEqual(result["xo"]["status"], "connected")
 
     async def test_get_route_keeps_partial_provider_failure_in_a_safe_snapshot(self):
         self.owner.side_effect = github.GitHubAPIError(403, _SECRET)
