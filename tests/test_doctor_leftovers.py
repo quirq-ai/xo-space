@@ -513,5 +513,82 @@ class NameSourceTests(LeftoverSandbox):
         self.assertEqual([p["name"] for p in blocked["details"]["projects"]], ["on-a-missing-disk"])
 
 
+class IdentityLostTests(LeftoverSandbox):
+    """A project folder that still exists but lost, changed or re-minted its
+    pid leaves its own history behind under the old pid. That is never a
+    leftover: Move aside would hide the project's history from it."""
+
+    def identity(self, change) -> None:
+        path = self.projects / "sample-project" / ".xo" / "project.json"
+        if change is None:
+            path.unlink()
+            return
+        document = json.loads(path.read_text(encoding="utf-8"))
+        change(document)
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def lost(self) -> dict:
+        found = self.runtime_findings()
+        self.assertEqual([f["id"] for f in found], ["runtime.identity_lost"])
+        return found[0]
+
+    def test_a_changed_pid_is_reported_on_the_project_not_as_a_leftover(self) -> None:
+        self.identity(lambda d: d.update(pid=OTHER))
+        finding = self.lost()
+        self.assertEqual((finding["subject"], finding["level"]), (PID, "FAIL"))
+        self.assertNotIn("action", finding)
+        self.assertEqual(finding["title"], "Project sample-project's earlier history is no longer linked to it")
+        self.assertEqual((finding["details"]["earlier_pid"], finding["details"]["current_pid"]), (PID, OTHER))
+        self.assertIn(f'set "pid" in sample-project/.xo/project.json back to {PID}', finding["next_step"])
+        self.assertIn(f"projects/{OTHER}/", finding["next_step"])
+        self.assertEqual(finding["problem_key"], f"identity:{PID}")
+
+    def test_a_removed_pid_is_certain(self) -> None:
+        self.identity(lambda d: d.pop("pid"))
+        finding = self.lost()
+        self.assertEqual(finding["level"], "FAIL")
+        self.assertIsNone(finding["details"]["current_pid"])
+        self.assertNotIn("activity recorded since", finding["next_step"])
+
+    def test_a_deleted_project_json_is_certain(self) -> None:
+        self.identity(None)
+        self.assertEqual(self.lost()["level"], "FAIL")
+
+    def test_a_project_created_after_the_history_may_only_reuse_the_name(self) -> None:
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now))
+        self.identity(lambda d: d.update(pid=OTHER, created_at=later))
+        finding = self.lost()
+        self.assertEqual(finding["level"], "WARN")
+        self.assertNotIn("action", finding)
+        self.assertIn("new project that reuses the name", finding["next_step"])
+
+    def test_a_name_that_only_matches_once_normalised_still_counts(self) -> None:
+        self.identity(lambda d: d.pop("pid"))
+        (self.projects / "sample-project").rename(self.projects / "Sample Project")
+        self.assertEqual(self.lost()["details"]["project"], "Sample Project")
+
+    def test_damaged_files_inside_are_grouped_under_it(self) -> None:
+        self.identity(lambda d: d.update(pid=OTHER))
+        (self.state / "projects" / PID / "stats.json").write_text("{", encoding="utf-8")
+        report = self.report()
+        self.assertFalse([f for f in self.problems(report) if f["subject"] == f"projects/{PID}/stats.json"])
+        finding = self.lost()
+        self.assertEqual([r["subject"] for r in finding["related"]], [f"projects/{PID}/stats.json"])
+
+    def test_move_aside_refuses_it(self) -> None:
+        self.identity(lambda d: d.update(pid=OTHER))
+        with self.assertRaises(leftovers.DoctorError) as caught:
+            leftovers.move_aside(PID, now=self.now)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("doctor_identity_lost", 409))
+        self.assertTrue((self.state / "projects" / PID).is_dir())
+
+    def test_a_deleted_project_is_still_an_ordinary_leftover(self) -> None:
+        shutil.rmtree(self.projects / "sample-project")
+        (self.projects / "third-project").mkdir()  # stay under the count guard
+        [finding] = self.runtime_findings()
+        self.assertEqual(finding["id"], "runtime.leftover")
+        self.assertIn("action", finding)
+
+
 if __name__ == "__main__":
     unittest.main()
