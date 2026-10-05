@@ -260,6 +260,10 @@ detailed guide changes in `xo-docs`:
 | Change | Also update |
 |---|---|
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in `xo-docs` |
+| `.xo/workitems.json` or `/api/xo-projects/.../workitems` | `.agents/skills/xo-projects/references/workitems-http-api.md` |
+| `.xo/peers.json` | `.agents/skills/xo-projects/references/peers-http-api.md` |
+| doctor / state health / leftover runtime folders | `DEVELOPING.md` §13 and the Quirq view in `space_ui/README.md` |
+| browser write 403 / `ALLOWED_ORIGINS` | `DEVELOPING.md` §12 |
 | any view's behaviour | its Space UI guide in `xo-docs`; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in `xo-docs` |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in `xo-docs` must agree |
