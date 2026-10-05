@@ -31,10 +31,10 @@ Read this file top to bottom on first contact: the four parts below are all here
 
 Keeping these out of the main file means a routine session doesn't drag endpoint schemas or the entire backup API into context.
 
-Two further surfaces are documented in the xo-cowork-api repo rather than in this skill, under `docs/`. Read them there when the task calls for them:
+Two further surfaces live next to this skill, in `references/` (`docs/` is gitignored and is not where they live):
 
-- **`docs/workitems-http-api.md`**: the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. For work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
-- **`docs/peers-http-api.md`**: the peers HTTP endpoints: the roster of humans a project is shared with, kept in `.xo/peers.json`. For who a project is shared with, adding or removing a collaborator, or "who else is on this". An empty roster means the project is solo: say so rather than guessing. Removing a peer is a hard delete: unlike a todo or a workitem, nothing is left behind.
+- **`references/workitems-http-api.md`**: the workitem HTTP endpoints: CRUD, claims, GitHub issue adoption, assignment, and the cross-project rollup an agent polls to find its own work. For work items, GitHub issues, or "what is assigned to me". A workitem is a unit of work with an owner and a lifecycle; a todo is one step inside a session. They are linked, not interchangeable.
+- **`references/peers-http-api.md`**: the peers HTTP endpoints: the roster of humans a project is shared with, kept in `.xo/peers.json`. For who a project is shared with, adding or removing a collaborator, or "who else is on this". An empty roster means the project is solo: say so rather than guessing. Removing a peer is a hard delete: unlike a todo or a workitem, nothing is left behind.
 
 ---
 

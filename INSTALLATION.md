@@ -273,6 +273,25 @@ enumeration skips dot-prefixed entries, so it can never be mistaken for a
 project. A visible `./quirq` state root, or one nested deeper, is still
 rejected.
 
+## Troubleshooting
+
+**Inbox, usage totals or the session list look wrong.** Open
+**Setup → Server → Technical details** (`#/setup/server/details`) and click
+**Run checks**. `GET /api/doctor` reports damaged or leftover files under the
+state root. Do not restart the server while a watcher read-position file is
+shown as damaged and the watcher is still running. Leftover `projects/<key>/`
+folders can be moved into `quarantine/` from that page; nothing is deleted.
+Engineering contract: [DEVELOPING.md §13](DEVELOPING.md).
+
+**A write from the UI returns 403** mentioning another website. The browser
+write guard refused a cross-site POST/PUT/PATCH/DELETE. Use Space's own
+pages, or add that frontend's origin to `ALLOWED_ORIGINS`. Local CLI clients
+may omit `Origin`. See [DEVELOPING.md §12](DEVELOPING.md).
+
+**Connectors tiles say NEEDS_KEY.** Composio needs your own API key
+(`COMPOSIO_BYO_API_KEY` or paste it on the Connectors tab). There is no XO
+fallback. `COMPOSIO_CALLBACK_URL` must match this server's public origin.
+
 ## Windows
 
 Not supported. The server's boot hooks are bash scripts, and while they fail

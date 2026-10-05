@@ -287,7 +287,7 @@ The router never knows which agent it is talking to. Each agent lives in `servic
 
 ## What leaves your machine
 
-Nothing, by default. A self-hosted install binds to loopback, needs no account, and sends no usage data. Session traces and telemetry stay in `.quirq/` and the agents' own stores.
+Nothing, by default. A self-hosted install binds to loopback, needs no account, and sends no usage data. Session traces and telemetry stay in `.quirq/` and the agents' own stores. `POST /api/sessions/{id}/otel/export` is the exception: it sends that session's spans to the OTLP collector you name (`OTEL_EXPORTER_OTLP_*`), including prompts, completions and tool names from the transcript. Leave it unused to keep traces local.
 
 If you set `XO_API_KEY` (or sign in from the app) to link the install to your XO account, a **daily usage summary** is sent: token counts, estimated cost, and message/session/tool-call counts per model. Normal metric fields exclude prompts, responses and file contents; diagnostic error notes can include source filenames and raw error details. Leave the key unset to stay signed out.
 
