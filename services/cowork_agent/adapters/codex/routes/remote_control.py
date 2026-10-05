@@ -1,4 +1,4 @@
-"""codex adapter-owned routes.
+"""codex adapter-owned Remote Control routes.
 
 Remote Control lifecycle endpoints — start/pair/stop/status the codex
 app-server daemon in remote-control mode so this machine can be driven from

@@ -4,7 +4,7 @@ Codex Remote Control lifecycle.
 Start / pair / stop / inspect the codex app-server daemon in remote-control
 mode so this machine can be driven from the ChatGPT app — the codex
 counterpart of ``adapters/claude_code/remote_control.py``. Served by
-``adapters/codex/routes.py`` at the same ``/api/remote-control/*`` paths
+``adapters/codex/routes/remote_control.py`` at the same ``/api/remote-control/*`` paths
 (mounted only while codex is the active agent) plus ``pair``, which codex
 needs because the ChatGPT app pairs by short-lived code, not by link.
 
@@ -44,8 +44,11 @@ None here — codex has no deep link) / ``pid`` / ``name`` on status, ``ok`` +
 (HTTP 200) for expected failures. Codex adds ``cli``, ``daemon``,
 ``enrollment`` and ``pairing``.
 
-Pairing codes are credentials: returned to the caller once, never logged
-(``utils.commands.run`` writes no log unless asked; nothing here asks).
+Pairing codes are credentials: returned to the caller once, never logged.
+``utils.commands.run`` records every command's output in the shared Inbox
+Activity ``commands.log``, and its redaction does not recognise a pairing
+code, so ``pair`` runs with ``log_output=False``: the log keeps the command
+and its exit status, never the JSON that carries the code.
 """
 from __future__ import annotations
 
@@ -224,8 +227,8 @@ def _action_timeout() -> float:
     return value if value > 0 else DEFAULT_ACTION_TIMEOUT_SECONDS
 
 
-async def _run(argv: list[str], *, timeout: float) -> CommandResult:
-    return await run(argv, cwd=get_agent(AGENT).cwd, timeout=timeout)
+async def _run(argv: list[str], *, timeout: float, log_output: bool = True) -> CommandResult:
+    return await run(argv, cwd=get_agent(AGENT).cwd, timeout=timeout, log_output=log_output)
 
 
 # ── Failure classification ───────────────────────────────────────────────
@@ -502,7 +505,8 @@ async def pair() -> dict[str, Any]:
         binary = _require_binary()
         timeout = _action_timeout()
         async with _action_lock:
-            result = await _run(_argv("remote_control_pair", binary), timeout=timeout)
+            # The output carries the pairing code: keep it out of commands.log.
+            result = await _run(_argv("remote_control_pair", binary), timeout=timeout, log_output=False)
         _raise_for_failure(result, "remote-control pair", timeout)
         payload = parse_json_object(result.output) or {}
         manual_code = _text(payload.get("manualPairingCode"))

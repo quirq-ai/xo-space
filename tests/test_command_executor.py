@@ -345,6 +345,31 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn(payload, own)
         self.assertNotIn("...[truncated ", own)
 
+    def test_log_output_off_keeps_output_out_of_every_log(self) -> None:
+        """A credential the redaction cannot recognise (a JSON pairing code)
+        never reaches a log; the entry still says what ran and how it ended,
+        and the caller still gets the output."""
+        from utils.commands import run as run_async, run_sync
+
+        secret = "PAIR-ABCD-1234"
+        # Built in the child, so the argv line does not carry it.
+        argv = [sys.executable, "-c", "print('{\"manualPairingCode\": \"PAIR-' + 'ABCD-1234\"}')"]
+        job_log = Path(self._tmp.name) / "job.log"
+        results = [
+            run_sync(argv, log_path=job_log, timeout=30, log_output=False),
+            run(run_async(argv, log_path=job_log, timeout=30, log_output=False)),
+        ]
+        for result in results:
+            self.assertTrue(result.ok)
+            self.assertIn(secret, result.output)
+        shared = (self.state_root / "inbox" / "activity" / "commands.log").read_text(encoding="utf-8")
+        own = job_log.read_text(encoding="utf-8")
+        for text in (shared, own):
+            self.assertNotIn(secret, text)
+            self.assertEqual(text.count("[output not logged]"), 2)
+            self.assertEqual(text.count("[0; "), 2)
+            self.assertIn("print(", text)
+
     def test_explicit_log_path_is_redacted_but_never_rotated(self) -> None:
         from utils.commands import run_sync
 
