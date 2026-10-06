@@ -62,6 +62,8 @@ class About:
 
 _NO_REBUILD = "Nothing: its store never rewrites a file it can't read."
 _RESTORE_PROJECT = "Restore it from git or the last project sync (both keep the project's .xo/ folder)"
+_INBOX_REFUSED = ("The Inbox shows as empty (the server answers with no items rather than an error), and marking "
+                  "items done, deleting them or adding notes fails.")
 
 ABOUT: dict[str, About] = {
     "inbox/inbox.json": About(
@@ -80,16 +82,10 @@ ABOUT: dict[str, About] = {
                 "next_step": ("If you have an earlier copy of inbox.json, put it back before the Inbox is next "
                               "opened; otherwise nothing is needed."),
             },
-            "invalid_json": {
-                "consequence": ("The Inbox shows as empty (the server answers with no items rather than an "
-                                "error), and marking items done, deleting them or adding notes fails."),
-            },
-            "wrong_type": {
-                "consequence": ("The Inbox treats it as empty, and its next refresh or change overwrites it, so "
-                                "its items, seen and done marks and notes are lost for good."),
-                "self_repair": "The next Inbox refresh replaces it with a fresh Inbox.",
-                "next_step": "If you have an earlier copy of inbox.json, put it back now, before the Inbox is opened again.",
-            },
+            # The store refuses to write over a file it can't use (not JSON,
+            # not an object, or items that aren't a list): it reads as empty.
+            "invalid_json": {"consequence": _INBOX_REFUSED},
+            "wrong_type": {"consequence": _INBOX_REFUSED},
         },
         levels={"empty": WARN},
     ),
