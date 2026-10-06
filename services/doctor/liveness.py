@@ -594,7 +594,7 @@ def relay(ctx: Context) -> list[Finding]:
             f"The project-sharing relay last polled {ago(ctx.now - last)} ago; it polls about every {ago(interval)}.",
             "", title="The project-sharing relay stopped polling", evidence=[ev("Last poll", moment(last, ctx.now))],
             consequence=COMPONENTS["relay poller"][1],
-            self_repair="Nothing: a git fetch may be hanging (they have no timeout).",
+            self_repair="A slow git fetch may be running; the relay stops it after 5 minutes and moves on.",
             next_step=RESTART, problem_key="component:relay poller:overdue")]
     if snapshot.get("last_poll_ok") is False:
         return [Finding(

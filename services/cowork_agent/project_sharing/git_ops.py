@@ -3,7 +3,14 @@ git errors return None/False/empty — the relay must degrade, never crash.
 
 `local_remote_head` is the one synchronous, subprocess-free reader: it looks at
 the remote-tracking ref git itself updates after `git push`, so a machine can
-notice its own push without a network call."""
+notice its own push without a network call.
+
+Every git call has a timeout, so a hung network or a stuck lock cannot stall
+the relay loop; on a timeout the runner kills git and its helpers. The two
+network calls (fetch, ls-remote) also run with GIT_TERMINAL_PROMPT=0, set on
+that one command only: with no credentials git fails at once instead of
+waiting on a username prompt. With credentials (a credential helper) it has
+no effect."""
 from __future__ import annotations
 
 import os
@@ -14,11 +21,26 @@ from utils.commands import run
 _SEP = "\x1f"  # unit separator: cannot appear in git subjects/authors
 
 
-async def _run(repo_dir, *args) -> tuple[int, str, str]:
+# Seconds. A fetch may download a large pack and cannot resume, so it gets
+# room; ls-remote reads branch names only; local reads normally take ms.
+FETCH_TIMEOUT = 300.0
+LS_REMOTE_TIMEOUT = 60.0
+LOCAL_TIMEOUT = 60.0
+
+
+def _noninteractive_env() -> dict[str, str]:
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
+async def _run(repo_dir, *args, timeout: float = LOCAL_TIMEOUT,
+               env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """`git -C <repo_dir> <args>` through the one executor. (code, stdout, stderr);
-    a missing git binary or a runner exception is a non-zero code with the
-    reason in stderr, so every caller's failure branch already covers it."""
-    res = await run(["git", "-C", str(repo_dir), *args], separate_stderr=True)
+    a missing git binary, a runner exception or a timeout is a non-zero code
+    with the reason in stderr, so every caller's failure branch covers it."""
+    res = await run(["git", "-C", str(repo_dir), *args], timeout=timeout, env=env,
+                    separate_stderr=True)
+    if res.timed_out:
+        return res.returncode or -1, "", f"git {args[0]} timed out after {int(timeout)}s"
     if res.binary_missing or res.exception:
         return res.returncode, "", res.output
     return res.returncode, res.stdout, res.stderr
@@ -32,7 +54,8 @@ async def origin_url(repo_dir) -> str | None:
 
 async def remote_head(repo_dir, branch: str) -> str | None:
     """SHA of origin's branch tip via ls-remote (ref names only, no objects)."""
-    code, out, _ = await _run(repo_dir, "ls-remote", "origin", f"refs/heads/{branch}")
+    code, out, _ = await _run(repo_dir, "ls-remote", "origin", f"refs/heads/{branch}",
+                              timeout=LS_REMOTE_TIMEOUT, env=_noninteractive_env())
     if code != 0:
         return None
     line = out.strip().splitlines()[0] if out.strip() else ""
@@ -78,7 +101,8 @@ async def enumerate_hashes(repo_dir, since_sha: str, head_sha: str) -> list[str]
 
 
 async def fetch_origin(repo_dir) -> tuple[bool, str]:
-    code, _, err = await _run(repo_dir, "fetch", "origin", "--quiet")
+    code, _, err = await _run(repo_dir, "fetch", "origin", "--quiet",
+                              timeout=FETCH_TIMEOUT, env=_noninteractive_env())
     return code == 0, err.strip()
 
 
@@ -115,8 +139,7 @@ async def clone(url: str, dest, *, config_args: list[str] | None = None,
     argv = ["git", *(config_args or []), "clone", "--", url, str(dest)]
     # The runner closes stdin, so with GIT_TERMINAL_PROMPT=0 git can never
     # block on a credential prompt; a private repo fails fast instead.
-    res = await run(argv, cwd=cwd, timeout=timeout,
-                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    res = await run(argv, cwd=cwd, timeout=timeout, env=_noninteractive_env(),
                     separate_stderr=True)
     if res.timed_out:
         return False, f"timed out after {timeout}s", True

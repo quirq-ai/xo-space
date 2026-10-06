@@ -1,8 +1,8 @@
 /* Project management owns one persistent controller. Navigation and catalog
    refreshes leave clone, access-review and inline sharing drafts mounted. */
 import {projectPage} from '../core/navigation.js?v=20260915-agents2';
-import {openProjectActivity} from '../core/project-actions.js?v=20260914-details1';
-import {mountProjectManagement} from './project-management.js?v=20260921-refresh1';
+import {openProjectActivity} from '../core/project-actions.js?v=20261001-restore1';
+import {mountProjectManagement} from './project-management.js?v=20261001-restore1';
 
 let root=null,manager=null,active=false,scrollTop=0;
 function refresh(){
@@ -20,8 +20,8 @@ export default {
       onChange:detail=>dispatchEvent(new CustomEvent(detail?.action==='access'?'space:project-access-changed':'space:projects-changed',{detail})),
       onViewActivity:id=>openProjectActivity(switchTo,id),
     });
-    addEventListener('space:add-project',()=>{
-      if(active&&location.hash==='#/projects/manage'&&root.classList.contains('is-active'))manager.openAdd();
+    addEventListener('space:add-project',event=>{
+      if(active&&location.hash==='#/projects/manage'&&root.classList.contains('is-active'))manager.openAdd(event.detail);
     });
   },
   show(){

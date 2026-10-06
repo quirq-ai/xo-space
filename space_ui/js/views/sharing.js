@@ -21,7 +21,7 @@ import {setSectionActions} from '../core/section-nav.js?v=20260921-refresh1';
    calls); this file only paints and handles events. One delegated click /
    submit / input listener on the section: the pane re-renders from state,
    so nothing is bound per element. */
-import {openProjectAdd} from '../core/project-actions.js?v=20260914-details1';
+import {openProjectAdd} from '../core/project-actions.js?v=20261001-restore1';
 import {toast} from '../core/ui.js';
 import {esc,rel,shortId,shortHash,sharingStatus,sharingStatusRes,refreshSharingStatus,
   startSharingPoll,refreshSoon,consumeNewClone,REASON,parked,memberState,entryFor,repos,
@@ -268,7 +268,7 @@ function inboxRow(r){
   if(r.need==='restore'){
     what='removed from this Space';
     why='automatic cloning is paused';
-    acts='<button class="sess-refresh is-sm" type="button" data-act="restore">Clone project</button>';
+    acts='<button class="sess-refresh is-sm" type="button" data-act="restore" data-repo="'+esc(r.repo)+'">Clone project</button>';
   }else if(r.need==='auth'){
     what='private repo · needs GitHub';
     why='connect GitHub once; XO Space clones it on the next check';
@@ -565,7 +565,8 @@ async function onClick(e){
     case'apply':return doApply(id);
     case'connect':return go('setup/connectors');
     case'restore':
-      return openProjectAdd(go);
+      /* the relay clones over HTTPS too; Manage suggests the folder name */
+      return openProjectAdd(go,b.dataset.repo?{repository:'https://'+b.dataset.repo+'.git'}:undefined);
     case'list':
       /* views never import each other: switch to List and tell it which
          drawer to open; it parks the request until its catalog is loaded */

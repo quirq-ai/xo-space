@@ -3,7 +3,7 @@
    bundler, so no file globbing; this import list is the one manual step. */
 import {registerView,startRegistry,switchTo} from './core/registry.js?v=20260915-typesync1';
 import {initPageRefresh,refreshPage} from './core/page-refresh.js?v=20260921-refresh1';
-import {initProjectActions} from './core/project-actions.js?v=20260914-details1';
+import {initProjectActions} from './core/project-actions.js?v=20261001-restore1';
 import {initServerWidget} from './core/server-widget.js?v=20260914-commands2';
 import {initToolbar} from './core/toolbar.js?v=20260915-cmdk6';
 import {initSectionNav} from './core/section-nav.js?v=20260921-refresh1';
@@ -15,9 +15,9 @@ import {createAgentViews} from './views/sessions.js?v=20260915-footer1';
 import {createInboxViews,initInboxBadge} from './views/inbox.js?v=20260921-refresh1';
 import {createActivityViews} from './views/inbox-activity.js?v=20260915-agents2';
 import projectsView from './views/projects.js?v=20260921-refresh1';
-import projectManageView from './views/project-manage.js?v=20260921-refresh1';
+import projectManageView from './views/project-manage.js?v=20261001-restore1';
 import treeView from './views/tree.js?v=20260915-agents2';
-import sharingView from './views/sharing.js?v=20260921-refresh1';
+import sharingView from './views/sharing.js?v=20261001-restore1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
 import wikiView from './views/wiki.js?v=20260916-jobs3';
