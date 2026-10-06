@@ -139,7 +139,7 @@ the clone itself your workspace and puts state in `./.quirq` — both are
 gitignored. To boot a specific backend:
 
 ```bash
-AGENT_NAME=claude_code venv/bin/python server.py   # or codex, openclaw, hermes, antigravity
+AGENT_NAME=claude_code venv/bin/python server.py   # or codex, openclaw, hermes, antigravity, grokbot
 ```
 
 The server runs its boot hooks (`config/agents/<name>/setup.sh`,
@@ -153,7 +153,7 @@ These are the invariants the architecture depends on. They are enforced in
 review, and some by tests.
 
 1. **The modularity invariant.** Core code never names a specific agent
-   (`claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`). Agent-specific
+   (`claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`, `grokbot`). Agent-specific
    code lives in exactly three trees: `services/cowork_agent/adapters/<name>/`,
    `config/agents/<name>/`, and `config/models/<name>/`. Everything else
    resolves the active agent from `AGENT_NAME` through one seam,
@@ -227,10 +227,11 @@ Run these before opening a PR. They need Linux/macOS (the watcher uses
 ```bash
 # 1. xo-space's own suite (prints its own count — do not quote a number in docs)
 venv/bin/python -m unittest discover -s tests -t .
+# CI runs the same suite under pytest: venv/bin/python -m pytest -q
 
 # 2. Import gate: the app must build under every runtime, and route counts
 #    differ by design — read them, don't assert them.
-for a in claude_code codex openclaw hermes antigravity; do
+for a in claude_code codex openclaw hermes antigravity grokbot; do
   AGENT_NAME=$a venv/bin/python -c "import server; print('$a', len(server.app.openapi()['paths']))"
 done
 
@@ -260,6 +261,11 @@ detailed guide changes in `xo-docs`:
 | Change | Also update |
 |---|---|
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in `xo-docs` |
+| `.xo/workitems.json` or `/api/xo-projects/.../workitems` | `.agents/skills/xo-projects/references/workitems-http-api.md` |
+| `.xo/peers.json` | `.agents/skills/xo-projects/references/peers-http-api.md` |
+| doctor / state health / leftover runtime folders | `DEVELOPING.md` §13 and the Quirq view in `space_ui/README.md` |
+| browser write 403 / `ALLOWED_ORIGINS` | `DEVELOPING.md` §12 |
+| CI workflows, `infra/repo.toml`, required checks | `DEVELOPING.md` §5 "CI" |
 | any view's behaviour | its Space UI guide in `xo-docs`; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in `xo-docs` |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in `xo-docs` must agree |
