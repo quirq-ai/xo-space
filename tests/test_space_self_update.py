@@ -115,5 +115,141 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(result["reason"], "not_a_git_checkout")
 
 
+class ReleaseChannelTests(unittest.TestCase):
+    """main and tag checkouts follow release tags, never the main tip, and
+    only ever move forward (the installer's fetch_repo applies the same
+    rule; tests/install_sh_harness.sh covers that side)."""
+
+    def setUp(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self.origin = tmp / "origin"
+        self.env = _git_env(self._tmp.name)
+        self.origin.mkdir()
+        self._run("init", "-q", "-b", "main", cwd=self.origin)
+        (self.origin / "requirements.txt").write_text("a==1\n", encoding="utf-8")
+        self._commit("first", "x=1\n")
+        self._tag("v1.9.0")
+        self.v110 = self._commit("second", "x=2\n")
+        self._tag("v1.10.0")
+        self._commit("third", "x=3\n")
+        self._tag("v2.0.0-rc1")  # a pre-release is never a target
+        self.tip = self._commit("main tip", "x=4\n")
+        self._orig_root = self_update.REPO_ROOT
+
+    def tearDown(self) -> None:
+        self_update.REPO_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def _run(self, *args: str, cwd: Path) -> str:
+        return subprocess.run(["git", *args], cwd=str(cwd), check=True,
+                              capture_output=True, text=True, env=self.env).stdout.strip()
+
+    def _commit(self, message: str, code: str, requirements: bool = False) -> str:
+        (self.origin / "code.py").write_text(code, encoding="utf-8")
+        if requirements:
+            path = self.origin / "requirements.txt"
+            path.write_text(path.read_text(encoding="utf-8") + "b==1\n", encoding="utf-8")
+        self._run("add", "-A", cwd=self.origin)
+        self._run("commit", "-q", "-m", message, cwd=self.origin)
+        return self._run("rev-parse", "HEAD", cwd=self.origin)
+
+    def _tag(self, name: str) -> None:
+        self._run("tag", "-a", name, "-m", name, cwd=self.origin)
+
+    def _checkout(self, name: str, *clone_args: str) -> Path:
+        work = Path(self._tmp.name) / name
+        self._run("clone", "-q", *clone_args, f"file://{self.origin}", str(work),
+                  cwd=Path(self._tmp.name))
+        self_update.REPO_ROOT = work
+        return work
+
+    def _head(self, work: Path) -> str:
+        return self._run("rev-parse", "HEAD", cwd=work)
+
+    def test_tag_install_moves_to_the_next_release_not_the_tip(self) -> None:
+        work = self._checkout("tagged", "--depth", "1", "--branch", "v1.10.0")
+        status = self_update.check_update_status()
+        self.assertTrue(status["supported"])
+        self.assertEqual(status["channel"], "release")
+        self.assertIsNone(status["branch"])
+        self.assertEqual(status["current_tag"], "v1.10.0")
+        self.assertTrue(status["up_to_date"])
+
+        v111 = self._commit("fix", "x=5\n", requirements=True)
+        self._tag("v1.11.0")
+        self._commit("after the release", "x=6\n")
+        status = self_update.check_update_status()
+        self.assertEqual(status["latest_tag"], "v1.11.0")
+        self.assertFalse(status["up_to_date"])
+        self.assertGreater(status["behind"], 0)
+
+        result = self_update.apply_update()
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["tag"], "v1.11.0")
+        self.assertTrue(result["requirements_changed"])
+        self.assertEqual(self._head(work), v111)
+        self.assertEqual(self._run("rev-parse", "--abbrev-ref", "HEAD", cwd=work), "HEAD")
+        self.assertTrue(self_update.check_update_status()["up_to_date"])
+
+    def test_main_tip_ahead_of_the_release_is_never_moved_back(self) -> None:
+        for name, args in (("full", ()), ("shallow", ("--depth", "1"))):
+            with self.subTest(name):
+                work = self._checkout(name, *args)
+                status = self_update.check_update_status()
+                self.assertEqual(status["channel"], "release")
+                self.assertEqual(status["latest_tag"], "v1.10.0")
+                self.assertTrue(status["up_to_date"])
+                result = self_update.apply_update()
+                self.assertFalse(result["updated"])
+                self.assertEqual(result["reason"], "up_to_date")
+                self.assertEqual(self._head(work), self.tip)
+
+    def test_main_behind_a_release_fast_forwards_to_it_and_stays_on_main(self) -> None:
+        work = self._checkout("onmain")
+        self._run("reset", "-q", "--hard", self.v110, cwd=work)
+        v111 = self._commit("fix", "x=5\n")
+        self._tag("v1.11.0")
+        self._commit("after the release", "x=6\n")
+        result = self_update.apply_update()
+        self.assertTrue(result["updated"])
+        self.assertEqual(self._head(work), v111)
+        self.assertEqual(self._run("rev-parse", "--abbrev-ref", "HEAD", cwd=work), "main")
+
+    def test_local_commits_on_main_are_reported_as_diverged(self) -> None:
+        work = self._checkout("local")
+        self._run("reset", "-q", "--hard", self.v110, cwd=work)
+        (work / "code.py").write_text("mine\n", encoding="utf-8")
+        self._run("add", "-A", cwd=work)
+        self._run("commit", "-q", "-m", "local work", cwd=work)
+        self._commit("fix", "x=5\n")
+        self._tag("v1.11.0")
+        result = self_update.apply_update()
+        self.assertFalse(result["updated"])
+        self.assertEqual(result["reason"], "diverged")
+
+    def test_other_branches_follow_their_own_tip(self) -> None:
+        self._run("checkout", "-q", "-b", "development", cwd=self.origin)
+        work = self._checkout("dev", "--branch", "development")
+        dev_tip = self._commit("dev work", "x=dev\n")
+        status = self_update.check_update_status()
+        self.assertEqual(status["channel"], "branch")
+        self.assertEqual(status["branch"], "development")
+        result = self_update.apply_update()
+        self.assertTrue(result["updated"])
+        self.assertEqual(self._head(work), dev_tip)
+
+    def test_detached_without_release_tags_is_unsupported(self) -> None:
+        for tag in ("v1.9.0", "v1.10.0", "v2.0.0-rc1"):
+            self._run("tag", "-d", tag, cwd=self.origin)
+        work = self._checkout("detached")
+        self._run("checkout", "-q", "--detach", "HEAD", cwd=work)
+        status = self_update.check_update_status()
+        self.assertFalse(status["supported"])
+        self.assertEqual(status["reason"], "detached_head")
+
+
 if __name__ == "__main__":
     unittest.main()

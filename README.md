@@ -93,7 +93,7 @@ curl -fsSL https://quirq.ai/install | sh
 
 Then open **http://localhost:5002/space/**.
 
-What the installer does: clones this repo into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `logs/quirq.log` for server output and `inbox/activity/commands.log` for every external command Quirq runs in that state root — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
+What the installer does: clones the latest release of this repo (the newest `vX.Y.Z` tag) into `./xo-space`, creates a Python 3.12 venv with [uv](https://docs.astral.sh/uv/), and starts the server in the foreground. Ctrl-C stops it; re-running the command updates and restarts it. Machine-local state and logs live in `./.quirq/`, next to your projects — including `logs/quirq.log` for server output and `inbox/activity/commands.log` for every external command Quirq runs in that state root — and the whole install is one folder you can move or delete. For a clean removal that keeps your project folders, run `./xo-space/uninstall.sh` — see [INSTALLATION.md](INSTALLATION.md#uninstalling).
 
 **Requirements:** `git`. Everything else is optional and only disables its own feature — `node`/`npm` for installing an agent CLI, `gh` for project backup, `rclone` for Drive/OneDrive. Windows runs under WSL ([details](INSTALLATION.md#windows)).
 
@@ -128,6 +128,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 | `UVICORN_RELOAD` | Auto-restart on code changes — turn on when hacking on the server | `false` |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | Optional. The agent CLI normally uses its own login; set one only if it isn't already authenticated. Leave commented rather than blank | unset |
 | `XO_API_KEY` | Links this install to your XO account | unset |
+| `COMPOSIO_CALLBACK_URL` | Where Composio returns after OAuth. Must be this server's public origin; change it when the server is reached from another host | `http://127.0.0.1:<PORT>/api/connectors/composio/callback` |
 
 Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes gateway URLs and tokens, Google Drive/Vercel connector settings) are documented in [`.env.example`](.env.example). Roots, the state directory and watcher timing: [INSTALLATION.md](INSTALLATION.md#configuration).
 
@@ -370,7 +371,7 @@ We'd love your help. Found a bug 🐛, want a runtime that isn't here 🧩, or h
 - **Start with** [`good first issue`](https://github.com/quirq-ai/xo-space/labels/good%20first%20issue) or [`help wanted`](https://github.com/quirq-ai/xo-space/labels/help%20wanted).
 - **Small fix?** Just open the PR. **Bigger change?** Open an issue first so nobody duplicates the work.
 - **Adding an agent** is designed to be two folders and zero core edits — the best-paved path in the repo.
-- Branch from and target **`main`**; that is what the installer ships. `development` is the maintainers' staging branch, not a PR target.
+- Branch from and target **`main`**; releases (what the installer ships) are tags on it. `development` is the maintainers' staging branch, not a PR target.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the dev setup, the ground rules and the PR checklist. No CLA — contributions are MIT like the rest of the code.
 
