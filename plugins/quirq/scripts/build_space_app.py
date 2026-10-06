@@ -20,7 +20,6 @@ import hashlib
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -119,10 +118,21 @@ def bundle_js() -> str:
         command = [npx(), "--yes", f"esbuild@{ESBUILD}", str(js / "app.js"), "--bundle",
                    "--format=esm", "--target=es2020", "--minify", "--charset=utf8",
                    "--legal-comments=none", "--log-level=warning", f"--outfile={out}"]
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            fail("esbuild failed:\n" + (result.stderr or result.stdout))
+        result = repo_run_sync()(command, timeout=600)
+        if not result.ok:
+            fail("esbuild failed:\n" + (result.exception or result.output))
         return out.read_text(encoding="utf-8")
+
+
+def repo_run_sync():
+    """The repo's one command executor (utils.commands; see
+    tests/test_command_executor.py). Imported on use: the shipped plugin
+    contains this script but not the repo, and only building needs it."""
+    repo = str(ROOT.parents[1])
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    from utils.commands import run_sync
+    return run_sync
 
 
 def script_safe(code: str) -> str:
