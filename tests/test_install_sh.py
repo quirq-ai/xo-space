@@ -8,32 +8,35 @@ started — but the real script logic runs, which is what caught an ``exec``
 that had drifted into the banner function and would have killed every
 install at startup under ``set -u``.
 
-Needs bash and git on a POSIX host; skipped elsewhere. The harness prints
-one PASS/FAIL line per case, so a failure names the case directly.
+Needs a POSIX host (skipped elsewhere) with bash and git, which fail the test
+when missing (tests/required_tools.py). The harness prints one PASS/FAIL line
+per case, so a failure names the case directly.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
+from tests.required_tools import clean_env, require_tools
+
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "tests" / "install_sh_harness.sh"
-BASH = shutil.which("bash") if os.name == "posix" else None
 
 
 class InstallShTests(unittest.TestCase):
-    @unittest.skipUnless(BASH and shutil.which("git"), "needs bash and git on a POSIX host")
+    @unittest.skipUnless(os.name == "posix", "needs a POSIX host (Windows is WSL-only)")
     def test_harness_passes(self) -> None:
+        bash = require_tools(self, "bash", "git")["bash"]
         result = subprocess.run(
-            [BASH, str(HARNESS)],
+            [bash, str(HARNESS)],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
             timeout=120,
+            env=clean_env(),
         )
         self.assertEqual(
             result.returncode, 0,
