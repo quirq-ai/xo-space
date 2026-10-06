@@ -54,15 +54,18 @@ prov() {
 if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else SUDO=""; fi
 
 # ==============================================================
-# Step 1 — apt prereqs (jq, unzip). Mirrors claude_code/setup.sh:63-85.
+# Step 1 — apt prereqs (jq, unzip, bubblewrap). Mirrors
+# claude_code/setup.sh:63-85. bubblewrap (`bwrap`) is the sandbox
+# codex remote control needs on Linux.
 # ==============================================================
 install_apt_prereqs() {
     local missing=()
     command -v jq    >/dev/null 2>&1 || missing+=("jq")
     command -v unzip >/dev/null 2>&1 || missing+=("unzip")
+    command -v bwrap >/dev/null 2>&1 || missing+=("bubblewrap")
 
     if [ "${#missing[@]}" -eq 0 ]; then
-        log "apt prereqs already present (jq, unzip)"
+        log "apt prereqs already present (jq, unzip, bubblewrap)"
         return 0
     fi
     if ! command -v apt-get >/dev/null 2>&1; then
