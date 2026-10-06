@@ -76,12 +76,12 @@ class ContentTests(ContentSandbox):
         self.edit(self.state / "scheduler" / "state.json", lambda d: d.pop("jobs"))
         self.assertEqual(self.problem(self.one()), "no jobs object")
 
-    def test_inbox_items_that_the_next_write_would_drop(self) -> None:
+    def test_inbox_items_that_are_not_a_list(self) -> None:
         self.edit(self.state / "inbox" / "inbox.json", lambda d: d.update(items="oops"))
         finding = self.one()
         self.assertEqual((finding["subject"], finding["level"]), ("inbox/inbox.json", "FAIL"))
-        self.assertIn("lost for good", finding["consequence"])
-        self.assertIn("put it back now", finding["next_step"])
+        self.assertIn("marking items done, deleting them or adding notes fails", finding["consequence"])
+        self.assertIn("leaves a file it can't parse alone", finding["self_repair"])
 
     def test_an_inbox_with_no_items_yet_is_fine(self) -> None:
         self.edit(self.state / "inbox" / "inbox.json", lambda d: d.pop("items"))
@@ -127,11 +127,11 @@ class StoreAgreementTests(ContentSandbox):
         with self.assertRaises(scheduler.SchedulerError):
             scheduler.list_jobs()
 
-    def test_the_inbox_store_really_drops_what_the_doctor_reports(self) -> None:
+    def test_the_inbox_store_refuses_what_the_doctor_reports(self) -> None:
         self.edit(self.state / "inbox" / "inbox.json", lambda d: d.update(items="oops"))
         self.one()
         document, ok = inbox_store.load_document()
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         self.assertEqual(document["items"], [])
 
 
