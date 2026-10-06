@@ -1,5 +1,8 @@
-"""codex Remote Control routes: the same ``/api/remote-control/*`` paths and
-contract as ``adapters/claude_code/routes.py``, plus ``pair``."""
+"""codex adapter-owned routes, mounted only while codex is the active agent.
+
+Remote Control: the same ``/api/remote-control/*`` paths and contract as
+``adapters/claude_code/routes.py``, plus ``pair``.
+"""
 from __future__ import annotations
 
 from typing import Any

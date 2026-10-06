@@ -497,7 +497,7 @@ class RoutesTests(unittest.TestCase):
         app.include_router(codex_routes.router)
         self.client = TestClient(app)
 
-    def test_loader_mounts_the_routes_package(self) -> None:
+    def test_loader_mounts_the_routes_module(self) -> None:
         module = try_load_capability("routes", agent="codex")
         self.assertIs(module, codex_routes)
         mounted = {(path, method) for route in module.router.routes
