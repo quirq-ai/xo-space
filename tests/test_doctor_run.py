@@ -171,7 +171,7 @@ class ReadCheckTests(DoctorSandbox):
 
     def test_a_truncated_walk_is_a_failure_not_a_warning(self) -> None:
         real_walk = inventory.walk_files
-        with patch.object(inventory, "walk_files", lambda root, limit=2: real_walk(root, limit)):
+        with patch.object(inventory, "walk_files", lambda root, limit=2, **kw: real_walk(root, limit, **kw)):
             report = self.report()
         truncated = [f for c in report["checks"] for f in c["findings"] if f["id"] == "read.too_large"]
         self.assertEqual([f["level"] for f in truncated], ["FAIL"])
@@ -211,8 +211,8 @@ class ReportSizeTests(DoctorSandbox):
         self._corrupt_shards(105)
         real_walk = inventory.walk_files
 
-        def force_truncated(root, limit=inventory.MAX_WALK_ENTRIES):
-            found, _truncated, unreadable = real_walk(root, limit)
+        def force_truncated(root, limit=inventory.MAX_WALK_ENTRIES, **kw):
+            found, _truncated, unreadable = real_walk(root, limit, **kw)
             return found, True, unreadable
 
         with patch.object(inventory, "walk_files", force_truncated):

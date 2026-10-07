@@ -9,7 +9,7 @@ from typing import Optional
 
 from services.doctor import catalog, inventory, liveness
 from services.doctor.context import Context
-from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, size
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, printable, size
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
 from services.storage import layout, migrations
 from services.timestamps import parse_ts
@@ -183,6 +183,60 @@ def _judge(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inv
         out.append(finding)
 
 
+def _judge_special(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inventory.Spec) -> None:
+    """A known state path holding a link, FIFO, socket or device (live test
+    D4: a FIFO Inbox and ``jobs.json -> /dev/zero`` were reported healthy).
+    Nothing here opens it: ``classify`` refuses anything but a regular file
+    before ``open()``."""
+    if not path.is_symlink():
+        _judge(ctx, out, path, subject, spec)  # read.special (or unreadable for a folder)
+        return
+    try:
+        target = printable(os.readlink(path))
+    except OSError:
+        target = "?"
+    result = ctx.read(path, spec)  # follows the link
+    if result.outcome in ("special", "unreadable", "file_too_large"):
+        finding = _read_finding(ctx, path, subject, spec, result)
+        if finding is not None:
+            finding.evidence.append(ev("Link to", target))
+            out.append(finding)
+        return
+    out.append(_link_finding(ctx, path, subject, spec, target, dangling=result.outcome == "absent"))
+    _judge(ctx, out, path, subject, spec)  # damage in the file it points to, if any
+
+
+def _link_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, target: str, *,
+                  dangling: bool) -> Finding:
+    about = catalog.about(spec)
+    values = catalog.labels(spec, subject, ctx.project_label)
+    name = catalog.fill(about.name, values)
+    evidence = [ev("Link to", target), ev("Owned by", catalog.fill(about.owner, values))]
+    if dangling:
+        return Finding(
+            "shape.symlink", FAIL if spec.klass == inventory.KEEP else WARN, subject, ctx.display(path),
+            f"The file is a link to {target}, which isn't there.", "",
+            details={"class": spec.klass, "behaviour": spec.behaviour, "link": "dangling"},
+            title=f"{name} is a link to something that isn't there", evidence=evidence,
+            consequence=("Its store finds no file here, and its next save replaces the link with a new file, so "
+                         "whatever the link pointed to is no longer used."),
+            self_repair="Nothing.",
+            next_step="Reconnect the storage the link points to, or replace the link with the real file.",
+            problem_key=f"file:{subject}:link")
+    # Every store saves by writing a temp file and os.replace()-ing it over
+    # the path, which replaces a link with a regular file.
+    return Finding(
+        "shape.symlink", WARN, subject, ctx.display(path), f"The file is a link to {target}.", "",
+        details={"class": spec.klass, "behaviour": spec.behaviour, "link": "file"},
+        title=f"{name} is a link to another file", evidence=evidence,
+        consequence=("Its store reads through the link, but each save replaces the link with a regular file: "
+                     "the file it points to then stops being updated."),
+        self_repair="Nothing.",
+        next_step=("Replace the link with the file itself. To keep state on another disk, point "
+                   "QUIRQ_STATE_ROOT at a folder there instead of linking single files."),
+        problem_key=f"file:{subject}:link")
+
+
 def _listing_error(path: Path) -> str:
     try:
         with os.scandir(path):
@@ -237,6 +291,13 @@ def reads(ctx: Context) -> list[Finding]:
         if spec.pattern == "usage/*.json" and usage_path is not None and path != usage_path:
             continue  # only the active agent's bookmark is ever read (investigation D6)
         _judge(ctx, out, path, rel, spec)
+    for path in sorted(ctx.state_special()):
+        rel = str(path)[len(prefix):]
+        spec = inventory.spec_for(inventory.STATE, rel)
+        if spec is None:
+            unknown.append((rel, path))
+        elif spec.parsed and not (spec.pattern == "usage/*.json" and usage_path is not None and path != usage_path):
+            _judge_special(ctx, out, path, rel, spec)
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
                inventory.spec_for(inventory.WORKSPACE, name))

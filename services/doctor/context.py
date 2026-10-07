@@ -52,6 +52,7 @@ class Context:
     components: dict = field(default_factory=dict)
     _reads: dict = field(default_factory=dict, repr=False)
     _state_files: Optional[tuple[list[Path], bool, list[Path]]] = field(default=None, repr=False)
+    _state_special: list = field(default_factory=list, repr=False)
     _projects: Optional[list["Project"]] = field(default=None, repr=False)
 
     @classmethod
@@ -76,8 +77,13 @@ class Context:
 
     def state_files(self) -> tuple[list[Path], bool, list[Path]]:
         if self._state_files is None:
-            self._state_files = inventory.walk_files(self.state_root)
+            self._state_files = inventory.walk_files(self.state_root, special=self._state_special)
         return self._state_files
+
+    def state_special(self) -> list[Path]:
+        """Links, FIFOs, sockets and devices the state walk found (never opened)."""
+        self.state_files()
+        return self._state_special
 
     def projects(self) -> list["Project"]:
         if self._projects is None:

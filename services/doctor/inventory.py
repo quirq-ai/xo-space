@@ -223,11 +223,14 @@ def names(base: str) -> tuple[str, ...]:
     return tuple(spec.pattern for spec in SPECS if spec.base == base)
 
 
-def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], bool, list[Path]]:
+def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES,
+               special: Optional[list[Path]] = None) -> tuple[list[Path], bool, list[Path]]:
     """Regular files under ``root`` (no symlinks followed or returned),
     whether the walk stopped at ``limit`` entries, and any subfolder ``root``
     couldn't list (permissions, I/O). Every directory and file counts toward
-    ``limit``."""
+    ``limit``. When ``special`` is given, every entry that is neither a
+    regular file nor a real folder is appended to it: a symlink (to a file
+    or a folder), a FIFO, a socket or a device. Those are never opened."""
     found: list[Path] = []
     unreadable: list[Path] = []
     seen = 0
@@ -240,6 +243,9 @@ def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], b
         seen += len(dirnames)
         if seen > limit:
             return found, True, unreadable
+        if special is not None:
+            # os.walk lists a link to a folder among the folders, without entering it.
+            special.extend(Path(dirpath, name) for name in dirnames if os.path.islink(os.path.join(dirpath, name)))
         for name in filenames:
             seen += 1
             if seen > limit:
@@ -248,6 +254,8 @@ def walk_files(root: Path, limit: int = MAX_WALK_ENTRIES) -> tuple[list[Path], b
             try:
                 if stat.S_ISREG(path.lstat().st_mode):
                     found.append(path)
+                elif special is not None:
+                    special.append(path)
             except OSError:
                 continue
     return found, False, unreadable
