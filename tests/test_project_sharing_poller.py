@@ -43,7 +43,7 @@ class PollerTickTests(unittest.TestCase):
 
     def test_parked_when_no_auth_makes_no_network_call(self) -> None:
         with patch.object(config, "auth_token", return_value=None):
-            with patch.object(poller.swarm_client, "poll", new=AsyncMock()) as p:
+            with patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock()) as p:
                 delay = run(poller.run_tick())
         p.assert_not_called()
         self.assertEqual(status.snapshot()["reason"], "no_auth")
@@ -51,17 +51,30 @@ class PollerTickTests(unittest.TestCase):
 
     def test_parked_when_no_workspace_id(self) -> None:
         with patch.dict(os.environ, {"XO_SPACE_ID": ""}):
-            with patch.object(poller.swarm_client, "poll", new=AsyncMock()) as p:
+            with patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock()) as p:
                 run(poller.run_tick())
         p.assert_not_called()
         self.assertEqual(status.snapshot()["reason"], "no_workspace_id")
 
     def test_parked_when_disabled(self) -> None:
         with patch.dict(os.environ, {"PROJECT_SHARING_ENABLED": "false"}):
-            with patch.object(poller.swarm_client, "poll", new=AsyncMock()) as p:
+            with patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock()) as p:
                 run(poller.run_tick())
         p.assert_not_called()
         self.assertEqual(status.snapshot()["reason"], "disabled")
+
+    def test_a_failed_poll_records_why(self) -> None:
+        for answer, expected in [((None, 401, False), (401, False)), ((None, 0, True), (0, True))]:
+            with self.subTest(answer=answer), \
+                 patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=answer)):
+                run(poller.run_tick())
+                snap = status.snapshot()
+                self.assertFalse(snap["last_poll_ok"])
+                self.assertEqual((snap["last_poll_status"], snap["last_poll_offline"]), expected)
+        with patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": []}, 200, False))):
+            run(poller.run_tick())
+        snap = status.snapshot()
+        self.assertEqual((snap["last_poll_ok"], snap["last_poll_status"], snap["last_poll_offline"]), (True, 200, False))
 
     def test_cursor_advances_only_to_highest_present_commit(self) -> None:
         events = [{"seq": 41, "commit": "c1"}, {"seq": 42, "commit": "c2"}, {"seq": 43, "commit": "c3"}]
@@ -69,7 +82,7 @@ class PollerTickTests(unittest.TestCase):
         with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="git@github.com:acme/trip-planner.git")), \
              patch.object(poller.git_ops, "fetch_origin", new=AsyncMock(return_value=(True, ""))), \
              patch.object(poller.git_ops, "commit_present", new=AsyncMock(side_effect=lambda d, sha: sha in present)), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "events": events, "has_more": False}]})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "events": events, "has_more": False}]}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
             delay = run(poller.run_tick())
         self.assertEqual(state.load_cursor(R), 42)
@@ -82,7 +95,7 @@ class PollerTickTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROJECT_SHARING_AUTO_CLONE": "false"}), \
              patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/other")), \
              patch.object(poller.git_ops, "fetch_origin", new=AsyncMock()) as fetch, \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "available": True}]})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "available": True}]}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
             run(poller.run_tick())
             run(poller.run_tick())
@@ -102,19 +115,19 @@ class PollerTickTests(unittest.TestCase):
         with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
              patch.object(poller.git_ops, "fetch_origin", new=AsyncMock(return_value=(True, ""))), \
              patch.object(poller.git_ops, "commit_present", new=AsyncMock(return_value=True)), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "events": events, "has_more": False}]})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "events": events, "has_more": False}]}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=fake_publish):
             run(poller.run_tick())
         self.assertEqual(seen["last"], "c1")
 
     def test_member_count_passes_through_and_absence_is_tolerated(self) -> None:
         with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "members": 3, "events": [], "has_more": False}]})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "members": 3, "events": [], "has_more": False}]}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
             run(poller.run_tick())
             self.assertEqual(status.snapshot()["repos"][R]["members"], 3)
         with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "events": [], "has_more": False}]})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "events": [], "has_more": False}]}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
             run(poller.run_tick())                        # older swarm: no field
         self.assertIsNone(status.snapshot()["repos"][R]["members"])
@@ -124,7 +137,7 @@ class PollerTickTests(unittest.TestCase):
         calls = []
         status.on_change(lambda: calls.append(1))
         with patch.object(poller.git_ops, "origin_url", new=AsyncMock(return_value="https://github.com/acme/trip-planner")), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": []})), \
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": []}, 200, False))), \
              patch.object(watcher, "run_tick_repo", new=AsyncMock(return_value="noop")):
             run(poller.run_tick())
             run(poller.run_tick())

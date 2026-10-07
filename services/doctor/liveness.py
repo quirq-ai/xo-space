@@ -592,8 +592,26 @@ def _usage_token_present() -> bool:
         return False
 
 
+#: Why a call to XO failed, from what the swarm client recorded.
+REJECTED, XO_ERROR, UNREACHABLE, UNKNOWN = "rejected", "xo_error", "unreachable", "unknown"
+
+
+def xo_failure(status: object, offline: object) -> str:
+    """One answer for every caller: no connection at all, XO refusing this
+    Space's key (or no key to send), or XO answering with an error. A
+    rejected key and an XO outage must never read as "check your network"."""
+    if offline is True:
+        return UNREACHABLE
+    if not isinstance(status, int) or isinstance(status, bool):
+        return UNKNOWN
+    if status in (401, 403) or status == 0:  # 0 without offline: nothing to authenticate with
+        return REJECTED
+    return XO_ERROR  # any other answer, 5xx or a body the client couldn't use
+
+
 def usage(ctx: Context) -> list[Finding]:
-    """Usage reporting that stopped (daily probe gone stale) or was refused."""
+    """Usage reporting that stopped (daily probe gone stale), was refused, or
+    couldn't verify its key because XO errored or couldn't be reached."""
     if not _usage_token_present():
         return []  # no key: nothing is reported, by design
     path = usage_state_path(ctx)
@@ -612,6 +630,29 @@ def usage(ctx: Context) -> list[Finding]:
             title="XO refused this Space's API key", evidence=[ev("Refused", _when(at, ctx.now))],
             consequence="No usage is reported to XO.", self_repair="It tries again at the next daily run.",
             next_step="Check the XO API key in Setup.", problem_key="component:usage sync:rejected")]
+    if probe.get("outcome") == "unverified":
+        # usage_sync records the HTTP status when XO answered, None when the
+        # key check never reached it (services/usage_sync.py _key_accepted).
+        status = probe.get("status")
+        reached = isinstance(status, int) and not isinstance(status, bool)
+        kind = xo_failure(status if reached else None, not reached)
+        evidence = [ev("Last attempt", _when(at, ctx.now))] + ([ev("XO answered", f"HTTP {status}")] if reached else [])
+        if kind == UNREACHABLE:
+            return [Finding(
+                "usage.unreachable", WARN, "usage sync", shown,
+                "The last usage report couldn't reach XO to check this Space's API key; nothing was sent.", "",
+                title="Usage reporting can't reach XO", evidence=evidence,
+                consequence="No usage is reported to XO until a check gets through.",
+                self_repair="It tries again at the next daily run, and when the server starts.",
+                next_step="Check this machine's network connection.", problem_key="component:usage sync:unreachable")]
+        return [Finding(
+            "usage.xo_error", WARN, "usage sync", shown,
+            f"XO answered the last usage report's key check with HTTP {status}; nothing was sent.", "",
+            title="XO answered usage reporting with an error", evidence=evidence,
+            consequence="No usage is reported to XO until a check succeeds.",
+            self_repair="It tries again at the next daily run, and when the server starts.",
+            next_step="Nothing to do unless it keeps happening; then check XO's status.",
+            problem_key="component:usage sync:xo_error")]
     if at is not None and ctx.now - at > USAGE_STALE_S:
         return [Finding(
             "usage.stale", WARN, "usage sync", shown,
@@ -647,11 +688,47 @@ def relay(ctx: Context) -> list[Finding]:
             self_repair="A slow git fetch may be running; the relay stops it after 5 minutes and moves on.",
             next_step=RESTART, problem_key="component:relay poller:overdue")]
     if snapshot.get("last_poll_ok") is False:
-        return [Finding(
-            "relay.unreachable", WARN, "relay poller", "", "The project-sharing relay can't reach XO.", "",
-            title="The project-sharing relay can't reach XO",
-            evidence=[ev("Last attempt", _when(last, ctx.now))],
-            consequence="Shared projects don't exchange commits until XO is reachable again.",
-            self_repair="It keeps retrying every poll.", next_step="Check this machine's network connection.",
-            problem_key="component:relay poller:unreachable")]
+        return [_relay_failed(snapshot, last, ctx.now)]
     return []
+
+
+def _relay_failed(snapshot: dict, last: Optional[float], now: float) -> Finding:
+    """The last relay poll failed: say why, from the status the poller kept."""
+    status = snapshot.get("last_poll_status")
+    kind = xo_failure(status, snapshot.get("last_poll_offline"))
+    evidence = [ev("Last attempt", _when(last, now))]
+    if kind == XO_ERROR or (kind == REJECTED and status):
+        evidence.append(ev("XO answered", f"HTTP {status}"))
+    stops = "Shared projects don't exchange commits"
+    if kind == REJECTED:
+        return Finding(
+            "relay.rejected", WARN, "relay poller", "",
+            ("XO refused this Space's key when the project-sharing relay polled." if status
+             else "The project-sharing relay had no XO key or sign-in to poll with."), "",
+            title="XO refused the project-sharing relay", evidence=evidence,
+            consequence=f"{stops} until XO accepts this Space's key.",
+            self_repair="It keeps retrying every poll, but the same answer comes back.",
+            next_step="Check the XO API key or sign-in in Setup.",
+            problem_key="component:relay poller:rejected")
+    if kind == XO_ERROR:
+        return Finding(
+            "relay.xo_error", WARN, "relay poller", "",
+            f"XO answered the project-sharing relay's poll with HTTP {status}.", "",
+            title="XO answered the project-sharing relay with an error", evidence=evidence,
+            consequence=f"{stops} until XO answers normally again.",
+            self_repair="It keeps retrying every poll.",
+            next_step="Nothing to do unless it keeps happening; then check XO's status.",
+            problem_key="component:relay poller:xo_error")
+    if kind == UNREACHABLE:
+        return Finding(
+            "relay.unreachable", WARN, "relay poller", "", "The project-sharing relay can't reach XO.", "",
+            title="The project-sharing relay can't reach XO", evidence=evidence,
+            consequence=f"{stops} until XO is reachable again.",
+            self_repair="It keeps retrying every poll.", next_step="Check this machine's network connection.",
+            problem_key="component:relay poller:unreachable")
+    return Finding(
+        "relay.failed", WARN, "relay poller", "", "The project-sharing relay's last poll of XO failed.", "",
+        title="The project-sharing relay's last poll failed", evidence=evidence,
+        consequence=f"{stops} until a poll succeeds.", self_repair="It keeps retrying every poll.",
+        next_step="If it keeps happening, the server log names the error.",
+        problem_key="component:relay poller:failed")

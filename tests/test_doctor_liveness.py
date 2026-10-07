@@ -455,6 +455,22 @@ class UsageTests(LivenessSandbox):
             self.probe("rejected", 3600)
             self.assertEqual([f["id"] for f in self.of("usage.")], ["usage.rejected"])
 
+    def unverified(self, status) -> list[dict]:
+        self.bookmark.write_text(json.dumps({"schema": 1, "key_probe": {
+            "outcome": "unverified", "status": status, "at": _stamp(self.now - 3600)}}), encoding="utf-8")
+        with patch("services.doctor.liveness._usage_token_present", return_value=True):
+            return self.of("usage.")
+
+    def test_an_xo_error_during_the_key_check(self) -> None:
+        [finding] = self.unverified(503)
+        self.assertEqual(finding["id"], "usage.xo_error")
+        self.assertIn("HTTP 503", finding["observed"])
+
+    def test_a_key_check_that_never_reached_xo(self) -> None:
+        [finding] = self.unverified(None)
+        self.assertEqual(finding["id"], "usage.unreachable")
+        self.assertIn("network", finding["next_step"])
+
     def test_no_key_means_nothing_is_expected(self) -> None:
         with patch("services.doctor.liveness._usage_token_present", return_value=False):
             self.probe("accepted", 99 * 3600)
@@ -472,12 +488,44 @@ class RelayTests(LivenessSandbox):
              patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
             self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.overdue"])
 
-    def test_an_unreachable_xo_and_a_parked_relay(self) -> None:
-        with self.tasks(self.record("relay poller")), self.relay(last_poll_ok=False), \
+    def failed_poll(self, **why) -> list[dict]:
+        with self.tasks(self.record("relay poller")), self.relay(last_poll_ok=False, **why), \
              patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
-            self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.unreachable"])
+            return self.of("relay.")
+
+    def test_an_unreachable_xo_and_a_parked_relay(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=0, last_poll_offline=True)
+        self.assertEqual(finding["id"], "relay.unreachable")
+        self.assertIn("network", finding["next_step"])
         with self.tasks(self.record("relay poller")), self.relay(cadence="parked", last_poll_at=None):
             self.assertEqual(self.of("relay."), [])
+
+    # Live test A1/A2: a 401 and a 500 both used to say "check your network".
+
+    def test_a_rejected_key_is_not_a_network_problem(self) -> None:
+        for status in (401, 403):
+            with self.subTest(status=status):
+                [finding] = self.failed_poll(last_poll_status=status, last_poll_offline=False)
+                self.assertEqual(finding["id"], "relay.rejected")
+                self.assertIn("Setup", finding["next_step"])
+                self.assertNotIn("network", finding["next_step"])
+                self.assertIn({"label": "XO answered", "value": f"HTTP {status}"}, finding["evidence"])
+
+    def test_no_credentials_to_send_reads_as_rejected(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=0, last_poll_offline=False)
+        self.assertEqual(finding["id"], "relay.rejected")
+        self.assertIn("no XO key or sign-in", finding["observed"])
+
+    def test_an_xo_error_is_not_a_network_problem(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=500, last_poll_offline=False)
+        self.assertEqual(finding["id"], "relay.xo_error")
+        self.assertIn("HTTP 500", finding["observed"])
+        self.assertNotIn("network", finding["next_step"])
+
+    def test_an_unknown_cause_claims_nothing(self) -> None:
+        [finding] = self.failed_poll()
+        self.assertEqual(finding["id"], "relay.failed")
+        self.assertNotIn("network", finding["next_step"])
 
     def test_outside_the_server_the_relay_is_not_judged(self) -> None:
         with self.relay(last_poll_at=_stamp(self.now - 99999)):

@@ -39,6 +39,8 @@ def reset() -> None:
         "cadence": "parked",          # parked | running
         "last_poll_at": None,
         "last_poll_ok": None,
+        "last_poll_status": None,     # HTTP status of the last poll; 0 = no answer
+        "last_poll_offline": None,    # True when the last poll never reached the swarm
         "repos": {},                  # repo -> {project, shared, available, last_fetch_at,
                                       #          fetched, pending_github, last_error}
         "recent": deque(maxlen=50),   # [{at, repo, kind, detail}]
@@ -77,12 +79,17 @@ def set_parked(reason: str) -> None:
 
 
 def record_poll(ok: bool, membership: set | None = None, local: dict | None = None,
-                members: dict | None = None) -> None:
+                members: dict | None = None, *, http_status: int | None = None,
+                offline: bool | None = None) -> None:
     """`members` maps repo -> active member count as the swarm reported it this
     tick (owner included). Missing for a repo, or an older swarm that sends
-    none, leaves the count unknown (None) rather than pretending to know."""
+    none, leaves the count unknown (None) rather than pretending to know.
+    `http_status` and `offline` say why a poll failed (see
+    ``swarm_api.project_sharing.poll_detailed``); None when unknown."""
     _state["last_poll_at"] = _now()
     _state["last_poll_ok"] = ok
+    _state["last_poll_status"] = http_status
+    _state["last_poll_offline"] = offline
     _state["enabled"] = True
     _state["workspace_configured"] = True
     _state["reason"] = None
