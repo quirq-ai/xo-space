@@ -96,7 +96,7 @@ Open an issue with:
   for `cowork-api.sh`. **Redact tokens and keys before pasting** (`/health`
   reports presence, not values, on purpose; logs may not).
 - For UI bugs: the browser, a screenshot, and the relevant
-  [Space guide](https://docs.quirq.ai/docs/space) if it contradicts what you saw.
+  [Space guide](https://docs.quirq.dev/docs/space) if it contradicts what you saw.
 
 If you are not sure it is a bug, open the issue anyway and say so.
 
@@ -216,7 +216,7 @@ capability modules you need (`usage.py`, `models.py`, `sessions.py`,
   `index.html`). Otherwise browsers keep the old file.
 - Update `js/views/wiki.js` when the offline overview or its navigation changes.
   Maintain detailed UI guides in `xo-docs`, published at
-  <https://docs.quirq.ai/docs/space>; Wiki opens those guides in a new tab.
+  <https://docs.quirq.dev/docs/space>; Wiki opens those guides in a new tab.
 - `node --check` each module you edit.
 
 ## Testing and validation
@@ -344,7 +344,7 @@ hides CRs, so don't trust it for that check.
 - **The in-app Wiki** — `http://localhost:5002/space/` → Wiki at the top right. A compact
   overview bundled with the running build and available offline, with links
   to the detailed online guides in a new tab.
-- **Full Space guides** — <https://docs.quirq.ai/docs/space>.
+- **Full Space guides** — <https://docs.quirq.dev/docs/space>.
 - **Licence** — MIT, see [LICENSE](LICENSE).
 
 Be kind and specific. Assume the other person is doing their best with the

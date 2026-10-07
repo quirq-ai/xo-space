@@ -34,7 +34,7 @@ Projects section URL.
 **Wiki** and **GitHub** stay at the top right across views. Wiki opens the local
 `#/wiki` overview in the same tab; GitHub opens in a new tab. Wiki has no numbered
 shortcut. Its three-step quickstart and topic cards link to the
-[full Space guides](https://docs.quirq.ai/docs/space), which open online in a new
+[full Space guides](https://docs.quirq.dev/docs/space), which open online in a new
 tab. Existing first-run and storage-help actions focus the matching overview
 section. The overview itself works offline.
 
