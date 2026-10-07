@@ -53,6 +53,8 @@ class Context:
     _reads: dict = field(default_factory=dict, repr=False)
     _state_files: Optional[tuple[list[Path], bool, list[Path]]] = field(default=None, repr=False)
     _state_special: list = field(default_factory=list, repr=False)
+    #: Files in the state folder this doctor doesn't know, counted by the read check.
+    unknown_files: int = 0
     _projects: Optional[list["Project"]] = field(default=None, repr=False)
 
     @classmethod
@@ -79,6 +81,10 @@ class Context:
         if self._state_files is None:
             self._state_files = inventory.walk_files(self.state_root, special=self._state_special)
         return self._state_files
+
+    def read_keys(self) -> list[tuple[Path, object]]:
+        """Every (path, spec) read so far in this run."""
+        return list(self._reads)
 
     def state_special(self) -> list[Path]:
         """Links, FIFOs, sockets and devices the state walk found (never opened)."""

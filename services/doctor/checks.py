@@ -273,11 +273,14 @@ def reads(ctx: Context) -> list[Finding]:
     # the report is incomplete and must never fall past the cap into the
     # rollup themselves.
     if truncated:
-        out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
+        # WARN: a big state folder isn't broken; the report's coverage marks it
+        # partial, and run.PINNED keeps this row whatever the cap drops.
+        out.append(Finding("read.too_large", WARN, "state root", ctx.display(ctx.state_root),
                            f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
                            "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy.",
                            title="The state folder is too large to check fully",
-                           consequence="Files past the first 50,000 entries weren't checked, so a healthy report doesn't mean the state is healthy.",
+                           consequence=("Files past the first 50,000 entries weren't checked, so this report is only "
+                                        "partly checked (see its coverage) and can't vouch for the rest."),
                            self_repair="Nothing.",
                            next_step="Find the folder holding far more files than it should (logs/, quarantine/ or a runtime folder) and clear what isn't needed."))
     for path in sorted(unreadable_dirs):
@@ -305,6 +308,7 @@ def reads(ctx: Context) -> list[Finding]:
         for name in inventory.names(inventory.PROJECT):
             _judge(ctx, out, project.xo / name, f"{project.name}/.xo/{name}",
                    inventory.spec_for(inventory.PROJECT, name))
+    ctx.unknown_files = len(unknown)
     for rel, path in unknown[:MAX_UNKNOWN_LISTED]:
         out.append(Finding("inventory.unknown_file", OK, rel, ctx.display(path),
                            "A file this version of the doctor doesn't know.", "Listed for information only."))

@@ -436,9 +436,15 @@ function vanished(previous,report){
 function renderHealth(report){
   const level=report.level||'OK';
   const badge=root.querySelector('#quirq-health-level');
-  badge.textContent=level==='OK'?'Healthy':level;
+  /* "Healthy" only when everything was checked (report.coverage, absent
+     from an older server): a partial check never reads as a clean bill. */
+  const coverage=report.coverage||null;
+  const partial=!!coverage&&coverage.complete===false;
+  badge.textContent=level==='OK'?(partial?'Healthy (partly checked)':'Healthy'):level;
   badge.className='is-'+level.toLowerCase();
-  root.querySelector('#quirq-health-checked').textContent='Checked '+relativeTime(report.checked_at);
+  root.querySelector('#quirq-health-checked').textContent='Checked '+relativeTime(report.checked_at)
+    +(coverage&&typeof coverage.documents_read==='number'?' · '+coverage.documents_read+' files read':'')
+    +(coverage&&coverage.walk_truncated?' · not every file was checked':'');
   const findings=flattenFindings(report);
   const gone=goneFindings.length
     ?'<div class="quirq-health-gone" id="quirq-health-gone"><span>No longer seen since the previous check</span>'
