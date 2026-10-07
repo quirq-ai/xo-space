@@ -8,7 +8,7 @@ blank_issues_enabled: true
 
 contact_links:
   - name: XO Space documentation
-    url: https://docs.xo.builders
+    url: https://docs.quirq.dev
     about: Product docs, architecture, installing Space, and the UI walkthrough.
   - name: Contributing guide
     url: https://github.com/quirq-ai/xo-space/blob/main/CONTRIBUTING.md

@@ -15,7 +15,7 @@
 One environment for Claude Code, Codex, OpenClaw, Hermes and Antigravity.<br>
 Every project, session, todo and cost on one screen. Measure output, not just tokens.
 
-[Quick start](#quick-start) · [Capabilities](#key-capabilities) · [Supported agents](#supported-agents) · [How it works](#how-it-works) · [Docs](https://docs.xo.builders) · [Contributing](#contributing)
+[Quick start](#quick-start) · [Capabilities](#key-capabilities) · [Supported agents](#supported-agents) · [How it works](#how-it-works) · [Docs](https://docs.quirq.dev) · [Contributing](#contributing)
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -305,7 +305,7 @@ Everything else on the network happens because you asked for it: `git fetch` whe
 
 | Where | What |
 |---|---|
-| [Space documentation](https://docs.quirq.ai/docs/space) | Full guides: [installation](https://docs.quirq.ai/docs/space/install-space), [UI walkthrough](https://docs.quirq.ai/docs/space/space-walk), [Observability](https://docs.quirq.ai/docs/space/observability) |
+| [Space documentation](https://docs.quirq.dev/docs/space) | Full guides: [installation](https://docs.quirq.dev/docs/space/install-space), [UI walkthrough](https://docs.quirq.dev/docs/space/space-walk), [Observability](https://docs.quirq.dev/docs/space/observability) |
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, first run, local data layout, configuration, Windows |
 | [DEVELOPING.md](DEVELOPING.md) | Architecture, adding an agent, validation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, ground rules, PR process |
@@ -344,7 +344,7 @@ Under WSL. The watcher uses <code>fcntl</code> and the scripts are bash. See the
 <details>
 <summary><b>What is quirq?</b></summary>
 
-The output meter — a unit of verified, owner-valued, delivered work, measured by comparing world state before and after instead of trusting self-reports. The <code>.quirq/</code> directory is its local state. <a href="https://docs.xo.builders/docs/quirq">Read more</a>.
+The output meter — a unit of verified, owner-valued, delivered work, measured by comparing world state before and after instead of trusting self-reports. The <code>.quirq/</code> directory is its local state. <a href="https://docs.quirq.dev/docs/quirq">Read more</a>.
 
 </details>
 
@@ -359,7 +359,7 @@ Not to self-host — everything local works signed out. An account is what conne
 
 ## Support
 
-Need help? [Open an issue](https://github.com/quirq-ai/xo-space/issues) — bugs, questions and ideas all go there; say if you're not sure it's a bug. The in-app Wiki (`/space/#/wiki`) is a compact offline overview; [Space documentation](https://docs.quirq.ai/docs/space) contains the full guides. For security issues, don't post details — open an issue titled *"Security: request for a private channel"* and a maintainer will reply.
+Need help? [Open an issue](https://github.com/quirq-ai/xo-space/issues) — bugs, questions and ideas all go there; say if you're not sure it's a bug. The in-app Wiki (`/space/#/wiki`) is a compact offline overview; [Space documentation](https://docs.quirq.dev/docs/space) contains the full guides. For security issues, don't post details — open an issue titled *"Security: request for a private channel"* and a maintainer will reply.
 
 ---
 
@@ -392,6 +392,6 @@ Released under the [MIT License](LICENSE).
 
 <div align="center">
 
-Part of <a href="https://xo.builders">XO</a> · Maintained at <a href="https://github.com/quirq-ai/xo-space">quirq-ai/xo-space</a> · <a href="https://docs.xo.builders">Docs</a>
+Part of <a href="https://xo.builders">XO</a> · Maintained at <a href="https://github.com/quirq-ai/xo-space">quirq-ai/xo-space</a> · <a href="https://docs.quirq.dev">Docs</a>
 
 </div>
