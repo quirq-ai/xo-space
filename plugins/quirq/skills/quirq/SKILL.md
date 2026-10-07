@@ -62,6 +62,25 @@ The plugin works in local macOS/Linux tasks and WSL. A remote/cloud task serves
 Space on that host's loopback; use the environment's supported port forwarding
 instead of claiming its localhost URL opens on the user's computer.
 
+## On Windows
+
+Space runs on Linux or macOS only, so on Windows it runs inside WSL. The
+plugin's own tools still run on Windows and reach Space at
+`http://127.0.0.1:5002` through WSL's localhost forwarding.
+
+- If this task runs on Windows (not inside WSL), run every bundled script
+  inside WSL, never with Git Bash or another Windows shell: convert the plugin
+  root with `wsl.exe wslpath -a "<plugin-root>"`, writing the Windows path with
+  forward slashes (`C:/Users/...`, every `\` replaced by `/`; backslashes are
+  mangled on the way into WSL), then run
+  `wsl.exe bash "<converted-path>/scripts/discover.sh"` (likewise
+  `space.sh install|start`).
+- Workspace paths are Linux paths inside WSL (default `~/xo-workspace` in the
+  WSL home).
+- Keep the WSL task running: Space stops when the task that started it ends.
+- If WSL isn't installed, tell the user to run `wsl --install` and restart,
+  then stop. Don't try to run Space directly on Windows.
+
 Space can inspect projects through `/api/runtime-config` and its UI. Do not read
 credential files, print secrets or configure third-party accounts unless asked.
 Space chat starts a separate Codex CLI process using Space's configured runtime;
