@@ -20,7 +20,7 @@ import treeView from './views/tree.js?v=20260915-agents2';
 import sharingView from './views/sharing.js?v=20261001-restore1';
 /* Chat is deliberately hidden from the tab bar: re-import ./views/chat.js
    and register it below to bring the tab back. */
-import wikiView from './views/wiki.js?v=20260916-jobs3';
+import wikiView from './views/wiki.js?v=20261007-docsdomain1';
 import quirqView from './views/quirq.js?v=20260924-doctor3';
 import {createSetupViews} from './views/setup.js?v=20260925-health1';
 import {loadTheme} from './core/theme.js?v=20260922-theme4';
