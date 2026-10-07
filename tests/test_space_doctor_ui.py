@@ -82,7 +82,8 @@ class HealthPanelTests(unittest.TestCase):
         # report.coverage.complete is False when the walk stopped early or a
         # check couldn't run; an older server sends no coverage at all.
         self.assertIn("const partial=!!coverage&&coverage.complete===false;", self.quirq)
-        self.assertIn("'Healthy (partly checked)'", self.quirq)
+        # On every level: a truncated walk is always at least a WARN.
+        self.assertIn("badge.textContent=(level==='OK'?'Healthy':level)+(partial?' (partly checked)':'');", self.quirq)
         self.assertIn("' · not every file was checked'", self.quirq)
 
     def test_the_move_identity_is_still_the_subject(self) -> None:

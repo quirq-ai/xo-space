@@ -436,11 +436,12 @@ function vanished(previous,report){
 function renderHealth(report){
   const level=report.level||'OK';
   const badge=root.querySelector('#quirq-health-level');
-  /* "Healthy" only when everything was checked (report.coverage, absent
-     from an older server): a partial check never reads as a clean bill. */
+  /* Any level says when the check was partial (report.coverage, absent from
+     an older server). A truncated walk always adds a WARN, so the note can't
+     live on "Healthy" alone: it would never be seen. */
   const coverage=report.coverage||null;
   const partial=!!coverage&&coverage.complete===false;
-  badge.textContent=level==='OK'?(partial?'Healthy (partly checked)':'Healthy'):level;
+  badge.textContent=(level==='OK'?'Healthy':level)+(partial?' (partly checked)':'');
   badge.className='is-'+level.toLowerCase();
   root.querySelector('#quirq-health-checked').textContent='Checked '+relativeTime(report.checked_at)
     +(coverage&&typeof coverage.documents_read==='number'?' · '+coverage.documents_read+' files read':'')
