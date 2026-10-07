@@ -1,5 +1,10 @@
 # XO Space for Codex
 
+**Space inside ChatGPT:** the full Space UI in the sidebar, beside
+conversations and inline, with @-mentions and plugin settings. See
+[EXTENSIONS.md](EXTENSIONS.md) for how it works and how to build, install and
+validate it.
+
 Install this plugin, then ask Codex **“Open XO Space.”** Codex installs the local
 server on first use, starts it and opens the Space UI in its browser when
 available. Projects, agent activity, todos and usage stay in your local workspace.
@@ -57,6 +62,10 @@ CLI bundled with the desktop app when it is not on PATH. Existing Codex login an
 agent CLIs. Check `codex login status` and use `codex login` if needed. No XO
 account is required for local browsing. Remote tasks need their host's supported
 port forwarding to expose the UI.
+
+The plugin's MCP server (the Space sidebar, panel and tools) needs
+[`uv`](https://docs.astral.sh/uv/) on PATH; `uv` fetches the server's Python and
+dependencies on first start. Space's `install.sh` installs it.
 
 The plugin installation itself only loads its skills and assets. Downloading the
 server and dependencies happens when you ask Codex to open/install Space. Runtime
