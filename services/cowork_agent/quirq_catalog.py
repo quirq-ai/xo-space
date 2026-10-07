@@ -297,6 +297,8 @@ def _description(relative_path: str, *, is_dir: bool) -> str:
         return "Appended command output through the command logger"
     if relative_path.startswith("inbox/activity/archive/"):
         return "An earlier command log, named for when it was archived"
+    if relative_path == "inbox/activity/commands.log.1":
+        return "The previous command log; a release keeps only this one"
     if relative_path.startswith("inbox/activity/commands.log"):
         return "Every external command Quirq runs: redacted, each entry capped, archived at 5 MB"
     if relative_path == "logs/quirq.log":

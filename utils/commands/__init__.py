@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -65,9 +66,14 @@ log = logging.getLogger(__name__)
 
 _COMMAND_LOG_MAX_BYTES = 5 * 1024 * 1024
 _COMMAND_LOG_ENTRY_CAP_CHARS = 4096
-#: Full generations of the shared log are kept here, one file per rotation,
-#: and nothing deletes them: disk use grows with how much the server runs.
+#: A development checkout keeps every full generation of the shared log here,
+#: one file per rotation, and nothing deletes them: disk use grows with how
+#: much the server runs. A release keeps only the previous generation, as
+#: ``commands.log.1`` beside the log, so its disk use stays bounded.
 COMMAND_LOG_ARCHIVE_DIR = "archive"
+#: The checkout this module ships in: a release is an install whose HEAD is
+#: exactly a ``vX.Y.Z`` tag (RELEASING.md); a development install is a branch.
+_REPO_DIR = Path(__file__).resolve().parents[2]
 _REDACTED = "[REDACTED]"
 _OUTPUT_WITHHELD = "[output not logged]\n"
 _SENSITIVE_FLAGS = frozenset({
@@ -352,14 +358,62 @@ def archive_path_for(log_path: Path, at: datetime) -> Path:
         when += timedelta(seconds=1)
 
 
+def checkout_on_release_tag(repo_dir: Path) -> bool:
+    """True when ``repo_dir`` is a git checkout whose HEAD is exactly a
+    ``v*`` tag. Anything git cannot answer (no git, not a checkout, a
+    timeout) counts as a release, so an unknown install gets the bounded log.
+
+    This calls ``subprocess`` directly, with nothing logged: going through
+    ``run_sync`` would write to the very log whose rotation is being decided.
+    """
+    try:
+        probe = subprocess.run(
+            ["git", "tag", "--points-at", "HEAD", "--list", "v[0-9]*"],
+            cwd=str(repo_dir),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    # A failure means no checkout to ask; an empty answer means a branch.
+    return probe.returncode != 0 or bool(probe.stdout.strip())
+
+
+@functools.lru_cache(maxsize=1)
+def _this_checkout_is_a_release() -> bool:
+    """Asked once per process: the checkout only changes under a restart."""
+    return checkout_on_release_tag(_REPO_DIR)
+
+
+def _keeps_command_log_archive() -> bool:
+    """Whether a full shared log goes to ``archive/`` (development) or replaces
+    ``commands.log.1`` (release). ``QUIRQ_COMMAND_LOG_ARCHIVE=on|off``
+    overrides what the checkout says."""
+    choice = (os.getenv("QUIRQ_COMMAND_LOG_ARCHIVE", "") or "").strip().lower()
+    if choice in ("on", "off"):
+        return choice == "on"
+    return not _this_checkout_is_a_release()
+
+
+def previous_command_log_path(log_path: Path) -> Path:
+    """``commands.log.1``: the one earlier generation a release keeps."""
+    return log_path.with_name(f"{log_path.name}.1")
+
+
 def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
     entry_bytes = entry.encode("utf-8")
     with _COMMAND_LOG_LOCK:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if rotate and log_path.exists() and log_path.stat().st_size + len(entry_bytes) > _COMMAND_LOG_MAX_BYTES:
-            archived = archive_path_for(log_path, datetime.now(timezone.utc))
-            archived.parent.mkdir(parents=True, exist_ok=True)
-            log_path.replace(archived)
+            if _keeps_command_log_archive():
+                archived = archive_path_for(log_path, datetime.now(timezone.utc))
+                archived.parent.mkdir(parents=True, exist_ok=True)
+                log_path.replace(archived)
+            else:
+                # Overwrites the generation before it: at most two files.
+                log_path.replace(previous_command_log_path(log_path))
         with log_path.open("ab") as f:
             f.write(entry_bytes)
 
