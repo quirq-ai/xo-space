@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shutil
 import sys
 import tempfile
 import time
@@ -89,13 +88,10 @@ class RunSpecTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.state_root = Path(self._tmp.name) / ".quirq"
-        # The archive tests describe a development checkout whichever commit
-        # the suite runs on; the release rotation pins "off" itself.
-        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.state_root),
-                                      "QUIRQ_COMMAND_LOG_ARCHIVE": "on"}, clear=False)
+        env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.state_root)}, clear=False)
         env.start()
         self.addCleanup(env.stop)
-        for key in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH"):
+        for key in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH", "QUIRQ_COMMAND_LOG_ARCHIVE"):
             os.environ.pop(key, None)
         warned = patch.object(commands, "_WARNED_COMMAND_LOG_PATHS", set())
         warned.start()
@@ -266,13 +262,13 @@ class RunSpecTests(unittest.TestCase):
                             for p in (self.state_root / "inbox" / "activity" / "archive").iterdir()]
                 self.assertTrue(any(f"=== one {old} ===" in text for text in archived), archived)
 
-    def test_a_release_keeps_only_the_previous_log(self) -> None:
-        """A release bounds disk use: each rotation replaces commands.log.1,
-        so the live log and the generation before it are all that remain."""
+    def test_archive_false_keeps_only_the_previous_log(self) -> None:
+        """QUIRQ_COMMAND_LOG_ARCHIVE=false: each rotation replaces
+        commands.log.1, so the live log and the one before it are all that remain."""
         activity = self.state_root / "inbox" / "activity"
         target = activity / "commands.log"
         entries = [f"=== entry {i:03d} ===\n{'y' * 80}\n" for i in range(40)]
-        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": "off"}), \
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": "false"}), \
              patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
             for entry in entries:
                 commands._write_log(target, entry, rotate=True)
@@ -287,16 +283,15 @@ class RunSpecTests(unittest.TestCase):
         self.assertIn(entries[-1], current)
         self.assertNotIn(entries[0], joined)
 
-    def test_the_checkout_decides_unless_the_switch_is_set(self) -> None:
-        os.environ.pop("QUIRQ_COMMAND_LOG_ARCHIVE")
-        for release, keeps in ((True, False), (False, True)):
-            with self.subTest(release=release), \
-                 patch.object(commands, "_this_checkout_is_a_release", return_value=release):
-                self.assertEqual(commands._keeps_command_log_archive(), keeps)
-        with patch.object(commands, "_this_checkout_is_a_release", return_value=True):
-            for value, keeps in (("on", True), ("ON ", True), ("off", False)):
-                with self.subTest(value=value), patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": value}):
+    def test_the_archive_is_on_unless_set_to_false(self) -> None:
+        for value, keeps in ((None, True), ("true", True), ("false", False), (" FALSE ", False)):
+            with self.subTest(value=value):
+                if value is None:
+                    os.environ.pop("QUIRQ_COMMAND_LOG_ARCHIVE", None)
                     self.assertEqual(commands._keeps_command_log_archive(), keeps)
+                else:
+                    with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": value}):
+                        self.assertEqual(commands._keeps_command_log_archive(), keeps)
 
     def test_off_switch_disables_default_log_but_keeps_explicit_log_path(self) -> None:
         from utils.commands import run_sync
@@ -497,56 +492,6 @@ class RunSpecTests(unittest.TestCase):
             run(run_spec(spec, separate_stderr=True))
         self.assertEqual((seen["argv"], seen["cwd"], seen["timeout"], seen["separate_stderr"]),
                          (["x"], "/tmp", 3.0, True))
-
-
-@unittest.skipUnless(shutil.which("git"), "needs git")
-class ReleaseCheckoutTests(unittest.TestCase):
-    """A release is a checkout whose HEAD is exactly a vX.Y.Z tag
-    (RELEASING.md) and a branch tip is development. No checkout at all counts
-    as a release, so an install nobody can identify gets the bounded log."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.repo = Path(self._tmp.name) / "repo"
-        self.repo.mkdir()
-        quiet = patch.dict(os.environ, {"QUIRQ_COMMAND_LOG": "off"}, clear=False)
-        quiet.start()
-        self.addCleanup(quiet.stop)
-        self.git("init")
-        self.commit("one")
-
-    def git(self, *args: str) -> None:
-        from utils.commands import run_sync
-
-        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
-        result = run_sync(["git", *args], cwd=self.repo, env=env, timeout=30)
-        self.assertTrue(result.ok, result.output)
-
-    def commit(self, message: str) -> None:
-        self.git("commit", "--allow-empty", "-m", message)
-
-    def test_a_branch_tip_is_development(self) -> None:
-        self.assertFalse(commands.checkout_on_release_tag(self.repo))
-
-    def test_head_on_a_release_tag_is_a_release(self) -> None:
-        self.git("tag", "-a", "v1.2.0", "-m", "v1.2.0")
-        self.assertTrue(commands.checkout_on_release_tag(self.repo))
-        self.git("checkout", "--detach", "v1.2.0")
-        self.assertTrue(commands.checkout_on_release_tag(self.repo))
-
-    def test_a_commit_after_the_tag_is_development_again(self) -> None:
-        self.git("tag", "-a", "v1.2.0", "-m", "v1.2.0")
-        self.commit("two")
-        self.assertFalse(commands.checkout_on_release_tag(self.repo))
-
-    def test_a_tag_that_is_not_a_version_does_not_count(self) -> None:
-        self.git("tag", "nightly")
-        self.assertFalse(commands.checkout_on_release_tag(self.repo))
-
-    def test_no_checkout_counts_as_a_release(self) -> None:
-        self.assertTrue(commands.checkout_on_release_tag(Path(self._tmp.name)))
 
 
 class SkillCatalogArgvTests(unittest.TestCase):
