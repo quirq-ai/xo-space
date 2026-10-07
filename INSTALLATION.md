@@ -56,7 +56,7 @@ workspace, the *XO root* — and shows what is there.
   and never moves files.
 
 Open **Wiki** at the top right for the local overview. It links to the
-[full Space guides](https://docs.quirq.ai/docs/space), which open online in a new tab.
+[full Space guides](https://docs.quirq.dev/docs/space), which open online in a new tab.
 
 **A project is a direct child folder of the workspace.** The folder name is
 the project id, and the watcher lists every non-hidden folder it finds on its

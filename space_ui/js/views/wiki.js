@@ -1,5 +1,5 @@
 /* A compact local starting page. Full guides live in xo-docs. */
-const DOCS_ROOT='https://docs.quirq.ai/docs/space';
+const DOCS_ROOT='https://docs.quirq.dev/docs/space';
 const GROUPS=[
   {
     title:'Explore your workspace',
