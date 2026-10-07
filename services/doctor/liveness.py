@@ -479,7 +479,7 @@ def scheduler(ctx: Context) -> list[Finding]:
         return []  # absent (no commands) or damaged (the read check reports that)
     job_map, state_map = jobs.value.get("jobs"), state.value.get("jobs")
     if not isinstance(job_map, dict) or not isinstance(state_map, dict):
-        return []
+        return []  # the scheduler refuses the file; the content check reports that
     grace = max(float(SCHEDULER_GRACE_S), 5 * runtime_env.watcher_tick_interval_seconds())
     running_now = sum(1 for entry in state_map.values()
                       if isinstance(entry, dict) and entry.get("running_since"))

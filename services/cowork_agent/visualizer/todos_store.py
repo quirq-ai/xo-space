@@ -169,10 +169,21 @@ def _read_sessions_for_write(todos_path: Path) -> tuple[Optional[dict], dict]:
             )
     else:
         current = value
+    reason = shape_problem(current)
+    if reason is not None:
+        raise _corrupt(todos_path, reason)
     raw = current.get("sessions")
-    if raw is not None and not isinstance(raw, dict):
-        raise _corrupt(todos_path, f"sessions is a {type(raw).__name__}, expected object")
     return current, copy.deepcopy(raw) if raw is not None else {}
+
+
+def shape_problem(document: dict) -> Optional[str]:
+    """Why a write refuses this parsed, correctly stamped document, or
+    ``None`` (reads show it as empty instead). Pure, so xo-doctor can ask
+    the store's own question."""
+    raw = document.get("sessions")
+    if raw is not None and not isinstance(raw, dict):
+        return f"sessions is a {type(raw).__name__}, expected object"
+    return None
 
 
 def _corrupt(path: Path, reason: str) -> TodosStoreError:

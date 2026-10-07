@@ -234,6 +234,19 @@ def normalize_document(raw, *, now: Optional[datetime] = None) -> dict:
     return doc
 
 
+def shape_problem(raw: object) -> Optional[str]:
+    """What :func:`normalize_document` would silently drop from a parsed
+    ``inbox.json``, or ``None``. The store stays lenient on purpose; xo-doctor
+    asks this so a person hears about it before the next write replaces the
+    saved items with an empty list."""
+    if not isinstance(raw, dict):
+        return None  # not an object at all: the doctor's own read check says so
+    items = raw.get("items")
+    if items is not None and not isinstance(items, list):
+        return f"items is a {type(items).__name__}, expected array"
+    return None
+
+
 def apply_retention(items: list[dict], now: Optional[datetime] = None) -> tuple[list[dict], int]:
     """TTL first, then the cap (done first, oldest first). Pure."""
     now = now or datetime.now(timezone.utc)

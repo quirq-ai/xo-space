@@ -28,6 +28,7 @@ PHRASE = {
     "empty": "is empty",
     "invalid_json": "is damaged (not valid JSON)",
     "wrong_type": "holds the wrong kind of data",
+    "wrong_shape": "holds data its store can't use",
     "unreadable": "can't be read",
     "special": "isn't a regular file",
     "file_too_large": "is too large to check",

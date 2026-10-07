@@ -181,9 +181,22 @@ def _read_doc(path: Path) -> dict:
             f"{path} is not valid JSON ({exc}); repair or delete it — the scheduler "
             f"will not rewrite a file it cannot read"
         ) from exc
-    if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+    if shape_problem(doc) is not None:
         raise SchedulerError(f"{path} must be a JSON object with a 'jobs' object")
     return doc
+
+
+def shape_problem(doc: Any) -> Optional[str]:
+    """Why ``jobs.json`` or ``state.json`` is refused, or ``None``. Pure, so
+    xo-doctor can ask the scheduler's own question."""
+    if not isinstance(doc, dict):
+        return f"the document is a {type(doc).__name__}, expected object"
+    jobs = doc.get("jobs")
+    if jobs is None:
+        return "no jobs object"
+    if not isinstance(jobs, dict):
+        return f"jobs is a {type(jobs).__name__}, expected object"
+    return None
 
 
 def _chmod_private(path: Path) -> None:
