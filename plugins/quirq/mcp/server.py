@@ -30,7 +30,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, Icon, ResourceLink, TextContent, ToolAnnotations
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 UI_URI = "ui://xo-space/dashboard"          # compact read-only dashboard (always present)
 APP_URI = "ui://xo-space/app"               # the full Space UI (built; see EXTENSIONS.md)
 APP_FILE = ROOT / "ui/space-app.html"

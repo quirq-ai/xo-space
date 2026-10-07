@@ -75,10 +75,17 @@ plugin's own tools still run on Windows and reach Space at
   mangled on the way into WSL), then run
   `wsl.exe bash "<converted-path>/scripts/discover.sh"` (likewise
   `space.sh install|start`).
+- Codex's sandbox always blocks `wsl.exe` (`Access is denied`,
+  `Wsl/E_ACCESSDENIED`); that does not mean WSL is missing. Run every
+  `wsl.exe` command outside the sandbox from the first call, asking the user's
+  approval with a one-line reason. If this session cannot ask for approval,
+  tell the user to switch the conversation to a permissions mode that asks
+  before running commands, then stop.
 - Workspace paths are Linux paths inside WSL (default `~/xo-workspace` in the
   WSL home).
 - Keep the WSL task running: Space stops when the task that started it ends.
-- If WSL isn't installed, tell the user to run `wsl --install` and restart,
+- If WSL isn't installed (`wsl.exe` is not found, or WSL reports no
+  distribution), tell the user to run `wsl --install` and restart,
   then stop. Don't try to run Space directly on Windows.
 
 Space can inspect projects through `/api/runtime-config` and its UI. Do not read
