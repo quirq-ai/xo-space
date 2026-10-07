@@ -91,7 +91,7 @@ class RunSpecTests(unittest.TestCase):
         env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.state_root)}, clear=False)
         env.start()
         self.addCleanup(env.stop)
-        for key in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH"):
+        for key in ("QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH", "QUIRQ_COMMAND_LOG_ARCHIVE"):
             os.environ.pop(key, None)
         warned = patch.object(commands, "_WARNED_COMMAND_LOG_PATHS", set())
         warned.start()
@@ -261,6 +261,37 @@ class RunSpecTests(unittest.TestCase):
                 archived = [p.read_text(encoding="utf-8")
                             for p in (self.state_root / "inbox" / "activity" / "archive").iterdir()]
                 self.assertTrue(any(f"=== one {old} ===" in text for text in archived), archived)
+
+    def test_archive_false_keeps_only_the_previous_log(self) -> None:
+        """QUIRQ_COMMAND_LOG_ARCHIVE=false: each rotation replaces
+        commands.log.1, so the live log and the one before it are all that remain."""
+        activity = self.state_root / "inbox" / "activity"
+        target = activity / "commands.log"
+        entries = [f"=== entry {i:03d} ===\n{'y' * 80}\n" for i in range(40)]
+        with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": "false"}), \
+             patch.object(commands, "_COMMAND_LOG_MAX_BYTES", 200):
+            for entry in entries:
+                commands._write_log(target, entry, rotate=True)
+
+        self.assertEqual(sorted(p.name for p in activity.iterdir()), ["commands.log", "commands.log.1"])
+        previous = (activity / "commands.log.1").read_text(encoding="utf-8")
+        current = target.read_text(encoding="utf-8")
+        # The two files are the newest entries, in order, with nothing missing
+        # between them: the record is shorter, never out of order.
+        joined = previous + current
+        self.assertTrue("".join(entries).endswith(joined))
+        self.assertIn(entries[-1], current)
+        self.assertNotIn(entries[0], joined)
+
+    def test_the_archive_is_on_unless_set_to_false(self) -> None:
+        for value, keeps in ((None, True), ("true", True), ("false", False), (" FALSE ", False)):
+            with self.subTest(value=value):
+                if value is None:
+                    os.environ.pop("QUIRQ_COMMAND_LOG_ARCHIVE", None)
+                    self.assertEqual(commands._keeps_command_log_archive(), keeps)
+                else:
+                    with patch.dict(os.environ, {"QUIRQ_COMMAND_LOG_ARCHIVE": value}):
+                        self.assertEqual(commands._keeps_command_log_archive(), keeps)
 
     def test_off_switch_disables_default_log_but_keeps_explicit_log_path(self) -> None:
         from utils.commands import run_sync

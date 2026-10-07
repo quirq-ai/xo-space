@@ -29,7 +29,7 @@ into them.
 |---|---|---|---|
 | `projects/` | `<pid>/timeline.jsonl`, `<pid>/stats.json`, `<pid>/sessions/`, `<pid>/github/issues.json`, `<pid>/workitems/claims.json`; `timeline.jsonl` for the whole Space; `offsets.json` and `<source>-offsets.json`, where the watcher stopped reading | the watcher; the todo, workitem and claim APIs | history nothing can rebuild |
 | `sessions/` | `sessionslist.d/<shard>.json`, one row per session started with no project (it belongs to no `projects/<pid>/`, so it lives one level up, where no project key can collide with it) | the chat adapters | those sessions vanish from the session list, messages and transcript |
-| `inbox/` | `inbox.json`; `activity/commands.log`, `activity/archive/commands.<stamp>.log` | `services/inbox/`, `utils/commands/` | Inbox items and what you marked done; the record of every command Quirq ran (the archive is every earlier command log) |
+| `inbox/` | `inbox.json`; `activity/commands.log`, then `activity/archive/commands.<stamp>.log`, or only `activity/commands.log.1` with `QUIRQ_COMMAND_LOG_ARCHIVE=false` | `services/inbox/`, `utils/commands/` | Inbox items and what you marked done; the record of every command Quirq ran (the archive is every earlier command log) |
 | `connections/` | `accounts.json`; `<toolkit>/config.json`, `state.json`, `events.jsonl` | `services/connections/` | what each connection collected |
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |
