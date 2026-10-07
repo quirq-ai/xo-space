@@ -21,11 +21,11 @@ from services.cowork_agent.helpers import normalize_agent_id
 from services.doctor import inventory
 from services.doctor.context import Context
 from services.doctor.model import FAIL, WARN, Finding, ago, ev, moment, printable, size
-from services.doctor.projects import is_safe_runtime_key
+from services.doctor.projects import Project, is_safe_runtime_key
 from services.doctor.reading import Tree, measure_tree, readable_dir, read_tail
 from services.errors import ServiceError
 from services.storage import layout
-from services.timestamps import iso
+from services.timestamps import iso, parse_ts
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +214,74 @@ def _last_known_names(ctx: Context, keys: list[str]) -> dict[str, tuple[str, str
     return found
 
 
+def _live_owner(ctx: Context, key: str, names: dict[str, tuple[str, str]]) -> Optional[Project]:
+    """The live project a leftover's last-known name points at, if any.
+
+    Every name source records a project *folder* name, so a match means the
+    folder that wrote this history still exists under another id: its
+    project.json lost, changed or re-minted its pid. Such data is the
+    project's own, not a leftover, and must never be offered for moving."""
+    name = names.get(key, (None, None))[0]
+    if not name:
+        return None
+    live = ctx.projects()
+    exact = next((project for project in live if project.name == name), None)
+    if exact is not None:
+        return exact
+    wanted = normalize_agent_id(name)
+    return next((project for project in live if normalize_agent_id(project.name) == wanted), None)
+
+
+def _created_at(project: Project) -> Optional[float]:
+    value = project.read.value if project.read.outcome == "ok" else None
+    raw = value.get("created_at") if isinstance(value, dict) else None
+    stamp = parse_ts(raw) if isinstance(raw, str) else None
+    return None if stamp is None else stamp.timestamp()
+
+
+def _identity_finding(ctx: Context, leftover: Leftover, project: Project,
+                      names: dict[str, tuple[str, str]]) -> Finding:
+    """projects/<key> is the earlier history of a project that still exists."""
+    key, tree = leftover.key, leftover.tree
+    name, source = names[key]
+    created = _created_at(project)
+    # FAIL when it is certainly the same project: it has no usable id at all,
+    # or it existed (its created_at, which a re-minted pid keeps) before this
+    # history was last written. Otherwise a new project may reuse the name.
+    certain = project.pid is None or (created is not None and tree.newest is not None and created < tree.newest)
+    taken = f"{'at least ' if tree.truncated else ''}{size(tree.bytes)}"
+    written = (f"Last written {ago(ctx.now - tree.newest)} ago." if tree.newest is not None
+               else "Can't be dated: too large or partly unreadable.")
+    now_uses = f"id {project.pid}" if project.pid else "no usable id"
+    identity = f"{project.name}/.xo/project.json"
+    restore = (f"stop the server, set \"pid\" in {identity} back to {key}, and start it again"
+               + (f"; activity recorded since the change is in projects/{project.pid}/, so move what you want to "
+                  f"keep from there into projects/{key}/ by hand first" if project.pid else ""))
+    if certain:
+        next_step = f"To link it again, {restore}. Don't move this folder aside: that would hide the history."
+    else:
+        next_step = (f"If {project.name} is the same project (its project.json was deleted or replaced), {restore}. "
+                     f"If it's a new project that reuses the name, this is the old project's data: move "
+                     f"projects/{key} into quarantine/ by hand once nothing in it is needed.")
+    return Finding(
+        "runtime.identity_lost", FAIL if certain else WARN, key, ctx.display(leftover.path),
+        f"This runtime data belonged to project {name} (named from {source}), and that project folder still "
+        f"exists but now uses {now_uses}. {written}", "",
+        details={"project_name": name, "name_source": source, "project": project.name,
+                 "earlier_pid": key, "current_pid": project.pid, "bytes": tree.bytes, "files": tree.files,
+                 "truncated": tree.truncated, "certain": certain},
+        title=f"Project {project.name}'s earlier history is no longer linked to it",
+        evidence=[ev("Earlier id", key), ev("Current id", project.pid or "none"),
+                  ev("Project created", moment(created, ctx.now) if created is not None else "unknown"),
+                  ev("History last written", moment(tree.newest, ctx.now) if tree.newest is not None
+                     else "unknown (too large or partly unreadable)"),
+                  ev("Size", taken), ev("Named from", source)],
+        consequence=("Its earlier sessions, usage totals, timeline and work-item claims are hidden: new activity is "
+                     "recorded under its current id instead."),
+        self_repair="Nothing: the server never links earlier history again by itself.",
+        next_step=next_step, problem_key=f"identity:{key}")
+
+
 def _finding(ctx: Context, leftover: Leftover, actionable: bool, names: dict[str, tuple[str, str]]) -> Finding:
     tree = leftover.tree
     contains = [label for name, label in _CONTENTS if (leftover.path / name).exists()]
@@ -314,7 +382,10 @@ def check(ctx: Context) -> list[Finding]:
     result = survey(ctx)
     out = [result.blocked] if result.blocked is not None else []
     names = _last_known_names(ctx, [leftover.key for leftover in result.leftovers]) if result.leftovers else {}
-    out += [_finding(ctx, leftover, result.blocked is None, names) for leftover in result.leftovers]
+    for leftover in result.leftovers:
+        owner = _live_owner(ctx, leftover.key, names)
+        out.append(_identity_finding(ctx, leftover, owner, names) if owner is not None
+                   else _finding(ctx, leftover, result.blocked is None, names))
     out += _split_findings(ctx)
     return out
 
@@ -371,6 +442,9 @@ def move_aside(key: str, *, now: Optional[float] = None) -> dict:
             raise DoctorError("doctor_not_leftover", "A project uses this data now. Nothing was moved.", 409)
         if not source.exists():
             raise gone
+        if _live_owner(ctx, key, _last_known_names(ctx, [key])) is not None:
+            raise DoctorError("doctor_identity_lost",
+                              "This is the earlier history of a project that still exists. Nothing was moved.", 409)
         if too_recent(ctx, leftover):
             raise DoctorError("doctor_too_recent", "This folder was written to in the last 10 minutes. Try again later.", 409)
         target = ctx.state_root / layout.quarantine_dir().name / "runtime-leftovers" / f"{key}-{_stamp(ctx.now)}"

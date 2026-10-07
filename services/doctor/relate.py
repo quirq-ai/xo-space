@@ -28,7 +28,7 @@ def _fold_leftover_files(by_family: dict[str, CheckResult]) -> None:
     runtime, read = by_family.get("runtime"), by_family.get("read")
     if runtime is None or read is None:
         return
-    parents = {f.subject: f for f in runtime.findings if f.id == "runtime.leftover"}
+    parents = {f.subject: f for f in runtime.findings if f.id in ("runtime.leftover", "runtime.identity_lost")}
     if not parents:
         return
     kept: list[Finding] = []
