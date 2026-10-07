@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Read-only local discovery. Requires only bash, curl, and POSIX awk.
+# Keep LF line endings (see .gitattributes): bash cannot run this file with CRLF.
 # A pointer is a last-known-location hint; discovery never installs or starts
 # anything. stdout contains exactly one JSON object (running, installed, or
 # not_installed). QUIRQ_DISCOVER_PORTS replaces the fallback ports, not the
