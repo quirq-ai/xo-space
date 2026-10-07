@@ -219,8 +219,9 @@ def _legacy_command_log_paths() -> tuple[Path, ...]:
 
 def _iter_log_paths(log_path: str | Path | None) -> list[tuple[Path, bool]]:
     """Destinations for one entry as (path, is_shared). The shared file is the
-    runner's own commands.log: capped per entry and rotated into `archive/`,
-    because every command in the process feeds it. A caller's explicit
+    runner's own commands.log: capped per entry and rotated (into `archive/`,
+    or onto commands.log.1 with QUIRQ_COMMAND_LOG_ARCHIVE=false), because
+    every command in the process feeds it. A caller's explicit
     `log_path` is that caller's complete record (a scheduler job, a
     provisioning run): redacted, but never capped or rotated — retention there
     is the caller's business."""
@@ -360,7 +361,7 @@ def _keeps_command_log_archive() -> bool:
     return (os.getenv("QUIRQ_COMMAND_LOG_ARCHIVE", "") or "").strip().lower() != "false"
 
 
-def previous_command_log_path(log_path: Path) -> Path:
+def _previous_command_log_path(log_path: Path) -> Path:
     """``commands.log.1``: the one earlier generation kept without the archive."""
     return log_path.with_name(f"{log_path.name}.1")
 
@@ -375,8 +376,12 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
                 archived.parent.mkdir(parents=True, exist_ok=True)
                 log_path.replace(archived)
             else:
-                # Overwrites the generation before it: at most two files.
-                log_path.replace(previous_command_log_path(log_path))
+                # Overwrites the generation before it: at most two files. The
+                # lock is per process, so if the launcher and the server both
+                # rotate at the same instant, the second replace can overwrite
+                # the full generation with a near-empty one. The archive's
+                # unique names cannot collide; this mode accepts the loss.
+                log_path.replace(_previous_command_log_path(log_path))
         with log_path.open("ab") as f:
             f.write(entry_bytes)
 
