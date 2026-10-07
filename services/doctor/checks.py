@@ -111,7 +111,9 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec,
                        "It is checked again on the next run.", details=details,
                        title=f"{name} was being written", evidence=evidence, problem_key=stable)
     alive = liveness.watcher_alive(ctx) if spec.behaviour == inventory.READ_POSITION else True
-    keys = ("watcher_stopped", result.outcome) if not alive else (result.outcome,)
+    situations = (("wrong_type_empty", "wrong_type") if result.outcome == "wrong_type" and result.empty_value
+                  else (result.outcome,))
+    keys = ("watcher_stopped", *situations) if not alive else situations
 
     def text(part: str) -> str:
         return catalog.fill(about.text(keys, part), values)

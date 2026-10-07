@@ -33,6 +33,25 @@ class ReadFindingTests(DoctorSandbox):
                          "Project sample-project's usage record is damaged (not valid JSON)")
         self.assertEqual(found["sample-project/.xo/todos.json"]["problem_key"], "file:sample-project/.xo/todos.json")
 
+    def test_a_usage_record_of_the_wrong_type_says_what_the_watcher_does(self) -> None:
+        # Live test A4: the watcher reads ``read_json(path) or {}``, so an empty
+        # value is replaced by fresh totals, while a list or string with content
+        # makes it fail on every new activity, which is then never recorded.
+        for name, path in [("stats", self.state / "projects" / PID / "stats.json"),
+                           ("augment", self.state / "projects" / PID / "sessions" / "sessions-augment.json")]:
+            with self.subTest(file=name):
+                original = path.read_text(encoding="utf-8")
+                path.write_text("[]", encoding="utf-8")
+                empty = self.by_subject()[str(path.relative_to(self.state))]
+                self.assertIn("next agent activity in this project replaces it", empty["consequence"])
+                self.assertNotIn("fails", empty["consequence"])
+                path.write_text('["x"]', encoding="utf-8")
+                filled = self.by_subject()[str(path.relative_to(self.state))]
+                self.assertIn("The watcher fails on this file", filled["consequence"])
+                self.assertIn("never recorded", filled["consequence"])
+                self.assertEqual((empty["level"], filled["level"]), ("FAIL", "FAIL"))
+                path.write_text(original, encoding="utf-8")
+
     def test_a_reading_position_file_depends_on_the_watcher(self) -> None:
         # #188 issue 8: the server rewrites it itself while the watcher runs.
         (self.state / "projects" / "offsets.json").write_text("", encoding="utf-8")

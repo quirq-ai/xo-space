@@ -119,6 +119,13 @@ class ClassifyTests(unittest.TestCase):
         result = classify(self.write("a.json", b"[]"), now=self.later, accepted=ONE)
         self.assertEqual((result.outcome, result.detail), ("wrong_type", "list"))
 
+    def test_wrong_type_says_whether_the_value_is_empty(self) -> None:
+        for raw, empty in [(b"[]", True), (b'""', True), (b"0", True), (b"false", True), (b"null", True),
+                           (b"[1, 2]", False), (b'"x"', False), (b"7", False)]:
+            with self.subTest(raw=raw):
+                result = classify(self.write("a.json", raw), now=self.later, accepted=ONE)
+                self.assertEqual((result.outcome, result.empty_value), ("wrong_type", empty))
+
     def test_exempt_file_needs_no_schema(self) -> None:
         result = classify(self.write("a.json", b'{"x": 1}'), now=self.later, accepted=None)
         self.assertEqual(result.outcome, "ok")

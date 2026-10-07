@@ -210,11 +210,25 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing recovers the old totals: the watcher's next write starts them again from zero.",
         next_step=("If you have an earlier copy, put it back before the next agent activity in this project; after "
                    "that, the old totals are gone."),
-        overrides={"wrong_type": {
-            "consequence": ("The project's usage totals can't be read, and the watcher fails on this file on every "
-                            "tick: the project's usage and timeline stop updating and new events are lost."),
-            "next_step": "Put back an earlier copy, or move the file aside so the watcher can start the totals again.",
-        }},
+        overrides={
+            # A list or string with content: the watcher's stats step raises
+            # on it each time the project has new activity (sinks/stats.py
+            # reads ``read_json(path) or {}``, then ``.get``), so that
+            # activity is never recorded, even after the file is repaired.
+            "wrong_type": {
+                "consequence": ("The watcher fails on this file each time this project has new agent activity: "
+                                "the project's usage totals and timeline stop updating, and that activity is never "
+                                "recorded, even after the file is repaired."),
+                "self_repair": "Nothing: the watcher never replaces a file it fails on.",
+                "next_step": ("Put back an earlier copy, or move the file aside so the totals start again from the "
+                              "next activity. Do it soon: activity until then is lost."),
+            },
+            # An empty value ([], "", 0, false) reads as no file at all.
+            "wrong_type_empty": {
+                "consequence": ("It holds no totals, and the next agent activity in this project replaces it with "
+                                "totals counted from that moment."),
+            },
+        },
     ),
     "projects/*/workitems/claims.json": About(
         name="Project {project}'s claim list", owner="work items",
@@ -228,11 +242,21 @@ ABOUT: dict[str, About] = {
                      "activity in this project replaces the file with counts from that moment."),
         self_repair="Nothing recovers the old counts.",
         next_step="If you have an earlier copy, put it back before the next agent activity in this project.",
-        overrides={"wrong_type": {
-            "consequence": ("The watcher fails on this file on every tick: this project's usage totals and "
-                            "timeline stop updating and new events are lost."),
-            "next_step": "Put back an earlier copy, or move the file aside.",
-        }},
+        overrides={
+            # Same reading as stats.json (sinks/sessions_augment.py).
+            "wrong_type": {
+                "consequence": ("The watcher fails on this file each time this project has new agent activity: "
+                                "its session counts, usage totals and timeline stop updating, and that activity is "
+                                "never recorded, even after the file is repaired."),
+                "self_repair": "Nothing: the watcher never replaces a file it fails on.",
+                "next_step": ("Put back an earlier copy, or move the file aside so the counts start again from the "
+                              "next activity. Do it soon: activity until then is lost."),
+            },
+            "wrong_type_empty": {
+                "consequence": ("It holds no counts, and the next agent activity in this project replaces it with "
+                                "counts from that moment."),
+            },
+        },
     ),
     "projects/*/sessions/sessionslist.d/*.json": About(
         name="A session index entry of project {project}", owner="the session index",
