@@ -153,7 +153,8 @@ SPECS: tuple[Spec, ...] = (
     _s("quarantine/**", OPAQUE),
     Spec(WORKSPACE, "space.json", SELF_OVERWRITING, "space.schema.json",
          schema_newer=REPLACED, schema_older=REPLACED),
-    Spec(WORKSPACE, "projects.json", REBUILT_VIEW, "projects.schema.json",
+    # Written through ChangeGate (workspace/projects_json.py): a change cache.
+    Spec(WORKSPACE, "projects.json", CHANGE_CACHE, "projects.schema.json",
          schema_newer=REPLACED, schema_older=REPLACED),
     Spec(WORKSPACE, "xo.json", REBUILT_VIEW),  # services/xo_manifest.py writes no stamp
     Spec(PROJECT, "project.json", IRREPLACEABLE, "project.schema.json",
