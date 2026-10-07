@@ -32,7 +32,9 @@ AGENT = "codex"
 
 # `start` enrolls and boots the daemon, so actions get the long budget
 # (CODEX_REMOTE_CONTROL_TIMEOUT); probes stay short because status is polled.
-DEFAULT_ACTION_TIMEOUT_SECONDS = 90.0
+# Keep it under the workspace proxy's 60s request limit, so a slow action
+# reports its own timeout instead of the proxy's bare 504.
+DEFAULT_ACTION_TIMEOUT_SECONDS = 45.0
 PROBE_TIMEOUT_SECONDS = 15.0
 _MAX_DETAIL_CHARS = 400
 
@@ -167,7 +169,11 @@ def _action_timeout() -> float:
 
 
 async def _run(argv: list[str], *, timeout: float, log_output: bool = True) -> CommandResult:
-    return await run(argv, cwd=get_agent(AGENT).cwd, timeout=timeout, log_output=log_output)
+    # output_to_file: `remote-control start` forks the daemon, which can keep
+    # an output pipe open long after the CLI exits.
+    return await run(
+        argv, cwd=get_agent(AGENT).cwd, timeout=timeout, log_output=log_output, output_to_file=True
+    )
 
 
 # ── Failure classification ───────────────────────────────────────────────
@@ -224,8 +230,13 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _live_pid() -> Optional[int]:
-    """The pid in ``app-server.pid``, only while that process exists."""
-    record = _read_json_file(_daemon_dir() / "app-server.pid") or {}
+    """The daemon's pid (``daemon.pid``; ``app-server.pid`` before codex-cli
+    0.160), only while that process exists."""
+    record = (
+        _read_json_file(_daemon_dir() / "daemon.pid")
+        or _read_json_file(_daemon_dir() / "app-server.pid")
+        or {}
+    )
     pid = record.get("pid")
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return None

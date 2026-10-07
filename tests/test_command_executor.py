@@ -423,6 +423,24 @@ class RunSpecTests(unittest.TestCase):
         self.assertTrue(res.timed_out)
         self.assertLess(time.monotonic() - started, 5.0)
 
+    @unittest.skipIf(os.name != "posix", "setsid is POSIX")
+    def test_output_to_file_returns_when_the_child_exits_not_its_daemon(self) -> None:
+        """Like `codex remote-control start`: the command exits at once but
+        leaves a detached daemon (own session, so no kill reaches it) holding
+        its stdout. A pipe would stay open until the daemon exits."""
+        script = "echo started; echo warn >&2; setsid sleep 5 &"
+        started = time.monotonic()
+        res = run(commands.run(["sh", "-c", script], timeout=30, output_to_file=True))
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertTrue(res.ok)
+        self.assertIn("started", res.output)
+        self.assertIn("warn", res.output)
+        split = run(commands.run(
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read()); sys.stderr.write('e')"],
+            input=b"in", separate_stderr=True, timeout=30, output_to_file=True,
+        ))
+        self.assertEqual((split.output, split.stderr), ("in", "e"))
+
     def test_kill_race_after_timeout_is_a_result_not_an_exception(self) -> None:
         """If the child exits in the instant between the timeout and the kill,
         asyncio raises ProcessLookupError from kill(); the runner must swallow

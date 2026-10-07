@@ -53,6 +53,7 @@ import re
 import shlex
 import signal
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -394,6 +395,7 @@ async def run(
     separate_stderr: bool = False,
     inherit_output: bool = False,
     log_output: bool = True,
+    output_to_file: bool = False,
 ) -> CommandResult:
     """Run a command asynchronously and return a `CommandResult`.
 
@@ -414,6 +416,10 @@ async def run(
                 must be visible live). `output` is then empty.
     log_output: False keeps the output out of every log entry (the command
                 and exit status are still logged). For output with credentials.
+    output_to_file:   capture into temp files instead of pipes and return as
+                soon as the child exits. For commands that launch a daemon: a
+                pipe stays open while any descendant holds it, so `communicate()`
+                would wait on the daemon rather than the command.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -422,6 +428,16 @@ async def run(
     ts = datetime.now(timezone.utc).isoformat()
     started = asyncio.get_event_loop().time()
 
+    out_file = tempfile.TemporaryFile() if output_to_file and not inherit_output else None
+    err_file = tempfile.TemporaryFile() if out_file is not None and separate_stderr else None
+    if inherit_output:
+        stdout_target = stderr_target = None
+    elif out_file is not None:
+        stdout_target, stderr_target = out_file, (err_file if err_file is not None else out_file)
+    else:
+        stdout_target = asyncio.subprocess.PIPE
+        stderr_target = asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT
+
     result: CommandResult
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -429,9 +445,8 @@ async def run(
             cwd=str(cwd) if cwd is not None else None,
             env=env,
             stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
-            stdout=None if inherit_output else asyncio.subprocess.PIPE,
-            stderr=None if inherit_output
-                   else (asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT),
+            stdout=stdout_target,
+            stderr=stderr_target,
             # own session => own process group, so a timeout can kill the
             # whole tree (see _kill_tree). Trade-off: a child no longer dies
             # with the server on Ctrl+C, so long-running calls pass a timeout.
@@ -461,16 +476,21 @@ async def run(
         return result
 
     try:
+        waiter = (proc.communicate(input=input) if out_file is None
+                  else _wait_and_read_files(proc, input, out_file, err_file))
         if timeout is not None:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(input=input), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(waiter, timeout=timeout)
         else:
-            stdout, stderr = await proc.communicate(input=input)
+            stdout, stderr = await waiter
     except asyncio.TimeoutError:
         # Kill the whole tree; _kill_tree swallows the ProcessLookupError that
         # asyncio raises when the child exited in the instant between the
         # timeout firing and the kill (the runner promises never to raise).
         _kill_tree(proc)
         await proc.communicate()
+        for f in (out_file, err_file):
+            if f is not None:
+                f.close()
         result = CommandResult(
             argv=argv_list,
             returncode=proc.returncode if proc.returncode is not None else -1,
@@ -493,6 +513,24 @@ async def run(
     _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
                log_output=log_output)
     return result
+
+
+async def _wait_and_read_files(proc, input: bytes | None, out_file, err_file) -> tuple[bytes, bytes | None]:
+    """`communicate()` for output captured in files (`output_to_file`): waits
+    for the child alone, then reads back and closes the files."""
+    if input is not None:
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            proc.stdin.write(input)
+            await proc.stdin.drain()
+        proc.stdin.close()
+    await proc.wait()
+
+    def read_back(f) -> bytes:
+        with f:
+            f.seek(0)
+            return f.read()
+
+    return read_back(out_file), (read_back(err_file) if err_file is not None else None)
 
 
 def run_sync(

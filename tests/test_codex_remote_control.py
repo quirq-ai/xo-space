@@ -145,7 +145,7 @@ class SmallHelperTests(unittest.TestCase):
                 self.assertEqual(rc._expiry(bad), (None, None))
 
     def test_action_timeout_env_override(self) -> None:
-        cases = {"": 90.0, "30": 30.0, "abc": 90.0, "-5": 90.0, "0": 90.0}
+        cases = {"": 45.0, "30": 30.0, "abc": 45.0, "-5": 45.0, "0": 45.0}
         for raw, expected in cases.items():
             with self.subTest(raw=raw), mock.patch.dict(os.environ, {"CODEX_REMOTE_CONTROL_TIMEOUT": raw}):
                 self.assertEqual(rc._action_timeout(), expected)
@@ -236,13 +236,17 @@ class FailureClassificationTests(unittest.TestCase):
 
 
 class LivePidTests(_IsolatedState, unittest.TestCase):
-    def _write_pid(self, pid) -> None:
+    def _write_pid(self, pid, name: str = "app-server.pid") -> None:
         daemon_dir = self.home / "app-server-daemon"
         daemon_dir.mkdir(parents=True, exist_ok=True)
-        (daemon_dir / "app-server.pid").write_text(json.dumps({"pid": pid}), encoding="utf-8")
+        (daemon_dir / name).write_text(json.dumps({"pid": pid}), encoding="utf-8")
 
     def test_live_process(self) -> None:
         self._write_pid(os.getpid())
+        self.assertEqual(rc._live_pid(), os.getpid())
+
+    def test_daemon_pid_file_from_newer_cli(self) -> None:
+        self._write_pid(os.getpid(), "daemon.pid")
         self.assertEqual(rc._live_pid(), os.getpid())
 
     def test_stale_file_after_crash(self) -> None:
@@ -356,7 +360,7 @@ class StartTests(_ApiCase):
         self.assertTrue(response["daemon"]["remote_control_enabled"])
         self.assertEqual(response["cli"]["version"], "0.152.0")
         # `name` is accepted for parity but never reaches the CLI.
-        self.assertEqual(cli.calls, [([BIN, "remote-control", "start", "--json"], 90.0)])
+        self.assertEqual(cli.calls, [([BIN, "remote-control", "start", "--json"], 45.0)])
 
     async def test_already_running(self) -> None:
         payload = {**START_PAYLOAD, "daemon": {**START_PAYLOAD["daemon"], "status": "alreadyRunning"}}
