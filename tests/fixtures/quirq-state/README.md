@@ -72,8 +72,7 @@ instead of replaying sessions onto surviving totals.
 
 ## Kept outside the state root on purpose
 
-- `~/.config/composio/`: the Composio stores, where `COMPOSIO_STORE_DIR` and the
-  compose file expect them.
+- `~/.config/composio/`: the Composio stores (`COMPOSIO_STORE_DIR` relocates them).
 - `~/.config/rclone/rclone.conf` and `~/.config/gh/`: those tools' own config.
 - `BACKUP_PASSWORD` in the checkout's `.env`.
 - `/tmp/xo-space.{pid,lock,log}`: the `cowork-api.sh` daemon's process files.
