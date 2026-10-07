@@ -87,3 +87,6 @@ rclone.conf
 /xo-projects/
 /quirq/
 .xo/
+
+# quirq infra (qq) local state: toolchains, venv, build and test output
+.qq/

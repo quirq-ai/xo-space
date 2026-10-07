@@ -1,0 +1,105 @@
+# The full suite on Python 3.12, the version that ships: the container
+# (Dockerfile `FROM python:3.12-slim`) and install.sh's default. The quirq
+# infra presubmit (qq-xo-space-presubmit.yml) runs on the org's pinned 3.14
+# only, so without this job a 3.14-only change could land and break the image
+# and every install. Retire it once the Dockerfile and install.sh move to the
+# org pin.
+#
+# The standalone steps after pytest repeat checks the suite also runs. They
+# run outside the test process, so nothing a checkout's .env loads into it
+# (server.py loads .env files with override=True) can change their result.
+#
+# Not a required check today, and deliberately not named `tests` (the job the
+# old tests.yml had), so gate's required-check settings stay as they are.
+
+name: python-3.12
+
+on:
+  pull_request:
+    branches: [main, development]
+  # The merge queue's merge result, and every commit that lands, also get a
+  # 3.12 run, not only the PR heads.
+  merge_group:
+  push:
+    branches: [main, development]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A PR's runs share a group, so a new push cancels the superseded run. Every
+  # other run gets a group of its own: a shared group keeps only one pending
+  # run, so commits landing in a burst would otherwise skip theirs.
+  group: python-3.12-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  suite-on-python-3-12:
+    name: full suite on Python 3.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: No committed .env files
+        run: |
+          # The template and the fixture state root are tracked on purpose
+          # (tests/test_checkout_hygiene.py keeps the same list).
+          found=$(git ls-files | grep -E '(^|/)(\.env(\..*)?|[^/]*\.env)$' \
+            | grep -vxF -e .env.example \
+                -e tests/fixtures/quirq-state/secrets/secrets.env \
+                -e tests/fixtures/quirq-state/settings/roots.env \
+                -e tests/fixtures/quirq-state/settings/runtime.env || true)
+          if [ -n "$found" ]; then
+            echo "::error::env files must not be committed:"; echo "$found"; exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          venv/bin/python -m pip install --quiet -r requirements.txt -r requirements-dev.txt
+
+      - name: Byte-compile on 3.12
+        run: venv/bin/python -m compileall -q server.py config routers services utils scripts tests
+
+      - name: Test suite (pytest)
+        run: venv/bin/python -m pytest -q -p no:cacheprovider
+
+      - name: Import gate + route parity (every agent runtime)
+        run: venv/bin/python scripts/check_route_parity.py
+
+      - name: install.sh harness
+        run: bash tests/install_sh_harness.sh
+
+      - name: uninstall.sh harness
+        run: bash tests/uninstall_sh_harness.sh
+
+      - name: Plugin bundles in sync
+        run: bash scripts/check_plugin_sync.sh
+
+      - name: Plugin scripts parse
+        run: |
+          # One file per `bash -n`: given several, bash parses only the first.
+          bash -n plugins/quirq/scripts/space.sh
+          bash -n plugin/scripts/discover.sh
+
+      - name: Space UI modules parse
+        run: |
+          # Through stdin as a module: `node --check file.js` exits 0 on a
+          # module with a syntax error (module detection swallows it).
+          failed=0
+          while IFS= read -r f; do
+            node --input-type=module --check < "$f" || { echo "::error file=$f::does not parse"; failed=1; }
+          done < <(find space_ui/js -name '*.js' | sort)
+          exit $failed

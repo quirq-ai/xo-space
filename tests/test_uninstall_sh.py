@@ -8,26 +8,28 @@ install. ``lsof`` is shadowed with a no-op fake and the
 daemon tmp dir is redirected, so nothing on the real machine is inspected,
 killed, or removed.
 
-Needs bash on a POSIX host (git for the dirty-checkout case); skipped
-elsewhere. The harness prints one PASS/FAIL line per case.
+Needs a POSIX host (skipped elsewhere) with bash, and git for the
+dirty-checkout case; a missing one fails the test (tests/required_tools.py).
+The harness prints one PASS/FAIL line per case.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
+from tests.required_tools import clean_env, require_tools
+
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = ROOT / "tests" / "uninstall_sh_harness.sh"
-BASH = shutil.which("bash") if os.name == "posix" else None
 
 
 class UninstallShTests(unittest.TestCase):
-    @unittest.skipUnless(BASH and shutil.which("git"), "needs bash and git on a POSIX host")
+    @unittest.skipUnless(os.name == "posix", "needs a POSIX host (Windows is WSL-only)")
     def test_harness_passes(self) -> None:
+        bash = require_tools(self, "bash", "git")["bash"]
         # Run the harness with the installation roots scrubbed from the
         # environment. ``services/cowork_agent/registry/settings.py`` calls
         # ``load_dotenv()`` at import time, so merely importing any module
@@ -39,10 +41,9 @@ class UninstallShTests(unittest.TestCase):
         # fabricated ``.quirq`` survives and the full-run case fails. That
         # made the suite's result depend on a gitignored file: green on a
         # checkout with no ``.env``, red on a configured one.
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT")}
+        env = clean_env(drop=("XO_PROJECTS_ROOT", "QUIRQ_STATE_ROOT"))
         result = subprocess.run(
-            [BASH, str(HARNESS)],
+            [bash, str(HARNESS)],
             cwd=str(ROOT),
             capture_output=True,
             text=True,

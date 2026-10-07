@@ -49,6 +49,11 @@ def probe(agent: str, roots: Path) -> dict:
         # Isolated roots: probing must never create or touch a real workspace.
         "XO_PROJECTS_ROOT": str(roots / "projects"),
         "QUIRQ_STATE_ROOT": str(roots / "state"),
+        # Pinned so the checkout's .env cannot name a runtime or secrets file
+        # that server.py then loads with override=True (and, say, re-point
+        # AGENT_NAME so every probe sees the same agent).
+        "QUIRQ_RUNTIME_FILE": str(roots / "state" / "settings" / "runtime.env"),
+        "QUIRQ_SECRETS_FILE": str(roots / "state" / "secrets" / "secrets.env"),
         "QUIRQ_SKIP_BOOT_INSTALL": "1",
         "QUIRQ_WATCHER_ENABLED": "false",
         "STARTUP_WARMUP_ENABLED": "false",
