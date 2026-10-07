@@ -90,12 +90,58 @@ install_space() {
 
 start_space() {
     local repo="$1"
+    local server
     absolute_directory "$repo"
     [ -f "${repo}/server.py" ] && [ -f "${repo}/requirements.txt" ] ||
         fail "No XO Space checkout found at ${repo}."
     [ -x "${repo}/venv/bin/python" ] ||
         fail "The Python environment is missing at ${repo}/venv. Run this checkout's install.sh with Bash to prepare it, then retry."
     repo="$(cd "$repo" && pwd -P)"
+    # The server runs as this script's child, still attached to the task that
+    # started it; the script reports once when it is ready, then waits on it.
+    launch_server "$repo" &
+    server=$!
+    trap 'kill "$server" 2>/dev/null; wait "$server" 2>/dev/null; exit 143' INT TERM HUP
+    report_ready "$repo" "$server"
+    wait "$server"
+}
+
+# Print one line, `XO_SPACE_START {json}`, once the server is up: discover.sh's
+# result for this checkout (state "running", base_url, repo_dir, roots), or
+# {"state":"exited"} / {"state":"timeout"} pointing at the log. Agents read
+# this line instead of polling /health and runtime-config themselves.
+report_ready() {
+    local repo="$1" server="$2" status discover deadline
+    discover="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/discover.sh"
+    deadline=$((SECONDS + ${QUIRQ_START_WAIT_SECONDS:-90}))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if ! kill -0 "$server" 2>/dev/null; then
+            start_status "$repo" exited
+            return 0
+        fi
+        status="$(bash "$discover" 2>/dev/null || true)"
+        case "$status" in
+            *'"state":"running"'*'"repo_dir":'"$(json_quote "$repo")"*)
+                printf 'XO_SPACE_START %s\n' "$status"
+                return 0 ;;
+        esac
+        sleep 2
+    done
+    start_status "$repo" timeout
+}
+
+start_status() { # repo state
+    printf 'XO_SPACE_START {"state":"%s","repo_dir":%s,"hint":"See the Space log named in the Logs: line above."}\n' \
+        "$2" "$(json_quote "$1")"
+}
+
+json_quote() { # JSON string for a filesystem path (paths carry no control characters)
+    local s="${1//\\/\\\\}"
+    printf '"%s"' "${s//\"/\\\"}"
+}
+
+launch_server() {
+    local repo="$1"
     cd "$repo"
     # Read dotenv as data, never as shell code. The existing venv provides
     # its parser; no global Python, dependency sync or network is needed.

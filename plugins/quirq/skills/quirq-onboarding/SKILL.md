@@ -7,6 +7,10 @@ description: First-run setup for the XO Space plugin. Use right after the plugin
 
 Goal: the user ends with a running local Space and knows where to find it.
 
+0. Identify the system this task runs on (from the environment details, or
+   `uname -s`): Windows, macOS, Linux or WSL. On Windows (not inside WSL),
+   run every script step below as the `quirq` skill's "On Windows" section
+   describes. On macOS, Linux and WSL, run the scripts directly with `bash`.
 1. Call `space_status`.
    - Connected: go to step 3.
    - Not reachable: continue with step 2.
