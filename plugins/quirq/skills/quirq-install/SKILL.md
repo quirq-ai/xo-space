@@ -41,9 +41,15 @@ Resolve `<plugin-root>` as two directories above this skill directory.
    it through `QUIRQ_DISCOVER_PORTS`. Do not mistake another running Space for
    this install. If the process exits or times out, report its error and a short
    redacted log excerpt; do not repeatedly reinstall.
-6. Open `<base_url>/space/` in Codex's browser when available. Report
+6. Show Space: when the Space MCP tools are available, call `space_open` (the
+   desktop app displays Space in the conversation; a terminal such as Codex CLI
+   displays nothing). Always also give the link `<base_url>/space/`; without the
+   MCP tools, open it in Codex's browser when available. Report
    `<workspace>/xo-space/.env`, the runtime's state/log path, and the task/terminal
    to keep alive. Existing Codex login is reused; no XO account is required.
+   Tell the user in one sentence: Space keeps running while this task is open;
+   if XO Space later says it is unreachable, ask "start XO Space" to start it
+   again.
 
 If a partial checkout already exists, the helper refuses to overwrite it. Inspect
 it and explain recovery: run its `install.sh` with `AGENT_NAME=codex` only when the
