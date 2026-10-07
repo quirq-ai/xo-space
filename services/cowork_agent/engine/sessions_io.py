@@ -14,6 +14,7 @@ from services.cowork_agent import project_layout
 from services.cowork_agent.helpers import iso_now, ms_to_iso
 from services.cowork_agent.project_layout import xo_projects_root
 from services.storage.layout import sessions_dir
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def _write_shard_atomic(path: Path, document: dict) -> None:
 def _read_index_document(path: Path) -> dict:
     """One ``{key: row}`` document, or ``{}`` if unreadable."""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(read_text_guarded(path))
     except (OSError, ValueError) as exc:
         logger.debug("session index: skipping %s: %s", path, exc)
         return {}

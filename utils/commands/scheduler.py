@@ -51,6 +51,7 @@ from utils.runtime_env import (
     scheduler_dir,
     watcher_tick_interval_seconds as tick_interval_seconds,
 )
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ def _empty_doc() -> dict:
 def _read_doc(path: Path) -> dict:
     """Absent → empty document. Corrupt → SchedulerError; never rewritten."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_guarded(path)
     except FileNotFoundError:
         return _empty_doc()
     except OSError as exc:
@@ -476,7 +477,7 @@ def list_runs(job_id: str, limit: int = 20) -> list[dict]:
             raise UnknownJobError(job_id)
         _harvest_for_read()
     try:
-        lines = runs_file(job_id).read_text(encoding="utf-8").splitlines()
+        lines = read_text_guarded(runs_file(job_id), max_bytes=None).splitlines()
     except FileNotFoundError:
         return []
     records: list[dict] = []

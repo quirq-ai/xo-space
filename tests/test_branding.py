@@ -229,7 +229,7 @@ class BrandingTests(unittest.TestCase):
                 self.assertEqual(self.path.read_text(), content)
 
     def test_unreadable_settings_report_actionable_error_without_details(self):
-        with patch.object(Path, "read_text", side_effect=PermissionError("private path")):
+        with patch.object(branding, "read_text_guarded", side_effect=PermissionError("private path")):
             response = self.client.get("/space/branding")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"]["code"], "branding_unavailable")

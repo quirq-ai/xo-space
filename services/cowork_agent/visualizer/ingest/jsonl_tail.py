@@ -38,6 +38,7 @@ from services.cowork_agent.visualizer.state import (
     legacy_watcher_state_dir,
     watcher_state_dir,
 )
+from utils.safe_read import read_text_guarded
 
 DEFAULT_OFFSETS_PATH = watcher_state_dir() / "offsets.json"
 LEGACY_OFFSETS_PATH = legacy_watcher_state_dir() / "offsets.json"
@@ -79,7 +80,7 @@ class OffsetStore:
         if not source_path.is_file():
             return
         try:
-            raw = json.loads(source_path.read_text(encoding="utf-8"))
+            raw = json.loads(read_text_guarded(source_path))
         except (OSError, json.JSONDecodeError):
             return
         offsets = raw.get("offsets") if isinstance(raw, dict) else None

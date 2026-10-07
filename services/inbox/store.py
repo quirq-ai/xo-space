@@ -47,6 +47,7 @@ from services.storage.flock import locked
 from services.storage.layout import inbox_dir
 from services.storage.reader import read_json
 from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts  # noqa: F401  (re-exported)
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +310,7 @@ def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
     ok = True
     if raw is None and path.is_file():
         try:
-            ok = not path.read_text(encoding="utf-8").strip()
+            ok = not read_text_guarded(path).strip()
         except OSError:
             ok = False
         if not ok:

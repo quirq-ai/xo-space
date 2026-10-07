@@ -125,7 +125,7 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(theme.get_theme(), {"theme": "quirq"})
 
     def test_unreadable_settings_report_error_without_private_details(self):
-        with patch.object(Path, "read_text", side_effect=PermissionError("private path")):
+        with patch.object(theme, "read_text_guarded", side_effect=PermissionError("private path")):
             response = self.client.get("/space/theme")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"]["code"], "theme_unavailable")
