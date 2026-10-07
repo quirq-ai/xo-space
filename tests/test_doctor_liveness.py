@@ -116,6 +116,27 @@ class WatcherTests(LivenessSandbox):
                 self.assertEqual([f["level"] for f in found], [] if level is None else [level])
 
 
+class WatcherDisabledTests(LivenessSandbox):
+    """Turning the watcher off is a setting (Setup's runtime settings), so it
+    is a note, never a warning by itself (the sandbox runs with it off)."""
+
+    def test_a_turned_off_watcher_is_a_note_not_a_problem(self) -> None:
+        report = self.report()
+        [watcher] = [c for c in report["checks"] if c["id"] == "watcher"]
+        self.assertEqual(watcher["level"], "OK")
+        [note] = watcher["findings"]
+        self.assertEqual((note["id"], note["level"]), ("watcher.disabled", "OK"))
+        self.assertIn("Stats, timelines", note["consequence"])
+        self.assertEqual(self.of("watcher."), [])
+
+    def test_a_running_watcher_has_no_note(self) -> None:
+        self.beat(1)
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}):
+            report = self.report()
+        [watcher] = [c for c in report["checks"] if c["id"] == "watcher"]
+        self.assertNotIn("watcher.disabled", [f["id"] for f in watcher["findings"]])
+
+
 class ComponentTests(LivenessSandbox):
     def test_a_crashed_poller_fails(self) -> None:
         with self.tasks(self.record("github poller", state="crashed", ended_at=self.now - 30,
@@ -344,6 +365,41 @@ class SchedulerTests(LivenessSandbox):
         self.assertEqual(self.of("scheduler."), [])
         self.schedule(next_run=_stamp(self.now - 99999))
         with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
+            self.assertEqual(self.of("scheduler."), [])
+
+    # The watcher is the only caller of scheduler.tick(): with it off, an
+    # enabled command never runs (live test A5 found this reported as healthy).
+
+    def test_with_the_watcher_off_enabled_commands_are_reported(self) -> None:
+        self.schedule(next_run=_stamp(self.now + 3600))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            [finding] = self.of("scheduler.")
+        self.assertEqual((finding["id"], finding["level"], finding["subject"]),
+                         ("scheduler.not_running", "WARN", "scheduler"))
+        self.assertEqual(finding["title"], "Saved commands can't run while the watcher is off")
+        self.assertIn("1 saved command is enabled", finding["observed"])
+        self.assertEqual(finding["problem_key"], "component:scheduler:not_running")
+
+    def test_with_the_watcher_off_an_overdue_command_is_a_fail(self) -> None:
+        self.schedule(next_run=_stamp(self.now - 5 * 86400))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            [finding] = self.of("scheduler.")
+        self.assertEqual(finding["level"], "FAIL")
+        evidence = {e["label"]: e["value"] for e in finding["evidence"]}
+        self.assertEqual(evidence["Overdue now"], "1")
+        self.assertIn("'nightly tests', due", evidence["Most overdue"])
+
+    def test_with_the_watcher_off_nothing_to_run_is_silent(self) -> None:
+        self.schedule(enabled=False, next_run=_stamp(self.now - 99999))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            self.assertEqual(self.of("scheduler."), [])
+            with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
+                self.schedule(next_run=_stamp(self.now - 99999))
+                self.assertEqual(self.of("scheduler."), [])
+
+    def test_with_the_watcher_off_damaged_files_are_left_to_their_checks(self) -> None:
+        (self.state / "scheduler" / "jobs.json").write_text("{", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
             self.assertEqual(self.of("scheduler."), [])
 
     def two_jobs(self, *, running_since) -> None:

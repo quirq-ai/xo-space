@@ -20,7 +20,7 @@ from services.cowork_agent.helpers import normalize_agent_id
 from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 from services.doctor import inventory
 from services.doctor.context import Context
-from services.doctor.model import FAIL, WARN, Finding, ago, ev, moment
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, moment
 from services.timestamps import parse_ts
 from utils import runtime_env
 
@@ -170,9 +170,17 @@ def _stopped(ctx: Context, name: str, record: dict, *, path: str = "",
 
 def watcher(ctx: Context) -> list[Finding]:
     """Crashed, stuck or failing (#188 design §7; decision 3)."""
-    if not watcher_enabled():
-        return []
     shown = ctx.display(watcher_heartbeat_path())
+    if not watcher_enabled():
+        # A setting a person may choose (Setup's runtime settings), so a note
+        # rather than a warning; what it costs in scheduled commands is
+        # judged by the scheduler check, which warns when something won't run.
+        _, stops = _label(WATCHER)
+        return [Finding(
+            "watcher.disabled", OK, WATCHER, shown, "The watcher is turned off (QUIRQ_WATCHER_ENABLED is false).", "",
+            title="The watcher is turned off", consequence=stops, self_repair="Nothing.",
+            next_step="If that isn't intended, turn the watcher on in Setup's runtime settings and restart the server.",
+            problem_key="component:watcher:disabled")]
     record = ctx.components.get(WATCHER)
     age = heartbeat_age(ctx)
     limit = stale_after()
@@ -466,15 +474,19 @@ _OK_RESULTS = frozenset({"ok", "skipped"})
 
 def scheduler(ctx: Context) -> list[Finding]:
     """Scheduled commands that didn't run, are stuck, or failed. The
-    scheduler runs inside the watcher, so both must be enabled."""
+    scheduler runs only inside the watcher (``visualizer/watcher.py`` is the
+    one caller of ``scheduler.tick()``): with the watcher off, an enabled
+    command never runs at all, which is reported by itself."""
     from utils.commands.scheduler import max_concurrent, scheduler_enabled
 
-    if not watcher_enabled() or not scheduler_enabled():
+    if not scheduler_enabled():
         return []
     jobs = ctx.read(ctx.state_root / "scheduler" / "jobs.json",
                     inventory.spec_for(inventory.STATE, "scheduler/jobs.json"))
     state = ctx.read(ctx.state_root / "scheduler" / "state.json",
                      inventory.spec_for(inventory.STATE, "scheduler/state.json"))
+    if not watcher_enabled():
+        return _not_running(ctx, jobs, state)
     if jobs.outcome != "ok" or state.outcome != "ok":
         return []  # absent (no commands) or damaged (the read check reports that)
     job_map, state_map = jobs.value.get("jobs"), state.value.get("jobs")
@@ -531,6 +543,44 @@ def scheduler(ctx: Context) -> list[Finding]:
                 next_step="Open the command on the Schedules page and read its output.",
                 problem_key=f"job:{job_id}:last_failed"))
     return out
+
+
+def _not_running(ctx: Context, jobs, state) -> list[Finding]:
+    """The watcher is off, so no saved command runs: one finding for all of
+    them, a FAIL once one of them is already past its due time."""
+    job_map = jobs.value.get("jobs") if jobs.outcome == "ok" else None
+    if not isinstance(job_map, dict):
+        return []  # no saved commands, or a file the read and content checks report
+    enabled = {job_id: job for job_id, job in job_map.items()
+               if isinstance(job, dict) and job.get("enabled", True)}
+    if not enabled:
+        return []
+    state_map = state.value.get("jobs") if state.outcome == "ok" else None
+    state_map = state_map if isinstance(state_map, dict) else {}
+    overdue: list[tuple[float, str]] = []
+    for job_id in enabled:
+        entry = state_map.get(job_id)
+        due = _ts(entry.get("next_run")) if isinstance(entry, dict) else None
+        if due is not None and due <= ctx.now:
+            overdue.append((due, job_id))
+    overdue.sort()
+    count = len(enabled)
+    evidence = [ev("Saved commands enabled", count)]
+    observed = f"{count} saved command{'' if count == 1 else 's'} {'is' if count == 1 else 'are'} enabled, but the watcher, which runs them, is turned off."
+    if overdue:
+        due, job_id = overdue[0]
+        name = str(enabled[job_id].get("name") or job_id)
+        evidence += [ev("Overdue now", len(overdue)), ev("Most overdue", f"'{name}', due {moment(due, ctx.now)}")]
+        observed += f" {len(overdue)} {'is' if len(overdue) == 1 else 'are'} already past due."
+    return [Finding(
+        "scheduler.not_running", FAIL if overdue else WARN, "scheduler",
+        ctx.display(ctx.state_root / "scheduler" / "jobs.json"), observed, "",
+        title="Saved commands can't run while the watcher is off", evidence=evidence,
+        consequence="They don't run at all, not even late, until the watcher is on again.",
+        self_repair="Nothing: the scheduler only runs inside the watcher.",
+        next_step=("Turn the watcher on in Setup's runtime settings and restart the server, or turn off the "
+                   "commands you don't need on the Schedules page."),
+        problem_key="component:scheduler:not_running")]
 
 
 def _usage_token_present() -> bool:
