@@ -141,7 +141,7 @@ class FeatureModuleTests(unittest.TestCase):
     def test_chat_client_returns_none_on_failure(self) -> None:
         with patch.object(chat, "request", new=AsyncMock(return_value=_http.SwarmResult(ok=False, status=500, text="x", detail="swarm returned 500"))):
             self.assertIsNone(run(chat.ChatAPIClient().push_message("p", "u", "m")))
-            self.assertEqual(run(chat.ChatAPIClient().get_message_count("p")), 0)
+            self.assertIsNone(run(chat.ChatAPIClient().fetch_messages("p")))
 
 
 class OneDoorTests(unittest.TestCase):
