@@ -113,11 +113,11 @@ mkdir -p "$W/ws2" && git clone -q -b main "file://$W/origin/xo-space" "$W/ws2/xo
 commit_installer "$W/ws2/xo-space" && chmod 0777 "$W/ws2/xo-space"
 local_head="$(git -C "$W/ws2/xo-space" rev-parse HEAD)"
 out="$(run "$W/ws2" "$W/ws2/xo-space/install.sh")"; rc=$?
-expect_stop "cd ws && ./xo-space/install.sh on a 0777 clone -> stops with chmod" "$out" "$rc" "chmod go-w $W/ws2/xo-space"
+expect_stop "cd ws && ./xo-space/install.sh on a 0777 clone -> stops with chmod" "$out" "$rc" "chmod -R go-w $W/ws2/xo-space"
 out="$(run "$W/ws2/xo-space" "$W/ws2/xo-space/install.sh")"; rc=$?
 expect_stop "cd xo-space && ./install.sh on a 0777 clone -> stops" "$out" "$rc" "Other users can write to $W/ws2/xo-space so"
 out="$(run "$W/ws2/xo-space")"; rc=$?
-expect_stop "piped from inside a 0777 clone -> stops" "$out" "$rc" "chmod go-w"
+expect_stop "piped from inside a 0777 clone -> stops" "$out" "$rc" "chmod -R go-w $W/ws2/xo-space"
 check "…the clone kept its local commit" "$(git -C "$W/ws2/xo-space" rev-parse HEAD)" "$local_head"
 check "…and nothing was nested in it" "$(test -e "$W/ws2/xo-space/xo-space" && echo nested || echo none)" "none"
 out="$(run "$W/ws2" "$W/ws2/xo-space/install.sh" 'filesystem_type(){ echo 9p; }')"; rc=$?
@@ -129,6 +129,7 @@ mkdir -p "$W/openparent" && git clone -q -b main "file://$W/origin/xo-space" "$W
 commit_installer "$W/openparent/xo-space" && chmod 0777 "$W/openparent"
 out="$(run "$W/openparent/xo-space" "$W/openparent/xo-space/install.sh")"; rc=$?
 expect_stop "own 0755 clone under a 0777 parent -> stops, names the parent" "$out" "$rc" "$W/openparent, a folder above $W/openparent/xo-space"
+case "$(err)" in *"chmod go-w $W/openparent "*) ok "…and says plain chmod go-w for a parent, not -R";; *) bad "…and says plain chmod go-w for a parent, not -R" "$(err)";; esac
 chmod 1777 "$W/openparent"
 check "…under a 1777 (sticky) parent -> in-place" \
       "$(run "$W/openparent/xo-space" "$W/openparent/xo-space/install.sh")" "$W/openparent/xo-space|$W/openparent/xo-space|0"
@@ -141,7 +142,7 @@ if [ "$(id -u)" -eq 0 ]; then shared_group=12345
 else shared_group="$(id -Gn | tr ' ' '\n' | grep -vx "$me_name" | head -n 1)"; fi
 if [ -n "$shared_group" ] && chgrp "$shared_group" "$W/gw" 2>/dev/null; then
     out="$(run "$W/gw" "$W/gw/install.sh")"; rc=$?
-    expect_stop "0775 clone, shared group $shared_group -> stops" "$out" "$rc" "chmod go-w $W/gw"
+    expect_stop "0775 clone, shared group $shared_group -> stops" "$out" "$rc" "chmod -R go-w $W/gw"
 else echo "skip  shared-group case: no group other than $me_name to test with"; fi
 if chgrp "$me_name" "$W/gw" 2>/dev/null; then
     check "0775 clone, the owner's private group -> in-place" "$(run "$W/gw" "$W/gw/install.sh")" "$W/gw|$W/gw|0"
@@ -245,7 +246,7 @@ expect_stop "one-liner under umask 000 on a drive where chmod does nothing -> st
 mkdir -p "$W/ww" && git clone -q -b main "file://$W/origin/xo-space" "$W/ww/xo-space"
 git -C "$W/ww/xo-space" reset -q --hard HEAD~1 && ww_head="$(git -C "$W/ww/xo-space" rev-parse HEAD)" && chmod 0777 "$W/ww/xo-space"
 out="$(prepare "$W/ww" 022)"; rc=$?
-expect_stop "existing 0777 managed checkout -> stops with chmod before any git command" "$out" "$rc" "chmod go-w $W/ww/xo-space"
+expect_stop "existing 0777 managed checkout -> stops with chmod before any git command" "$out" "$rc" "chmod -R go-w $W/ww/xo-space"
 check "…and was not updated" "$(git -C "$W/ww/xo-space" rev-parse HEAD)" "$ww_head"
 if [ "$(id -u)" -eq 0 ]; then
     mkdir -p "$W/theirs" && git clone -q -b main "file://$W/origin/xo-space" "$W/theirs/xo-space" && chown -R 12345 "$W/theirs/xo-space"

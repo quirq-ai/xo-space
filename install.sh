@@ -168,14 +168,16 @@ on_permissionless_fs() {
 # no Unix permissions (WSL's /mnt/c, FAT and exFAT drives, VirtualBox shared
 # folders) chmod changes nothing, so it says to clone elsewhere instead.
 writable_problem() {
-    local path="$1" checkout="$2" where=""
-    [ "$path" = "$checkout" ] || where=", a folder above ${checkout},"
+    local path="$1" checkout="$2" where="" recursive="-R "
+    # The checkout's files are as exposed as the folder, so fix them too; a
+    # parent folder only needs its own bit.
+    [ "$path" = "$checkout" ] || { where=", a folder above ${checkout},"; recursive=""; }
     if on_permissionless_fs "$path"; then
         printf 'Other users can change files in %s%s and this drive does not keep Linux permissions, so Quirq will not run from there. Clone it into a Linux folder instead:  git clone %s ~/%s && ~/%s/install.sh' \
             "$path" "$where" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
     else
-        printf 'Other users can write to %s%s so Quirq will not run from there. Run  chmod go-w %q  and start again. If that does not take (some drives ignore permissions), clone into a folder in your home directory instead.' \
-            "$path" "$where" "$path"
+        printf 'Other users can write to %s%s so Quirq will not run from there. Run  chmod %sgo-w %q  and start again. If that does not take (some drives ignore permissions), clone into a folder in your home directory instead.' \
+            "$path" "$where" "$recursive" "$path"
     fi
 }
 
