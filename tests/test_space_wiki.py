@@ -731,8 +731,10 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("print_restart_hint", code)
         self.assertIn("Start again later:", code)
         self.assertIn("https://quirq.ai/install", code)
-        # The launch directory itself is probed for a checkout.
-        self.assertIn('"${LAUNCH_DIR}/server.py"', code)
+        # The launch directory itself is probed for a checkout, through the
+        # same ownership check as the script's own directory.
+        self.assertIn('looks_like_checkout "$LAUNCH_DIR"', code)
+        self.assertIn('[ -f "${dir}/server.py" ]', code)
         # A checkout on another branch is left alone, like a dirty one.
         self.assertIn("rev-parse --abbrev-ref HEAD", code)
 
