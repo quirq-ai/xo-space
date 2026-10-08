@@ -384,6 +384,12 @@ attribution is the fixed minimum the schema requires,
     the parent's session id, so subagent turns count toward the same run.
   - Every tool is counted by name, including `Agent` and `mcp__*`. Inputs
     are never recorded.
+- **Read side:** `GET /api/xo-projects/{id}/usage-records` returns the summary
+  the Activity page's **Usage & cost** panel shows. It is built by
+  `visualizer/audr_summary.py` from the file and its rotations.
+  - It applies AUDR's own rules: one record per `record_id`, and a `corrects`
+    record replaces the record it names.
+  - The result is cached against each file's size and modification time.
 
 - **Fields:** `emitter.component` is `harness` and `run.run_id` is the native
   session id. `run.span_id` is derived from the event, so it is unique within

@@ -30,6 +30,33 @@
 .iac-todo-status.st-pending{color:var(--ink-2)}
 .iac-todo-status.st-blocked{color:var(--warning-text,#e0b04c);border-color:var(--warning-text,#e0b04c)}
 .iac-todo-status.st-completed,.iac-todo-status.st-cancelled{color:var(--ink-3)}
+/* Usage & cost (OpenAudr records). Every block is its own bordered card with
+   even spacing: stat tiles, then one card per breakdown. Text stays in ink
+   tokens; nothing here is encoded by colour. */
+.iac-usage>div{padding:16px 15px 4px;border-top:1px solid var(--line-soft)}
+.iac-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.iac-stat{display:flex;flex-direction:column;gap:5px;padding:14px 16px;border:1px solid var(--line-soft);border-radius:9px;background:var(--bg);min-width:0}
+.iac-stat-label{font-size:11px;color:var(--ink-3);padding-bottom:7px;border-bottom:1px solid var(--line-soft)}
+.iac-stat-value{font:500 22px/1.2 var(--sans);color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:-.01em;padding-top:3px}
+.iac-stat-note{font-size:11px;line-height:1.5;color:var(--ink-3);overflow-wrap:anywhere}
+/* Cards top-align: a short card never stretches to match the tallest. */
+.iac-usage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:start;gap:12px;margin-bottom:16px}
+.iac-usage-card{border:1px solid var(--line-soft);border-radius:9px;background:var(--bg);min-width:0;overflow:hidden}
+.iac-usage-card-title{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:0;padding:11px 14px;border-bottom:1px solid var(--line-soft);font:500 12px/1.4 var(--sans);color:var(--ink-2)}
+.iac-usage-card-title>span{font-weight:400;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.iac-usage-table{width:100%;border-collapse:collapse;font-size:12px}
+.iac-usage-table th,.iac-usage-table td{padding:9px 14px;vertical-align:top;text-align:left}
+.iac-usage-table thead th{font-weight:400;font-size:11px;color:var(--ink-3);padding-top:8px;padding-bottom:8px;border-bottom:1px solid var(--line-soft);background:var(--bg-2)}
+.iac-usage-table tbody tr+tr>*{border-top:1px solid var(--line-soft)}
+.iac-usage-table tbody th{font-weight:400;color:var(--ink-2);min-width:0}
+.iac-usage-table .num{text-align:right;padding-left:6px;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.iac-usage-name{display:block;overflow-wrap:anywhere;min-width:0}
+code.iac-usage-name{font:400 12px/1.5 var(--mono)}
+.iac-usage-sub,.iac-usage-flag{display:block;margin-top:2px;font-size:11px;line-height:1.5;color:var(--ink-3)}
+.iac-usage-muted{color:var(--ink-3)}
+.iac-usage-more{margin:0;padding:8px 14px;border-top:1px solid var(--line-soft);font-size:11px;color:var(--ink-3)}
+.iac-usage-foot{margin:0 0 12px;padding-top:12px;border-top:1px solid var(--line-soft);font-size:11px;line-height:1.6;color:var(--ink-3)}
+.iac-usage-foot code{font:400 11px var(--mono)}
 .iac-events{list-style:none;padding:0;margin:0;border:1px solid var(--line-soft);border-radius:12px;background:var(--bg-2);overflow:hidden}
 .iac-events:empty{display:none}
 .iac-event{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:14px;padding:16px 18px;align-items:start}

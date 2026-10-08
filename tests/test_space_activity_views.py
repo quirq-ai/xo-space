@@ -44,7 +44,7 @@ const ctx=vm.createContext({
   setInterval:(fn,ms)=>{const id=++sequence;intervals.set(id,{fn,ms});return id;},clearInterval:id=>intervals.delete(id),
 });
 const source=fs.readFileSync('space_ui/js/views/inbox-activity.js','utf8').replace(/^import[^\n]*\n/gm,'').replace(/export function /g,'function ');
-vm.runInContext(source+'\nglobalThis.api={createActivityViews,buildWorkspaceEvents,buildSharingEvents,filterActivityEvents,buildProjectTodos};',ctx);
+vm.runInContext(source+'\nglobalThis.api={createActivityViews,buildWorkspaceEvents,buildSharingEvents,filterActivityEvents,buildProjectTodos,formatUsd};',ctx);
 const {api}=ctx;
 const emit=(type,detail)=>{for(const fn of listeners.get(type)||[])fn({detail});};
 const settle=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
@@ -249,6 +249,51 @@ assert.match(root.querySelector('[data-activity-warning]').textContent,/Open ses
 assert.match(root.querySelector('[data-activity-warning]').textContent,/Project todos are unavailable/);
 assert.ok(!todos.innerHTML.includes('Beta task'),'Mismatched identity is unavailable, never presented as current');
 malformed=false;await view.refresh();assert.match(todos.innerHTML,/Beta task/);view.hide();
+""")
+
+    def test_project_usage_panel_shows_cost_and_flags_unpriced_turns(self):
+        self.probe(r"""
+assert.equal(api.formatUsd(0.2901289),'$0.2901');assert.equal(api.formatUsd(0.00001),'<$0.0001');
+assert.equal(api.formatUsd(0),'$0.0000');assert.equal(api.formatUsd(123.456),'$123.46');assert.equal(api.formatUsd(NaN),'—');
+const defaults=handler;let identity='alpha';
+const tokens={input:30,output:1063,cache_read:459144,cache_write:143151};
+handler=path=>path==='/api/xo-projects/alpha/usage-records'?success({project_id:identity,records:22,unreadable_lines:0,currency:'USD',
+  total_cost:0.290128945,model_turns:15,priced_turns:5,unpriced_turns:10,tool_calls:7,tokens,
+  by_model:[{model:'<b>claude-opus-5-5</b>',provider:'anthropic',turns:13,tokens,cost:0.2877638,unpriced_turns:9}],
+  by_session:[{run_id:'aa31fbc7-1f13-46eb-8ec6-77ac2863a286',turns:4,tool_calls:2,cost:0.18,unpriced_turns:0,first_at:'2026-10-08T14:14:58Z',last_at:'2026-10-08T14:15:05Z'},
+   {run_id:'389af880-54e9-49db-91c8-b10aabe19f21',turns:5,tool_calls:4,cost:0,unpriced_turns:5,first_at:'2026-10-08T14:14:39Z',last_at:'2026-10-08T14:14:45Z'}],
+  by_tool:[{tool:'Bash',calls:6},{tool:'Write',calls:1}],recent:[]}):defaults(path);
+emit('space:activity-project',{project_id:'alpha'});
+const [view]=api.createActivityViews(),root=mount(view);view.show();await view.refresh();
+assert.ok(calls.some(call=>call.path==='/api/xo-projects/alpha/usage-records'));
+assert.equal(root.querySelector('[data-activity-usage]').hidden,false);
+assert.equal(root.querySelector('[data-activity-usage]').open,true);
+assert.equal(root.querySelector('[data-activity-usage-summary]').textContent,'Usage & cost · $0.2901 · 15 model turns');
+const html=root.querySelector('[data-activity-usage-rows]').innerHTML;
+assert.match(html,/Total cost/);assert.match(html,/10 turns unpriced/);assert.match(html,/\+9 unpriced/);
+assert.match(html,/aa31fbc7/);assert.match(html,/Bash/);
+assert.match(html,/>Unpriced</,'A session with no priced turn says Unpriced');
+assert.ok(!html.includes('$0.0000'),'An unpriced session is never shown as $0');
+assert.ok(html.includes('&lt;b&gt;claude-opus-5-5'),'Model names are escaped');
+identity='beta';await view.refresh();
+assert.match(root.querySelector('[data-activity-warning]').textContent,/Usage and cost are unavailable/);
+assert.ok(!root.querySelector('[data-activity-usage-rows]').innerHTML.includes('Total cost'),'Another project\'s usage is never shown');
+const select=root.querySelector('[data-activity-project-filter]');select.value='';select.emit('change');await settle();
+assert.equal(root.querySelector('[data-activity-usage]').hidden,true);
+assert.equal(calls.filter(call=>call.path==='/api/xo-projects/usage-records').length,0,'All projects makes no usage read');
+view.hide();
+""")
+
+    def test_project_usage_panel_explains_an_empty_project(self):
+        self.probe(r"""
+const defaults=handler;
+handler=path=>path.endsWith('/usage-records')?success({project_id:'alpha',records:0,unreadable_lines:0,currency:'USD',total_cost:0,
+  model_turns:0,priced_turns:0,unpriced_turns:0,tool_calls:0,tokens:{input:0,output:0,cache_read:0,cache_write:0},
+  by_model:[],by_session:[],by_tool:[],recent:[]}):defaults(path);
+emit('space:activity-project',{project_id:'alpha'});
+const [view]=api.createActivityViews(),root=mount(view);view.show();await view.refresh();
+assert.match(root.querySelector('[data-activity-usage-rows]').innerHTML,/No usage has been recorded for this project yet/);
+view.hide();
 """)
 
 

@@ -10,6 +10,7 @@ from typing import Iterable, Optional, Union
 from services.cowork_agent import project_layout
 from services.cowork_agent.engine import sessions_io as session_index
 from services.cowork_agent.registry import agent_env
+from services.cowork_agent.visualizer import audr_summary
 from services.cowork_agent.visualizer import peers_store
 from services.cowork_agent.visualizer import reader as visualizer_reader
 from services.cowork_agent.visualizer import todos_store
@@ -105,6 +106,10 @@ class _XoReader:
 
     def read_activity(self) -> Optional[dict]:
         return visualizer_reader.read_json(self._activity_path)
+
+    def read_usage_records(self) -> dict:
+        """The project's OpenAudr usage records (``audr.jsonl``), summarised."""
+        return audr_summary.summarize(self._runtime_root)
 
     def read_timeline(
         self,

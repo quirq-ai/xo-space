@@ -391,8 +391,15 @@ with project names from `/api/xo-projects` and a separate open-session summary
 from `/api/xo-projects/activity`. Choosing a project uses its `/timeline`, `/activity`
 and `/todos` endpoints. The selected project shows todos in status order and
 current sessions with their agent, runtime, session ID, opened time and last
-activity. All projects does not request every project’s todos. **View activity**
-in Manage selects that project and clears an older event search. **Load older
+activity. All projects does not request every project’s todos. A selected
+project also shows **Usage & cost**, read from `/api/xo-projects/{id}/usage-records`,
+a summary of the project's OpenAudr `audr.jsonl`. It shows:
+- total cost in USD, model turns, tool calls and tokens;
+- a breakdown by model, session and tool.
+
+Turns with no price are counted and labelled "unpriced", never shown as $0.
+**View activity** in Manage selects that project and clears an older event
+search. **Load older
 events** follows `next_cursor` with `before`; search covers loaded events.
 
 **Sharing activity** (`#/inbox/sharing-activity`) follows Activity. It reads

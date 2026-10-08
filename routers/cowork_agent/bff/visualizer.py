@@ -47,6 +47,7 @@ from routers.cowork_agent.bff._visualizer_models import (
     SessionTodos,
     TimelineEvent,
     TimelineResponse,
+    UsageRecordsResponse,
     TokenTotals,
     Todo,
     TodosResponse,
@@ -1502,6 +1503,32 @@ def project_activity(project_id: str) -> ActivityResponse:
                     "message": "activity state is not readable."},
         ) from exc
     return _shape_activity(project_id, raw)
+
+
+# ── /api/xo-projects/{id}/usage-records ──────────────────────────────────────
+
+
+@router.get(
+    "/api/xo-projects/{project_id}/usage-records",
+    response_model=UsageRecordsResponse,
+)
+def project_usage_records(project_id: str) -> UsageRecordsResponse:
+    """The project's OpenAudr usage records, summarised: cost, tokens, and
+    breakdowns by model, session and tool, plus the newest records.
+
+    Read-only over the watcher-written ``audr.jsonl``. Zeros, not 404, when
+    nothing has been recorded yet.
+    """
+    scope = _require_project(project_id)
+    try:
+        summary = scope.read_usage_records()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "scope_unavailable",
+                    "message": "usage records are not readable."},
+        ) from exc
+    return UsageRecordsResponse(project_id=project_id, **summary)
 
 
 def _message_counts_for_row(row: dict) -> MessageCounts:
