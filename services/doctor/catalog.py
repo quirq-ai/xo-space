@@ -28,6 +28,7 @@ PHRASE = {
     "empty": "is empty",
     "invalid_json": "is damaged (not valid JSON)",
     "wrong_type": "holds the wrong kind of data",
+    "wrong_shape": "holds data its store can't use",
     "unreadable": "can't be read",
     "special": "isn't a regular file",
     "file_too_large": "is too large to check",
@@ -60,7 +61,14 @@ class About:
 
 
 _NO_REBUILD = "Nothing: its store never rewrites a file it can't read."
-_RESTORE_PROJECT = "Restore it from git or the last project sync (both keep the project's .xo/ folder)"
+_RESTORE_PROJECT = "Restore it from the last project sync (it always keeps .xo/), or from git if the project commits .xo/"
+#: Change caches are written through ChangeGate, which never re-reads the disk
+#: once it holds a copy (storage/atomic_write.py), so a damaged one is replaced
+#: only when its content changes, at the next server start, or when deleted.
+_CHANGE_CACHE_REPAIR = "the next server start, or if the file is deleted"
+
+_INBOX_REFUSED = ("The Inbox shows as empty (the server answers with no items rather than an error), and marking "
+                  "items done, deleting them or adding notes fails.")
 
 ABOUT: dict[str, About] = {
     "inbox/inbox.json": About(
@@ -68,27 +76,23 @@ ABOUT: dict[str, About] = {
         consequence="The Inbox can't use its saved items, seen and done marks, notes and read positions.",
         self_repair="Nothing: the Inbox leaves a file it can't parse alone.",
         next_step=("Repair the JSON by hand if you can. Otherwise move the file aside: the next Inbox refresh "
-                   "rebuilds items from the last day of activity, the last week of GitHub issues and blocked "
-                   "todos, but seen and done marks and notes are lost."),
+                   "rebuilds items from the last day of activity and connection items, open GitHub issues updated "
+                   "in the last week, blocked todos and recent sharing events, but seen and done marks and notes "
+                   "are lost."),
         overrides={
             "empty": {
                 "consequence": ("The Inbox treats it as a new, empty Inbox: its items, seen and done marks and "
                                 "notes are already gone."),
-                "self_repair": ("The next Inbox refresh adds back items from the last day of activity, the last "
-                                "week of GitHub issues and blocked todos, as new."),
+                "self_repair": ("The next Inbox refresh adds back items from the last day of activity and "
+                                "connection items, open GitHub issues updated in the last week, blocked todos and "
+                                "recent sharing events, as new."),
                 "next_step": ("If you have an earlier copy of inbox.json, put it back before the Inbox is next "
-                              "opened; otherwise nothing is needed."),
+                              "opened or anything adds to it; otherwise nothing is needed."),
             },
-            "invalid_json": {
-                "consequence": ("The Inbox shows as empty (the server answers with no items rather than an "
-                                "error), and marking items done, deleting them or adding notes fails."),
-            },
-            "wrong_type": {
-                "consequence": ("The Inbox treats it as empty, and its next refresh or change overwrites it, so "
-                                "its items, seen and done marks and notes are lost for good."),
-                "self_repair": "The next Inbox refresh replaces it with a fresh Inbox.",
-                "next_step": "If you have an earlier copy of inbox.json, put it back now, before the Inbox is opened again.",
-            },
+            # The store refuses to write over a file it can't use (not JSON,
+            # not an object, or items that aren't a list): it reads as empty.
+            "invalid_json": {"consequence": _INBOX_REFUSED},
+            "wrong_type": {"consequence": _INBOX_REFUSED},
         },
         levels={"empty": WARN},
     ),
@@ -106,8 +110,9 @@ ABOUT: dict[str, About] = {
                      "last run times can't be read."),
         self_repair=("Nothing while it's unreadable. If it's deleted, the scheduler rebuilds it from the saved "
                      "commands on its next tick."),
-        next_step=("Delete it to let the scheduler rebuild it within a second. One-time commands that already ran "
-                   "will run once more, and each command's last result is blank until its next run."),
+        next_step=("Delete it to let the scheduler rebuild it on its next tick (within a second while the watcher "
+                   "runs). One-time commands that already ran will run once more, a repeating command with no start "
+                   "time waits one full interval, and each command's last result is blank until its next run."),
     ),
     "connections/accounts.json": About(
         name="The connected-account list", owner="Connections",
@@ -115,6 +120,10 @@ ABOUT: dict[str, About] = {
         self_repair=("Nothing while it can't be parsed. If it's deleted, each connection's next poll looks the "
                      "account up again."),
         next_step="Delete it; the labels come back on each connection's next poll.",
+        overrides={situation: {
+            "self_repair": "The next poll that looks up an account rewrites it.",
+            "next_step": "Nothing is needed.",
+        } for situation in ("empty", "wrong_type")},
     ),
     "connections/*/config.json": About(
         name="{toolkit}'s connection settings file", owner="Connections",
@@ -123,10 +132,10 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing.",
         next_step=("Fix the file by hand, or delete it and turn {toolkit} back on in Connections, choosing the "
                    "interval and feeds again. Items already collected are kept."),
-        overrides={"wrong_type": {
+        overrides={situation: {
             "consequence": ("{toolkit} counts as not configured and isn't polled; the next time its settings are "
                             "saved, this file is replaced with the defaults."),
-        }},
+        } for situation in ("empty", "wrong_type")},
     ),
     "connections/*/state.json": About(
         name="{toolkit}'s polling record", owner="the connections poller",
@@ -165,7 +174,8 @@ ABOUT: dict[str, About] = {
     "usage/*.json": About(
         name="The usage-report bookmark", owner="usage reporting",
         consequence="Usage reporting can't tell what it already sent.",
-        self_repair="At the next server start it re-sends all usage history once and writes the file again.",
+        self_repair=("At the next usage sync (when the server starts, or the daily run) it re-sends all usage "
+                     "history and writes the file again, once the Space is signed in and XO accepts its key."),
         next_step="Nothing is needed, or delete it; the next start rebuilds it.",
         overrides={"wrong_type": {
             "consequence": ("Usage reporting has stopped: it fails on this file every time the server starts, "
@@ -178,15 +188,16 @@ ABOUT: dict[str, About] = {
     "projects/offsets.json": About(
         name="The watcher's reading-position file", owner="the watcher",
         consequence=("Nothing breaks while the server keeps running: the watcher keeps the positions in memory. If "
-                     "the server restarts before this file is valid again, every agent session is read again from "
-                     "the start, and usage totals, session counters and timelines count everything twice."),
-        self_repair="The watcher writes it again from memory the next time any agent session grows.",
+                     "the server restarts before this file is valid again, every agent session it tracks is read "
+                     "again from the start, and usage totals, session counters and timelines count everything twice."),
+        self_repair=("The watcher writes it again from memory the next time a session it tracks grows or a new "
+                     "one starts."),
         next_step=("Don't restart the server yet. Use any agent session (or wait for one to continue), then run "
                    "checks again to confirm the file is valid."),
         overrides={"watcher_stopped": {
             "consequence": ("The watcher isn't running, so it can't write this file again. When the server next "
-                            "starts, every agent session is read again from the start, and usage totals, session "
-                            "counters and timelines count everything twice."),
+                            "starts, every agent session it tracks is read again from the start, and usage totals, "
+                            "session counters and timelines count everything twice."),
             "self_repair": "Nothing while the watcher is stopped.",
             "next_step": ("If you have an earlier copy of this file, put it back before the server restarts. "
                           "Otherwise expect usage totals and timelines to double after the next restart."),
@@ -213,11 +224,25 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing recovers the old totals: the watcher's next write starts them again from zero.",
         next_step=("If you have an earlier copy, put it back before the next agent activity in this project; after "
                    "that, the old totals are gone."),
-        overrides={"wrong_type": {
-            "consequence": ("The project's usage totals can't be read, and the watcher fails on this file on every "
-                            "tick: the project's usage and timeline stop updating and new events are lost."),
-            "next_step": "Put back an earlier copy, or move the file aside so the watcher can start the totals again.",
-        }},
+        overrides={
+            # A list or string with content: the watcher's stats step raises
+            # on it each time the project has new activity (sinks/stats.py
+            # reads ``read_json(path) or {}``, then ``.get``), so that
+            # activity is never recorded, even after the file is repaired.
+            "wrong_type": {
+                "consequence": ("The watcher fails on this file each time this project has new agent activity: "
+                                "the project's usage totals and timeline stop updating, and that activity is never "
+                                "recorded, even after the file is repaired."),
+                "self_repair": "Nothing: the watcher never replaces a file it fails on.",
+                "next_step": ("Put back an earlier copy, or move the file aside so the totals start again from the "
+                              "next activity. Do it soon: activity until then is lost."),
+            },
+            # An empty value ([], "", 0, false) reads as no file at all.
+            "wrong_type_empty": {
+                "consequence": ("It holds no totals, and the next agent activity in this project replaces it with "
+                                "totals counted from that moment."),
+            },
+        },
     ),
     "projects/*/workitems/claims.json": About(
         name="Project {project}'s claim list", owner="work items",
@@ -228,35 +253,48 @@ ABOUT: dict[str, About] = {
     "projects/*/sessions/sessions-augment.json": About(
         name="Project {project}'s session-counter record", owner="the watcher",
         consequence=("Message and tool counts for this project's sessions can't be read, and the next agent "
-                     "activity in this project replaces the file with counts from that moment."),
+                     "activity or todo change in this project replaces the file with counts from that moment."),
         self_repair="Nothing recovers the old counts.",
-        next_step="If you have an earlier copy, put it back before the next agent activity in this project.",
-        overrides={"wrong_type": {
-            "consequence": ("The watcher fails on this file on every tick: this project's usage totals and "
-                            "timeline stop updating and new events are lost."),
-            "next_step": "Put back an earlier copy, or move the file aside.",
-        }},
+        next_step=("If you have an earlier copy, put it back before the next agent activity or todo change in this "
+                   "project."),
+        overrides={
+            # Same reading as stats.json (sinks/sessions_augment.py).
+            "wrong_type": {
+                "consequence": ("The watcher fails on this file each time this project has new agent activity: "
+                                "its session counts, usage totals and timeline stop updating, and that activity is "
+                                "never recorded, even after the file is repaired."),
+                "self_repair": "Nothing: the watcher never replaces a file it fails on.",
+                "next_step": ("Put back an earlier copy, or move the file aside so the counts start again from the "
+                              "next activity. Do it soon: activity until then is lost."),
+            },
+            "wrong_type_empty": {
+                "consequence": ("It holds no counts, and the next agent activity in this project replaces it with "
+                                "counts from that moment."),
+            },
+        },
     ),
     "projects/*/sessions/sessionslist.d/*.json": About(
         name="A session index entry of project {project}", owner="the session index",
-        consequence="That chat drops out of the session list and can't be resumed. Its transcript is still on disk.",
+        consequence=("That chat drops out of the session list and usually can't be resumed. Its transcript is "
+                     "still on disk."),
         self_repair="Nothing: only a new session writes a new entry.",
         next_step=("Repair the JSON by hand, or move the file aside to keep it; don't delete it. A repaired entry "
                    "shows again at once."),
     ),
     "sessions/sessionslist.d/*.json": About(
         name="A session index entry for chats outside any project", owner="the session index",
-        consequence=("That chat, started outside any project, drops out of the session list and can't be resumed. "
-                     "Its transcript is still on disk."),
+        consequence=("That chat, started outside any project, drops out of the session list and usually can't be "
+                     "resumed. Its transcript is still on disk."),
         self_repair="Nothing: only a new session writes a new entry.",
         next_step="Repair the JSON by hand, or move the file aside to keep it; don't delete it.",
     ),
     "projects/*/github/issues.json": About(
         name="Project {project}'s GitHub issue copy", owner="the GitHub poller",
-        consequence="The project's GitHub issues aren't shown until it's refreshed.",
-        self_repair="The GitHub poller overwrites it on its next successful poll, usually within a minute.",
-        next_step=("Leave it: deleting it would close this project's GitHub items in the Inbox, and they wouldn't "
-                   "reopen."),
+        consequence=("The project's GitHub issues aren't shown until it's refreshed. Meanwhile issues closed on "
+                     "GitHub stay open in the Inbox, for every project."),
+        self_repair="The GitHub poller rewrites it on its next poll, usually within a minute.",
+        next_step=("Leave it: deleting it can close this project's GitHub items in the Inbox until each issue next "
+                   "changes on GitHub."),
     ),
     "cache/heartbeat.json": About(
         name="The watcher's heartbeat", owner="the watcher",
@@ -266,10 +304,14 @@ ABOUT: dict[str, About] = {
     ),
     "cache/stats.json": About(
         name="The Space-wide usage record", owner="the watcher",
-        consequence="Space-wide usage shows zeros.",
-        self_repair=("Rebuilt from the projects' totals, but only when a project's totals next change, or if the "
-                     "file is deleted."),
+        consequence="Space-wide token, model and tool usage shows zeros.",
+        self_repair="Rebuilt from the projects' totals when one of them next changes, at " + _CHANGE_CACHE_REPAIR + ".",
         next_step="Delete it; the watcher writes it again within seconds.",
+        overrides={
+            # A list or string with content reaches `stats.get` and the route raises.
+            "wrong_type": {"consequence": "Space-wide usage pages fail with a server error."},
+            "wrong_type_empty": {"consequence": "Space-wide token, model and tool usage shows zeros."},
+        },
     ),
     "cache/graph.json": About(
         name="The workspace map", owner="the watcher",
@@ -288,39 +330,44 @@ ABOUT: dict[str, About] = {
     ),
     "cache/sessions/sessionslist.json": About(
         name="The Space-wide session list", owner="the watcher",
-        consequence="Space-wide session lists show as empty.",
-        self_repair="Rebuilt from the projects' session entries when a session next changes, or if the file is deleted.",
+        consequence="Nothing in the server reads it; only tools that read this file directly see no sessions.",
+        self_repair="Rebuilt from the projects' session entries when a session next changes, at " + _CHANGE_CACHE_REPAIR + ".",
         next_step="Delete it; the watcher writes it again within seconds.",
     ),
     "cache/sessions/sessions-augment.json": About(
         name="The Space-wide session-counter record", owner="the watcher",
-        consequence="Space-wide session rows show no message or tool counts.",
-        self_repair="Rebuilt when a project's session counters next change, or if the file is deleted.",
+        consequence="Nothing in the server reads it; Space-wide session rows are unaffected.",
+        self_repair="Rebuilt when a project's session counters next change, at " + _CHANGE_CACHE_REPAIR + ".",
         next_step="Delete it; the watcher writes it again within seconds.",
     ),
     "cache/activity/workspace.json": About(
         name="The Space's live activity", owner="the watcher",
         consequence="The Space doesn't show who is working right now.",
-        self_repair="Rebuilt when someone's activity next changes, or if the file is deleted.",
+        self_repair="Rebuilt when someone's activity next changes, at " + _CHANGE_CACHE_REPAIR + ".",
         next_step="Delete it; the watcher writes it again within seconds.",
+        overrides={"wrong_type": {"consequence": "The Space's live-activity request fails with a server error."},
+                   "wrong_type_empty": {"consequence": "The Space doesn't show who is working right now."}},
     ),
     "cache/activity/projects/*.json": About(
         name="Project {project}'s live activity", owner="the watcher",
-        consequence=("The project doesn't show who is working in it right now, and its work-item claims may look "
-                     "stale."),
-        self_repair="Rebuilt when activity in the project next changes, or if the file is deleted.",
+        consequence=("The project doesn't show who is working in it right now, and work items being worked on "
+                     "stop showing as in progress."),
+        self_repair="Rebuilt when activity in the project next changes, at " + _CHANGE_CACHE_REPAIR + ".",
         next_step="Delete it; the watcher writes it again within seconds.",
+        overrides={"wrong_type": {"consequence": "The project's live-activity request fails with a server error."}},
     ),
     "space.json": About(
         name="The Space record", owner="the watcher",
         consequence="Nothing in the server reads it back; tools that read the Space's id and folders from it see nothing.",
-        self_repair="The watcher replaces it within a minute; its label, creation date and first-seen dates are reset.",
+        self_repair=("The watcher replaces it within a minute; its label, owner, creation date and the agents' "
+                     "first-seen dates are reset."),
         next_step="Nothing is needed; re-enter a custom Space label after it's rewritten.",
     ),
     "projects.json": About(
         name="The project registry", owner="the watcher",
-        consequence="Nothing in the server reads it; tools that list projects from it see a stale list.",
-        self_repair="The watcher replaces it within seconds.", next_step="Nothing is needed.",
+        consequence="Nothing in the server reads it; tools that list projects from it see no projects.",
+        self_repair="Rebuilt when a project is added, removed or re-identified, at " + _CHANGE_CACHE_REPAIR + ".",
+        next_step="Delete it; the watcher writes it again within seconds.",
     ),
     "xo.json": About(
         name="The feature manifest", owner="the server",
@@ -342,6 +389,16 @@ ABOUT: dict[str, About] = {
                      "todo items in the Inbox are closed."),
         self_repair="Nothing.",
         next_step=_RESTORE_PROJECT + ", or repair the JSON by hand. Don't delete it: an empty list would be created in its place.",
+        overrides={
+            "wrong_type": {"consequence": ("The todo list fails to load with an error, adding or changing todos "
+                                           "fails, and the project's todo items in the Inbox are closed.")},
+            "wrong_type_empty": {"consequence": ("The todo list shows as empty (no error), adding or changing todos "
+                                                 "fails, and the project's todo items in the Inbox are closed.")},
+            # Content checks: an empty sessions value reads as no todos, one with content raises.
+            "wrong_shape": {"consequence": ("The todo list fails to load or shows as empty, depending on what the "
+                                            "file holds; adding or changing todos fails, and the project's todo "
+                                            "items in the Inbox are closed.")},
+        },
     ),
     "workitems.json": About(
         name="Project {project}'s work-item list", owner="the work-item store",
@@ -359,7 +416,8 @@ ABOUT: dict[str, About] = {
     ),
     "agent.json": About(
         name="Project {project}'s agent record", owner="the agent backend",
-        consequence="The agent looks missing, or the whole agent list fails to load if the file holds the wrong kind of data.",
+        consequence=("The agent still appears in the list under its folder name, but opening or editing it finds "
+                     "nothing; the whole agent list fails to load if the file holds the wrong kind of data."),
         self_repair="Nothing.",
         next_step=(_RESTORE_PROJECT + ". Don't re-create the agent while project.json is also damaged: that "
                    "replaces the project's identity."),

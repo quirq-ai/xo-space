@@ -79,13 +79,13 @@ class NudgeTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         with patch.object(config, "auth_token", return_value="tok"), \
              patch.object(poller, "log_line", side_effect=lines.append), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value=None)):
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=(None, 0, True))):
             for _ in range(3):
                 loop.run_until_complete(poller.run_tick())
         failures = [l for l in lines if "unreachable" in l]
         self.assertEqual(len(failures), 1)
         with patch.object(config, "auth_token", return_value="tok"), \
              patch.object(poller, "log_line", side_effect=lines.append), \
-             patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": []})):
+             patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": []}, 200, False))):
             loop.run_until_complete(poller.run_tick())
         self.assertTrue(any("recovered" in l for l in lines))

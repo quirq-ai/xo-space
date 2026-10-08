@@ -7,10 +7,10 @@ import time
 from datetime import datetime, timezone
 from typing import Callable
 
-from services.doctor import checks, history, leftovers, liveness, relate
+from services.doctor import checks, content, history, leftovers, liveness, relate
 from services.doctor.context import Context
 from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, printable, rank, worst
-from services.doctor.reading import readable_dir
+from services.doctor.reading import MAX_WALK_ENTRIES, readable_dir
 from services.timestamps import iso
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ CHECKS: tuple[tuple[str, Check], ...] = (
     ("roots", checks.roots),
     ("disk", checks.disk_space),
     ("read", checks.reads),
+    ("content", content.check),
     ("history", history.check),
     ("perms", checks.private_permissions),
     ("space", checks.space_identity),
@@ -45,6 +46,9 @@ CHECKS: tuple[tuple[str, Check], ...] = (
 #: session shards made a 1.9 MB report, and the Space UI renders every row.
 #: Keep the worst ones and say how many were left out.
 MAX_FINDINGS_PER_CHECK = 100
+#: Findings that say the report itself is incomplete: never dropped by the
+#: cap, whatever their level, so a capped list can't hide that it's partial.
+PINNED = frozenset({"read.too_large"})
 
 
 def _cap(family: str, findings: list[Finding]) -> list[Finding]:
@@ -52,7 +56,7 @@ def _cap(family: str, findings: list[Finding]) -> list[Finding]:
         return findings
     # A stable sort by rank keeps each level's original order, so the report
     # still reads in inventory order within the worst level.
-    ordered = sorted(findings, key=lambda finding: -rank(finding.level))
+    ordered = sorted(findings, key=lambda finding: (finding.id not in PINNED, -rank(finding.level)))
     kept, dropped = ordered[:MAX_FINDINGS_PER_CHECK], ordered[MAX_FINDINGS_PER_CHECK:]
     return kept + [Finding(
         # The rollup's level is the worst of what it hides, not of the whole
@@ -78,10 +82,35 @@ def _run_one(family: str, check: Check, ctx: Context) -> CheckResult:
     return CheckResult(family, worst(f.level for f in findings), findings)
 
 
+def _coverage(ctx: Context, results: list[CheckResult], state_readable: bool) -> dict:
+    """What this run actually looked at, so "Healthy" never means "not
+    checked". ``complete`` is False when the state folder couldn't be read,
+    the walk stopped at its limit, or a check couldn't run."""
+    errored = [result.id for result in results if result.error is not None]
+    if not state_readable:
+        return {"complete": False, "state_root_readable": False, "files_seen": 0, "documents_read": 0,
+                "unknown_files": 0, "special_entries": 0, "unreadable_folders": 0, "walk_truncated": False,
+                "walk_limit": MAX_WALK_ENTRIES, "checks_errored": errored}
+    files, truncated, unreadable = ctx.state_files()
+    return {
+        "complete": not truncated and not errored,
+        "state_root_readable": True,
+        "files_seen": len(files),
+        "documents_read": len({path for path, _spec in ctx.read_keys()}),
+        "unknown_files": ctx.unknown_files,
+        "special_entries": len(ctx.state_special()),
+        "unreadable_folders": len(unreadable),
+        "walk_truncated": truncated,
+        "walk_limit": MAX_WALK_ENTRIES,
+        "checks_errored": errored,
+    }
+
+
 def run_checks(*, now: float | None = None) -> dict:
     started = time.monotonic()
     ctx = Context.from_environment(now)
-    if not readable_dir(ctx.state_root):
+    state_readable = readable_dir(ctx.state_root)
+    if not state_readable:
         results = [CheckResult("roots", FAIL, [Finding(
             "roots.state_unavailable", FAIL, "state root", ctx.display(ctx.state_root),
             "The Quirq state folder is missing or can't be read.",
@@ -111,4 +140,5 @@ def run_checks(*, now: float | None = None) -> dict:
         "finding_counts": finding_counts,
         "roots": {"state": ctx.display(ctx.state_root), "projects": ctx.display(ctx.projects_root)},
         "checks": [result.to_dict() for result in results],
+        "coverage": _coverage(ctx, results, state_readable),
     })

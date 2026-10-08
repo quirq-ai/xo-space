@@ -18,8 +18,17 @@ async def report_commits(repo: str, workspace_id: str, hashes: list[str]) -> boo
 async def poll(workspace_id: str, cursors: dict[str, int]) -> dict | None:
     """One poll covers every repo. None on any failure (the caller records a
     failed poll and retries next tick)."""
+    return (await poll_detailed(workspace_id, cursors))[0]
+
+
+async def poll_detailed(workspace_id: str, cursors: dict[str, int]) -> tuple[dict | None, int, bool]:
+    """:func:`poll` plus why it failed: ``(body, status, offline)``. ``body``
+    is None on any failure; ``status`` is the HTTP status, 0 when nothing was
+    answered; ``offline`` is True when the request never reached the swarm,
+    so a rejected key, a swarm error and no network can be told apart."""
     res = await request("POST", "/commits/poll", json={"workspace_id": workspace_id, "cursors": cursors or {}})
-    return res.data if res.ok and isinstance(res.data, dict) else None
+    body = res.data if res.ok and isinstance(res.data, dict) else None
+    return body, res.status, res.offline
 
 
 async def share(repo: str, owner_workspace_id: str, shared_workspace_id: str) -> tuple[bool, int, str]:

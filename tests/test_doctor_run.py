@@ -169,12 +169,48 @@ class ReadCheckTests(DoctorSandbox):
         finding = self.finding("read.unreadable")
         self.assertEqual((finding["level"], finding["subject"]), ("FAIL", "inbox"))
 
-    def test_a_truncated_walk_is_a_failure_not_a_warning(self) -> None:
+    def test_a_truncated_walk_is_a_warning_and_marks_the_report_partial(self) -> None:
+        # Live test C1: a big but healthy Space got a permanent FAIL. Size isn't
+        # damage; the report says it's only partly checked instead.
         real_walk = inventory.walk_files
-        with patch.object(inventory, "walk_files", lambda root, limit=2: real_walk(root, limit)):
+        with patch.object(inventory, "walk_files", lambda root, limit=2, **kw: real_walk(root, limit, **kw)):
             report = self.report()
         truncated = [f for c in report["checks"] for f in c["findings"] if f["id"] == "read.too_large"]
-        self.assertEqual([f["level"] for f in truncated], ["FAIL"])
+        self.assertEqual([f["level"] for f in truncated], ["WARN"])
+        self.assertEqual((report["coverage"]["walk_truncated"], report["coverage"]["complete"]), (True, False))
+
+
+class CoverageTests(DoctorSandbox):
+    """"Healthy" means checked: every report says how much it looked at."""
+
+    def test_a_healthy_sample_is_completely_checked(self) -> None:
+        coverage = self.report()["coverage"]
+        self.assertTrue(coverage["complete"])
+        self.assertGreater(coverage["files_seen"], 20)
+        self.assertGreater(coverage["documents_read"], 20)
+        self.assertEqual((coverage["unknown_files"], coverage["special_entries"], coverage["unreadable_folders"],
+                          coverage["checks_errored"]), (0, 0, 0, []))
+
+    def test_unknown_and_special_entries_are_counted(self) -> None:
+        (self.state / "cache" / "mystery.json").write_text("{}", encoding="utf-8")
+        os.mkfifo(self.state / "cache" / "pipe")
+        coverage = self.report()["coverage"]
+        # The FIFO is at no known path, so it is both unknown and special.
+        self.assertEqual((coverage["unknown_files"], coverage["special_entries"]), (2, 1))
+
+    def test_a_check_that_could_not_run_makes_it_partial(self) -> None:
+        def boom(ctx):
+            raise RuntimeError("bug")
+
+        with patch.object(run, "CHECKS", (("boom", boom), *run.CHECKS)):
+            coverage = self.report()["coverage"]
+        self.assertEqual((coverage["complete"], coverage["checks_errored"]), (False, ["boom"]))
+
+    def test_an_unreadable_state_root_checked_nothing(self) -> None:
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.state / "missing")}):
+            coverage = self.report()["coverage"]
+        self.assertEqual((coverage["complete"], coverage["state_root_readable"], coverage["files_seen"]),
+                         (False, False, 0))
 
 
 class ReportSizeTests(DoctorSandbox):
@@ -211,8 +247,8 @@ class ReportSizeTests(DoctorSandbox):
         self._corrupt_shards(105)
         real_walk = inventory.walk_files
 
-        def force_truncated(root, limit=inventory.MAX_WALK_ENTRIES):
-            found, _truncated, unreadable = real_walk(root, limit)
+        def force_truncated(root, limit=inventory.MAX_WALK_ENTRIES, **kw):
+            found, _truncated, unreadable = real_walk(root, limit, **kw)
             return found, True, unreadable
 
         with patch.object(inventory, "walk_files", force_truncated):

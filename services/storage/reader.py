@@ -26,6 +26,8 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from utils.safe_read import read_text_guarded
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +63,7 @@ def read_json(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_guarded(path)
         if not text.strip():
             return None
         return json.loads(text)
@@ -105,7 +107,7 @@ def read_jsonl_tail_reverse(
         return []
 
     try:
-        raw = path.read_text(encoding="utf-8").splitlines()
+        raw = read_text_guarded(path, max_bytes=None).splitlines()
     except OSError as exc:
         logger.warning("visualizer.read_jsonl_tail_reverse io failed for %s: %s", path, exc)
         return []

@@ -51,6 +51,7 @@ from utils.runtime_env import (
     scheduler_dir,
     watcher_tick_interval_seconds as tick_interval_seconds,
 )
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ def _empty_doc() -> dict:
 def _read_doc(path: Path) -> dict:
     """Absent → empty document. Corrupt → SchedulerError; never rewritten."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_guarded(path)
     except FileNotFoundError:
         return _empty_doc()
     except OSError as exc:
@@ -181,9 +182,22 @@ def _read_doc(path: Path) -> dict:
             f"{path} is not valid JSON ({exc}); repair or delete it — the scheduler "
             f"will not rewrite a file it cannot read"
         ) from exc
-    if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+    if shape_problem(doc) is not None:
         raise SchedulerError(f"{path} must be a JSON object with a 'jobs' object")
     return doc
+
+
+def shape_problem(doc: Any) -> Optional[str]:
+    """Why ``jobs.json`` or ``state.json`` is refused, or ``None``. Pure, so
+    xo-doctor can ask the scheduler's own question."""
+    if not isinstance(doc, dict):
+        return f"the document is a {type(doc).__name__}, expected object"
+    jobs = doc.get("jobs")
+    if jobs is None:
+        return "no jobs object"
+    if not isinstance(jobs, dict):
+        return f"jobs is a {type(jobs).__name__}, expected object"
+    return None
 
 
 def _chmod_private(path: Path) -> None:
@@ -463,7 +477,7 @@ def list_runs(job_id: str, limit: int = 20) -> list[dict]:
             raise UnknownJobError(job_id)
         _harvest_for_read()
     try:
-        lines = runs_file(job_id).read_text(encoding="utf-8").splitlines()
+        lines = read_text_guarded(runs_file(job_id), max_bytes=None).splitlines()
     except FileNotFoundError:
         return []
     records: list[dict] = []

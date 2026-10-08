@@ -232,7 +232,7 @@ class AutoCloneInTickTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _tick(self, clone_result):
-        with patch.object(poller.swarm_client, "poll", new=AsyncMock(return_value={"repos": [{"repo": R, "available": True}]})), \
+        with patch.object(poller.swarm_client, "poll_detailed", new=AsyncMock(return_value=({"repos": [{"repo": R, "available": True}]}, 200, False))), \
              patch.object(clone, "clone_shared_repo", new=AsyncMock(return_value=clone_result)) as cl:
             delay = run(poller.run_tick())
         return delay, cl

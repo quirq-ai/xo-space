@@ -9,7 +9,7 @@ from typing import Optional
 
 from services.doctor import catalog, inventory, liveness
 from services.doctor.context import Context
-from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, size
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, printable, size
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
 from services.storage import layout, migrations
 from services.timestamps import parse_ts
@@ -111,7 +111,9 @@ def _read_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec,
                        "It is checked again on the next run.", details=details,
                        title=f"{name} was being written", evidence=evidence, problem_key=stable)
     alive = liveness.watcher_alive(ctx) if spec.behaviour == inventory.READ_POSITION else True
-    keys = ("watcher_stopped", result.outcome) if not alive else (result.outcome,)
+    situations = (("wrong_type_empty", "wrong_type") if result.outcome == "wrong_type" and result.empty_value
+                  else (result.outcome,))
+    keys = ("watcher_stopped", *situations) if not alive else situations
 
     def text(part: str) -> str:
         return catalog.fill(about.text(keys, part), values)
@@ -181,6 +183,60 @@ def _judge(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inv
         out.append(finding)
 
 
+def _judge_special(ctx: Context, out: list[Finding], path: Path, subject: str, spec: inventory.Spec) -> None:
+    """A known state path holding a link, FIFO, socket or device (live test
+    D4: a FIFO Inbox and ``jobs.json -> /dev/zero`` were reported healthy).
+    Nothing here opens it: ``classify`` refuses anything but a regular file
+    before ``open()``."""
+    if not path.is_symlink():
+        _judge(ctx, out, path, subject, spec)  # read.special (or unreadable for a folder)
+        return
+    try:
+        target = printable(os.readlink(path))
+    except OSError:
+        target = "?"
+    result = ctx.read(path, spec)  # follows the link
+    if result.outcome in ("special", "unreadable", "file_too_large"):
+        finding = _read_finding(ctx, path, subject, spec, result)
+        if finding is not None:
+            finding.evidence.append(ev("Link to", target))
+            out.append(finding)
+        return
+    out.append(_link_finding(ctx, path, subject, spec, target, dangling=result.outcome == "absent"))
+    _judge(ctx, out, path, subject, spec)  # damage in the file it points to, if any
+
+
+def _link_finding(ctx: Context, path: Path, subject: str, spec: inventory.Spec, target: str, *,
+                  dangling: bool) -> Finding:
+    about = catalog.about(spec)
+    values = catalog.labels(spec, subject, ctx.project_label)
+    name = catalog.fill(about.name, values)
+    evidence = [ev("Link to", target), ev("Owned by", catalog.fill(about.owner, values))]
+    if dangling:
+        return Finding(
+            "shape.symlink", FAIL if spec.klass == inventory.KEEP else WARN, subject, ctx.display(path),
+            f"The file is a link to {target}, which isn't there.", "",
+            details={"class": spec.klass, "behaviour": spec.behaviour, "link": "dangling"},
+            title=f"{name} is a link to something that isn't there", evidence=evidence,
+            consequence=("Its store finds no file here, and its next save replaces the link with a new file, so "
+                         "whatever the link pointed to is no longer used."),
+            self_repair="Nothing.",
+            next_step="Reconnect the storage the link points to, or replace the link with the real file.",
+            problem_key=f"file:{subject}:link")
+    # Every store saves by writing a temp file and os.replace()-ing it over
+    # the path, which replaces a link with a regular file.
+    return Finding(
+        "shape.symlink", WARN, subject, ctx.display(path), f"The file is a link to {target}.", "",
+        details={"class": spec.klass, "behaviour": spec.behaviour, "link": "file"},
+        title=f"{name} is a link to another file", evidence=evidence,
+        consequence=("Its store reads through the link, but each save replaces the link with a regular file: "
+                     "the file it points to then stops being updated."),
+        self_repair="Nothing.",
+        next_step=("Replace the link with the file itself. To keep state on another disk, point "
+                   "QUIRQ_STATE_ROOT at a folder there instead of linking single files."),
+        problem_key=f"file:{subject}:link")
+
+
 def _listing_error(path: Path) -> str:
     try:
         with os.scandir(path):
@@ -217,11 +273,14 @@ def reads(ctx: Context) -> list[Finding]:
     # the report is incomplete and must never fall past the cap into the
     # rollup themselves.
     if truncated:
-        out.append(Finding("read.too_large", FAIL, "state root", ctx.display(ctx.state_root),
+        # WARN: a big state folder isn't broken; the report's coverage marks it
+        # partial, and run.PINNED keeps this row whatever the cap drops.
+        out.append(Finding("read.too_large", WARN, "state root", ctx.display(ctx.state_root),
                            f"The state folder has more than {MAX_WALK_ENTRIES:,} entries; the rest weren't checked.",
                            "Files whose loss cannot be recovered were not checked for corruption, so a healthy report here does not mean the state is healthy.",
                            title="The state folder is too large to check fully",
-                           consequence="Files past the first 50,000 entries weren't checked, so a healthy report doesn't mean the state is healthy.",
+                           consequence=("Files past the first 50,000 entries weren't checked, so this report is only "
+                                        "partly checked (see its coverage) and can't vouch for the rest."),
                            self_repair="Nothing.",
                            next_step="Find the folder holding far more files than it should (logs/, quarantine/ or a runtime folder) and clear what isn't needed."))
     for path in sorted(unreadable_dirs):
@@ -235,6 +294,13 @@ def reads(ctx: Context) -> list[Finding]:
         if spec.pattern == "usage/*.json" and usage_path is not None and path != usage_path:
             continue  # only the active agent's bookmark is ever read (investigation D6)
         _judge(ctx, out, path, rel, spec)
+    for path in sorted(ctx.state_special()):
+        rel = str(path)[len(prefix):]
+        spec = inventory.spec_for(inventory.STATE, rel)
+        if spec is None:
+            unknown.append((rel, path))
+        elif spec.parsed and not (spec.pattern == "usage/*.json" and usage_path is not None and path != usage_path):
+            _judge_special(ctx, out, path, rel, spec)
     for name in inventory.names(inventory.WORKSPACE):
         _judge(ctx, out, ctx.projects_root / ".xo" / name, f"<projects root>/.xo/{name}",
                inventory.spec_for(inventory.WORKSPACE, name))
@@ -242,6 +308,7 @@ def reads(ctx: Context) -> list[Finding]:
         for name in inventory.names(inventory.PROJECT):
             _judge(ctx, out, project.xo / name, f"{project.name}/.xo/{name}",
                    inventory.spec_for(inventory.PROJECT, name))
+    ctx.unknown_files = len(unknown)
     for rel, path in unknown[:MAX_UNKNOWN_LISTED]:
         out.append(Finding("inventory.unknown_file", OK, rel, ctx.display(path),
                            "A file this version of the doctor doesn't know.", "Listed for information only."))

@@ -47,6 +47,7 @@ from services.storage.flock import locked
 from services.storage.layout import inbox_dir
 from services.storage.reader import read_json
 from services.timestamps import EPOCH as _EPOCH, now_iso, parse_ts  # noqa: F401  (re-exported)
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,19 @@ def normalize_document(raw, *, now: Optional[datetime] = None) -> dict:
     return doc
 
 
+def shape_problem(raw: object) -> Optional[str]:
+    """Why a parsed ``inbox.json`` can't be used, or ``None``: the saved items
+    :func:`normalize_document` would have to drop, which the next write would
+    then replace with an empty list. :func:`load_document` reports such a
+    file as not ok, so nothing overwrites it; xo-doctor asks the same."""
+    if not isinstance(raw, dict):
+        return f"the document is a {type(raw).__name__}, expected object"
+    items = raw.get("items")
+    if items is not None and not isinstance(items, list):
+        return f"items is a {type(items).__name__}, expected array"
+    return None
+
+
 def apply_retention(items: list[dict], now: Optional[datetime] = None) -> tuple[list[dict], int]:
     """TTL first, then the cap (done first, oldest first). Pure."""
     now = now or datetime.now(timezone.utc)
@@ -280,7 +294,8 @@ def _adopt_legacy(path: Path) -> None:
 
 def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
     """``(document, ok)``. ``ok`` is False when the file exists with content
-    that is not JSON; callers must not overwrite it in that case.
+    that is not JSON, or JSON whose saved items it would have to drop
+    (:func:`shape_problem`); callers must not overwrite it in that case.
 
     Called without a path (the unlocked readers: ``refresh``, ``list_items``)
     it adopts a legacy file first, under the same lock :func:`modify` holds
@@ -295,11 +310,16 @@ def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
     ok = True
     if raw is None and path.is_file():
         try:
-            ok = not path.read_text(encoding="utf-8").strip()
+            ok = not read_text_guarded(path).strip()
         except OSError:
             ok = False
         if not ok:
             logger.warning("inbox: %s is not valid JSON; leaving it untouched", path)
+    elif raw is not None:
+        problem = shape_problem(raw)
+        if problem is not None:
+            ok = False
+            logger.warning("inbox: %s can't be used (%s); leaving it untouched", path, problem)
     return normalize_document(raw), ok
 
 
@@ -323,7 +343,8 @@ def modify(fn: Callable[[dict], bool], *, now: Optional[datetime] = None) -> dic
         if not ok:
             # path-free on purpose: load_document already logged the full path,
             # and the router forwards this message to the browser
-            raise InboxError("scope_unavailable", "inbox.json is not valid JSON; fix or remove it.", 500)
+            raise InboxError("scope_unavailable", "inbox.json can't be used (not valid JSON, or its items aren't a "
+                                                  "list); fix or remove it.", 500)
         if fn(doc):
             doc["items"], pruned = apply_retention(doc["items"], now)
             if pruned:

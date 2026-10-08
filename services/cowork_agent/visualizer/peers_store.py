@@ -140,33 +140,36 @@ def _read_document(path: Path) -> tuple[Optional[str], list[dict]]:
         )
     parsed = value
 
-    raw = parsed.get("peers")
+    reason = shape_problem(parsed)
+    if reason is not None:
+        raise _corrupt(path, reason)
+
+    stamp = parsed.get("updated_at")
+    return (stamp if isinstance(stamp, str) else None, copy.deepcopy(parsed["peers"]))
+
+
+def shape_problem(document: dict) -> Optional[str]:
+    """Why this store refuses a parsed, correctly stamped document, or
+    ``None``. Pure, so xo-doctor can ask the store's own question."""
+    raw = document.get("peers")
     if raw is None:
-        raise _corrupt(path, "no peers list")
+        return "no peers list"
     if not isinstance(raw, list):
-        raise _corrupt(path, f"peers is a {type(raw).__name__}, expected array")
+        return f"peers is a {type(raw).__name__}, expected array"
 
     seen: set[str] = set()
     for index, record in enumerate(raw):
         if not isinstance(record, dict):
-            raise _corrupt(path, f"peers[{index}] is a {type(record).__name__}")
+            return f"peers[{index}] is a {type(record).__name__}"
         user_id = record.get("user_id")
         if not isinstance(user_id, str) or not user_id:
-            raise _corrupt(
-                path, f"peers[{index}] carries user_id {user_id!r}, which is "
-                      f"not a usable identity"
-            )
+            return f"peers[{index}] carries user_id {user_id!r}, which is not a usable identity"
         if user_id in seen:
-            raise _corrupt(
-                path,
-                f"peers lists {user_id!r} more than once; the roster is a set "
-                f"keyed by user_id and there is no way to choose between two "
-                f"records for one person",
-            )
+            return (f"peers lists {user_id!r} more than once; the roster is a set "
+                    f"keyed by user_id and there is no way to choose between two "
+                    f"records for one person")
         seen.add(user_id)
-
-    stamp = parsed.get("updated_at")
-    return (stamp if isinstance(stamp, str) else None, copy.deepcopy(raw))
+    return None
 
 
 def _write(path: Path, peers: list[dict]) -> None:

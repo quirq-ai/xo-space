@@ -33,6 +33,54 @@ class ReadFindingTests(DoctorSandbox):
                          "Project sample-project's usage record is damaged (not valid JSON)")
         self.assertEqual(found["sample-project/.xo/todos.json"]["problem_key"], "file:sample-project/.xo/todos.json")
 
+    def test_a_usage_record_of_the_wrong_type_says_what_the_watcher_does(self) -> None:
+        # Live test A4: the watcher reads ``read_json(path) or {}``, so an empty
+        # value is replaced by fresh totals, while a list or string with content
+        # makes it fail on every new activity, which is then never recorded.
+        for name, path in [("stats", self.state / "projects" / PID / "stats.json"),
+                           ("augment", self.state / "projects" / PID / "sessions" / "sessions-augment.json")]:
+            with self.subTest(file=name):
+                original = path.read_text(encoding="utf-8")
+                path.write_text("[]", encoding="utf-8")
+                empty = self.by_subject()[str(path.relative_to(self.state))]
+                self.assertIn("next agent activity in this project replaces it", empty["consequence"])
+                self.assertNotIn("fails", empty["consequence"])
+                path.write_text('["x"]', encoding="utf-8")
+                filled = self.by_subject()[str(path.relative_to(self.state))]
+                self.assertIn("The watcher fails on this file", filled["consequence"])
+                self.assertIn("never recorded", filled["consequence"])
+                self.assertEqual((empty["level"], filled["level"]), ("FAIL", "FAIL"))
+                path.write_text(original, encoding="utf-8")
+
+    def test_texts_follow_what_the_server_does_with_each_value(self) -> None:
+        # Checked against a live server: a value with content reaches `.get`
+        # in the route (HTTP 500); an empty one reads as no document.
+        cases = [
+            (self.projects / "sample-project" / ".xo" / "todos.json", "sample-project/.xo/todos.json",
+             '["x"]', "fails to load with an error", "[]", "shows as empty (no error)"),
+            (self.state / "cache" / "stats.json", "cache/stats.json",
+             "[1]", "fail with a server error", "[]", "shows zeros"),
+        ]
+        for path, subject, filled, filled_text, empty, empty_text in cases:
+            with self.subTest(file=subject):
+                original = path.read_text(encoding="utf-8")
+                path.write_text(filled, encoding="utf-8")
+                self.assertIn(filled_text, self.by_subject()[subject]["consequence"])
+                path.write_text(empty, encoding="utf-8")
+                self.assertIn(empty_text, self.by_subject()[subject]["consequence"])
+                path.write_text(original, encoding="utf-8")
+
+    def test_an_empty_connection_settings_file_is_replaced_on_the_next_save(self) -> None:
+        (self.state / "connections" / "gmail" / "config.json").write_text("", encoding="utf-8")
+        finding = self.by_subject()["connections/gmail/config.json"]
+        self.assertIn("replaced with the defaults", finding["consequence"])
+
+    def test_unused_space_wide_session_caches_say_so(self) -> None:
+        (self.state / "cache" / "sessions" / "sessionslist.json").write_text("{", encoding="utf-8")
+        finding = self.by_subject()["cache/sessions/sessionslist.json"]
+        self.assertIn("Nothing in the server reads it", finding["consequence"])
+        self.assertIn("next server start", finding["self_repair"])
+
     def test_a_reading_position_file_depends_on_the_watcher(self) -> None:
         # #188 issue 8: the server rewrites it itself while the watcher runs.
         (self.state / "projects" / "offsets.json").write_text("", encoding="utf-8")

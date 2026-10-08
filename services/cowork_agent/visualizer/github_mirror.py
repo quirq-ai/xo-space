@@ -13,6 +13,7 @@ from services.cowork_agent import project_layout
 from services.cowork_agent.connectors.github.issues import IssuesResult, RateLimit
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic_if_changed
 from services.cowork_agent.visualizer.flock import locked
+from utils.safe_read import read_text_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ def read_mirror(project: str) -> Optional[dict]:
 
 def _read_document(path: Path) -> Optional[dict]:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_guarded(path)
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:

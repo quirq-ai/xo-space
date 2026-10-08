@@ -15,6 +15,7 @@ from services.errors import ServiceError
 from services.storage.atomic_write import write_json_atomic
 from services.storage.flock import locked
 from services.storage.layout import settings_dir
+from utils.safe_read import read_text_guarded
 
 DEFAULT_NAME = "Space"
 MAX_NAME_LENGTH = 80
@@ -87,7 +88,7 @@ def _logo_bytes(logo: dict) -> bytes:
 
 def _read() -> dict:
     try:
-        document = json.loads(_path().read_text(encoding="utf-8"))
+        document = json.loads(read_text_guarded(_path()))
     except FileNotFoundError:
         return {"schema": 1, "name": DEFAULT_NAME, "logo": None}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:

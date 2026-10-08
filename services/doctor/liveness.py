@@ -20,7 +20,7 @@ from services.cowork_agent.helpers import normalize_agent_id
 from services.cowork_agent.visualizer.state import watcher_heartbeat_path
 from services.doctor import inventory
 from services.doctor.context import Context
-from services.doctor.model import FAIL, WARN, Finding, ago, ev, moment
+from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, moment
 from services.timestamps import parse_ts
 from utils import runtime_env
 
@@ -170,9 +170,17 @@ def _stopped(ctx: Context, name: str, record: dict, *, path: str = "",
 
 def watcher(ctx: Context) -> list[Finding]:
     """Crashed, stuck or failing (#188 design §7; decision 3)."""
-    if not watcher_enabled():
-        return []
     shown = ctx.display(watcher_heartbeat_path())
+    if not watcher_enabled():
+        # A setting a person may choose (Setup's runtime settings), so a note
+        # rather than a warning; what it costs in scheduled commands is
+        # judged by the scheduler check, which warns when something won't run.
+        _, stops = _label(WATCHER)
+        return [Finding(
+            "watcher.disabled", OK, WATCHER, shown, "The watcher is turned off (QUIRQ_WATCHER_ENABLED is false).", "",
+            title="The watcher is turned off", consequence=stops, self_repair="Nothing.",
+            next_step="If that isn't intended, turn the watcher on in Setup's runtime settings and restart the server.",
+            problem_key="component:watcher:disabled")]
     record = ctx.components.get(WATCHER)
     age = heartbeat_age(ctx)
     limit = stale_after()
@@ -466,20 +474,24 @@ _OK_RESULTS = frozenset({"ok", "skipped"})
 
 def scheduler(ctx: Context) -> list[Finding]:
     """Scheduled commands that didn't run, are stuck, or failed. The
-    scheduler runs inside the watcher, so both must be enabled."""
+    scheduler runs only inside the watcher (``visualizer/watcher.py`` is the
+    one caller of ``scheduler.tick()``): with the watcher off, an enabled
+    command never runs at all, which is reported by itself."""
     from utils.commands.scheduler import max_concurrent, scheduler_enabled
 
-    if not watcher_enabled() or not scheduler_enabled():
+    if not scheduler_enabled():
         return []
     jobs = ctx.read(ctx.state_root / "scheduler" / "jobs.json",
                     inventory.spec_for(inventory.STATE, "scheduler/jobs.json"))
     state = ctx.read(ctx.state_root / "scheduler" / "state.json",
                      inventory.spec_for(inventory.STATE, "scheduler/state.json"))
+    if not watcher_enabled():
+        return _not_running(ctx, jobs, state)
     if jobs.outcome != "ok" or state.outcome != "ok":
         return []  # absent (no commands) or damaged (the read check reports that)
     job_map, state_map = jobs.value.get("jobs"), state.value.get("jobs")
     if not isinstance(job_map, dict) or not isinstance(state_map, dict):
-        return []
+        return []  # the scheduler refuses the file; the content check reports that
     grace = max(float(SCHEDULER_GRACE_S), 5 * runtime_env.watcher_tick_interval_seconds())
     running_now = sum(1 for entry in state_map.values()
                       if isinstance(entry, dict) and entry.get("running_since"))
@@ -533,6 +545,44 @@ def scheduler(ctx: Context) -> list[Finding]:
     return out
 
 
+def _not_running(ctx: Context, jobs, state) -> list[Finding]:
+    """The watcher is off, so no saved command runs: one finding for all of
+    them, a FAIL once one of them is already past its due time."""
+    job_map = jobs.value.get("jobs") if jobs.outcome == "ok" else None
+    if not isinstance(job_map, dict):
+        return []  # no saved commands, or a file the read and content checks report
+    enabled = {job_id: job for job_id, job in job_map.items()
+               if isinstance(job, dict) and job.get("enabled", True)}
+    if not enabled:
+        return []
+    state_map = state.value.get("jobs") if state.outcome == "ok" else None
+    state_map = state_map if isinstance(state_map, dict) else {}
+    overdue: list[tuple[float, str]] = []
+    for job_id in enabled:
+        entry = state_map.get(job_id)
+        due = _ts(entry.get("next_run")) if isinstance(entry, dict) else None
+        if due is not None and due <= ctx.now:
+            overdue.append((due, job_id))
+    overdue.sort()
+    count = len(enabled)
+    evidence = [ev("Saved commands enabled", count)]
+    observed = f"{count} saved command{'' if count == 1 else 's'} {'is' if count == 1 else 'are'} enabled, but the watcher, which runs them, is turned off."
+    if overdue:
+        due, job_id = overdue[0]
+        name = str(enabled[job_id].get("name") or job_id)
+        evidence += [ev("Overdue now", len(overdue)), ev("Most overdue", f"'{name}', due {moment(due, ctx.now)}")]
+        observed += f" {len(overdue)} {'is' if len(overdue) == 1 else 'are'} already past due."
+    return [Finding(
+        "scheduler.not_running", FAIL if overdue else WARN, "scheduler",
+        ctx.display(ctx.state_root / "scheduler" / "jobs.json"), observed, "",
+        title="Saved commands can't run while the watcher is off", evidence=evidence,
+        consequence="They don't run at all, not even late, until the watcher is on again.",
+        self_repair="Nothing: the scheduler only runs inside the watcher.",
+        next_step=("Turn the watcher on in Setup's runtime settings and restart the server, or turn off the "
+                   "commands you don't need on the Schedules page."),
+        problem_key="component:scheduler:not_running")]
+
+
 def _usage_token_present() -> bool:
     try:
         from routers.auth.auth import get_auth_token
@@ -542,8 +592,26 @@ def _usage_token_present() -> bool:
         return False
 
 
+#: Why a call to XO failed, from what the swarm client recorded.
+REJECTED, XO_ERROR, UNREACHABLE, UNKNOWN = "rejected", "xo_error", "unreachable", "unknown"
+
+
+def xo_failure(status: object, offline: object) -> str:
+    """One answer for every caller: no connection at all, XO refusing this
+    Space's key (or no key to send), or XO answering with an error. A
+    rejected key and an XO outage must never read as "check your network"."""
+    if offline is True:
+        return UNREACHABLE
+    if not isinstance(status, int) or isinstance(status, bool):
+        return UNKNOWN
+    if status in (401, 403) or status == 0:  # 0 without offline: nothing to authenticate with
+        return REJECTED
+    return XO_ERROR  # any other answer, 5xx or a body the client couldn't use
+
+
 def usage(ctx: Context) -> list[Finding]:
-    """Usage reporting that stopped (daily probe gone stale) or was refused."""
+    """Usage reporting that stopped (daily probe gone stale), was refused, or
+    couldn't verify its key because XO errored or couldn't be reached."""
     if not _usage_token_present():
         return []  # no key: nothing is reported, by design
     path = usage_state_path(ctx)
@@ -562,6 +630,29 @@ def usage(ctx: Context) -> list[Finding]:
             title="XO refused this Space's API key", evidence=[ev("Refused", _when(at, ctx.now))],
             consequence="No usage is reported to XO.", self_repair="It tries again at the next daily run.",
             next_step="Check the XO API key in Setup.", problem_key="component:usage sync:rejected")]
+    if probe.get("outcome") == "unverified":
+        # usage_sync records the HTTP status when XO answered, None when the
+        # key check never reached it (services/usage_sync.py _key_accepted).
+        status = probe.get("status")
+        reached = isinstance(status, int) and not isinstance(status, bool)
+        kind = xo_failure(status if reached else None, not reached)
+        evidence = [ev("Last attempt", _when(at, ctx.now))] + ([ev("XO answered", f"HTTP {status}")] if reached else [])
+        if kind == UNREACHABLE:
+            return [Finding(
+                "usage.unreachable", WARN, "usage sync", shown,
+                "The last usage report couldn't reach XO to check this Space's API key; nothing was sent.", "",
+                title="Usage reporting can't reach XO", evidence=evidence,
+                consequence="No usage is reported to XO until a check gets through.",
+                self_repair="It tries again at the next daily run, and when the server starts.",
+                next_step="Check this machine's network connection.", problem_key="component:usage sync:unreachable")]
+        return [Finding(
+            "usage.xo_error", WARN, "usage sync", shown,
+            f"XO answered the last usage report's key check with HTTP {status}; nothing was sent.", "",
+            title="XO answered usage reporting with an error", evidence=evidence,
+            consequence="No usage is reported to XO until a check succeeds.",
+            self_repair="It tries again at the next daily run, and when the server starts.",
+            next_step="Nothing to do unless it keeps happening; then check XO's status.",
+            problem_key="component:usage sync:xo_error")]
     if at is not None and ctx.now - at > USAGE_STALE_S:
         return [Finding(
             "usage.stale", WARN, "usage sync", shown,
@@ -597,11 +688,47 @@ def relay(ctx: Context) -> list[Finding]:
             self_repair="A slow git fetch may be running; the relay stops it after 5 minutes and moves on.",
             next_step=RESTART, problem_key="component:relay poller:overdue")]
     if snapshot.get("last_poll_ok") is False:
-        return [Finding(
-            "relay.unreachable", WARN, "relay poller", "", "The project-sharing relay can't reach XO.", "",
-            title="The project-sharing relay can't reach XO",
-            evidence=[ev("Last attempt", _when(last, ctx.now))],
-            consequence="Shared projects don't exchange commits until XO is reachable again.",
-            self_repair="It keeps retrying every poll.", next_step="Check this machine's network connection.",
-            problem_key="component:relay poller:unreachable")]
+        return [_relay_failed(snapshot, last, ctx.now)]
     return []
+
+
+def _relay_failed(snapshot: dict, last: Optional[float], now: float) -> Finding:
+    """The last relay poll failed: say why, from the status the poller kept."""
+    status = snapshot.get("last_poll_status")
+    kind = xo_failure(status, snapshot.get("last_poll_offline"))
+    evidence = [ev("Last attempt", _when(last, now))]
+    if kind == XO_ERROR or (kind == REJECTED and status):
+        evidence.append(ev("XO answered", f"HTTP {status}"))
+    stops = "Shared projects don't exchange commits"
+    if kind == REJECTED:
+        return Finding(
+            "relay.rejected", WARN, "relay poller", "",
+            ("XO refused this Space's key when the project-sharing relay polled." if status
+             else "The project-sharing relay had no XO key or sign-in to poll with."), "",
+            title="XO refused the project-sharing relay", evidence=evidence,
+            consequence=f"{stops} until XO accepts this Space's key.",
+            self_repair="It keeps retrying every poll, but the same answer comes back.",
+            next_step="Check the XO API key or sign-in in Setup.",
+            problem_key="component:relay poller:rejected")
+    if kind == XO_ERROR:
+        return Finding(
+            "relay.xo_error", WARN, "relay poller", "",
+            f"XO answered the project-sharing relay's poll with HTTP {status}.", "",
+            title="XO answered the project-sharing relay with an error", evidence=evidence,
+            consequence=f"{stops} until XO answers normally again.",
+            self_repair="It keeps retrying every poll.",
+            next_step="Nothing to do unless it keeps happening; then check XO's status.",
+            problem_key="component:relay poller:xo_error")
+    if kind == UNREACHABLE:
+        return Finding(
+            "relay.unreachable", WARN, "relay poller", "", "The project-sharing relay can't reach XO.", "",
+            title="The project-sharing relay can't reach XO", evidence=evidence,
+            consequence=f"{stops} until XO is reachable again.",
+            self_repair="It keeps retrying every poll.", next_step="Check this machine's network connection.",
+            problem_key="component:relay poller:unreachable")
+    return Finding(
+        "relay.failed", WARN, "relay poller", "", "The project-sharing relay's last poll of XO failed.", "",
+        title="The project-sharing relay's last poll failed", evidence=evidence,
+        consequence=f"{stops} until a poll succeeds.", self_repair="It keeps retrying every poll.",
+        next_step="If it keeps happening, the server log names the error.",
+        problem_key="component:relay poller:failed")

@@ -61,6 +61,9 @@ class FakeSwarm:
     def revoke(self, repo: str, ws: str) -> None:
         self.shares[repo][ws] = "revoked"
 
+    async def poll_detailed(self, ws: str, cursors: dict) -> tuple[dict, int, bool]:
+        return await self.poll(ws, cursors), 200, False
+
     async def poll(self, ws: str, cursors: dict) -> dict:
         out = []
         for repo, rows in sorted(self.shares.items()):
@@ -119,6 +122,7 @@ class ProjectSharingEndToEndTests(unittest.TestCase):
         self.swarm = FakeSwarm()
         self._patches = [
             patch.object(swarm_mod, "poll", new=self.swarm.poll),
+            patch.object(swarm_mod, "poll_detailed", new=self.swarm.poll_detailed),
             patch.object(swarm_mod, "report_commits", new=self.swarm.report_commits),
             patch.object(config, "auth_token", return_value="tok"),
             patch.object(clone, "_github_auth", new=AsyncMock(return_value=(None, False))),
