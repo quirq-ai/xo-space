@@ -1,6 +1,6 @@
 {
   "name": "quirq",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "XO Space inside Codex and ChatGPT: the full Space UI in the sidebar and beside conversations, plus install, start and status for the local server.",
   "author": {
     "name": "Quirq",
