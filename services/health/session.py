@@ -14,6 +14,7 @@ around" is close; :func:`end` marks a clean shutdown. Nothing here raises.
 
 from __future__ import annotations
 
+import asyncio
 import faulthandler
 import json
 import logging
@@ -95,6 +96,7 @@ def begin(now: Optional[float] = None) -> str:
     boot_id = uuid.uuid4().hex[:12]
     try:
         recorder.set_boot_id(boot_id)
+        recorder.enable()
         previous = _read_json(session_path())
         if previous is not None and not previous.get("clean_exit_at") and not _still_running(previous.get("pid")):
             recorder.record("server", recorder.UNCLEAN_EXIT, error_type="UncleanExit",
@@ -128,6 +130,14 @@ def mark_alive(now: Optional[float] = None) -> None:
         return
     _last_alive = now
     _update(alive_at=_stamp(now))
+
+
+async def keep_alive() -> None:
+    """Refresh ``alive_at`` every :data:`ALIVE_EVERY_S` for as long as the
+    server runs (the lifespan cancels it at shutdown)."""
+    while True:
+        await asyncio.sleep(ALIVE_EVERY_S)
+        await asyncio.to_thread(mark_alive)
 
 
 def end(now: Optional[float] = None) -> None:

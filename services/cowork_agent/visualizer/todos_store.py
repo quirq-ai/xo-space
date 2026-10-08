@@ -26,6 +26,7 @@ from services.cowork_agent.visualizer.reader import read_json
 from services.cowork_agent.visualizer.sinks import sessions_augment, timeline
 from services.cowork_agent.visualizer.store_common import corrupt_message
 from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES
+from services.health import recorder as health_recorder
 
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,8 @@ def shape_problem(document: dict) -> Optional[str]:
 
 
 def _corrupt(path: Path, reason: str) -> TodosStoreError:
+    health_recorder.record("todos", health_recorder.REFUSAL, error_type="corrupt_document", message=reason,
+                           subject=str(path))
     return TodosStoreError(
         "corrupt_document",
         corrupt_message(path, reason, document="todos", loss="every todo it holds"),

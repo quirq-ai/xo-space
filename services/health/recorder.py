@@ -13,7 +13,10 @@ projects root and the home folder shortened), and code locations only
 source text, request bodies or file contents.
 
 ``record()`` never raises: a bookkeeping failure must never change what its
-caller does. Repeats are coalesced in memory and written at most once per
+caller does. It writes nothing until :func:`enable` (``session.begin``, which
+only the server's lifespan calls): the record describes server runs, so a test,
+script or tool that merely imports a store can never write into a real
+``~/.quirq``. Repeats are coalesced in memory and written at most once per
 signature every :data:`MIN_WRITE_INTERVAL_S`; :func:`flush` writes the rest
 (the server calls it on shutdown).
 """
@@ -64,6 +67,7 @@ KINDS = frozenset({CRASH, EXIT, FAILING, REFUSAL, HTTP_500, UNCLEAN_EXIT, FATAL}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _lock = threading.Lock()
+_enabled = False
 _boot_id = "unknown"
 _last_write: dict[str, float] = {}
 _pending: dict[str, dict[str, Any]] = {}
@@ -71,6 +75,16 @@ _pending: dict[str, dict[str, Any]] = {}
 
 def events_dir() -> Path:
     return layout.health_dir() / "events"
+
+
+def enable() -> None:
+    """Start writing (``session.begin`` calls it for a server run)."""
+    global _enabled
+    _enabled = True
+
+
+def enabled() -> bool:
+    return _enabled
 
 
 def set_boot_id(boot_id: str) -> None:
@@ -85,6 +99,8 @@ def record(component: str, kind: str, *, exc: Optional[BaseException] = None, me
     """Record one failure. ``exc`` gives the type, message and code location;
     without it, ``message`` and ``error_type`` describe it. ``subject`` is
     what it concerns (a file, a route, a watcher step). Never raises."""
+    if not _enabled:
+        return
     try:
         _record(component, kind, exc, message, subject, error_type, frames, details, time.time())
     except Exception:  # noqa: BLE001 - recording must never cost the caller
@@ -261,8 +277,10 @@ def _make_room() -> None:
         total -= size
 
 
-def _reset_for_tests() -> None:
+def _reset_for_tests(*, enable_recording: bool = False) -> None:
+    global _enabled
     with _lock:
         _pending.clear()
         _last_write.clear()
     set_boot_id("unknown")
+    _enabled = enable_recording

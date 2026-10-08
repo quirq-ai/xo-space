@@ -66,6 +66,22 @@ _lock = threading.Lock()
 _records: dict[str, _Record] = {}
 
 
+#: A failure streak crossing one of these is written to the health record
+#: (services/health): once per crossing, not once per tick.
+FAILING_THRESHOLDS = frozenset({3, 5, 60})
+
+
+def _health(component: str, kind: str, **fields: Any) -> None:
+    """Hand a failure to the durable record. Imported here, not at module
+    top, so the record can never stop this module importing; never raises."""
+    try:
+        from services.health import recorder
+
+        recorder.record(component, kind, **fields)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def register(name: str, task: Any, *, finishes_by_design: bool = False) -> None:
     """Start recording ``task`` under ``name``. ``finishes_by_design`` marks a
     task whose returning is normal (a one-off sweep), not a failure."""
@@ -88,6 +104,11 @@ def _ended(record: _Record, task: Any) -> None:
             state, error = ("returned", None) if exc is None else ("crashed", describe(exc))
         with _lock:
             record.state, record.error, record.ended_at = state, error, time.time()
+        if state == "crashed":
+            _health(record.name, "crash", exc=exc)
+        elif state == "returned" and not record.finishes_by_design:
+            _health(record.name, "exit", error_type="TaskExited",
+                    message=f"{record.name} returned and is no longer running.")
     except Exception:  # noqa: BLE001
         pass
 
@@ -122,6 +143,7 @@ def tick_failed(name: str, error: Any) -> None:
     """``error`` is the exception, or a text a loop composed itself."""
     try:
         text = describe(error) if isinstance(error, BaseException) else redact(str(error))
+        streak = 0
         with _lock:
             record = _get(name)
             if record is not None:
@@ -129,6 +151,13 @@ def tick_failed(name: str, error: Any) -> None:
                 record.consecutive_failures += 1
                 record.last_failure = text
                 record.last_failure_at = time.time()
+                streak = record.consecutive_failures
+        if streak in FAILING_THRESHOLDS:
+            if isinstance(error, BaseException):
+                _health(name, "failing", exc=error, details={"consecutive_failures": streak})
+            else:
+                _health(name, "failing", error_type="RepeatedFailure", message=text,
+                        details={"consecutive_failures": streak})
     except Exception:  # noqa: BLE001
         pass
 

@@ -624,6 +624,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ State layout migration skipped (non-fatal): {exc}")
 
+    # The health record (services/health): note whether the last run shut
+    # down cleanly, describe this one, and from here on keep failures as they
+    # happen, including the loop's and threads' own. After the layout move,
+    # so it writes to setup/health/. Never raises.
+    from services.health import hooks as health_hooks, session as health_session
+    health_session.begin()
+    health_hooks.install_loop_hook(asyncio.get_running_loop())
+    health_hooks.install_thread_hook()
+    _health_alive_task = asyncio.create_task(health_session.keep_alive())
+
     # Boot sweep: drop any orphan Claude-Code mcp.json subdirs left behind
     # by a crash or hard-kill of a previous run. Files there used to carry
     # the Composio session URL + x-api-key; today they only carry the
@@ -913,6 +923,10 @@ async def lifespan(app: FastAPI):
             await _mcp_gateway_task
         except asyncio.CancelledError:
             pass
+
+    # Last: a run that gets here shut down cleanly.
+    _health_alive_task.cancel()
+    health_session.end()
     print("👋 Shutting down XO Space API Server...")
 
 
@@ -945,6 +959,10 @@ app.add_middleware(
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
 add_forwarding_middleware(app)
+# Unhandled errors (the ones that become a bare 500) are kept in the health
+# record, keyed by route, and re-raised: responses are unchanged.
+from services.health.hooks import RecordUnhandledErrors
+app.add_middleware(RecordUnhandledErrors)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)

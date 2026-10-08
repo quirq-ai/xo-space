@@ -36,7 +36,7 @@ class RecorderSandbox(unittest.TestCase):
                                       "XO_PROJECTS_ROOT": str(Path(tmp.name) / "projects")})
         env.start()
         self.addCleanup(env.stop)
-        recorder._reset_for_tests()
+        recorder._reset_for_tests(enable_recording=True)
         self.addCleanup(recorder._reset_for_tests)
 
     def events(self) -> list[dict]:
@@ -104,6 +104,20 @@ class RecordTests(RecorderSandbox):
                         subject=str(self.state.parent / "projects" / "q" / ".xo" / "todos.json"))
         subjects = sorted(e["subject"] for e in self.events())
         self.assertEqual(subjects, ["<projects>/p/.xo/todos.json", "<projects>/q/.xo/todos.json"])
+
+
+class OnlyAServerRunWritesTests(RecorderSandbox):
+    """A test, script or tool that imports a store must never write into a
+    real ~/.quirq: tests/test_background.py crashing a fake task once did."""
+
+    def test_nothing_is_written_before_a_run_starts(self) -> None:
+        recorder._reset_for_tests()  # as any process that never began a session
+        recorder.record("watcher", recorder.CRASH, exc=_boom())
+        recorder.flush()
+        self.assertFalse((self.state / "setup").exists())
+        recorder.enable()
+        recorder.record("watcher", recorder.CRASH, exc=_boom())
+        self.assertEqual(len(self.events()), 1)
 
 
 class PrivacyTests(RecorderSandbox):
@@ -186,7 +200,7 @@ class NeverRaisesTests(RecorderSandbox):
         [path] = (self.state / "setup/health/events").glob("*.json")
         path.write_text("{")
         recorder.flush()
-        recorder._reset_for_tests()
+        recorder._reset_for_tests(enable_recording=True)
         recorder.record("x", recorder.FAILING, error_type="E", message="m")
         [event] = self.events()
         self.assertEqual(event["count"], 1, "a damaged record starts over")
