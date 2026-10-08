@@ -40,7 +40,7 @@ Pillow>=11.3.0
 # scripts/install_shared_deps.sh; the Space Sessions tab reads its DB.
 # Pinned: bump deliberately (an unpinned latest makes installs
 # non-reproducible across workspaces).
-argus-code==0.5.1
+argus-code==0.6.0
 
 # YAML — hermes keeps its config in ~/.hermes/config.yaml, so the hermes
 # adapter (adapters/hermes/routes.py, top-level import), the config editor
