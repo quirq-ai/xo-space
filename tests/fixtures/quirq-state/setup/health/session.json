@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "boot_id": "5a3c1e9d2b4f",
+  "pid": 4242,
+  "started_at": "2026-01-01T09:00:00Z",
+  "alive_at": "2026-01-01T09:30:00Z",
+  "version": "v1.2.0",
+  "clean_exit_at": "2026-01-01T09:30:12Z"
+}

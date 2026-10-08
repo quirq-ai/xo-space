@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "signature": "9f0c2a7b41d8e356",
+  "component": "watcher",
+  "kind": "failing",
+  "error_type": "AttributeError",
+  "message": "'list' object has no attribute 'get'",
+  "subject": "stats",
+  "frames": [
+    {
+      "file": "services/cowork_agent/visualizer/watcher.py",
+      "line": 212,
+      "function": "_tick_body"
+    },
+    {
+      "file": "services/cowork_agent/visualizer/sinks/stats.py",
+      "line": 154,
+      "function": "apply"
+    }
+  ],
+  "details": {},
+  "first_seen": "2026-01-01T09:10:00Z",
+  "last_seen": "2026-01-01T09:12:30Z",
+  "count": 3,
+  "occurrences": [
+    {
+      "at": "2026-01-01T09:10:00Z",
+      "boot_id": "5a3c1e9d2b4f"
+    },
+    {
+      "at": "2026-01-01T09:11:15Z",
+      "boot_id": "5a3c1e9d2b4f"
+    },
+    {
+      "at": "2026-01-01T09:12:30Z",
+      "boot_id": "5a3c1e9d2b4f"
+    }
+  ]
+}
