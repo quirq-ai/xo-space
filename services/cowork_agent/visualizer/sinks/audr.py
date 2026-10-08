@@ -8,7 +8,9 @@ xo-space observes the runs, so it emits as the ``harness`` component.
 Mapping, from the normalised events every adapter already produces:
 
 * :class:`UsageObserved` → a ``model`` / ``generation`` record with the
-  turn's token counters under ``usage.llm``.
+  turn's token counters under ``usage.llm`` and, when the model has a price
+  (:mod:`~services.cowork_agent.visualizer.model_pricing`), its USD cost under
+  ``cost``. An unpriced model gets no ``cost`` rather than a claimed $0.
 * :class:`ToolUseObserved` → a ``tool`` / ``tool_execution`` record, one
   ``invocation`` under ``usage.tool``. The tool **name** only: inputs never
   reach an event, so they never reach a record.
@@ -33,6 +35,7 @@ from typing import Iterable, Optional
 
 import audr
 
+from services.cowork_agent.visualizer import model_pricing
 from services.cowork_agent.visualizer.atomic_write import append_jsonl, rotate_jsonl
 from services.cowork_agent.visualizer.ingest.events import (
     Event,
@@ -67,6 +70,11 @@ _PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
 
 #: The spec's slug for a tool the harness runs locally.
 _LOCAL_TOOL_PROVIDER = "self-hosted"
+
+_CURRENCY = "USD"
+#: Costs are rounded to nano-dollars: enough for a single cached token, and
+#: it keeps float noise (``3.0000000000000004e-05``) out of the file.
+_COST_DECIMALS = 9
 
 
 def _slug(value: str) -> str:
@@ -105,6 +113,33 @@ def _run(ev: Event, span_id: str) -> audr.Run:
     return audr.Run(run_id=ev.native_session_id, span_id=span_id, run_type="agent_run")
 
 
+def _cost(ev: UsageObserved) -> Optional[audr.Cost]:
+    turn = model_pricing.price_turn(
+        ev.model,
+        input_tokens=ev.input_tokens,
+        output_tokens=ev.output_tokens,
+        cache_read_tokens=ev.cache_read_input_tokens,
+        cache_write_tokens=ev.cache_creation_input_tokens,
+    )
+    if turn is None:
+        return None
+
+    def r(amount: float) -> float:
+        return round(amount, _COST_DECIMALS)
+
+    return audr.Cost(
+        total_cost=r(turn.total),
+        currency=_CURRENCY,
+        llm=audr.LlmCost(
+            total_token_cost=r(turn.total),
+            input_token_cost=r(turn.input),
+            output_token_cost=r(turn.output),
+            cache_read_cost=r(turn.cache_read),
+            cache_write_cost=r(turn.cache_write),
+        ),
+    )
+
+
 def _model_record(ev: UsageObserved, when: datetime, ordinal: int) -> audr.AUDR:
     name = ev.model or "unknown"
     return audr.AUDR(
@@ -128,6 +163,7 @@ def _model_record(ev: UsageObserved, when: datetime, ordinal: int) -> audr.AUDR:
                 requests=1,
             )
         ),
+        cost=_cost(ev),
     )
 
 

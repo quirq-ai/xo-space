@@ -47,6 +47,7 @@ from services.cowork_agent.visualizer.ingest.events import (
     SessionFirstSeen,
     TaskCreated,
     TaskCreateObserved,
+    TaskStatusChanged,
     ToolResultObserved,
     UsageObserved,
     compute_latency_ms,
@@ -62,6 +63,9 @@ _CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
 _TASK_RESULT_RE = re.compile(r"Task #(\d+) created", re.IGNORECASE)
+
+#: The todo events a subagent's log must not feed (see ``_tail_one``).
+_TASK_FAMILY = (TaskCreateObserved, TaskStatusChanged, ToolResultObserved)
 
 
 class Source:
@@ -88,11 +92,13 @@ class Source:
         # integer id (never the result text — it may carry PII) until the
         # matching TaskCreate arrives. Symmetric with _pending_creates.
         self._pending_results: dict[tuple[str, str], str] = {}
-        # native_session_id → ts of the last MessageObserved(role="user").
+        # (native_session_id, lane) → ts of the last MessageObserved(role="user").
         # Used to attach latency_ms on the matching UsageObserved.
         # Cleared on attachment so a single user message contributes
-        # at most one latency sample.
-        self._last_user_ts: dict[str, str] = {}
+        # at most one latency sample. ``lane`` is the line's ``agentId``
+        # ("" for the main thread): a subagent shares its parent's
+        # session id, so without it one's prompt would time the other's turn.
+        self._last_user_ts: dict[tuple[str, str], str] = {}
         # Claude Code's jsonl emits MULTIPLE records per actual assistant
         # turn, all sharing one ``message.id`` (the Anthropic ``msg_*`` id).
         # The ``usage`` block is repeated IDENTICALLY on every record
@@ -214,6 +220,7 @@ class Source:
             if jsonl.is_file() and jsonl not in yielded:
                 yielded.add(jsonl)
                 yield project_id, jsonl
+                yield from self._subagent_jsonls(project_id, jsonl, yielded)
 
         # 2. Auto-discovery for sessions launched directly inside an
         # xo-project (e.g. ``cd ~/xo-projects/foo && claude``). These
@@ -244,6 +251,27 @@ class Source:
                         continue
                     yielded.add(jsonl)
                     yield project_id, jsonl
+                    yield from self._subagent_jsonls(project_id, jsonl, yielded)
+
+    @staticmethod
+    def _subagent_jsonls(
+        project_id: str, session_jsonl: Path, yielded: set[Path],
+    ) -> Iterator[tuple[str, Path]]:
+        """The session's subagent logs: ``<session>/subagents/*.jsonl``.
+
+        A subagent (the ``Agent`` tool) writes its own log beside the
+        parent's, under the parent's session id. Its turns and tool calls
+        are real usage, so they belong to the parent's project. Without
+        this, a session's subagent tokens were never counted.
+        """
+        sub_dir = session_jsonl.with_suffix("") / "subagents"
+        if not sub_dir.is_dir():
+            return
+        for jsonl in sorted(sub_dir.glob("*.jsonl")):
+            if jsonl in yielded:
+                continue
+            yielded.add(jsonl)
+            yield project_id, jsonl
 
     # ── Per-jsonl pipeline ──────────────────────────────────────────────
 
@@ -265,13 +293,21 @@ class Source:
             usage_already_counted = self._note_assistant_line(raw)
 
             cwd = raw.get("cwd") if isinstance(raw, dict) else None
+            agent_id = raw.get("agentId")
+            lane = agent_id if isinstance(agent_id, str) else ""
             for ev in pii_filter.normalize_event(raw, runtime=self.name):
                 if usage_already_counted and _is_duplicate_turn_event(ev):
+                    continue
+                # A subagent's own todo list is its working state, not the
+                # session's: only its usage and activity are kept.
+                if lane and isinstance(ev, _TASK_FAMILY):
                     continue
                 # Back-fill project_id on every event (the filter is
                 # stateless; the source is the only place that knows).
                 ev = dataclasses.replace(ev, project_id=project_id)
-                yield from self._post_process(ev, cwd=cwd, fallback_project_id=project_id)
+                yield from self._post_process(
+                    ev, cwd=cwd, fallback_project_id=project_id, lane=lane,
+                )
 
     def _note_assistant_line(self, raw: dict) -> bool:
         """Record the Anthropic ``message.id`` of an assistant line.
@@ -303,6 +339,7 @@ class Source:
         *,
         cwd: Optional[str],
         fallback_project_id: str,
+        lane: str = "",
     ) -> Iterator[Event]:
         # 1) Emit SessionFirstSeen once per session, before anything else.
         nsid = ev.native_session_id
@@ -322,9 +359,9 @@ class Source:
         # attach latency_ms via dataclass.replace. Pop on use so each
         # user message contributes at most one latency sample.
         if isinstance(ev, MessageObserved) and ev.role == "user" and nsid:
-            self._last_user_ts[nsid] = ev.ts
+            self._last_user_ts[(nsid, lane)] = ev.ts
         elif isinstance(ev, UsageObserved) and nsid:
-            user_ts = self._last_user_ts.pop(nsid, None)
+            user_ts = self._last_user_ts.pop((nsid, lane), None)
             if user_ts is not None:
                 latency = compute_latency_ms(user_ts, ev.ts)
                 if latency is not None:

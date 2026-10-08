@@ -123,6 +123,29 @@ class ModelRecordTests(_Sandbox):
         [record] = audr_sink.apply(self.root, [_usage(model=None, latency_ms=None)])
         self.assertEqual(record["resource"]["name"], "unknown")
         self.assertNotIn("duration_ms", record["timing"])
+        self.assertNotIn("cost", record)
+
+    def test_a_priced_turn_carries_its_cost_in_usd(self) -> None:
+        [record] = audr_sink.apply(self.root, [_usage(
+            model="claude-opus-5-5", input_tokens=2, output_tokens=74,
+            cache_read_input_tokens=21_869, cache_creation_input_tokens=18_725,
+        )])
+        self.assertEqual(record["cost"], {
+            "total_cost": 0.0994868, "currency": "USD",
+            "llm": {
+                "total_token_cost": 0.0994868, "input_token_cost": 0.000008,
+                "output_token_cost": 0.00148, "cache_read_cost": 0.0043738,
+                "cache_write_cost": 0.093625,
+            },
+        })
+
+    def test_an_unpriced_model_claims_no_cost(self) -> None:
+        [record] = audr_sink.apply(self.root, [_usage(model="llama-4")])
+        self.assertNotIn("cost", record)
+
+    def test_tool_records_claim_no_cost(self) -> None:
+        [record] = audr_sink.apply(self.root, [_tool()])
+        self.assertNotIn("cost", record)
 
 
 class ToolRecordTests(_Sandbox):
@@ -197,10 +220,12 @@ class SchemaTests(_Sandbox):
     def test_every_written_line_satisfies_the_schema(self) -> None:
         audr_sink.apply(self.root, [
             _usage(), _usage(model=None, latency_ms=None, cache_read_input_tokens=0),
+            _usage(model="claude-haiku-5-5"),
             _tool("Bash"), _tool("mcp__server__do_thing"),
         ])
         lines = self.written()
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 5)
+        self.assertEqual(sum("cost" in line for line in lines), 2)
         for line in lines:
             with self.subTest(span=line["run"]["span_id"]):
                 self.validator.validate(line)

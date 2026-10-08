@@ -12,15 +12,13 @@ The filter delivers `TaskCreateObserved` and `ToolResultObserved`
 events; the source's pairing logic converts them into final
 `TaskCreated` events.
 
-Tools we DROP entirely (their inputs and results are PII):
+Every tool's inputs and results are DROPPED (they are PII). What survives
+is the tool **name**: every ``tool_use`` (built-ins, ``Agent``, any
+``mcp__*``) emits a :class:`events.ToolUseObserved` carrying only that,
+capped at :data:`_TOOL_NAME_MAX` characters. The Task family (todos) is
+the exception, handled separately below.
 
-* ``Bash``, ``Edit``, ``Write``, ``Read``, ``NotebookEdit``
-* ``WebFetch``, ``WebSearch``
-* ``mcp__*`` (any MCP tool)
-* All other tools by default (allowlist below)
-
-For ``Edit`` / ``Write`` / ``NotebookEdit`` specifically we still
-emit a :class:`events.ToolUseObserved` (just the tool name) AND a
+For ``Edit`` / ``Write`` / ``NotebookEdit`` specifically we also emit a
 :class:`events.FileTouched` event carrying only the input
 ``file_path`` — re-anchored to project-relative by the SOURCE layer
 (this module can't compute it without knowing the project root).
@@ -41,14 +39,11 @@ from services.cowork_agent.visualizer.ingest.events import (
 )
 
 
-# Tools that get a ``ToolUseObserved`` event (name only).
-# All others are dropped entirely.
-_TRACKED_TOOLS: frozenset[str] = frozenset({
-    "Bash", "Edit", "Write", "Read",
-    "NotebookEdit", "WebFetch", "WebSearch",
-    "Glob", "Grep",
-    # Task family handled separately below — NOT in this set.
-})
+# Every tool gets a ``ToolUseObserved`` event (name only, never its input),
+# so usage records and stats count all of them: ``Agent``, MCP tools and
+# whatever a runtime adds next. The Task family is handled separately below.
+# A name is an identifier, not content; the cap only bounds a malformed one.
+_TOOL_NAME_MAX = 128
 
 # Tools whose **input.file_path** the source layer should turn into a
 # :class:`events.FileTouched` event. Edit = existing file, Write = new.
@@ -191,10 +186,11 @@ def _normalize_content_block(
             # subagent-task id, not user-visible — drop per design §2.3
             return
 
-        # All other tools: emit a name-only ToolUseObserved if tracked.
-        if name in _TRACKED_TOOLS:
+        # All other tools: a name-only ToolUseObserved.
+        if name:
             yield ToolUseObserved(
-                ts=ts, native_session_id=sid, runtime=runtime, tool=name,
+                ts=ts, native_session_id=sid, runtime=runtime,
+                tool=name[:_TOOL_NAME_MAX],
             )
 
         # Edit/Write/NotebookEdit also surface a pending file-touch

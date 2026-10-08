@@ -367,8 +367,23 @@ attribution is the fixed minimum the schema requires,
 
 | Event             | Record                                                                 |
 |-------------------|------------------------------------------------------------------------|
-| `UsageObserved`   | `model` / `generation`, `usage.llm` = the turn's tokens (cache read/write included), `requests: 1` |
+| `UsageObserved`   | `model` / `generation`, `usage.llm` = the turn's tokens (cache read/write included), `requests: 1`, plus a `cost` block in USD when the model has a price |
 | `ToolUseObserved` | `tool` / `tool_execution`, provider `self-hosted`, `usage.tool` = one `invocation` (name only, never inputs) |
+
+- **Cost:** prices come from `visualizer/model_pricing.py`. It first uses
+  Argus's pricing table, the same one behind the Sessions tab's
+  `cost_usd`, then a short supplement of list prices for models Argus doesn't
+  have yet. A newer Argus table always wins.
+  - A model neither source knows gets no `cost` block, never a claimed $0.
+  - Cache writes are priced at the 5-minute rate, because events don't split
+    5-minute from 1-hour writes. That makes the cost a lower bound.
+  - Costs stay inside `audr.jsonl` in the project's state folder. Nothing
+    sends them anywhere.
+- **What's counted:**
+  - Claude Code subagent logs (`<session>/subagents/*.jsonl`) are read under
+    the parent's session id, so subagent turns count toward the same run.
+  - Every tool is counted by name, including `Agent` and `mcp__*`. Inputs
+    are never recorded.
 
 - **Fields:** `emitter.component` is `harness` and `run.run_id` is the native
   session id. `run.span_id` is derived from the event, so it is unique within
