@@ -19,7 +19,7 @@
   the inbox; the inbox registers a new-events listener with it.
 - Keep route handlers thin; move logic to clients/services.
 - Preserve request/response contracts unless explicitly requested.
-- Every external command runs through `utils/commands.py` (`run` / `run_spec` over an
+- Every external command runs through `utils/commands/` (`run` / `run_spec` over an
   argv list, `safe_arg` for untrusted values). No `shell=True`, no command strings;
   `tests/test_command_executor.py` enforces it and holds the migration backlog.
 - Every call to xo-swarm-api goes through `services/swarm_api/` (one transport in

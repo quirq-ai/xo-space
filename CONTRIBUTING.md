@@ -81,7 +81,7 @@ Things we will push back on, so you don't spend time on them first:
 Open an issue with:
 
 - **How you installed:** the one-liner (`curl -fsSL https://quirq.ai/install | sh`),
-  `./install.sh` from a clone, `./cowork-api.sh dev`, `./quirq` (compose), or
+  `./install.sh` from a clone, `./cowork-api.sh dev`, the Codex plugin, or
   a hosted workspace.
 - **Where it runs:** OS and version (Windows means WSL — see
   [Windows](#windows)), Python version (`./venv/bin/python --version`), and
@@ -188,14 +188,13 @@ routers/                       HTTP only — cowork_agent/ (Plane B /api/*), aut
 services/cowork_agent/         the broker: engine, adapters/, registry/, connectors/, visualizer/, xo_projects_sync/
 config/agents/<name>/          per-runtime manifest, capabilities, settings, setup.sh
 space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the offline overview
-install.sh · cowork-api.sh · quirq   the three ways to run it
+install.sh · cowork-api.sh        the two ways to run it from a checkout
 tests/                         xo-space's own unittest suite
 plugin/ · plugins/quirq/       Claude Code / Codex bundles (shared discovery checked by scripts/check_plugin_sync.sh)
 .agents/plugins/marketplace.json  Codex repository marketplace
 ```
 
-DEVELOPING.md §2 has the full map; the README's "Project structure" section
-has the annotated tree.
+DEVELOPING.md §2 has the full, annotated map.
 
 ### Adding a runtime ("drop two folders")
 
@@ -215,7 +214,7 @@ capability modules you need (`usage.py`, `models.py`, `sessions.py`,
   the `app.js` stamp in `index.html` if a view stamp moves; CSS stamps live in
   `index.html`). Otherwise browsers keep the old file.
 - Update `js/views/wiki.js` when the offline overview or its navigation changes.
-  Maintain detailed UI guides in `xo-docs`, published at
+  Maintain detailed UI guides in the [docs](https://github.com/quirq-ai/docs) repo, published at
   <https://docs.quirq.dev/docs/space>; Wiki opens those guides in a new tab.
 - `node --check` each module you edit.
 
@@ -230,7 +229,7 @@ venv/bin/python -m unittest discover -s tests -t .
 
 # 2. Import gate: the app must build under every runtime, and route counts
 #    differ by design — read them, don't assert them.
-for a in claude_code codex openclaw hermes antigravity; do
+for a in claude_code codex openclaw hermes antigravity grokbot; do
   AGENT_NAME=$a venv/bin/python -c "import server; print('$a', len(server.app.openapi()['paths']))"
 done
 
@@ -255,14 +254,14 @@ contract changes; do not restore removed manual pages to satisfy a text pin.
 
 The docs are part of the product, and several are pinned by tests. When you
 change… update the corresponding repository reference and coordinate any
-detailed guide changes in `xo-docs`:
+detailed guide changes in the docs repo:
 
 | Change | Also update |
 |---|---|
-| the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in `xo-docs` |
-| any view's behaviour | its Space UI guide in `xo-docs`; update `wiki.js` if the overview or navigation changes |
-| `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in `xo-docs` |
-| what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in `xo-docs` must agree |
+| the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in the docs repo |
+| any view's behaviour | its Space UI guide in the docs repo; update `wiki.js` if the overview or navigation changes |
+| `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in the docs repo |
+| what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in the docs repo must agree |
 | what leaves the machine | README "What leaves your machine" — keep the heading verbatim; `install.sh` prints a pointer to it |
 
 The README only references files that exist on `main`; it states the repo's
