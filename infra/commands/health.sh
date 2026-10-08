@@ -1,3 +1,5 @@
 #!/bin/sh
 : Check the server is up and print its health report
-curl -fsS "$(. infra/qq-lib.sh; qq_url)/health" | python3 -m json.tool || { echo "qq health: nothing answering at $(. infra/qq-lib.sh; qq_url)" >&2; exit 1; }
+url=$(. infra/qq-lib.sh; qq_url)
+body=$(curl -fs "$url/health") || { echo "qq health: nothing answering at $url" >&2; exit 1; }
+echo "$body" | python3 -m json.tool
