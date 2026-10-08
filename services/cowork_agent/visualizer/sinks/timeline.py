@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional
 
-from services.cowork_agent.visualizer.atomic_write import append_jsonl
+from services.cowork_agent.visualizer.atomic_write import append_jsonl, rotate_jsonl
 from services.cowork_agent.visualizer.ingest.events import (
     WORKITEM_ACTIONS,
     Event,
@@ -120,36 +120,6 @@ def _emit_workitem(ev: WorkitemEvent) -> Optional[dict]:
     return line
 
 
-def _rotate_if_needed(root: Path) -> None:
-    path = root / _TIMELINE_FILE
-    if not path.is_file():
-        return
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    if size < _ROTATE_BYTES:
-        return
-
-    # Atomic rename to a timestamped rotation.
-    from datetime import datetime, timezone
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    rotated = path.with_name(f"timeline.{stamp}.jsonl")
-    try:
-        path.rename(rotated)
-    except OSError as exc:
-        logger.warning("timeline rotate failed: %s", exc)
-        return
-
-    # Prune older rotations.
-    rotations = sorted(path.parent.glob("timeline.*.jsonl"))
-    for old in rotations[:-_MAX_ROTATIONS_KEEP]:
-        try:
-            old.unlink()
-        except OSError as exc:
-            logger.warning("timeline rotation prune failed for %s: %s", old, exc)
-
-
 def apply(root: Path, events: Iterable[Event], *, project_id: Optional[str] = None) -> list[dict]:
     """Append timeline events for this project's events.
 
@@ -158,7 +128,7 @@ def apply(root: Path, events: Iterable[Event], *, project_id: Optional[str] = No
     carries every event a project timeline does: the watcher's, and the todo,
     workitem and claim events their stores write.
     """
-    _rotate_if_needed(root)
+    rotate_jsonl(root / _TIMELINE_FILE, max_bytes=_ROTATE_BYTES, keep=_MAX_ROTATIONS_KEEP)
 
     pid = root.name if _PID_RE.fullmatch(root.name) else None
     lines: list[dict] = []

@@ -352,6 +352,35 @@ Uninstall removes the state root but keeps `secrets/`, so credentials
 (`secrets.env`, `token.json`) survive a reinstall; the Composio stores stay in
 `~/.config/composio/`.
 
+### Usage records: OpenAudr (`audr.jsonl`)
+
+The watcher writes a third per-project log next to `timeline.jsonl` and
+`stats.json`: `projects/<pid>/audr.jsonl`. Each line is one
+[AUDR v1.0.0](https://openaudr.dev/spec/v1.0.0/) record (Agent Usage Detail
+Record), one per metered operation, written by
+`services/cowork_agent/visualizer/sinks/audr.py`. Records are built and
+validated with the official `audr` SDK. The spec's schema is vendored at
+`visualizer/schema/audr.schema.json`, and `tests/test_audr_sink.py` validates
+every line against it. The sink always runs. It has no setting, and its
+attribution is the fixed minimum the schema requires,
+`{"environment": "development"}`.
+
+| Event             | Record                                                                 |
+|-------------------|------------------------------------------------------------------------|
+| `UsageObserved`   | `model` / `generation`, `usage.llm` = the turn's tokens (cache read/write included), `requests: 1` |
+| `ToolUseObserved` | `tool` / `tool_execution`, provider `self-hosted`, `usage.tool` = one `invocation` (name only, never inputs) |
+
+- **Fields:** `emitter.component` is `harness` and `run.run_id` is the native
+  session id. `run.span_id` is derived from the event, so it is unique within
+  the run.
+- **Provider:** taken from the model-name prefix (`claude`→`anthropic`,
+  `gpt`/`o*`/`codex`→`openai`, `gemini`→`google`, `grok`→`xai`). Any other
+  model falls back to the runtime, slugged.
+- **Rotation:** the same as the timeline (8 MB, keep 5).
+- **Exception to the record rules above:** these lines follow the AUDR spec,
+  not the state-root conventions. The spec's schema is closed, so they carry
+  no `ts`/`type`/`pid` envelope. The time is `timing.event_time`.
+
 ### One executor for external commands
 
 Every subprocess xo-space starts goes through the `utils/commands/` package
