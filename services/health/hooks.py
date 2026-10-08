@@ -106,8 +106,12 @@ def with_health_record(lifespan: Callable[[Any], Any]) -> Callable[[Any], Any]:
             raise
         finally:
             alive.cancel()
-            with contextlib.suppress(BaseException):
+            try:
                 await alive
+            except asyncio.CancelledError:
+                if not alive.cancelled():  # the cancellation is ours, not alive's: pass it on
+                    session.end()
+                    raise
             session.end()
 
     return wrapped

@@ -69,8 +69,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: (install.sh puts the venv in the checkout).
 _NOT_OURS = frozenset({"venv", ".venv", "env", ".qq", "node_modules", "site-packages"})
 #: Kinds whose subject is part of what the failure is: the same error on two
-#: routes, two files or two watcher steps is two problems.
-_SUBJECT_IN_SIGNATURE = frozenset({"http_500", "refusal", "failing"})
+#: routes or two files is two problems. Other kinds use the subject only when
+#: there is no code location: a watcher step's subject names its project
+#: ("sinks for p1"), and one cause that hits 150 projects must be one record
+#: with a count, not 150 that evict the crashes the record exists to keep.
+_SUBJECT_IN_SIGNATURE = frozenset({"http_500", "refusal"})
 #: A subject is cut to this many characters.
 MAX_SUBJECT = 300
 
@@ -253,6 +256,10 @@ def _write(signature: str, now: float) -> None:
     existing = _read(path)
     if existing is None:
         _make_room()
+    # Before the write: a record() nested in it (garbage collection running a
+    # loop hook on this thread) for this same signature then coalesces in
+    # memory instead of writing the same file and temp file at once.
+    _last_write[signature] = now
     document = dict(entry["base"])
     document["first_seen"] = (existing or {}).get("first_seen") or entry["occurrences"][0]["at"]
     document["last_seen"] = _stamp(entry["last_seen"])
@@ -261,7 +268,6 @@ def _write(signature: str, now: float) -> None:
     previous = previous if isinstance(previous, list) else []
     document["occurrences"] = (previous + entry["occurrences"])[-MAX_OCCURRENCES:]
     write_json_atomic(path, document)
-    _last_write[signature] = now
 
 
 def _read(path: Path) -> Optional[dict[str, Any]]:

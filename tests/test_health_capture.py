@@ -110,6 +110,24 @@ class WatcherStepTests(CaptureSandbox):
         self.assertEqual(len(fake.step_errors), 1, "the watcher's own bookkeeping is unchanged")
 
 
+    def test_one_cause_across_many_projects_is_one_record(self) -> None:
+        # Follow-up review 2.1: step subjects name their project, and one cause
+        # hitting every project must not become a record per project (150
+        # projects would evict the crashes the record exists to keep).
+        fake = SimpleNamespace(step_errors=[])
+
+        def stats_step():
+            {}.get("x").get("y")
+
+        for project in ("p1", "p2", "p3"):
+            try:
+                stats_step()
+            except AttributeError as exc:
+                Watcher._step_failed(fake, f"sinks for {project}", exc)
+        [event] = self.events(component="watcher")
+        self.assertEqual(event["count"], 3)
+
+
 class StoreRefusalTests(CaptureSandbox):
     def xo(self, name: str, document: dict) -> Path:
         path = self.root / "p" / "proj" / ".xo" / name
@@ -306,6 +324,24 @@ class ReviewFixTests(CaptureSandbox):
             worker.join(5)
         self.assertFalse(worker.is_alive(), "record() deadlocked on its own lock")
         self.assertEqual(sorted(e["component"] for e in self.events()), ["asyncio", "watcher"])
+
+    def test_a_nested_record_of_the_same_failure_coalesces(self) -> None:
+        # Follow-up review 2.2: the nested call used to write the same file and
+        # temp file while the outer write was still in progress.
+        real_write = recorder.write_json_atomic
+        writes = []
+
+        def write_and_record(path, data):
+            writes.append(path)
+            if len(writes) == 1:
+                recorder.record("asyncio", recorder.CRASH, error_type="LoopError", message="m")
+            real_write(path, data)
+
+        with patch.object(recorder, "write_json_atomic", write_and_record):
+            recorder.record("asyncio", recorder.CRASH, error_type="LoopError", message="m")
+        self.assertEqual(len(writes), 1, "the nested repeat waited instead of writing")
+        [event] = self.events(component="asyncio")
+        self.assertEqual(event["count"], 2)
 
     def test_a_library_in_a_venv_inside_the_checkout_is_not_our_code(self) -> None:
         # Review finding 3: install.sh puts the venv in the checkout.
