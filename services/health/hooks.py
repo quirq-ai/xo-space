@@ -8,6 +8,10 @@
   other loop errors (``crash``), passed on to the previous handler.
 - :func:`install_thread_hook`: a thread that died of an exception
   (``crash``), passed on to the previous hook.
+- :func:`with_health_record`: wraps the server's lifespan so the run's
+  marker is always closed. A shutdown step that raises (awaiting a task that
+  had crashed re-raises its error) still ends in a clean-exit mark, and a
+  startup that fails is recorded as such, never as an unclean exit.
 
 Nothing here changes what the caller sees; recording never raises.
 """
@@ -15,10 +19,11 @@ Nothing here changes what the caller sees; recording never raises.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
-from services.health import recorder
+from services.health import recorder, session
 
 Scope = dict[str, Any]
 ASGIApp = Callable[[Scope, Callable[[], Awaitable[Any]], Callable[[Any], Awaitable[None]]], Awaitable[None]]
@@ -79,3 +84,30 @@ def install_thread_hook() -> None:
         previous(args)
 
     threading.excepthook = on_thread_error
+
+
+def with_health_record(lifespan: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """``lifespan`` with this run's health record around it."""
+
+    @contextlib.asynccontextmanager
+    async def wrapped(app: Any) -> AsyncIterator[None]:
+        session.begin()
+        install_loop_hook(asyncio.get_running_loop())
+        install_thread_hook()
+        alive = asyncio.create_task(session.keep_alive())
+        started = False
+        try:
+            async with lifespan(app):
+                started = True
+                yield
+        except Exception as exc:
+            if not started:
+                recorder.record("server startup", recorder.CRASH, exc=exc)
+            raise
+        finally:
+            alive.cancel()
+            with contextlib.suppress(BaseException):
+                await alive
+            session.end()
+
+    return wrapped

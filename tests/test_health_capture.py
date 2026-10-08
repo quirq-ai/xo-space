@@ -207,3 +207,122 @@ class LoopAndThreadTests(CaptureSandbox):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LifespanWrapperTests(CaptureSandbox):
+    """Review finding 1: a crashed component made the next start report a
+    false unclean exit, because shutdown raised before the clean mark."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from services.health import session
+        self.session = session
+        for name in ("_enable_faulthandler", "_disable_faulthandler"):
+            p = patch.object(session, name)
+            p.start()
+            self.addCleanup(p.stop)
+        original_hook = threading.excepthook
+        self.addCleanup(setattr, threading, "excepthook", original_hook)
+
+    def marker(self) -> dict:
+        return json.loads((self.state / "setup" / "health" / "session.json").read_text())
+
+    def run_lifespan(self, inner) -> BaseException | None:
+        wrapped = hooks.with_health_record(inner)
+
+        async def main():
+            async with wrapped(None):
+                pass
+
+        try:
+            asyncio.run(main())
+        except BaseException as exc:  # noqa: BLE001
+            return exc
+        return None
+
+    def next_start_unclean(self) -> list[dict]:
+        recorder._reset_for_tests()
+        self.session.begin()
+        return self.events(kind="unclean_exit")
+
+    def test_a_normal_run_ends_clean(self) -> None:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def inner(app):
+            yield
+
+        self.assertIsNone(self.run_lifespan(inner))
+        self.assertTrue(self.marker()["clean_exit_at"])
+        self.assertEqual(self.next_start_unclean(), [])
+
+    def test_a_shutdown_step_that_raises_still_ends_clean(self) -> None:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def inner(app):
+            yield
+            raise RuntimeError("awaiting a task that had crashed")  # what server.py's shutdown does
+
+        self.assertIsInstance(self.run_lifespan(inner), RuntimeError)
+        self.assertTrue(self.marker()["clean_exit_at"])
+        self.assertEqual(self.next_start_unclean(), [])
+
+    def test_a_failed_startup_is_a_startup_crash_not_an_unclean_exit(self) -> None:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def inner(app):
+            raise OSError("agent setup failed")
+            yield  # pragma: no cover
+
+        self.assertIsInstance(self.run_lifespan(inner), OSError)
+        [crash] = self.events(component="server startup")
+        self.assertEqual((crash["kind"], crash["error_type"]), ("crash", "OSError"))
+        self.assertEqual(self.next_start_unclean(), [])
+
+
+class ReviewFixTests(CaptureSandbox):
+    def test_recording_while_a_record_is_being_written_does_not_hang(self) -> None:
+        # Review finding 2: GC can run Task.__del__ -> the loop hook -> record()
+        # on the thread that already holds the recorder's lock.
+        real_write = recorder.write_json_atomic
+        nested = []
+
+        def write_and_record(path, data):
+            if not nested:
+                nested.append(True)
+                recorder.record("asyncio", recorder.CRASH, error_type="LoopError", message="from __del__")
+            real_write(path, data)
+
+        result = []
+        # A fresh lock of the recorder's own type: if it deadlocks, only this
+        # throwaway lock is stuck, and the rest of the suite carries on.
+        with patch.object(recorder, "_lock", type(recorder._lock)()), \
+             patch.object(recorder, "write_json_atomic", write_and_record):
+            worker = threading.Thread(target=lambda: result.append(
+                recorder.record("watcher", recorder.CRASH, error_type="E", message="m")), daemon=True)
+            worker.start()
+            worker.join(5)
+        self.assertFalse(worker.is_alive(), "record() deadlocked on its own lock")
+        self.assertEqual(sorted(e["component"] for e in self.events()), ["asyncio", "watcher"])
+
+    def test_a_library_in_a_venv_inside_the_checkout_is_not_our_code(self) -> None:
+        # Review finding 3: install.sh puts the venv in the checkout.
+        fake = recorder.REPO_ROOT / "venv" / "lib" / "python3" / "site-packages" / "lib.py"
+        self.assertIsNone(recorder._relative(str(fake)))
+        self.assertEqual(recorder._relative(str(recorder.REPO_ROOT / "services" / "x.py")), "services/x.py")
+
+    def test_one_error_on_two_routes_is_two_records(self) -> None:
+        frames = [{"file": "<lib>/default.py", "line": 1, "function": "map_exceptions"}]
+        for route in ("GET /api/a", "GET /api/b"):
+            recorder.record("http", recorder.HTTP_500, error_type="ConnectError", message="m", frames=frames,
+                            subject=route)
+        self.assertEqual(sorted(e["subject"] for e in self.events()), ["GET /api/a", "GET /api/b"])
+
+    def test_a_long_project_name_survives_in_a_subject(self) -> None:
+        # Review finding 5: the secret filter turned it into "<redacted>".
+        path = self.root / "p" / "quarterly-marketing-plan-2026" / ".xo" / "todos.json"
+        recorder.record("todos", recorder.REFUSAL, error_type="corrupt_document", message="m", subject=str(path))
+        [event] = self.events()
+        self.assertEqual(event["subject"], "<projects>/quarterly-marketing-plan-2026/.xo/todos.json")

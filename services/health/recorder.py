@@ -65,8 +65,19 @@ KINDS = frozenset({CRASH, EXIT, FAILING, REFUSAL, HTTP_500, UNCLEAN_EXIT, FATAL}
 
 #: Frames inside this checkout are kept with a path relative to it.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+#: Folders inside the checkout that hold installed libraries, not its code
+#: (install.sh puts the venv in the checkout).
+_NOT_OURS = frozenset({"venv", ".venv", "env", ".qq", "node_modules", "site-packages"})
+#: Kinds whose subject is part of what the failure is: the same error on two
+#: routes, two files or two watcher steps is two problems.
+_SUBJECT_IN_SIGNATURE = frozenset({"http_500", "refusal", "failing"})
+#: A subject is cut to this many characters.
+MAX_SUBJECT = 300
 
-_lock = threading.Lock()
+# Re-entrant: asyncio reports a task whose exception was never retrieved from
+# Task.__del__, which garbage collection can run on this very thread while a
+# record is being written; with a plain Lock that would hang the server.
+_lock = threading.RLock()
 _enabled = False
 _boot_id = "unknown"
 _last_write: dict[str, float] = {}
@@ -142,11 +153,14 @@ def _record(component: str, kind: str, exc: Optional[BaseException], message: Op
         frames = code_frames(exc) if exc is not None else []
     error_type = error_type or (type(exc).__name__ if exc is not None else kind)
     text = message if message is not None else (str(exc) if exc is not None else "")
-    location = (f"{frames[-1]['file']}:{frames[-1]['function']}" if frames else "") or clean(subject or "")
-    signature = hashlib.sha1("|".join((component, kind, error_type, location)).encode("utf-8")).hexdigest()[:16]
+    shown_subject = shorten(subject) if subject else None
+    location = f"{frames[-1]['file']}:{frames[-1]['function']}" if frames else ""
+    keyed_subject = shown_subject or "" if (kind in _SUBJECT_IN_SIGNATURE or not location) else ""
+    signature = hashlib.sha1("|".join((component, kind, error_type, location, keyed_subject)).encode("utf-8")
+                             ).hexdigest()[:16]
     base = {
         "schema": SCHEMA, "signature": signature, "component": component, "kind": kind,
-        "error_type": error_type, "message": clean(text), "subject": clean(subject) if subject else None,
+        "error_type": error_type, "message": clean(text), "subject": shown_subject,
         "frames": frames, "details": _clean_details(details),
     }
     with _lock:
@@ -177,10 +191,15 @@ def code_frames(exc: Optional[BaseException]) -> list[dict[str, Any]]:
 
 
 def _relative(filename: str) -> Optional[str]:
+    """This checkout's own file, relative to it; None for anything else,
+    including a library installed in a venv inside the checkout."""
     try:
-        return Path(filename).resolve().relative_to(REPO_ROOT).as_posix()
+        relative = Path(filename).resolve().relative_to(REPO_ROOT)
     except (ValueError, OSError):
         return None
+    if _NOT_OURS.intersection(relative.parts):
+        return None
+    return relative.as_posix()
 
 
 def _roots() -> list[tuple[str, str]]:
@@ -196,13 +215,21 @@ def _roots() -> list[tuple[str, str]]:
     return sorted(pairs, key=lambda pair: -len(pair[0]))
 
 
-def clean(text: Optional[str]) -> str:
-    """A message safe to keep: folders shortened, secrets and URLs removed, cut."""
+def shorten(text: Optional[str]) -> str:
+    """Folders under the state, projects and home roots shortened. For
+    subjects (a file, a route, a step): names, not free text, so the secret
+    filter is not applied; it would turn a long project name into
+    "<redacted>" and the doctor could no longer match the file."""
     text = str(text or "")
     for root, label in _roots():
         if root and root != "/":
             text = text.replace(root, label)
-    return redact(text)[:MAX_MESSAGE]
+    return text[:MAX_SUBJECT]
+
+
+def clean(text: Optional[str]) -> str:
+    """A message safe to keep: folders shortened, secrets and URLs removed, cut."""
+    return redact(shorten(text))[:MAX_MESSAGE]
 
 
 def _clean_details(details: Optional[dict[str, Any]]) -> dict[str, Any]:

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 from services.doctor.leftovers import describe_unknown
-from services.doctor.model import CheckResult, Finding, ev, worst
+from services.doctor.model import CheckResult, Finding, ev, rank, worst
 
 _FILE_IDS = ("read.", "schema.")
 #: read.* findings about the walk itself, not about one file.
@@ -105,6 +105,8 @@ def _file_subject(recorded: object) -> Optional[str]:
     ``<projects>/p/.xo/todos.json`` → ``p/.xo/todos.json``."""
     if not isinstance(recorded, str):
         return None
+    if recorded.startswith("<projects>/.xo/"):
+        return "<projects root>/" + recorded[len("<projects>/"):]  # the projects root's own .xo/
     for prefix in ("<state>/", "<projects>/"):
         if recorded.startswith(prefix):
             return recorded[len(prefix):]
@@ -118,14 +120,20 @@ def _fold_history(by_family: dict[str, CheckResult]) -> None:
     history = by_family.get("crashes")
     if history is None:
         return
+    # Which current finding a record of each kind belongs under: a crash
+    # under "crashed" (the watcher's crash or exit is watcher.stopped), an
+    # exit under "exited", a failing record under the failing streak.
     current: dict[tuple[str, str], Finding] = {}
+    by_kind = {"component.crashed": "crash", "component.exited": "exit",
+               "component.failing": "failing", "watcher.failing": "failing"}
     for family in ("components", "watcher"):
         result = by_family.get(family)
         for finding in result.findings if result is not None else []:
-            if finding.id in ("component.crashed", "component.exited", "watcher.stopped"):
-                current.setdefault((finding.subject, "stopped"), finding)
-            elif finding.id in ("component.failing", "watcher.failing"):
-                current.setdefault((finding.subject, "failing"), finding)
+            if finding.id == "watcher.stopped":
+                current.setdefault((finding.subject, "crash"), finding)
+                current.setdefault((finding.subject, "exit"), finding)
+            elif finding.id in by_kind:
+                current.setdefault((finding.subject, by_kind[finding.id]), finding)
     files: dict[str, Finding] = {}
     for family in ("read", "content"):
         result = by_family.get(family)
@@ -135,15 +143,15 @@ def _fold_history(by_family: dict[str, CheckResult]) -> None:
     kept: list[Finding] = []
     for finding in history.findings:
         component, kind = finding.details.get("component"), finding.details.get("kind")
-        if kind in ("crash", "exit"):
-            parent = current.get((component, "stopped"))
-        elif kind == "failing":
-            parent = current.get((component, "failing"))
+        if kind in ("crash", "exit", "failing"):
+            parent = current.get((component, kind))
         elif kind == "refusal":
             parent = files.get(_file_subject(finding.details.get("subject")) or "")
         else:
             parent = None
-        if parent is not None:
+        # Never hide a worse record under a milder entry: its level would
+        # no longer count towards the report's.
+        if parent is not None and rank(finding.level) <= rank(parent.level):
             _attach(parent, finding, "History", finding.observed)
         else:
             kept.append(finding)

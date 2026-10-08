@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -67,10 +68,17 @@ def switches() -> dict[str, Optional[bool]]:
         ("connections_poller", connections), ("project_sharing", sharing))}
 
 
+_HOME = re.compile(r"^/(?:home|Users)/[^/]+")
+
+
 def _shown(path: str, host_variable: str) -> str:
-    """A root as a person sees it: the host path when running in Docker."""
-    host = (os.getenv(host_variable, "") or "").strip()
-    return host or path
+    """A root as a person sees it (the host path in Docker), with the home
+    folder as ``~`` so the record carries no user name."""
+    shown = (os.getenv(host_variable, "") or "").strip() or path
+    home = str(Path.home())
+    if home not in ("", "/") and (shown == home or shown.startswith(home + "/")):
+        return "~" + shown[len(home):]
+    return _HOME.sub("~", shown)
 
 
 def collect(boot_id: str, started_at: str) -> dict[str, Any]:

@@ -154,3 +154,29 @@ class HistoryFoldingTests(CrashSandbox):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class FoldSeverityTests(CrashSandbox):
+    """A record is grouped only under the matching finding, and never under a
+    milder one."""
+
+    def record(self, state: str) -> dict:
+        return {"name": "connections poller", "state": state, "started_at": self.now - 2 * HOUR,
+                "ended_at": self.now - HOUR, "error": "RuntimeError: x", "consecutive_failures": 0}
+
+    def test_a_recent_crash_is_not_hidden_under_an_exit(self) -> None:
+        self.at(HOUR, "connections poller", recorder.CRASH, exc=_boom())
+        with patch("services.doctor.context._components_snapshot",
+                   return_value={"connections poller": self.record("returned")}):
+            report = self.report()
+        [crash] = self.crashes(report)
+        self.assertEqual((crash["id"], crash["level"]), ("crash.recent", "FAIL"))
+
+    def test_an_exit_goes_under_the_exit(self) -> None:
+        self.at(HOUR, "connections poller", recorder.EXIT, error_type="TaskExited", message="m")
+        with patch("services.doctor.context._components_snapshot",
+                   return_value={"connections poller": self.record("returned")}):
+            report = self.report()
+        self.assertEqual(self.crashes(report), [])
+        [exited] = [f for c in report["checks"] for f in c["findings"] if f["id"] == "component.exited"]
+        self.assertEqual([r["id"] for r in exited["related"]], ["crash.exit"])

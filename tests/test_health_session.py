@@ -169,3 +169,28 @@ class AnnotationTests(SessionSandbox):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkerOwnershipTests(SessionSandbox):
+    """Review finding 4 and the shutdown race."""
+
+    def test_a_run_never_changes_another_runs_marker(self) -> None:
+        session.begin()
+        self.write_session(boot_id="another-server", clean_exit_at=None)
+        session.end()
+        marker = json.loads((self.health / "session.json").read_text())
+        self.assertEqual((marker["boot_id"], marker["clean_exit_at"]), ("another-server", None))
+
+    def test_a_refresh_after_the_end_cannot_undo_the_clean_mark(self) -> None:
+        session.begin(now=1000.0)
+        session.end(now=1100.0)
+        session.mark_alive(now=5000.0)
+        marker = json.loads((self.health / "session.json").read_text())
+        self.assertEqual(marker["clean_exit_at"], session._stamp(1100.0))
+        self.assertEqual(marker["alive_at"], session._stamp(1100.0))
+
+    def test_annotation_roots_carry_no_user_name(self) -> None:
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(Path.home() / ".quirq-test"),
+                                     "XO_PROJECTS_ROOT": "~/xo-projects", "QUIRQ_HOST_PROJECTS_ROOT": "/home/alice/xo"}):
+            notes = annotations.collect("boot", "2026-01-01T00:00:00Z")
+        self.assertEqual(notes["roots"], {"state": "~/.quirq-test", "projects": "~/xo"})

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -42,7 +43,15 @@ FATAL_READ_BYTES = 256 * 1024
 _FATAL_FRAME = re.compile(r'^\s*File "(?P<file>[^"]+)", line (?P<line>\d+) in (?P<function>\S+)')
 
 _fatal_handle = None
+_faulthandler_was_on = False
 _last_alive = 0.0
+#: This process's run, so it only ever updates its own marker: a second
+#: server on the same state folder writes its own, and this one must not
+#: stamp a clean exit on it.
+_own_boot_id: Optional[str] = None
+#: Set by end(); a refresh still in flight must not undo the clean-exit mark.
+_ended = False
+_marker_lock = threading.Lock()
 
 
 def session_path() -> Path:
@@ -92,8 +101,10 @@ def _ended_around(previous: dict[str, Any]) -> Optional[str]:
 
 def begin(now: Optional[float] = None) -> str:
     """Start this run's record; returns its boot id. Never raises."""
+    global _own_boot_id, _ended
     now = time.time() if now is None else now
     boot_id = uuid.uuid4().hex[:12]
+    _own_boot_id, _ended = boot_id, False
     try:
         recorder.set_boot_id(boot_id)
         recorder.enable()
@@ -129,29 +140,41 @@ def mark_alive(now: Optional[float] = None) -> None:
     if now - _last_alive < ALIVE_EVERY_S:
         return
     _last_alive = now
-    _update(alive_at=_stamp(now))
+    with _marker_lock:
+        if not _ended:
+            _update(alive_at=_stamp(now))
 
 
 async def keep_alive() -> None:
-    """Refresh ``alive_at`` every :data:`ALIVE_EVERY_S` for as long as the
-    server runs (the lifespan cancels it at shutdown)."""
+    """Refresh ``alive_at`` and write coalesced repeats every
+    :data:`ALIVE_EVERY_S` for as long as the server runs (cancelled at
+    shutdown), so a run that is killed loses at most a minute of counts."""
     while True:
         await asyncio.sleep(ALIVE_EVERY_S)
-        await asyncio.to_thread(mark_alive)
+        await asyncio.to_thread(_tick)
+
+
+def _tick() -> None:
+    mark_alive()
+    recorder.flush()
 
 
 def end(now: Optional[float] = None) -> None:
     """A clean shutdown: write coalesced repeats, mark the run clean. Never raises."""
+    global _ended
     now = time.time() if now is None else now
     recorder.flush()
-    _update(alive_at=_stamp(now), clean_exit_at=_stamp(now))
+    with _marker_lock:
+        _update(alive_at=_stamp(now), clean_exit_at=_stamp(now))
+        _ended = True
     _disable_faulthandler()
 
 
 def _update(**fields: Any) -> None:
+    """Change this run's marker, and only this run's (see _own_boot_id)."""
     try:
         current = _read_json(session_path())
-        if current is None:
+        if current is None or _own_boot_id is None or current.get("boot_id") != _own_boot_id:
             return
         current.update(fields)
         write_json_atomic(session_path(), current)
@@ -209,19 +232,27 @@ def _record_fatal_log() -> None:
 
 
 def _enable_faulthandler() -> None:
-    global _fatal_handle
+    global _fatal_handle, _faulthandler_was_on
+    if _fatal_handle is None:  # a second begin() in one process keeps the first handle
+        _faulthandler_was_on = faulthandler.is_enabled()
+    else:
+        _disable_faulthandler(restore=False)
     path = fatal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     _fatal_handle = open(path, "a", encoding="utf-8")  # kept open: faulthandler writes to its fd
     faulthandler.enable(file=_fatal_handle, all_threads=True)
 
 
-def _disable_faulthandler() -> None:
+def _disable_faulthandler(*, restore: bool = True) -> None:
+    """Stop writing to fatal.log; if faulthandler was on before this run
+    (PYTHONFAULTHANDLER, -X faulthandler), put it back on stderr."""
     global _fatal_handle
     try:
         if _fatal_handle is not None:
             faulthandler.disable()
             _fatal_handle.close()
+            if restore and _faulthandler_was_on:
+                faulthandler.enable(all_threads=True)
     except Exception:  # noqa: BLE001
         pass
     _fatal_handle = None
