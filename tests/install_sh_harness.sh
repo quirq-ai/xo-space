@@ -185,8 +185,9 @@ check "piped from inside another project with server.py -> not adopted, managed 
 case "$(err)" in *"Not using $W/proj as the Quirq checkout: it is not a clone of"*) ok "…and said why";; *) bad "…and said why" "$(err)";; esac
 check "…its commit untouched" "$(git -C "$W/proj" rev-parse HEAD)" "$proj_head"
 ids="$( source "$W/lib.sh" 2>/dev/null
-        for u in https://github.com/Quirq-AI/xo-space.git git@github.com:quirq-ai/xo-space ssh://git@github.com/quirq-ai/xo-space/; do repo_identity "$u"; echo; done | sort -u )"
-check "https, ssh and .git spellings of one repo are the same clone" "$ids" "github.com/quirq-ai/xo-space"
+        for u in https://github.com/Quirq-AI/xo-space.git git@github.com:quirq-ai/xo-space ssh://git@github.com/quirq-ai/xo-space/ \
+                 ssh://git@github.com:22/quirq-ai/xo-space.git https://someone@GitHub.com/quirq-ai/XO-Space.GIT; do repo_identity "$u"; echo; done | sort -u )"
+check "https, ssh, port, user, case and .git spellings of one repo are the same clone" "$ids" "github.com/quirq-ai/xo-space"
 
 # ---- 2. fetch_repo ---------------------------------------------------------
 cd "$W/origin/xo-space" && echo c >> server.py && $G commit -qam v2
@@ -223,6 +224,37 @@ check "QUIRQ_SOURCE_REF=development -> that clone DOES update, to origin/develop
 mkdir -p "$W/fresh"
 out="$(fetch "$W/fresh/xo-space" 2>&1)"
 check "no checkout yet -> cloned" "$(git -C "$W/fresh/xo-space" rev-parse HEAD 2>/dev/null)" "$(git -C "$W/origin/xo-space" rev-parse HEAD)"
+
+# ---- 2b. the managed checkout passes the same trust check ------------------
+# prepare(): what main does in managed mode, from workspace $1 into $1/xo-space,
+# under umask $2; $3 is evaluated after sourcing (to fake a filesystem).
+prepare(){ ( cd "$1" || exit 9; umask "$2"
+             # shellcheck disable=SC1090
+             source "$W/lib.sh" 2>/dev/null
+             if [ -n "${3:-}" ]; then eval "$3"; fi
+             REPO_DIR="$1/xo-space"; MANAGED_CHECKOUT=1
+             prepare_managed_checkout >/dev/null 2>"$W/err"
+             printf '%s' "$REPO_DIR" ); }
+mkdir -p "$W/u0"
+check "one-liner under umask 000 -> clones and runs" "$(prepare "$W/u0" 000)" "$W/u0/xo-space"
+check "…with nothing in the clone writable by others" \
+      "$(find "$W/u0/xo-space" -perm -0002 ! -type l -print | head -n 1)" ""
+mkdir -p "$W/u0fs"
+out="$(prepare "$W/u0fs" 000 'on_permissionless_fs(){ return 0; }; chmod(){ :; }')"; rc=$?
+expect_stop "one-liner under umask 000 on a drive where chmod does nothing -> stops, says Linux folder" "$out" "$rc" "Clone it into a Linux folder"
+mkdir -p "$W/ww" && git clone -q -b main "file://$W/origin/xo-space" "$W/ww/xo-space"
+git -C "$W/ww/xo-space" reset -q --hard HEAD~1 && ww_head="$(git -C "$W/ww/xo-space" rev-parse HEAD)" && chmod 0777 "$W/ww/xo-space"
+out="$(prepare "$W/ww" 022)"; rc=$?
+expect_stop "existing 0777 managed checkout -> stops with chmod before any git command" "$out" "$rc" "chmod go-w $W/ww/xo-space"
+check "…and was not updated" "$(git -C "$W/ww/xo-space" rev-parse HEAD)" "$ww_head"
+if [ "$(id -u)" -eq 0 ]; then
+    mkdir -p "$W/theirs" && git clone -q -b main "file://$W/origin/xo-space" "$W/theirs/xo-space" && chown -R 12345 "$W/theirs/xo-space"
+    out="$(prepare "$W/theirs" 022)"; rc=$?
+    expect_stop "root, another user's existing managed checkout -> stops" "$out" "$rc" "$W/theirs/xo-space belongs to 12345"
+else
+    echo "skip  other-owner managed case: need root to create another user's directory"
+fi
+case "$(sed -n '/^main()/,/^}/p' "$W/lib.sh")" in *"umask o-w"*"resolve_repo_dir"*) ok "main drops other-write from the umask before anything is created";; *) bad "main sets umask o-w first" "";; esac
 
 # ---- 3. banner -------------------------------------------------------------
 hint(){ ( cd "$W"; source "$W/lib.sh" 2>/dev/null; MANAGED_CHECKOUT="$1"; REPO_DIR="$2"; LAUNCH_DIR="$3"; SOURCE_REF="${4:-main}"; print_restart_hint ); }

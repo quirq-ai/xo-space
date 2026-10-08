@@ -142,11 +142,26 @@ dir_writable_by_others() {
     return 1
 }
 
+# Every filesystem type at a path, one per line (findmnt lists each layer
+# of a stacked mount).
 filesystem_type() {
+    local types=""
     if command -v findmnt >/dev/null 2>&1; then
-        findmnt -n -o FSTYPE --target "$1" 2>/dev/null && return
+        types="$(findmnt -n -o FSTYPE --target "$1" 2>/dev/null)" || types=""
     fi
-    stat -f -c %T "$1" 2>/dev/null || true
+    [ -n "$types" ] || types="$(stat -f -c %T "$1" 2>/dev/null)" || types=""
+    printf '%s\n' "$types"
+}
+
+# Whether any layer at a path is a filesystem that keeps no Unix permissions.
+on_permissionless_fs() {
+    local type
+    for type in $(filesystem_type "$1"); do
+        case "$type" in
+            9p | v9fs | drvfs | vfat | msdos | exfat | vboxsf | ntfs | ntfs3 | fuseblk) return 0 ;;
+        esac
+    done
+    return 1
 }
 
 # The message for a directory others can write to. On filesystems that keep
@@ -155,16 +170,13 @@ filesystem_type() {
 writable_problem() {
     local path="$1" checkout="$2" where=""
     [ "$path" = "$checkout" ] || where=", a folder above ${checkout},"
-    case "$(filesystem_type "$path")" in
-        9p | v9fs | drvfs | vfat | msdos | exfat | vboxsf | ntfs | ntfs3 | fuseblk)
-            printf 'Other users can change files in %s%s and this drive does not keep Linux permissions, so Quirq will not run from there. Clone it into a Linux folder instead:  git clone %s ~/%s && ~/%s/install.sh' \
-                "$path" "$where" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
-            ;;
-        *)
-            printf 'Other users can write to %s%s so Quirq will not run from there. Run  chmod go-w %q  and start again. If that does not take (some drives ignore permissions), clone into a folder in your home directory instead.' \
-                "$path" "$where" "$path"
-            ;;
-    esac
+    if on_permissionless_fs "$path"; then
+        printf 'Other users can change files in %s%s and this drive does not keep Linux permissions, so Quirq will not run from there. Clone it into a Linux folder instead:  git clone %s ~/%s && ~/%s/install.sh' \
+            "$path" "$where" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
+    else
+        printf 'Other users can write to %s%s so Quirq will not run from there. Run  chmod go-w %q  and start again. If that does not take (some drives ignore permissions), clone into a folder in your home directory instead.' \
+            "$path" "$where" "$path"
+    fi
 }
 
 # Prints why the checkout at physical path $1 cannot be trusted, or nothing
@@ -216,15 +228,32 @@ checkout_trust_problem() {
     done
 }
 
-# host/owner/name, so the https, ssh and .git spellings of one repo match.
+# host/owner/name, so the https, ssh and .git spellings of one repo match:
+# lowercased, without user, port, trailing slash or .git.
 repo_identity() {
-    local url="$1"
+    local url host path
+    url="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
     url="${url%/}"
     url="${url%.git}"
-    url="${url#*://}"
-    url="${url#*@}"
-    url="${url/:/\/}"
-    printf '%s' "$url" | tr '[:upper:]' '[:lower:]'
+    case "$url" in
+        *://*)
+            url="${url#*://}"
+            host="${url%%/*}"
+            path="${url#"$host"}"
+            ;;
+        *:*)
+            # scp form: [user@]host:owner/name
+            host="${url%%:*}"
+            path="/${url#*:}"
+            ;;
+        *)
+            host=""
+            path="$url"
+            ;;
+    esac
+    host="${host##*@}"
+    host="${host%%:*}"
+    printf '%s%s' "$host" "$path"
 }
 
 # Whether $1 is a clone of SOURCE_REPO. Reads the config file directly
@@ -328,6 +357,30 @@ fetch_repo() {
     printf 'Downloading Quirq into %s...\n' "$REPO_DIR"
     git clone --quiet --depth 1 --branch "$SOURCE_REF" "$SOURCE_REPO" "$REPO_DIR" ||
         fail "Could not clone ${SOURCE_REPO} (${SOURCE_REF})."
+    # A clone we just made is ours to tighten: under umask 000 git makes it
+    # world-writable. Where chmod has no effect (WSL's /mnt/c, FAT) the
+    # trust check that follows stops with the Linux-folder message.
+    chmod -R go-w "$REPO_DIR" 2>/dev/null || true
+}
+
+# The managed checkout gets the same trust check as one found by the probes,
+# before we run git in an existing one and again after a fresh clone, so the
+# one-liner never runs code that other users can change.
+check_managed_checkout() {
+    local physical problem
+    physical="$(physical_dir "$REPO_DIR")"
+    [ -n "$physical" ] || fail "Could not open ${REPO_DIR}."
+    problem="$(checkout_trust_problem "$physical" 0)"
+    [ -z "$problem" ] || fail "$problem"
+    REPO_DIR="$physical"
+}
+
+prepare_managed_checkout() {
+    if [ -e "$REPO_DIR" ]; then
+        check_managed_checkout
+    fi
+    fetch_repo
+    check_managed_checkout
 }
 
 # ==============================================================
@@ -777,6 +830,10 @@ main() {
 
     [ -n "$user_home" ] || fail "HOME must be set."
 
+    # Nothing the installer or the server creates is writable by other
+    # users, whatever umask the caller had (000 is common on WSL).
+    umask o-w
+
     resolve_repo_dir
 
     require_command git \
@@ -784,7 +841,7 @@ main() {
 
     if [ "$MANAGED_CHECKOUT" -eq 1 ]; then
         source_label="managed"
-        fetch_repo
+        prepare_managed_checkout
     fi
 
     cd "$REPO_DIR"
