@@ -97,41 +97,166 @@ require_command() {
 # the case that has to fall through to managed mode.
 # ==============================================================
 #
-# Either probe only trusts a directory this user controls. A bootstrap that
-# saves this script to a temp file, or someone running from /tmp, must never
-# turn a server.py and requirements.txt that another user left in a shared,
-# world-writable directory into "the checkout": we would install and run
-# their code.
-looks_like_checkout() {
-    local dir="$1"
+# Either probe only adopts a directory that nobody else can change. A
+# bootstrap that saves this script to a temp file, or someone running from
+# /tmp, must never turn a server.py and requirements.txt that another user
+# left in a shared directory into "the checkout": we would install and run
+# their code. Every check works on the physical path (symlinks resolved), so
+# a link can neither hide a shared directory nor make a private one look
+# shared, and the path we check is the path we run from.
+#
+# The permission checks read `ls -ld`, whose columns are the same on Linux
+# and macOS; stat and find flags differ between GNU and BSD.
 
-    [ -f "${dir}/server.py" ] && [ -f "${dir}/requirements.txt" ] || return 1
+# The physical path of a directory, or nothing if it cannot be entered.
+physical_dir() {
+    (CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) || true
+}
 
-    # World-writable (/tmp, /var/tmp and anything like them): never.
-    if [ -n "$(find "$dir" -maxdepth 0 -perm -0002 -print 2>/dev/null)" ]; then
-        printf 'Ignoring the server.py in %s: other users can write to that directory.\n' "$dir" >&2
-        return 1
+has_checkout_files() {
+    [ -f "${1}/server.py" ] && [ -f "${1}/requirements.txt" ]
+}
+
+# Sets DIR_MODE (e.g. drwxr-xr-x+), DIR_UID, DIR_OWNER and DIR_GROUP.
+read_dir_info() {
+    local numeric named
+    numeric="$(ls -ldn -- "$1" 2>/dev/null)" || return 1
+    named="$(ls -ld -- "$1" 2>/dev/null)" || return 1
+    read -r DIR_MODE _ DIR_UID _ _ <<<"$numeric"
+    read -r _ _ DIR_OWNER DIR_GROUP _ <<<"$named"
+    [ -n "$DIR_UID" ]
+}
+
+# Sticky and world-writable: /tmp, /var/tmp, macOS's /private/tmp, a 1777
+# TMPDIR. Such a directory is never a checkout, whatever is in it.
+is_shared_tmp() {
+    read_dir_info "$1" && [ "${DIR_MODE:8:2}" = "wt" ]
+}
+
+# Whether the directory last read by read_dir_info can be written by anyone
+# but its owner. Group write is fine when the group is the owner's own
+# private group (umask 002 on Fedora and similar).
+dir_writable_by_others() {
+    [ "${DIR_MODE:8:1}" = "w" ] && return 0
+    [ "${DIR_MODE:5:1}" = "w" ] && [ "$DIR_GROUP" != "$DIR_OWNER" ] && return 0
+    return 1
+}
+
+filesystem_type() {
+    if command -v findmnt >/dev/null 2>&1; then
+        findmnt -n -o FSTYPE --target "$1" 2>/dev/null && return
     fi
-    # Someone else's directory: only root may adopt it (sudo ./install.sh).
-    if [ ! -O "$dir" ] && [ "$(id -u)" -ne 0 ]; then
-        printf 'Ignoring the server.py in %s: that directory belongs to another user.\n' "$dir" >&2
-        return 1
+    stat -f -c %T "$1" 2>/dev/null || true
+}
+
+# The message for a directory others can write to. On filesystems that keep
+# no Unix permissions (WSL's /mnt/c, FAT and exFAT drives, VirtualBox shared
+# folders) chmod changes nothing, so it says to clone elsewhere instead.
+writable_problem() {
+    local path="$1" checkout="$2" where=""
+    [ "$path" = "$checkout" ] || where=", a folder above ${checkout},"
+    case "$(filesystem_type "$path")" in
+        9p | v9fs | drvfs | vfat | msdos | exfat | vboxsf | ntfs | ntfs3 | fuseblk)
+            printf 'Other users can change files in %s%s and this drive does not keep Linux permissions, so Quirq will not run from there. Clone it into a Linux folder instead:  git clone %s ~/%s && ~/%s/install.sh' \
+                "$path" "$where" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
+            ;;
+        *)
+            printf 'Other users can write to %s%s so Quirq will not run from there. Run  chmod go-w %q  and start again. If that does not take (some drives ignore permissions), clone into a folder in your home directory instead.' \
+                "$path" "$where" "$path"
+            ;;
+    esac
+}
+
+# Prints why the checkout at physical path $1 cannot be trusted, or nothing
+# when it can. It must belong to this user (root may adopt another user's
+# checkout only when $2 is 1, i.e. that user's install.sh was run by path),
+# be writable by nobody else, carry no ACL, and sit under folders that
+# nobody else can rename it out of (the rule OpenSSH uses for ~/.ssh).
+checkout_trust_problem() {
+    local dir="$1" allow_other_owner="$2" me owner path
+    me="$(id -u)"
+
+    read_dir_info "$dir" || { printf 'Could not read the permissions of %s.' "$dir"; return; }
+    owner="$DIR_UID"
+    if [ "$owner" != "$me" ] && { [ "$me" -ne 0 ] || [ "$allow_other_owner" -ne 1 ]; }; then
+        if [ "$owner" = 0 ]; then
+            printf '%s belongs to root, so Quirq cannot set itself up there for you. Clone your own copy:  git clone %s ~/%s && ~/%s/install.sh' \
+                "$dir" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
+        else
+            printf '%s belongs to %s. Run the installer as %s, or clone your own copy:  git clone %s ~/%s && ~/%s/install.sh' \
+                "$dir" "$DIR_OWNER" "$DIR_OWNER" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
+        fi
+        return
     fi
-    return 0
+    if [ "${DIR_MODE:10:1}" = "+" ]; then
+        printf '%s has an access control list (ls -ld shows a +), so other users may be able to write to it. Remove it with  setfacl -b %q  (Linux) or  chmod -N %q  (macOS), and start again.' \
+            "$dir" "$dir" "$dir"
+        return
+    fi
+    if dir_writable_by_others; then
+        writable_problem "$dir" "$dir"
+        return
+    fi
+
+    path="$dir"
+    while [ "$path" != "/" ]; do
+        path="$(dirname "$path")"
+        read_dir_info "$path" || { printf 'Could not read the permissions of %s.' "$path"; return; }
+        if [ "$DIR_UID" != 0 ] && [ "$DIR_UID" != "$me" ] && [ "$DIR_UID" != "$owner" ]; then
+            printf '%s, a folder above %s, belongs to %s, who could swap the checkout for other code. Clone your own copy into your home directory:  git clone %s ~/%s && ~/%s/install.sh' \
+                "$path" "$dir" "$DIR_OWNER" "$SOURCE_REPO" "$REPO_NAME" "$REPO_NAME"
+            return
+        fi
+        # Sticky (like /tmp): others can add entries but cannot rename ours.
+        case "${DIR_MODE:9:1}" in t | T) continue ;; esac
+        if dir_writable_by_others; then
+            writable_problem "$path" "$dir"
+            return
+        fi
+    done
+}
+
+# host/owner/name, so the https, ssh and .git spellings of one repo match.
+repo_identity() {
+    local url="$1"
+    url="${url%/}"
+    url="${url%.git}"
+    url="${url#*://}"
+    url="${url#*@}"
+    url="${url/:/\/}"
+    printf '%s' "$url" | tr '[:upper:]' '[:lower:]'
+}
+
+# Whether $1 is a clone of SOURCE_REPO. Reads the config file directly
+# rather than running git inside a directory we have not vetted yet.
+is_source_clone() {
+    local origin
+    [ -f "${1}/.git/config" ] || return 1
+    origin="$(git config --file "${1}/.git/config" --get remote.origin.url 2>/dev/null)" || return 1
+    [ "$(repo_identity "$origin")" = "$(repo_identity "$SOURCE_REPO")" ]
 }
 
 resolve_repo_dir() {
     local source_path="${BASH_SOURCE[0]:-}"
-    local script_dir=""
+    local script_dir="" launch_dir="" skipped="" problem=""
 
     if [ -n "$source_path" ] && [ -f "$source_path" ]; then
-        script_dir="$(cd "$(dirname "$source_path")" && pwd)"
+        script_dir="$(physical_dir "$(dirname "$source_path")")"
     fi
 
-    if [ -n "$script_dir" ] && looks_like_checkout "$script_dir"; then
-        REPO_DIR="$script_dir"
-        MANAGED_CHECKOUT=0
-        return
+    if [ -n "$script_dir" ] && has_checkout_files "$script_dir"; then
+        if is_shared_tmp "$script_dir"; then
+            printf 'Ignoring the server.py in %s: it is a shared temporary folder.\n' "$script_dir" >&2
+            skipped="$script_dir"
+        else
+            # Stop rather than fall back to a managed clone: that would
+            # reset this checkout to upstream, or nest a second one in it.
+            problem="$(checkout_trust_problem "$script_dir" 1)"
+            [ -z "$problem" ] || fail "$problem"
+            REPO_DIR="$script_dir"
+            MANAGED_CHECKOUT=0
+            return
+        fi
     fi
 
     # Piped from curl while standing inside a checkout — typically someone
@@ -139,14 +264,28 @@ resolve_repo_dir() {
     # above it. Nesting a second clone in there would make this checkout the
     # projects root and leave it permanently dirty (so it would never update
     # again). Use it as the managed checkout and its parent as the workspace:
-    # exactly what running the same command one level up does. An explicit
-    # QUIRQ_APP_DIR still wins.
-    if [ -z "${QUIRQ_APP_DIR:-}" ] && looks_like_checkout "$LAUNCH_DIR"; then
-        REPO_DIR="$LAUNCH_DIR"
-        LAUNCH_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
-        MANAGED_CHECKOUT=1
-        printf 'Running from inside the Quirq checkout; the workspace is %s\n' "$LAUNCH_DIR"
-        return
+    # exactly what running the same command one level up does. Managed mode
+    # resets the tree to upstream, so only a clone of SOURCE_REPO qualifies,
+    # never some other project with a server.py, and root never adopts
+    # another user's directory this way. An explicit QUIRQ_APP_DIR still wins.
+    if [ -z "${QUIRQ_APP_DIR:-}" ]; then
+        launch_dir="$(physical_dir "$LAUNCH_DIR")"
+        if [ -n "$launch_dir" ] && has_checkout_files "$launch_dir"; then
+            if is_shared_tmp "$launch_dir"; then
+                [ "$launch_dir" = "$skipped" ] ||
+                    printf 'Ignoring the server.py in %s: it is a shared temporary folder.\n' "$launch_dir" >&2
+            elif is_source_clone "$launch_dir"; then
+                problem="$(checkout_trust_problem "$launch_dir" 0)"
+                [ -z "$problem" ] || fail "$problem"
+                REPO_DIR="$launch_dir"
+                LAUNCH_DIR="$(dirname "$launch_dir")"
+                MANAGED_CHECKOUT=1
+                printf 'Running from inside the Quirq checkout; the workspace is %s\n' "$LAUNCH_DIR"
+                return
+            else
+                printf 'Not using %s as the Quirq checkout: it is not a clone of %s.\n' "$launch_dir" "$SOURCE_REPO" >&2
+            fi
+        fi
     fi
 
     REPO_DIR="$APP_DIR"

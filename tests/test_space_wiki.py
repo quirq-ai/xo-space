@@ -731,10 +731,12 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("print_restart_hint", code)
         self.assertIn("Start again later:", code)
         self.assertIn("https://quirq.ai/install", code)
-        # The launch directory itself is probed for a checkout, through the
-        # same ownership check as the script's own directory.
-        self.assertIn('looks_like_checkout "$LAUNCH_DIR"', code)
-        self.assertIn('[ -f "${dir}/server.py" ]', code)
+        # The launch directory itself is probed for a checkout, by its
+        # physical path and through the same trust check as the script's own
+        # directory (tests/install_sh_harness.sh pins the behaviour).
+        self.assertIn('launch_dir="$(physical_dir "$LAUNCH_DIR")"', code)
+        self.assertIn('checkout_trust_problem "$launch_dir" 0', code)
+        self.assertIn('[ -f "${1}/server.py" ]', code)
         # A checkout on another branch is left alone, like a dirty one.
         self.assertIn("rev-parse --abbrev-ref HEAD", code)
 

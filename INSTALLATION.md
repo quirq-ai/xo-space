@@ -277,3 +277,6 @@ rejected.
 
 Not supported. The server's boot hooks are bash scripts, and while they fail
 non-fatally, no equivalent installer exists. Use WSL.
+Run the installer from your Linux home (for example `~/work`), not from
+`/mnt/c`: Windows drives do not keep Linux permissions, so other users could
+change the code there, and the installer stops rather than run it.
