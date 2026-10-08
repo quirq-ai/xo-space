@@ -152,12 +152,11 @@ def tick_failed(name: str, error: Any) -> None:
                 record.last_failure = text
                 record.last_failure_at = time.time()
                 streak = record.consecutive_failures
-        if streak in FAILING_THRESHOLDS:
-            if isinstance(error, BaseException):
-                _health(name, "failing", exc=error, details={"consecutive_failures": streak})
-            else:
-                _health(name, "failing", error_type="RepeatedFailure", message=text,
-                        details={"consecutive_failures": streak})
+        # A loop that reports a composed text (the watcher: "2 step(s)
+        # failed; first: …") records each failing step itself, precisely;
+        # a second, vaguer record of the streak would only repeat it.
+        if streak in FAILING_THRESHOLDS and isinstance(error, BaseException):
+            _health(name, "failing", exc=error, details={"consecutive_failures": streak})
     except Exception:  # noqa: BLE001
         pass
 

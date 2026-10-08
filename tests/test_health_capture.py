@@ -84,6 +84,18 @@ class BackgroundTaskTests(CaptureSandbox):
         self.assertEqual(event["details"]["consecutive_failures"], 5)
 
 
+    def test_a_streak_reported_as_text_is_not_a_second_record(self) -> None:
+        # The watcher reports "N step(s) failed; first: …" and records each
+        # failing step itself; the streak would only repeat it, less precisely.
+        async def idle():
+            await asyncio.sleep(0)
+
+        self.run_task("watcher", idle)
+        for _ in range(6):
+            background.tick_failed("watcher", "1 step(s) failed; first: stats: AttributeError: x")
+        self.assertEqual(self.events(kind="failing"), [])
+
+
 class WatcherStepTests(CaptureSandbox):
     def test_every_failing_step_is_recorded_even_without_a_streak(self) -> None:
         # Live test A4: a damaged stats.json fails only ticks with activity, so

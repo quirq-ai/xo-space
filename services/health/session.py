@@ -182,7 +182,16 @@ def _record_fatal_log() -> None:
     lines = [line for line in text.splitlines() if line.strip()]
     headline = next((line.strip() for line in lines if line.startswith("Fatal Python error")), None)
     frames = []
-    for line in lines:
+    # faulthandler dumps every thread; only the one that crashed says where.
+    # Its block starts "Current thread 0x… (most recent call first):".
+    start = next((i for i, line in enumerate(lines) if line.startswith("Current thread")), None)
+    crashed = []
+    if start is not None:
+        for line in lines[start + 1:]:
+            if not _FATAL_FRAME.match(line):
+                break
+            crashed.append(line)
+    for line in crashed:
         match = _FATAL_FRAME.match(line)
         if match:
             relative = recorder._relative(match["file"])

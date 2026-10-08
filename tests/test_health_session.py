@@ -119,15 +119,23 @@ class FatalTests(SessionSandbox):
         self.health.mkdir(parents=True)
         (self.health / "fatal.log").write_text(
             "Fatal Python error: Segmentation fault\n\n"
+            "Thread 0x00007e (most recent call first):\n"
+            '  File "/usr/lib/python3.14/threading.py", line 369 in wait\n'
+            '  File "/usr/lib/python3.14/queue.py", line 199 in get\n\n'
             "Current thread 0x00007f (most recent call first):\n"
             f'  File "{REPO}/services/cowork_agent/visualizer/watcher.py", line 212 in _tick_body\n'
             f'  File "{REPO}/server.py", line 800 in lifespan\n'
-            '  File "/usr/lib/python3.14/asyncio/base_events.py", line 1 in run_forever\n')
+            '  File "/usr/lib/python3.14/asyncio/base_events.py", line 1 in run_forever\n\n'
+            "Thread 0x00007d (most recent call first):\n"
+            '  File "/usr/lib/python3.14/selectors.py", line 452 in select\n')
         session.begin()
         [event] = self.events("fatal")
         self.assertEqual(event["message"], "Fatal Python error: Segmentation fault")
         self.assertEqual(event["frames"][-1], {"file": "services/cowork_agent/visualizer/watcher.py", "line": 212,
                                                "function": "_tick_body"})
+        # Only the crashed thread's frames: idle threads say nothing about where.
+        self.assertNotIn("<lib>/queue.py", json.dumps(event["frames"]))
+        self.assertNotIn("<lib>/selectors.py", json.dumps(event["frames"]))
         self.assertFalse((self.health / "fatal.log").exists())
         self.assertTrue((self.health / "fatal.log.1").exists(), "read once, then kept beside")
 
