@@ -96,6 +96,30 @@ require_command() {
 # a script read from stdin names no real file — which is exactly
 # the case that has to fall through to managed mode.
 # ==============================================================
+#
+# Either probe only trusts a directory this user controls. A bootstrap that
+# saves this script to a temp file, or someone running from /tmp, must never
+# turn a server.py and requirements.txt that another user left in a shared,
+# world-writable directory into "the checkout": we would install and run
+# their code.
+looks_like_checkout() {
+    local dir="$1"
+
+    [ -f "${dir}/server.py" ] && [ -f "${dir}/requirements.txt" ] || return 1
+
+    # World-writable (/tmp, /var/tmp and anything like them): never.
+    if [ -n "$(find "$dir" -maxdepth 0 -perm -0002 -print 2>/dev/null)" ]; then
+        printf 'Ignoring the server.py in %s: other users can write to that directory.\n' "$dir" >&2
+        return 1
+    fi
+    # Someone else's directory: only root may adopt it (sudo ./install.sh).
+    if [ ! -O "$dir" ] && [ "$(id -u)" -ne 0 ]; then
+        printf 'Ignoring the server.py in %s: that directory belongs to another user.\n' "$dir" >&2
+        return 1
+    fi
+    return 0
+}
+
 resolve_repo_dir() {
     local source_path="${BASH_SOURCE[0]:-}"
     local script_dir=""
@@ -104,9 +128,7 @@ resolve_repo_dir() {
         script_dir="$(cd "$(dirname "$source_path")" && pwd)"
     fi
 
-    if [ -n "$script_dir" ] &&
-        [ -f "${script_dir}/server.py" ] &&
-        [ -f "${script_dir}/requirements.txt" ]; then
+    if [ -n "$script_dir" ] && looks_like_checkout "$script_dir"; then
         REPO_DIR="$script_dir"
         MANAGED_CHECKOUT=0
         return
@@ -119,9 +141,7 @@ resolve_repo_dir() {
     # again). Use it as the managed checkout and its parent as the workspace:
     # exactly what running the same command one level up does. An explicit
     # QUIRQ_APP_DIR still wins.
-    if [ -z "${QUIRQ_APP_DIR:-}" ] &&
-        [ -f "${LAUNCH_DIR}/server.py" ] &&
-        [ -f "${LAUNCH_DIR}/requirements.txt" ]; then
+    if [ -z "${QUIRQ_APP_DIR:-}" ] && looks_like_checkout "$LAUNCH_DIR"; then
         REPO_DIR="$LAUNCH_DIR"
         LAUNCH_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
         MANAGED_CHECKOUT=1
@@ -379,12 +399,14 @@ from utils.local_port import is_port_available
 
 host = os.environ["QUIRQ_CHECK_HOST"]
 port = int(os.environ["QUIRQ_CHECK_PORT"])
-sys.exit(0 if is_port_available(host, port) else 1)
+# 3, not 1: Python exits 1 on any uncaught error (an ImportError, say),
+# and that must not read as "port in use".
+sys.exit(0 if is_port_available(host, port) else 3)
 PY
 
     case "$status" in
         0) return 0 ;;
-        1) fail "Port ${port} is already in use — Quirq may already be running here. Stop it with Ctrl-C in the terminal running it (find a stray one with: lsof -i :${port}), or set PORT=<port> to start a second one." ;;
+        3) fail "Port ${port} is already in use — Quirq may already be running here. Stop it with Ctrl-C in the terminal running it (find a stray one with: lsof -i :${port}), or set PORT=<port> to start a second one." ;;
         *) printf 'Could not verify that port %s is free; starting anyway.\n' "$port" ;;
     esac
 }

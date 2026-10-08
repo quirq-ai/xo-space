@@ -55,6 +55,24 @@ inplace="$( cd "$W/clone" && source ./install.sh 2>/dev/null; resolve_repo_dir; 
 check "./install.sh from a clone -> in-place, no update" \
       "$inplace" "$W/clone|$W/clone|0"
 
+# a shared temp dir (mode 1777) where someone left server.py and
+# requirements.txt: the quirq.ai bootstrap saves this script into such a
+# directory, and people run the one-liner from /tmp. Neither probe may adopt it.
+mkdir -p "$W/sharedtmp" "$W/runfrom" && chmod 1777 "$W/sharedtmp"
+echo planted > "$W/sharedtmp/server.py" && : > "$W/sharedtmp/requirements.txt"
+cp "$W/lib.sh" "$W/sharedtmp/install.sh"
+shared="$( cd "$W/runfrom" && unset QUIRQ_APP_DIR && source "$W/sharedtmp/install.sh" 2>/dev/null; resolve_repo_dir 2>/dev/null; printf '%s|%s|%s' "$REPO_DIR" "$LAUNCH_DIR" "$MANAGED_CHECKOUT" )"
+check "script saved into a world-writable dir with planted files -> managed clone, not in-place" \
+      "$shared" "$W/runfrom/xo-space|$W/runfrom|1"
+check "piped while standing in a world-writable dir with planted files -> managed ./xo-space" \
+      "$(detect "$W/sharedtmp")" "$W/sharedtmp/xo-space|$W/sharedtmp|1"
+said="$( cd "$W/runfrom" && source "$W/sharedtmp/install.sh" 2>/dev/null; resolve_repo_dir 2>&1 >/dev/null )"
+case "$said" in *"Ignoring the server.py in $W/sharedtmp: other users can write"*) ok "…and said why";; *) bad "…and said why" "$said";; esac
+# the same files in a directory only this user can write are still a checkout
+chmod 0755 "$W/sharedtmp"
+check "same dir once it is not world-writable -> in-place again" \
+      "$( cd "$W/runfrom" && source "$W/sharedtmp/install.sh" 2>/dev/null; resolve_repo_dir 2>/dev/null; printf '%s|%s' "$REPO_DIR" "$MANAGED_CHECKOUT" )" "$W/sharedtmp|0"
+
 # ---- 2. fetch_repo ---------------------------------------------------------
 cd "$W/origin/xo-space" && echo c >> server.py && $G commit -qam v2
 UP="$(git -C "$W/origin/xo-space" rev-parse HEAD)"
@@ -102,6 +120,15 @@ case "$m" in *"| QUIRQ_SOURCE_REF=development sh"*) ok "managed banner on dev re
 case "$m" in *"QUIRQ_SOURCE_REF=development curl"*) bad "managed banner on dev ref: prefix must not be on curl" "$m";; *) ok "managed banner on dev ref: prefix not on curl";; esac
 i="$(hint 0 "$W/ws/xo-space" "$W/ws/xo-space")"
 case "$i" in *"cd $W/ws/xo-space && ./install.sh"*"git pull --ff-only"*) ok "in-place banner";; *) bad "in-place banner" "$i";; esac
+
+# ---- 3b. port probe: only "in use" says "in use" ---------------------------
+# A stand-in interpreter exits with the code under test, the way the real
+# probe would (3 = in use; 1 = Python died, e.g. on an ImportError).
+port(){ printf '#!/bin/sh\nexit %s\n' "$1" > "$W/fakepy" && chmod +x "$W/fakepy"
+        ( cd "$W"; source "$W/lib.sh" 2>/dev/null; VENV_PYTHON="$W/fakepy"; ensure_port_available 127.0.0.1 5002 ) 2>&1; }
+case "$(port 3)" in *"Port 5002 is already in use"*) ok "probe exit 3 -> port in use";; *) bad "probe exit 3 -> port in use" "$(port 3)";; esac
+case "$(port 1)" in *"Could not verify that port 5002 is free"*) ok "probe exit 1 (crash) -> could not verify, not 'in use'";; *) bad "probe exit 1 (crash) -> could not verify" "$(port 1)";; esac
+case "$(port 0)" in "") ok "probe exit 0 -> silent";; *) bad "probe exit 0 -> silent" "$(port 0)";; esac
 
 # ---- 4. strictness: set -u / -e under bash 5, and shellcheck if present -----
 bash -n "$W/lib.sh" && ok "bash -n (LF-normalised copy)" || bad "bash -n" "syntax error"
