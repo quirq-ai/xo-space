@@ -2,7 +2,7 @@
   "mcpServers": {
     "space": {
       "command": "uv",
-      "args": ["run", "--script", "./mcp/server.py"],
+      "args": ["run", "--no-build", "--script", "./mcp/server.py"],
       "cwd": "."
     }
   }
