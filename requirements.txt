@@ -22,6 +22,13 @@ requests>=2.31.0
 # Async support
 anyio>=4.2.0
 
+# WebSocket client — the codex adapter reads remote-control status from the
+# codex app-server daemon's Unix-socket WebSocket
+# (adapters/codex/app_server_rpc.py, lazily imported). Already installed via
+# uvicorn[standard]; declared because we import it directly. The floor is the
+# release that added websockets.asyncio.client.unix_connect.
+websockets>=13.0
+
 # Optional: For production deployment
 gunicorn>=21.2.0
 python-multipart>=0.0.20
