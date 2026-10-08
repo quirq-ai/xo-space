@@ -492,6 +492,32 @@ class PairTests(_ApiCase):
         for code in ("ABCD-EFGH", "RAW-CODE-1234"):
             self.assertNotIn(code, logged)
 
+    async def test_cli_timeout_stays_under_the_proxy_limit(self) -> None:
+        """pair answers inside the request: the env override can shorten its
+        budget but never lift it past REQUEST_TIMEOUT_SECONDS."""
+        cases = {"": rc.REQUEST_TIMEOUT_SECONDS, "300": rc.REQUEST_TIMEOUT_SECONDS, "10": 10.0}
+        for raw, budget in cases.items():
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {"CODEX_REMOTE_CONTROL_TIMEOUT": raw}):
+                cli = self.use_cli(remote_control_pair=_json(PAIR_PAYLOAD))
+                await rc.pair()
+                (_, timeout), = cli.calls
+                self.assertLessEqual(timeout, budget)
+                self.assertGreater(timeout, budget - 1.0)
+
+    async def test_lock_wait_counts_toward_the_budget(self) -> None:
+        """A pair queued behind another action answers `busy` within the
+        budget instead of waiting for the lock and then the CLI."""
+        cli = self.use_cli(remote_control_pair=_json(PAIR_PAYLOAD))
+        # A fresh lock: the module's one binds to the first loop that waits on it.
+        lock = asyncio.Lock()
+        with mock.patch.object(rc, "REQUEST_TIMEOUT_SECONDS", 0.05), \
+                mock.patch.object(rc, "_action_lock", lock):
+            async with lock:
+                response = await rc.pair()
+            self.assertFalse(lock.locked())
+        self.assertEqual((response["ok"], response["error"]), (False, "busy"))
+        self.assertEqual(cli.calls, [])
+
     async def test_failure_never_echoes_a_code(self) -> None:
         output = json.dumps(PAIR_PAYLOAD) + "\nError: enrollment rejected\n"
         self.use_cli(remote_control_pair=_result(output, returncode=1))

@@ -45,13 +45,18 @@ logger = logging.getLogger(__name__)
 
 AGENT = "codex"
 
-# The CLI's wall clock for start / pair / stop (CODEX_REMOTE_CONTROL_TIMEOUT).
+# The CLI's wall clock for start / stop (CODEX_REMOTE_CONTROL_TIMEOUT; `pair`
+# is capped at REQUEST_TIMEOUT_SECONDS).
 # Long, because start and stop run in the background (see module docstring)
 # and a kill mid-start can leave the daemon half restarted.
 DEFAULT_ACTION_TIMEOUT_SECONDS = 180.0
 # How long a start / stop request waits before answering `pending`: well under
 # the workspace proxy's 60s request limit.
 RESPONSE_WAIT_SECONDS = 20.0
+# The whole budget of an action answered inside the request (`pair`): the wait
+# for `_action_lock` plus the CLI run. Under the workspace proxy's 60s limit so
+# a slow action returns `busy` / `timeout` instead of a bare 504.
+REQUEST_TIMEOUT_SECONDS = 45.0
 PROBE_TIMEOUT_SECONDS = 15.0
 _MAX_DETAIL_CHARS = 400
 _MAX_DEVICES = 50
@@ -192,6 +197,32 @@ def _action_timeout() -> float:
     except ValueError:
         value = DEFAULT_ACTION_TIMEOUT_SECONDS
     return value if value > 0 else DEFAULT_ACTION_TIMEOUT_SECONDS
+
+
+def _request_timeout() -> float:
+    """``_action_timeout()`` capped at ``REQUEST_TIMEOUT_SECONDS``: the env
+    override may shorten an in-request action, never push it past the proxy."""
+    return min(_action_timeout(), REQUEST_TIMEOUT_SECONDS)
+
+
+async def _run_in_request(argv: list[str], *, log_output: bool = True) -> tuple[CommandResult, float]:
+    """Run an action the request waits on, inside one deadline shared by the
+    lock wait and the CLI. Returns the result and that budget (for the
+    failure message); raises ``busy`` when the lock is not free in time."""
+    budget = _request_timeout()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget
+    try:
+        await asyncio.wait_for(_action_lock.acquire(), timeout=budget)
+    except asyncio.TimeoutError:
+        raise RemoteControlError(
+            "busy", "Another remote control action is still running. Try again when it finishes."
+        ) from None
+    try:
+        timeout = max(deadline - loop.time(), 1.0)
+        return await _run(argv, timeout=timeout, log_output=log_output), budget
+    finally:
+        _action_lock.release()
 
 
 async def _run(argv: list[str], *, timeout: float, log_output: bool = True) -> CommandResult:
@@ -641,11 +672,9 @@ async def pair() -> dict[str, Any]:
                 "busy", f"Remote control is still {_PROGRESSIVE[pending]}. Try again when it finishes."
             )
         binary = _require_binary()
-        timeout = _action_timeout()
-        async with _action_lock:
-            # The output carries the code: keep it out of commands.log.
-            result = await _run(_argv("remote_control_pair", binary), timeout=timeout, log_output=False)
-        _raise_for_failure(result, "remote-control pair", timeout)
+        # The output carries the code: keep it out of commands.log.
+        result, budget = await _run_in_request(_argv("remote_control_pair", binary), log_output=False)
+        _raise_for_failure(result, "remote-control pair", budget)
         payload = parse_json_object(result.output) or {}
         manual_code = _text(payload.get("manualPairingCode"))
         raw_code = _text(payload.get("pairingCode"))
