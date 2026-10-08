@@ -99,6 +99,57 @@ def _fold_under(by_family: dict[str, CheckResult], child_family: str, child_id: 
     children.findings = kept
 
 
+def _file_subject(recorded: object) -> Optional[str]:
+    """A refusal's file as the read and content checks name it:
+    ``<state>/inbox/inbox.json`` → ``inbox/inbox.json``,
+    ``<projects>/p/.xo/todos.json`` → ``p/.xo/todos.json``."""
+    if not isinstance(recorded, str):
+        return None
+    for prefix in ("<state>/", "<projects>/"):
+        if recorded.startswith(prefix):
+            return recorded[len(prefix):]
+    return None
+
+
+def _fold_history(by_family: dict[str, CheckResult]) -> None:
+    """A failure record goes under the finding about the same thing now (a
+    crashed poller, a failing watcher, the damaged file a store refused), so
+    one problem reads as one entry with its history attached."""
+    history = by_family.get("crashes")
+    if history is None:
+        return
+    current: dict[tuple[str, str], Finding] = {}
+    for family in ("components", "watcher"):
+        result = by_family.get(family)
+        for finding in result.findings if result is not None else []:
+            if finding.id in ("component.crashed", "component.exited", "watcher.stopped"):
+                current.setdefault((finding.subject, "stopped"), finding)
+            elif finding.id in ("component.failing", "watcher.failing"):
+                current.setdefault((finding.subject, "failing"), finding)
+    files: dict[str, Finding] = {}
+    for family in ("read", "content"):
+        result = by_family.get(family)
+        for finding in result.findings if result is not None else []:
+            if finding.id.startswith(("read.", "schema.", "content.")) and finding.id not in _NOT_ONE_FILE:
+                files.setdefault(finding.subject, finding)
+    kept: list[Finding] = []
+    for finding in history.findings:
+        component, kind = finding.details.get("component"), finding.details.get("kind")
+        if kind in ("crash", "exit"):
+            parent = current.get((component, "stopped"))
+        elif kind == "failing":
+            parent = current.get((component, "failing"))
+        elif kind == "refusal":
+            parent = files.get(_file_subject(finding.details.get("subject")) or "")
+        else:
+            parent = None
+        if parent is not None:
+            _attach(parent, finding, "History", finding.observed)
+        else:
+            kept.append(finding)
+    history.findings = kept
+
+
 def relate(results: list[CheckResult]) -> list[CheckResult]:
     by_family = {result.id: result for result in results}
     _fold_leftover_files(by_family)
@@ -110,6 +161,7 @@ def relate(results: list[CheckResult]) -> list[CheckResult]:
                 ("component.crashed", "component.exited"), "connections poller")
     _fold_under(by_family, "github", "github.stale", "components",
                 ("component.crashed", "component.exited"), "github poller")
+    _fold_history(by_family)
     for result in results:
         if result.error is None:
             result.level = worst(finding.level for finding in result.findings)
