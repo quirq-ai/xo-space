@@ -51,9 +51,9 @@ Test: an operation with a clear start and end, useful outside the server, that t
 | doctor and its move-aside fix | Chat and streaming (`/api/chat/*`): a live connection |
 | checks, unit | UI reads polled constantly: project list, inbox list, sessions, usage summaries, file trees, status. qq may offer the same views for terminals, but the UI keeps reading in-process |
 | Project add, clone, remove | Request guards, auth checks, sign-in flows |
-| Sharing: share, revoke, apply, members, **tick** | |
+| Sharing: share, revoke, apply, members | The project sharing relay loop (see below) |
 | Backup, restore (xo-projects-sync) | |
-| Periodic batches, run as scheduler jobs: daily usage upload, GitHub issue mirror, connections collectors, sharing tick | |
+| Periodic batches, run as scheduler jobs: daily usage upload, GitHub issue mirror, connections collectors | |
 
 ## How the server calls qq
 
@@ -75,64 +75,31 @@ So the watcher is already xo-space's clock and its scheduler already runs comman
 becomes **built-in scheduler jobs that run qq commands**, registered by the server at start-up:
 the watcher keeps time, the scheduler handles overlap and logging, qq does the work.
 
-## Project sharing on the scheduler
+## Project sharing stays in the server
 
-Today the relay is its own asyncio loop (`project_sharing/poller.py`): poll, fetch, auto-clone and
-publish every 60 s ±20 %, 5 s drain ticks while there is a backlog, woken early by a nudge
-(share/revoke/apply/"Check now") or by a local push (a cheap 5 s scan of `origin/<branch>` refs).
-
-Proposed: a built-in job running `qq sharing tick --json` every 60 s (timeout about 10 minutes).
-Running the relay's tick inside the watcher's own step instead was considered and rejected: a tick
-does network calls and `git fetch`/`clone` (seconds to minutes), and the watcher's tick is
-synchronous with a ~1 s budget, so ingestion would stall.
-
-What has to change first:
-
-| Today | With the scheduler |
-| --- | --- |
-| Status in memory (`project_sharing/status.py`), read by `/api/project-sharing/status`, the Inbox `sharing` feeder (`services/inbox/feeders.py:204`) and doctor (`services/doctor/liveness.py:577`) | Each tick writes its status, including the recent transitions, to `<state>/sharing/status.json`; those readers read the file. Cursors and bookmarks are already on disk. |
-| A nudge wakes the loop | share/revoke/apply/check call `scheduler.run_now("sharing-tick")` |
-| A local push is noticed within ~5 s | The watcher's tick runs the same cheap ref scan and calls `run_now` when it changes |
-| 5 s drain ticks | The command keeps ticking while the swarm says `has_more` (bounded), then exits |
-| ±20 % jitter spreads a fleet | Lost unless the job adds a random delay; acceptable for now |
-
-Same rule as everywhere: the job runs `qq sharing tick` first and falls back to the in-process
-tick only when qq cannot run. The relay's own asyncio loop stays in the code, no longer started,
-until the cleanup. When the watcher is off, sharing is off, and the Space UI says why in text.
-
-### Built (branch `qq-commands`)
-
-- `status.py`: `save()` / `load()` to `<state>/sharing/status.json`; `read_from_file()` makes the
-  server's `snapshot()` (status route, Inbox feeder) read it. The in-memory functions are unchanged.
-- `tick.py`: one tick as a process. Loads the server's settings, takes `<state>/sharing/.tick.lock`
-  (exit 3 if held), loads the status, ticks while there is a backlog or a pending nudge (at most 12
-  rounds, 5 s apart), saves. Exit 0 ran or parked, 1 the poll failed.
-- `job.py`: registers the built-in "sharing tick" job at start-up (every poll interval, timeout
-  600 s, `qq sharing tick --json`, or `python -m ...project_sharing.tick` when qq is not on PATH);
-  `nudge()` is `scheduler.run_now`, or a `.nudge` marker the running tick picks up;
-  `local_change_check()` runs from the watcher's tick every 5 s.
-- `service.py`: nudges go through `job.nudge()` (the old `poller.nudge()` without a job); with the
-  watcher off, the status says `reason: watcher_off`, shown as text on the Sharing page.
-- `server.py`: registers the job when the watcher is on; the old loop's start-up is kept, not run.
-- Commands: `qq sharing tick [--json]`, `qq logs sharing`.
+The relay keeps its own asyncio loop in the server (`project_sharing/poller.py`), exactly as before:
+poll, fetch, auto-clone and publish every 60 s ±20 %, 5 s drain ticks while there is a backlog,
+woken early by a nudge (share/revoke/apply/"Check now") or by a local push. It is a frequent,
+stateful loop that must react to nudges at once, so a process per tick (status on disk, lock and
+nudge files, scheduler round trips) would add cost and moving parts for nothing. There is no
+`qq sharing tick` command. The sharing operations people run (share, revoke, apply, members,
+status) are qq commands.
 
 ## Plan
 
 1. **Contract and helper.** `run_qq` in the server; `--json` and the exit codes on the existing commands.
 2. **Pilot: update.** Move `self_update`'s logic behind `qq update-check` / `qq update`; make
    `/space/update/*` call them, with the in-process fallback. Measure the latency.
-3. **Sharing tick on the scheduler.** Status on disk, `qq sharing tick`, the built-in job, run_now
-   for nudges, the watcher's local-change check, the "sharing is off" reason in the UI.
-4. **Lifecycle.** `qq start --background`, `qq restart`; `cowork-api.sh` becomes a wrapper.
-5. **The other periodic batches and operations.** Usage upload, GitHub mirror, connections,
+3. **Lifecycle.** `qq start --background`, `qq restart`; `cowork-api.sh` becomes a wrapper.
+4. **The periodic batches and operations.** Usage upload, GitHub mirror, connections,
    doctor, backup/restore, project add/remove.
 
 ## Decisions (2026-10-09)
 
-1. **Sharing depends on the watcher.** Accepted: when the watcher is off, sharing is off, and the
-   Space UI says so in text (the reason it is off), instead of looking broken.
+1. **Project sharing stays in the server.** Its relay loop runs as before, independent of the
+   watcher; no `qq sharing tick` command (a tried scheduler-job version was reverted).
 2. **The UI-read boundary.** Confirmed: constantly polled reads and chat streaming stay in-process.
-3. **Pilot order.** `update` first, then the sharing tick.
+3. **Pilot.** `update` first.
 
 ## Pilot: update
 

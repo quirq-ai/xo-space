@@ -7,7 +7,7 @@ from services.cowork_agent.project_layout import project_dir, project_dir_exists
 
 from services.swarm_api import project_sharing as swarm_client
 
-from . import config, git_ops, job, poller, state, status
+from . import config, git_ops, poller, state, status
 from .repo_identity import normalize_repo
 
 
@@ -49,10 +49,6 @@ class SwarmError(RelayError):
 
 def status_snapshot() -> dict:
     snap = status.snapshot()
-    if job.watcher_off():
-        # Sharing runs on the watcher's scheduler: with the watcher off it is
-        # off too, and the Sharing page says why (REASON.watcher_off).
-        snap.update(cadence="parked", reason="watcher_off", enabled=False)
     root = xo_projects_root()
     snap["own_workspace_id"] = config.workspace_id()
     snap["watch_branch"] = config.watch_branch()
@@ -118,7 +114,7 @@ async def apply(project_id: str) -> dict:
     ok, detail = await git_ops.apply_ff(d, branch)
     if not ok:
         raise ApplyFailed(detail or None)
-    job.nudge()   # the behind count in the next status snapshot drops to 0
+    poller.nudge()   # the behind count in the next status snapshot drops to 0
     return {"project_id": project_id, "branch": branch, "applied": behind,
             "head": await git_ops.head_sha(d)}
 
@@ -126,7 +122,7 @@ async def apply(project_id: str) -> dict:
 def check_now() -> dict:
     """The "Check now" button: run the relay's next tick as soon as possible
     instead of waiting out the minute. Harmless while parked."""
-    job.nudge()
+    poller.nudge()
     return {"ok": True, "cadence": status.snapshot().get("cadence")}
 
 
@@ -146,7 +142,7 @@ async def share(project_id: str, workspace_id: str) -> dict:
     ok, code, detail = await swarm_client.share(repo, ws, workspace_id)
     if not ok:
         raise SwarmError(code, "share_failed", detail)
-    job.nudge()   # our own status flips to "shared" within a second
+    poller.nudge()   # our own status flips to "shared" within a second
     return {"ok": True, "repo": repo}
 
 
@@ -156,5 +152,5 @@ async def revoke(project_id: str, workspace_id: str) -> dict:
     ok, code, detail = await swarm_client.revoke(repo, workspace_id)
     if not ok:
         raise SwarmError(code, "revoke_failed", detail)
-    job.nudge()
+    poller.nudge()
     return {"ok": True, "repo": repo}

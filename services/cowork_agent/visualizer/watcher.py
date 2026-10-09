@@ -277,22 +277,8 @@ class Watcher:
         # small reads when nothing is due.
         self._scheduler_step()
 
-        # 7b. Project sharing's local-change check: a new clone or this
-        # machine's own push starts the "sharing tick" job at once. Cheap
-        # (filesystem only, every few seconds), and a no-op without the job.
-        self._sharing_step()
-
         # 8. Liveness beat — last, so duration_ms covers the real tick.
         self._write_heartbeat(tick_started)
-
-    def _sharing_step(self) -> None:
-        """Never raises: sharing must not stop telemetry ingestion."""
-        try:
-            from services.cowork_agent.project_sharing import job as sharing_job
-            sharing_job.local_change_check()
-        except Exception as exc:
-            self._step_failed("sharing", exc)
-            logger.exception("sharing local-change check failed (non-fatal)")
 
     def _scheduler_step(self) -> None:
         """Give the command scheduler its once-per-tick call. Never raises:

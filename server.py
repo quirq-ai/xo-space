@@ -830,40 +830,17 @@ async def lifespan(app: FastAPI):
     else:
         print("   Watcher: disabled by runtime configuration")
 
-    # Cross-workspace commit relay. It runs as the "sharing tick" job of the
-    # watcher's command scheduler (`qq sharing tick`, project_sharing/job.py and
-    # infra/commands/DESIGN.md): each run is its own process and the server
-    # reads its status from disk. With the watcher off, sharing is off and the
-    # Sharing page says why. The relay's own always-on loop below is kept, not
-    # started, until the cleanup.
-    _relay_driver = "watcher" if _watcher_enabled else "off"
-    try:
-        from services.cowork_agent.project_sharing import job as sharing_job
-        from services.cowork_agent.project_sharing import status as sharing_status
-
-        sharing_status.read_from_file()
-        if _relay_driver == "watcher":
-            sharing_job.ensure_job()
-            print("   Relay: runs as the scheduler's 'sharing tick' job")
-        else:
-            sharing_job.mark_watcher_off()
-            print("   Relay: off, because the watcher is off")
-    except Exception as e:
-        print(f"⚠️ Relay job failed to register (non-fatal): {e}")
-
-    # The relay's own loop (poll + fetch + publish in a single tick, see
-    # services/cowork_agent/project_sharing/poller.py). Not started: the job
-    # above replaces it.
+    # Cross-workspace commit relay: one always-on loop (poll + fetch + publish
+    # in a single tick, see services/cowork_agent/project_sharing/poller.py).
     # PROJECT_SHARING_ENABLED=false is an emergency brake; with no XO_SPACE_ID or no
     # XO sign-in the loop PARKS (zero network calls). Non-fatal on failure.
-    if _relay_driver == "loop":
-        try:
-            from services.cowork_agent.project_sharing.poller import run_relay_poller
-            _relay_task = asyncio.create_task(run_relay_poller())
-            background.register("relay poller", _relay_task)
-            print("   Relay: background task started")
-        except Exception as e:
-            print(f"⚠️ Relay failed to start (non-fatal): {e}")
+    try:
+        from services.cowork_agent.project_sharing.poller import run_relay_poller
+        _relay_task = asyncio.create_task(run_relay_poller())
+        background.register("relay poller", _relay_task)
+        print("   Relay: background task started")
+    except Exception as e:
+        print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
     _warmup_task = asyncio.create_task(startup_warmup_request())
 

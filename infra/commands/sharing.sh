@@ -1,15 +1,10 @@
 #!/bin/sh
-: Show the project sharing relay status, qq sharing check to make it poll now, qq sharing tick to run one tick here
+: Show the project sharing relay status, or qq sharing check to make it poll now
 . infra/qq-lib.sh
 case "${1:-}" in
     "") ;;
     check) qq_call POST /api/project-sharing/check >/dev/null && echo "qq sharing: asked the relay to poll now"; exit ;;
-    tick)
-        # One relay tick in this process: what the watcher's "sharing tick" job runs every minute.
-        shift
-        [ -x .qq/venv/bin/python ] || { echo "qq sharing tick: no .qq/venv yet, run qq deps first" >&2; exit 1; }
-        QUIRQ_STATE_ROOT="$(qq_state)" XO_PROJECTS_ROOT="${XO_PROJECTS_ROOT:-$(_qq_pointer projects_root || pwd)}"             exec .qq/venv/bin/python -m services.cowork_agent.project_sharing.tick "$@" ;;
-    *) echo "usage: qq sharing [check | tick [--json]]" >&2; exit 2 ;;
+    *) echo "usage: qq sharing [check]" >&2; exit 2 ;;
 esac
 body=$(qq_call GET /api/project-sharing/status) || exit 1
 python3 - "$body" <<'PY'
