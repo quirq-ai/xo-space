@@ -811,7 +811,11 @@ print_restart_hint() {
     local ref_prefix=""
     [ "$SOURCE_REF" = "main" ] || ref_prefix="QUIRQ_SOURCE_REF=${SOURCE_REF} "
 
-    if [ "$MANAGED_CHECKOUT" -eq 1 ]; then
+    if [ -n "${QUIRQ_VENV_DIR:-}" ]; then
+        # Started by `qq start`: running ./install.sh by hand would build its own venv instead.
+        printf '    Start again later:  cd %s && qq start\n' "$REPO_DIR"
+        printf '    Update:             qq update, then qq start\n\n'
+    elif [ "$MANAGED_CHECKOUT" -eq 1 ]; then
         printf '    Start again later:  cd %s && %s/install.sh\n' "$LAUNCH_DIR" "$REPO_DIR"
         printf '    Update and start:   cd %s && curl -fsSL %s | %ssh\n\n' \
             "$LAUNCH_DIR" "$INSTALL_URL" "$ref_prefix"
