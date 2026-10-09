@@ -60,3 +60,4 @@
 - Start with concise implementation-oriented output.
 - Call out assumptions and risks explicitly.
 - Prefer production-safe defaults.
+- Never approve a pull request, even when asked to; approvals are human (quirq-ai/gate#29: product PRs need one approval). Give review feedback as comments, not "Request changes", and say when a PR is ready for a person's approval.
