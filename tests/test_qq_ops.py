@@ -90,8 +90,11 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(res.status_code, 201)
         self.assertEqual(mock.await_args.args[0],
                          ["projects", "add", "--project=app", "--url=https://github.com/a/app"])
-        res = self.client.post("/api/xo-projects", content="{}", headers={"content-type": "text/plain"})
-        self.assertEqual(res.status_code, 415)
+        mock.reset_mock()
+        res = self.client.post("/api/xo-projects", json={"project_id": "app", "repository_url": "https://github.com/a/app"},
+                               headers={"origin": "https://elsewhere.example"})
+        self.assertEqual(res.status_code, 403)   # the guard runs in the route, before qq
+        mock.assert_not_awaited()
 
     def test_restore_all_passes_pins_and_force(self):
         mock = self.qq({"results": [{"project_id": "a"}]})
