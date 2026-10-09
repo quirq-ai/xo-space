@@ -1,6 +1,6 @@
 #!/bin/sh
 : Run every CI check except the test suite, keep going, and summarise
-[ -x venv/bin/python ] || { echo "qq checks: no venv yet, run qq start once to create it" >&2; exit 1; }
+[ -x .qq/venv/bin/python ] || { echo "qq checks: no .qq/venv yet, run qq deps first" >&2; exit 1; }
 failed=""
 
 step() {
@@ -29,8 +29,8 @@ ui_modules_parse() {
 }
 
 step "no committed .env files" no_env_files
-step "byte-compile" venv/bin/python -m compileall -q server.py config routers services utils scripts tests
-step "route parity, every agent runtime" venv/bin/python scripts/check_route_parity.py
+step "byte-compile" .qq/venv/bin/python -m compileall -q server.py config routers services utils scripts tests
+step "route parity, every agent runtime" .qq/venv/bin/python scripts/check_route_parity.py
 step "install.sh harness" bash tests/install_sh_harness.sh
 step "uninstall.sh harness" bash tests/uninstall_sh_harness.sh
 step "plugin bundles in sync" bash scripts/check_plugin_sync.sh

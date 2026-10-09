@@ -849,6 +849,14 @@ main() {
     cd "$REPO_DIR"
     VENV_DIR="${REPO_DIR}/venv"
     VENV_PYTHON="${VENV_DIR}/bin/python"
+    # `qq start` builds the environment itself (qq build server: .qq/venv on the
+    # repo's pinned Python) and passes it here; this script then only runs it.
+    if [ -n "${QUIRQ_VENV_DIR:-}" ]; then
+        VENV_DIR="$QUIRQ_VENV_DIR"
+        VENV_PYTHON="${VENV_DIR}/bin/python"
+        [ -x "$VENV_PYTHON" ] ||
+            fail "QUIRQ_VENV_DIR=${VENV_DIR} has no bin/python; run qq build server first."
+    fi
 
     # Before any default is applied, so .env drives the resolution below
     # rather than being shadowed by it.
@@ -874,8 +882,10 @@ main() {
             "The Quirq checkout cannot live inside the Quirq root (${state_root}). Set QUIRQ_APP_DIR to a path outside it." ;;
     esac
 
-    ensure_uv
-    sync_dependencies
+    if [ -z "${QUIRQ_VENV_DIR:-}" ]; then
+        ensure_uv
+        sync_dependencies
+    fi
 
     mkdir -p "$projects_root"
     prepare_state_root "$anchor_dir" "$state_root"

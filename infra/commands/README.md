@@ -1,7 +1,8 @@
 # xo-space qq commands
 
-Each `infra/commands/NAME.sh` here is a `qq NAME` command for this repo. Run them from the
-checkout with [depot](https://github.com/quirq-ai/depot)'s `qq` on `PATH`; `qq --help` lists
+Each `infra/commands/NAME.sh` here is a `qq NAME` command for this repo. They all use one
+Python environment, `.qq/venv`, built by `qq build server` on the Python `infra/repo.toml` pins. Run them from the
+checkout with [qq](https://github.com/quirq-ai/qq)'s `qq` on `PATH`; `qq --help` lists
 them. Commands that talk to the server find this checkout's port from
 `~/.config/quirq/install.json` (only when it names this checkout), else `$PORT`, else 5002
 (`infra/qq-lib.sh`).
@@ -10,7 +11,7 @@ them. Commands that talk to the server find this checkout's port from
 
 | Command | What it does |
 |---|---|
-| `qq start` | Starts xo-space in the foreground through `install.sh`, on the pinned Python 3.14. |
+| `qq start` | Builds or updates `.qq/venv` (`qq build server`), then starts xo-space in the foreground through `install.sh` on that venv. |
 | `qq stop` | Stops this checkout's server through its localhost-only stop route, and nothing else. |
 | `qq health` | Checks the server is up and prints its `/health` report. |
 | `qq info` | Shows the running server's port, PID, instance and restart mode. |
@@ -23,7 +24,7 @@ them. Commands that talk to the server find this checkout's port from
 |---|---|
 | `qq update-check` | Says whether a newer commit is on the branch, without changing anything. |
 | `qq update` | Fast-forwards the checkout to the newest commit, like the Setup tab's Update button. |
-| `qq deps` | Reinstalls the Python dependencies into `venv/` with uv, as `install.sh` does. |
+| `qq deps` | Rebuilds `.qq/venv`: the pinned Python from `infra/repo.toml` plus `requirements.txt`. |
 | `qq doctor` | Shows the server's state health report. |
 | `qq uninstall` | Shows what uninstall would remove. Only `qq uninstall --yes` removes it. |
 
