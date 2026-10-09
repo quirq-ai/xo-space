@@ -60,9 +60,6 @@ from the checkout, with this install's environment; parse stdout; map exit codes
 with the command's message, 2 → 422, timeout → 504). Routes become thin: validate the request, call
 `run_qq`, return its JSON. The old in-process function stays behind the setting.
 
-Prerequisite: the server must find a pinned `qq`. Locally that's the user's depot checkout; in the
-cloud **depot must be installed in the Docker image**, pinned like the manifest's `[qq] version`.
-
 ## Periodic work: the watcher's command scheduler
 
 `services/cowork_agent/visualizer/watcher.py` ticks every second (`QUIRQ_WATCHER_INTERVAL_SECONDS`).
@@ -109,10 +106,20 @@ watcher driver is proven. The old loop is not deleted.
 5. **The other periodic batches and operations.** Usage upload, GitHub mirror, connections,
    doctor, backup/restore, project add/remove.
 
-## Questions for review
+## Decisions (2026-10-09)
 
-1. **Sharing depends on the watcher.** With the scheduler driver, sharing stops when the watcher
-   is turned off in Setup. Is that acceptable, or must the old loop take over when the watcher is off?
-2. **qq in the Docker image.** Add a pinned depot to the image so the cloud server can call qq?
-3. **The UI-read boundary.** Confirm that constantly polled reads and chat streaming stay in-process.
-4. **Pilot order.** Start with `update`, then the sharing tick?
+1. **Sharing depends on the watcher.** Accepted: when the watcher is off, sharing is off, and the
+   Space UI says so in text (the reason it is off), instead of looking broken.
+2. **The UI-read boundary.** Confirmed: constantly polled reads and chat streaming stay in-process.
+3. **Pilot order.** `update` first, then the sharing tick.
+
+## Pilot: update
+
+- Switch: `QUIRQ_QQ_OPERATIONS`, a comma-separated list of operations the server runs through qq
+  (`update` for the pilot). Unset means the old in-process path, for every operation.
+- `qq update-check --json` / `qq update --json` print the same objects the routes return today.
+  For now the commands call `services.cowork_agent.self_update`, so the logic is shared; where the
+  code lives is part of the later cleanup. What changes now is who calls whom.
+- `/space/update/status` and `/space/update/apply` call `run_qq` when `update` is switched on, and
+  return the command's object unchanged, so the Setup tab does not notice.
+- Tests: `run_qq` (JSON, exit codes, timeout, qq missing) and both routes in both modes.
