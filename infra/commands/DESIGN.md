@@ -100,6 +100,22 @@ Same rule as everywhere: the job runs `qq sharing tick` first and falls back to 
 tick only when qq cannot run. The relay's own asyncio loop stays in the code, no longer started,
 until the cleanup. When the watcher is off, sharing is off, and the Space UI says why in text.
 
+### Built (branch `qq-commands`)
+
+- `status.py`: `save()` / `load()` to `<state>/sharing/status.json`; `read_from_file()` makes the
+  server's `snapshot()` (status route, Inbox feeder) read it. The in-memory functions are unchanged.
+- `tick.py`: one tick as a process. Loads the server's settings, takes `<state>/sharing/.tick.lock`
+  (exit 3 if held), loads the status, ticks while there is a backlog or a pending nudge (at most 12
+  rounds, 5 s apart), saves. Exit 0 ran or parked, 1 the poll failed.
+- `job.py`: registers the built-in "sharing tick" job at start-up (every poll interval, timeout
+  600 s, `qq sharing tick --json`, or `python -m ...project_sharing.tick` when qq is not on PATH);
+  `nudge()` is `scheduler.run_now`, or a `.nudge` marker the running tick picks up;
+  `local_change_check()` runs from the watcher's tick every 5 s.
+- `service.py`: nudges go through `job.nudge()` (the old `poller.nudge()` without a job); with the
+  watcher off, the status says `reason: watcher_off`, shown as text on the Sharing page.
+- `server.py`: registers the job when the watcher is on; the old loop's start-up is kept, not run.
+- Commands: `qq sharing tick [--json]`, `qq logs sharing`.
+
 ## Plan
 
 1. **Contract and helper.** `run_qq` in the server; `--json` and the exit codes on the existing commands.

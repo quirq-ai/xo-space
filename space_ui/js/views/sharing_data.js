@@ -96,6 +96,7 @@ export const REASON={
   disabled:'sharing is switched off (PROJECT_SHARING_ENABLED=false)',
   no_workspace_id:'no workspace id: set XO_SPACE_ID in .env and restart',
   no_auth:'sign in to XO (or set XO_API_KEY) to share projects',
+  watcher_off:'sharing is off because the watcher is off: turn the watcher on in Setup and restart the server',
 };
 export const parked=()=>!!status&&status.cadence==='parked';
 

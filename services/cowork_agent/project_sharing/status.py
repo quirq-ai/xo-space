@@ -183,9 +183,82 @@ def member_repos() -> set[str]:
 
 
 def snapshot() -> dict:
+    if _read_from_file:
+        saved = _saved_state()
+        if saved is not None:
+            return saved
     snap = copy.deepcopy({k: v for k, v in _state.items() if k != "recent"})
     snap["recent"] = list(_state["recent"])
     return snap
+
+
+# ── persistence ──────────────────────────────────────────────────────────────
+# Under the watcher driver each tick is its own process (`qq sharing tick`, see
+# tick.py): it load()s the last status, ticks, and save()s it, because the
+# transitions above compare against what the previous tick saw. The server,
+# which no longer ticks, reads the file through snapshot() once
+# read_from_file() is on. One writer at a time: the tick holds a lock.
+
+STATUS_SCHEMA = 1
+_read_from_file = False
+
+
+def status_file():
+    from services.storage.layout import sharing_dir
+    return sharing_dir() / "status.json"
+
+
+def read_from_file(enabled: bool = True) -> None:
+    """Make snapshot() return what the last tick saved (the server, which does
+    not tick itself under the watcher driver)."""
+    global _read_from_file
+    _read_from_file = enabled
+
+
+def _saved_state() -> dict | None:
+    try:
+        data = json.loads(status_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != STATUS_SCHEMA:
+        return None
+    data.pop("schema", None)
+    data.setdefault("repos", {})
+    data.setdefault("recent", [])
+    return data
+
+
+def load() -> None:
+    """Start this process from the last saved status (a fresh one if none)."""
+    reset()
+    saved = _saved_state()
+    if saved is None:
+        return
+    recent = saved.pop("recent", [])
+    _state.update({k: v for k, v in saved.items() if k in _state})
+    _state["recent"].extend(e for e in recent if isinstance(e, dict))
+
+
+def save() -> None:
+    """Write the status atomically, for the server and the next tick."""
+    import os
+    import tempfile
+
+    path = status_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"schema": STATUS_SCHEMA, **{k: v for k, v in _state.items() if k != "recent"},
+            "recent": list(_state["recent"])}
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".status.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def feed_view() -> dict:

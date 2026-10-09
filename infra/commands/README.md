@@ -15,7 +15,7 @@ them. Commands that talk to the server find this checkout's port from
 | `qq stop` | Stops this checkout's server through its localhost-only stop route, and nothing else. |
 | `qq health` | Checks the server is up and prints its `/health` report. |
 | `qq info` | Shows the running server's port, PID, instance and restart mode. |
-| `qq logs` | Follows the server log in `<state>/logs/quirq.log`. |
+| `qq logs [sharing]` | Follows the server log in `<state>/logs/quirq.log`; `sharing` follows the sharing tick job's log instead. |
 | `qq open` | Prints the Space UI address. |
 
 ## Tier 2: maintenance
@@ -48,7 +48,7 @@ them. Commands that talk to the server find this checkout's port from
 
 | Command | What it does |
 |---|---|
-| `qq sharing [check]` | Shows the project-sharing relay status; `check` makes it poll now. |
+| `qq sharing [check \| tick]` | Shows the project-sharing relay status; `check` makes it poll now; `tick` runs one relay tick in this terminal, the same thing the watcher's "sharing tick" job runs every minute. |
 | `qq members PROJECT` | Lists the Spaces a project is shared with. |
 | `qq commits PROJECT [COUNT]` | Shows the project's shared branch and which commits are new. |
 | `qq share PROJECT SPACE_ID` | Shares a project with another Space. |
