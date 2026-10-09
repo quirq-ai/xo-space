@@ -34,6 +34,7 @@ from services.cowork_agent.visualizer.ingest.events import (
 )
 from services.cowork_agent.visualizer.sinks import (
     activity,
+    audr,
     project_json,
     sessions_augment,
     stats,
@@ -202,6 +203,13 @@ class Watcher:
                 self._step_failed(f"sinks for {project_id}", exc)
                 logger.exception("sink batch failed for project %s", project_id)
                 continue
+            # Usage records: their own step, so a failure here never costs
+            # the sinks above their write.
+            try:
+                audr.apply(rt, sink_events)
+            except Exception as exc:
+                self._step_failed(f"audr sink for {project_id}", exc)
+                logger.exception("audr sink failed for project %s", project_id)
 
         # 5. Activity sink — driven by presence snapshot, not events.
         # Runs for every project (even those with no events this tick)

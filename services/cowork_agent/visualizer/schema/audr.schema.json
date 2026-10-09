@@ -1,0 +1,735 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openaudr.dev/spec/v1.0.0/audr.schema.json",
+  "title": "Agent Usage Detail Record (AUDR)",
+  "description": "This specification defines the Agent Usage Detail Record (AUDR), a JSON object that describes one metered operation in an agent system. A record identifies its emitter and resource, reports raw model or tool usage, associates the operation with a run, and carries attribution required for downstream cost allocation. A record MAY include an informational cost assertion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "record_id",
+    "emitter",
+    "timing",
+    "resource",
+    "usage",
+    "run",
+    "attribution"
+  ],
+  "properties": {
+    "spec_version": {
+      "type": "string",
+      "pattern": "^1\\.0\\.\\d+$",
+      "examples": [
+        "1.0.0"
+      ],
+      "description": "AUDR schema version, constrained here to 1.0.x. Consumers MUST reject unsupported major versions.",
+      "x_summary": "AUDR schema version, constrained here to 1.0.x. Consumers MUST reject unsupported major versions."
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 64,
+      "description": "ULID or UUIDv7 idempotency key, unique to each emitted record rather than each logical event. Records from different components use distinct IDs and are merged, not deduplicated.",
+      "x_summary": "ULID or UUIDv7 idempotency key, unique to each emitted record rather than each logical event. Records from different components use distinct IDs and are merged, not deduplicated."
+    },
+    "emitter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Identifies the software component that wrote the record.",
+      "required": [
+        "component",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "component": {
+          "enum": [
+            "harness",
+            "router",
+            "provider"
+          ],
+          "description": "Component that wrote the record. This field identifies the caller that metered tool usage and cost.",
+          "x_summary": "Component that wrote the record. This field identifies the caller that metered tool usage and cost."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "@audr/openrouter"
+          ],
+          "description": "Package identifier for the emitter.",
+          "x_summary": "Package identifier for the emitter."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "0.5.1"
+          ],
+          "description": "Emitter release used to attribute data-quality issues.",
+          "x_summary": "Emitter release used to attribute data-quality issues."
+        }
+      },
+      "x_summary": "Identifies the software component that wrote the record.",
+      "x_title": "Emitter Object"
+    },
+    "corrects": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 64,
+      "description": "Identifies one earlier record fully restated by this correction. The correction MUST contain full state, use a fresh record_id, and come from the same emitter.component; all-zero usage represents a void.",
+      "x_summary": "Identifies one earlier record fully restated by this correction. The correction MUST contain full state, use a fresh record_id, and come from the same emitter.component; all-zero usage represents a void."
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Event completion, ingest, and duration observations.",
+      "required": [
+        "event_time"
+      ],
+      "properties": {
+        "event_time": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+          "description": "Event invocation time in RFC 3339 format with millisecond precision; for streams, use stream termination.",
+          "x_summary": "Event invocation time in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) format with millisecond precision; for streams, use stream termination."
+        },
+        "received_time": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+          "description": "Ingest time in RFC 3339 format with millisecond precision. Set by the sink.",
+          "x_summary": "Ingest time in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) format with millisecond precision. Set by the sink."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Event execution duration in milliseconds.",
+          "x_summary": "Event execution duration in milliseconds."
+        }
+      },
+      "x_summary": "Event completion, ingest, and duration observations.",
+      "x_title": "Timing Object"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "type",
+        "name",
+        "operation"
+      ],
+      "description": "Identifies the consumed model or tool. Model operations require type=model; tool_execution and retrieval require type=tool.",
+      "x_summary": "Identifies the consumed model or tool. Model operations require type=model; tool_execution and retrieval require type=tool.",
+      "x_title": "Resource Object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "examples": [
+            "anthropic",
+            "openai",
+            "google",
+            "aws-bedrock",
+            "azure-openai",
+            "self-hosted"
+          ],
+          "description": "Canonical lowercase provider slug. For tool operations, identify the executing vendor or platform; use self-hosted for locally run tools.",
+          "x_summary": "Canonical lowercase provider slug. For tool operations, identify the executing vendor or platform; use self-hosted for locally run tools."
+        },
+        "type": {
+          "enum": [
+            "model",
+            "tool"
+          ],
+          "description": "Named resource kind: model for model operations or tool for tool_execution and retrieval. resource.operation selects the usage block.",
+          "x_summary": "Named resource kind: model for model operations or tool for tool_execution and retrieval. resource.operation selects the usage block."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "claude-sonnet-4-20250514",
+            "search_tickets",
+            "run_sql",
+            "web_search"
+          ],
+          "description": "Verbatim provider model identifier for models, or stable logical tool/backend identifier for tools. Do not normalize model names or use URLs and versioned function symbols for tools.",
+          "x_summary": "Verbatim provider model identifier for models, or stable logical tool/backend identifier for tools. Do not normalize model names or use URLs and versioned function symbols for tools."
+        },
+        "operation": {
+          "enum": [
+            "generation",
+            "embedding",
+            "reranking",
+            "tool_execution",
+            "retrieval"
+          ],
+          "description": "Operation class that selects resource.type and usage: model operations use model with usage.llm; tool_execution and retrieval use tool with usage.tool.",
+          "x_summary": "Operation class that selects resource.type and usage: model operations use model with usage.llm; tool_execution and retrieval use tool with usage.tool."
+        },
+        "modality": {
+          "enum": [
+            "text",
+            "image",
+            "audio",
+            "multimodal"
+          ],
+          "description": "The modality of the task or operation. This field is required when resource.type is model.",
+          "x_requirement": "conditional"
+        },
+        "key_name": {
+          "type": "string",
+          "examples": [
+            "prod-shared",
+            "team-research",
+            "byo-acme"
+          ],
+          "description": "Credential label from the gateway registry. It MUST contain no key material, prefix, hash, or other secret substring.",
+          "x_summary": "Credential label from the gateway registry. It MUST contain no key material, prefix, hash, or other secret substring."
+        },
+        "region": {
+          "type": "string",
+          "examples": [
+            "us-east-1",
+            "eu-central-1"
+          ],
+          "description": "Region affecting price and data residency.",
+          "x_summary": "Region affecting price and data residency."
+        },
+        "deployment": {
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "AWS",
+            "GCP",
+            "Azure",
+            "self-hosted"
+          ],
+          "description": "Open-vocabulary deployment platform or environment, such as AWS, GCP, Azure, or self-hosted."
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "span_id"
+      ],
+      "description": "Groups metered operations into a task and span hierarchy. Spawned agents reuse run_id, parent_span_id links within that run, and a harness outcome closes the run.",
+      "x_summary": "Groups metered operations into a task and span hierarchy. Spawned agents reuse run_id, parent_span_id links within that run, and a harness outcome closes the run.",
+      "x_title": "Run Object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 64,
+          "description": "Unique run identifier, generated by the harness or by the router when no harness exists. It MUST be account-unique and identical on every record in the run, including spawned-agent records.",
+          "x_summary": "Unique run identifier, generated by the harness or by the router when no harness exists. It MUST be account-unique and identical on every record in the run, including spawned-agent records."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional human-readable name of the agentic run. When absent, run_id is used in its place for display purposes.",
+          "x_summary": "Optional human-readable name of the agentic run. When absent, run_id is used in its place for display purposes."
+        },
+        "span_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Span identifier for one metered operation, unique within run_id. Together they form the sink merge key, which MUST NOT be shared by different operations.",
+          "x_summary": "Span identifier for one metered operation, unique within run_id. Together they form the sink merge key, which MUST NOT be shared by different operations."
+        },
+        "parent_span_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Links nested tools and spawned agents to a span in the same run_id. Spawned agents MUST reuse the parent run_id and set this field to their spawning span.",
+          "x_summary": "Links nested tools and spawned agents to a span in the same run_id. Spawned agents MUST reuse the parent run_id and set this field to their spawning span."
+        },
+        "step": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ordinal position within the run."
+        },
+        "trace_id": {
+          "type": "string",
+          "description": "W3C trace identifier for OpenTelemetry correlation.",
+          "x_summary": "W3C trace identifier for OpenTelemetry correlation."
+        },
+        "run_type": {
+          "enum": [
+            "agent_run",
+            "workflow",
+            "single_call"
+          ],
+          "description": "Overall work shape.",
+          "x_summary": "Overall work shape."
+        },
+        "error_code": {
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "TOOL_TIMEOUT",
+            "PROVIDER_5XX",
+            "CONTENT_POLICY_VIOLATION",
+            "CAPACITY_UNAVAILABLE",
+            "SERVICE_UNAVAILABLE",
+            "CLIENT_CANCELLED"
+          ],
+          "description": "Error code when the run fails. Report consumed usage even on failure; downstream rating decides billability.",
+          "x_summary": "Error code when the run fails. Report consumed usage even on failure; downstream rating decides billability."
+        },
+        "error_reason": {
+          "type": "string",
+          "maxLength": 32,
+          "examples": [
+            "sandbox wall-clock exceeded"
+          ],
+          "description": "Human-readable message of the run failure, limited to 32 characters.",
+          "x_summary": "Human-readable message of the run failure, limited to 32 characters."
+        },
+        "outcome": {
+          "enum": [
+            "resolved",
+            "escalated",
+            "abandoned",
+            "failed"
+          ],
+          "description": "The agent run's final outcome, emitted only by the harness.",
+          "x_summary": "The agent run's final outcome, emitted only by the harness."
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Carries billability and allocation dimensions. Emitters MUST supply environment; sinks ignore records missing it, and production records require account_id.",
+      "x_summary": "Carries billability and allocation dimensions. Emitters MUST supply environment; sinks ignore records missing it, and production records require account_id.",
+      "x_title": "Attribution Object",
+      "properties": {
+        "environment": {
+          "enum": [
+            "production",
+            "staging",
+            "development",
+            "test",
+            "evaluation"
+          ],
+          "description": "Deployment environment. A conformant emitter MUST populate it; a missing value triggers default-deny ignore.",
+          "x_summary": "Deployment environment. A conformant emitter MUST populate it; a missing value triggers default-deny ignore.",
+          "x_requirement": "conditional"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "Pseudonymous identity of the triggering user; never an email or name. It MUST NOT be used by rating; account_id MUST be used for rating.",
+          "x_summary": "Pseudonymous identity of the triggering user; never an email or name. It MUST NOT be used by rating; account_id MUST be used for rating."
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The account that pays the bill. Rating may aggregate usage by this account. Required for production traffic; optional otherwise.",
+          "x_summary": "The account that pays the bill. Rating may aggregate usage by this account. Required for production traffic; optional otherwise.",
+          "x_requirement": "conditional"
+        },
+        "subscription_id": {
+          "type": "string",
+          "description": "Subscription associated with the paying account for this usage record.",
+          "x_summary": "Subscription associated with the paying account for this usage record."
+        },
+        "labels": {
+          "type": "object",
+          "maxProperties": 20,
+          "propertyNames": {
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_.-]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "description": "Up to 20 free-form dimensions for non-billable metadata. Labels MUST NOT contain PII.",
+          "x_summary": "Up to 20 free-form dimensions for non-billable metadata. Labels MUST NOT contain PII."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "account_id is required for production traffic.",
+          "if": {
+            "properties": {
+              "environment": {
+                "const": "production"
+              }
+            },
+            "required": [
+              "environment"
+            ]
+          },
+          "then": {
+            "required": [
+              "account_id"
+            ]
+          }
+        }
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Raw, non-monetary counters with exactly one non-empty llm or tool block selected by resource.operation. An absent counter means unreported or inapplicable; zero means measured as zero and MUST NOT be inferred from absence.",
+      "x_summary": "Raw, non-monetary counters with exactly one non-empty llm or tool block selected by resource.operation. An absent counter means unreported or inapplicable; zero means measured as zero and MUST NOT be inferred from absence.",
+      "x_title": "Usage Object",
+      "properties": {
+        "llm": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "description": "Non-empty model-call counters. A harness may emit counters read from the provider response.",
+          "x_summary": "Non-empty model-call counters. A harness may emit counters read from the provider response.",
+          "x_requirement": "conditional",
+          "properties": {
+            "input_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Uncached input tokens; MUST exclude cache reads.",
+              "x_summary": "Uncached input tokens; MUST exclude cache reads."
+            },
+            "output_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Output tokens; exclude reasoning tokens when reasoning_tokens is present.",
+              "x_summary": "Output tokens; exclude reasoning tokens when reasoning_tokens is present."
+            },
+            "cache_read_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Prompt-cache read tokens, reported separately for distinct pricing.",
+              "x_summary": "Prompt-cache read tokens, reported separately for distinct pricing."
+            },
+            "cache_write_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Tokens written to a prompt cache by this call.",
+              "x_summary": "Tokens written to a prompt cache by this call."
+            },
+            "reasoning_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Reasoning tokens, separate from output for independent pricing.",
+              "x_summary": "Reasoning tokens, separate from output for independent pricing."
+            },
+            "requests": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Request count for per-request pricing. No default applies: absent means unreported, while one request is encoded as 1.",
+              "x_summary": "Request count for per-request pricing. No default applies: absent means unreported, while one request is encoded as 1."
+            },
+            "images_processed": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Images supplied in model input.",
+              "x_summary": "Images supplied in model input."
+            },
+            "audio_input_seconds": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Seconds of audio submitted."
+            },
+            "audio_output_seconds": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Seconds of audio generated."
+            }
+          },
+          "patternProperties": {
+            "^x_[a-z0-9_]+$": {
+              "type": [
+                "integer",
+                "number"
+              ],
+              "minimum": 0,
+              "description": "Non-negative provider counter named x_<provider>_<name>.",
+              "x_summary": "Non-negative provider counter named x_<provider>_<name>."
+            }
+          }
+        },
+        "tool": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "description": "Non-empty counters reported by the component that executed the tool: harness for caller-held contracts, router for provider-executed tools.",
+          "x_summary": "Non-empty counters reported by the component that executed the tool: harness for caller-held contracts, router for provider-executed tools.",
+          "x_requirement": "conditional",
+          "properties": {
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The tool operation being metered, such as invocation, api, web_search, code_execution, or retrieval. It complements resource.operation and resource.name.",
+              "x_summary": "The tool operation being metered, such as invocation, api, web_search, code_execution, or retrieval. It complements resource.operation and resource.name."
+            },
+            "call_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Invocation or run count used for per-call pricing. For retrieval, this is usually the query count.",
+              "x_summary": "Invocation or run count used for per-call pricing. For retrieval, this is usually the query count."
+            },
+            "sandbox_time": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Sandbox compute wall-clock time in milliseconds, distinct from whole-operation timing.duration_ms. Used when an agent run spins up a sandbox for tool execution.",
+              "x_summary": "Sandbox compute wall-clock time in milliseconds, distinct from whole-operation timing.duration_ms. Used when an agent run spins up a sandbox for tool execution."
+            }
+          },
+          "patternProperties": {
+            "^x_[a-z0-9_]+$": {
+              "type": [
+                "integer",
+                "number"
+              ],
+              "minimum": 0,
+              "description": "Non-negative implementation counter named x_<name>.",
+              "x_summary": "Non-negative implementation counter named x_<name>."
+            }
+          }
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_cost",
+        "currency"
+      ],
+      "description": "Provider- or router-asserted cost that rating MAY use or ignore according to its billing configuration. Components are gross, total_cost is net, and the single cost sub-block must match usage; rating MAY check consistency but MUST NOT overwrite the total.",
+      "x_summary": "Provider- or router-asserted cost that rating MAY use or ignore according to its billing configuration. Components are gross, total_cost is net, and the single cost sub-block must match usage; rating MAY check consistency but MUST NOT overwrite the total.",
+      "x_title": "Cost Object",
+      "properties": {
+        "total_cost": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Event-level total cost after discounts.",
+          "x_summary": "Event-level total cost after discounts."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "Currency code of the costs in uppercase according to ISO 4217 format.",
+          "x_summary": "Currency code of the costs in uppercase according to ISO 4217 format."
+        },
+        "llm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total_token_cost"
+          ],
+          "description": "The gross cost of the model operation calls. The breakdown is similar to usage.llm and is present only for model operations.",
+          "x_summary": "The gross cost of the model operation calls. The breakdown is similar to usage.llm and is present only for model operations.",
+          "x_requirement": "conditional",
+          "properties": {
+            "total_token_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Total token cost for this model call event. Reference only and MAY have rounding differences with the sum of individual token costs.",
+              "x_summary": "Total token cost for this model call event. Reference only and MAY have rounding differences with the sum of individual token costs."
+            },
+            "input_token_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Cost of uncached input tokens. This would be the total input token cost if cache_read_cost were absent.",
+              "x_summary": "Cost of uncached input tokens. This would be the total input token cost if cache_read_cost were absent."
+            },
+            "output_token_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Output token cost and MUST exclude reasoning_cost.",
+              "x_summary": "Output token cost and MUST exclude reasoning_cost."
+            },
+            "cache_read_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Prompt-cache read cost.",
+              "x_summary": "Prompt-cache read cost."
+            },
+            "cache_write_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Prompt-cache write cost.",
+              "x_summary": "Prompt-cache write cost."
+            },
+            "reasoning_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Reasoning-token cost.",
+              "x_summary": "Reasoning-token cost."
+            }
+          }
+        },
+        "tool": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "description": "The gross cost of the tool execution calls. The breakdown is similar to usage.tool and is present only for tool_execution and retrieval.",
+          "x_summary": "The gross cost of the tool execution calls. The breakdown is similar to usage.tool and is present only for tool_execution and retrieval.",
+          "x_requirement": "conditional",
+          "properties": {
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The tool operation being metered. It SHOULD match usage.tool.type on the same record.",
+              "x_summary": "The tool operation being metered. It SHOULD match usage.tool.type on the same record."
+            },
+            "call_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Per-invocation charge corresponding to usage.tool.call_count.",
+              "x_summary": "Per-invocation charge corresponding to usage.tool.call_count."
+            },
+            "sandbox_cost": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Charge corresponding to usage.tool.sandbox_time.",
+              "x_summary": "Charge corresponding to usage.tool.sandbox_time."
+            }
+          },
+          "patternProperties": {
+            "^x_[a-z0-9_]+$": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Charge amount for an implementation-specific field named x_<name>.",
+              "x_summary": "Charge amount for an implementation-specific field named x_<name>."
+            }
+          }
+        },
+        "original_cost": {
+          "type": "number",
+          "minimum": 0,
+          "description": "List cost before commitments, negotiated rates, or promotions.",
+          "x_summary": "List cost before commitments, negotiated rates, or promotions."
+        },
+        "discount_amount": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Difference between original_cost and total_cost.",
+          "x_summary": "Difference between original_cost and total_cost."
+        },
+        "discount_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Any provider promotional discount percentage.",
+          "x_summary": "Any provider promotional discount percentage."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "MODEL OPERATIONS: resource.type MUST be model, usage.llm is the record's usage block, and the tool sub-blocks MUST be absent.",
+      "if": {
+        "required": [
+          "resource"
+        ],
+        "properties": {
+          "resource": {
+            "required": [
+              "operation"
+            ],
+            "properties": {
+              "operation": {
+                "enum": [
+                  "generation",
+                  "embedding",
+                  "reranking"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "resource": {
+            "required": [
+              "modality"
+            ],
+            "properties": {
+              "type": {
+                "const": "model"
+              }
+            }
+          },
+          "usage": {
+            "required": [
+              "llm"
+            ],
+            "not": {
+              "required": [
+                "tool"
+              ]
+            }
+          },
+          "cost": {
+            "not": {
+              "required": [
+                "tool"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "TOOL OPERATIONS: resource.type MUST be tool, usage.tool is the record's usage block, and the llm sub-blocks MUST be absent.",
+      "if": {
+        "required": [
+          "resource"
+        ],
+        "properties": {
+          "resource": {
+            "required": [
+              "operation"
+            ],
+            "properties": {
+              "operation": {
+                "enum": [
+                  "tool_execution",
+                  "retrieval"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "resource": {
+            "properties": {
+              "type": {
+                "const": "tool"
+              }
+            }
+          },
+          "usage": {
+            "required": [
+              "tool"
+            ],
+            "not": {
+              "required": [
+                "llm"
+              ]
+            }
+          },
+          "cost": {
+            "not": {
+              "required": [
+                "llm"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

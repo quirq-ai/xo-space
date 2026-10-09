@@ -403,6 +403,71 @@ class ActivityResponse(_ForbidExtra):
     open_sessions: list[OpenSession]
 
 
+# ── /usage-records (OpenAudr) ─────────────────────────────────────────────────
+
+
+class UsageRecordTokens(_ForbidExtra):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class UsageRecordModel(_ForbidExtra):
+    model: str
+    provider: str
+    turns: int
+    tokens: UsageRecordTokens
+    cost: float
+    # Turns with no ``cost`` (model unpriced); ``cost`` excludes them.
+    unpriced_turns: int
+
+
+class UsageRecordSession(_ForbidExtra):
+    run_id: str
+    turns: int
+    tool_calls: int
+    cost: float
+    unpriced_turns: int
+    first_at: str
+    last_at: str
+
+
+class UsageRecordTool(_ForbidExtra):
+    tool: str
+    calls: int
+
+
+class UsageRecordRow(_ForbidExtra):
+    record_id: str
+    event_time: str
+    run_id: str
+    type: str
+    name: str
+    provider: str
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    # USD; ``None`` for tools and for an unpriced model turn.
+    cost: Optional[float] = None
+
+
+class UsageRecordsResponse(_ForbidExtra):
+    project_id: str
+    records: int
+    unreadable_lines: int
+    currency: Literal["USD"]
+    total_cost: float
+    model_turns: int
+    priced_turns: int
+    unpriced_turns: int
+    tool_calls: int
+    tokens: UsageRecordTokens
+    by_model: list[UsageRecordModel]
+    by_session: list[UsageRecordSession]
+    by_tool: list[UsageRecordTool]
+    recent: list[UsageRecordRow]
+
+
 # ── /timeline ─────────────────────────────────────────────────────────────────
 
 

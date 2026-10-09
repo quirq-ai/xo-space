@@ -212,6 +212,10 @@ Current types: `session.started`, `todo.added`, `todo.completed`,
 todo leaves no trace here. The schema also reserves project and peer sync
 event families for their owning services.
 
+Beside the timeline, services also keep a machine-local `audr.jsonl`. It holds
+one [OpenAudr](https://openaudr.dev/spec/v1.0.0/) usage record per model turn
+and tool call, for cost and usage accounting. Agents never write it.
+
 ---
 
 ## 8. Memory discipline

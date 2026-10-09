@@ -24,6 +24,17 @@ const newestFirst=rows=>rows.sort((a,b)=>(b.ms??-Infinity)-(a.ms??-Infinity)||b.
 /* Status vocabulary lives in visualizer/todo_status.py; order is a UI choice. */
 const ST_ORDER={in_progress:0,pending:1,blocked:2,completed:3,cancelled:4};
 const TODO_LIMIT=30;
+const USAGE_ROWS=8;
+const count=value=>Number.isFinite(value)?Math.round(value).toLocaleString():'0';
+const compact=value=>Number.isFinite(value)?Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(value):'0';
+/* Usage costs are fractions of a cent per turn: show four decimals, and say
+   "<$0.0001" rather than rounding a real cost to zero. */
+export function formatUsd(value){
+  if(!Number.isFinite(value))return'—';
+  if(value>0&&value<0.0001)return'<$0.0001';
+  return'$'+value.toFixed(value>=100?2:4);
+}
+const tokenTotal=tokens=>['input','output','cache_read','cache_write'].reduce((sum,key)=>sum+(Number(tokens?.[key])||0),0);
 let pendingProject=null;
 addEventListener('space:activity-project',event=>{
   const id=text(event.detail?.project_id);
@@ -85,6 +96,7 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     let hasSnapshot=false,loadedOlder=false,loading=false,loadingMore=false,lastLoaded=null;
     let feedError='',catalogError='',liveError='',todosError='',invalidRows=false;
     let todos=null,liveLoading=false,todosLoading=false;
+    let usage=null,usageLoading=false,usageError='';
     const reads=new Set(),rowNodes=new Map();
     const $=selector=>root.querySelector(selector);
     const title=sharing?'Sharing activity':'Activity';
@@ -111,7 +123,7 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       if(pending)return pending;
       if(older&&(!nextCursor||sharing))return;
       const revision=++generation,selected=project,before=older?nextCursor:'';
-      if(!older&&!sharing){liveLoading=true;todosLoading=Boolean(selected);}
+      if(!older&&!sharing){liveLoading=true;todosLoading=Boolean(selected);usageLoading=Boolean(selected);}
       loading=!older;loadingMore=older;feedError='';render();
       const work=read(sharing?'/api/project-sharing/status':timelinePath(before)).then(result=>{
         if(!current(revision))return;
@@ -161,6 +173,16 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
               &&session.todos.every(todo=>todo&&text(todo.status)&&typeof todo.content==='string'))){
             todos=buildProjectTodos(data);todosError='';
           }else{todos=null;todosError='Project todos are unavailable. Try Refresh.';}
+          render();
+        }),
+        read('/api/xo-projects/'+encodeURIComponent(selected)+'/usage-records').then(result=>{
+          if(!current(revision))return;
+          usageLoading=false;
+          const data=result.data;
+          if(result.ok&&data?.project_id===selected&&Number.isFinite(data.total_cost)
+            &&Array.isArray(data.by_model)&&Array.isArray(data.by_session)&&Array.isArray(data.by_tool)){
+            usage=data;usageError='';
+          }else{usage=null;usageError='Usage and cost are unavailable. Try Refresh.';}
           render();
         })]:[]),
       ];
@@ -213,6 +235,57 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           +(todo.runtime?'<span class="iac-runtime">'+esc(todo.runtime)+'</span>':'')+'</div>').join('')
           +(todos.length>shown.length?'<p class="iac-note">Showing '+shown.length+' of '+todos.length+' todos · '+(todos.length-shown.length)+' more</p>':'');
     }
+    function renderUsage(){
+      if(sharing)return;
+      const details=$('[data-activity-usage]'),summary=$('[data-activity-usage-summary]');
+      details.hidden=!project;
+      if(!project)return;
+      const body=$('[data-activity-usage-rows]');
+      if(usage===null){
+        summary.textContent=usageLoading?'Loading usage and cost…':'Usage and cost unavailable';
+        body.innerHTML='<p class="iac-note">'+(usageLoading?'Loading usage records for this project…':'Try Refresh to check again.')+'</p>';
+        return;
+      }
+      summary.textContent=(usageLoading?'Refreshing… · ':'')+'Usage & cost · '+formatUsd(usage.total_cost)
+        +' · '+count(usage.model_turns)+' model '+(usage.model_turns===1?'turn':'turns');
+      if(!usage.records){
+        body.innerHTML='<p class="iac-note">No usage has been recorded for this project yet. Records appear after an agent session runs here.</p>';
+        return;
+      }
+      const tile=(label,value,note='')=>'<div class="iac-stat"><span class="iac-stat-label">'+esc(label)+'</span>'
+        +'<b class="iac-stat-value">'+esc(value)+'</b>'+(note?'<span class="iac-stat-note">'+esc(note)+'</span>':'')+'</div>';
+      const t=usage.tokens||{};
+      const cached=(Number(t.cache_read)||0)+(Number(t.cache_write)||0);
+      const tokenNote=compact(cached)+' cached · '+compact(t.output)+' output';
+      const unpriced=usage.unpriced_turns?count(usage.unpriced_turns)+' '+(usage.unpriced_turns===1?'turn':'turns')+' unpriced':'All turns priced';
+      /* A row whose every turn is unpriced has no cost to show: say so instead
+         of "$0.0000". A partly priced row shows its priced total, flagged. */
+      const costCell=(cost,unpricedTurns,turns)=>turns>0&&unpricedTurns>=turns
+        ?'<span class="iac-usage-muted" title="No price is recorded for these turns">Unpriced</span>'
+        :esc(formatUsd(cost))+(unpricedTurns?'<span class="iac-usage-flag" title="'+esc(count(unpricedTurns)+' turn(s) have no price and are not in this total')+'">+'+count(unpricedTurns)+' unpriced</span>':'');
+      /* Each breakdown is its own bordered card: title, column header, rows. */
+      const table=(caption,head,rows,total)=>'<section class="iac-usage-card"><h3 class="iac-usage-card-title">'+esc(caption)
+        +'<span>'+count(total)+'</span></h3><table class="iac-usage-table"><thead><tr>'
+        +head.map((h,i)=>'<th scope="col"'+(i?' class="num"':'')+'>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'
+        +rows.join('')+'</tbody></table>'+(total>rows.length?'<p class="iac-usage-more">Showing '+rows.length+' of '+total+'</p>':'')+'</section>';
+      const models=usage.by_model.slice(0,USAGE_ROWS).map(m=>'<tr><th scope="row"><span class="iac-usage-name">'+esc(m.model)+'</span>'
+        +(m.provider?'<span class="iac-usage-sub">'+esc(m.provider)+'</span>':'')+'</th><td class="num">'+count(m.turns)+'</td>'
+        +'<td class="num">'+compact(tokenTotal(m.tokens))+'</td><td class="num">'+costCell(m.cost,m.unpriced_turns,m.turns)+'</td></tr>');
+      const sessions=usage.by_session.slice(0,USAGE_ROWS).map(s=>'<tr><th scope="row"><code class="iac-usage-name" title="'+esc(s.run_id)+'">'+esc(s.run_id.slice(0,8))+'</code>'
+        +'<time class="iac-usage-sub"'+(stamp(s.last_at)!==null?' datetime="'+esc(s.last_at)+'"':'')+' title="'+esc(dateLabel(s.last_at))+'">'+esc(rel(s.last_at)||dateLabel(s.last_at))+'</time></th>'
+        +'<td class="num">'+count(s.turns)+'</td><td class="num">'+count(s.tool_calls)+'</td><td class="num">'+costCell(s.cost,s.unpriced_turns,s.turns)+'</td></tr>');
+      const tools=usage.by_tool.slice(0,USAGE_ROWS).map(x=>'<tr><th scope="row"><span class="iac-usage-name">'+esc(x.tool)+'</span></th><td class="num">'+count(x.calls)+'</td></tr>');
+      body.innerHTML='<div class="iac-stats">'
+        +tile('Total cost',formatUsd(usage.total_cost),unpriced)
+        +tile('Model turns',count(usage.model_turns))
+        +tile('Tool calls',count(usage.tool_calls))
+        +tile('Tokens',compact(tokenTotal(t)),tokenNote)+'</div>'
+        +'<div class="iac-usage-grid">'
+        +table('By model',['Model','Turns','Tokens','Cost'],models,usage.by_model.length)
+        +table('By session',['Session','Turns','Tools','Cost'],sessions,usage.by_session.length)
+        +(tools.length?table('By tool',['Tool','Calls'],tools,usage.by_tool.length):'')+'</div>'
+        +'<p class="iac-usage-foot">OpenAudr usage records from this project\'s <code>audr.jsonl</code>. Costs are list-price estimates in USD; cache writes use the 5-minute rate.</p>';
+    }
     function rowHTML(row){
       const subject=sharing?row.subject:names.get(row.projectId)||row.subject||'Workspace';
       const projectLink=sharing?'<a href="#/inbox/sharing">'+esc(subject)+'</a>':row.projectId
@@ -237,10 +310,10 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
     }
     function render(){
       if(!root)return;
-      renderFilter();renderLive();renderTodos();
+      renderFilter();renderLive();renderTodos();renderUsage();
       const rows=filterActivityEvents(events,{query,project,names});renderRows(rows);
       $('[data-activity-summary]').textContent=(loading&&hasSnapshot?'Refreshing… · ':'')+(hasSnapshot?rows.length+' of '+events.length+' loaded events':feedError?'Activity unavailable':'Loading activity…');
-      const warnings=[feedError,catalogError,liveError,todosError,invalidRows?'Some activity records could not be read.':''];
+      const warnings=[feedError,catalogError,liveError,todosError,usageError,invalidRows?'Some activity records could not be read.':''];
       if(sharing&&snapshot?.cadence==='parked')warnings.push('Sharing is paused. Open Sharing for its connection status.');
       const warning=$('[data-activity-warning]');warning.textContent=warnings.filter(Boolean).join(' ');warning.hidden=!warning.textContent;
       const empty=$('[data-activity-empty]');empty.hidden=rows.length>0;
@@ -255,8 +328,8 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
       if(sharing){render();return;}
       if(handoff){query='';refreshToolbar();}
       ++generation;cancelReads();events=[];hasSnapshot=false;loadedOlder=false;nextCursor=null;lastLoaded=null;
-      feedError='';liveError='';todosError='';invalidRows=false;sessions=null;todos=null;
-      if(project){$('[data-activity-live]').open=true;$('[data-activity-todos]').open=true;}
+      feedError='';liveError='';todosError='';usageError='';invalidRows=false;sessions=null;todos=null;usage=null;
+      if(project){$('[data-activity-live]').open=true;$('[data-activity-todos]').open=true;$('[data-activity-usage]').open=true;}
       return refresh();
     }
     function openPendingProject(){
@@ -275,7 +348,8 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
           +'<span class="iac-retention">'+(sharing?'Latest 50 events · cleared when the server restarts':'Recent workspace events · search covers loaded events')+'</span></div>'
           +'<p class="iac-warning" data-activity-warning role="status" hidden></p>'
           +(sharing?'':'<details class="iac-live" data-activity-live><summary data-activity-live-summary>Checking open sessions…</summary><div data-activity-live-rows></div></details>'
-            +'<p class="iac-todo-scope" data-activity-todo-scope>Select a project to see its todos and current sessions.</p>'
+            +'<p class="iac-todo-scope" data-activity-todo-scope>Select a project to see its usage and cost, todos and current sessions.</p>'
+            +'<details class="iac-live iac-usage" data-activity-usage hidden><summary data-activity-usage-summary>Usage &amp; cost</summary><div data-activity-usage-rows></div></details>'
             +'<details class="iac-live iac-todos" data-activity-todos hidden><summary data-activity-todos-summary>Project todos</summary><div data-activity-todo-rows></div></details>')
           +'<p class="iac-empty" data-activity-empty>Loading activity…</p><ol class="iac-events" data-activity-rows></ol>'
           +'<footer class="iac-footer"><button type="button" class="inb-btn" data-activity-more hidden>Load older events</button><span data-activity-updated></span></footer></div>';
@@ -299,7 +373,7 @@ export function createActivityViews({request=apiFetch,timeoutMs=12000,pollMs=300
         // the initial workspace request without waiting for unrelated data.
         refresh().catch(error=>console.error('Activity refresh failed:',error));
       },
-      hide(){active=false;clearInterval(poll);poll=null;++generation;cancelReads();loading=false;loadingMore=false;liveLoading=false;todosLoading=false;},
+      hide(){active=false;clearInterval(poll);poll=null;++generation;cancelReads();loading=false;loadingMore=false;liveLoading=false;todosLoading=false;usageLoading=false;},
       refresh:()=>refresh(),
     };
   }

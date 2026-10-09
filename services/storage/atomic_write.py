@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -124,6 +126,40 @@ def append_jsonl(path: Path, lines: list[dict]) -> None:
         fp.write(payload)
         fp.flush()
         os.fsync(fp.fileno())
+
+
+def rotate_jsonl(path: Path, *, max_bytes: int, keep: int) -> None:
+    """Rename ``<stem>.jsonl`` past ``max_bytes`` to ``<stem>.<stamp>.jsonl``.
+
+    Keeps the newest ``keep`` rotations and prunes the rest. Best effort: a
+    failed stat, rename or unlink is logged and the log stays where it is.
+    Shared by the append-only logs the watcher sinks own (``timeline.jsonl``,
+    ``audr.jsonl``).
+    """
+    logger = logging.getLogger(__name__)
+    if not path.is_file():
+        return
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size < max_bytes:
+        return
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    rotated = path.with_name(f"{path.stem}.{stamp}{path.suffix}")
+    try:
+        path.rename(rotated)
+    except OSError as exc:
+        logger.warning("%s rotate failed: %s", path.name, exc)
+        return
+
+    rotations = sorted(path.parent.glob(f"{path.stem}.*{path.suffix}"))
+    for old in rotations[:-keep]:
+        try:
+            old.unlink()
+        except OSError as exc:
+            logger.warning("%s rotation prune failed for %s: %s", path.name, old, exc)
 
 
 class CorruptDocumentError(ValueError):

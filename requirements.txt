@@ -68,3 +68,8 @@ mcp>=1.28.1
 # it. Pulls in composio-client, openai, pysher, jiter and a few small transitive
 # deps automatically.
 composio>=0.18,<0.19
+
+# OpenAudr (AUDR v1.0.0) SDK — builds and validates the usage records the
+# watcher's audr sink appends to each project's audr.jsonl
+# (visualizer/sinks/audr.py). Pinned: the SDK is pre-1.0, so bump deliberately.
+audr==0.1.1

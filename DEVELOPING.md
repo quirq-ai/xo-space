@@ -360,6 +360,56 @@ Uninstall removes the state root but keeps `secrets/`, so credentials
 (`secrets.env`, `token.json`) survive a reinstall; the Composio stores stay in
 `~/.config/composio/`.
 
+### Usage records: OpenAudr (`audr.jsonl`)
+
+The watcher writes a third per-project log next to `timeline.jsonl` and
+`stats.json`: `projects/<pid>/audr.jsonl`. Each line is one
+[AUDR v1.0.0](https://openaudr.dev/spec/v1.0.0/) record (Agent Usage Detail
+Record), one per metered operation, written by
+`services/cowork_agent/visualizer/sinks/audr.py`. Records are built and
+validated with the official `audr` SDK. The spec's schema is vendored at
+`visualizer/schema/audr.schema.json`, and `tests/test_audr_sink.py` validates
+every line against it. The sink always runs. It has no setting, and its
+attribution is the fixed minimum the schema requires,
+`{"environment": "development"}`.
+
+| Event             | Record                                                                 |
+|-------------------|------------------------------------------------------------------------|
+| `UsageObserved`   | `model` / `generation`, `usage.llm` = the turn's tokens (cache read/write included), `requests: 1`, plus a `cost` block in USD when the model has a price |
+| `ToolUseObserved` | `tool` / `tool_execution`, provider `self-hosted`, `usage.tool` = one `invocation` (name only, never inputs) |
+
+- **Cost:** prices come from `visualizer/model_pricing.py`. It first uses
+  Argus's pricing table, the same one behind the Sessions tab's
+  `cost_usd`, then a short supplement of list prices for models Argus doesn't
+  have yet. A newer Argus table always wins.
+  - A model neither source knows gets no `cost` block, never a claimed $0.
+  - Cache writes are priced at the 5-minute rate, because events don't split
+    5-minute from 1-hour writes. That makes the cost a lower bound.
+  - Costs stay inside `audr.jsonl` in the project's state folder. Nothing
+    sends them anywhere.
+- **What's counted:**
+  - Claude Code subagent logs (`<session>/subagents/*.jsonl`) are read under
+    the parent's session id, so subagent turns count toward the same run.
+  - Every tool is counted by name, including `Agent` and `mcp__*`. Inputs
+    are never recorded.
+- **Read side:** `GET /api/xo-projects/{id}/usage-records` returns the summary
+  the Activity page's **Usage & cost** panel shows. It is built by
+  `visualizer/audr_summary.py` from the file and its rotations.
+  - It applies AUDR's own rules: one record per `record_id`, and a `corrects`
+    record replaces the record it names.
+  - The result is cached against each file's size and modification time.
+
+- **Fields:** `emitter.component` is `harness` and `run.run_id` is the native
+  session id. `run.span_id` is derived from the event, so it is unique within
+  the run.
+- **Provider:** taken from the model-name prefix (`claude`→`anthropic`,
+  `gpt`/`o*`/`codex`→`openai`, `gemini`→`google`, `grok`→`xai`). Any other
+  model falls back to the runtime, slugged.
+- **Rotation:** the same as the timeline (8 MB, keep 5).
+- **Exception to the record rules above:** these lines follow the AUDR spec,
+  not the state-root conventions. The spec's schema is closed, so they carry
+  no `ts`/`type`/`pid` envelope. The time is `timing.event_time`.
+
 ### One executor for external commands
 
 Every subprocess xo-space starts goes through the `utils/commands/` package
