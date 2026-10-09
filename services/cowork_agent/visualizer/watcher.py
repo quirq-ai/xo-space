@@ -64,6 +64,7 @@ from services.cowork_agent.visualizer.workspace_index import (
     list_project_ids,
     project_index_scope,
 )
+from services.health import recorder as health_recorder
 from utils.commands import scheduler
 from utils.runtime_env import watcher_tick_interval_seconds
 
@@ -147,6 +148,9 @@ class Watcher:
 
     def _step_failed(self, step: str, exc: BaseException) -> None:
         self.step_errors.append(f"{step}: {background.describe(exc)}")
+        # Every failing step, even one whose tick otherwise succeeds: a step
+        # that fails only on ticks with work never builds a streak.
+        health_recorder.record("watcher", health_recorder.FAILING, exc=exc, subject=step)
 
     def tick(self) -> None:
         """

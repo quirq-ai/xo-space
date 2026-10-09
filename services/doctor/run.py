@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Callable
 
-from services.doctor import checks, content, history, leftovers, liveness, relate
+from services.doctor import checks, content, crashes, history, leftovers, liveness, relate
 from services.doctor.context import Context
 from services.doctor.model import ERROR, FAIL, LEVELS, CheckResult, Finding, printable, rank, worst
 from services.doctor.reading import MAX_WALK_ENTRIES, readable_dir
@@ -33,6 +33,7 @@ CHECKS: tuple[tuple[str, Check], ...] = (
     ("legacy", checks.legacy_pending),
     ("watcher", liveness.watcher),
     ("components", liveness.components),
+    ("crashes", crashes.check),
     ("connections", liveness.connections),
     ("github", liveness.github),
     ("scheduler", liveness.scheduler),

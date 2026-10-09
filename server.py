@@ -916,11 +916,17 @@ async def lifespan(app: FastAPI):
     print("👋 Shutting down XO Space API Server...")
 
 
+# The health record (services/health) wraps the lifespan: it notes whether
+# the last run shut down cleanly, keeps failures as they happen (the loop's
+# and threads' own included), and always closes this run's marker, even when
+# a shutdown step raises or startup fails.
+from services.health.hooks import RecordUnhandledErrors, with_health_record
+
 app = FastAPI(
     title="XO Space API",
     description="XO Space API - local control plane brokering chat to coding-agent runtimes",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=with_health_record(lifespan)
 )
 
 _CORS_ORIGINS = [
@@ -945,6 +951,9 @@ app.add_middleware(
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
 add_forwarding_middleware(app)
+# Unhandled errors (the ones that become a bare 500) are kept in the health
+# record, keyed by route, and re-raised: responses are unchanged.
+app.add_middleware(RecordUnhandledErrors)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)
