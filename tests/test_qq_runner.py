@@ -35,7 +35,10 @@ class RunQQTests(unittest.TestCase):
         fake = Path(self.tmp.name) / "qq"
         fake.write_text(FAKE_QQ)
         fake.chmod(0o755)
-        path = patch.dict(os.environ, {"PATH": f"{self.tmp.name}{os.pathsep}{os.environ.get('PATH', '')}"})
+        # The state root too: every run is written to <state>/inbox/activity/commands.log, which
+        # must not be the real one.
+        path = patch.dict(os.environ, {"PATH": f"{self.tmp.name}{os.pathsep}{os.environ.get('PATH', '')}",
+                                       "QUIRQ_STATE_ROOT": str(Path(self.tmp.name) / "state")})
         path.start()
         self.addCleanup(path.stop)
         launcher = patch.object(qq_runner, "QQ", "qq")   # tests/__init__.py turns qq off
