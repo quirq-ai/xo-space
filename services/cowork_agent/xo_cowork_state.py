@@ -27,6 +27,7 @@ from typing import Any
 
 from services.cowork_agent.local_state import legacy_state_dir
 from services.storage.layout import settings_dir
+from utils.safe_read import read_text_guarded
 
 
 STATE_DIR = settings_dir()
@@ -42,7 +43,7 @@ def _read() -> dict[str, Any]:
     if not source_path.exists():
         return {}
     try:
-        payload = json.loads(source_path.read_text(encoding="utf-8")) or {}
+        payload = json.loads(read_text_guarded(source_path)) or {}
     except (OSError, json.JSONDecodeError):
         return {}
     if source_path == LEGACY_STATE_FILE and isinstance(payload, dict):

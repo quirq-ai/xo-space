@@ -322,25 +322,29 @@ def _read_document(path: Path) -> dict:
             "unsupported_schema",
             unsupported_schema_message(path, value, WORKITEMS_SCHEMA),
         )
-    parsed = value
+    reason = shape_problem(value)
+    if reason is not None:
+        raise _corrupt(path, reason)
+    return copy.deepcopy(value["items"])
 
-    raw = parsed.get("items")
+
+def shape_problem(document: dict) -> Optional[str]:
+    """Why this store refuses a parsed, correctly stamped document, or
+    ``None``. Pure, so xo-doctor can ask the store's own question."""
+    raw = document.get("items")
     if raw is None:
-        raise _corrupt(path, "no items map")
+        return "no items map"
     if not isinstance(raw, dict):
-        raise _corrupt(path, f"items is a {type(raw).__name__}, expected object")
+        return f"items is a {type(raw).__name__}, expected object"
     for key, record in raw.items():
         if not isinstance(record, dict):
-            raise _corrupt(path, f"items[{key!r}] is a {type(record).__name__}")
+            return f"items[{key!r}] is a {type(record).__name__}"
         if not isinstance(key, str) or not _UUID4_RE.match(key):
-            raise _corrupt(path, f"items key {key!r} is not a canonical UUID4")
+            return f"items key {key!r} is not a canonical UUID4"
         if record.get("id") != key:
-            raise _corrupt(
-                path,
-                f"items[{key!r}] carries id {record.get('id')!r}; the key and "
-                f"the record's own id must agree",
-            )
-    return copy.deepcopy(raw)
+            return (f"items[{key!r}] carries id {record.get('id')!r}; the key and "
+                    f"the record's own id must agree")
+    return None
 
 
 def _write(path: Path, items: dict) -> None:

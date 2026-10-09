@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from services.storage.layout import sharing_dir
+from utils.safe_read import read_text_guarded
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _read(repo: str) -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text_guarded(path))
         return data if isinstance(data, dict) else {}
     except Exception as exc:  # noqa: BLE001 — corrupt state degrades to empty
         log.debug("project_sharing: bad state %s: %s", path, exc)

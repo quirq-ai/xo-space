@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
+from utils.safe_read import read_text_guarded
+
 
 def _json_text(data: Any) -> str:
     """The one on-disk JSON form: two-space indent, UTF-8, trailing newline."""
@@ -205,7 +207,7 @@ def _equal_ignoring(left: Any, right: Any, mask: dict[str, Any]) -> bool:
 def _read_document(path: Path) -> tuple[str, Any]:
     """Read ``path`` as JSON, classifying the outcome."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_text_guarded(path)
     except FileNotFoundError:
         return ("absent", None)
     except (OSError, UnicodeDecodeError) as exc:

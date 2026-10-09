@@ -54,6 +54,10 @@ class ReadResult:
     #: the stat itself failed or the file is absent.
     size: Optional[int] = None
     mtime: Optional[float] = None
+    #: For ``wrong_type``: the value is an empty one (``[]``, ``""``, ``0``,
+    #: ``false``). Stores that read ``doc or {}`` treat it as no document at
+    #: all and write a fresh one, unlike a list or string with content.
+    empty_value: bool = False
 
 
 def _read_regular(path: Path) -> "bytes | bytearray | ReadResult":
@@ -144,7 +148,7 @@ def classify(path: Path, *, now: float, accepted: Optional[frozenset[int]],
         return stamped_result(
             ReadResult("recent") if recent else ReadResult("invalid_json", "holds a number too long to read"))
     if not isinstance(value, dict):
-        return stamped_result(ReadResult("wrong_type", type(value).__name__))
+        return stamped_result(ReadResult("wrong_type", type(value).__name__, empty_value=not value))
     if accepted is None:
         return stamped_result(ReadResult("ok", value=value))
     if not stamped and value.get("schema") is None:

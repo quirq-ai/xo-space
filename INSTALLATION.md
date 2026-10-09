@@ -42,8 +42,8 @@ What you see first depends on where you ran the installer. Quirq does not
 create anything for you: it watches the directory you installed in — your
 workspace, the *XO root* — and shows what is there.
 
-- **An empty directory:** the Projects List says **No projects in this workspace yet**,
-  and Dashboard, Graph, Tree and Timeline draw the same empty map. Setup and
+- **An empty directory:** the Projects List says **No projects yet**,
+  and Overview, Graph, Tree and Timeline draw the same empty map. Setup and
   the offline Wiki overview work fully; Sessions shows *no data* until a
   runtime has run a session on this machine.
 - **A directory that already holds folders:** every non-hidden folder is
@@ -85,11 +85,11 @@ Three ways to get a project in:
    folder exists). The root is printed by the installer (`XO projects:`),
    shown in the Setup tab, and returned by `GET /api/config/workspace`.
 
-Space opens on Dashboard, the first lens under Projects. Its lens switch is
-**Dashboard | List | Graph | Tree | Sharing**. Clicking Projects opens List
-(`#/projects`); `#/dashboard` still opens Dashboard directly.
+Space opens on **Projects → Overview** (`#/projects/overview`). Projects
+contains **Overview | Data | Timeline | Manage**, with **List | Graph | Tree**
+inside Data. Sharing is under Inbox. `#/dashboard` still opens Overview.
 
-Tabs fill in stages: any folder lights up Projects (Dashboard, List, Graph,
+Tabs fill in stages: any folder lights up Projects (Overview, List, Graph,
 Tree); a scaffolded project adds identity and todos; a `.git` inside
 the project adds a Timeline lane and file dates; an agent session adds live
 badges, drawer events and Sessions telemetry; credentials (Setup or `.env`)
@@ -277,3 +277,6 @@ rejected.
 
 Not supported. The server's boot hooks are bash scripts, and while they fail
 non-fatally, no equivalent installer exists. Use WSL.
+Run the installer from your Linux home (for example `~/work`), not from
+`/mnt/c`: Windows drives do not keep Linux permissions, so other users could
+change the code there, and the installer stops rather than run it.

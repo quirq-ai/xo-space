@@ -116,6 +116,27 @@ class WatcherTests(LivenessSandbox):
                 self.assertEqual([f["level"] for f in found], [] if level is None else [level])
 
 
+class WatcherDisabledTests(LivenessSandbox):
+    """Turning the watcher off is a setting (Setup's runtime settings), so it
+    is a note, never a warning by itself (the sandbox runs with it off)."""
+
+    def test_a_turned_off_watcher_is_a_note_not_a_problem(self) -> None:
+        report = self.report()
+        [watcher] = [c for c in report["checks"] if c["id"] == "watcher"]
+        self.assertEqual(watcher["level"], "OK")
+        [note] = watcher["findings"]
+        self.assertEqual((note["id"], note["level"]), ("watcher.disabled", "OK"))
+        self.assertIn("Stats, timelines", note["consequence"])
+        self.assertEqual(self.of("watcher."), [])
+
+    def test_a_running_watcher_has_no_note(self) -> None:
+        self.beat(1)
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "true"}):
+            report = self.report()
+        [watcher] = [c for c in report["checks"] if c["id"] == "watcher"]
+        self.assertNotIn("watcher.disabled", [f["id"] for f in watcher["findings"]])
+
+
 class ComponentTests(LivenessSandbox):
     def test_a_crashed_poller_fails(self) -> None:
         with self.tasks(self.record("github poller", state="crashed", ended_at=self.now - 30,
@@ -346,6 +367,41 @@ class SchedulerTests(LivenessSandbox):
         with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
             self.assertEqual(self.of("scheduler."), [])
 
+    # The watcher is the only caller of scheduler.tick(): with it off, an
+    # enabled command never runs (live test A5 found this reported as healthy).
+
+    def test_with_the_watcher_off_enabled_commands_are_reported(self) -> None:
+        self.schedule(next_run=_stamp(self.now + 3600))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            [finding] = self.of("scheduler.")
+        self.assertEqual((finding["id"], finding["level"], finding["subject"]),
+                         ("scheduler.not_running", "WARN", "scheduler"))
+        self.assertEqual(finding["title"], "Saved commands can't run while the watcher is off")
+        self.assertIn("1 saved command is enabled", finding["observed"])
+        self.assertEqual(finding["problem_key"], "component:scheduler:not_running")
+
+    def test_with_the_watcher_off_an_overdue_command_is_a_fail(self) -> None:
+        self.schedule(next_run=_stamp(self.now - 5 * 86400))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            [finding] = self.of("scheduler.")
+        self.assertEqual(finding["level"], "FAIL")
+        evidence = {e["label"]: e["value"] for e in finding["evidence"]}
+        self.assertEqual(evidence["Overdue now"], "1")
+        self.assertIn("'nightly tests', due", evidence["Most overdue"])
+
+    def test_with_the_watcher_off_nothing_to_run_is_silent(self) -> None:
+        self.schedule(enabled=False, next_run=_stamp(self.now - 99999))
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            self.assertEqual(self.of("scheduler."), [])
+            with patch.dict(os.environ, {"XO_SCHEDULER_ENABLED": "false"}):
+                self.schedule(next_run=_stamp(self.now - 99999))
+                self.assertEqual(self.of("scheduler."), [])
+
+    def test_with_the_watcher_off_damaged_files_are_left_to_their_checks(self) -> None:
+        (self.state / "scheduler" / "jobs.json").write_text("{", encoding="utf-8")
+        with patch.dict(os.environ, {"QUIRQ_WATCHER_ENABLED": "false"}):
+            self.assertEqual(self.of("scheduler."), [])
+
     def two_jobs(self, *, running_since) -> None:
         jobs = {
             "running-job": {"id": "running-job", "name": "running job", "enabled": True, "every_seconds": 86400,
@@ -399,6 +455,22 @@ class UsageTests(LivenessSandbox):
             self.probe("rejected", 3600)
             self.assertEqual([f["id"] for f in self.of("usage.")], ["usage.rejected"])
 
+    def unverified(self, status) -> list[dict]:
+        self.bookmark.write_text(json.dumps({"schema": 1, "key_probe": {
+            "outcome": "unverified", "status": status, "at": _stamp(self.now - 3600)}}), encoding="utf-8")
+        with patch("services.doctor.liveness._usage_token_present", return_value=True):
+            return self.of("usage.")
+
+    def test_an_xo_error_during_the_key_check(self) -> None:
+        [finding] = self.unverified(503)
+        self.assertEqual(finding["id"], "usage.xo_error")
+        self.assertIn("HTTP 503", finding["observed"])
+
+    def test_a_key_check_that_never_reached_xo(self) -> None:
+        [finding] = self.unverified(None)
+        self.assertEqual(finding["id"], "usage.unreachable")
+        self.assertIn("network", finding["next_step"])
+
     def test_no_key_means_nothing_is_expected(self) -> None:
         with patch("services.doctor.liveness._usage_token_present", return_value=False):
             self.probe("accepted", 99 * 3600)
@@ -416,12 +488,44 @@ class RelayTests(LivenessSandbox):
              patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
             self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.overdue"])
 
-    def test_an_unreachable_xo_and_a_parked_relay(self) -> None:
-        with self.tasks(self.record("relay poller")), self.relay(last_poll_ok=False), \
+    def failed_poll(self, **why) -> list[dict]:
+        with self.tasks(self.record("relay poller")), self.relay(last_poll_ok=False, **why), \
              patch("services.cowork_agent.project_sharing.config.poll_interval", return_value=60.0):
-            self.assertEqual([f["id"] for f in self.of("relay.")], ["relay.unreachable"])
+            return self.of("relay.")
+
+    def test_an_unreachable_xo_and_a_parked_relay(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=0, last_poll_offline=True)
+        self.assertEqual(finding["id"], "relay.unreachable")
+        self.assertIn("network", finding["next_step"])
         with self.tasks(self.record("relay poller")), self.relay(cadence="parked", last_poll_at=None):
             self.assertEqual(self.of("relay."), [])
+
+    # Live test A1/A2: a 401 and a 500 both used to say "check your network".
+
+    def test_a_rejected_key_is_not_a_network_problem(self) -> None:
+        for status in (401, 403):
+            with self.subTest(status=status):
+                [finding] = self.failed_poll(last_poll_status=status, last_poll_offline=False)
+                self.assertEqual(finding["id"], "relay.rejected")
+                self.assertIn("Setup", finding["next_step"])
+                self.assertNotIn("network", finding["next_step"])
+                self.assertIn({"label": "XO answered", "value": f"HTTP {status}"}, finding["evidence"])
+
+    def test_no_credentials_to_send_reads_as_rejected(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=0, last_poll_offline=False)
+        self.assertEqual(finding["id"], "relay.rejected")
+        self.assertIn("no XO key or sign-in", finding["observed"])
+
+    def test_an_xo_error_is_not_a_network_problem(self) -> None:
+        [finding] = self.failed_poll(last_poll_status=500, last_poll_offline=False)
+        self.assertEqual(finding["id"], "relay.xo_error")
+        self.assertIn("HTTP 500", finding["observed"])
+        self.assertNotIn("network", finding["next_step"])
+
+    def test_an_unknown_cause_claims_nothing(self) -> None:
+        [finding] = self.failed_poll()
+        self.assertEqual(finding["id"], "relay.failed")
+        self.assertNotIn("network", finding["next_step"])
 
     def test_outside_the_server_the_relay_is_not_judged(self) -> None:
         with self.relay(last_poll_at=_stamp(self.now - 99999)):

@@ -106,12 +106,13 @@ async def run_tick() -> float:
     ws = config.workspace_id()
     repos = await local_repo_map()
     cursors = {repo: state.load_cursor(repo) for repo in repos}
-    resp = await swarm_client.poll(ws, cursors)
+    resp, http_status, offline = await swarm_client.poll_detailed(ws, cursors)
     if resp is None:
-        status.record_poll(ok=False)
+        status.record_poll(ok=False, http_status=http_status, offline=offline)
         _fail_streak += 1
         if _fail_streak == 1:
-            log_line("⚠️ relay: swarm unreachable or rejected the poll — will keep retrying quietly")
+            why = "swarm unreachable" if offline else f"swarm answered HTTP {http_status}"
+            log_line(f"⚠️ relay: poll failed ({why}) — will keep retrying quietly")
         status.notify_if_changed()
         return config.jittered_interval()
     if _fail_streak:
@@ -179,7 +180,7 @@ async def run_tick() -> float:
     await asyncio.gather(*(publish(r) for r in membership & set(repos)))
 
     status.record_poll(ok=True, membership=membership, local={r: repos[r].name for r in repos},
-                       members=member_counts)
+                       members=member_counts, http_status=http_status, offline=False)
     status.notify_if_changed()
     return DRAIN_INTERVAL if drain else config.jittered_interval()
 

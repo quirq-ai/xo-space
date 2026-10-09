@@ -246,6 +246,30 @@ class InboxStoreTests(unittest.TestCase):
         self.assertNotIn(str(self.root), cm.exception.message)
         self.assertEqual(self.path().read_text(encoding="utf-8"), "{not json")
 
+    def test_a_file_whose_items_would_be_dropped_is_never_overwritten(self) -> None:
+        # Valid JSON that normalises to an empty Inbox: writing it back would
+        # replace every saved item, so it is refused exactly like bad JSON.
+        for text in ('{"schema": 1, "items": "oops"}', '{"schema": 1, "items": {"a": 1}}', "[]", '"inbox"'):
+            with self.subTest(content=text):
+                self.path().parent.mkdir(parents=True, exist_ok=True)
+                self.path().write_text(text, encoding="utf-8")
+                service._reset_throttle()
+                self.assertEqual(service.list_items()["items"], [])
+                self.assertFalse(service.refresh(force=True))
+                with self.assertRaises(store.InboxError) as cm:
+                    service.create_item("x")
+                self.assertEqual((cm.exception.code, cm.exception.status), ("scope_unavailable", 500))
+                self.assertNotIn(str(self.root), cm.exception.message)
+                self.assertEqual(self.path().read_text(encoding="utf-8"), text)
+
+    def test_a_file_with_no_items_yet_is_still_usable(self) -> None:
+        self.path().parent.mkdir(parents=True)
+        self.path().write_text('{"schema": 1}', encoding="utf-8")
+        _doc, ok = store.load_document()
+        self.assertTrue(ok)
+        service.create_item("x")
+        self.assertEqual(len(self.read()["items"]), 1)
+
     # ── feeders ─────────────────────────────────────────────────────────────
 
     def test_timeline_bootstrap_window_then_cursor(self) -> None:

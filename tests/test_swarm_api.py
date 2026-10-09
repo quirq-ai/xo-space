@@ -130,6 +130,22 @@ class FeatureModuleTests(unittest.TestCase):
             self.assertEqual(run(project_sharing.members("r")), (False, 403, "not the owner"))
             self.assertIsNone(run(project_sharing.poll("ws", {})))
 
+    def test_a_failed_poll_says_why(self) -> None:
+        """A rejected key, a swarm error and no network must stay apart:
+        xo-doctor tells a person which one it was."""
+        cases = [
+            (_http.SwarmResult(ok=True, status=200, data={"repos": []}), ({"repos": []}, 200, False)),
+            (_http.SwarmResult(ok=False, status=401, detail="bad key"), (None, 401, False)),
+            (_http.SwarmResult(ok=False, status=503, detail="swarm returned 503"), (None, 503, False)),
+            (_http.SwarmResult(ok=False, detail="swarm is unreachable", offline=True), (None, 0, True)),
+            (_http.SwarmResult(ok=True, status=200, data=["not", "a", "dict"]), (None, 200, False)),
+        ]
+        for result, expected in cases:
+            with self.subTest(status=result.status, offline=result.offline), \
+                 patch.object(project_sharing, "request", new=AsyncMock(return_value=result)):
+                self.assertEqual(run(project_sharing.poll_detailed("ws", {})), expected)
+                self.assertEqual(run(project_sharing.poll("ws", {})), expected[0])
+
     def test_usage_probe_and_report_hit_the_same_path(self) -> None:
         with patch.object(usage, "request", new=AsyncMock(return_value=_http.SwarmResult(ok=True, status=200, data={"upserted": 1}))) as req:
             run(usage.probe_key())
