@@ -589,7 +589,7 @@ async function copyRootCommand(){
 }
 
 async function restartRuntime(){
-  if(restarting||!['managed','native'].includes(serverData?.restart_mode))return;
+  if(restarting||!['managed','native','qq'].includes(serverData?.restart_mode))return;
   if(!confirm('Restart Space? The page will reconnect automatically.'))return;
   restarting=true;
   renderRestartButtons();
@@ -622,7 +622,7 @@ async function restartRuntime(){
 }
 
 function renderRestartButtons(){
-  const supported=['managed','native'].includes(serverData?.restart_mode);
+  const supported=['managed','native','qq'].includes(serverData?.restart_mode);
   const hint=!serverData?'Server status unavailable. Refresh the page to retry.'
     :supported?'':'Ctrl-C and re-run Space in the terminal where it started.';
   const reasons=runtimeData?.restart_reasons||[];

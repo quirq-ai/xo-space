@@ -97,11 +97,13 @@ status) are qq commands.
 1. **Contract and helper.** `run_qq` in the server; `--json` and the exit codes on the existing commands.
 2. **Pilot: update.** Move `self_update`'s logic behind `qq update-check` / `qq update`; make
    `/space/update/*` call them, with the in-process fallback. Measure the latency.
-3. **Lifecycle.** `qq start --background`, `qq restart`; `cowork-api.sh` becomes a wrapper.
+3. **Lifecycle.** `qq start --background`, `qq restart` (done, see below).
 4. **The periodic batches and operations.** Usage upload, GitHub mirror, connections,
    doctor (waits until the doctor is finished).
 
-Done after the pilot: sharing operations, project add/remove, backup/restore (see below).
+Done after the pilot: sharing operations, project add/remove, backup/restore, restart (see below).
+On hold: doctor (still being built), skills install. Search reindex has nothing to move (the route is a
+stub). The daily usage upload stays the server's own loop; `qq usage sync` only runs it by hand.
 
 ## Decisions (2026-10-09)
 
@@ -148,3 +150,21 @@ What the move had to keep:
 Stays in the server: backup `/setup` (it writes the passphrase into the server's environment, and a
 passphrase must not travel on a command line), the reads (status, members, commits, removal check,
 backup list) and "Check now" (only a nudge).
+
+## Batch 2: restart
+
+Before, a server `qq start` launched could not restart: it is a foreground process, so the Setup
+tab said "Ctrl-C and re-run". `install.sh` leaves process lifecycle to whoever launched it, and for
+those servers that is now qq.
+
+- **Restart mode `qq`.** `restart_mode()` reports `qq` for a server running on this checkout's
+  `.qq/venv` when `qq` is on PATH; the Setup tab enables Restart for it.
+- **`qq restart`** asks the server for its PID (`/space/server/status`), stops it only if that
+  process runs from this checkout, waits for it to exit, then runs `qq start --background`.
+- **The route** starts `qq restart` detached (it outlives the server) with a clean environment:
+  the login basics plus `PORT` and `QUIRQ_STATE_ROOT`, nothing loaded from `.env` or the settings
+  files, so a folder just changed in Setup wins over the old one. When `qq restart` cannot start,
+  the route answers as for a foreground server.
+- Unchanged: managed containers (the supervisor restarts), the `cowork-api.sh` runner (native),
+  stop (the server stops itself; a qq process sending the same signal adds nothing), and the
+  legacy `/app/restart`, `/app/update` and `/gateway/restart` (the agent gateway, not the server).

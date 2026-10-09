@@ -52,7 +52,7 @@ NATIVE_PID_FILE = Path("/tmp/xo-space.pid")  # cowork-api.sh's process manager
 
 
 def restart_mode() -> str:
-    """Only restart a supervisor-managed process or our native runner.
+    """Only restart a supervisor-managed process, our native runner, or a qq-started server.
 
     The native pid can be the server itself or its bash wrapper. A stale
     pid file (or another checkout's server) must not enable process control.
@@ -62,7 +62,24 @@ def restart_mode() -> str:
         return "foreground"
     if _as_bool(os.getenv("QUIRQ_MANAGED_CONTAINER"), default=False):
         return "managed"
-    return "native" if native_restart_pid() is not None else "foreground"
+    if native_restart_pid() is not None:
+        return "native"
+    return "qq" if qq_can_restart() else "foreground"
+
+
+def qq_can_restart() -> bool:
+    """A server `qq start` launched (it runs on this checkout's .qq/venv) restarts through
+    `qq restart`, when qq is on PATH. infra/commands/DESIGN.md."""
+    import sys
+
+    from services import qq_runner
+
+    venv = REPO_ROOT / ".qq" / "venv"
+    try:
+        on_qq_venv = Path(sys.prefix).resolve() == venv.resolve()
+    except OSError:
+        return False
+    return on_qq_venv and shutil.which(qq_runner.QQ) is not None
 
 
 def native_restart_pid() -> int | None:

@@ -59,16 +59,19 @@ async def space_setup_status():
 
 @router.post("/server/stop")
 async def space_server_stop(request: Request):
-    """Gracefully stop the server. Local, same-origin only; restart via ./cowork-api.sh start."""
+    """Gracefully stop the server. Local, same-origin only; restart via ./cowork-api.sh start,
+    or qq start for a server qq started. The server stops itself: a qq process sending the
+    same signal would add a process and nothing else (qq stop calls this route)."""
     if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail="stop is allowed from localhost only")
+    from services.cowork_agent.runtime_config import restart_mode
 
     async def _terminate_soon():
         await asyncio.sleep(0.4)
         os.kill(os.getpid(), signal.SIGTERM)
 
     asyncio.get_running_loop().create_task(_terminate_soon())
-    return {"status": "stopping", "restart": "./cowork-api.sh start"}
+    return {"status": "stopping", "restart": "qq start" if restart_mode() == "qq" else "./cowork-api.sh start"}
 
 
 @router.post("/server/restart")
@@ -80,6 +83,17 @@ async def space_server_restart(request: Request):
     from utils.commands import spawn_detached
 
     mode = restart_mode()
+    if mode == "qq":
+        # qq restart stops this server (by the PID /space/server/status reports) and starts it
+        # again in the background. Detached: it outlives this process. When it cannot be
+        # started, the restart falls back to what a foreground server gets.
+        from services import qq_runner
+
+        result = spawn_detached([qq_runner.QQ, "restart"], cwd=REPO_ROOT, env=_restart_env())
+        if result.ok:
+            return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
+        print(f"⚠️ qq restart did not start ({result.output}); restart from the terminal instead")
+        mode = "foreground"
     if mode == "foreground":
         raise HTTPException(status_code=409, detail="Ctrl-C and re-run the server from the terminal where you launched it.")
     if mode == "native":
@@ -102,6 +116,16 @@ async def space_server_restart(request: Request):
             background=BackgroundTask(_terminate_soon),
         )
     return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
+
+
+def _restart_env() -> dict[str, str]:
+    """The environment for `qq restart`: the login basics plus this server's port and state
+    root, and nothing this server loaded from .env or the settings files. The new server must
+    read those files afresh: an inherited XO_PROJECTS_ROOT would outrank a folder just changed
+    in Setup (install.sh ranks the shell above roots.env)."""
+    keep = ("HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "TZ", "TMPDIR",
+            "XDG_CONFIG_HOME", "PORT", "QUIRQ_STATE_ROOT")
+    return {k: os.environ[k] for k in keep if os.environ.get(k)}
 
 
 @router.get("/update/status")

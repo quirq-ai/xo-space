@@ -11,7 +11,8 @@ them. Commands that talk to the server find this checkout's port from
 
 | Command | What it does |
 |---|---|
-| `qq start` | Builds or updates `.qq/venv` (`qq build server`), then starts xo-space in the foreground through `install.sh` on that venv. |
+| `qq start` | Builds or updates `.qq/venv` (`qq build server`), then starts xo-space in the foreground through `install.sh` on that venv. `--background` starts it detached and waits until it answers. |
+| `qq restart` | Stops this checkout's server and starts it again in the background. The Setup tab's Restart button runs it for a server `qq start` launched. |
 | `qq stop` | Stops this checkout's server through its localhost-only stop route, and nothing else. |
 | `qq health` | Checks the server is up and prints its `/health` report. |
 | `qq info` | Shows the running server's port, PID, instance and restart mode. |
@@ -46,6 +47,7 @@ them. Commands that talk to the server find this checkout's port from
 | `qq restore PROJECT` | Restores a project from its newest backup. `--snapshot ID` picks one, `--force` overwrites, `--all` restores every project. |
 | `qq inbox [open\|done\|all]` | Shows inbox items with their counts; open items by default. |
 | `qq usage [DAYS]` | Shows cost, tokens and messages per day; 7 days by default. |
+| `qq usage sync` | Runs the usage upload once, now. The server still runs its own daily upload. |
 | `qq sessions [COUNT]` | Lists agent sessions like the Agents → Sessions page; newest 20 by default. |
 
 ## Tier 5: sharing and agent
@@ -62,4 +64,5 @@ them. Commands that talk to the server find this checkout's port from
 | `qq agent` | Shows the active agent runtime and every runtime this Space supports, read only. |
 
 The server runs `share`, `revoke`, `apply`, `projects add|remove`, `backup` and `restore` itself
-(and `update-check`, `update`): its routes call these commands first. See `DESIGN.md`.
+(and `update-check`, `update`): its routes call these commands first. Its Restart button runs
+`qq restart` for a server `qq start` launched. See `DESIGN.md`.

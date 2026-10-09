@@ -6,10 +6,11 @@ route run its in-process code instead. When qq started but gave no answer (timed
 QQNoAnswer) the operation may be half done, so it is reported as a 502 and never run twice.
 
 Process side, ``python -m routers.qq_ops OP ...``: what those commands run
-(infra/commands/{projects,share,revoke,apply,backup,restore}.sh). It loads the server's settings
-and calls the same code the route falls back to. With --json it prints one object: the route's
-answer (exit 0; a list answer is {"results": [...]}), or {"code", "message", "status", "detail"}
-where status and detail are the HTTP error the route would have raised (exit 1).
+(infra/commands/{projects,share,revoke,apply,backup,restore}.sh, and the terminal-only
+`qq usage sync`). It loads the server's settings and calls the same code the route falls back
+to. With --json it prints one object: the route's answer (exit 0; a list answer is
+{"results": [...]}), or {"code", "message", "status", "detail"} where status and detail are the
+HTTP error the route would have raised (exit 1).
 
 Values always arrive as --name=VALUE, so a project called "--all" stays a value.
 Design: infra/commands/DESIGN.md.
@@ -164,6 +165,15 @@ async def _restore(a):
         return await r.restore_project_in_process(a.project, r.RestoreBody(snapshot_id=a.snapshot, force=a.force))
 
 
+async def _usage_sync(a):
+    """Today's usage upload, once, from a terminal. The server keeps its own daily run
+    (services/usage_sync.py); this does not replace it and no route calls it."""
+    from services import usage_sync
+
+    await usage_sync._run_sync()
+    return usage_sync.usage_reporting_status()
+
+
 def _say(op: str, d: dict) -> str:
     """One human line (or a few) for an answer."""
     if op == "projects-add":
@@ -176,6 +186,9 @@ def _say(op: str, d: dict) -> str:
         return f"{d.get('project_id')} can be removed. Run again with --yes to delete this Space's copy."
     if op in ("share", "revoke"):
         return f"{op}d {d.get('repo')}" if op == "revoke" else f"shared {d.get('repo')}. Their Space picks it up on its next poll."
+    if op == "usage-sync":
+        return (f"usage reporting is {d.get('status')}, synced up to {d.get('last_synced_date') or 'nothing yet'}"
+                + (" (no key set, nothing was sent)" if d.get("status") == "off" else ""))
     if op == "apply":
         n = d.get("applied") or 0
         head = str(d.get("head"))[:7]
@@ -219,7 +232,8 @@ def _error(exc: HTTPException) -> dict:
 
 
 OPS = {"projects-add": _projects_add, "projects-remove": _projects_remove, "share": _share,
-       "revoke": _revoke, "apply": _apply, "backup": _backup, "restore": _restore}
+       "revoke": _revoke, "apply": _apply, "backup": _backup, "restore": _restore,
+       "usage-sync": _usage_sync}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -250,6 +264,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--snapshot", default=None)
     p.add_argument("--force", action="store_true")
     p.add_argument("--pin", action="append", default=[], metavar="PROJECT=SNAPSHOT")
+    op("usage-sync")
     return ap
 
 

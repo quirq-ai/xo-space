@@ -1,11 +1,16 @@
 """Routes that run as qq commands (routers/qq_ops.py): the server side (qq_first and the routes
-for sharing, project add/remove, backup and restore) and the process side (python -m routers.qq_ops)."""
+for sharing, project add/remove, backup and restore), the process side (python -m routers.qq_ops),
+and restart through `qq restart` for a server `qq start` launched."""
 from __future__ import annotations
 
 import asyncio
 import io
 import json
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from contextlib import redirect_stdout
 from unittest.mock import AsyncMock, patch
 
@@ -13,10 +18,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from routers import qq_ops
+from routers import qq_ops, space
 from routers.cowork_agent import xo_projects_sync
 from routers.cowork_agent.bff import project_management, project_sharing
 from services import qq_runner
+from services.cowork_agent import runtime_config
+from utils.commands import CommandResult
 
 
 def answer(code: int, data: dict) -> AsyncMock:
@@ -162,6 +169,66 @@ class ProcessSideTests(unittest.TestCase):
         self.assertIsNone(seen["confirm"])
         self.run_op(["projects-remove", "app", "--yes"], op)
         self.assertEqual(seen["confirm"], "app")
+
+
+class QQRestartTests(unittest.TestCase):
+    def setUp(self) -> None:
+        app = FastAPI()
+        app.include_router(space.router)
+        self.client = TestClient(app, client=("127.0.0.1", 12345))
+
+    def test_a_server_on_the_qq_venv_restarts_through_qq(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+                "QUIRQ_MANAGED_CONTAINER": "0", "UVICORN_RELOAD": "0"}),                 patch.object(runtime_config, "REPO_ROOT", Path(tmp)),                 patch.object(runtime_config, "NATIVE_PID_FILE", Path(tmp) / "pid"),                 patch.object(sys, "prefix", str(Path(tmp) / ".qq" / "venv")):
+            (Path(tmp) / ".qq" / "venv").mkdir(parents=True)
+            with patch("shutil.which", return_value="/usr/bin/qq"):
+                self.assertEqual(runtime_config.restart_mode(), "qq")
+            with patch("shutil.which", return_value=None):   # no qq on PATH
+                self.assertEqual(runtime_config.restart_mode(), "foreground")
+
+    def test_restart_spawns_qq_restart_with_a_clean_environment(self):
+        spawned = CommandResult(argv=["qq"], returncode=0, output="", duration_seconds=0)
+        with patch.object(runtime_config, "restart_mode", return_value="qq"),                 patch("utils.commands.spawn_detached", return_value=spawned) as spawn,                 patch.dict(os.environ, {"PORT": "5002", "XO_PROJECTS_ROOT": "/old/root", "XO_SPACE_ID": "ws"}):
+            res = self.client.post("/space/server/restart")
+        self.assertEqual((res.status_code, res.json()["mode"]), (200, "qq"))
+        argv, kwargs = spawn.call_args.args[0], spawn.call_args.kwargs
+        self.assertEqual(argv, [qq_runner.QQ, "restart"])
+        self.assertEqual(kwargs["env"]["PORT"], "5002")
+        self.assertNotIn("XO_PROJECTS_ROOT", kwargs["env"])   # Setup's new folder must win
+        self.assertNotIn("XO_SPACE_ID", kwargs["env"])
+
+    def test_when_qq_restart_cannot_start_it_is_the_foreground_answer(self):
+        failed = CommandResult(argv=["qq"], returncode=-1, output="qq not found in PATH",
+                               duration_seconds=0, binary_missing=True)
+        with patch.object(runtime_config, "restart_mode", return_value="qq"),                 patch("utils.commands.spawn_detached", return_value=failed):
+            res = self.client.post("/space/server/restart")
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("Ctrl-C and re-run", res.json()["detail"])
+
+
+
+class QQStopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_says_how_to_start_again(self):
+        from starlette.requests import Request
+        request = Request({"type": "http", "client": ("::1", 12345), "headers": []})
+        # The route kills its own process 0.4 s later: let that run while os.kill is a mock.
+        with patch.object(runtime_config, "restart_mode", return_value="qq"),                 patch("routers.space.os.kill") as kill,                 patch("routers.space.asyncio.sleep", new_callable=AsyncMock):
+            body = await space.space_server_stop(request)
+            await asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()}))
+        self.assertEqual(body["restart"], "qq start")
+        kill.assert_called_once()
+
+
+class UsageSyncTests(unittest.TestCase):
+    def test_runs_the_upload_once_and_reports(self):
+        from services import usage_sync
+        out = io.StringIO()
+        with patch.object(qq_ops, "_load_settings"),                 patch.object(usage_sync, "_run_sync", new=AsyncMock()) as run,                 patch.object(usage_sync, "usage_reporting_status",
+                             return_value={"status": "on", "last_synced_date": "2026-10-08"}),                 redirect_stdout(out):
+            code = qq_ops.main(["usage-sync"])
+        run.assert_awaited_once_with()
+        self.assertEqual(code, 0)
+        self.assertIn("usage reporting is on, synced up to 2026-10-08", out.getvalue())
 
 
 if __name__ == "__main__":
