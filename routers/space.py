@@ -104,12 +104,28 @@ async def space_server_restart(request: Request):
     return {"ok": True, "restarting": True, "mode": mode, "instance_id": _SERVER_INSTANCE}
 
 
+def _qq_unavailable(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail={"code": "qq_unavailable", "message": str(exc)})
+
+
 @router.get("/update/status")
 async def space_update_status():
     """Version check for the Setup tab: how far HEAD is behind the remote.
 
     Fetches the checkout's own remote via git; offline it still reports the
-    local version with fetch_ok false."""
+    local version with fetch_ok false. With ``update`` in QUIRQ_QQ_OPERATIONS
+    the check runs as ``qq update-check --json`` (infra/commands/DESIGN.md)."""
+    from services import qq_runner
+
+    if qq_runner.enabled("update"):
+        try:
+            res = await qq_runner.run_qq(["update-check"], timeout=120)
+        except qq_runner.QQUnavailable as exc:
+            raise _qq_unavailable(exc)
+        if "code" in res.data:
+            raise HTTPException(status_code=503, detail=res.data)
+        return res.data
+
     from services.cowork_agent.self_update import check_update_status
 
     try:
@@ -131,6 +147,19 @@ async def space_update_apply(request: Request):
     if not is_local_mutation(request):
         raise HTTPException(status_code=403,
                             detail="update is allowed from localhost only")
+    from services import qq_runner
+
+    if qq_runner.enabled("update"):
+        # qq update exits 1 on a refusal too (dirty tree, diverged); the object
+        # says which, and the Setup tab expects a refusal as a 200 like before.
+        try:
+            res = await qq_runner.run_qq(["update"], timeout=300)
+        except qq_runner.QQUnavailable as exc:
+            raise _qq_unavailable(exc)
+        if "code" in res.data:
+            raise HTTPException(status_code=409, detail=res.data)
+        return res.data
+
     from services.cowork_agent.self_update import UpdateError, apply_update
 
     try:

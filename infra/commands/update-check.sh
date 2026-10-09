@@ -1,8 +1,19 @@
 #!/bin/sh
 : Check whether a newer xo-space is on its branch, without changing anything
-QUIRQ_STATE_ROOT="$(. infra/qq-lib.sh; qq_state)" exec python3 - <<'PY'
+QUIRQ_STATE_ROOT="$(. infra/qq-lib.sh; qq_state)" exec python3 - "$@" <<'PY'
+import json, sys
 from services.cowork_agent.self_update import check_update_status
-s = check_update_status()
+as_json = "--json" in sys.argv[1:]
+try:
+    s = check_update_status()
+except Exception as e:
+    if as_json:
+        print(json.dumps({"code": "update_status_failed", "message": f"Could not determine the checkout's version state: {e}"}))
+        raise SystemExit(1)
+    raise SystemExit(f"qq update-check: {e}")
+if as_json:
+    print(json.dumps(s))
+    raise SystemExit(0)
 if not s.get("supported"):
     raise SystemExit(f"qq update-check: {s['message']}")
 cur, lat = s.get("current") or {}, s.get("latest")
