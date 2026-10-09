@@ -40,6 +40,10 @@ them. Commands that talk to the server find this checkout's port from
 | Command | What it does |
 |---|---|
 | `qq projects` | Lists the projects in this Space. |
+| `qq projects add NAME URL` | Clones a repository into this Space as a project. |
+| `qq projects remove NAME` | Says whether the project can be removed. Only `--yes` deletes this Space's copy. |
+| `qq backup PROJECT` | Backs up a project to its encrypted GitHub repo. `--all` backs up every project, `--list` shows the backups. |
+| `qq restore PROJECT` | Restores a project from its newest backup. `--snapshot ID` picks one, `--force` overwrites, `--all` restores every project. |
 | `qq inbox [open\|done\|all]` | Shows inbox items with their counts; open items by default. |
 | `qq usage [DAYS]` | Shows cost, tokens and messages per day; 7 days by default. |
 | `qq sessions [COUNT]` | Lists agent sessions like the Agents → Sessions page; newest 20 by default. |
@@ -56,3 +60,6 @@ them. Commands that talk to the server find this checkout's port from
 | `qq apply PROJECT` | Fast-forwards a project to the commits fetched from its sharers. |
 | `qq ask "QUESTION"` | Sends a prompt to the active agent and streams its answer. `QQ_SESSION=ID` continues a conversation, `QQ_PROJECT=NAME` works in a project. |
 | `qq agent` | Shows the active agent runtime and every runtime this Space supports, read only. |
+
+The server runs `share`, `revoke`, `apply`, `projects add|remove`, `backup` and `restore` itself
+(and `update-check`, `update`): its routes call these commands first. See `DESIGN.md`.

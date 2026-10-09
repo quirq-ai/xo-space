@@ -18,6 +18,11 @@ Auth + config preconditions:
 - ``/setup`` only persists the passphrase; it does NOT touch GitHub
   repos. The first per-project backup is what creates that project's
   remote.
+
+Backup and restore run as qq commands first (``qq backup``, ``qq restore``;
+routers/qq_ops.py); the *_in_process functions are their fallback and what
+those commands run. ``/setup`` stays here: it writes the passphrase into this
+process's environment, and a passphrase must not travel on a command line.
 """
 
 from __future__ import annotations
@@ -32,10 +37,19 @@ from services.cowork_agent.xo_projects_sync import backup as backup_mod
 from services.cowork_agent.xo_projects_sync import config as cfg_mod
 from services.cowork_agent.xo_projects_sync import crypto, github
 from services.cowork_agent.xo_projects_sync import restore as restore_mod
+from routers.qq_ops import qq_first
 
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/xo-projects-sync", tags=["xo-projects-sync"])
+
+# tar, gpg and a push or pull per project: minutes, not seconds.
+ONE_TIMEOUT = 30 * 60.0
+ALL_TIMEOUT = 2 * 60 * 60.0
+
+
+def _note(body: "BackupBody | None") -> list[str]:
+    return [f"--note={body.note}"] if body and body.note else []
 
 
 # ── Request bodies ───────────────────────────────────────────────────────────
@@ -231,7 +245,12 @@ async def list_projects_in_repo() -> JSONResponse:
 
 
 @router.post("/projects/{project_id}")
-async def backup_project(project_id: str, body: BackupBody | None = None) -> JSONResponse:
+async def backup_project(project_id: str, body: BackupBody | None = None):
+    return await qq_first(["backup", f"--project={project_id}", *_note(body)], ONE_TIMEOUT,
+                          lambda: backup_project_in_process(project_id, body))
+
+
+async def backup_project_in_process(project_id: str, body: BackupBody | None = None) -> JSONResponse:
     cfg, auth, owner = await _require_config_and_auth()
     note = body.note if body else None
     try:
@@ -261,7 +280,12 @@ async def backup_project(project_id: str, body: BackupBody | None = None) -> JSO
 
 
 @router.post("/all")
-async def backup_all_projects(body: BackupBody | None = None) -> JSONResponse:
+async def backup_all_projects(body: BackupBody | None = None):
+    return await qq_first(["backup", "--all", *_note(body)], ALL_TIMEOUT,
+                          lambda: backup_all_projects_in_process(body), results=True)
+
+
+async def backup_all_projects_in_process(body: BackupBody | None = None) -> JSONResponse:
     cfg, auth, owner = await _require_config_and_auth()
     note = body.note if body else None
     results = await backup_mod.backup_all(
@@ -274,7 +298,16 @@ async def backup_all_projects(body: BackupBody | None = None) -> JSONResponse:
 
 
 @router.post("/projects/{project_id}/restore")
-async def restore_project(project_id: str, body: RestoreBody | None = None) -> JSONResponse:
+async def restore_project(project_id: str, body: RestoreBody | None = None):
+    args = ["restore", f"--project={project_id}"]
+    if body and body.snapshot_id:
+        args.append(f"--snapshot={body.snapshot_id}")
+    if body and body.force:
+        args.append("--force")
+    return await qq_first(args, ONE_TIMEOUT, lambda: restore_project_in_process(project_id, body))
+
+
+async def restore_project_in_process(project_id: str, body: RestoreBody | None = None) -> JSONResponse:
     cfg, auth, owner = await _require_config_and_auth()
     snapshot_id = body.snapshot_id if body else None
     force = body.force if body else False
@@ -302,7 +335,16 @@ async def restore_project(project_id: str, body: RestoreBody | None = None) -> J
 
 
 @router.post("/all/restore")
-async def restore_all_projects(body: RestoreAllBody | None = None) -> JSONResponse:
+async def restore_all_projects(body: RestoreAllBody | None = None):
+    args = ["restore", "--all"]
+    for project, snapshot in ((body.snapshot_id_map or {}) if body else {}).items():
+        args.append(f"--pin={project}={snapshot}")
+    if body and body.force:
+        args.append("--force")
+    return await qq_first(args, ALL_TIMEOUT, lambda: restore_all_projects_in_process(body), results=True)
+
+
+async def restore_all_projects_in_process(body: RestoreAllBody | None = None) -> JSONResponse:
     cfg, auth, owner = await _require_config_and_auth()
     snapshot_id_map = body.snapshot_id_map if body else None
     force = body.force if body else False

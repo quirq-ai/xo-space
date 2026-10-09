@@ -1,5 +1,8 @@
 #!/bin/sh
-: List the projects in this Space
+: List the projects in this Space, or qq projects add NAME URL, qq projects remove NAME --yes
+case "${1:-}" in
+    add|remove) . infra/qq-lib.sh; op="projects-$1"; shift; qq_ops "$op" "$@" ;;
+esac
 url=$(. infra/qq-lib.sh; qq_url)
 body=$(curl -fs "$url/api/xo-projects") || { echo "qq projects: no answer from $url, is the server running" >&2; exit 1; }
 python3 - "$body" <<'PY'

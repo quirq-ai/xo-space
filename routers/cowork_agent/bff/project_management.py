@@ -1,13 +1,21 @@
-"""Local project management. All filesystem and sharing policy is in services."""
+"""Local project management. All filesystem and sharing policy is in services.
+
+Add and remove run as qq commands first (``qq projects add|remove``, routers/qq_ops.py); the
+*_in_process functions are their fallback and what those commands run. The request guards stay
+here, before qq."""
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import StrictStr
 
 from routers.browser_guard import origin_allowed
 from routers.cowork_agent.bff.errors import ForbidExtra, http_error
+from routers.qq_ops import qq_first
 from services import project_management as service
 from services.errors import ServiceError
 
 router = APIRouter()
+
+CLONE_QQ_TIMEOUT = service.CLONE_TIMEOUT + 60   # the clone's own limit, plus the checks around it
+REMOVE_QQ_TIMEOUT = 120.0
 
 
 def _require_mutation(request: Request) -> None:
@@ -35,8 +43,14 @@ class RemoveProject(ForbidExtra):
 @router.post("/api/xo-projects", status_code=201)
 async def clone_project(body: CloneProject, request: Request) -> dict:
     _require_mutation(request)
+    return await qq_first(
+        ["projects", "add", f"--project={body.project_id}", f"--url={body.repository_url}"], CLONE_QQ_TIMEOUT,
+        lambda: clone_project_in_process(body.project_id, body.repository_url))
+
+
+async def clone_project_in_process(project_id: str, repository_url: str) -> dict:
     try:
-        return await service.clone_project(body.project_id, body.repository_url)
+        return await service.clone_project(project_id, repository_url)
     except ServiceError as exc:
         raise http_error(exc) from exc
 
@@ -52,7 +66,13 @@ async def removal_status(project_id: str) -> dict:
 @router.delete("/api/xo-projects/{project_id}")
 async def remove_project(project_id: str, body: RemoveProject, request: Request) -> dict:
     _require_mutation(request)
+    return await qq_first(
+        ["projects", "remove", f"--project={project_id}", f"--confirm={body.confirm_project_id}"],
+        REMOVE_QQ_TIMEOUT, lambda: remove_project_in_process(project_id, body.confirm_project_id))
+
+
+async def remove_project_in_process(project_id: str, confirm_project_id: str) -> dict:
     try:
-        return await service.remove_project(project_id, body.confirm_project_id)
+        return await service.remove_project(project_id, confirm_project_id)
     except ServiceError as exc:
         raise http_error(exc) from exc

@@ -59,10 +59,17 @@ Test: an operation with a clear start and end, useful outside the server, that t
 
 One helper in the server, `services/qq_runner.py`: `run_qq(args, timeout)` runs `qq <args> --json`
 from the checkout through `utils.commands` (the executor every external command uses, so the run is
-logged and redacted) and returns the exit code and the JSON object. It raises `QQUnavailable` when qq
-cannot run or gives no JSON object; that, and only that, triggers the route's in-process fallback. A
-real answer from qq, a refusal included, is final. Routes become thin: validate the request, call
-`run_qq`, map the object to HTTP the way the old code did.
+logged and redacted) and returns the exit code and the JSON object. When there is no JSON object it
+raises one of two errors:
+
+- `QQNotRun`: the operation never started (qq missing, bad usage, no Python: exit 2, 125, 126, 127).
+  The route runs its in-process code instead.
+- `QQNoAnswer`: it started but gave no answer (timed out, crashed). The operation may be half done,
+  so a route whose operation is not safe to repeat (clone, remove, backup, restore, share) answers
+  502 and does not run it again. Update is safe to repeat (fast-forward only) and still falls back.
+
+A real answer from qq, a refusal included, is final. Routes become thin: guard and validate the
+request, call qq, map the object to HTTP the way the old code did.
 
 ## Periodic work: the watcher's command scheduler
 
@@ -92,7 +99,9 @@ status) are qq commands.
    `/space/update/*` call them, with the in-process fallback. Measure the latency.
 3. **Lifecycle.** `qq start --background`, `qq restart`; `cowork-api.sh` becomes a wrapper.
 4. **The periodic batches and operations.** Usage upload, GitHub mirror, connections,
-   doctor, backup/restore, project add/remove.
+   doctor (waits until the doctor is finished).
+
+Done after the pilot: sharing operations, project add/remove, backup/restore (see below).
 
 ## Decisions (2026-10-09)
 
@@ -111,3 +120,31 @@ status) are qq commands.
   in-process `self_update` functions.
 - Tests: `run_qq` (JSON, exit codes, timeout, qq missing) and both routes: answered by qq, qq's
   errors mapped to HTTP, and the fallback when qq cannot run.
+
+## Batch 1: sharing operations, project add/remove, backup/restore
+
+Each route runs its qq command first through `qq_first()` in `routers/qq_ops.py`; its old body is
+now `<route>_in_process`, the fallback and also what the command runs (`python -m routers.qq_ops`),
+so the logic and the HTTP errors are the same on both paths.
+
+| Route | qq command |
+| --- | --- |
+| `POST /api/xo-projects/{id}/share`, `/revoke`, `/apply` | `qq share`, `qq revoke`, `qq apply` |
+| `POST /api/xo-projects`, `DELETE /api/xo-projects/{id}` | `qq projects add`, `qq projects remove` |
+| `POST /api/xo-projects-sync/projects/{id}`, `/all` | `qq backup PROJECT`, `qq backup --all` |
+| `POST /api/xo-projects-sync/projects/{id}/restore`, `/all/restore` | `qq restore PROJECT`, `qq restore --all` |
+
+What the move had to keep:
+
+- **The relay's nudge.** It wakes the loop in the server's memory, so the route nudges after qq answers.
+- **One backup at a time.** The services' asyncio locks cover one process only; the command takes a
+  file lock (`xo-projects-sync.lock` in the state locks folder) around every backup and restore.
+- **The request guards** (JSON, same origin, workspace id) run in the route, before qq.
+- **Values stay values.** The route passes every value as `--name=VALUE`, so a project called
+  `--all` is never read as a flag.
+- **Tests.** `tests/__init__.py` makes qq "not installed" in tests, so route tests keep testing the
+  in-process code with their mocks; `tests/test_qq_ops.py` covers the bridge.
+
+Stays in the server: backup `/setup` (it writes the passphrase into the server's environment, and a
+passphrase must not travel on a command line), the reads (status, members, commits, removal check,
+backup list) and "Check now" (only a nudge).

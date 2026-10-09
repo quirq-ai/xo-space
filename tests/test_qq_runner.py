@@ -22,6 +22,8 @@ case "$QQ_FAKE" in
     refused) echo '{"updated": false, "reason": "dirty_tree"}'; exit 1 ;;
     garbage) echo 'not json'; echo 'something broke' >&2; exit 2 ;;
     slow)    sleep 5; echo '{}' ;;
+    norun)   echo 'qq: no Python environment' >&2; exit 127 ;;
+    crash)   echo 'Traceback ...' >&2; exit 1 ;;
 esac
 """
 
@@ -36,6 +38,9 @@ class RunQQTests(unittest.TestCase):
         path = patch.dict(os.environ, {"PATH": f"{self.tmp.name}{os.pathsep}{os.environ.get('PATH', '')}"})
         path.start()
         self.addCleanup(path.stop)
+        launcher = patch.object(qq_runner, "QQ", "qq")   # tests/__init__.py turns qq off
+        launcher.start()
+        self.addCleanup(launcher.stop)
 
     def run_qq(self, mode: str, *args: str, timeout: float = 10):
         with patch.dict(os.environ, {"QQ_FAKE": mode}):
@@ -57,16 +62,26 @@ class RunQQTests(unittest.TestCase):
         self.assertIn("exited 2 without a JSON result", str(cm.exception))
         self.assertIn("something broke", str(cm.exception))
 
-    def test_timeout_is_unavailable(self):
-        with self.assertRaises(qq_runner.QQUnavailable) as cm:
+    def test_timeout_is_no_answer(self):
+        with self.assertRaises(qq_runner.QQNoAnswer) as cm:
             self.run_qq("slow", "update", timeout=0.5)
         self.assertIn("timed out", str(cm.exception))
 
     def test_missing_qq_is_unavailable(self):
         with patch.dict(os.environ, {"PATH": self.tmp.name + "/nowhere"}):
-            with self.assertRaises(qq_runner.QQUnavailable) as cm:
+            with self.assertRaises(qq_runner.QQNotRun) as cm:
                 asyncio.run(qq_runner.run_qq(["update"], timeout=5))
         self.assertIn("not on PATH", str(cm.exception))
+
+    def test_bad_usage_and_no_python_mean_it_never_ran(self):
+        for mode in ("garbage", "norun"):   # exit 2 and exit 127
+            with self.subTest(mode), self.assertRaises(qq_runner.QQNotRun):
+                self.run_qq(mode, "backup")
+
+    def test_a_crash_after_starting_is_no_answer(self):
+        with self.assertRaises(qq_runner.QQNoAnswer) as cm:
+            self.run_qq("crash", "backup")
+        self.assertIn("Traceback", str(cm.exception))
 
 
 class UpdateRouteTests(unittest.TestCase):

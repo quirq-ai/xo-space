@@ -45,3 +45,14 @@ PY
 
 # qq_path_part TEXT: TEXT encoded for one URL path segment.
 qq_path_part() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+
+# qq_ops OP ARGS...: run an operation the way the server does (python -m routers.qq_ops), on the
+# checkout's Python: .qq/venv (qq start), else venv (./install.sh). Without one it exits 127, which
+# tells the server the operation never started, so it runs its in-process code instead.
+qq_ops() {
+    for _py in .qq/venv/bin/python venv/bin/python; do
+        [ -x "$_py" ] && QUIRQ_STATE_ROOT="$(qq_state)" exec "$_py" -m routers.qq_ops "$@"
+    done
+    echo "qq: no Python environment in this checkout yet, run qq deps" >&2
+    exit 127
+}
