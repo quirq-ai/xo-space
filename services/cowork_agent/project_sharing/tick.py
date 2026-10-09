@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -86,13 +87,17 @@ def main(argv: list[str] | None = None) -> int:
         except BlockingIOError:
             return emit({"result": "busy", "reason": "another tick is running"}, 3)
 
-        status.load()
-        try:
-            clone.cleanup_stale_temp_dirs()  # under the lock no clone of ours is in flight
-        except Exception:  # noqa: BLE001
-            pass
-        rounds = asyncio.run(_run())
-        status.save()
+        # With --json, stdout carries exactly one JSON object: the relay's own
+        # log lines (log_line prints) go to stderr, which the job's log keeps.
+        quiet = contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext()
+        with quiet:
+            status.load()
+            try:
+                clone.cleanup_stale_temp_dirs()  # under the lock no clone of ours is in flight
+            except Exception:  # noqa: BLE001
+                pass
+            rounds = asyncio.run(_run())
+            status.save()
 
     snap = status.snapshot()
     parked = snap.get("cadence") == "parked"
