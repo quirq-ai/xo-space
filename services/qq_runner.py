@@ -1,8 +1,8 @@
 """Run qq commands from the server: the bridge for operations that moved to qq.
 
-Design: infra/commands/DESIGN.md. An operation listed in ``$QUIRQ_QQ_OPERATIONS``
-(comma-separated, e.g. ``update``) is run as ``qq <command> --json`` from this
-checkout instead of in-process; anything not listed keeps its in-process path.
+Design: infra/commands/DESIGN.md. A migrated operation runs ``qq <command> --json``
+from this checkout first; only when qq cannot run (missing, timed out, no JSON
+answer: QQUnavailable) does the caller fall back to its in-process code.
 
 A qq command prints one JSON object on stdout with ``--json`` and exits 0 (ok),
 1 (failed or refused), 2 (bad usage) or 3 (pending); qq's own errors are 125.
@@ -12,21 +12,13 @@ land in the activity log with credentials redacted.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
 from utils.commands import run
 
-ENV_OPERATIONS = "QUIRQ_QQ_OPERATIONS"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def enabled(operation: str) -> bool:
-    """True when the server should run ``operation`` through qq."""
-    raw = os.getenv(ENV_OPERATIONS, "") or ""
-    return operation in {part.strip() for part in raw.split(",") if part.strip()}
 
 
 class QQUnavailable(Exception):

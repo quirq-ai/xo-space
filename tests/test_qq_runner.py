@@ -69,14 +69,6 @@ class RunQQTests(unittest.TestCase):
         self.assertIn("not on PATH", str(cm.exception))
 
 
-class EnabledTests(unittest.TestCase):
-    def test_comma_separated_list(self):
-        for value, expected in (("", False), ("update", True), (" doctor , update ", True),
-                                ("updates", False), ("doctor", False)):
-            with patch.dict(os.environ, {qq_runner.ENV_OPERATIONS: value}):
-                self.assertIs(qq_runner.enabled("update"), expected, value)
-
-
 class UpdateRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         app = FastAPI()
@@ -86,54 +78,54 @@ class UpdateRouteTests(unittest.TestCase):
 
     def with_qq(self, result=None, error=None):
         mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=result)
-        env = patch.dict(os.environ, {qq_runner.ENV_OPERATIONS: "update"})
-        env.start()
-        self.addCleanup(env.stop)
         runner = patch.object(qq_runner, "run_qq", mock)
         runner.start()
         self.addCleanup(runner.stop)
         return mock
 
-    def test_status_through_qq_returns_its_object(self):
+    def test_status_comes_from_qq_first(self):
         mock = self.with_qq(qq_runner.QQResult(0, {"supported": True, "behind": 2}, ""))
-        res = self.client.get("/space/update/status")
+        with patch("services.cowork_agent.self_update.check_update_status") as in_process:
+            res = self.client.get("/space/update/status")
         self.assertEqual((res.status_code, res.json()), (200, {"supported": True, "behind": 2}))
-        mock.assert_awaited_once()
         self.assertEqual(mock.await_args.args[0], ["update-check"])
+        in_process.assert_not_called()
 
-    def test_status_error_object_is_503(self):
+    def test_status_error_object_from_qq_is_503(self):
         self.with_qq(qq_runner.QQResult(1, {"code": "update_status_failed", "message": "x"}, ""))
         res = self.client.get("/space/update/status")
         self.assertEqual((res.status_code, res.json()["detail"]["code"]), (503, "update_status_failed"))
 
-    def test_qq_unavailable_is_503(self):
+    def test_status_falls_back_in_process_when_qq_cannot_run(self):
         self.with_qq(error=qq_runner.QQUnavailable("qq is not on PATH"))
-        res = self.client.get("/space/update/status")
-        self.assertEqual((res.status_code, res.json()["detail"]["code"]), (503, "qq_unavailable"))
+        with patch("services.cowork_agent.self_update.check_update_status",
+                   return_value={"supported": True, "in_process": True}):
+            res = self.client.get("/space/update/status")
+        self.assertEqual((res.status_code, res.json()), (200, {"supported": True, "in_process": True}))
 
-    def test_apply_refusal_stays_a_200_for_the_setup_tab(self):
+    def test_apply_refusal_from_qq_stays_a_200_and_is_final(self):
         self.with_qq(qq_runner.QQResult(1, {"updated": False, "reason": "dirty_tree", "message": "m"}, ""))
-        res = self.client.post("/space/update/apply")
+        with patch("services.cowork_agent.self_update.apply_update") as in_process:
+            res = self.client.post("/space/update/apply")
         self.assertEqual((res.status_code, res.json()["reason"]), (200, "dirty_tree"))
+        in_process.assert_not_called()
 
-    def test_apply_failure_is_409(self):
+    def test_apply_failure_from_qq_is_409(self):
         self.with_qq(qq_runner.QQResult(1, {"code": "update_failed", "message": "merge failed"}, ""))
         res = self.client.post("/space/update/apply")
         self.assertEqual((res.status_code, res.json()["detail"]["code"]), (409, "update_failed"))
+
+    def test_apply_falls_back_in_process_when_qq_cannot_run(self):
+        self.with_qq(error=qq_runner.QQUnavailable("qq update timed out after 300s"))
+        with patch("services.cowork_agent.self_update.apply_update",
+                   return_value={"updated": False, "reason": "up_to_date", "message": "m"}):
+            res = self.client.post("/space/update/apply")
+        self.assertEqual((res.status_code, res.json()["reason"]), (200, "up_to_date"))
 
     def test_apply_is_still_localhost_only(self):
         mock = self.with_qq(qq_runner.QQResult(0, {"updated": True}, ""))
         self.assertEqual(self.remote.post("/space/update/apply").status_code, 403)
         mock.assert_not_awaited()
-
-    def test_switched_off_uses_the_in_process_path_and_never_qq(self):
-        with patch.dict(os.environ, {qq_runner.ENV_OPERATIONS: ""}), \
-                patch.object(qq_runner, "run_qq", AsyncMock()) as runner, \
-                patch("services.cowork_agent.self_update.check_update_status",
-                      return_value={"supported": True, "in_process": True}):
-            res = self.client.get("/space/update/status")
-        self.assertEqual(res.json(), {"supported": True, "in_process": True})
-        runner.assert_not_awaited()
 
 
 if __name__ == "__main__":

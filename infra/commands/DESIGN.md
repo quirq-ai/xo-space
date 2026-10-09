@@ -17,8 +17,10 @@ terminal, agent, cloud script ─────┘
 
 ## Ground rules
 
-- **Nothing is deleted.** Existing code paths stay until a later cleanup. Where a qq command takes
-  over a job, a setting chooses between the old path and the new one, defaulting to the old.
+- **Nothing is deleted.** Existing code paths stay until a later cleanup.
+- **qq first, with a fallback.** Where a qq command takes over a job, the server runs the command
+  first. Only when qq cannot run at all (not installed, timed out, no JSON answer) does it fall back
+  to the old in-process code, and the server log says why. There is no setting to choose a path.
 - **Not everything becomes a command.** See "What becomes a qq command" below.
 - The commands invert gradually: today `infra/commands/*.sh` call the server; each migrated
   operation moves its logic into the command, and the server calls the command instead.
@@ -55,10 +57,12 @@ Test: an operation with a clear start and end, useful outside the server, that t
 
 ## How the server calls qq
 
-One helper in the server, `run_qq(args, timeout) -> dict`: run `qq <args> --json` as a subprocess
-from the checkout, with this install's environment; parse stdout; map exit codes to HTTP (1 → 409
-with the command's message, 2 → 422, timeout → 504). Routes become thin: validate the request, call
-`run_qq`, return its JSON. The old in-process function stays behind the setting.
+One helper in the server, `services/qq_runner.py`: `run_qq(args, timeout)` runs `qq <args> --json`
+from the checkout through `utils.commands` (the executor every external command uses, so the run is
+logged and redacted) and returns the exit code and the JSON object. It raises `QQUnavailable` when qq
+cannot run or gives no JSON object; that, and only that, triggers the route's in-process fallback. A
+real answer from qq, a refusal included, is final. Routes become thin: validate the request, call
+`run_qq`, map the object to HTTP the way the old code did.
 
 ## Periodic work: the watcher's command scheduler
 
@@ -92,16 +96,17 @@ What has to change first:
 | 5 s drain ticks | The command keeps ticking while the swarm says `has_more` (bounded), then exits |
 | ±20 % jitter spreads a fleet | Lost unless the job adds a random delay; acceptable for now |
 
-A setting selects the driver, `PROJECT_SHARING_DRIVER=loop|watcher`, default `loop` until the
-watcher driver is proven. The old loop is not deleted.
+Same rule as everywhere: the job runs `qq sharing tick` first and falls back to the in-process
+tick only when qq cannot run. The relay's own asyncio loop stays in the code, no longer started,
+until the cleanup. When the watcher is off, sharing is off, and the Space UI says why in text.
 
 ## Plan
 
 1. **Contract and helper.** `run_qq` in the server; `--json` and the exit codes on the existing commands.
 2. **Pilot: update.** Move `self_update`'s logic behind `qq update-check` / `qq update`; make
-   `/space/update/*` call them. Measure the latency. Old code stays behind a setting.
+   `/space/update/*` call them, with the in-process fallback. Measure the latency.
 3. **Sharing tick on the scheduler.** Status on disk, `qq sharing tick`, the built-in job, run_now
-   for nudges, the watcher's local-change check, the driver setting.
+   for nudges, the watcher's local-change check, the "sharing is off" reason in the UI.
 4. **Lifecycle.** `qq start --background`, `qq restart`; `cowork-api.sh` becomes a wrapper.
 5. **The other periodic batches and operations.** Usage upload, GitHub mirror, connections,
    doctor, backup/restore, project add/remove.
@@ -115,11 +120,11 @@ watcher driver is proven. The old loop is not deleted.
 
 ## Pilot: update
 
-- Switch: `QUIRQ_QQ_OPERATIONS`, a comma-separated list of operations the server runs through qq
-  (`update` for the pilot). Unset means the old in-process path, for every operation.
 - `qq update-check --json` / `qq update --json` print the same objects the routes return today.
   For now the commands call `services.cowork_agent.self_update`, so the logic is shared; where the
   code lives is part of the later cleanup. What changes now is who calls whom.
-- `/space/update/status` and `/space/update/apply` call `run_qq` when `update` is switched on, and
-  return the command's object unchanged, so the Setup tab does not notice.
-- Tests: `run_qq` (JSON, exit codes, timeout, qq missing) and both routes in both modes.
+- `/space/update/status` and `/space/update/apply` call `run_qq` first and return the command's
+  object unchanged, so the Setup tab does not notice. When qq cannot run they fall back to the
+  in-process `self_update` functions.
+- Tests: `run_qq` (JSON, exit codes, timeout, qq missing) and both routes: answered by qq, qq's
+  errors mapped to HTTP, and the fallback when qq cannot run.
