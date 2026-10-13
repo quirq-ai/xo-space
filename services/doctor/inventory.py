@@ -156,6 +156,7 @@ SPECS: tuple[Spec, ...] = (
     *(spec for base in ("projects/*/sessions", "sessions") for spec in (
         _s(f"{base}/cse_*/session.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
         _s(f"{base}/cse_*/events.jsonl", OPAQUE),
+        _s(f"{base}/cse_*/inbox/*.json", OPAQUE),  # wakes waiting for the session's next turn
     )),
     _s("cache/heartbeat.json", REBUILT_VIEW, versions=V1, **_IGN),
     _s("cache/stats.json", CHANGE_CACHE, schema_file="stats.schema.json", **_IGN),

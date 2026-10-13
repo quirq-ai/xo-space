@@ -245,6 +245,18 @@ def _read_lines(path: Path) -> list[dict]:
     return out
 
 
+def add_reaction(project: Optional[str], message_id: str, *, emoji: str, by: str,
+                 thread_ts: Optional[str] = None, remove: bool = False) -> dict:
+    """Record a reaction (or its removal) as its own line beside the messages."""
+    ch = channel(project, create=True)
+    line = {"ts": now_ms_iso(), "type": "reaction.removed" if remove else "reaction", "schema": SCHEMA,
+            **_identity(ch), "message_id": message_id, "emoji": emoji[:32], "by": by}
+    path = _messages_path(ch, thread_ts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    append_jsonl(path, [line])
+    return line
+
+
 def read_messages(project: Optional[str], *, thread_ts: Optional[str] = None,
                   after: Optional[str] = None, limit: Optional[int] = None) -> list[dict]:
     """Messages oldest first; ``after`` keeps those with a later id, ``limit`` the newest N."""
@@ -374,6 +386,14 @@ def read_status(project: Optional[str], ts: str) -> Optional[str]:
         return None
 
 
+def get_card(project: Optional[str], ts: str) -> Optional[dict]:
+    try:
+        doc = read_json(_thread_dir(channel(project), ts) / "card.json")
+    except StoreError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def write_card(project: Optional[str], ts: str, card: dict) -> dict:
     """The thread's status card: latest in ``card.json``, history in ``cards.jsonl``."""
     ch = channel(project)
@@ -456,6 +476,13 @@ def create_session(project: Optional[str], *, role: str, cwd: str,
     write_json_atomic(folder / "session.json", record)
     append_session_event(project, session_id, "session.created", role=role, thread_ts=thread_ts)
     return {**record, "token": f"{session_id}.{token_secret}"}
+
+
+def issue_token(project: Optional[str], session_id: str) -> str:
+    """A fresh comms token for a session's next turn; the previous one stops working."""
+    secret = secrets.token_urlsafe(24)
+    update_session(project, session_id, token_sha256=_digest(secret))
+    return f"{session_id}.{secret}"
 
 
 def _digest(secret: str) -> str:
