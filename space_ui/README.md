@@ -7,7 +7,7 @@ pages and can be copied, opened in another tab, or revisited with Back/Forward.
 
 | Section | Default route | Pages |
 |---------|---------------|-------|
-| Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Manage |
+| Projects (`1`) | `#/projects/overview` | Overview, Data (List, Graph, Tree), Timeline, Chat, Manage |
 | Agents (`2`) | `#/agents/overview` | Overview, Sessions, Trends, Configure |
 | Inbox (`3`) | `#/inbox/items` | Items, Connections, Jobs, Activity, Sharing activity, Sharing |
 | Setup (`4`) | `#/setup/workspace` | Workspace, Intelligence layer, Connectors, Secrets, Jobs, Server |
@@ -127,6 +127,7 @@ directly. Descended from the single-file xo-atlas `v3.html`.
 | `js/views/chat.js` | The Chat view: Plane-B chat (`/api/chat/prompt` → SSE stream → transcript refetch) with session sidebar, project binding for new sessions, and mini-markdown rendering. Works across claude_code / hermes / openclaw. Deliberately unregistered: no tab. |
 | `js/views/wiki.js` | The compact Wiki overview: local quickstart/view actions and links to detailed online guides. Opens from the header resource link (`nav:false`, `#/wiki`), with no primary tab. Legacy `space:wiki-page` requests focus the matching topic without replacing the overview. |
 | `js/views/quirq.js` | The Quirq view: machine-local `.quirq` state (watcher infrastructure and the derived runtime tier) beside the durable project `.xo` output. Its file rows come from `services/cowork_agent/quirq_catalog.py`, which is data-driven: a file that moves root without a catalog entry to match renders as `0 present`. No tab of its own: `nav:false, parent:'setup'`, opened from **Setup → Server → Technical details** (`#/setup/server/details`). |
+| `js/views/projects-chat.js` | Projects Chat at `#/projects/chat`: channel list (Workspace, then each project with its open thread count), the channel timeline with a composer (disabled, with the reason, when `/api/projects-chat/status` says the router is off or the agent is unsupported), and thread cards grouped Waiting on you / Working / Ready / Failed / Resolved; a card or a `#cmsg_` link opens the thread (checklist, messages, its own composer posting with `thread_ts`). One EventSource per open channel, closed on hide and channel switch, with 5 s polling when the stream errors. Styled by `css/projects-chat.css`. |
 | `js/views/project-manage.js` | Persistent Projects Manage page. Owns the project-management controller, catalog refresh, Add handoff and form retention across navigation. |
 | `js/views/project-management.js` | Clone, collapsible project cards, pins, GitHub URL copying, inline sharing and removal/access-review controls, styled by `css/project-management.css`. Details load Issues when expanded; View activity opens the selected project in Inbox. |
 | `js/core/project-issues.js` | Reusable GitHub issue mirror: local Open/Closed/All filters and search, retained controls and explicit polling through **Check GitHub**. Styled by `css/project-management.css`. |
