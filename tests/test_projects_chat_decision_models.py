@@ -126,12 +126,42 @@ class RouterTests(unittest.TestCase):
         msg = store.post_message(None, author_kind="owner", author_id="owner", text="Footer on site, --help in calc")
         with mock.patch.object(dm, "ask", mock.AsyncMock(return_value=self.answers(
                 projects=dm.Answer("projects", "tags", probabilities={"calc": 0.9, "site": 0.85},
-                                   applies={"calc": True, "site": True})))):
+                                   applies={"calc": True, "site": True})))), \
+             mock.patch.object(turns, "route_forwarded") as routed:
             decision = asyncio.run(model.route("workspace", None, msg))
         self.assertEqual(sorted(a.target for a in decision.actions), ["proj:calc", "proj:site"])
         for project in ("calc", "site"):
             self.assertEqual(store.read_messages(project)[0]["forwarded_from"]["message_id"], msg["id"])
         self.assertEqual(store.read_messages(None)[-1]["text"], "Sent to calc, site.")
+        self.assertEqual(sorted(c.args[0] for c in routed.call_args_list), ["calc", "site"],
+                         "a project that routes with a decision model routes its forwarded copy too")
+        for call in routed.call_args_list:
+            self.assertIn("several projects (calc, site)", call.args[2], "each project is told to take only its part")
+
+    def test_a_project_on_the_agent_router_gets_the_forward_and_its_scope_note(self) -> None:
+        msg = store.post_message(None, author_kind="owner", author_id="owner", text="Footer on site, --help in calc")
+        with mock.patch.dict(os.environ, {"XO_ROUTER_PROJECT": "agent"}), \
+             mock.patch.object(dm, "ask", mock.AsyncMock(return_value=self.answers(
+                projects=dm.Answer("projects", "tags", probabilities={"calc": 0.9, "site": 0.85},
+                                   applies={"calc": True, "site": True})))):
+            asyncio.run(model.route("workspace", None, msg))
+        [wake] = wakes.pending("calc", coordinators.live("calc")["id"])
+        self.assertIn("Act only on the part that concerns this project", wake["envelope"])
+
+    def test_a_scope_note_reaches_the_thread_brief_and_an_escalation(self) -> None:
+        msg = store.post_message("calc", author_kind="owner", author_id="owner", text="Footer on site, --help in calc")
+        with mock.patch.object(dm, "ask", mock.AsyncMock(return_value=self.answers(
+                intent=dm.Answer("intent", "choice", chosen="new_task", probability=0.95)))):
+            asyncio.run(model.route("project", "calc", msg, "Only the calc part is yours."))
+        session = store.get_thread("calc", msg["id"])["session_id"]
+        self.assertIn("Only the calc part is yours.", wakes.pending("calc", session)[0]["envelope"])
+        unsure = store.post_message("calc", author_kind="owner", author_id="owner", text="Hmm")
+        with mock.patch.object(dm, "ask", mock.AsyncMock(return_value=self.answers(
+                intent=dm.Answer("intent", "choice", chosen="question", probability=0.9)))):
+            asyncio.run(turns._route_with_model("calc", unsure, "Only the calc part is yours."))
+        envelope = wakes.pending("calc", coordinators.live("calc")["id"])[-1]["envelope"]
+        self.assertIn("handed this message to you", envelope)
+        self.assertIn("Only the calc part is yours.", envelope)
 
     def test_escalation_wakes_the_coordinator_with_a_note(self) -> None:
         msg = store.post_message("calc", author_kind="owner", author_id="owner", text="What does calc do?")

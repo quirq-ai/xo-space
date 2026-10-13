@@ -333,20 +333,28 @@ def _wake_owner_message(project: Optional[str], target: dict, row: dict, note: O
     wakes.enqueue(project, target["id"], reason="mention", envelope=text, meta={"message_id": row["id"]})
 
 
-async def _route_with_model(project: Optional[str], row: dict) -> None:
-    """Decision-model routing; anything it does not route goes to the coordinator agent."""
+async def _route_with_model(project: Optional[str], row: dict, note: Optional[str] = None) -> None:
+    """Decision-model routing; anything it does not route goes to the coordinator agent.
+    ``note`` is context that came with the message (a forward's scope)."""
     from services.projects_chat.router import model
 
     level = "workspace" if not project else "project"
     try:
-        decision = await model.route(level, project, row)
+        decision = await model.route(level, project, row, note)
     except Exception:  # noqa: BLE001 - the agent router is always the fallback
         log.exception("projects chat: decision-model routing failed; the coordinator takes the message")
         decision = None
     if decision is None or decision.escalated_from:
         why = "; ".join(decision.reasons) if decision is not None and decision.reasons else "it failed"
         _wake_owner_message(project, coordinators.ensure(project), row,
-                            note=f"The {mode.decision_model()} decision model handed this message to you ({why}).")
+                            note=f"The {mode.decision_model()} decision model handed this message to you ({why})."
+                                 + (f" {note}" if note else ""))
+
+
+def route_forwarded(project: str, row: dict, note: Optional[str] = None) -> None:
+    """A forwarded copy reaches a project that routes with a decision model:
+    it goes through that router like any owner message, scope note and all."""
+    engine.submit(_route_with_model(project, row, note))
 
 
 def deliver_owner_message(project: Optional[str], row: dict) -> dict:

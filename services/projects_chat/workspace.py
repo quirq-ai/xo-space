@@ -24,6 +24,7 @@ from typing import Optional
 
 from services.cowork_agent import project_layout
 from services.projects_chat import comms, coordinators, envelope, store, wakes
+from services.projects_chat.router import mode
 
 _S = {"type": "string"}
 
@@ -99,6 +100,11 @@ def forward_to_project(c: comms.Caller, a: dict) -> dict:
                                          text=row["text"],
                                          forwarded_from={"chat_id": store.WORKSPACE_CHAT_ID,
                                                          "message_id": message_id}))
+    if len(copies) == 1 and mode.mode("project") == mode.DECISION:
+        from services.projects_chat import turns  # the engine imports this module
+
+        turns.route_forwarded(name, copies[0], note)
+        return {"project": name, "forwarded_message_ids": [copies[0]["id"]], "routed_by": mode.decision_model()}
     parts = []
     if note or copies:
         parts.append(envelope.relay(sender="workspace-coordinator", sender_session=c.session_id,

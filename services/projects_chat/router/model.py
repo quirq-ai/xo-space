@@ -52,11 +52,16 @@ def _title(text: str) -> str:
 
 
 def project_questions(project: str) -> list:
-    questions = [dm.Choice(INTENT_ID, "The content is a message the owner of a software project sent to the "
-                                      "project's chat. What does it ask for?", dict(INTENTS))]
     threads = [t for t in store.list_threads(project)][:20]
+    intent = "The content is a message the owner of a software project sent to the project's chat. What does it ask for?"
     if threads:
-        options = {t["ts"]: f"{t.get('title')} ({t.get('state')})" for t in threads}
+        # Without the threads in view, "also make it do X" reads as new work.
+        listed = "; ".join(f"\"{t.get('title')}\" ({t.get('state')})" for t in threads)
+        intent += (f" The project's threads so far: {listed}. A message that adds to, corrects or extends the "
+                   "work of one of them is a follow-up, even when that thread is resolved.")
+    questions = [dm.Choice(INTENT_ID, intent, dict(INTENTS))]
+    if threads:
+        options = {t["ts"]: f"the thread working on: {t.get('title')} ({t.get('state')})" for t in threads}
         options[NO_THREAD] = "none of these threads is about it"
         questions.append(dm.Choice(THREAD_ID, "If the message is about work already under way, which thread is "
                                               "doing that work?", options))
@@ -85,7 +90,11 @@ def decide(level: str, project: Optional[str], trigger: dict, result: dm.Result)
             decision.abstained = True
             decision.reasons.append(answer.error if answer and answer.error else "no project clearly applies")
             return decision
-        decision.actions = [Action("forward", target=f"proj:{p}", cited=[trigger["id"]]) for p in chosen]
+        scope = None
+        if len(chosen) > 1:
+            scope = (f"The owner's message concerns several projects ({', '.join(chosen)}); each of them "
+                     "got the same message. Act only on the part that concerns this project.")
+        decision.actions = [Action("forward", target=f"proj:{p}", note=scope, cited=[trigger["id"]]) for p in chosen]
         decision.confidence = min(answer.probabilities.get(p, 0.0) for p in chosen)
         return decision
     intent = result.answers.get(INTENT_ID)
@@ -110,9 +119,11 @@ def decide(level: str, project: Optional[str], trigger: dict, result: dm.Result)
     return decision
 
 
-def apply(decision: Decision, project: Optional[str], trigger: dict) -> bool:
+def apply(decision: Decision, project: Optional[str], trigger: dict, note: Optional[str] = None) -> bool:
     """Carry out a routing decision through the comms tools. Returns ``False``
-    when it routed nothing (the agent router takes the message)."""
+    when it routed nothing (the agent router takes the message). ``note`` is
+    context that came with the message (a forward's scope), passed on to
+    whoever does the work."""
     if not decision.actions:
         return False
     coordinator = coordinators.ensure(project)
@@ -120,14 +131,17 @@ def apply(decision: Decision, project: Optional[str], trigger: dict) -> bool:
     for action in decision.actions:
         if action.kind == "forward":
             comms.call(caller, "forward_to_project", {"project": action.target.split(":", 1)[1],
-                                                      "context_message_ids": action.cited})
+                                                      "context_message_ids": action.cited,
+                                                      **({"note": action.note} if action.note else {})})
         elif action.kind == "start_thread":
             comms.call(caller, "start_thread_session", {
                 "message_id": trigger["id"], "title": action.title or _title(trigger["text"]),
-                "instructions": f"Routed by {decision.provider}: the owner's message is attached; do what it asks.",
+                "instructions": f"Routed by {decision.provider}: the owner's message is attached; do what it asks."
+                                + (f" {note}" if note else ""),
                 "project_ack": "On it, starting a thread."})
         elif action.kind == "message_thread":
-            comms.call(caller, "message_thread", {"thread_id": action.target, "context_message_ids": action.cited})
+            comms.call(caller, "message_thread", {"thread_id": action.target, "context_message_ids": action.cited,
+                                                  **({"note": note} if note else {})})
             thread = store.get_thread(project, action.target) or {}
             comms.call(caller, "post_message", {"text": f"Sent to [{thread.get('title', 'its thread')}](#{action.target})."})
     if decision.level == "workspace":
@@ -136,7 +150,7 @@ def apply(decision: Decision, project: Optional[str], trigger: dict) -> bool:
     return True
 
 
-async def route(level: str, project: Optional[str], trigger: dict) -> Decision:
+async def route(level: str, project: Optional[str], trigger: dict, note: Optional[str] = None) -> Decision:
     """Classify, decide, apply, log. Returns the decision (``escalated_from``
     set when the agent router must take the message)."""
     provider = mode.decision_model()
@@ -150,7 +164,7 @@ async def route(level: str, project: Optional[str], trigger: dict) -> Decision:
     decision.latency_ms = round((time.perf_counter() - started) * 1000, 1)
     routed = False
     try:
-        routed = apply(decision, project, trigger)
+        routed = apply(decision, project, trigger, note)
     except comms.CommsError as exc:
         decision.reasons.append(f"could not apply: {exc.message}")
         decision.actions = []
