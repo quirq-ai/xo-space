@@ -1,7 +1,7 @@
 """Levanto Sage through its ``/decide`` endpoint (native choice and tags).
 
-Every request goes through ``services/levanto/client.py``, the only reader of
-``LEVANTO_API_KEY``. Questions are sent concurrently, one ``/decide`` each.
+Every request goes through ``services/levanto/client.py``, the only module that
+reads the Levanto key. Questions are sent concurrently, one ``/decide`` each.
 Sage's ``chosen: null`` (too close to call) and tags' ``applies: null`` are
 kept as "no pick" / "unsure".
 """
