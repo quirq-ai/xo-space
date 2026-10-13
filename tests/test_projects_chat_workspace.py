@@ -34,7 +34,7 @@ class WorkspaceToolTests(unittest.TestCase):
         names = {t["name"] for t in comms.tools_for("workspace-coordinator")}
         self.assertLessEqual({"list_projects", "fetch_project_card", "forward_to_project", "no_such_project"}, names)
         self.assertNotIn("start_thread_session", names)
-        self.assertIn("mcp__xo_comms__no_such_project", comms.terminal_tool_names("workspace-coordinator"))
+        self.assertIn("no_such_project", comms.terminal_tools("workspace-coordinator"))
 
     def test_list_projects_describes_each(self) -> None:
         projects = comms.call(self.ws, "list_projects", {})["projects"]

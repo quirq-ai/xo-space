@@ -13,13 +13,14 @@ from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.adapters.claude_code import coordinator as claude_coordinator
+from services.projects_chat import capability as contract
 from services.projects_chat import comms, store, turns, wakes, worktree
 
 
 class _Fake:
     """A ``coordinator`` capability whose turns call the comms tools directly."""
 
-    TurnSpec = claude_coordinator.TurnSpec
+    TurnSpec = contract.TurnSpec
 
     def __init__(self, script):
         self.script = script
@@ -61,22 +62,22 @@ class _Sandbox(unittest.TestCase):
 
 class WorktreeTests(_Sandbox):
     def test_a_thread_worktree_is_created_excluded_locked_and_removed_only_when_clean(self) -> None:
-        tree = asyncio.run(worktree.create("acs", "cmsg_t1"))
+        tree = asyncio.run(worktree.create("acs", "cmsg_t1", ".claude/worktrees"))
         self.assertEqual(tree.path, self.repo / ".claude" / "worktrees" / "thread-cmsg_t1")
         self.assertTrue(tree.branch.startswith("xo/thread-"))
         self.assertIn("/.claude/worktrees/", (self.repo / ".git" / "info" / "exclude").read_text())
         status = subprocess.run(["git", "-C", str(self.repo), "status", "--porcelain"], capture_output=True, text=True)
         self.assertEqual(status.stdout, "", "the worktree does not dirty the project")
-        self.assertEqual(asyncio.run(worktree.create("acs", "cmsg_t1")).path, tree.path, "idempotent")
+        self.assertEqual(asyncio.run(worktree.create("acs", "cmsg_t1", ".claude/worktrees")).path, tree.path, "idempotent")
         (tree.path / "new.txt").write_text("x")
-        self.assertEqual(asyncio.run(worktree.remove("acs", "cmsg_t1")), (False, "uncommitted changes"))
+        self.assertEqual(asyncio.run(worktree.remove("acs", "cmsg_t1", ".claude/worktrees")), (False, "uncommitted changes"))
         (tree.path / "new.txt").unlink()
-        self.assertEqual(asyncio.run(worktree.remove("acs", "cmsg_t1")), (True, "removed"))
+        self.assertEqual(asyncio.run(worktree.remove("acs", "cmsg_t1", ".claude/worktrees")), (True, "removed"))
 
     def test_a_project_that_is_not_a_repo_runs_in_place(self) -> None:
         plain = self.repo.parent / "notes"
         plain.mkdir()
-        tree = asyncio.run(worktree.create("notes", "cmsg_t2"))
+        tree = asyncio.run(worktree.create("notes", "cmsg_t2", ".xo-worktrees"))
         self.assertEqual((tree.path, tree.isolated), (plain, False))
 
 
@@ -115,7 +116,9 @@ class EngineTests(_Sandbox):
         coord_spec, thread_spec, status_spec = fake.specs
         self.assertIn(root["id"], coord_spec.prompt)
         self.assertLess(thread_spec.prompt.index('reason="spawn"'), thread_spec.prompt.index('role="initiator"'))
-        self.assertEqual(thread_spec.cwd, str(self.repo / ".claude" / "worktrees" / f"thread-{root['id']}"))
+        self.assertEqual(thread_spec.cwd, str(self.repo / ".xo-worktrees" / f"thread-{root['id']}"),
+                         "a backend that names no worktrees folder gets the neutral default")
+        self.assertEqual((thread_spec.comms_server, thread_spec.terminal_tools), ("xo_comms", ["reply", "update_status", "no_reply_needed"]))
         self.assertFalse(thread_spec.resume)
         self.assertIn("delegation-status", status_spec.prompt)
         self.assertTrue(status_spec.resume, "the coordinator's second turn resumes its session")
@@ -163,9 +166,9 @@ class EngineTests(_Sandbox):
 
 class ClaudeSpawnTests(unittest.TestCase):
     def spec(self, role, resume=False):
-        return claude_coordinator.TurnSpec(role=role, session_id="cse_x", agent_session_uuid="u-1", resume=resume,
-                                           cwd="/w", prompt="<wake/>", comms_url="http://127.0.0.1:5002/mcp/space-comms/t",
-                                           terminal_tools=["mcp__xo_comms__reply"], budget_usd=None)
+        return contract.TurnSpec(role=role, session_id="cse_x", agent_session_uuid="u-1", resume=resume,
+                                 cwd="/w", prompt="<wake/>", comms_url="http://127.0.0.1:5002/mcp/space-comms/t",
+                                 comms_server="xo_comms", terminal_tools=["reply"], budget_usd=None)
 
     def test_a_coordinator_has_no_skip_permissions_and_only_comms_plus_readers(self) -> None:
         cfg = claude_coordinator.role_config("project-coordinator")
@@ -178,6 +181,14 @@ class ClaudeSpawnTests(unittest.TestCase):
         env = claude_coordinator.build_env(self.spec("project-coordinator"), cfg,
                                            types.SimpleNamespace(cli_env=lambda: {}))
         self.assertEqual(env["CLAUDE_CODE_COORDINATOR_MODE"], "1")
+
+    def test_claude_qualifies_the_bare_tool_names_its_own_way(self) -> None:
+        cfg = claude_coordinator.role_config("thread")
+        env = claude_coordinator.build_env(self.spec("thread"), cfg, types.SimpleNamespace(cli_env=lambda: {}))
+        self.assertEqual(env["CLAUDE_CODE_TERMINAL_MCP_TOOLS"], "mcp__xo_comms__reply")
+        self.assertEqual(env["CLAUDE_CODE_MCP_PREWAIT_SERVERS"], "xo_comms")
+        self.assertEqual(claude_coordinator.WORKTREES_SUBDIR, ".claude/worktrees")
+        self.assertFalse(hasattr(claude_coordinator, "COMMS_SERVER"))
 
     def test_a_thread_resumes_with_high_effort_and_no_coordinator_mode(self) -> None:
         cfg = claude_coordinator.role_config("thread")

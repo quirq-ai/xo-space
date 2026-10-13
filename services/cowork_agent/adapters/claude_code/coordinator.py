@@ -1,8 +1,9 @@
 """Capability ``coordinator``: run one projects-chat turn with the claude CLI.
 
-The projects chat (``services/projects_chat/``) names no agent; it hands this
-module a :class:`TurnSpec` (role, session, cwd, the envelopes for the turn,
-the comms URL) and gets back what happened. Everything Claude-specific is
+Implements the contract in ``services/projects_chat/capability.py``: the
+projects chat (which names no agent) hands this module a ``TurnSpec`` (role,
+session, cwd, the envelopes for the turn, the comms server) and gets back
+what happened. Everything Claude-specific is
 here and in ``config/agents/claude_code/coordinator.json``:
 
 - coordinators run in the CLI's coordinator mode (``CLAUDE_CODE_COORDINATOR_MODE``)
@@ -31,36 +32,23 @@ import logging
 import os
 import secrets
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from services.cowork_agent.adapters.claude_code.adapter import Adapter
 from services.cowork_agent.adapters.claude_code.streaming import turn_outcome
 from services.cowork_agent.registry.settings import load_agent_config
+from services.projects_chat.capability import TurnSpec
 from utils.commands import run
 
 log = logging.getLogger(__name__)
 
 SUPPORTED_ROLES = ("workspace-coordinator", "project-coordinator", "thread")
 _CONFIG = Path(__file__).resolve().parents[4] / "config" / "agents" / "claude_code" / "coordinator.json"
-COMMS_SERVER = "xo_comms"
+#: Claude Code keeps its own worktrees here; threads' worktrees sit beside them.
+WORKTREES_SUBDIR = ".claude/worktrees"
 _STDERR_TAIL = 2000
 
 
-@dataclass
-class TurnSpec:
-    role: str
-    session_id: str
-    agent_session_uuid: str
-    resume: bool
-    cwd: str
-    prompt: str
-    comms_url: str
-    terminal_tools: list[str]
-    add_dirs: list[str] = field(default_factory=list)
-    budget_usd: Optional[float] = None
-    log_path: Optional[str] = None
 
 
 def role_config(role: str) -> dict:
@@ -91,7 +79,7 @@ def _spawn_dir(spec: TurnSpec, cfg: dict) -> Path:
     server = {"type": "http", "url": spec.comms_url, "alwaysLoad": True}
     if cfg.get("coordinator_mode"):
         server["role"] = "comms"
-    (folder / "mcp.json").write_text(json.dumps({"mcpServers": {COMMS_SERVER: server}}), encoding="utf-8")
+    (folder / "mcp.json").write_text(json.dumps({"mcpServers": {spec.comms_server: server}}), encoding="utf-8")
     for name in ("append-system-prompt.txt", "mcp.json"):
         os.chmod(folder / name, 0o600)
     return folder
@@ -110,9 +98,9 @@ def build_argv(spec: TurnSpec, cfg: dict, spawn: Path, cli: str) -> list[str]:
     for folder in [spec.cwd, *spec.add_dirs]:
         argv += ["--add-dir", folder]
     if cfg.get("coordinator_mode"):
-        argv += ["--allowedTools", f"mcp__{COMMS_SERVER}__*", *cfg.get("read_tools", [])]
+        argv += ["--allowedTools", f"mcp__{spec.comms_server}__*", *cfg.get("read_tools", [])]
     else:
-        argv += ["--dangerously-skip-permissions", "--allowedTools", f"mcp__{COMMS_SERVER}__*"]
+        argv += ["--dangerously-skip-permissions", "--allowedTools", f"mcp__{spec.comms_server}__*"]
         if cfg.get("disallowed_tools"):
             argv += ["--disallowedTools", *cfg["disallowed_tools"]]
     argv += ["--resume", spec.agent_session_uuid] if spec.resume else ["--session-id", spec.agent_session_uuid]
@@ -121,8 +109,9 @@ def build_argv(spec: TurnSpec, cfg: dict, spawn: Path, cli: str) -> list[str]:
 
 def build_env(spec: TurnSpec, cfg: dict, adapter: Adapter) -> dict[str, str]:
     env = adapter.cli_env()
-    env["CLAUDE_CODE_MCP_PREWAIT_SERVERS"] = COMMS_SERVER
-    env["CLAUDE_CODE_TERMINAL_MCP_TOOLS"] = ",".join(spec.terminal_tools)
+    env["CLAUDE_CODE_MCP_PREWAIT_SERVERS"] = spec.comms_server
+    # Claude Code names an MCP tool mcp__<server>__<tool>.
+    env["CLAUDE_CODE_TERMINAL_MCP_TOOLS"] = ",".join(f"mcp__{spec.comms_server}__{t}" for t in spec.terminal_tools)
     if cfg.get("coordinator_mode"):
         env["CLAUDE_CODE_COORDINATOR_MODE"] = "1"
     else:

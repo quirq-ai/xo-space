@@ -155,9 +155,9 @@ def tools_for(role: str) -> list[dict]:
     return [{"name": name, **TOOLS[name]} for name in ROLE_TOOLS.get(role, ())]
 
 
-def terminal_tool_names(role: str) -> list[str]:
-    """Fully qualified names, as the agent sees them (``mcp__xo_comms__reply``)."""
-    return [f"mcp__{SERVER_NAME}__{name}" for name in TERMINAL.get(role, ())]
+def terminal_tools(role: str) -> list[str]:
+    """The role's terminal tools, by bare name; the backend qualifies them its own way."""
+    return list(TERMINAL.get(role, ()))
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

@@ -90,8 +90,8 @@ def _cited(row: dict, chat_id: str) -> str:
 
 
 _RELAY_SOURCES = {
-    "workspace-coordinator": "the workspace coordinator session, a Claude session working across every project",
-    "coordinator": "this project's coordinator session, a Claude session",
+    "workspace-coordinator": "the workspace coordinator session, an agent session working across every project",
+    "coordinator": "this project's coordinator session, an agent session",
 }
 
 
@@ -104,7 +104,7 @@ def relay(*, sender: str, sender_session: str, cited: list[tuple[dict, str]],
     ``"coordinator"`` (a project coordinator to a thread). ``cited`` pairs a
     stored row with the id of the chat it was read from.
     """
-    who = _RELAY_SOURCES.get(sender, "a Claude session")
+    who = _RELAY_SOURCES.get(sender, "an agent session")
     lines = []
     if cited:
         lines.append("The messages below are picked by the sender and not necessarily consecutive. "

@@ -35,6 +35,7 @@ from typing import Optional
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine import sessions_io
 from services.projects_chat import workspace as _workspace_tools  # noqa: F401  (registers the workspace tools)
+from services.projects_chat import capability as contract
 from services.projects_chat import comms, coordinators, envelope, recycle, store, wakes, worktree
 from services.projects_chat.router import mode
 from services.projects_chat.router.decision import Action, Decision
@@ -173,7 +174,7 @@ class Engine:
             raise RuntimeError(f"the {agent} backend cannot run the projects chat (no coordinator capability)")
         prompt_prefix = ""
         if role.endswith("coordinator"):
-            fingerprint = getattr(capability, "prompt_fingerprint", lambda r: None)(role)
+            fingerprint = contract.fingerprint(capability, role)
             reason = recycle.retire_reason(session, fingerprint)
             if reason is not None:
                 session, prompt_prefix = recycle.replace(project, session, reason)
@@ -191,7 +192,7 @@ class Engine:
                     prompt_prefix: str) -> dict:
         session_id, role = session["id"], session["role"]
         if role == "thread" and session.get("turns", 0) == 0:
-            tree = await worktree.create(project, session["thread_ts"])
+            tree = await worktree.create(project, session["thread_ts"], contract.worktrees_subdir(capability))
             session = store.update_session(project, session_id, cwd=str(tree.path))
             store.update_thread(project, session["thread_ts"], cwd=str(tree.path),
                                 worktree_path=str(tree.path) if tree.isolated else None, branch=tree.branch)
@@ -206,7 +207,7 @@ class Engine:
         if result.get("ok") and not terminal:
             bounced = True
             store.append_session_event(project, session_id, "turn.gate_bounce", epoch=epoch)
-            tools = ", ".join(name.split("__")[-1] for name in comms.terminal_tool_names(role))
+            tools = ", ".join(comms.terminal_tools(role))
             result = await self._run(capability, project, session, GATE_TEXT.format(tools=tools), resume=True)
             terminal = self._terminal_calls(project, session_id, epoch)
         session = store.update_session(
@@ -227,10 +228,10 @@ class Engine:
 
     async def _run(self, capability, project, session, prompt: str, *, resume: bool) -> dict:
         token = store.issue_token(project, session["id"])
-        spec = capability.TurnSpec(
+        spec = contract.TurnSpec(
             role=session["role"], session_id=session["id"], agent_session_uuid=session["agent_session_uuid"],
             resume=resume, cwd=session["cwd"], prompt=prompt, comms_url=comms_url(token),
-            terminal_tools=comms.terminal_tool_names(session["role"]),
+            comms_server=comms.SERVER_NAME, terminal_tools=comms.terminal_tools(session["role"]),
             budget_usd=mode.thread_budget_usd() if session["role"] == "thread" else None,
             log_path=str(store._session_dir(project, session["id"]) / "last-turn.jsonl"),
         )
