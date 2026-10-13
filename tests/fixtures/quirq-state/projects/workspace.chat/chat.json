@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "chat_workspace",
+  "kind": "workspace",
+  "project_id": null,
+  "pid": null,
+  "created_at": "2026-01-01T09:00:00.000Z",
+  "settings": {}
+}

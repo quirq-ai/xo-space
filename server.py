@@ -842,9 +842,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
+    # Projects chat: the turn engine runs coordinator and thread turns when a
+    # wake arrives (idle costs nothing), and resumes wakes left from before a
+    # restart. It starts nothing when the router is off.
+    _projects_chat_engine = None
+    try:
+        from services.projects_chat.router import mode as _router_mode
+        if _router_mode.enabled():
+            from services.projects_chat.turns import engine as _projects_chat_engine
+            _projects_chat_engine.start()
+            print(f"   Projects chat: router {_router_mode.mode('workspace')}/{_router_mode.mode('project')}, "
+                  f"up to {_router_mode.max_turns()} turns at once")
+    except Exception as e:
+        _projects_chat_engine = None
+        print(f"⚠️ Projects chat failed to start (non-fatal): {e}")
+
     _warmup_task = asyncio.create_task(startup_warmup_request())
 
     yield
+
+    if _projects_chat_engine is not None:
+        await _projects_chat_engine.stop()
 
     # Stop ingestion first: the daemon is an external process, so leaving it
     # behind outlives this server, unlike the asyncio tasks cancelled below.

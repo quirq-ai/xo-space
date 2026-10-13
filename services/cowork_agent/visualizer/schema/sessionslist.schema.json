@@ -16,7 +16,11 @@
         "directory":       { "type": "string", "description": "Absolute path to the project the session is running in. Stored for adapter use; STRIPPED before any BFF response (see docs/watcher-design.md §7.3)." },
         "backend":         { "type": "string", "description": "Runtime that owns this session, e.g. `claude_code`, `openclaw`, `hermes`. Open string — adding a new agent should not require a schema edit." },
         "updatedAt":       { "type": "integer", "minimum": 0, "description": "Epoch milliseconds of the most recent adapter write to this row." },
-        "usage":           { "$ref": "#/definitions/usage" }
+        "usage":           { "$ref": "#/definitions/usage" },
+        "title":           { "type": "string", "maxLength": 200, "description": "Optional. A display title set by whoever started the session. When present, session lists show it instead of a title derived from the session's first message (which, for an orchestrated session, is a machine envelope)." },
+        "role":            { "type": "string", "enum": ["workspace-coordinator", "project-coordinator", "thread"], "description": "Optional. Set on sessions the projects chat runs (services/projects_chat): which role the session plays." },
+        "chat":            { "type": "string", "description": "Optional, projects chat only: the chat the session belongs to (`chat_workspace` or `chat_<project>`)." },
+        "thread_ts":       { "type": ["string", "null"], "description": "Optional, projects chat only: the thread a thread session works (the id of the thread's root message); null for coordinators." }
       }
     },
     "usage": {

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "pid": "00000000-0000-4000-8000-000000000000",
+  "project_id": "sample-project",
+  "ts": "cmsg_0mfx2k0a0000a1b2c3d4",
+  "chat_id": "chat_00000000-0000-4000-8000-000000000000",
+  "title": "Add a test runner",
+  "label": null,
+  "session_id": "cse_0123456789abcdef01234567",
+  "created_by_session": null,
+  "cwd": "/home/you/xo-projects/sample-project/.claude/worktrees/thread-cmsg_0mfx2k0a0000a1b2c3d4",
+  "branch": "xo/thread-a1b2c3",
+  "worktree_path": "/home/you/xo-projects/sample-project/.claude/worktrees/thread-cmsg_0mfx2k0a0000a1b2c3d4",
+  "state": "done",
+  "resolved_at": null,
+  "outputs": {"prs": [], "files": []},
+  "created_at": "2026-01-01T10:00:05.000Z",
+  "last_activity_at": "2026-01-01T10:06:00.000Z"
+}

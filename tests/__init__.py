@@ -1,5 +1,13 @@
 """XO Cowork API tests."""
 
-# Snapshot the missing-tools flags and PATH before any test imports server.py
-# (see tests/required_tools.py).
-from tests import required_tools as _required_tools  # noqa: F401
+import os
+
+# Decision-model routing stays off in tests, whatever the checkout's .env says.
+# A developer's .env may set a router mode and real decision-model keys, and
+# importing server.py loads it. load_dotenv() never overrides a non-empty
+# export, and server.py refills a blank one from .env, so both are pinned to
+# non-empty values here, before any test imports it. Tests that need a mode or
+# a key patch them in.
+os.environ["XO_ROUTER_MODE"] = "off"
+os.environ["LEVANTO_API_KEY"] = "test-placeholder-not-a-key"
+os.environ["TYPESAFE_API_KEY"] = "test-placeholder-not-a-key"

@@ -38,6 +38,8 @@ from .workspace_memory import router as workspace_memory_router
 from .bff import bff_routers
 from .opentelemetry import router as opentelemetry_router
 from .xo_projects_sync import router as xo_projects_sync_router
+from .space_comms import router as space_comms_router
+from .projects_chat import router as projects_chat_router
 
 
 def _active_agent_routes() -> list[APIRouter]:
@@ -82,6 +84,8 @@ all_routers: list[APIRouter] = [
     vercel_router,
     composio_router,
     mcp_proxy_router,
+    space_comms_router,
+    projects_chat_router,
     *bff_routers,
     xo_projects_sync_router,
 ]

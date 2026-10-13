@@ -20,6 +20,33 @@ def _block_activity(block: dict, *, partial: bool) -> dict | None:
     return None
 
 
+def _number(value: object) -> int | float | None:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def turn_outcome(event: dict) -> dict:
+    """What a finished turn cost and did, from Claude Code's ``result`` event,
+    in the agent-neutral shape the intelligence outcome log records."""
+    usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+    model_usage = event.get("modelUsage")
+    subtype = event.get("subtype")
+    return {
+        "turns": _number(event.get("num_turns")),
+        "duration_ms": _number(event.get("duration_ms")),
+        "api_duration_ms": _number(event.get("duration_api_ms")),
+        "cost_usd": _number(event.get("total_cost_usd")),
+        "is_error": bool(event.get("is_error")),
+        "stop": subtype if isinstance(subtype, str) else None,
+        "models": sorted(model_usage) if isinstance(model_usage, dict) else [],
+        "tokens": {
+            "input": _number(usage.get("input_tokens")),
+            "output": _number(usage.get("output_tokens")),
+            "cache_read": _number(usage.get("cache_read_input_tokens")),
+            "cache_write": _number(usage.get("cache_creation_input_tokens")),
+        },
+    }
+
+
 def parse_stream_line(raw: bytes) -> dict | None:
     """
     Decode one raw line from Claude Code's stream-json output.
@@ -100,12 +127,13 @@ def parse_stream_line(raw: bytes) -> dict | None:
 
     if etype == "result":
         if event.get("is_error"):
-            return se.error(event.get("result", "Claude Code error"))
+            return {**se.error(event.get("result", "Claude Code error")), "outcome": turn_outcome(event)}
         return se.result(
             result=event.get("result", ""),
             session_id=event.get("session_id"),
             usage=event.get("usage") or {},
             model=event.get("model", ""),
+            outcome=turn_outcome(event),
         )
 
     if etype == "text":

@@ -138,6 +138,29 @@ SPECS: tuple[Spec, ...] = (
     _s("projects/*/github/issues.json", REBUILT_VIEW, schema_file="github-issues.schema.json",
        newer=REPLACED, older=REPLACED),
     _s("projects/*/timeline*.jsonl", HISTORY),
+    # Projects chat (services/projects_chat/store.py): the workspace chat in
+    # projects/workspace.chat/ (a dot, so never a project key) and one
+    # chat per project in projects/<key>/chat/. The store creates a
+    # missing chat.json again and reads records whatever their number.
+    *(spec for base in ("projects/workspace.chat", "projects/*/chat") for spec in (
+        _s(f"{base}/chat.json", SELF_OVERWRITING, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/messages.jsonl", HISTORY),
+        _s(f"{base}/threads/*/thread.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/threads/*/messages.jsonl", HISTORY),
+        _s(f"{base}/threads/*/card.json", OVERWRITTEN_NEXT, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/threads/*/cards.jsonl", OPAQUE),
+        _s(f"{base}/threads/*/status.md", OPAQUE),
+        _s(f"{base}/router/decisions.jsonl", OPAQUE),
+        _s(f"{base}/memory/*.md", OPAQUE),  # the chat's memory, written through its own versioned tools
+        _s(f"{base}/memory/.versions.json", OPAQUE),
+    )),
+    # One folder per projects-chat agent session, beside the session index.
+    *(spec for base in ("projects/*/sessions", "sessions") for spec in (
+        _s(f"{base}/cse_*/session.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/cse_*/events.jsonl", OPAQUE),
+        _s(f"{base}/cse_*/inbox/*.json", OPAQUE),  # wakes waiting for the session's next turn
+        _s(f"{base}/cse_*/last-turn.jsonl", OPAQUE),  # the agent's raw output for its latest turn
+    )),
     _s("cache/heartbeat.json", REBUILT_VIEW, versions=V1, **_IGN),
     _s("cache/stats.json", CHANGE_CACHE, schema_file="stats.schema.json", **_IGN),
     _s("cache/graph.json", REBUILT_VIEW),

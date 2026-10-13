@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "pid": "00000000-0000-4000-8000-000000000000",
+  "project_id": "sample-project",
+  "id": "cse_0123456789abcdef01234567",
+  "role": "thread",
+  "chat_id": "chat_00000000-0000-4000-8000-000000000000",
+  "thread_ts": "cmsg_0mfx2k0a0000a1b2c3d4",
+  "agent_session_uuid": "11111111-1111-4111-8111-111111111111",
+  "cwd": "/home/you/xo-projects/sample-project/.claude/worktrees/thread-cmsg_0mfx2k0a0000a1b2c3d4",
+  "epoch": 1,
+  "status": "idle",
+  "incarnation": null,
+  "token_sha256": "replace-with-a-sha256-hex-digest",
+  "turns": 1,
+  "created_at": "2026-01-01T10:00:05.000Z",
+  "updated_at": "2026-01-01T10:06:01.000Z",
+  "retired_at": null
+}
