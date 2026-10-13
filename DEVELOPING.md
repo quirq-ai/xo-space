@@ -161,6 +161,8 @@ Capabilities in use today:
 | `agents` | `/api/agents` CRUD | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `session_telemetry` | session telemetry, shown even when the agent is not active | no | ✓ | ✓ | no | no | no |
 | `session_prompts` | one session's user prompts, for the Space detail view | no | ✓ | ✓ | no | no | no |
+| `coordinator` | projects chat: run a coordinator or thread turn (§13) | no | ✓ | no | no | no | no |
+| `oneshot` | a tool-free one-off completion (not used by core yet) | no | ✓ | no | no | no | no |
 
 `cursor` has only `session_telemetry`: its sessions appear in telemetry, and it
 cannot run a turn.
@@ -930,3 +932,17 @@ Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs
 follow the `main` tip, not the latest tag. The runbook, the numbering rules and the hotfix flow are in
 [RELEASING.md](RELEASING.md).
+
+## 13. Projects chat: router, coordinators, threads (proof of concept)
+
+`services/projects_chat/` (routes in `routers/cowork_agent/projects_chat.py` and
+`routers/cowork_agent/space_comms.py`, UI at `#/projects/chat`) gives the workspace and
+every project one long-running **chat** whose **coordinator** agent answers, starts
+**threads** (each its own agent session in its own git worktree) or forwards
+follow-ups to them; the workspace coordinator routes to project coordinators. The
+**router** deciding this is `off`, the agent (default) or a decision model
+(`services/decision_models/`: Sage, Jev). A Space-level package (§7): core names no
+agent, and a backend opts in with the `coordinator` capability, whose contract is
+`services/projects_chat/capability.py` (§3 lists the backend that has it). The module
+guide is `services/projects_chat/README.md`; the approved design, as-built notes and
+known gaps are in `design/projects-chat/`.
