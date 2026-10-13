@@ -112,6 +112,22 @@ class Engine:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def submit(self, coro) -> None:
+        """Run a coroutine on the engine's loop, from any thread."""
+        if self._loop is None:
+            coro.close()
+            raise RuntimeError("the projects chat engine is not running")
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._loop:
+            task = self._loop.create_task(coro)
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        else:
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+
     def busy(self, session_id: str) -> bool:
         task = self._draining.get(session_id)
         return task is not None and not task.done()
@@ -270,16 +286,42 @@ class Engine:
 engine = Engine()
 
 
+def _wake_owner_message(project: Optional[str], target: dict, row: dict, note: Optional[str] = None) -> None:
+    ch = store.channel(project)
+    text = envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=row,
+                         thread_ts=row.get("thread_ts"), system_note=note)
+    wakes.enqueue(project, target["id"], reason="mention", envelope=text, meta={"message_id": row["id"]})
+
+
+async def _route_with_model(project: Optional[str], row: dict) -> None:
+    """Decision-model routing; anything it does not route goes to the coordinator agent."""
+    from services.projects_chat.router import model
+
+    level = "workspace" if not project else "project"
+    try:
+        decision = await model.route(level, project, row)
+    except Exception:  # noqa: BLE001 - the agent router is always the fallback
+        log.exception("projects chat: decision-model routing failed; the coordinator takes the message")
+        decision = None
+    if decision is None or decision.escalated_from:
+        why = "; ".join(decision.reasons) if decision is not None and decision.reasons else "it failed"
+        _wake_owner_message(project, coordinators.ensure(project), row,
+                            note=f"The {mode.decision_model()} decision model handed this message to you ({why}).")
+
+
 def deliver_owner_message(project: Optional[str], row: dict) -> dict:
     """Route an owner's message: in a thread, straight to that thread's agent;
-    on a timeline, to the channel's coordinator. Returns the session woken."""
-    ch = store.channel(project)
+    on a timeline, to the channel's router (the decision model when that level
+    uses one, else the coordinator agent). Returns the session that handles it."""
     if row.get("thread_ts"):
         thread = store.get_thread(project, row["thread_ts"])
         target = store.get_session(project, thread["session_id"])
+        _wake_owner_message(project, target, row)
+        return target
+    target = coordinators.ensure(project)
+    level = "workspace" if not project else "project"
+    if mode.mode(level) == mode.DECISION:
+        engine.submit(_route_with_model(project, row))
     else:
-        target = coordinators.ensure(project)
-    text = envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=row,
-                         thread_ts=row.get("thread_ts"))
-    wakes.enqueue(project, target["id"], reason="mention", envelope=text, meta={"message_id": row["id"]})
+        _wake_owner_message(project, target, row)
     return target
