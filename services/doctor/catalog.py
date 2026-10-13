@@ -296,6 +296,54 @@ ABOUT: dict[str, About] = {
         next_step=("Leave it: deleting it can close this project's GitHub items in the Inbox until each issue next "
                    "changes on GitHub."),
     ),
+    "projects/workspace.channel/channel.json": About(
+        name="The workspace chat channel record", owner="projects chat",
+        consequence="The workspace chat can't read its channel settings until the record is readable.",
+        self_repair="Projects chat writes a fresh record the next time the chat is opened.",
+        next_step="Move it aside: only channel settings are lost, never messages or threads.",
+    ),
+    "projects/workspace.channel/threads/*/thread.json": About(
+        name="A thread record in the workspace chat", owner="projects chat",
+        consequence="This thread in the workspace chat can't be shown or resumed, and its card stays stale.",
+        self_repair="Nothing: the thread record is the only copy of its session, worktree and state.",
+        next_step="Restore it from a backup if you have one; otherwise move it aside and start the work again.",
+    ),
+    "projects/workspace.channel/threads/*/card.json": About(
+        name="A thread status card in the workspace chat", owner="projects chat",
+        consequence="The thread's card in the workspace chat shows nothing until its next turn.",
+        self_repair="The thread's next turn writes a new card; earlier cards stay in cards.jsonl.",
+        next_step="Leave it: the next turn replaces it.",
+    ),
+    "projects/*/channel/channel.json": About(
+        name="Project {project}'s chat channel record", owner="projects chat",
+        consequence="Project {project}'s chat can't read its channel settings until the record is readable.",
+        self_repair="Projects chat writes a fresh record the next time the chat is opened.",
+        next_step="Move it aside: only channel settings are lost, never messages or threads.",
+    ),
+    "projects/*/channel/threads/*/thread.json": About(
+        name="A thread record in project {project}'s chat", owner="projects chat",
+        consequence="This thread in project {project}'s chat can't be shown or resumed, and its card stays stale.",
+        self_repair="Nothing: the thread record is the only copy of its session, worktree and state.",
+        next_step="Restore it from a backup if you have one; otherwise move it aside and start the work again.",
+    ),
+    "projects/*/channel/threads/*/card.json": About(
+        name="A thread status card in project {project}'s chat", owner="projects chat",
+        consequence="The thread's card in project {project}'s chat shows nothing until its next turn.",
+        self_repair="The thread's next turn writes a new card; earlier cards stay in cards.jsonl.",
+        next_step="Leave it: the next turn replaces it.",
+    ),
+    "projects/*/sessions/cse_*/session.json": About(
+        name="A projects-chat agent session in project {project}", owner="projects chat",
+        consequence="This coordinator or thread session in project {project} can't take another turn until the record is readable.",
+        self_repair="Nothing: it is the only record linking the session to its thread and agent.",
+        next_step="Move it aside; a coordinator is started again on the next message, a thread must be restarted.",
+    ),
+    "sessions/cse_*/session.json": About(
+        name="A projects-chat agent session in the workspace", owner="projects chat",
+        consequence="This coordinator or thread session in the workspace can't take another turn until the record is readable.",
+        self_repair="Nothing: it is the only record linking the session to its thread and agent.",
+        next_step="Move it aside; a coordinator is started again on the next message, a thread must be restarted.",
+    ),
     "cache/heartbeat.json": About(
         name="The watcher's heartbeat", owner="the watcher",
         consequence="Only the liveness display is affected.",

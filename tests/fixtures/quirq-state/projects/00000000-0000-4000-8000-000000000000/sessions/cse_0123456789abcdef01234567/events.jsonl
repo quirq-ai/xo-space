@@ -1,0 +1,2 @@
+{"ts": "2026-01-01T10:00:05.000Z", "type": "session.created", "role": "thread", "thread_ts": "cmsg_0mfx2k0a0000a1b2c3d4"}
+{"ts": "2026-01-01T10:06:01.000Z", "type": "turn.finished", "epoch": 1, "terminal_tool": "reply"}

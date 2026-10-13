@@ -308,6 +308,21 @@ class ExampleStoreTests(unittest.TestCase):
         [(source, cursor)] = _documents(offsets)[0]["offsets"].items()
         self.assertEqual(OffsetStore(offsets, legacy_store_path=None).get(Path(source)), (cursor["offset"], cursor["inode"]))
 
+    def test_projects_chat(self) -> None:
+        from services.projects_chat import store as chat_store
+
+        project_root = self.root.parent / "projects" / EXAMPLE_PROJECT / ".xo"
+        project_root.mkdir(parents=True)
+        (project_root / "project.json").write_text(json.dumps({"pid": EXAMPLE_PID}), encoding="utf-8")
+        [workspace_row] = chat_store.read_messages(None)
+        [root] = chat_store.read_messages(EXAMPLE_PROJECT)
+        self.assertEqual(root["forwarded_from"]["message_id"], workspace_row["id"])
+        [thread] = chat_store.list_threads(EXAMPLE_PROJECT)
+        self.assertEqual((thread["ts"], thread["card"]["state"]), (root["id"], "done"))
+        [session] = chat_store.list_sessions(EXAMPLE_PROJECT)
+        self.assertEqual(session["id"], thread["session_id"])
+        self.assertEqual(chat_store.read_decisions(EXAMPLE_PROJECT)[0]["actions"][0]["kind"], "start_thread")
+
     def test_settings(self) -> None:
         roots = runtime_config._parse_env_file(runtime_config.root_config_file(), runtime_config.ROOT_CONFIG_KEYS)
         self.assertEqual(roots["XO_PROJECTS_ROOT"], "/home/you/xo-projects")

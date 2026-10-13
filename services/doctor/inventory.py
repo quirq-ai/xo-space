@@ -138,6 +138,25 @@ SPECS: tuple[Spec, ...] = (
     _s("projects/*/github/issues.json", REBUILT_VIEW, schema_file="github-issues.schema.json",
        newer=REPLACED, older=REPLACED),
     _s("projects/*/timeline*.jsonl", HISTORY),
+    # Projects chat (services/projects_chat/store.py): the workspace channel in
+    # projects/workspace.channel/ (a dot, so never a project key) and one
+    # channel per project in projects/<key>/channel/. The store creates a
+    # missing channel.json again and reads records whatever their number.
+    *(spec for base in ("projects/workspace.channel", "projects/*/channel") for spec in (
+        _s(f"{base}/channel.json", SELF_OVERWRITING, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/messages.jsonl", HISTORY),
+        _s(f"{base}/threads/*/thread.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/threads/*/messages.jsonl", HISTORY),
+        _s(f"{base}/threads/*/card.json", OVERWRITTEN_NEXT, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/threads/*/cards.jsonl", OPAQUE),
+        _s(f"{base}/threads/*/status.md", OPAQUE),
+        _s(f"{base}/router/decisions.jsonl", OPAQUE),
+    )),
+    # One folder per projects-chat agent session, beside the session index.
+    *(spec for base in ("projects/*/sessions", "sessions") for spec in (
+        _s(f"{base}/cse_*/session.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
+        _s(f"{base}/cse_*/events.jsonl", OPAQUE),
+    )),
     _s("cache/heartbeat.json", REBUILT_VIEW, versions=V1, **_IGN),
     _s("cache/stats.json", CHANGE_CACHE, schema_file="stats.schema.json", **_IGN),
     _s("cache/graph.json", REBUILT_VIEW),
