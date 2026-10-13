@@ -86,7 +86,7 @@ owner ──► thread pane ─────────────────�
 ```bash
 E=<scratch dir>; mkdir -p $E/xo $E/state $E/tmp   # put git repos under $E/xo/<project>
 env QUIRQ_STATE_ROOT=$E/state XO_PROJECTS_ROOT=$E/xo AI_WORKSPACE_ROOT=$E/xo \
-  PORT=5098 HOST=127.0.0.1 STAGE=local AGENT_NAME=claude_code QUIRQ_SKIP_BOOT_INSTALL=1 QUIRQ_WATCHER_ENABLED=false \
+  PORT=5002 HOST=127.0.0.1 STAGE=local AGENT_NAME=claude_code QUIRQ_SKIP_BOOT_INSTALL=1 QUIRQ_WATCHER_ENABLED=false \
   STARTUP_WARMUP_ENABLED=false XO_GITHUB_POLL_ENABLED=false XO_CONNECTIONS_POLL_ENABLED=false PROJECT_SHARING_ENABLED=false \
   XO_MCP_TMP_ROOT=$E/tmp XO_ROUTER_MODE=agent venv/bin/python server.py
 # then POST /api/projects-chat/chats/{workspace|<project>}/messages {"text": "..."} and read the chat back.
