@@ -41,6 +41,8 @@ from services.xo_manifest import resolve_agent_name
 
 log = logging.getLogger(__name__)
 
+BATCH_WINDOW_S = 0.3
+
 GATE_TEXT = ("[xo-reply-gate] Your last turn ended without a terminal xo_comms tool call, so nothing reached "
              "anyone: plain text is not delivered. Call the right xo_comms tool now ({tools}), or "
              "no_reply_needed if no reply is warranted.")
@@ -117,6 +119,9 @@ class Engine:
     async def _drain(self, project: Optional[str], session_id: str) -> None:
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
+            # Wakes queued together (a tool call that queues several, a burst
+            # of messages) share one turn.
+            await asyncio.sleep(BATCH_WINDOW_S)
             while wakes.pending(project, session_id):
                 session = store.get_session(project, session_id)
                 if session is None or session.get("retired_at"):
@@ -196,7 +201,9 @@ class Engine:
         return [e for e in events[start:] if e.get("type") == "comms.call"]
 
     def _terminal_calls(self, project, session_id: str, epoch: int) -> list[str]:
-        return [e["tool"] for e in self._turn_calls(project, session_id, epoch) if e.get("ok") and e.get("terminal")]
+        """Calls that satisfy the reply gate: a terminal call, or one that handed the work on."""
+        return [e["tool"] for e in self._turn_calls(project, session_id, epoch)
+                if e.get("ok") and (e.get("terminal") or e.get("tool") in comms.ROUTING)]
 
     def _index_row(self, project: Optional[str], session: dict, agent: str) -> None:
         key = f"{agent}:{project or ''}:xo:{session['id']}"
@@ -244,6 +251,8 @@ class Engine:
         happened = (replies[-1] if replies else (result.get("error") or ""))[:140]
         store.write_card(project, ts, {"state": card_state, "headline": thread.get("title"),
                                        "happened": happened, "needs_you": "", "epoch": epoch})
+        if thread.get("state") != "resolved" and thread.get("state") != card_state:
+            store.update_thread(project, ts, state=card_state)
         if replies or card_state == "failed":
             coordinator = coordinators.ensure(project)
             ch = store.channel(project)

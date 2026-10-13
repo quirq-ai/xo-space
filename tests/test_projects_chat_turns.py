@@ -140,6 +140,21 @@ class EngineTests(_Sandbox):
         self.assertTrue(finished["gate_bounced"])
         self.assertEqual(finished["terminal_tools"], ["post_message"])
 
+    def test_handing_work_on_satisfies_the_reply_gate(self) -> None:
+        def script(spec, caller):
+            if spec.role == "project-coordinator" and "delegation-status" not in spec.prompt:
+                anchor = store.read_messages("acs")[0]["id"]
+                yield "start_thread_session", {"message_id": anchor, "title": "x", "instructions": "y",
+                                               "project_ack": "On it."}
+            elif spec.role == "thread":
+                yield "reply", {"text": "done"}
+            else:
+                yield "no_reply_needed", {"reason": "status"}
+        self.run_engine(_Fake(script))
+        coord = store.list_sessions("acs", role="project-coordinator")[0]
+        first = [e for e in store.read_session_events("acs", coord["id"]) if e["type"] == "turn.finished"][0]
+        self.assertFalse(first["gate_bounced"])
+
     def test_without_the_capability_the_turn_fails_cleanly(self) -> None:
         self.run_engine(None)
         coord = store.list_sessions("acs", role="project-coordinator")[0]

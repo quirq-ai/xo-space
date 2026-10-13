@@ -127,6 +127,10 @@ ROLE_TOOLS = {
     "workspace-coordinator": ("post_message", "fetch_timeline", "react", "no_reply_needed"),
 }
 
+#: Calls that hand the turn's work on; a turn that made one has been heard
+#: (the reply gate counts them like a terminal call).
+ROUTING = ("start_thread_session", "message_thread", "ask_workspace", "forward_to_project", "no_such_project")
+
 TERMINAL = {
     "project-coordinator": ("post_message", "react", "no_reply_needed"),
     "thread": ("reply", "update_status", "no_reply_needed"),
@@ -219,10 +223,12 @@ def _start_thread_session(c: Caller, a: dict) -> dict:
     cited = _cited_rows(c.project, extra, ch.id)
     brief = envelope.relay(sender="coordinator", sender_session=c.session_id, cited=cited,
                            note=_text(a, "instructions"), reason="spawn")
-    wakes.enqueue(c.project, thread_session["id"], reason="spawn", envelope=brief, priority="next")
     first = envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=anchor,
                           role="initiator")
-    wakes.enqueue(c.project, thread_session["id"], reason="mention", envelope=first, priority="next")
+    # One wake, so the brief and the owner's message can never reach the
+    # thread in different turns.
+    wakes.enqueue(c.project, thread_session["id"], reason="spawn", envelope=f"{brief}\n\n{first}",
+                  priority="next", meta={"message_id": anchor_id})
     return {"thread_id": anchor_id, "session_id": thread_session["id"]}
 
 
