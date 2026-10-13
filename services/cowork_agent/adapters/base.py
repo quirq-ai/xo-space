@@ -49,6 +49,13 @@ class BaseAgentAdapter(ABC):
         Streaming execution.
         Must yield dicts of shape { "type": "token", "token": str }
         and end with exactly one { "done": True, "native_session_id": str | None }.
+        Optional keywords from the intelligence layer (an adapter may ignore
+        them): "intelligence" ({profile, model, effort, source}, the setup to
+        run with) and "context" (text to hand the agent this turn, beside the
+        user's message, never inside it).
+        The done event may carry "outcome": what the turn cost and did
+        (turns, duration_ms, api_duration_ms, cost_usd, is_error, stop,
+        models, tokens), recorded by the intelligence outcome log.
         """
 
     # ── Concrete (override when needed) ───────────────────────────────────────

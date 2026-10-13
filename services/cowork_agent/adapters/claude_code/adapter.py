@@ -16,6 +16,11 @@ from services.cowork_agent.project_layout import (
 from services.cowork_agent.engine import sessions_io as _session_index
 
 
+#: Longest stream-json line read from ``claude``. One event is one line, and a
+#: tool result carrying a screenshot or a large file runs to hundreds of KB;
+#: asyncio's 64 KiB default made reading it raise and end the turn early.
+STREAM_LINE_LIMIT = 64 * 1024 * 1024
+
 # ── Module-level native session ID cache (session_key → native_session_id) ───
 
 _native_map: dict[str, str] = {}
@@ -45,6 +50,14 @@ def _extract_native_session_id(event: dict) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _flag_value(flag: str, value: str) -> str:
+    """A value for ``--model`` / ``--effort``. Already checked against the
+    agent's profiles; checked again here so no value can become a flag."""
+    if not value or value.startswith("-") or any(ch.isspace() for ch in value):
+        raise ValueError(f"refusing {flag} value {value!r}")
+    return value
 
 
 def make_session_key(agent_id: str) -> str:
@@ -195,6 +208,9 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         cwd: str | None = None,
         mcp_config_path: "Path | None" = None,
         new_session_id: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        settings_path: "Path | None" = None,
     ) -> list[str]:
         cli = self.config.get("cli_path") or "claude"
         workspace = cwd or str(xo_projects_root())
@@ -221,6 +237,15 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             cmd += ["--verbose", "--include-partial-messages"]
         if mcp_config_path is not None:
             cmd += ["--mcp-config", str(mcp_config_path)]
+        # The turn's intelligence profile (config/agents/claude_code/intelligence.json).
+        # Neither flag is passed unless chosen, so Claude Code's own settings decide.
+        if model:
+            cmd += ["--model", _flag_value("--model", model)]
+        if effort:
+            cmd += ["--effort", _flag_value("--effort", effort)]
+        # This turn's context from XO, as a UserPromptSubmit hook (context_hook.py).
+        if settings_path is not None:
+            cmd += ["--settings", str(settings_path)]
         # --resume and --session-id are mutually exclusive at the CLI.
         if native_session_id:
             cmd += ["--resume", native_session_id]
@@ -329,6 +354,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         agent_type: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        from services.cowork_agent.adapters.claude_code.context_hook import (
+            cleanup_turn_context,
+            write_turn_context,
+        )
         from services.cowork_agent.adapters.claude_code.mcp_config import (
             cleanup_session_mcp_config,
             write_session_mcp_config,
@@ -336,12 +365,17 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
 
         agent_id = kwargs.get("agent_id")
         user_id = kwargs.get("user_id")
+        intelligence = kwargs.get("intelligence") or {}
         cwd = self._resolve_cwd(agent_id)
         mcp_config_path = write_session_mcp_config(user_id, kwargs.get("session_key"))
+        context_settings = write_turn_context(kwargs.get("context"))
         try:
             cmd = self._build_cmd(
                 question, session_id, stream=False, agent_type=agent_type, cwd=cwd,
                 mcp_config_path=mcp_config_path,
+                model=intelligence.get("model"),
+                effort=intelligence.get("effort"),
+                settings_path=context_settings,
             )
             timeout = self.config.get("timeout", 300)
 
@@ -374,6 +408,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             }
         finally:
             cleanup_session_mcp_config(mcp_config_path)
+            cleanup_turn_context(context_settings)
 
     async def stream(
         self,
@@ -382,6 +417,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         agent_type: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
+        from services.cowork_agent.adapters.claude_code.context_hook import (
+            cleanup_turn_context,
+            write_turn_context,
+        )
         from services.cowork_agent.adapters.claude_code.mcp_config import (
             cleanup_session_mcp_config,
             write_session_mcp_config,
@@ -392,6 +431,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         is_new: bool = kwargs.get("is_new_session", session_id is None)
         agent_id: str | None = kwargs.get("agent_id")
         user_id: str | None = kwargs.get("user_id")
+        intelligence: dict = kwargs.get("intelligence") or {}
 
         # Resolve session_key: generate for new sessions, look up for existing ones.
         sk: str | None = kwargs.get("session_key")
@@ -428,11 +468,20 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             native_resume_id = get_native_session_id(sk)
 
         mcp_config_path = write_session_mcp_config(user_id, sk)
+        context_settings = write_turn_context(kwargs.get("context"))
+        # Read by the ``finally`` below, so set before anything can fail: a
+        # spawn error must surface as itself, not as an UnboundLocalError.
+        native_session_id: str | None = None
+        usage: dict = {}
+        outcome: dict | None = None  # what the turn cost and did, from the result event
         try:
             cmd = self._build_cmd(
                 question, native_resume_id, stream=True, agent_type=agent_type, cwd=effective_cwd,
                 mcp_config_path=mcp_config_path,
                 new_session_id=pre_allocated_native_sid,
+                model=intelligence.get("model"),
+                effort=intelligence.get("effort"),
+                settings_path=context_settings,
             )
 
             proc = await asyncio.create_subprocess_exec(
@@ -441,12 +490,11 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 stderr=asyncio.subprocess.PIPE,
                 env=self._subprocess_env(),
                 cwd=effective_cwd,
+                limit=STREAM_LINE_LIMIT,
             )
 
-            native_session_id: str | None = None
             response_parts: list[str] = []
             result_text: str = ""
-            usage: dict = {}
             model_id = ""
             # With --include-partial-messages the CLI streams a block as
             # deltas (text) or a block start (thinking, tool use) and THEN
@@ -480,11 +528,14 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                     if sid:
                         _patch_native_session_id(sk or "", sid)
                     usage = event.get("usage") or {}
+                    outcome = event.get("outcome")
                     model_id = event.get("model", "")
                     result_text = (event.get("result") or "").strip()
                     continue
 
                 kind = event.get("type")
+                if kind == "error" and event.get("outcome"):
+                    outcome = event.pop("outcome")
                 if kind in saw_partial:
                     if event.get("partial"):
                         saw_partial[kind] = True
@@ -504,6 +555,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 yield {"type": "token", "token": result_text}
         finally:
             cleanup_session_mcp_config(mcp_config_path)
+            cleanup_turn_context(context_settings)
             # Always roll up usage onto the sessions index, even on cancellation.
             # ``nativeSessionId`` itself was already written from inside the loop
             # via ``_patch_native_session_id``; this finally block just updates
@@ -527,7 +579,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                     _write_agent_row(agent_id_for_key, sk, meta)
                 _native_map[sk] = native_session_id
 
-        yield {"done": True, "native_session_id": native_session_id}
+        yield {"done": True, "native_session_id": native_session_id, "outcome": outcome}
 
     async def health(self) -> dict[str, Any]:
         cli = self.config.get("cli_path") or "claude"
