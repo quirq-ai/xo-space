@@ -69,6 +69,17 @@ def _context_tokens(outcome: Optional[dict]) -> Optional[int]:
     return sum(v for v in values if isinstance(v, (int, float))) or None
 
 
+def _session_title(project: Optional[str], session: dict) -> str:
+    """What session lists call this session: its thread's title, or which coordinator it is."""
+    if session.get("role") == "thread":
+        thread = store.get_thread(project, session.get("thread_ts") or "") if session.get("thread_ts") else None
+        title = (thread or {}).get("title") or "Untitled thread"
+        return f"Thread: {title}"[:200]
+    who = "Workspace coordinator" if session.get("role") == "workspace-coordinator" else f"{project} coordinator"
+    incarnation = session.get("incarnation")
+    return f"{who} #{incarnation}" if incarnation else who
+
+
 class Engine:
     def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -256,6 +267,7 @@ class Engine:
             "sessionId": session["id"], "nativeSessionId": session.get("agent_session_uuid"),
             "directory": session.get("cwd"), "backend": agent, "role": session["role"],
             "chat": session.get("chat_id"), "thread_ts": session.get("thread_ts"),
+            "title": _session_title(project, session),
             "updatedAt": int(time.time() * 1000),
         })
 

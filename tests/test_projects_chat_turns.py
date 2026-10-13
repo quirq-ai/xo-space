@@ -128,6 +128,34 @@ class EngineTests(_Sandbox):
         self.assertEqual([a["kind"] for a in decision["actions"]], ["start_thread", "no_reply"])
         self.assertEqual(decision["trigger_id"], root["id"])
 
+    def test_session_index_rows_match_their_schema_and_lists_show_a_readable_title(self) -> None:
+        import jsonschema
+        from services.cowork_agent.engine import sessions_io
+
+        def script(spec, caller):
+            if spec.role == "project-coordinator" and "delegation-status" not in spec.prompt:
+                anchor = store.read_messages("acs")[0]["id"]
+                yield "start_thread_session", {"message_id": anchor, "title": "Makefile",
+                                               "instructions": "Use make.", "project_ack": "On it."}
+                yield "no_reply_needed", {"reason": "started"}
+            elif spec.role == "project-coordinator":
+                yield "no_reply_needed", {"reason": "status only"}
+            else:
+                yield "reply", {"text": "Added a Makefile."}
+        self.run_engine(_Fake(script))
+        schema_path = Path(sessions_io.__file__).resolve().parents[1] / "visualizer" / "schema" / "sessionslist.schema.json"
+        validator = jsonschema.Draft7Validator(json.loads(schema_path.read_text()))
+        rows = [meta for _pid, _dir, index in sessions_io.iter_project_session_indexes() for meta in index.values()]
+        self.assertEqual(sorted(r["role"] for r in rows), ["project-coordinator", "thread"])
+        for row in rows:
+            validator.validate({"k": row})
+        titles = {r["role"]: r["title"] for r in rows}
+        self.assertEqual(titles["thread"], "Thread: Makefile")
+        self.assertTrue(titles["project-coordinator"].startswith("acs coordinator"))
+        listed = {s["id"]: s["title"] for s in sessions_io.load_all_sessions()}
+        self.assertEqual(sorted(listed.values()), sorted(titles.values()),
+                         "an explicit row title wins over one derived from an envelope")
+
     def test_a_silent_turn_is_bounced_once(self) -> None:
         calls = {"n": 0}
 

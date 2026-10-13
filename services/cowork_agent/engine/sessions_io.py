@@ -259,6 +259,11 @@ def load_all_sessions() -> list[dict]:
                     title = tt
             else:
                 effective_agent = agent_name
+            # A title the session's starter put in the row wins: for an
+            # orchestrated session the first message is an envelope, not words.
+            row_title = meta.get("title")
+            if isinstance(row_title, str) and row_title.strip():
+                title = row_title.strip()[:200]
 
             sessions.append({
                 "id": session_id,
