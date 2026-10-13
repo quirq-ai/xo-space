@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from services.projects_chat import workspace as _workspace_tools  # noqa: F401  (registers the workspace tools)
 from services.projects_chat import comms, store
 
 log = logging.getLogger(__name__)

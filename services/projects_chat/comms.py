@@ -292,13 +292,11 @@ def _set_thread_resolved(c: Caller, a: dict) -> dict:
 def _ask_workspace(c: Caller, a: dict) -> dict:
     question = _text(a, "question", limit=4000)
     workspace = coordinators.ensure(None)
-    row = store.post_message(None, author_kind="agent", author_id=f"coordinator:{c.project}",
-                             author_session_id=c.session_id, text=question)
+    # Coordinator to coordinator: not posted in any chat, delivered as a relay.
     text = envelope.relay(sender="coordinator", sender_session=c.session_id, cited=[],
-                          note=f"Project {c.project!r} asks (answer in its chat with forward_to_project): {question}",
-                          reason="ask")
-    wakes.enqueue(None, workspace["id"], reason="ask", envelope=text, meta={"from_project": c.project,
-                                                                          "message_id": row["id"]})
+                          note=f"The coordinator of project {c.project!r} asks (answer with forward_to_project "
+                               f"to {c.project!r}, a note only): {question}", reason="ask")
+    wakes.enqueue(None, workspace["id"], reason="ask", envelope=text, meta={"from_project": c.project})
     return {"asked": True, "note": "The answer will arrive as a relay. End your turn now."}
 
 

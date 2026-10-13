@@ -34,6 +34,7 @@ from typing import Optional
 
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine import sessions_io
+from services.projects_chat import workspace as _workspace_tools  # noqa: F401  (registers the workspace tools)
 from services.projects_chat import comms, coordinators, envelope, store, wakes, worktree
 from services.projects_chat.router import mode
 from services.projects_chat.router.decision import Action, Decision
@@ -222,7 +223,8 @@ class Engine:
             if kind is None:
                 continue
             args, result = call.get("args") or {}, call.get("result") or {}
-            target = args.get("thread_id") or args.get("project") or result.get("thread_id")
+            target = args.get("thread_id") or result.get("thread_id") or \
+                (f"proj:{args['project']}" if args.get("project") else None)
             actions.append(Action(kind=kind, target=target, title=args.get("title"),
                                   cited=list(args.get("context_message_ids") or ([args["message_id"]]
                                              if args.get("message_id") else []))[:8]))
