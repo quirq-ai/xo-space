@@ -241,11 +241,13 @@ class Engine:
         replies = [c["args"].get("text", "") for c in calls if c.get("tool") == "reply"]
         thread = store.get_thread(project, ts) or {}
         checklist = store.read_status(project, ts) or ""
-        open_items = "○" in checklist or "✱" in checklist
+        in_progress, to_do = "✱" in checklist, "○" in checklist
         if not result.get("ok"):
             card_state = "failed"
-        elif thread.get("state") == "resolved" or (replies and not open_items):
+        elif thread.get("state") == "resolved" or (replies and not in_progress and not to_do):
             card_state = "done"
+        elif replies and to_do and not in_progress:
+            card_state = "needs_reply"  # it answered and left an item waiting on the owner
         else:
             card_state = "working"
         happened = (replies[-1] if replies else (result.get("error") or ""))[:140]
