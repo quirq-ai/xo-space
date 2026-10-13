@@ -157,6 +157,7 @@ SPECS: tuple[Spec, ...] = (
         _s(f"{base}/cse_*/session.json", IRREPLACEABLE, versions=V1, newer=IGNORED, older=IGNORED),
         _s(f"{base}/cse_*/events.jsonl", OPAQUE),
         _s(f"{base}/cse_*/inbox/*.json", OPAQUE),  # wakes waiting for the session's next turn
+        _s(f"{base}/cse_*/last-turn.jsonl", OPAQUE),  # the agent's raw output for its latest turn
     )),
     _s("cache/heartbeat.json", REBUILT_VIEW, versions=V1, **_IGN),
     _s("cache/stats.json", CHANGE_CACHE, schema_file="stats.schema.json", **_IGN),
