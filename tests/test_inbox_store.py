@@ -31,7 +31,10 @@ def item(i: int, *, status: str = "new", ts: str | None = None, **extra) -> dict
 class InboxStoreTests(unittest.TestCase):
     """Hermetic: XO_PROJECTS_ROOT and QUIRQ_STATE_ROOT point into a temp dir
     (the flock sentinel resolves through QUIRQ_STATE_ROOT at call time), the
-    in-memory sharing status is reset, and the per-process throttle is cleared."""
+    in-memory sharing status is reset, and the per-process throttle is cleared.
+    Retention's clock is pinned to NOW, the date the fixtures are stamped
+    with: on the wall clock an item stamped NOW and then marked done is
+    pruned by the same write once NOW is DONE_TTL_DAYS in the past."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -39,12 +42,17 @@ class InboxStoreTests(unittest.TestCase):
         self._env = patch.dict(os.environ, {"XO_PROJECTS_ROOT": str(self.root),
                                             "QUIRQ_STATE_ROOT": str(self.root / ".quirq")})
         self._env.start()
+        real_retention = store.apply_retention
+        self._clock = patch.object(store, "apply_retention",
+                                   lambda items, now=None: real_retention(items, now or NOW))
+        self._clock.start()
         service._reset_throttle()
         sharing_status.reset()
 
     def tearDown(self) -> None:
         service._reset_throttle()
         sharing_status.reset()
+        self._clock.stop()
         self._env.stop()
         self._tmp.cleanup()
 
