@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from services.errors import ServiceError
-from services.projects_chat import coordinators, envelope, store, wakes
+from services.projects_chat import coordinators, envelope, memory, store, wakes
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +112,18 @@ TOOLS: dict[str, dict] = {
         "description": "React to a message with an emoji (e.g. to acknowledge thanks).",
         "inputSchema": _schema({"message_id": _S, "emoji": _S}, ["message_id", "emoji"]),
     },
+    "read_memory": {
+        "description": "Read this channel's memory: MEMORY.md (the index, the default) or one memory file it lists. "
+                       "Returns the content and its version, which update_memory needs.",
+        "inputSchema": _schema({"path": _S}, []),
+    },
+    "update_memory": {
+        "description": "Replace one memory file whole (create it with if_version \"new\"), and keep MEMORY.md as one "
+                       "short line per memory: - [Title](file.md) — hook. Save only what must outlive you: the owner's "
+                       "durable preferences and decisions. Never secrets. A stale if_version returns the current "
+                       "content: merge and retry.",
+        "inputSchema": _schema({"path": _S, "content": _S, "if_version": _S}, ["path", "content", "if_version"]),
+    },
     "no_reply_needed": {
         "description": "End the turn without saying anything (duplicate wake, people talking to each other, nothing to add).",
         "inputSchema": _schema({"reason": _S}, ["reason"]),
@@ -121,10 +133,11 @@ TOOLS: dict[str, dict] = {
 ROLE_TOOLS = {
     "project-coordinator": ("post_message", "start_thread_session", "message_thread", "list_thread_sessions",
                             "fetch_thread", "fetch_timeline", "set_thread_resolved", "ask_workspace", "react",
-                            "no_reply_needed"),
+                            "read_memory", "update_memory", "no_reply_needed"),
     "thread": ("reply", "update_status", "set_thread_resolved", "fetch_thread", "fetch_timeline", "react",
-               "no_reply_needed"),
-    "workspace-coordinator": ("post_message", "fetch_timeline", "react", "no_reply_needed"),
+               "read_memory", "no_reply_needed"),
+    "workspace-coordinator": ("post_message", "fetch_timeline", "react", "read_memory", "update_memory",
+                              "no_reply_needed"),
 }
 
 #: Calls that hand the turn's work on; a turn that made one has been heard
@@ -324,6 +337,22 @@ def _react(c: Caller, a: dict) -> dict:
     return {"ok": True}
 
 
+def _read_memory(c: Caller, a: dict) -> dict:
+    path = _text(a, "path", required=False) or memory.INDEX
+    out = memory.read(c.project, path)
+    if path == memory.INDEX:
+        out["files"] = memory.list_files(c.project)
+    return out
+
+
+def _update_memory(c: Caller, a: dict) -> dict:
+    try:
+        return memory.write(c.project, _text(a, "path"), a.get("content") if isinstance(a.get("content"), str) else "",
+                            if_version=_text(a, "if_version"), by_session=c.session_id)
+    except memory.MemoryError_ as exc:
+        raise CommsError(exc.code, exc.message) from exc
+
+
 def _no_reply_needed(c: Caller, a: dict) -> dict:
     return {"ok": True, "reason": _text(a, "reason", required=False, limit=200)}
 
@@ -334,6 +363,7 @@ _HANDLERS: dict[str, Callable[[Caller, dict], dict]] = {
     "fetch_thread": _fetch_thread, "fetch_timeline": _fetch_timeline,
     "set_thread_resolved": _set_thread_resolved, "ask_workspace": _ask_workspace, "reply": _reply,
     "update_status": _update_status, "react": _react, "no_reply_needed": _no_reply_needed,
+    "read_memory": _read_memory, "update_memory": _update_memory,
 }
 
 

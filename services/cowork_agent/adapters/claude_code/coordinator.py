@@ -71,6 +71,14 @@ def role_config(role: str) -> dict:
     return roles[role]
 
 
+def prompt_fingerprint(role: str) -> str:
+    """Changes when the role's prompt or settings change; a coordinator started
+    on an older one is replaced (a running session keeps its first prompt)."""
+    import hashlib
+
+    return hashlib.sha256(json.dumps(role_config(role), sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
 def _tmp_root() -> Path:
     return Path(os.environ.get("XO_MCP_TMP_ROOT") or "/tmp/xo-cowork")
 

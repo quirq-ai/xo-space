@@ -35,7 +35,7 @@ from typing import Optional
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine import sessions_io
 from services.projects_chat import workspace as _workspace_tools  # noqa: F401  (registers the workspace tools)
-from services.projects_chat import comms, coordinators, envelope, store, wakes, worktree
+from services.projects_chat import comms, coordinators, envelope, recycle, store, wakes, worktree
 from services.projects_chat.router import mode
 from services.projects_chat.router.decision import Action, Decision
 from services.xo_manifest import resolve_agent_name
@@ -59,6 +59,13 @@ _ACTION_OF = {
 def comms_url(token: str) -> str:
     base = (os.getenv("XO_COMMS_BASE_URL") or f"http://127.0.0.1:{os.getenv('PORT', '5002')}").rstrip("/")
     return f"{base}/mcp/space-comms/{token}"
+
+
+def _context_tokens(outcome: Optional[dict]) -> Optional[int]:
+    """How big the session's context was on its last turn (all input, cached or not)."""
+    tokens = (outcome or {}).get("tokens") or {}
+    values = [tokens.get(k) for k in ("input", "cache_read", "cache_write")]
+    return sum(v for v in values if isinstance(v, (int, float))) or None
 
 
 class Engine:
@@ -164,6 +171,25 @@ class Engine:
         capability = try_load_capability("coordinator", agent=agent)
         if capability is None:
             raise RuntimeError(f"the {agent} backend cannot run the projects chat (no coordinator capability)")
+        prompt_prefix = ""
+        if role.endswith("coordinator"):
+            fingerprint = getattr(capability, "prompt_fingerprint", lambda r: None)(role)
+            reason = recycle.retire_reason(session, fingerprint)
+            if reason is not None:
+                session, prompt_prefix = recycle.replace(project, session, reason)
+                if not session.get("prompt_fingerprint") and fingerprint:
+                    session = store.update_session(project, session["id"], prompt_fingerprint=fingerprint)
+                # The successor is a session of its own: hold its lock too, so a
+                # wake that arrives meanwhile waits for this turn.
+                async with self._locks.setdefault(session["id"], asyncio.Lock()):
+                    return await self._turn(capability, agent, project, session, taken, prompt_prefix)
+            if not session.get("prompt_fingerprint") and fingerprint:
+                session = store.update_session(project, session_id, prompt_fingerprint=fingerprint)
+        return await self._turn(capability, agent, project, session, taken, prompt_prefix)
+
+    async def _turn(self, capability, agent: str, project: Optional[str], session: dict, taken: list[dict],
+                    prompt_prefix: str) -> dict:
+        session_id, role = session["id"], session["role"]
         if role == "thread" and session.get("turns", 0) == 0:
             tree = await worktree.create(project, session["thread_ts"])
             session = store.update_session(project, session_id, cwd=str(tree.path))
@@ -173,7 +199,7 @@ class Engine:
         session = store.update_session(project, session_id, status="running", epoch=epoch)
         store.append_session_event(project, session_id, "turn.started", epoch=epoch,
                                    wakes=[w["id"] for w in taken])
-        prompt = "\n\n".join(w["envelope"] for w in taken)
+        prompt = "\n\n".join(([prompt_prefix] if prompt_prefix else []) + [w["envelope"] for w in taken])
         result = await self._run(capability, project, session, prompt, resume=session.get("turns", 0) > 0)
         terminal = self._terminal_calls(project, session_id, epoch)
         bounced = False
@@ -186,6 +212,7 @@ class Engine:
         session = store.update_session(
             project, session_id, status="idle" if result.get("ok") else "failed",
             turns=int(session.get("turns") or 0) + 1, native_session_id=result.get("native_session_id"),
+            last_context_tokens=_context_tokens(result.get("outcome")),
             last_error=None if result.get("ok") else (result.get("error") or "")[:500],
         )
         store.append_session_event(project, session_id, "turn.finished", epoch=epoch, ok=result.get("ok"),

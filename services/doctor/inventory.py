@@ -151,6 +151,8 @@ SPECS: tuple[Spec, ...] = (
         _s(f"{base}/threads/*/cards.jsonl", OPAQUE),
         _s(f"{base}/threads/*/status.md", OPAQUE),
         _s(f"{base}/router/decisions.jsonl", OPAQUE),
+        _s(f"{base}/memory/*.md", OPAQUE),  # the channel's memory, written through its own versioned tools
+        _s(f"{base}/memory/.versions.json", OPAQUE),
     )),
     # One folder per projects-chat agent session, beside the session index.
     *(spec for base in ("projects/*/sessions", "sessions") for spec in (
