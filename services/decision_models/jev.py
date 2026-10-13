@@ -23,6 +23,9 @@ from services.decision_models import Answer, Choice, Result, Tags, applies_from
 BASE_URL = "https://api.typesafe.ai"
 ENV_API_KEY = "TYPESAFE_API_KEY"
 MODEL = "jev-latest"
+ENV_KEY = ENV_API_KEY
+LABEL = "TypeSafe Jev"
+DOCS_URL = "https://docs.typesafe.ai"
 _SEP = "__"
 
 

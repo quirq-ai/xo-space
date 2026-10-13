@@ -70,25 +70,30 @@ def applies_from(p: Optional[float]) -> Optional[bool]:
     return True if p >= YES_AT else False if p <= NO_AT else None
 
 
+#: Provider id -> its module. A provider module exposes ``ask``, ``configured``,
+#: ``ENV_KEY`` (the env var its key lives in), ``LABEL`` and ``DOCS_URL``.
+PROVIDERS = {"sage": "services.decision_models.sage", "jev": "services.decision_models.jev"}
+
+
+def provider_module(provider: str):
+    """The module for ``provider``; ``ValueError`` for an unknown one."""
+    import importlib
+
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown decision model {provider!r}")
+    return importlib.import_module(PROVIDERS[provider])
+
+
 async def ask(provider: str, content: str, questions: list, *, timeout: float = 8.0) -> Result:
     """Ask every question about ``content`` with ``provider`` (``sage`` or ``jev``)."""
-    if provider == "sage":
-        from services.decision_models import sage as impl
-    elif provider == "jev":
-        from services.decision_models import jev as impl
-    else:
-        raise ValueError(f"unknown decision model {provider!r}")
-    return await impl.ask(content, questions, timeout=timeout)
+    return await provider_module(provider).ask(content, questions, timeout=timeout)
 
 
 def configured(provider: str) -> bool:
-    if provider == "sage":
-        from services.decision_models import sage as impl
-    elif provider == "jev":
-        from services.decision_models import jev as impl
-    else:
+    try:
+        return provider_module(provider).configured()
+    except ValueError:
         return False
-    return impl.configured()
 
 
-__all__ = ["Answer", "Choice", "Result", "Tags", "applies_from", "ask", "configured"]
+__all__ = ["PROVIDERS", "Answer", "Choice", "Result", "Tags", "applies_from", "ask", "configured", "provider_module"]

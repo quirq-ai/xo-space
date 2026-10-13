@@ -7,6 +7,9 @@
   GET  /api/projects-chat/chats/{chat}/threads
   GET  /api/projects-chat/chats/{chat}/threads/{ts}
   GET  /api/projects-chat/chats/{chat}/stream       SSE: new messages and thread changes
+  GET    /api/projects-chat/decision-models                 each model: configured?, where its key comes from
+  PUT    /api/projects-chat/decision-models/{provider}/key  {api_key}: save it (persisted; never returned)
+  DELETE /api/projects-chat/decision-models/{provider}/key
 
 ``{chat}`` is ``workspace`` or a project's folder name. Posting stores the
 owner's message and wakes whoever handles it (the chat's coordinator, or
@@ -29,6 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from routers.cowork_agent.bff.errors import http_error
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters.loader import try_load_capability
+from services.decision_models import keys as decision_model_keys
 from services.errors import ServiceError
 from services.projects_chat import coordinators, store, turns
 from services.projects_chat.router import mode
@@ -37,6 +41,11 @@ from services.xo_manifest import resolve_agent_name
 router = APIRouter(prefix="/api/projects-chat")
 
 WORKSPACE = "workspace"
+
+
+class KeyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_key: str
 
 
 class PostBody(BaseModel):
@@ -147,3 +156,24 @@ async def stream(chat: str, request: Request, after: Optional[str] = None):
             coordinator = coordinator or coordinators.live(project)
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/decision-models")
+def decision_models():
+    return {"decision_models": decision_model_keys.list_status(), "selected": mode.decision_model()}
+
+
+@router.put("/decision-models/{provider}/key")
+def save_decision_model_key(provider: str, body: KeyBody):
+    try:
+        return decision_model_keys.set_key(provider, body.api_key)
+    except ServiceError as exc:
+        raise http_error(exc) from exc
+
+
+@router.delete("/decision-models/{provider}/key")
+def clear_decision_model_key(provider: str):
+    try:
+        return decision_model_keys.clear_key(provider)
+    except ServiceError as exc:
+        raise http_error(exc) from exc

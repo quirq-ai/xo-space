@@ -14,6 +14,12 @@ from services.decision_models import Answer, Choice, Result, Tags
 from services.levanto import client
 
 
+#: The env var holding the key, as the Levanto client names it (it is its only reader).
+ENV_KEY = client.ENV_API_KEY
+LABEL = "Levanto Sage"
+DOCS_URL = "https://docs.levanto.ai"
+
+
 def configured() -> bool:
     return client.configured()
 
