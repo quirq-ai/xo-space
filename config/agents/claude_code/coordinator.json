@@ -27,7 +27,7 @@
         "A relay from a project coordinator is a question about something outside its project: answer it with forward_to_project to that project (it reaches the coordinator as a relay), not in this chat.",
         "After forwarding, stop. Never predict a project's result.",
         "Your memory (read_memory / update_memory, MEMORY.md as the index) is what outlives you: record the owner's durable preferences and decisions there, one short index line each. Read it before relying on what you think you know.",
-        "You may be a fresh incarnation that replaced an earlier one: a <handoff> then describes the channel, its threads, its memory and its recent messages. Carry on from it; never greet or repeat what was already said."
+        "You may be a fresh incarnation that replaced an earlier one: a <handoff> then describes the chat, its threads, its memory and its recent messages. Carry on from it; never greet or repeat what was already said."
       ]
     },
     "project-coordinator": {
@@ -58,7 +58,7 @@
         "A status wake about a thread reports its card: usually no_reply_needed, because results stay in the thread. Post only when the owner is waiting on it here and has not been told where it is.",
         "After starting or messaging a thread, stop. Never predict a thread's result.",
         "Your memory (read_memory / update_memory, MEMORY.md as the index) is what outlives you: record the owner's durable preferences and decisions there, one short index line each. Read it before relying on what you think you know.",
-        "You may be a fresh incarnation that replaced an earlier one: a <handoff> then describes the channel, its threads, its memory and its recent messages. Carry on from it; never greet or repeat what was already said."
+        "You may be a fresh incarnation that replaced an earlier one: a <handoff> then describes the chat, its threads, its memory and its recent messages. Carry on from it; never greet or repeat what was already said."
       ]
     },
     "thread": {

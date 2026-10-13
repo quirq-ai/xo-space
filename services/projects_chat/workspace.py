@@ -1,6 +1,6 @@
 """The workspace coordinator's tools: route a message to the right project(s).
 
-The workspace channel is one chat across every project. Its coordinator
+The workspace chat is one chat across every project. Its coordinator
 sees all of them (it runs in the projects root and may read any of them
 through read-only readers), and these tools are how it routes:
 
@@ -86,8 +86,8 @@ def forward_to_project(c: comms.Caller, a: dict) -> dict:
     note = a.get("note") if isinstance(a.get("note"), str) and a.get("note").strip() else None
     if not ids and not note:
         raise comms.CommsError("empty_forward", "Pass the owner's message id in context_message_ids, a note, or both.")
-    store.ensure_channel(name)
-    ch = store.channel(name)
+    store.ensure_chat(name)
+    ch = store.chat(name)
     copies = []
     for message_id in ids:
         row = store.get_message(None, message_id)
@@ -97,14 +97,14 @@ def forward_to_project(c: comms.Caller, a: dict) -> dict:
             raise comms.CommsError("not_an_owner_message", "Only the owner's own messages can be forwarded.")
         copies.append(store.post_message(name, author_kind="owner", author_id=row.get("author_id") or "owner",
                                          text=row["text"],
-                                         forwarded_from={"channel_id": store.WORKSPACE_CHANNEL_ID,
+                                         forwarded_from={"chat_id": store.WORKSPACE_CHAT_ID,
                                                          "message_id": message_id}))
     parts = []
     if note or copies:
         parts.append(envelope.relay(sender="workspace-coordinator", sender_session=c.session_id,
                                     cited=[], note=note, reason="forward" if copies else "answer"))
     for copy in copies:
-        parts.append(envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=copy))
+        parts.append(envelope.wake(reason="mention", chat_id=ch.id, chat_kind=ch.kind, trigger=copy))
     target = coordinators.ensure(name)
     wakes.enqueue(name, target["id"], reason="forward" if copies else "relay", envelope="\n\n".join(parts),
                   meta={"message_id": copies[0]["id"]} if copies else {})

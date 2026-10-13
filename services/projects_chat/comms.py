@@ -7,7 +7,7 @@ an agent writes outside these tools reaches no one. A successful call to a
 re-prompted once by the turn engine (the reply gate).
 
 Each call is checked against the caller's role and scope (a thread acts on
-its own thread only; a coordinator on its own channel only), applied to the
+its own thread only; a coordinator on its own chat only), applied to the
 store, and logged as a ``comms.call`` line in the session's ``events.jsonl``,
 which is what a coordinator's routing decision is built from. Calls that hand
 work on (start a thread, forward, ask) queue a wake for the receiving session;
@@ -59,7 +59,7 @@ _LIMIT = {"type": "integer", "minimum": 1, "maximum": 100}
 
 TOOLS: dict[str, dict] = {
     "post_message": {
-        "description": "Post a message in this channel's chat. This is the only way the user reads your words "
+        "description": "Post a message in this chat. This is the only way the user reads your words "
                        "here; it notifies everyone. Keep it short.",
         "inputSchema": _schema({"text": _S}, ["text"]),
     },
@@ -88,7 +88,7 @@ TOOLS: dict[str, dict] = {
         "inputSchema": _schema({"thread_id": _S, "limit": _LIMIT}, []),
     },
     "fetch_timeline": {
-        "description": "Recent messages in this channel's chat, oldest first.",
+        "description": "Recent messages in this chat, oldest first.",
         "inputSchema": _schema({"limit": _LIMIT}, []),
     },
     "set_thread_resolved": {
@@ -113,7 +113,7 @@ TOOLS: dict[str, dict] = {
         "inputSchema": _schema({"message_id": _S, "emoji": _S}, ["message_id", "emoji"]),
     },
     "read_memory": {
-        "description": "Read this channel's memory: MEMORY.md (the index, the default) or one memory file it lists. "
+        "description": "Read this chat's memory: MEMORY.md (the index, the default) or one memory file it lists. "
                        "Returns the content and its version, which update_memory needs.",
         "inputSchema": _schema({"path": _S}, []),
     },
@@ -178,7 +178,7 @@ def _cited_rows(project: Optional[str], ids: list[str], ch_id: str) -> list[tupl
     for message_id in ids[:8]:
         row = store.get_message(project, message_id)
         if row is None:
-            raise CommsError("no_such_message", f"There is no message {message_id!r} in this channel.")
+            raise CommsError("no_such_message", f"There is no message {message_id!r} in this chat.")
         rows.append((row, ch_id))
     return rows
 
@@ -220,7 +220,7 @@ def _start_thread_session(c: Caller, a: dict) -> dict:
     if existing is not None:
         return {"already_running": True, "thread_id": anchor_id,
                 "hint": "Use message_thread to send this thread a follow-up."}
-    ch = store.channel(c.project)
+    ch = store.chat(c.project)
     thread_session = store.create_session(c.project, role="thread", cwd=coordinators.cwd_for(c.project),
                                           thread_ts=anchor_id)
     thread_session.pop("token", None)
@@ -236,7 +236,7 @@ def _start_thread_session(c: Caller, a: dict) -> dict:
     cited = _cited_rows(c.project, extra, ch.id)
     brief = envelope.relay(sender="coordinator", sender_session=c.session_id, cited=cited,
                            note=_text(a, "instructions"), reason="spawn")
-    first = envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=anchor,
+    first = envelope.wake(reason="mention", chat_id=ch.id, chat_kind=ch.kind, trigger=anchor,
                           role="initiator")
     # One wake, so the brief and the owner's message can never reach the
     # thread in different turns.
@@ -251,7 +251,7 @@ def _message_thread(c: Caller, a: dict) -> dict:
     reopened = thread.get("state") == "resolved"
     if reopened:
         store.update_thread(c.project, thread_id, state="working", resolved_at=None)
-    ch = store.channel(c.project)
+    ch = store.chat(c.project)
     cited = _cited_rows(c.project, list(a.get("context_message_ids") or []), ch.id)
     note = _text(a, "note", required=False)
     if not cited and not note:

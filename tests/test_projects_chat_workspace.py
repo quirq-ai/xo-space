@@ -50,7 +50,7 @@ class WorkspaceToolTests(unittest.TestCase):
             [copy] = store.read_messages(project)
             self.assertEqual(copy["text"], msg["text"])
             self.assertNotEqual(copy["id"], msg["id"])
-            self.assertEqual(copy["forwarded_from"], {"channel_id": "chan_workspace", "message_id": msg["id"]})
+            self.assertEqual(copy["forwarded_from"], {"chat_id": "chat_workspace", "message_id": msg["id"]})
             coordinator = coordinators.live(project)
             [wake] = wakes.pending(project, coordinator["id"])
             self.assertEqual(wake["meta"]["message_id"], copy["id"])

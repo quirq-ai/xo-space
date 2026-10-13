@@ -1,15 +1,15 @@
-"""The projects-chat store: channels, messages, threads, cards, sessions, decisions.
+"""The projects-chat store: chats, messages, threads, cards, sessions, decisions.
 
 Everything is machine-local, under the state root, never in a project's
 ``.xo/`` (chat content must not sync)::
 
     ~/.quirq/projects/
-    ├── workspace.channel/             the workspace channel (chan_workspace); the
+    ├── workspace.chat/             the workspace chat (chat_workspace); the
     │   │                              dot keeps it apart from every project key,
     │   │                              which can never hold one
     │   └── …same files as below…
-    └── <pid>/channel/                 one project's channel (chan_<pid>)
-        ├── channel.json               identity and settings
+    └── <pid>/chat/                 one project's chat (chat_<pid>)
+        ├── chat.json               identity and settings
         ├── messages.jsonl             the timeline, one message per line
         ├── threads/<ts>/
         │   ├── thread.json            the thread: title, session, worktree, state
@@ -25,7 +25,7 @@ its own sessions: ``<sessions dir>/<cse>/session.json`` + ``events.jsonl``.
 The workspace coordinator runs in the projects root, so its sessions sit in
 the Space's ``~/.quirq/sessions/``.
 
-A channel is addressed by project folder name, or ``None`` for the
+A chat is addressed by project folder name, or ``None`` for the
 workspace. Files follow the state-root rules: a ``schema`` number on every
 document, ``ts`` and ``type`` first on every line, times in UTC ending in
 ``Z``, project records keyed by ``pid``. The agent's own transcript is never
@@ -57,11 +57,11 @@ from services.storage.reader import read_json
 log = logging.getLogger(__name__)
 
 SCHEMA = 1
-WORKSPACE_CHANNEL_ID = "chan_workspace"
-CHANNEL_SUBDIR = "channel"
-#: The workspace channel's folder in ``projects/``. Runtime keys can never
+WORKSPACE_CHAT_ID = "chat_workspace"
+CHAT_SUBDIR = "chat"
+#: The workspace chat's folder in ``projects/``. Runtime keys can never
 #: contain a dot, so no project folder can take this name.
-WORKSPACE_CHANNEL_DIR = "workspace.channel"
+WORKSPACE_CHAT_DIR = "workspace.chat"
 
 MESSAGE_ID = re.compile(r"^cmsg_[A-Za-z0-9_-]{1,128}$")
 SESSION_ID = re.compile(r"^cse_[A-Za-z0-9]{8,64}$")
@@ -114,11 +114,11 @@ def new_session_id() -> str:
     return "cse_" + secrets.token_hex(12)
 
 
-# ── channels ──────────────────────────────────────────────────────────────────
+# ── chats ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
-class Channel:
-    """A resolved channel: its id, files folder, and the project it belongs to."""
+class Chat:
+    """A resolved chat: its id, files folder, and the project it belongs to."""
 
     id: str
     dir: Path
@@ -130,26 +130,26 @@ class Channel:
         return "workspace" if self.project is None else "project"
 
 
-def channel(project: Optional[str], *, create: bool = False) -> Channel:
-    """The workspace channel (``project=None``) or a project's channel.
+def chat(project: Optional[str], *, create: bool = False) -> Chat:
+    """The workspace chat (``project=None``) or a project's chat.
 
     Raises :class:`StoreError` for a project with no folder under the
     projects root.
     """
     if not project:
-        return Channel(WORKSPACE_CHANNEL_ID, projects_dir() / WORKSPACE_CHANNEL_DIR, None, None)
+        return Chat(WORKSPACE_CHAT_ID, projects_dir() / WORKSPACE_CHAT_DIR, None, None)
     runtime = project_layout.runtime_dir_for_project(project, create=create)
     if runtime is None:
         raise StoreError("no_such_project", f"There is no project called {project!r}.", status=404)
     meta = project_layout.load_project(project) or {}
     pid = str(meta["pid"]) if meta.get("pid") and not meta.get("_template") else runtime.name
-    return Channel(f"chan_{runtime.name}", runtime / CHANNEL_SUBDIR, project, pid)
+    return Chat(f"chat_{runtime.name}", runtime / CHAT_SUBDIR, project, pid)
 
 
-def ensure_channel(project: Optional[str]) -> dict:
-    """Create the channel's ``channel.json`` if missing; return it."""
-    ch = channel(project, create=True)
-    path = ch.dir / "channel.json"
+def ensure_chat(project: Optional[str]) -> dict:
+    """Create the chat's ``chat.json`` if missing; return it."""
+    ch = chat(project, create=True)
+    path = ch.dir / "chat.json"
     with flock.locked(path):
         doc = read_json(path)
         if isinstance(doc, dict) and doc.get("id") == ch.id:
@@ -167,24 +167,24 @@ def ensure_channel(project: Optional[str]) -> dict:
     return doc
 
 
-def read_channel(project: Optional[str]) -> Optional[dict]:
+def read_chat(project: Optional[str]) -> Optional[dict]:
     try:
-        ch = channel(project)
+        ch = chat(project)
     except StoreError:
         return None
-    doc = read_json(ch.dir / "channel.json")
+    doc = read_json(ch.dir / "chat.json")
     return doc if isinstance(doc, dict) else None
 
 
 # ── messages ──────────────────────────────────────────────────────────────────
 
-def _messages_path(ch: Channel, thread_ts: Optional[str]) -> Path:
+def _messages_path(ch: Chat, thread_ts: Optional[str]) -> Path:
     if thread_ts:
         return _thread_dir(ch, thread_ts) / "messages.jsonl"
     return ch.dir / "messages.jsonl"
 
 
-def _identity(ch: Channel) -> dict:
+def _identity(ch: Chat) -> dict:
     return {"pid": ch.pid, "project_id": ch.project} if ch.project else {}
 
 
@@ -204,13 +204,13 @@ def post_message(
         raise StoreError("invalid_author", f"author_kind must be one of {', '.join(AUTHOR_KINDS)}.")
     if not isinstance(text, str) or not text.strip():
         raise StoreError("empty_message", "A message needs some text.")
-    ch = channel(project, create=True)
+    ch = chat(project, create=True)
     if thread_ts and get_thread(project, thread_ts) is None:
         raise StoreError("no_such_thread", f"There is no thread {thread_ts!r} here.", status=404)
     row: dict[str, Any] = {"ts": now_ms_iso(), "type": "message", "schema": SCHEMA, **_identity(ch)}
     row.update({
         "id": new_message_id(),
-        "channel_id": ch.id,
+        "chat_id": ch.id,
         "where": "thread" if thread_ts else "timeline",
         "thread_ts": thread_ts,
         "author_kind": author_kind,
@@ -248,7 +248,7 @@ def _read_lines(path: Path) -> list[dict]:
 def add_reaction(project: Optional[str], message_id: str, *, emoji: str, by: str,
                  thread_ts: Optional[str] = None, remove: bool = False) -> dict:
     """Record a reaction (or its removal) as its own line beside the messages."""
-    ch = channel(project, create=True)
+    ch = chat(project, create=True)
     line = {"ts": now_ms_iso(), "type": "reaction.removed" if remove else "reaction", "schema": SCHEMA,
             **_identity(ch), "message_id": message_id, "emoji": emoji[:32], "by": by}
     path = _messages_path(ch, thread_ts)
@@ -261,7 +261,7 @@ def read_messages(project: Optional[str], *, thread_ts: Optional[str] = None,
                   after: Optional[str] = None, limit: Optional[int] = None) -> list[dict]:
     """Messages oldest first; ``after`` keeps those with a later id, ``limit`` the newest N."""
     try:
-        ch = channel(project)
+        ch = chat(project)
     except StoreError:
         return []
     rows = [r for r in _read_lines(_messages_path(ch, thread_ts)) if r.get("type") == "message"]
@@ -272,7 +272,7 @@ def read_messages(project: Optional[str], *, thread_ts: Optional[str] = None,
 
 
 def get_message(project: Optional[str], message_id: str) -> Optional[dict]:
-    """A message by id, from the timeline or any thread of the channel."""
+    """A message by id, from the timeline or any thread of the chat."""
     if not isinstance(message_id, str) or not MESSAGE_ID.match(message_id):
         return None
     for row in read_messages(project):
@@ -287,7 +287,7 @@ def get_message(project: Optional[str], message_id: str) -> Optional[dict]:
 
 # ── threads ───────────────────────────────────────────────────────────────────
 
-def _thread_dir(ch: Channel, ts: str) -> Path:
+def _thread_dir(ch: Chat, ts: str) -> Path:
     if not isinstance(ts, str) or not MESSAGE_ID.match(ts):
         raise StoreError("invalid_thread", f"{ts!r} is not a thread id.")
     return ch.dir / "threads" / ts
@@ -298,7 +298,7 @@ def create_thread(project: Optional[str], *, root_id: str, title: str, session_i
                   branch: Optional[str] = None, worktree_path: Optional[str] = None) -> dict:
     """Root a thread on a timeline message. Raises if the message is unknown
     or already roots a thread."""
-    ch = channel(project, create=True)
+    ch = chat(project, create=True)
     root = next((r for r in read_messages(project) if r.get("id") == root_id), None)
     if root is None:
         raise StoreError("no_such_message", f"There is no timeline message {root_id!r}.", status=404)
@@ -309,7 +309,7 @@ def create_thread(project: Optional[str], *, root_id: str, title: str, session_i
         doc = {
             "schema": SCHEMA, **_identity(ch),
             "ts": root_id,
-            "channel_id": ch.id,
+            "chat_id": ch.id,
             "title": title.strip()[:120] or "Thread",
             "label": None,
             "session_id": session_id,
@@ -329,7 +329,7 @@ def create_thread(project: Optional[str], *, root_id: str, title: str, session_i
 
 def get_thread(project: Optional[str], ts: str) -> Optional[dict]:
     try:
-        ch = channel(project)
+        ch = chat(project)
         doc = read_json(_thread_dir(ch, ts) / "thread.json")
     except StoreError:
         return None
@@ -340,7 +340,7 @@ def update_thread(project: Optional[str], ts: str, **fields: Any) -> dict:
     """Merge ``fields`` into ``thread.json`` (``state`` is checked)."""
     if "state" in fields and fields["state"] not in THREAD_STATES:
         raise StoreError("invalid_state", f"state must be one of {', '.join(THREAD_STATES)}.")
-    ch = channel(project)
+    ch = chat(project)
     path = _thread_dir(ch, ts) / "thread.json"
     with flock.locked(path):
         doc = read_json(path)
@@ -353,9 +353,9 @@ def update_thread(project: Optional[str], ts: str, **fields: Any) -> dict:
 
 
 def list_threads(project: Optional[str]) -> list[dict]:
-    """Every thread of the channel, most recently active first."""
+    """Every thread of the chat, most recently active first."""
     try:
-        ch = channel(project)
+        ch = chat(project)
     except StoreError:
         return []
     base = ch.dir / "threads"
@@ -371,7 +371,7 @@ def list_threads(project: Optional[str]) -> list[dict]:
 
 def write_status(project: Optional[str], ts: str, text: str) -> None:
     """The thread's live checklist (``update_status``), replaced whole."""
-    ch = channel(project)
+    ch = chat(project)
     path = _thread_dir(ch, ts) / "status.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".md.tmp")
@@ -381,14 +381,14 @@ def write_status(project: Optional[str], ts: str, text: str) -> None:
 
 def read_status(project: Optional[str], ts: str) -> Optional[str]:
     try:
-        return (_thread_dir(channel(project), ts) / "status.md").read_text(encoding="utf-8")
+        return (_thread_dir(chat(project), ts) / "status.md").read_text(encoding="utf-8")
     except (OSError, StoreError):
         return None
 
 
 def get_card(project: Optional[str], ts: str) -> Optional[dict]:
     try:
-        doc = read_json(_thread_dir(channel(project), ts) / "card.json")
+        doc = read_json(_thread_dir(chat(project), ts) / "card.json")
     except StoreError:
         return None
     return doc if isinstance(doc, dict) else None
@@ -396,7 +396,7 @@ def get_card(project: Optional[str], ts: str) -> Optional[dict]:
 
 def write_card(project: Optional[str], ts: str, card: dict) -> dict:
     """The thread's status card: latest in ``card.json``, history in ``cards.jsonl``."""
-    ch = channel(project)
+    ch = chat(project)
     folder = _thread_dir(ch, ts)
     stamped = {"schema": SCHEMA, **_identity(ch), "thread_ts": ts, **card, "updated_at": now_ms_iso()}
     write_json_atomic(folder / "card.json", stamped)
@@ -409,7 +409,7 @@ def write_card(project: Optional[str], ts: str, card: dict) -> dict:
 
 def record_decision(project: Optional[str], decision: dict) -> None:
     """Append one routing decision (the router's :class:`Decision`, as a dict)."""
-    ch = channel(project, create=True)
+    ch = chat(project, create=True)
     path = ch.dir / "router" / "decisions.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     append_jsonl(path, [{"ts": now_ms_iso(), "type": "router.decision", **_identity(ch), **decision}])
@@ -417,7 +417,7 @@ def record_decision(project: Optional[str], decision: dict) -> None:
 
 def read_decisions(project: Optional[str], limit: Optional[int] = None) -> list[dict]:
     try:
-        ch = channel(project)
+        ch = chat(project)
     except StoreError:
         return []
     rows = _read_lines(ch.dir / "router" / "decisions.jsonl")
@@ -451,14 +451,14 @@ def create_session(project: Optional[str], *, role: str, cwd: str,
     """
     if role not in ROLES:
         raise StoreError("invalid_role", f"role must be one of {', '.join(ROLES)}.")
-    ch = channel(project, create=True)
+    ch = chat(project, create=True)
     session_id = new_session_id()
     token_secret = secrets.token_urlsafe(24)
     record = {
         "schema": SCHEMA, **_identity(ch),
         "id": session_id,
         "role": role,
-        "channel_id": ch.id,
+        "chat_id": ch.id,
         "thread_ts": thread_ts,
         "agent_session_uuid": str(uuid.uuid4()),
         "cwd": cwd,

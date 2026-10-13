@@ -13,7 +13,7 @@ is first classified by the decision model:
 
 Whatever the model is unsure about (an abstain, under the threshold, a
 failure, no key) and everything that needs words (answering a question,
-chat, ``no_such_project``) goes to the agent router: the channel's
+chat, ``no_such_project``) goes to the agent router: the chat's
 coordinator gets the message as usual, with a note that the model handed it
 over. A decision model can only route; it never writes an answer.
 
@@ -73,9 +73,9 @@ def workspace_questions() -> list:
 def decide(level: str, project: Optional[str], trigger: dict, result: dm.Result) -> Decision:
     """Turn the model's answers into a :class:`Decision`. An empty action list
     means: hand the message to the agent router."""
-    ch = store.channel(project)
+    ch = store.chat(project)
     threshold = mode.abstain_below()
-    decision = Decision(level=level, channel_id=ch.id, trigger_id=trigger["id"], provider=result.provider,
+    decision = Decision(level=level, chat_id=ch.id, trigger_id=trigger["id"], provider=result.provider,
                         usage={"input_tokens": result.input_tokens}, latency_ms=result.latency_ms)
     if level == "workspace":
         answer = result.answers.get(PROJECTS_ID)

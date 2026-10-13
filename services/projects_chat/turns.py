@@ -254,7 +254,7 @@ class Engine:
         sessions_io.write_session_row(project or "", key, {
             "sessionId": session["id"], "nativeSessionId": session.get("agent_session_uuid"),
             "directory": session.get("cwd"), "backend": agent, "role": session["role"],
-            "channel": session.get("channel_id"), "thread_ts": session.get("thread_ts"),
+            "chat": session.get("chat_id"), "thread_ts": session.get("thread_ts"),
             "updatedAt": int(time.time() * 1000),
         })
 
@@ -273,7 +273,7 @@ class Engine:
                                              if args.get("message_id") else []))[:8]))
         trigger = next((w.get("meta", {}).get("message_id") for w in taken if w.get("meta", {}).get("message_id")), None)
         decision = Decision(level="workspace" if session["role"] == "workspace-coordinator" else "project",
-                            channel_id=session["channel_id"], trigger_id=trigger or taken[0]["id"],
+                            chat_id=session["chat_id"], trigger_id=trigger or taken[0]["id"],
                             provider="agent", actions=actions)
         try:
             store.record_decision(project, decision.as_dict())
@@ -302,10 +302,10 @@ class Engine:
             store.update_thread(project, ts, state=card_state)
         if replies or card_state == "failed":
             coordinator = coordinators.ensure(project)
-            ch = store.channel(project)
+            ch = store.chat(project)
             row = {"id": ts, "author_kind": "system", "author_id": "thread", "written_at": store.now_ms_iso(),
                    "text": f"Thread {thread.get('title')!r} is {card_state}: {happened}"}
-            text = envelope.wake(reason="delegation-status", channel_id=ch.id, channel_kind=ch.kind,
+            text = envelope.wake(reason="delegation-status", chat_id=ch.id, chat_kind=ch.kind,
                                  trigger=row, thread_ts=ts, trust="peer", mention=False)
             wakes.enqueue(project, coordinator["id"], reason="delegation-status", envelope=text, priority="later")
 
@@ -314,8 +314,8 @@ engine = Engine()
 
 
 def _wake_owner_message(project: Optional[str], target: dict, row: dict, note: Optional[str] = None) -> None:
-    ch = store.channel(project)
-    text = envelope.wake(reason="mention", channel_id=ch.id, channel_kind=ch.kind, trigger=row,
+    ch = store.chat(project)
+    text = envelope.wake(reason="mention", chat_id=ch.id, chat_kind=ch.kind, trigger=row,
                          thread_ts=row.get("thread_ts"), system_note=note)
     wakes.enqueue(project, target["id"], reason="mention", envelope=text, meta={"message_id": row["id"]})
 
@@ -338,7 +338,7 @@ async def _route_with_model(project: Optional[str], row: dict) -> None:
 
 def deliver_owner_message(project: Optional[str], row: dict) -> dict:
     """Route an owner's message: in a thread, straight to that thread's agent;
-    on a timeline, to the channel's router (the decision model when that level
+    on a timeline, to the chat's router (the decision model when that level
     uses one, else the coordinator agent). Returns the session that handles it."""
     if row.get("thread_ts"):
         thread = store.get_thread(project, row["thread_ts"])

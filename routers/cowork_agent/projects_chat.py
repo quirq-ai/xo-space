@@ -1,15 +1,15 @@
-"""Projects chat routes: the workspace channel, project channels, threads.
+"""Projects chat routes: the workspace chat, project chats, threads.
 
   GET  /api/projects-chat/status
-  GET  /api/projects-chat/channels
-  GET  /api/projects-chat/channels/{channel}/messages?thread=&after=&limit=
-  POST /api/projects-chat/channels/{channel}/messages     {text, thread_ts?}
-  GET  /api/projects-chat/channels/{channel}/threads
-  GET  /api/projects-chat/channels/{channel}/threads/{ts}
-  GET  /api/projects-chat/channels/{channel}/stream       SSE: new messages and thread changes
+  GET  /api/projects-chat/chats
+  GET  /api/projects-chat/chats/{chat}/messages?thread=&after=&limit=
+  POST /api/projects-chat/chats/{chat}/messages     {text, thread_ts?}
+  GET  /api/projects-chat/chats/{chat}/threads
+  GET  /api/projects-chat/chats/{chat}/threads/{ts}
+  GET  /api/projects-chat/chats/{chat}/stream       SSE: new messages and thread changes
 
-``{channel}`` is ``workspace`` or a project's folder name. Posting stores the
-owner's message and wakes whoever handles it (the channel's coordinator, or
+``{chat}`` is ``workspace`` or a project's folder name. Posting stores the
+owner's message and wakes whoever handles it (the chat's coordinator, or
 in a thread, that thread's agent); the reply arrives later through the store,
 so the stream tails the store and never holds an agent turn open. With the
 router off the chat refuses new messages (409); a backend without the
@@ -45,8 +45,8 @@ class PostBody(BaseModel):
     thread_ts: Optional[str] = None
 
 
-def _project(channel: str) -> Optional[str]:
-    return None if channel == WORKSPACE else channel
+def _project(chat: str) -> Optional[str]:
+    return None if chat == WORKSPACE else chat
 
 
 def _supported() -> bool:
@@ -61,42 +61,42 @@ def status():
             "thread_budget_usd": mode.thread_budget_usd()}
 
 
-@router.get("/channels")
-def channels():
-    out = [{"channel": WORKSPACE, "id": store.WORKSPACE_CHANNEL_ID, "kind": "workspace"}]
+@router.get("/chats")
+def chats():
+    out = [{"chat": WORKSPACE, "id": store.WORKSPACE_CHAT_ID, "kind": "workspace"}]
     root = project_layout.xo_projects_root()
     try:
         names = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
     except OSError:
         names = []
     for name in names:
-        doc = store.read_channel(name)
+        doc = store.read_chat(name)
         threads = store.list_threads(name) if doc else []
-        out.append({"channel": name, "id": doc["id"] if doc else None, "kind": "project",
+        out.append({"chat": name, "id": doc["id"] if doc else None, "kind": "project",
                     "open_threads": sum(1 for t in threads if t.get("state") != "resolved")})
-    return {"channels": out}
+    return {"chats": out}
 
 
-@router.get("/channels/{channel}/messages")
-def messages(channel: str, thread: Optional[str] = None, after: Optional[str] = None, limit: int = 200):
+@router.get("/chats/{chat}/messages")
+def messages(chat: str, thread: Optional[str] = None, after: Optional[str] = None, limit: int = 200):
     try:
-        store.channel(_project(channel))
+        store.chat(_project(chat))
     except ServiceError as exc:
         raise http_error(exc) from exc
-    return {"messages": store.read_messages(_project(channel), thread_ts=thread, after=after,
+    return {"messages": store.read_messages(_project(chat), thread_ts=thread, after=after,
                                             limit=max(1, min(limit, 1000)))}
 
 
-@router.post("/channels/{channel}/messages")
-def post(channel: str, body: PostBody):
+@router.post("/chats/{chat}/messages")
+def post(chat: str, body: PostBody):
     if not mode.enabled():
         raise HTTPException(409, {"code": "router_off", "message": "The router is off (XO_ROUTER_MODE=off)."})
     if not _supported():
         raise HTTPException(501, {"code": "not_supported",
                                   "message": f"The {resolve_agent_name()} backend has no projects chat."})
-    project = _project(channel)
+    project = _project(chat)
     try:
-        store.ensure_channel(project)
+        store.ensure_chat(project)
         row = store.post_message(project, author_kind="owner", author_id="owner", text=body.text,
                                  thread_ts=body.thread_ts)
         target = turns.deliver_owner_message(project, row)
@@ -105,14 +105,14 @@ def post(channel: str, body: PostBody):
     return {"message": row, "delivered_to": {"session_id": target["id"], "role": target["role"]}}
 
 
-@router.get("/channels/{channel}/threads")
-def threads(channel: str):
-    return {"threads": store.list_threads(_project(channel))}
+@router.get("/chats/{chat}/threads")
+def threads(chat: str):
+    return {"threads": store.list_threads(_project(chat))}
 
 
-@router.get("/channels/{channel}/threads/{ts}")
-def thread(channel: str, ts: str):
-    project = _project(channel)
+@router.get("/chats/{chat}/threads/{ts}")
+def thread(chat: str, ts: str):
+    project = _project(chat)
     doc = store.get_thread(project, ts)
     if doc is None:
         raise HTTPException(404, {"code": "no_such_thread", "message": "There is no such thread."})
@@ -123,9 +123,9 @@ def thread(channel: str, ts: str):
             "busy": turns.engine.busy(doc.get("session_id") or "")}
 
 
-@router.get("/channels/{channel}/stream")
-async def stream(channel: str, request: Request, after: Optional[str] = None):
-    project = _project(channel)
+@router.get("/chats/{chat}/stream")
+async def stream(chat: str, request: Request, after: Optional[str] = None):
+    project = _project(chat)
 
     async def events():
         last = after

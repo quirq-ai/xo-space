@@ -12,7 +12,7 @@ replaced, between turns, when one of these is true (each one an env knob):
   fingerprint), since a running session keeps the prompt it started with.
 
 The successor is a new session (a new incarnation number) that never greets
-and starts from a ``<handoff>``: the channel, its memory index, its threads
+and starts from a ``<handoff>``: the chat, its memory index, its threads
 with their cards, and the recent timeline. The conversation is the store,
 not any one session, so nothing the owner sees changes.
 """
@@ -57,14 +57,14 @@ def retire_reason(session: dict, fingerprint: Optional[str]) -> Optional[str]:
 
 
 def build_handoff(project: Optional[str], predecessor: dict) -> str:
-    channel = store.read_channel(project) or {"id": store.channel(project).id, "kind": store.channel(project).kind,
+    chat = store.read_chat(project) or {"id": store.chat(project).id, "kind": store.chat(project).kind,
                                               "project_id": project}
     threads = store.list_threads(project)[:THREADS_IN_HANDOFF]
     open_needs = [f"{t.get('title')}: {(t.get('card') or {}).get('state')}" for t in threads
                   if (t.get("card") or {}).get("state") in ("needs_reply", "needs_approval", "failed")]
     index = memory.read(project)["content"] or None
-    return envelope.handoff(predecessor=predecessor["id"], channel=channel,
-                            instructions=(channel.get("settings") or {}).get("instructions"), memory_index=index,
+    return envelope.handoff(predecessor=predecessor["id"], chat=chat,
+                            instructions=(chat.get("settings") or {}).get("instructions"), memory_index=index,
                             threads=threads, timeline=store.read_messages(project, limit=TIMELINE_IN_HANDOFF),
                             pending=open_needs or None)
 

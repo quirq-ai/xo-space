@@ -1,10 +1,10 @@
-/* Projects chat: the workspace channel and one channel per project, each
+/* Projects chat: the workspace chat and one chat per project, each
    with a coordinator, plus the threads the coordinators start. Reads and
    writes /api/projects-chat/* (routers/cowork_agent/projects_chat.py).
 
-   Layout: channel list | the selected channel's timeline and composer |
+   Layout: chat list | the selected chat's timeline and composer |
    thread cards grouped by what they need, or one open thread. Live updates
-   come from one EventSource per open channel (closed on hide and on channel
+   come from one EventSource per open chat (closed on hide and on chat
    switch); when the stream errors the page polls every 5 s instead.
 
    Every agent or owner string goes through chatMarkdown(), which escapes
@@ -17,7 +17,7 @@ import {projectPage} from '../core/navigation.js?v=20261013-chat1';
 const BASE='/api/projects-chat';
 const WORKSPACE='workspace';
 const POLL_MS=5000;
-const CHANNEL_KEY='space.projectsChat.channel';
+const CHAT_KEY='space.projectsChat.chat';
 const THREAD_ID=/^cmsg_[A-Za-z0-9]+$/;
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
@@ -107,15 +107,15 @@ export function checklistHtml(status){
   }).join('')+'</ul>';
 }
 
-export const channelLabel=ch=>ch===WORKSPACE?'Workspace':ch;
+export const chatLabel=ch=>ch===WORKSPACE?'Workspace':ch;
 const enc=encodeURIComponent;
 const stateLabel={needs_reply:'Needs your reply',needs_approval:'Needs approval',working:'Working',done:'Ready',
   failed:'Failed',resolved:'Resolved'};
 
 /* Workspace first, then projects alphabetically. */
-export function sortChannels(list){
-  return(Array.isArray(list)?list:[]).filter(c=>c&&typeof c.channel==='string')
-    .sort((a,b)=>(a.channel===WORKSPACE?-1:b.channel===WORKSPACE?1:a.channel.localeCompare(b.channel)));
+export function sortChats(list){
+  return(Array.isArray(list)?list:[]).filter(c=>c&&typeof c.chat==='string')
+    .sort((a,b)=>(a.chat===WORKSPACE?-1:b.chat===WORKSPACE?1:a.chat.localeCompare(b.chat)));
 }
 
 export function messageHtml(m,threadTitles=new Map()){
@@ -157,20 +157,20 @@ export function cardsHtml(threads,openTs=''){
 export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalThis.EventSource,pollMs=POLL_MS,
   storage=globalThis.localStorage}={}){
   let root=null,active=false,generation=0;
-  let statusResult=null,channels=[],channelsError='',channel=null;
+  let statusResult=null,chats=[],chatsError='',chat=null;
   let messages=[],seen=new Set(),lastId='',threads=new Map(),loadError='';
   let es=null,pollTimer=null,coordinatorBusy=false;
   let openTs='',threadResult=null,threadGeneration=0,threadReload=null;
   let sending=false,threadSending=false;
   const $=sel=>root.querySelector(sel);
 
-  const remember=name=>{try{storage?.setItem(CHANNEL_KEY,name);}catch(_e){}};
-  const recall=()=>{try{return storage?.getItem(CHANNEL_KEY)||'';}catch(_e){return'';}};
-  const path=(suffix='')=>BASE+'/channels/'+enc(channel)+suffix;
+  const remember=name=>{try{storage?.setItem(CHAT_KEY,name);}catch(_e){}};
+  const recall=()=>{try{return storage?.getItem(CHAT_KEY)||'';}catch(_e){return'';}};
+  const path=(suffix='')=>BASE+'/chats/'+enc(chat)+suffix;
 
   function shell(){
     return'<div class="pc">'
-      +'<aside class="pc-channels" aria-label="Channels"><h2>Channels</h2><ul data-pc-channels></ul></aside>'
+      +'<aside class="pc-chats" aria-label="Chats"><h2>Chats</h2><ul data-pc-chats></ul></aside>'
       +'<div class="pc-main"><header class="pc-main-head"><h2 data-pc-title>Chat</h2>'
       +'<span class="pc-busy" data-pc-busy hidden><span class="pc-dot" aria-hidden="true"></span>coordinator working…</span>'
       +'<span class="pc-live" data-pc-live></span></header>'
@@ -193,14 +193,14 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   }
 
   /* ── rendering ── */
-  function renderChannels(){
-    const list=$('[data-pc-channels]');
-    if(channelsError){list.innerHTML='<li class="pc-error">'+esc(channelsError)+'</li>';return;}
-    list.innerHTML=channels.map(c=>{
+  function renderChats(){
+    const list=$('[data-pc-chats]');
+    if(chatsError){list.innerHTML='<li class="pc-error">'+esc(chatsError)+'</li>';return;}
+    list.innerHTML=chats.map(c=>{
       const n=Number.isInteger(c.open_threads)&&c.open_threads>0?'<span class="pc-count" title="Open threads">'+c.open_threads+'</span>':'';
-      const on=c.channel===channel;
-      return'<li><button type="button" data-pc-channel="'+esc(c.channel)+'"'+(on?' class="is-on" aria-current="true"':'')+'>'
-        +'<span>'+(c.kind==='workspace'?'# ':'')+esc(channelLabel(c.channel))+'</span>'+n+'</button></li>';
+      const on=c.chat===chat;
+      return'<li><button type="button" data-pc-chat="'+esc(c.chat)+'"'+(on?' class="is-on" aria-current="true"':'')+'>'
+        +'<span>'+(c.kind==='workspace'?'# ':'')+esc(chatLabel(c.chat))+'</span>'+n+'</button></li>';
     }).join('');
   }
   function threadTitles(){
@@ -211,9 +211,9 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   function renderTimeline(){
     const list=$('[data-pc-timeline]');
     const pinned=list.scrollHeight-list.scrollTop-list.clientHeight<80;
-    $('[data-pc-title]').textContent=channel?channelLabel(channel):'Chat';
+    $('[data-pc-title]').textContent=chat?chatLabel(chat):'Chat';
     if(loadError)list.innerHTML='<li class="pc-error">'+esc(loadError)+'</li>';
-    else if(!messages.length)list.innerHTML='<li class="pc-empty">'+(channel===WORKSPACE
+    else if(!messages.length)list.innerHTML='<li class="pc-empty">'+(chat===WORKSPACE
       ?'Ask the workspace coordinator anything; it routes work to the right project.'
       :'No messages yet. Ask this project’s coordinator for something to start a thread.')+'</li>';
     else{const titles=threadTitles();list.innerHTML=messages.map(m=>messageHtml(m,titles)).join('');}
@@ -225,8 +225,8 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   function renderComposer(){
     const state=composerState(statusResult);
     const input=$('[data-pc-input]'),send=$('[data-pc-send]'),hint=$('[data-pc-hint]');
-    input.disabled=state.disabled||!channel;
-    send.disabled=state.disabled||sending||!channel;
+    input.disabled=state.disabled||!chat;
+    send.disabled=state.disabled||sending||!chat;
     hint.textContent=state.disabled?state.reason:'Enter to send, Shift+Enter for a new line.';
     hint.classList.toggle('is-blocked',state.disabled);
     const tInput=$('[data-pc-thread-input]'),tSend=$('[data-pc-thread-send]');
@@ -256,7 +256,7 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
       +(d.status?'<h3>Checklist</h3>'+checklistHtml(d.status):'')
       +'<h3>Messages</h3><ol class="pc-timeline is-thread">'+(list||'<li class="pc-empty">No messages in this thread yet.</li>')+'</ol>';
   }
-  function renderAll(){renderChannels();renderTimeline();renderCards();renderBusy();renderLive();renderComposer();renderThread();}
+  function renderAll(){renderChats();renderTimeline();renderCards();renderBusy();renderLive();renderComposer();renderThread();}
 
   /* ── data ── */
   function addMessages(rows){
@@ -278,17 +278,17 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
     statusResult=await request(API_BASE+BASE+'/status');
     if(root)renderComposer();
   }
-  async function loadChannels(){
-    const res=await request(API_BASE+BASE+'/channels');
-    channelsError=res.ok?'':'Channels unavailable: '+failText(res);
-    if(res.ok)channels=sortChannels(res.data?.channels);
-    if(!channel||!channels.some(c=>c.channel===channel)){
+  async function loadChats(){
+    const res=await request(API_BASE+BASE+'/chats');
+    chatsError=res.ok?'':'Chats unavailable: '+failText(res);
+    if(res.ok)chats=sortChats(res.data?.chats);
+    if(!chat||!chats.some(c=>c.chat===chat)){
       const saved=recall();
-      channel=channels.some(c=>c.channel===saved)?saved:(channels[0]?.channel||WORKSPACE);
+      chat=chats.some(c=>c.chat===saved)?saved:(chats[0]?.chat||WORKSPACE);
     }
-    if(root)renderChannels();
+    if(root)renderChats();
   }
-  async function loadChannel(){
+  async function loadChat(){
     const gen=generation;
     const [msgs,list]=await Promise.all([request(API_BASE+path('/messages?limit=200')),request(API_BASE+path('/threads'))]);
     if(gen!==generation)return false;
@@ -319,7 +319,7 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   }
   function startLive(){
     stopLive();
-    if(!active||!channel)return;
+    if(!active||!chat)return;
     if(typeof EventSourceImpl!=='function'){startPolling();return;}
     const gen=generation;
     let source;
@@ -366,19 +366,19 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   }
 
   /* ── actions ── */
-  /* keepThread: a refresh or re-show of the same channel leaves the open
+  /* keepThread: a refresh or re-show of the same chat leaves the open
      thread open (and rereads it) instead of closing the pane. */
-  async function selectChannel(name,{keepThread=false}={}){
+  async function selectChat(name,{keepThread=false}={}){
     if(!name)return;
     stopLive();
     const gen=++generation;
-    const keep=keepThread&&name===channel?openTs:'';
-    channel=name;remember(name);
+    const keep=keepThread&&name===chat?openTs:'';
+    chat=name;remember(name);
     messages=[];seen=new Set();lastId='';threads=new Map();loadError='';
     openTs=keep;if(!keep){threadResult=null;threadGeneration++;}
     $('[data-pc-error]').hidden=true;
     renderAll();
-    await loadChannel();
+    await loadChat();
     if(gen!==generation)return;
     if(keep)loadThread();
     if(active)startLive();
@@ -397,13 +397,13 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
     const input=$(thread?'[data-pc-thread-input]':'[data-pc-input]');
     const errEl=$(thread?'[data-pc-thread-error]':'[data-pc-error]');
     const text=input.value.trim();
-    if(!text||composerState(statusResult).disabled||(thread?threadSending:sending)||!channel)return;
+    if(!text||composerState(statusResult).disabled||(thread?threadSending:sending)||!chat)return;
     if(thread&&!openTs)return;
-    const target=channel,ts=openTs;
+    const target=chat,ts=openTs;
     const body=thread?{text,thread_ts:ts}:{text};
     if(thread)threadSending=true;else sending=true;
     errEl.hidden=true;renderComposer();
-    const res=await request(API_BASE+BASE+'/channels/'+enc(target)+'/messages',{method:'POST',body});
+    const res=await request(API_BASE+BASE+'/chats/'+enc(target)+'/messages',{method:'POST',body});
     if(thread)threadSending=false;else sending=false;
     renderComposer();
     if(!res.ok){
@@ -411,7 +411,7 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
       if(res.status===409||res.notImplemented)loadStatus();
       return;
     }
-    if(channel!==target)return;
+    if(chat!==target)return;
     input.value='';
     if(thread){if(ts===openTs)loadThread();}
     else if(addMessages([res.data?.message]))renderTimeline();
@@ -419,9 +419,9 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
 
   function wire(){
     root.addEventListener('click',event=>{
-      const el=event.target?.closest?.('[data-pc-channel],[data-pc-thread],[data-pc-close]');
+      const el=event.target?.closest?.('[data-pc-chat],[data-pc-thread],[data-pc-close]');
       if(!el)return;
-      if(el.dataset.pcChannel!==undefined){if(el.dataset.pcChannel!==channel)selectChannel(el.dataset.pcChannel);return;}
+      if(el.dataset.pcChat!==undefined){if(el.dataset.pcChat!==chat)selectChat(el.dataset.pcChat);return;}
       if(el.dataset.pcClose!==undefined){closeThread();return;}
       event.preventDefault();openThread(el.dataset.pcThread);
     });
@@ -434,10 +434,10 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
   }
 
   async function reload(){
-    const previous=channel;
-    await Promise.all([loadStatus(),loadChannels()]);
+    const previous=chat;
+    await Promise.all([loadStatus(),loadChats()]);
     if(!active)return;
-    await selectChannel(channel,{keepThread:channel===previous});
+    await selectChat(chat,{keepThread:chat===previous});
   }
 
   return{
@@ -449,8 +449,8 @@ export function createProjectsChatView({request=apiFetch,EventSourceImpl=globalT
     hide(){active=false;generation++;stopLive();},
     refresh:reload,
     /* for tests: the live state the page renders from */
-    _state:()=>({channel,messages,threads,openTs,es,pollTimer,coordinatorBusy,statusResult}),
-    _send:send,_selectChannel:selectChannel,_openThread:openThread,
+    _state:()=>({chat,messages,threads,openTs,es,pollTimer,coordinatorBusy,statusResult}),
+    _send:send,_selectChat:selectChat,_openThread:openThread,
   };
 }
 

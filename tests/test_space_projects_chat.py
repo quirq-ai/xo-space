@@ -49,10 +49,10 @@ const request=async(path,options={})=>{
   calls.push({path,options});
   if(options.method==='POST')return postResult||ok({message:msg('cmsg_9posted',options.body.text,{author_kind:'owner',author_id:'owner'}),delivered_to:{}});
   if(path.endsWith('/status'))return ok(statusPayload);
-  if(path.endsWith('/channels'))return ok({channels:[
-    {channel:'site',id:'chan_site',kind:'project',open_threads:0},
-    {channel:'workspace',id:'chan_workspace',kind:'workspace'},
-    {channel:'calc',id:'chan_calc',kind:'project',open_threads:2}]});
+  if(path.endsWith('/chats'))return ok({chats:[
+    {chat:'site',id:'chat_site',kind:'project',open_threads:0},
+    {chat:'workspace',id:'chat_workspace',kind:'workspace'},
+    {chat:'calc',id:'chat_calc',kind:'project',open_threads:2}]});
   if(/\/threads\/[^/]+$/.test(path))return ok({thread:{ts:'cmsg_1a',title:'Power op',state:'working',branch:'xo/thread-1'},
     card:{state:'working'},status:'✓ Parse ^\n✱ Write tests\n○ Commit',messages:[],session:{status:'idle',turns:1},busy:false});
   if(path.includes('/threads'))return ok({threads:[{ts:'cmsg_1a',title:'Power op',state:'working',card:{state:'needs_reply',headline:'Power op'}}]});
@@ -114,7 +114,7 @@ assert.ok(html.includes('<br>'),'single newlines break lines');
 assert.ok(!html.includes('undefined'),'NUL placeholders in the source cannot reach the code-span table');
 assert.equal(mod.chatMarkdown('`[a](#cmsg_x1)`'),'<p><code>[a](#cmsg_x1)</code></p>','code spans stay literal');
 const row=mod.messageHtml({id:'cmsg_3"x',author_kind:'owner',author_id:'owner',text:'<img src=x onerror=alert(1)>',
-  forwarded_from:{channel_id:'chan_workspace',message_id:'cmsg_1'}});
+  forwarded_from:{chat_id:'chat_workspace',message_id:'cmsg_1'}});
 assert.ok(!row.includes('<img'));assert.ok(row.includes('data-id="cmsg_3&quot;x"'));
 assert.ok(row.includes('forwarded from workspace'));assert.ok(row.includes('is-owner'));
 const sys=mod.messageHtml({id:'cmsg_4',author_kind:'system',text:'Thread **failed**'});
@@ -141,7 +141,7 @@ assert.ok(html.indexOf('data-group="waiting"')<html.indexOf('data-group="working
 assert.ok(html.includes('class="pc-card is-open" data-pc-thread="cmsg_c"'));
 assert.match(mod.cardsHtml([]),/No threads yet/);
 assert.ok(!mod.cardsHtml([t('<x>','done')]).includes('<x>'),'thread fields are escaped');
-assert.deepEqual(mod.sortChannels([{channel:'b'},{channel:'workspace'},{channel:'a'}]).map(c=>c.channel),['workspace','a','b']);
+assert.deepEqual(mod.sortChats([{chat:'b'},{chat:'workspace'},{chat:'a'}]).map(c=>c.chat),['workspace','a','b']);
 """)
 
     def test_composer_disabled_with_reason_when_chat_cannot_send(self):
@@ -167,14 +167,14 @@ assert.equal(calls.filter(c=>c.options.method==='POST').length,0,'a disabled com
 view.hide();
 """)
 
-    def test_stream_per_channel_send_threads_and_polling_fallback(self):
+    def test_stream_per_chat_send_threads_and_polling_fallback(self):
         self.probe(r"""
 const {view,$}=await mount();
-assert.equal(view._state().channel,'workspace','Workspace is selected first');
-assert.ok($('[data-pc-channels]').innerHTML.indexOf('workspace')<$('[data-pc-channels]').innerHTML.indexOf('calc'));
-assert.match($('[data-pc-channels]').innerHTML,/<span class="pc-count" title="Open threads">2<\/span>/);
-assert.equal(sources.length,1,'one stream for the open channel');
-assert.equal(sources[0].url,'/api/projects-chat/channels/workspace/stream?after=cmsg_2b');
+assert.equal(view._state().chat,'workspace','Workspace is selected first');
+assert.ok($('[data-pc-chats]').innerHTML.indexOf('workspace')<$('[data-pc-chats]').innerHTML.indexOf('calc'));
+assert.match($('[data-pc-chats]').innerHTML,/<span class="pc-count" title="Open threads">2<\/span>/);
+assert.equal(sources.length,1,'one stream for the open chat');
+assert.equal(sources[0].url,'/api/projects-chat/chats/workspace/stream?after=cmsg_2b');
 assert.match($('[data-pc-timeline]').innerHTML,/Thread: Power op/,'a message that started a thread links to it');
 sources[0].emit('message',msg('cmsg_3c','live [Power op](#cmsg_1a)'));
 sources[0].emit('message',msg('cmsg_3c','duplicate'));
@@ -188,7 +188,7 @@ assert.equal($('[data-pc-busy]').hidden,true);
 $('[data-pc-input]').value='  do it  ';
 await view._send();
 const post=calls.filter(c=>c.options.method==='POST').at(-1);
-assert.equal(post.path,'/api/projects-chat/channels/workspace/messages');assert.deepEqual(post.options.body,{text:'do it'});
+assert.equal(post.path,'/api/projects-chat/chats/workspace/messages');assert.deepEqual(post.options.body,{text:'do it'});
 assert.equal($('[data-pc-input]').value,'');
 assert.ok(view._state().messages.some(m=>m.id==='cmsg_9posted'));
 
@@ -208,18 +208,18 @@ await view._send({thread:true});
 const threadPost=calls.filter(c=>c.options.method==='POST').at(-1);
 assert.deepEqual(threadPost.options.body,{text:'straight to the thread',thread_ts:'cmsg_1a'});
 
-await view._selectChannel('calc');await settle();
-assert.equal(sources[0].closed,true,'switching channels closes the old stream');
-assert.equal(sources.length,2);assert.match(sources[1].url,/\/channels\/calc\/stream\?after=/);
-assert.equal(view._state().openTs,'','a channel switch closes the thread pane');
-assert.equal(memory.get('space.projectsChat.channel'),'calc');
+await view._selectChat('calc');await settle();
+assert.equal(sources[0].closed,true,'switching chats closes the old stream');
+assert.equal(sources.length,2);assert.match(sources[1].url,/\/chats\/calc\/stream\?after=/);
+assert.equal(view._state().openTs,'','a chat switch closes the thread pane');
+assert.equal(memory.get('space.projectsChat.chat'),'calc');
 
 sources[1].onerror();
 assert.equal(sources[1].closed,true);
 const poll=timers.filter(t=>t.ms===5000&&!t.cleared);
 assert.equal(poll.length,1,'a broken stream falls back to one 5 s poll');
 const before=calls.length;await poll[0].fn();await settle();
-assert.ok(calls.slice(before).some(c=>c.path.startsWith('/api/projects-chat/channels/calc/messages?after=')));
+assert.ok(calls.slice(before).some(c=>c.path.startsWith('/api/projects-chat/chats/calc/messages?after=')));
 view.hide();
 const next=timers.filter(t=>t.ms===5000);
 assert.equal(next.length,2,'each poll schedules the next');

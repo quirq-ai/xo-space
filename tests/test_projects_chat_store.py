@@ -1,4 +1,4 @@
-"""The projects-chat store: channels, timeline and thread messages, threads,
+"""The projects-chat store: chats, timeline and thread messages, threads,
 cards, decisions and session records, all under the state root."""
 
 import json
@@ -28,25 +28,25 @@ class _Sandbox(unittest.TestCase):
         self.addCleanup(env.stop)
 
 
-class ChannelTests(_Sandbox):
-    def test_the_workspace_and_a_project_have_separate_channels(self) -> None:
-        ws = store.ensure_channel(None)
-        proj = store.ensure_channel("acs")
-        self.assertEqual(ws["id"], "chan_workspace")
-        self.assertEqual(proj["id"], "chan_11111111-1111-4111-8111-111111111111")
-        self.assertTrue((self.state / "projects" / "workspace.channel" / "channel.json").is_file())
+class ChatTests(_Sandbox):
+    def test_the_workspace_and_a_project_have_separate_chats(self) -> None:
+        ws = store.ensure_chat(None)
+        proj = store.ensure_chat("acs")
+        self.assertEqual(ws["id"], "chat_workspace")
+        self.assertEqual(proj["id"], "chat_11111111-1111-4111-8111-111111111111")
+        self.assertTrue((self.state / "projects" / "workspace.chat" / "chat.json").is_file())
         self.assertTrue((self.state / "projects" / "11111111-1111-4111-8111-111111111111"
-                         / "channel" / "channel.json").is_file())
-        self.assertEqual(store.ensure_channel("acs"), proj, "idempotent")
+                         / "chat" / "chat.json").is_file())
+        self.assertEqual(store.ensure_chat("acs"), proj, "idempotent")
 
     def test_nothing_is_written_into_the_project_folder(self) -> None:
-        store.ensure_channel("acs")
+        store.ensure_chat("acs")
         store.post_message("acs", author_kind="owner", author_id="user_1", text="hello")
         self.assertEqual(sorted(p.name for p in (self.projects / "acs").rglob("*")), [".xo", "project.json"])
 
     def test_an_unknown_project_is_refused(self) -> None:
         with self.assertRaises(store.StoreError) as ctx:
-            store.ensure_channel("nope")
+            store.ensure_chat("nope")
         self.assertEqual(ctx.exception.code, "no_such_project")
 
 
@@ -92,7 +92,7 @@ class MessageAndThreadTests(_Sandbox):
     def test_a_forwarded_copy_keeps_its_origin(self) -> None:
         original = store.post_message(None, author_kind="owner", author_id="user_1", text="fix acs and blog")
         copy = store.post_message("acs", author_kind="owner", author_id="user_1", text=original["text"],
-                                  forwarded_from={"channel_id": "chan_workspace", "message_id": original["id"]})
+                                  forwarded_from={"chat_id": "chat_workspace", "message_id": original["id"]})
         self.assertNotEqual(copy["id"], original["id"])
         self.assertEqual(copy["forwarded_from"]["message_id"], original["id"])
 

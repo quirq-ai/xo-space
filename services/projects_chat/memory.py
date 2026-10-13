@@ -1,11 +1,11 @@
-"""A channel's memory: what a coordinator learned that must outlive it.
+"""A chat's memory: what a coordinator learned that must outlive it.
 
 Coordinators are replaced (``recycle.py``); whatever an incarnation learned
 survives only here. The shape is Claude Code's own memory folder:
 ``MEMORY.md`` is the index (one line per memory, ``- [Title](file.md) — hook``)
 and each memory is a markdown file beside it::
 
-    <channel dir>/memory/
+    <chat dir>/memory/
     ├── MEMORY.md
     ├── <topic>.md
     └── .versions.json       {path: {version, updated_by_session, updated_at}}
@@ -45,7 +45,7 @@ class MemoryError_(ServiceError):
 
 
 def _dir(project: Optional[str]) -> Path:
-    return store.channel(project, create=True).dir / "memory"
+    return store.chat(project, create=True).dir / "memory"
 
 
 def _version(text: str) -> str:

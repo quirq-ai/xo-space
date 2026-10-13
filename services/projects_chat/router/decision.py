@@ -3,7 +3,7 @@
 A :class:`Decision` is a list of actions for one triggering message. The
 agent provider produces it from the coordinator's comms tool calls; a
 decision model produces it from its answers. Core applies it the same way
-either way, and logs it to the channel's ``router/decisions.jsonl``.
+either way, and logs it to the chat's ``router/decisions.jsonl``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Candidate:
 @dataclass
 class RouterRequest:
     level: str
-    channel_id: str
+    chat_id: str
     trigger: dict                # the stored message row
     candidates: list[Candidate] = field(default_factory=list)
     recent: list[dict] = field(default_factory=list)
@@ -71,7 +71,7 @@ class Action:
 @dataclass
 class Decision:
     level: str
-    channel_id: str
+    chat_id: str
     trigger_id: str
     provider: str
     actions: list[Action] = field(default_factory=list)
@@ -103,7 +103,7 @@ class Decision:
         return self
 
     def as_dict(self) -> dict[str, Any]:
-        out = {"schema": SCHEMA, "level": self.level, "channel_id": self.channel_id,
+        out = {"schema": SCHEMA, "level": self.level, "chat_id": self.chat_id,
                "trigger_id": self.trigger_id, "provider": self.provider,
                "actions": [a.as_dict() for a in self.actions]}
         for name in ("ack", "confidence", "probabilities", "escalated_from", "usage", "latency_ms"):

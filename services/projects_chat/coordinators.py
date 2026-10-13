@@ -1,7 +1,7 @@
-"""One live coordinator per channel: find it, or start its first incarnation.
+"""One live coordinator per chat: find it, or start its first incarnation.
 
 A coordinator is a session record with role ``workspace-coordinator`` (the
-workspace channel) or ``project-coordinator`` (a project's channel). Its cwd
+workspace chat) or ``project-coordinator`` (a project's chat). Its cwd
 is the projects root or the project folder; it never writes there (its
 tools are comms tools and read-only readers). Recycling an incarnation for a
 fresh one with a handoff comes later (M4); for now the first live one is used.
@@ -28,19 +28,19 @@ def cwd_for(project: Optional[str]) -> str:
 
 
 def live(project: Optional[str]) -> Optional[dict]:
-    """The channel's live coordinator session, or ``None``."""
+    """The chat's live coordinator session, or ``None``."""
     sessions = [s for s in store.list_sessions(project, role=role_for(project)) if s.get("retired_at") is None]
     sessions.sort(key=lambda s: s.get("created_at") or "")
     return sessions[-1] if sessions else None
 
 
 def ensure(project: Optional[str]) -> dict:
-    """The channel's live coordinator, creating incarnation 1 if there is none."""
+    """The chat's live coordinator, creating incarnation 1 if there is none."""
     with _lock:
         found = live(project)
         if found is not None:
             return found
-        store.ensure_channel(project)
+        store.ensure_chat(project)
         previous = [s.get("incarnation") or 0 for s in store.list_sessions(project, role=role_for(project))]
         record = store.create_session(project, role=role_for(project), cwd=cwd_for(project),
                                       incarnation=max(previous, default=0) + 1)

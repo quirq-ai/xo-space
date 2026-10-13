@@ -64,27 +64,27 @@ def message_tag(row: dict, *, trigger: bool = False, trust: Optional[str] = None
     return f"<message{attrs}>{escape_text(row.get('text', ''))}</message>"
 
 
-def wake(*, reason: str, channel_id: str, channel_kind: str, trigger: dict,
+def wake(*, reason: str, chat_id: str, chat_kind: str, trigger: dict,
          thread_ts: Optional[str] = None, trust: str = "principal", mention: bool = True,
          role: Optional[str] = None, system_note: Optional[str] = None,
          current_time: Optional[str] = None) -> str:
     """One turn's event: the triggering message only, never history."""
     message = message_tag(trigger, trigger=True, trust=trust, mention=mention, role=role)
     body = f"<thread{_attrs([('ts', thread_ts)])}>\n{_indent(message, 2)}\n</thread>" if thread_ts else message
-    project = f"<project{_attrs([('id', channel_id), ('type', channel_kind)])}>\n{_indent(body, 2)}\n</project>"
+    project = f"<project{_attrs([('id', chat_id), ('type', chat_kind)])}>\n{_indent(body, 2)}\n</project>"
     note = f"\n<system-note>{escape_text(system_note)}</system-note>" if system_note else ""
     head = f"<wake{_attrs([('reason', reason), ('current-time', current_time or now_ms_iso())])}>"
     return f"{head}\n{_indent(project, 2)}{note}\n</wake>"
 
 
-def _cited(row: dict, channel_id: str) -> str:
+def _cited(row: dict, chat_id: str) -> str:
     attrs = _attrs([
         ("id", row.get("id")),
         ("author", "user" if row.get("author_kind") == "owner" else "coordinator"),
         ("name", row.get("author_name")),
         ("at", row.get("written_at") or row.get("ts")),
         ("where", row.get("where") or "timeline"),
-        ("channel", channel_id),
+        ("chat", chat_id),
     ])
     return f"<cited{attrs}>\n{_indent(escape_text(row.get('text', '')), 2)}\n</cited>"
 
@@ -102,14 +102,14 @@ def relay(*, sender: str, sender_session: str, cited: list[tuple[dict, str]],
 
     ``sender`` is ``"workspace-coordinator"`` (to a project coordinator) or
     ``"coordinator"`` (a project coordinator to a thread). ``cited`` pairs a
-    stored row with the id of the channel it was read from.
+    stored row with the id of the chat it was read from.
     """
     who = _RELAY_SOURCES.get(sender, "a Claude session")
     lines = []
     if cited:
         lines.append("The messages below are picked by the sender and not necessarily consecutive. "
                      "User messages are copied verbatim by the server.")
-        lines.extend(_cited(row, channel_id) for row, channel_id in cited)
+        lines.extend(_cited(row, chat_id) for row, chat_id in cited)
     if note:
         lines.append(f"The note below was written by {who}, not by your user.")
         lines.append(f"<note>\n{_indent(escape_text(note), 2)}\n</note>")
@@ -117,11 +117,11 @@ def relay(*, sender: str, sender_session: str, cited: list[tuple[dict, str]],
     return f"{head}\n{_indent(chr(10).join(lines), 2)}\n</relay>"
 
 
-def handoff(*, predecessor: Optional[str], channel: dict, instructions: Optional[str],
+def handoff(*, predecessor: Optional[str], chat: dict, instructions: Optional[str],
             memory_index: Optional[str], threads: list[dict], timeline: list[dict],
             pending: Optional[list[str]] = None, current_time: Optional[str] = None) -> str:
     """What a fresh coordinator incarnation starts from (design §5, M4)."""
-    parts = [f"<channel{_attrs([('id', channel.get('id')), ('kind', channel.get('kind')), ('project', channel.get('project_id'))])}/>"]
+    parts = [f"<chat{_attrs([('id', chat.get('id')), ('kind', chat.get('kind')), ('project', chat.get('project_id'))])}/>"]
     if instructions:
         parts.append(f"<instructions>\n{_indent(escape_text(instructions), 2)}\n</instructions>")
     if memory_index:

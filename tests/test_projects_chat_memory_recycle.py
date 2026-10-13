@@ -1,4 +1,4 @@
-"""The indefinite coordinator: versioned channel memory, and a coordinator
+"""The indefinite coordinator: versioned chat memory, and a coordinator
 replaced between turns by a fresh incarnation that starts from a handoff."""
 
 import asyncio

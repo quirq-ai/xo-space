@@ -3,7 +3,7 @@
   "pid": "00000000-0000-4000-8000-000000000000",
   "project_id": "sample-project",
   "ts": "cmsg_0mfx2k0a0000a1b2c3d4",
-  "channel_id": "chan_00000000-0000-4000-8000-000000000000",
+  "chat_id": "chat_00000000-0000-4000-8000-000000000000",
   "title": "Add a test runner",
   "label": null,
   "session_id": "cse_0123456789abcdef01234567",
