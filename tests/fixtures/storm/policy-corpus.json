@@ -322,6 +322,18 @@
     {"group": "third independent review: nobody asked (2026-10-15)", "command": "git diff --ext-diff", "role": "coordinator", "expect": "deny"},
     {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --attr-source status log", "role": "coordinator", "expect": "deny"},
     {"group": "third independent review: nobody asked (2026-10-15)", "command": "git log --oneline", "role": "coordinator", "expect": "allow"},
-    {"group": "third independent review: nobody asked (2026-10-15)", "command": "rg -n foo src", "role": "coordinator", "expect": "allow"}
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "rg -n foo src", "role": "coordinator", "expect": "allow"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "grep -f /home/you/.ssh/id_rsa .", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "rg --file /home/you/.env src", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "diff --from-file /home/you/.ssh/id_rsa README.md", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "date -f /home/you/.ssh/id_rsa", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "grep -f /home/you/.ssh/id_rsa .", "expect": "ask", "tier": "destructive", "role": "coordinator"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git add /home/you/.ssh/id_rsa", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git blame /home/you/.ssh/id_rsa", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git grep foo -- /home/you/.ssh", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git show HEAD:x /home/you/.ssh/id_rsa", "expect": "ask", "tier": "destructive"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git log origin/main", "expect": "allow"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git add src/app.py", "expect": "allow"},
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "grep -f patterns.txt src", "expect": "allow"}
   ]
 }

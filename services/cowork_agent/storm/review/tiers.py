@@ -154,6 +154,15 @@ READ_ONLY_FLAGS: dict[str, tuple[Spec, frozenset[str]]] = {
 #: tier (the allowlist above already keeps them from running unasked).
 RUNS_PROGRAMS = {"rg": frozenset({"--pre", "--pre-glob"}), "sort": frozenset({"--compress-program"}),
                  "fd": frozenset({"-x", "--exec", "-X", "--exec-batch"})}
+#: Options of reading commands whose value is a file the command reads: judged
+#: like any path it reads (a key read through `grep -f ~/.ssh/id_rsa` asks).
+READ_FILE_OPTIONS = {
+    **dict.fromkeys(("grep", "egrep", "fgrep"), frozenset({"-f", "--file", "--exclude-from"})),
+    "rg": frozenset({"-f", "--file", "--ignore-file"}),
+    "diff": frozenset({"--from-file", "--to-file", "--exclude-from", "-X"}),
+    "date": frozenset({"-f", "--file", "-r", "--reference"}),
+    "du": frozenset({"-X", "--exclude-from", "--files0-from"}),
+}
 #: Commands whose first operand is a pattern, not a path.
 PATTERN_FIRST = frozenset({"grep", "egrep", "fgrep", "rg"})
 #: Commands whose operands are not paths at all.
@@ -850,6 +859,7 @@ def _read_only(judge: _Judge, name: str, args: list[str], places: Places, where:
     paths = [] if name in NO_PATHS else list(options.operands)
     if name in PATTERN_FIRST and not options.has("-e", "-f", "--regexp", "--file"):
         paths = paths[1:]
+    paths += [value for flag, value in options.flags if flag in READ_FILE_OPTIONS.get(name, ()) and value]
     for path in paths:
         _read(judge, path, places, where)
 
@@ -1035,6 +1045,12 @@ def _git(judge: _Judge, args: list[str], places: Places, where: Path | None, bra
         return
     sub, options = args[0], read_options(args[1:], GIT_SPEC)
     outside = here is None or places.place(str(here), None) is not Place.INSIDE and here != places.session_folder
+    if sub in GIT_READ_SUBCOMMANDS or sub == "add":
+        # A path operand is read (or staged) like any other read; revisions
+        # and rev:path forms name the repository's own content.
+        for operand in options.operands:
+            if ":" not in operand and ("/" in operand or operand.startswith(("~", "."))):
+                _read(judge, operand, places, here)
     for output in options.values(*GIT_OUTPUT.get(sub, ("--output",))):
         judge.at_least(Tier.NOTABLE, f"git {sub} writes a file")
         _write(judge, output, places, here)
