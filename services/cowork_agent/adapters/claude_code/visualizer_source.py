@@ -54,6 +54,7 @@ from services.cowork_agent.visualizer.ingest.events import (
 from services.cowork_agent.visualizer.project_index import project_id_for_cwd
 from services.cowork_agent.visualizer.workspace_index import list_project_ids
 from services.cowork_agent.project_layout import xo_projects_root
+from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 
 logger = logging.getLogger(__name__)
 
@@ -208,8 +209,8 @@ class Source:
                 continue
             if not isinstance(directory, str) or not directory:
                 continue
-            # Claude's encoding: '/foo/bar' → '-foo-bar' (lossless forward).
-            encoded = directory.replace("/", "-")
+            # Claude's encoding: every non-alphanumeric character → '-'.
+            encoded = encode_path(directory)
             jsonl = _CLAUDE_PROJECTS_DIR / encoded / f"{native}.jsonl"
             if jsonl.is_file() and jsonl not in yielded:
                 yielded.add(jsonl)
@@ -235,7 +236,7 @@ class Source:
         for project_id in list_project_ids():
             for project_root in project_roots:
                 project_path = project_root / project_id
-                encoded = str(project_path).replace("/", "-")
+                encoded = encode_path(str(project_path))
                 log_dir = _CLAUDE_PROJECTS_DIR / encoded
                 if not log_dir.is_dir():
                     continue
