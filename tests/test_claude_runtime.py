@@ -677,6 +677,18 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cli.of(c.SessionClosed)[0].reason, "closed")
         self.assertFalse((self.cli.root / "state" / "run" / "cse_test").exists())
 
+    async def test_a_removed_run_folder_is_never_written_again(self) -> None:
+        """A restart cancelled while its thread writes the run files must not
+        bring the folder back after close() removed it."""
+        self.cli = FakeClaude(claude.initialize())
+        await self.cli.open()
+        folder = self.cli.root / "state" / "run" / "cse_test"
+        await self.cli.session.close()
+        self.assertFalse(folder.exists())
+        with self.assertRaises(c.RuntimeFailure):
+            await asyncio.to_thread(self.cli.session._write_run_files)   # the late write of a cancelled restart
+        self.assertFalse(folder.exists())
+
     async def test_concurrent_sends_during_a_pending_restart_both_go_through(self) -> None:
         self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
                                *claude.text_turn(SID, "ok"), claude.idle(SID)])
@@ -917,12 +929,20 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
         lines = path.read_bytes().splitlines(keepends=True)
         first = await self.runtime.read_session(self.S1, limit=2)
         self.assertEqual(first.next, str(len(lines[0]) + len(lines[1])))   # where line 3 starts
-        for bad in ("5", "-1", str(path.stat().st_size + 1), "two"):
+        for bad in ("5", "-1", str(path.stat().st_size + 1), "two", " 0", "0 ", "+0", "\u0661", "1e3"):
             with self.subTest(bad), self.assertRaises(c.RuntimeFailure) as caught:
                 await self.runtime.read_session(self.S1, after=bad)
             self.assertIn("not a cursor", caught.exception.message)
         end = str(path.stat().st_size)
         self.assertEqual((await self.runtime.read_session(self.S1, after=end)).items, ())
+
+    async def test_a_line_with_invalid_utf8_is_read_not_dropped(self) -> None:
+        path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
+        size = path.stat().st_size
+        with path.open("ab") as f:
+            f.write(b'{"type":"user","uuid":"u9","message":{"role":"user","content":"bad \xff byte"}}\n')
+        page = await self.runtime.read_session(self.S1, after=str(size))
+        self.assertEqual([(i["id"], i["message"]["content"]) for i in page.items], [("u9", "bad \ufffd byte")])
 
     async def test_a_line_claude_is_still_writing_waits_for_the_next_read(self) -> None:
         path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"

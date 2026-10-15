@@ -25,6 +25,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import threading
 import uuid
 from collections import deque
 from dataclasses import replace
@@ -142,6 +143,10 @@ class ClaudeSession:
         self._restart_task: asyncio.Task | None = None
         self._retiring: ProcessHandle | None = None   # the process a restart is replacing
         self._retiring_reader: asyncio.Task | None = None
+        # Writing the run files and removing the folder run in threads; this
+        # orders them, so a removal is final.
+        self._folder_lock = threading.Lock()
+        self._folder_removed = False
 
     # ── start ────────────────────────────────────────────────────────────
 
@@ -163,8 +168,7 @@ class ClaudeSession:
         if not await asyncio.to_thread(os.path.isdir, self._spec.cwd):
             raise self._missing_cwd()
         try:
-            files = await asyncio.to_thread(command.write_run_files, self._folder, self._spec,
-                                            self._credential_rules)
+            files = await asyncio.to_thread(self._write_run_files)
         except OSError as exc:
             raise RuntimeFailure("spec_refused", f"can't write the session's folder {self._folder}: "
                                                  f"{exc.strerror or exc}") from exc
@@ -336,7 +340,9 @@ class ClaudeSession:
         for handler in list(self._handlers.values()):
             handler.cancel()
         if self._stderr_task is not None:
-            await asyncio.wait({self._stderr_task}, timeout=KILL_GRACE_S)   # the rest of claude's stderr
+            done, _ = await asyncio.wait({self._stderr_task}, timeout=KILL_GRACE_S)   # the rest of its stderr
+            if not done:
+                await _cancel_and_wait(self._stderr_task, KILL_GRACE_S)
         tail = " | ".join(list(self._stderr)[-5:])[:500]
         for future in self._pending.values():
             if not future.done():
@@ -363,8 +369,19 @@ class ClaudeSession:
         self._turn_idle.set()
         self._finished.set()
 
+    def _write_run_files(self) -> command.RunFiles:
+        """Blocking (a thread). Never once the folder was removed for good: a
+        restart cancelled mid-write must not bring it back after close()."""
+        with self._folder_lock:
+            if self._folder_removed:
+                raise RuntimeFailure("process_died", f"session {self.id} has ended; open it again to resume")
+            return command.write_run_files(self._folder, self._spec, self._credential_rules)
+
     def _remove_folders(self) -> None:
-        shutil.rmtree(self._folder, ignore_errors=True)
+        """Blocking (a thread): the session's folder, for good."""
+        with self._folder_lock:
+            self._folder_removed = True
+            shutil.rmtree(self._folder, ignore_errors=True)
         if not self._spec.persist:
             remove_empty_project_folder(self._claude_home, self._spec.cwd)
 

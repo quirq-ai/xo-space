@@ -125,14 +125,13 @@ def _cursor(path: Path, after: str | None) -> int:
         return 0
     stale = RuntimeFailure("protocol", f"{after!r} is not a cursor of transcript {path.stem}; read it again "
                                        "from the start (no cursor)")
-    try:
-        offset = int(after)
-    except ValueError:
-        raise stale from None
+    if not (after.isascii() and after.isdigit()):
+        raise stale                     # only what a page gave: plain digits, no sign or space
+    offset = int(after)
     try:
         with path.open("rb") as f:
             size = os.fstat(f.fileno()).st_size
-            if offset < 0 or offset > size:
+            if offset > size:
                 raise stale
             if offset:
                 f.seek(offset - 1)
@@ -156,7 +155,8 @@ def _records(path: Path, start: int) -> Iterator[tuple[int, dict[str, Any]]]:
                     return
                 offset += len(line)
                 try:
-                    record = json.loads(line)
+                    # Invalid UTF-8 is read with replacement characters: reported, never dropped.
+                    record = json.loads(line.decode("utf-8", errors="replace"))
                 except ValueError:
                     continue
                 if isinstance(record, dict):
