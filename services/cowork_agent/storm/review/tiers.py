@@ -14,12 +14,16 @@ project config come in through ``Places``.
 
 from __future__ import annotations
 
+import ipaddress
+import posixpath
 import re
+import socket
 from dataclasses import dataclass, field
+from functools import lru_cache
 from enum import IntEnum
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from services.cowork_agent.storm.review.paths import Place, Places
 from services.cowork_agent.storm.review.shell import Redirect, ShellRefused, SimpleCommand, parse
@@ -48,11 +52,11 @@ KNOWN_HOSTS = frozenset({
     "developer.mozilla.org", "docs.github.com",
 })
 #: XO routes the xo-projects skill documents for agents (ch 16 §7): the inbox and backups.
-XO_AGENT_ROUTES = ("/api/inbox", "/api/xo-projects-sync/")
+#: Matched on the path's segments, after decoding and resolving "..".
+XO_AGENT_ROUTES = ("/api/inbox", "/api/xo-projects-sync")
 #: Anything else naming these is XO's own machinery (anti-forgery, R-E T2).
 XO_MARKERS = ("/mcp/space-comms", "/api/chat/", "XO_COMMS_TOKEN", "XO_SESSION_TOKEN", "XO_API_KEY",
               "XO_AUTH_SESSION_ID", "XO_POLL_TOKEN")
-LOOPBACK = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"})
 
 #: Read-only commands, each with the flags that would make it not read-only.
 READ_ONLY = {
@@ -120,7 +124,7 @@ GLOBAL_FLAGS = ("-g", "--global", "--location=global")
 GIT_READ_SUBCOMMANDS = frozenset({"status", "diff", "log", "show", "blame", "rev-parse", "ls-files", "ls-tree",
                                   "cat-file", "describe", "shortlog", "grep", "reflog", "rev-list", "whatchanged"})
 GIT_LOCAL_SUBCOMMANDS = frozenset({"add", "commit", "checkout", "switch", "restore", "stash", "mv", "rm"})
-GIT_OUTPUT_FLAGS = ("--output", "-o")
+GIT_OUTPUT_FLAGS = ("--output", "--output-directory")      # plus -o for format-patch
 GIT_FORCE = ("-f", "--force", "--force-with-lease", "--force-if-includes", "--mirror", "--delete", "-d", "--prune")
 THREAD_BRANCH = re.compile(r"^(refs/heads/)?xo/thread-[A-Za-z0-9._-]+$")
 
@@ -146,7 +150,7 @@ class Part:
     category: str
     reasons: tuple[str, ...] = ()
     read_only: bool = False
-    secret_read: bool = False
+    secret_read: bool = False             # it may read credentials (or XO can't tell what it reads)
     protected: tuple[str, ...] = ()       # protected paths it would write: always denied
     runs_repo_code: bool = False
     # What a rule matches against:
@@ -184,10 +188,15 @@ class Assessment:
 
 @dataclass
 class _Judge:
+    """Collects one part's features. Findings only ever add up: once a part
+    writes (``wrote``), nothing later can make it read-only again or put it
+    in a default rule's category, whatever the program or URL looks like."""
+
     tier: Tier = Tier.ROUTINE
     category: str = OTHER
     reasons: list[str] = field(default_factory=list)
-    read_only: bool = False
+    read_only: bool = False               # the program only reads, as far as its own words go
+    wrote: bool = False                   # something in it writes a file
     secret_read: bool = False
     protected: list[str] = field(default_factory=list)
     runs_repo_code: bool = False
@@ -200,7 +209,12 @@ class _Judge:
             self.reasons.append(reason)
 
     def part(self, *, path: str | None = None, mcp: tuple[str, str] | None = None) -> Part:
-        return Part(self.tier, self.category, tuple(self.reasons), self.read_only, self.secret_read,
+        category = self.category
+        if self.wrote:
+            # A write never rides on a read, git or network default rule.
+            routine_edit = self.tier == Tier.ROUTINE and not self.protected and category in (OTHER, EDIT_INSIDE)
+            category = EDIT_INSIDE if routine_edit else OTHER
+        return Part(self.tier, category, tuple(self.reasons), self.read_only and not self.wrote, self.secret_read,
                     tuple(self.protected), self.runs_repo_code, self.words, path, self.host, mcp)
 
 
@@ -209,32 +223,52 @@ class _Judge:
 #: git's options before the subcommand; the ones with a value take the next word.
 GIT_GLOBAL_VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
 _SHORT_FLAGS = re.compile(r"^-[A-Za-z]+$")
+#: Other spellings of the same flag, for the commands whose rules matter most.
+FLAG_ALIASES = {
+    "rm": {"-R": "-r", "--recursive": "-r", "--force": "-f", "--dir": "-d", "--verbose": "-v",
+           "--interactive": "-i"},
+    "cp": {"-R": "-r", "--recursive": "-r", "--force": "-f", "--archive": "-a", "--verbose": "-v"},
+    "mv": {"--force": "-f", "--verbose": "-v", "--no-clobber": "-n"},
+    "chmod": {"--recursive": "-R", "--verbose": "-v"},
+    "chown": {"--recursive": "-R", "--verbose": "-v"},
+}
 
 
 def canonical_words(words: Iterable[str]) -> tuple[str, ...]:
-    """The form rules compare: the program by name only, git's options before
-    its subcommand dropped, and each run of short flags spelled one flag a
-    word, sorted, so ``rm -fr``, ``rm -rf`` and ``rm -r -f`` are the same
-    words and ``git -C . push`` is ``git push`` (R-E F6, F7)."""
+    """The form rules compare. The program by name only; git's options
+    before its subcommand dropped; and each run of short flags, with their
+    long spellings, folded into one sorted word, so ``rm -fr``, ``rm -rf``,
+    ``rm -r -f``, ``rm -fR`` and ``rm --recursive --force`` are all
+    ``rm -fr`` and ``git -C . push`` is ``git push`` (R-E F6, F7)."""
     words = list(words)
     if not words:
         return ()
-    out = [words[0].rsplit("/", 1)[-1]]
+    program = words[0].rsplit("/", 1)[-1]
+    aliases = FLAG_ALIASES.get(program, {})
+    out = [program]
     rest = words[1:]
-    if out[0] == "git":
+    if program == "git":
         while rest and rest[0].startswith("-"):
             flag = rest.pop(0)
             if flag in GIT_GLOBAL_VALUED and rest:
                 rest.pop(0)
-    run: list[str] = []
+    run: set[str] = set()
     for word in rest:
+        word = aliases.get(word, word)
         if _SHORT_FLAGS.match(word):
-            run += [f"-{c}" for c in word[1:]]
+            run.update(aliases.get(f"-{c}", f"-{c}")[1] for c in word[1:])
             continue
-        out += sorted(set(run))
-        run = []
+        if run:
+            out.append("-" + "".join(sorted(run)))
+            run = set()
         out.append(word)
-    return tuple(out + sorted(set(run)))
+    if run:
+        out.append("-" + "".join(sorted(run)))
+    return tuple(out)
+
+
+def is_flag_run(word: str) -> bool:
+    return bool(_SHORT_FLAGS.match(word))
 
 
 # ── Whole actions ────────────────────────────────────────────────────────────
@@ -265,8 +299,6 @@ def assess_paths(kind: str, paths: Iterable[str], places: Places, cwd: Path | No
         (_write if writes else _read)(judge, path, places, cwd)
         if not writes and judge.tier == Tier.ROUTINE:
             judge.category = READ_INSIDE
-        elif writes and judge.tier == Tier.ROUTINE and not judge.protected:
-            judge.category = EDIT_INSIDE
         parts.append(judge.part(path=places.relative(path, cwd)))
     return Assessment(tuple(parts) or (Part(Tier.NOTABLE, OTHER, ("it names no file",)),))
 
@@ -334,7 +366,7 @@ def _command(command: SimpleCommand, places: Places, where: Path | None, branch:
         _program(judge, argv, places, where, branch, ports)
     elif not command.redirects:
         judge.read_only = True
-    if judge.tier == Tier.ROUTINE and judge.category == OTHER and judge.read_only:
+    if judge.tier == Tier.ROUTINE and judge.category == OTHER and judge.read_only and not judge.wrote:
         judge.category = READ_INSIDE
     return judge.part()
 
@@ -444,7 +476,9 @@ def _read_only(judge: _Judge, name: str, args: list[str], places: Places, where:
 def _read(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
     place = places.place(path, where)
     if place is None:
-        judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is")
+        # A variable or a glob can name anything, credentials included.
+        judge.secret_read = True
+        judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is, so it may be a secret")
     elif place is Place.SECRET or place is Place.STATE_ROOT or place is Place.CLI_HOME:
         judge.secret_read = True
         judge.at_least(Tier.DESTRUCTIVE, f"it reads credentials or private state ({path})")
@@ -453,16 +487,17 @@ def _read(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
 
 
 def _write(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
-    judge.read_only = False
+    judge.wrote = True
+    if places.resolve(path, where) is None:
+        judge.at_least(Tier.DESTRUCTIVE, f"XO can't tell where {path} is, so it can't check it isn't protected")
+        return
     why = places.protected(path, where)
     if why:
         judge.protected.append(f"{path}: {why}")
         judge.at_least(Tier.DESTRUCTIVE, f"it writes a protected path ({path})")
         return
     place = places.place(path, where)
-    if place is None:
-        judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is")
-    elif place in (Place.STATE_ROOT, Place.OTHER_WORKTREE, Place.CLI_HOME, Place.SECRET):
+    if place in (Place.STATE_ROOT, Place.OTHER_WORKTREE, Place.CLI_HOME, Place.SECRET):
         judge.at_least(Tier.DESTRUCTIVE, f"it writes {_PLACE_WORDS[place]} ({path})")
     elif place is Place.OUTSIDE:
         judge.at_least(Tier.NOTABLE, f"it writes outside this session's folder ({path})")
@@ -473,7 +508,7 @@ _PLACE_WORDS = {Place.STATE_ROOT: "XO's own state", Place.OTHER_WORKTREE: "anoth
 
 
 def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
-    judge.read_only = False
+    judge.wrote = True
     targets = [a for a in args if not a.startswith("-") or a == "-"]
     if not targets:
         judge.at_least(Tier.NOTABLE, f"{name} with no visible target")
@@ -487,17 +522,25 @@ def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Pa
             judge.at_least(Tier.DESTRUCTIVE, f"it deletes a protected path ({target})")
         elif places.place(target, where) is not Place.INSIDE:
             judge.at_least(Tier.DESTRUCTIVE, f"{name} outside this session's folder ({target})")
-    if judge.tier == Tier.ROUTINE:
-        judge.category = EDIT_INSIDE
+
+
+#: Each file-writing command's options that take a value (the value is not an operand).
+_TARGET_DIR = ("-t", "--target-directory", "-S", "--suffix")
+FILE_WRITE_VALUED = {"cp": _TARGET_DIR, "mv": _TARGET_DIR, "ln": _TARGET_DIR,
+                     "install": (*_TARGET_DIR, "-m", "--mode", "-o", "--owner", "-g", "--group"),
+                     "rsync": ("-e", "--rsh", "-f", "--filter", "--exclude", "--include")}
 
 
 def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
-    judge.read_only = False
-    operands = [a for a in args if not a.startswith("-")]
+    judge.wrote = True
+    operands = _operands(args, FILE_WRITE_VALUED.get(name, ()))
+    into = _flag_value(args, ("-t", "--target-directory")) if name in ("cp", "mv", "ln", "install") else None     # cp/mv/ln/install -t DIR SOURCE...
     if name == "dd":
         targets = [a.split("=", 1)[1] for a in args if a.startswith("of=")]
         reads = [a.split("=", 1)[1] for a in args if a.startswith("if=")]
-    elif name in ("cp", "install", "ln", "rsync"):
+    elif name in ("cp", "install", "ln", "rsync", "mv") and into is not None:
+        targets, reads = [into], operands
+    elif name in ("cp", "install", "ln", "rsync", "mv"):
         targets, reads = operands[-1:], operands[:-1]
     else:
         targets, reads = operands, []
@@ -507,12 +550,24 @@ def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where
         judge.at_least(Tier.DESTRUCTIVE, "rsync copies to or from another machine")
     for path in reads:
         _read(judge, path, places, where)
-    for path in (operands if name == "mv" else targets):
+    for path in (*targets, *(reads if name == "mv" else ())):   # mv also removes its sources
         _write(judge, path, places, where)
+    if name in ("cp", "install", "ln", "rsync", "mv"):
+        # The destination may be a folder: each source lands inside it by name.
+        for folder in targets:
+            for source in reads:
+                _guard(judge, f"{folder.rstrip('/')}/{source.rstrip('/').rsplit('/', 1)[-1]}", places, where)
     if not targets:
         judge.at_least(Tier.NOTABLE, f"{name} with no visible target")
-    if judge.tier == Tier.ROUTINE:
-        judge.category = EDIT_INSIDE
+
+
+def _guard(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
+    """Only the protected-path check, for a path a command may write without
+    it being its main effect (a git pathspec, a file landing in a folder)."""
+    why = places.protected(path, where)
+    if why:
+        judge.protected.append(f"{path}: {why}")
+        judge.at_least(Tier.DESTRUCTIVE, f"it writes a protected path ({path})")
 
 
 # ── git, gh ──────────────────────────────────────────────────────────────────
@@ -535,11 +590,10 @@ def _git(judge: _Judge, args: list[str], places: Places, where: Path | None, bra
         return
     sub, rest = args[0], args[1:]
     outside = here is None or places.place(str(here), None) not in (Place.INSIDE,) and here != places.session_folder
-    if any(a.split("=", 1)[0] in GIT_OUTPUT_FLAGS for a in rest):
+    output_flags = (*GIT_OUTPUT_FLAGS, "-o") if sub == "format-patch" else GIT_OUTPUT_FLAGS
+    if any(a.split("=", 1)[0] in output_flags for a in rest):
         judge.at_least(Tier.NOTABLE, f"git {sub} --output writes a file")
-        for a in rest:
-            if a.startswith("--output="):
-                _write(judge, a.split("=", 1)[1], places, here)
+        _write(judge, _flag_value(rest, output_flags) or "", places, here)
         return
     if sub in GIT_READ_SUBCOMMANDS or (sub in ("branch", "tag") and _lists_only(rest)) or (
             sub == "remote" and (not rest or rest[0] in ("-v", "show", "get-url"))) or (
@@ -569,10 +623,11 @@ def _git(judge: _Judge, args: list[str], places: Places, where: Path | None, bra
         judge.at_least(Tier.DESTRUCTIVE, "git clean outside this session's folder")
         return
     if sub in ("checkout", "restore", "rm", "mv"):
-        paths = rest[rest.index("--") + 1:] if "--" in rest else (
-            [a for a in rest if not a.startswith("-")] if sub in ("restore", "rm", "mv") else [])
-        for path in paths:
-            _write(judge, path, places, here)
+        # Any operand may be a pathspec, with "--" or without (git checkout
+        # HEAD .xo/project.json); a branch name never matches a protected
+        # path, so checking every operand costs nothing.
+        for operand in (a for a in rest if not a.startswith("-")):
+            _guard(judge, operand, places, here)
     if sub in GIT_LOCAL_SUBCOMMANDS or sub == "branch":
         if not outside and not judge.protected:
             judge.category = GIT_LOCAL if sub in ("add", "commit") or (sub == "checkout" and "-b" in rest) else OTHER
@@ -622,32 +677,43 @@ def _gh(judge: _Judge, args: list[str]) -> None:
 # ── Network ──────────────────────────────────────────────────────────────────
 
 
+#: Each download tool's flags: what sends data, what takes a value, where output goes.
+_CURL_DATA = ("-d", "--data", "--data-binary", "--data-raw", "--data-urlencode", "--json", "-F", "--form",
+              "-T", "--upload-file")
+_WGET_DATA = ("--post-data", "--post-file", "--body-data", "--body-file")
+DOWNLOADERS = {
+    "curl": {"data": _CURL_DATA, "settings": ("-K", "--config"), "output": ("-o", "--output"),
+             "valued": ("-X", "--request", "-o", "--output", "--output-dir", "-K", "--config", "-H", "--header",
+                        "-u", "--user", "-A", "--user-agent", "-e", "--referer", *_CURL_DATA)},
+    "wget": {"data": _WGET_DATA, "settings": ("-e", "--execute"), "output": ("-O", "--output-document"),
+             "valued": ("-O", "--output-document", "-P", "--directory-prefix", "-e", "--execute", "--method",
+                        "--header", "-U", "--user-agent", "--user", "--password", *_WGET_DATA)},
+    "http": {"data": (), "settings": (), "output": ("-o", "--output"),
+             "valued": ("-o", "--output", "-a", "--auth", "--session", "--verify", "--cert")},
+}
+DOWNLOADERS["https"] = DOWNLOADERS["http"]
+
+
 def _download(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None,
               ports: frozenset[int]) -> None:
-    """curl, wget and httpie: the method, any upload, any file written, and
+    """curl, wget and httpie: the method, any upload, every file written, and
     each URL."""
-    data_flags = ("-d", "--data", "--data-binary", "--data-raw", "--data-urlencode", "--json", "-F", "--form",
-                  "-T", "--upload-file", "--post-data", "--post-file", "--body-data", "--body-file")
-    valued = ("-X", "--request", "--method", "-o", "--output", "-O", "--output-document", "-K", "--config",
-              "-e", "--execute", "-H", "--header", "-u", "--user", "-A", "--user-agent", *data_flags)
+    tool = DOWNLOADERS[name]
     method = (_flag_value(args, ("-X", "--request", "--method")) or "GET").upper()
-    if any(a.split("=", 1)[0] in data_flags for a in args):
+    if any(a.split("=", 1)[0] in tool["data"] for a in args):
         method = "POST" if method == "GET" else method
-    settings = ("-K", "--config") if name == "curl" else ("-e", "--execute") if name == "wget" else ()
-    if any(a.split("=", 1)[0] in settings for a in args):
+    if any(a.split("=", 1)[0] in tool["settings"] for a in args):
         judge.at_least(Tier.DESTRUCTIVE, f"{name} reads settings XO can't see")
     for i, arg in enumerate(args):
         flag, eq, value = arg.partition("=")
-        if flag in data_flags and not eq and i + 1 < len(args):
-            value = args[i + 1]
-        if flag in data_flags and value.startswith("@") and len(value) > 1:
-            _read(judge, value[1:], places, where)       # curl -d @file sends the file
-        if flag in ("--post-file", "--body-file", "-T", "--upload-file") and value:
+        if flag not in tool["data"]:
+            continue
+        value = value if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if value.startswith("@") and len(value) > 1:
+            _read(judge, value[1:], places, where)          # curl -d @file sends the file
+        elif flag in ("--post-file", "--body-file", "-T", "--upload-file") and value:
             _read(judge, value, places, where)
-    output = _flag_value(args, ("-o", "--output", "--output-document") if name != "wget" else ("-O", "--output-document"))
-    if output and output != "-":
-        _write(judge, output, places, where)
-    words = _operands(args, valued)
+    words = _operands(args, tool["valued"])
     if name in ("http", "https"):
         # httpie: an optional method word, the URL, then items; a data item makes it a POST.
         if words and words[0].upper() in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
@@ -657,8 +723,35 @@ def _download(judge: _Judge, name: str, args: list[str], places: Places, where: 
         words = words[:1]
     if not words:
         judge.at_least(Tier.NOTABLE, f"{name} with no visible URL")
+    for path in _downloaded_files(name, args, words, tool):
+        _write(judge, path, places, where)
     for url in words:
         _fetch(judge, url, method, ports)
+
+
+def _downloaded_files(name: str, args: list[str], urls: list[str], tool: dict) -> list[str]:
+    """The files a download writes: the one named, or the ones the tool names
+    after the URL."""
+    named = _flag_value(args, tool["output"])
+    if named is not None:
+        return [] if named == "-" else [named]
+    if name == "curl" and any(a in ("-O", "--remote-name", "--remote-name-all") for a in args):
+        folder = _flag_value(args, ("--output-dir",)) or "."
+    elif name == "wget" and "--spider" not in args:
+        folder = _flag_value(args, ("-P", "--directory-prefix")) or "."
+    elif name in ("http", "https") and any(a in ("-d", "--download") for a in args):
+        folder = "."
+    else:
+        return []
+    return [f"{folder.rstrip('/')}/{_url_file(url)}" for url in urls]
+
+
+def _url_file(url: str) -> str:
+    try:
+        path = urlsplit(url if "://" in url else f"http://{url}").path
+    except ValueError:
+        path = ""
+    return path.rstrip("/").rsplit("/", 1)[-1] or "index.html"
 
 
 def _flag_value(args: list[str], flags: tuple[str, ...]) -> str | None:
@@ -685,10 +778,13 @@ def _operands(args: list[str], valued: tuple[str, ...]) -> list[str]:
 
 
 def _fetch(judge: _Judge, url: str, method: str, ports: frozenset[int]) -> None:
+    """One URL. XO's own server is a loopback host on one of ``ports`` (all
+    of loopback when no port is known); there only the routes the
+    xo-projects skill documents are open to agents (ch 16 §7)."""
     target = url if "://" in url else f"http://{url}"
     if "$" in target:
-        split = urlsplit(target.replace("$", ""))
-        if split.path.startswith(("/api/", "/mcp/")) and not split.path.startswith(XO_AGENT_ROUTES):
+        path = _route_path(urlsplit(target.replace("$", "")).path)
+        if path.startswith(("/api/", "/mcp/")) and not _agent_route(path):
             judge.at_least(Tier.DESTRUCTIVE, "it calls an XO route agents may not use")
         else:
             judge.at_least(Tier.NOTABLE, f"XO can't tell which host {url} reaches")
@@ -700,14 +796,14 @@ def _fetch(judge: _Judge, url: str, method: str, ports: frozenset[int]) -> None:
         judge.at_least(Tier.NOTABLE, f"XO can't read the URL {url}")
         return
     judge.host = host or None
-    if host in LOOPBACK and (port in ports or not ports):
-        if split.path.startswith(XO_AGENT_ROUTES):
-            if method == "GET":
-                judge.category = XO_DOCUMENTED_GET
-            else:
-                judge.at_least(Tier.NOTABLE, f"it changes XO's {split.path.split('/')[2]} through the API")
-        else:
+    if _is_loopback(host) and (port in ports or not ports):
+        path = _route_path(split.path)
+        if not _agent_route(path):
             judge.at_least(Tier.DESTRUCTIVE, "it calls an XO route agents may not use")
+        elif method == "GET":
+            judge.category = XO_DOCUMENTED_GET
+        else:
+            judge.at_least(Tier.NOTABLE, f"it changes XO's {path.split('/')[2]} through the API")
         return
     if method != "GET":
         judge.at_least(Tier.DESTRUCTIVE, f"it sends data to {host or url} ({method})")
@@ -717,6 +813,63 @@ def _fetch(judge: _Judge, url: str, method: str, ports: frozenset[int]) -> None:
         judge.at_least(Tier.NOTABLE, f"it fetches from {host or url}")
 
 
+def _route_path(path: str) -> str:
+    """The path a server routes: percent-decoded until it stops changing and
+    with "." and ".." resolved, as curl and the server see it
+    (``/api/inbox/../secrets/env`` is ``/api/secrets/env``)."""
+    for _ in range(3):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    return posixpath.normpath("/" + path.lstrip("/"))
+
+
+def _agent_route(path: str) -> bool:
+    return any(path == route or path.startswith(route + "/") for route in XO_AGENT_ROUTES)
+
+
+def _is_loopback(host: str) -> bool:
+    """Every spelling of this machine: ``localhost`` and ``*.localhost``,
+    ``127.0.0.0/8`` (also as ``127.1``, ``0x7f.0.0.1``, ``2130706433``),
+    ``0.0.0.0``, ``::1`` and IPv4-mapped forms."""
+    host = host.strip("[]").rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost") or host in _hosts_file_loopback_names():
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            address = ipaddress.IPv4Address(socket.inet_aton(host))
+        except OSError:
+            return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.is_loopback or address.is_unspecified
+
+
+@lru_cache(maxsize=1)
+def _hosts_file_loopback_names() -> frozenset[str]:
+    """Names ``/etc/hosts`` maps to loopback (``localhost.localdomain``, often
+    the machine's own name on ``127.0.1.1``). Read once."""
+    names: set[str] = set()
+    try:
+        text = Path("/etc/hosts").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return frozenset()
+    for line in text.splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) < 2:
+            continue
+        try:
+            address = ipaddress.ip_address(fields[0])
+        except ValueError:
+            continue
+        if address.is_loopback or address.is_unspecified:
+            names.update(name.lower().rstrip(".") for name in fields[1:])
+    return frozenset(names)
+
+
 # ── Interpreters and packages ────────────────────────────────────────────────
 
 
@@ -724,12 +877,9 @@ def _interpreter(judge: _Judge, name: str, args: list[str], places: Places, wher
     inline = INTERPRETERS[name]
     if name in ("awk", "gawk", "sed"):
         if name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
-            judge.read_only = False
             files = [a for a in args if not a.startswith("-")][1:]
             for path in files:
                 _write(judge, path, places, where)
-            if judge.tier == Tier.ROUTINE:
-                judge.category = EDIT_INSIDE
             return
         judge.at_least(Tier.NOTABLE, f"{name} programs can write files and run commands")
         return

@@ -35,6 +35,7 @@ from services.cowork_agent.storm.review.tiers import (
     Part,
     Tier,
     canonical_words,
+    is_flag_run,
 )
 
 Scope = Literal["thread", "project", "workspace"]
@@ -50,12 +51,14 @@ class Match:
     host: str | None = None
     mcp: tuple[str, str] | None = None         # (server, tool); tool "*" is every tool of the server
 
-    def matches(self, part: Part) -> bool:
+    def matches(self, part: Part, *, at_least: bool = False) -> bool:
+        """``at_least`` (deny rules): a command carrying more flags than the
+        rule still matches. Otherwise (allow rules) flags must be exactly the
+        rule's, so "allow ``rm -f``" never covers ``rm -rf``."""
         if self.command is not None:
             return part.words == canonical_words(self.command)
         if self.prefix is not None:
-            prefix = canonical_words(self.prefix)
-            return part.words[:len(prefix)] == prefix
+            return _starts_with(part.words, canonical_words(self.prefix), at_least)
         if self.path_glob is not None:
             return part.path is not None and _glob(part.path, self.path_glob)
         if self.host is not None:
@@ -88,7 +91,7 @@ class Rule:
             return False
         if self.effect == "allow" and part.tier > self.tier:
             return False                       # "allow git log" never covers git log --output=/elsewhere
-        return self.kind == kind and self.match.matches(part)
+        return self.kind == kind and self.match.matches(part, at_least=self.effect == "deny")
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,17 @@ def render_sentence(rule_effect: str, scope: Scope, kind: str, match: Match, pro
     if rule_effect == "deny":
         return f"{where}, never {what}"
     return f"{where}, {what} without asking"
+
+
+def _starts_with(words: tuple[str, ...], prefix: tuple[str, ...], at_least: bool) -> bool:
+    """Word by word; with ``at_least``, the command's flags (anywhere in it)
+    need only include each flag run of the prefix."""
+    if not at_least:
+        return words[:len(prefix)] == prefix
+    plain = [w for w in prefix if not is_flag_run(w)]
+    wanted = {c for w in prefix if is_flag_run(w) for c in w[1:]}
+    have = {c for w in words if is_flag_run(w) for c in w[1:]}
+    return [w for w in words if not is_flag_run(w)][:len(plain)] == plain and wanted <= have
 
 
 def _glob(path: str, pattern: str) -> bool:

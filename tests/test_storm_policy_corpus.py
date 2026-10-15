@@ -11,7 +11,19 @@ import json
 import unittest
 from pathlib import Path
 
-from services.cowork_agent.storm.review import Action, Match, PolicyContext, Rule, SessionRef, Tier, decide
+from dataclasses import replace
+
+from services.cowork_agent.storm.review import (
+    Action,
+    Grant,
+    Match,
+    PolicyContext,
+    Rule,
+    SessionRef,
+    Tier,
+    decide,
+    input_sha256,
+)
 from services.cowork_agent.storm.review.paths import Places
 
 CORPUS = json.loads((Path(__file__).resolve().parent / "fixtures" / "storm" / "policy-corpus.json")
@@ -27,6 +39,8 @@ PLACES = Places(
 )
 SESSION = SessionRef(id="cse_1", role="thread", cwd=WORKTREE, project_pid="pid-app", thread_ts="t1",
                      branch="xo/thread-abc123")
+COORDINATOR = SessionRef(id="cse_c", role="coordinator", cwd=PROJECT, project_pid="pid-app")
+COORDINATOR_PLACES = replace(PLACES, session_folder=PROJECT, worktree=None)
 NOW = "2026-10-15T12:00:00Z"
 
 
@@ -37,14 +51,23 @@ def rule_from(spec: dict) -> Rule:
                 thread_ts="t1")
 
 
+def run(case: dict):
+    coordinator = case.get("role") == "coordinator"
+    session = COORDINATOR if coordinator else SESSION
+    raw = {"command": case["command"]}
+    grants = (Grant(id="g1", session_id=session.id, tool="Bash", input_sha256=input_sha256(raw),
+                    expires_at="2026-10-15T12:30:00Z"),) if case.get("grant") else ()
+    ctx = PolicyContext(places=COORDINATOR_PLACES if coordinator else PLACES, now=NOW, grants=grants,
+                        rules=(rule_from(case["rule"]),) if "rule" in case else ())
+    return decide(Action(kind="command", tool="Bash", session=session, command=case["command"], raw=raw), ctx)
+
+
 class CorpusTests(unittest.TestCase):
     def test_every_case(self) -> None:
         for case in CORPUS["cases"]:
-            with self.subTest(group=case["group"], command=case["command"]):
-                rules = (rule_from(case["rule"]),) if "rule" in case else ()
-                ctx = PolicyContext(places=PLACES, now=NOW, rules=rules)
-                verdict = decide(Action(kind="command", tool="Bash", session=SESSION, command=case["command"],
-                                        raw={"command": case["command"]}), ctx)
+            with self.subTest(group=case["group"], command=case["command"], role=case.get("role"),
+                              grant=case.get("grant")):
+                verdict = run(case)
                 if case["expect"] == "not_allow":
                     self.assertNotEqual(verdict.effect, "allow", verdict)
                 else:
@@ -57,10 +80,7 @@ class CorpusTests(unittest.TestCase):
         self.assertGreaterEqual(len(bypasses), 12)
         for case in bypasses:
             with self.subTest(command=case["command"]):
-                rules = (rule_from(case["rule"]),) if "rule" in case else ()
-                verdict = decide(Action(kind="command", tool="Bash", session=SESSION, command=case["command"]),
-                                 PolicyContext(places=PLACES, now=NOW, rules=rules))
-                self.assertIn(verdict.effect, ("ask", "deny"))
+                self.assertIn(run(case).effect, ("ask", "deny"))
 
 
 if __name__ == "__main__":
