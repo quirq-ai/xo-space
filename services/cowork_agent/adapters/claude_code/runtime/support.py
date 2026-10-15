@@ -129,9 +129,16 @@ def check(spec: SessionSpec) -> SupportReport:
 
 
 def _host_sees_the_rest(spec: SessionSpec) -> bool:
-    """Whether claude sends every action it doesn't allow to the stdio host:
-    a coordinator, or ``ask`` mode."""
-    return spec.orchestration == "coordinator" or spec.permissions.mode == "ask"
+    """Whether every shell command (the only way claude deletes) reaches the
+    stdio host: a coordinator's always do (its shell allows are stripped and
+    ``Bash`` is asked); in ``ask`` mode only when the spec allows no shell."""
+    if spec.orchestration == "coordinator":
+        return True
+    return spec.permissions.mode == "ask" and not any(_is_shell_ref(ref) for ref in spec.tools.allow)
+
+
+def _is_shell_ref(ref: str) -> bool:
+    return ref == "shell" or ref.startswith("shell:") or ref == "native:Bash" or ref.startswith("native:Bash(")
 
 
 def _permission_mode(spec: SessionSpec) -> SupportItem:

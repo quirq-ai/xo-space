@@ -29,6 +29,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, command, support
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
+from services.cowork_agent.adapters.claude_code.runtime.session import EVENT_QUEUE_SIZE
 from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter
@@ -231,6 +232,16 @@ class CheckAndFeaturesTests(unittest.TestCase):
                 support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
                                             permissions=c.PermissionPolicy(mode=mode)))
 
+    def test_ask_mode_counts_on_the_host_for_a_delete_only_when_no_shell_is_allowed(self) -> None:
+        for allow in (("shell",), ("shell:rm",), ("shell:git",), ("native:Bash",)):
+            with self.subTest(allow), self.assertRaises(c.SpecRefused):
+                support.check(c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(mode="ask"),
+                                            tools=c.ToolPolicy(allow=allow, deny=("delete",))))
+        coordinator = support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
+                                                  permissions=c.PermissionPolicy(mode="deny_unasked"),
+                                                  tools=c.ToolPolicy(allow=("shell:git log",), deny=("delete",))))
+        self.assertEqual(coordinator.weakest("tools.deny").enforced_by, "host")   # its shell allows are stripped
+
     def test_feature_list(self) -> None:
         listed = support.features("2.1.301")
         self.assertEqual(listed.features["project_config_paths"].values, (".claude/**", ".mcp.json"))
@@ -351,11 +362,13 @@ class FakeClaude:
         self.events: list[c.Event] = []
         self.reader: asyncio.Task | None = None
 
-    async def open(self, host: ScriptedHost | None = None, **spec) -> c.Session:
+    async def open(self, host: ScriptedHost | None = None, *, consume: bool = True, **spec) -> c.Session:
+        """``consume=False``: nobody reads ``events()`` (a stalled consumer)."""
         self.host = host or ScriptedHost(decide=lambda req: ALLOW)
         self.session = await self.runtime.open(c.SessionSpec(cwd=str(self.work), **spec), self.host,
                                                session_id="cse_test")
-        self.reader = asyncio.create_task(self._consume())
+        if consume:
+            self.reader = asyncio.create_task(self._consume())
         return self.session
 
     async def _consume(self) -> None:
@@ -635,6 +648,35 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cli.session.state, "closed")
         self.assertFalse((self.cli.root / "state" / "run" / "cse_test").exists())
 
+    async def test_close_during_an_effort_restart_with_a_stalled_consumer_never_hangs(self) -> None:
+        # The queue fills while nobody reads; the restart then waits on the old
+        # reader (blocked on the full queue) when close() cancels it.
+        flood = [claude.rate_limit("allowed") for _ in range(EVENT_QUEUE_SIZE + 80)]
+        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
+                               *claude.text_turn(SID, "ok"), claude.idle(SID), *flood, {"sleep": 30}])
+        await self.cli.open(effort="low", consume=False)
+        await self.cli.session.send(c.UserInput(text="go"))
+        while self.cli.session._queue.qsize() < EVENT_QUEUE_SIZE or self.cli.session._wire.current_turn:
+            await asyncio.sleep(0.05)
+        update = asyncio.create_task(self.cli.session.update(effort="high"))
+        await asyncio.sleep(0.5)
+        started = time.monotonic()
+        await asyncio.wait_for(self.cli.session.close(), 15)
+        self.assertLess(time.monotonic() - started, 10)
+        report = await asyncio.wait_for(update, 10)
+        self.assertEqual(report.items[0].support, "refused")
+        self.assertEqual(len(self.cli.host.launcher.spawned), 1)        # no new claude after the cancel
+        pid = self.cli.host.launcher.spawned[0].pid
+        self.assertNotIn(pid, {p.pid for p in live_processes()})
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        restart = self.cli.session._restart_task
+        self.assertTrue(restart is None or restart.done())
+        self.cli.reader = asyncio.create_task(self.cli._consume())      # a consumer comes back: events() ends
+        await asyncio.wait_for(self.cli.reader, 10)
+        self.assertEqual(self.cli.of(c.SessionClosed)[0].reason, "closed")
+        self.assertFalse((self.cli.root / "state" / "run" / "cse_test").exists())
+
     async def test_concurrent_sends_during_a_pending_restart_both_go_through(self) -> None:
         self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
                                *claude.text_turn(SID, "ok"), claude.idle(SID)])
@@ -870,6 +912,31 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(c.RuntimeFailure):
             await self.runtime.read_session("../escape")
 
+    async def test_the_cursor_is_a_byte_offset_and_a_stale_one_is_refused(self) -> None:
+        path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
+        lines = path.read_bytes().splitlines(keepends=True)
+        first = await self.runtime.read_session(self.S1, limit=2)
+        self.assertEqual(first.next, str(len(lines[0]) + len(lines[1])))   # where line 3 starts
+        for bad in ("5", "-1", str(path.stat().st_size + 1), "two"):
+            with self.subTest(bad), self.assertRaises(c.RuntimeFailure) as caught:
+                await self.runtime.read_session(self.S1, after=bad)
+            self.assertIn("not a cursor", caught.exception.message)
+        end = str(path.stat().st_size)
+        self.assertEqual((await self.runtime.read_session(self.S1, after=end)).items, ())
+
+    async def test_a_line_claude_is_still_writing_waits_for_the_next_read(self) -> None:
+        path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
+        size = path.stat().st_size
+        record = json.dumps({"type": "user", "uuid": "u3", "message": {"role": "user", "content": "more"}})
+        with path.open("a") as f:
+            f.write(record[:20])
+        page = await self.runtime.read_session(self.S1, after=str(size))
+        self.assertEqual(page.items, ())
+        with path.open("a") as f:
+            f.write(record[20:] + "\n")
+        page = await self.runtime.read_session(self.S1, after=str(size))
+        self.assertEqual([i["id"] for i in page.items], ["u3"])
+
     async def test_runs_from_the_sidecars(self) -> None:
         runs = await self.runtime.list_runs(self.S1)
         self.assertEqual([(r.run_id, r.parent_run_id, r.spawn_call_id, r.agent_type, r.title, r.background, r.depth)
@@ -927,7 +994,10 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(Path(run["cwd"]).name.startswith("xo-oneshot-"))
         self.assertFalse(Path(run["cwd"]).exists())
         self.assertNotIn("XO_API_KEY", run["env"])
-        self.assertEqual(oneshot_prompt.oneshot().check().weakest("isolation").support, "native")
+        isolation = oneshot_prompt.oneshot().check().weakest("isolation")
+        self.assertEqual(isolation.support, "native")
+        for word in ("user settings", "hooks", "user memory"):
+            self.assertIn(word, isolation.note)
 
     async def test_oneshot_failures_are_runtime_failures(self) -> None:
         from services.cowork_agent.adapters.claude_code import oneshot_prompt

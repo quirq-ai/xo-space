@@ -8,8 +8,9 @@ claude writes them; nothing is copied.
     ~/.claude/projects/<encoded cwd>/<session>/subagents/agent-<id>.meta.json  its sidecar
 
 A page is the transcript's conversation records (``user`` and ``assistant``)
-in file order; the cursor is the line number to continue after, so pages
-stay stable while claude appends. Blocking file I/O: callers run these in a
+in file order; the cursor is the byte offset to continue from, so each page
+reads only its own part of the file and pages stay stable while claude
+appends. Blocking file I/O: callers run these in a
 thread.
 """
 
@@ -28,7 +29,7 @@ from services.cowork_agent.adapters.contract import RunInfo, RuntimeFailure, Ses
 
 CONVERSATION = frozenset({"user", "assistant"})
 TITLE_MAX = 80
-#: Lines read from the top of a transcript to find its cwd and title.
+#: Records read from the top of a transcript to find its cwd and title.
 HEAD_LINES = 50
 
 
@@ -101,16 +102,13 @@ def session_file(claude_home: Path, native_id: str) -> Path:
 
 def _page(path: Path, *, after: str | None, limit: int, sidechains: bool) -> TranscriptPage:
     limit = max(limit, 1)
-    try:
-        start = int(after) if after else 0
-    except ValueError as exc:
-        raise RuntimeFailure("protocol", f"not a transcript cursor: {after!r}") from exc
+    start = _cursor(path, after)
     items: list[dict[str, Any]] = []
     last = start
-    for number, record in _records(path, start):
+    for end, record in _records(path, start):
         if len(items) >= limit:
             return TranscriptPage(items=tuple(items), next=str(last))
-        last = number
+        last = end
         if record.get("type") not in CONVERSATION or record.get("isMeta"):
             continue
         if record.get("isSidechain") and not sidechains:
@@ -120,27 +118,57 @@ def _page(path: Path, *, after: str | None, limit: int, sidechains: bool) -> Tra
     return TranscriptPage(items=tuple(items), next=None)
 
 
-def _records(path: Path, start: int) -> Iterator[tuple[int, dict[str, Any]]]:
-    """(line number, record) after line ``start``; unreadable lines skipped."""
+def _cursor(path: Path, after: str | None) -> int:
+    """The byte offset a cursor names. It must be one a page of this
+    transcript gave: a whole number, inside the file, at the start of a line."""
+    if not after:
+        return 0
+    stale = RuntimeFailure("protocol", f"{after!r} is not a cursor of transcript {path.stem}; read it again "
+                                       "from the start (no cursor)")
     try:
-        with path.open(encoding="utf-8", errors="replace") as f:
-            for number, line in enumerate(f, 1):
-                if number <= start:
-                    continue
+        offset = int(after)
+    except ValueError:
+        raise stale from None
+    try:
+        with path.open("rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if offset < 0 or offset > size:
+                raise stale
+            if offset:
+                f.seek(offset - 1)
+                if f.read(1) != b"\n":
+                    raise stale
+    except OSError as exc:
+        raise RuntimeFailure("session_not_found", f"can't read {path.name}: {exc.strerror}") from exc
+    return offset
+
+
+def _records(path: Path, start: int) -> Iterator[tuple[int, dict[str, Any]]]:
+    """(byte offset just past the record's line, record) from byte ``start``
+    on; unreadable lines are skipped, and a last line claude is still writing
+    (no newline yet) is left for the next read."""
+    try:
+        with path.open("rb") as f:
+            f.seek(start)
+            offset = start
+            for line in iter(f.readline, b""):
+                if not line.endswith(b"\n"):
+                    return
+                offset += len(line)
                 try:
                     record = json.loads(line)
                 except ValueError:
                     continue
                 if isinstance(record, dict):
-                    yield number, record
+                    yield offset, record
     except OSError as exc:
         raise RuntimeFailure("session_not_found", f"can't read {path.name}: {exc.strerror}") from exc
 
 
 def _session_info(path: Path, mtime: float) -> SessionInfo:
     cwd = title = None
-    for number, record in _records(path, 0):
-        if number > HEAD_LINES or (cwd and title):
+    for count, (_offset, record) in enumerate(_records(path, 0), 1):
+        if count > HEAD_LINES or (cwd and title):
             break
         if cwd is None and isinstance(record.get("cwd"), str):
             cwd = record["cwd"]

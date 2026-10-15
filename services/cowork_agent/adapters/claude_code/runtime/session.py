@@ -141,6 +141,7 @@ class ClaudeSession:
         self._attach_lock = asyncio.Lock()
         self._restart_task: asyncio.Task | None = None
         self._retiring: ProcessHandle | None = None   # the process a restart is replacing
+        self._retiring_reader: asyncio.Task | None = None
 
     # ── start ────────────────────────────────────────────────────────────
 
@@ -219,9 +220,7 @@ class ClaudeSession:
             await self._handle.terminate(KILL_GRACE_S)
         for task in (self._reader, self._stderr_task):
             if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+                await _cancel_and_wait(task, READER_DRAIN_S)
         await asyncio.to_thread(self._remove_folders)
         self.state = "failed"
 
@@ -337,8 +336,7 @@ class ClaudeSession:
         for handler in list(self._handlers.values()):
             handler.cancel()
         if self._stderr_task is not None:
-            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                await asyncio.wait_for(self._stderr_task, KILL_GRACE_S)
+            await asyncio.wait({self._stderr_task}, timeout=KILL_GRACE_S)   # the rest of claude's stderr
         tail = " | ".join(list(self._stderr)[-5:])[:500]
         for future in self._pending.values():
             if not future.done():
@@ -681,15 +679,16 @@ class ClaudeSession:
         old, reader = self._handle, self._reader
         self._pending_effort = None
         self._spec = replace(self._spec, effort=effort, fork=False, fork_at=None)
-        self._retiring, self._handle = old, None
+        self._retiring, self._retiring_reader, self._handle = old, reader, None
         for handler in list(self._handlers.values()):
             handler.cancel()                # a background run's held check: its process is going
         if old is not None:
             await old.terminate(KILL_GRACE_S)
         if reader is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reader
-        self._retiring = None
+            # asyncio.wait, not a suppressed await: a close() that cancels this
+            # restart must stop it here, before it attaches a new process.
+            await asyncio.wait({reader})
+        self._retiring = self._retiring_reader = None
         # Background runs and their calls died with the old process.
         await self._deliver([*self._wire.cancel_all_tools(), *self._wire.end_live_runs("claude was restarted")])
         try:
@@ -732,11 +731,13 @@ class ClaudeSession:
         self.state = "closing"
         for handler in list(self._handlers.values()):
             handler.cancel()
-        restart = self._restart_task
-        if restart is not None and not restart.done():
-            restart.cancel()                # a restart in flight never attaches a new process now
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await restart
+        if self._restart_task is not None:
+            # A restart in flight never attaches a new process now; one held up
+            # (its old reader blocked on a consumer that stopped reading) is
+            # given up on after READER_DRAIN_S, like any reader.
+            await _cancel_and_wait(self._restart_task, READER_DRAIN_S)
+        if self._retiring_reader is not None:
+            await _cancel_and_wait(self._retiring_reader, READER_DRAIN_S)
         for handle in (self._retiring, self._handle):
             if handle is not None:
                 await handle.terminate(grace_s)
@@ -756,9 +757,7 @@ class ClaudeSession:
         done, _ = await asyncio.wait({reader}, timeout=READER_DRAIN_S)
         if done:
             return
-        reader.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await reader
+        await _cancel_and_wait(reader, READER_DRAIN_S)
         if not self._finished.is_set():
             await self._ended(await handle.wait(), None)
 
@@ -775,6 +774,15 @@ class ClaudeSession:
             await self._deliver([Out(Notice, {"code": "credentials_changed",
                                               "message": "the claude login changed since this process started; "
                                                          "recycle the session to use it"})])
+
+
+async def _cancel_and_wait(task: asyncio.Task, timeout: float) -> None:
+    """Cancel a task this session owns and wait at most ``timeout`` for it to
+    end. Never swallows the caller's own cancellation (unlike a suppressed
+    ``await task``): ``asyncio.wait`` leaves the task's outcome in the task."""
+    if not task.done():
+        task.cancel()
+        await asyncio.wait({task}, timeout=timeout)
 
 
 def _content_blocks(msg: UserInput) -> list[dict[str, Any]]:

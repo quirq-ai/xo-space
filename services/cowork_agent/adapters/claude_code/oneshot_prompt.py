@@ -49,7 +49,10 @@ class ClaudeOneshot:
     def check(self) -> SupportReport:
         return SupportReport(items=(
             SupportItem(feature="isolation", support="native", enforced_by="cli",
-                        mechanism="--tools '' --strict-mcp-config --no-session-persistence, in an empty folder"),
+                        mechanism="--tools '' --strict-mcp-config --no-session-persistence, in an empty folder",
+                        note="no tools, no MCP servers, no project and no transcript; the person's user "
+                             "settings do load, with their hooks and user memory, because settings can carry "
+                             "API-key auth"),
             SupportItem(feature="output_schema", support="native", enforced_by="cli", mechanism="--json-schema"),
         ))
 
