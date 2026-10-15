@@ -19,9 +19,9 @@ route may write through the engine.
    gone, so the decision will come back as a grant and a wake.
 6. The sessions with queued wakes are returned, oldest first, for the engine
    to admit (four at a time).
-7. Per-session folders under ``~/.quirq/run/`` are removed: none has a live
-   owner now. One that can't be removed is logged and left, so it never
-   stops the boot.
+7. Per-session folders under ``~/.quirq/run/`` are removed, except those of
+   sessions whose process may have survived step 2. One that can't be
+   removed is logged and left, so it never stops the boot.
 
 Steps 3–5 are one transaction.
 """
@@ -66,10 +66,10 @@ class RecoveryReport:
 async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None) -> RecoveryReport:
     if not lock.held:
         raise RuntimeError("boot recovery runs only under the engine lock")
-    cleared, left = await _reap_orphans(store)
+    cleared, survivors = await _reap_orphans(store)
     settled = await store.write(_settle)
-    removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir())
-    report = RecoveryReport(orphans_cleared=cleared, orphans_left=left, folders_removed=removed, **settled)
+    removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir(), survivors)
+    report = RecoveryReport(orphans_cleared=cleared, orphans_left=len(survivors), folders_removed=removed, **settled)
     log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d wake(s) requeued, "
              "%d call(s) parked, %d session(s) to re-kick, %d folder(s) removed",
              report.orphans_cleared, report.orphans_left, len(report.turns_interrupted), len(report.wakes_requeued),
@@ -77,21 +77,26 @@ async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None
     return report
 
 
-async def _reap_orphans(store: Store) -> tuple[int, int]:
-    """Stop each registered process that is still running; returns how many
-    rows were cleared and how many stay because their process survived."""
-    rows = await store.read(lambda conn: conn.execute("SELECT pid, start_ticks, started_at FROM procs").fetchall())
+async def _reap_orphans(store: Store) -> tuple[int, list[str | None]]:
+    """Stop each registered process that is still running. Returns how many
+    rows were cleared, and the session of each row kept because its process
+    may have survived (None for a process no session owns)."""
+    rows = await store.read(lambda conn: conn.execute(
+        "SELECT pid, start_ticks, started_at, session_id FROM procs").fetchall())
     booted = boot_time()
-    gone = await asyncio.gather(*(_gone(pid, ticks, started_at, booted) for pid, ticks, started_at in rows))
-    cleared = [(pid, ticks) for (pid, ticks, _), done in zip(rows, gone) if done]
-    for (pid, ticks, _), done in zip(rows, gone):
+    gone = await asyncio.gather(*(_gone(pid, ticks, started_at, booted) for pid, ticks, started_at, _ in rows))
+    cleared = [(pid, ticks) for (pid, ticks, _, _), done in zip(rows, gone) if done]
+    survivors = []
+    for (pid, ticks, _, session_id), done in zip(rows, gone):
         if not done:
-            log.warning("storm recovery: process %d (registered %s) could not be confirmed gone; its row is kept", pid, ticks)
+            log.warning("storm recovery: process %d (registered %s) could not be confirmed gone; its row is kept",
+                        pid, ticks)
+            survivors.append(session_id)
 
     def forget(tx: Tx) -> None:
         tx.conn.executemany("DELETE FROM procs WHERE pid = ? AND start_ticks = ?", cleared)
     await store.write(forget)
-    return len(cleared), len(rows) - len(cleared)
+    return len(cleared), survivors
 
 
 async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | None) -> bool:
@@ -101,8 +106,12 @@ async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | Non
         if booted is not None and datetime.fromisoformat(started_at).timestamp() < booted:
             return True
     except ValueError:
-        pass
-    return await reap_orphan(pid, start_ticks)
+        pass                # unreadable time: check the process instead
+    try:
+        return await reap_orphan(pid, start_ticks)
+    except Exception:  # noqa: BLE001 - one row must never stop the boot; the row is kept and retried
+        log.exception("storm recovery: checking process %d failed; its row is kept", pid)
+        return False
 
 
 def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
@@ -159,12 +168,14 @@ def _last_step(conn: sqlite3.Connection, turn_id: str | None) -> str:
     return f"“{title}”" if title else "it started"
 
 
-def _clear_session_folders(folder: Path) -> int:
+def _clear_session_folders(folder: Path, survivors: list[str | None]) -> int:
+    """Remove each session's folder, except those of sessions whose process
+    may still be running: it may still use its folder (an agy hook socket)."""
     if not folder.is_dir():
         return 0
     removed = 0
     for child in folder.iterdir():
-        if not child.name.startswith(SESSION_FOLDER_PREFIX):
+        if not child.name.startswith(SESSION_FOLDER_PREFIX) or child.name in survivors:
             continue
         try:
             if child.is_symlink() or not child.is_dir():

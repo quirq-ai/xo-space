@@ -110,10 +110,8 @@ class Tx:
 class Store:
     """Open with ``await Store.open(path)``; close with ``await store.close()``."""
 
-    def __init__(self, path: Path, conn: sqlite3.Connection, thread: ThreadPoolExecutor,
-                 loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, path: Path, conn: sqlite3.Connection, thread: ThreadPoolExecutor) -> None:
         self.path = path
-        self._loop = loop
         self._conn = conn
         self._thread = thread
         self._listeners: list[Callable[[list[StoredEvent]], None]] = []
@@ -133,7 +131,7 @@ class Store:
             if isinstance(exc, sqlite3.Error) and (failure := _store_failure(exc, path)):
                 raise failure from exc
             raise
-        return cls(path, conn, thread, asyncio.get_running_loop())
+        return cls(path, conn, thread)
 
     def on_commit(self, listener: Callable[[list[StoredEvent]], None]) -> None:
         """Call ``listener`` with each committed transaction's events, in seq
@@ -150,8 +148,9 @@ class Store:
         mid-write (a client went away): the store never keeps a change it
         doesn't announce. A cancelled writer can't tell whether its change
         was kept; it reads the store to find out."""
-        published = self._loop.create_future()
-        result = await self._run(self._transaction, fn, published)
+        loop = asyncio.get_running_loop()
+        published = loop.create_future()
+        result = await self._run(self._transaction, fn, loop, published)
         await published
         return result
 
@@ -167,14 +166,17 @@ class Store:
         return await self.read(query)
 
     async def close(self) -> None:
-        """Idempotent."""
+        """Idempotent. Work queued before the close still runs; anything
+        asked of the store afterwards is refused with `StoreFailed`."""
         if self._closed:
             return
         self._closed = True
-        await self._run(self._conn.close)
-        self._thread.shutdown(wait=True)
+        await asyncio.get_running_loop().run_in_executor(self._thread, self._conn.close)
+        self._thread.shutdown(wait=False)
 
     async def _run(self, fn: Callable[..., T], *args: Any) -> T:
+        if self._closed:
+            raise StoreFailed(f"The store at {self.path} is closed (the server is stopping); retry once it is up.")
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(self._thread, fn, *args)
@@ -185,7 +187,7 @@ class Store:
 
     # The two below run on the store's thread only.
 
-    def _transaction(self, fn: Callable[[Tx], T], published: asyncio.Future) -> T:
+    def _transaction(self, fn: Callable[[Tx], T], loop: asyncio.AbstractEventLoop, published: asyncio.Future) -> T:
         tx = Tx(self._conn)
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -196,7 +198,7 @@ class Store:
             if self._conn.in_transaction:
                 self._conn.execute("ROLLBACK")
             raise
-        self._loop.call_soon_threadsafe(self._publish, tx.events, published)
+        loop.call_soon_threadsafe(self._publish, tx.events, published)
         return result
 
     def _publish(self, events: list[StoredEvent], published: asyncio.Future) -> None:

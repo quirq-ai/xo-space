@@ -205,6 +205,24 @@ class TransactionTests(_Temp):
         await store.write(lambda tx: tx.append("b"))
         self.assertEqual(heard, [1, 2])
 
+    async def test_a_store_closed_refuses_with_a_typed_error(self) -> None:
+        store = await Store.open(self.db)
+        await store.close()
+        with self.assertRaises(StoreFailed) as caught:
+            await store.write(lambda tx: tx.append("a"))
+        self.assertIn("closed", caught.exception.message)
+
+    async def test_a_write_is_announced_on_the_loop_it_runs_on(self) -> None:
+        # Opened on a loop that has since closed (a test, a restart of the
+        # app's loop): a later write must still be announced, not fail after
+        # its commit.
+        store = await asyncio.to_thread(asyncio.run, Store.open(self.db))
+        self.addAsyncCleanup(store.close)
+        heard = []
+        store.on_commit(lambda events: heard.extend(e.seq for e in events))
+        self.assertEqual(await store.write(lambda tx: tx.append("a")), 1)
+        self.assertEqual(heard, [1])
+
     async def test_a_wake_is_inserted_once(self) -> None:
         store = await self.open()
 
@@ -369,12 +387,24 @@ class RecoveryTests(_Temp):
         self.assertIsNone(proc.returncode)
         self.assertEqual(process_start_ticks(proc.pid), proc.start_ticks)
 
-    async def test_a_row_whose_process_may_survive_is_kept_for_the_next_boot(self) -> None:
+    async def test_a_row_whose_process_may_survive_is_kept_with_its_folder(self) -> None:
+        (self.run / "cse_thread000000").mkdir()
+        (self.run / "cse_other").mkdir()
         with patch("services.cowork_agent.storm.store.recovery.reap_orphan", AsyncMock(return_value=False)), \
+                patch("services.cowork_agent.storm.store.recovery.boot_time", return_value=None), \
                 self.assertLogs("services.cowork_agent.storm.store.recovery", level="WARNING"):
             report = await recover(self.store, self.lock, folders=self.run)
         self.assertEqual((report.orphans_cleared, report.orphans_left), (0, 1))
         self.assertEqual(await self.rows("SELECT pid FROM procs"), [(4194300,)])
+        self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["cse_thread000000", "engine.lock"])
+
+    async def test_a_row_that_fails_to_check_never_stops_the_boot(self) -> None:
+        failing = AsyncMock(side_effect=PermissionError(1, "not permitted"))
+        with patch("services.cowork_agent.storm.store.recovery.reap_orphan", failing), \
+                patch("services.cowork_agent.storm.store.recovery.boot_time", return_value=None), \
+                self.assertLogs("services.cowork_agent.storm.store.recovery", level="ERROR"):
+            report = await recover(self.store, self.lock, folders=self.run)
+        self.assertEqual((report.orphans_left, report.turns_interrupted), (1, ("turn_000000000001",)))
 
     async def test_a_folder_that_cant_be_removed_never_stops_the_boot(self) -> None:
         stuck = self.run / "cse_stuck" / "locked"
