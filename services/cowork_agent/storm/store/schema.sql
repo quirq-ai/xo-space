@@ -141,6 +141,7 @@ CREATE INDEX hops_by_thread ON hops (chat_id, thread_ts, created_at);
 
 CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
+    seq             INTEGER NOT NULL UNIQUE,    -- the seq of its creation `session` event: lists page by it
     chat_id         TEXT REFERENCES chats (id) ON DELETE CASCADE,   -- none for a plain chat
     thread_ts       TEXT,
     role            TEXT NOT NULL,
@@ -178,6 +179,8 @@ CREATE TABLE turns (
     cost_source    TEXT CHECK (cost_source IN ('reported', 'estimate')),
     wall_ms        INTEGER,
     wait_person_ms INTEGER,
+    steps          INTEGER,                    -- the turn's own steps (sub-agents' are their runs')
+    tool_calls     INTEGER,
     peak_rss_kb    INTEGER,
     rate_limit     TEXT CHECK (rate_limit IS NULL OR json_valid(rate_limit))
 );

@@ -9,14 +9,16 @@ route may write through the engine.
    row is cleared once its process is gone (rows from before this machine's
    boot name nothing that runs); a row whose process survived stays, and the
    next boot tries again.
-3. Turns still marked running become ``interrupted`` (reason ``restart``); every
-   session that had a process goes ``cold`` and its epoch moves, so anything
-   left of the old process is fenced off.
+3. Turns still marked running become ``interrupted`` (reason ``restart``).
 4. Wakes those turns had taken go back to the queue, at least once, with a
    note naming the last step the turn got to. A turn that recorded its result
    already consumed its wakes, in the same transaction.
 5. Calls held waiting for the person are parked: the process holding them is
-   gone, so the decision will come back as a grant and a wake.
+   gone, so the decision will come back as a grant and a wake. Then every
+   session that had a process (or work steps 4–5 touched) gets a new epoch,
+   so anything left of the old process is fenced off, and goes ``parked`` if
+   it has a parked call, else ``cold``. Its ``session`` event names the wakes
+   requeued and the calls parked (the stream's vocabulary, ch 09 §3).
 6. The sessions with queued wakes are returned, oldest first, for the engine
    to admit (four at a time).
 7. Per-session folders under ``~/.quirq/run/`` are removed, except those of
@@ -123,15 +125,7 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
         tx.append("turn.finished", {"status": "interrupted", "reason": "restart"},
                   session_id=session_id, turn_id=turn_id, epoch=epoch)
 
-    sessions = tx.execute(
-        "SELECT id, chat_id, thread_ts FROM sessions WHERE status <> 'cold' AND retired_at IS NULL ORDER BY id"
-    ).fetchall()
-    for session_id, chat_id, thread_ts in sessions:
-        epoch = tx.execute("UPDATE sessions SET status = 'cold', epoch = epoch + 1, updated_at = ? WHERE id = ? "
-                           "RETURNING epoch", (now, session_id)).fetchone()[0]
-        tx.append("session", {"status": "cold", "reason": "restart"},
-                  chat_id=chat_id, session_id=session_id, thread_ts=thread_ts, epoch=epoch)
-
+    requeued: dict[str, list[str]] = {}
     wakes = tx.execute("SELECT id, session_id, turn_id, envelope FROM wakes WHERE state = 'taken' "
                        "ORDER BY created_at").fetchall()
     for wake_id, session_id, turn_id, envelope in wakes:
@@ -139,21 +133,37 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
         tx.execute("UPDATE wakes SET state = 'queued', turn_id = NULL, taken_at = NULL, "
                    "redelivery = redelivery + 1, envelope = ? WHERE id = ?",
                    (f"{note}\n\n{envelope}" if envelope else note, wake_id))
-        tx.append("wake.requeued", {"wake": wake_id, "reason": "restart"}, session_id=session_id,
-                  turn_id=turn_id)
+        requeued.setdefault(session_id, []).append(wake_id)
 
-    held = tx.execute("SELECT id, chat_id, thread_ts, session_id FROM review_items "
+    parked: dict[str, list[str]] = {}
+    held = tx.execute("SELECT id, session_id FROM review_items "
                       "WHERE state = 'open' AND parked = 0 AND native IS NOT NULL ORDER BY created_at").fetchall()
-    for item_id, chat_id, thread_ts, session_id in held:
+    for item_id, session_id in held:
         tx.execute("UPDATE review_items SET parked = 1 WHERE id = ?", (item_id,))
-        tx.append("review.parked", {"item": item_id, "reason": "restart"}, chat_id=chat_id,
-                  session_id=session_id, thread_ts=thread_ts)
+        parked.setdefault(session_id, []).append(item_id)
+
+    # Every session that had a process, or work the restart touched: a new
+    # epoch fences off anything left of the old process. One with a parked
+    # call is `parked` (it waits on the person); the rest are `cold`.
+    sessions = tx.execute("SELECT id, chat_id, thread_ts, status FROM sessions WHERE retired_at IS NULL "
+                          "ORDER BY id").fetchall()
+    fenced = []
+    for session_id, chat_id, thread_ts, status in sessions:
+        if status in ("cold", "parked") and session_id not in requeued and session_id not in parked:
+            continue                # no process, nothing touched: already settled
+        new_status = "parked" if session_id in parked else "cold"
+        epoch = tx.execute("UPDATE sessions SET status = ?, epoch = epoch + 1, updated_at = ? WHERE id = ? "
+                           "RETURNING epoch", (new_status, now, session_id)).fetchone()[0]
+        tx.append("session", {"status": new_status, "reason": "restart",
+                              "wakes_requeued": requeued.get(session_id, []), "parked": parked.get(session_id, [])},
+                  chat_id=chat_id, session_id=session_id, thread_ts=thread_ts, epoch=epoch)
+        fenced.append(session_id)
 
     rekick = tx.execute("SELECT session_id FROM wakes WHERE state = 'queued' GROUP BY session_id "
                         "ORDER BY min(created_at)").fetchall()
     return {
         "turns_interrupted": tuple(t[0] for t in turns),
-        "sessions_fenced": tuple(s[0] for s in sessions),
+        "sessions_fenced": tuple(fenced),
         "wakes_requeued": tuple(w[0] for w in wakes),
         "calls_parked": tuple(h[0] for h in held),
         "sessions_to_rekick": tuple(r[0] for r in rekick),
@@ -161,8 +171,8 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
 
 
 def _last_step(conn: sqlite3.Connection, turn_id: str | None) -> str:
-    """The title of the turn's last recorded step, or "it started"."""
-    row = conn.execute("SELECT data FROM events WHERE turn_id = ? AND type LIKE 'step.%' "
+    """The title of the turn's last tool step, or "it started"."""
+    row = conn.execute("SELECT data FROM events WHERE turn_id = ? AND type = 'step.tool' "
                        "ORDER BY seq DESC LIMIT 1", (turn_id,)).fetchone() if turn_id else None
     title = json.loads(row[0]).get("title") if row else None
     return f"“{title}”" if title else "it started"

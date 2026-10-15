@@ -149,6 +149,7 @@ CREATE INDEX hops_by_thread ON hops (chat_id, thread_ts, created_at);
 
 CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
+    seq             INTEGER NOT NULL UNIQUE,    -- the seq of its creation `session` event: lists page by it
     chat_id         TEXT REFERENCES chats (id) ON DELETE CASCADE,   -- none for a plain chat
     thread_ts       TEXT,
     role            TEXT NOT NULL,
@@ -186,6 +187,8 @@ CREATE TABLE turns (
     cost_source    TEXT CHECK (cost_source IN ('reported', 'estimate')),
     wall_ms        INTEGER,
     wait_person_ms INTEGER,
+    steps          INTEGER,                    -- the turn's own steps (sub-agents' are their runs')
+    tool_calls     INTEGER,
     peak_rss_kb    INTEGER,
     rate_limit     TEXT CHECK (rate_limit IS NULL OR json_valid(rate_limit))
 );
@@ -337,13 +340,16 @@ INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-
 INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}');
 
 INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_id, epoch, data) VALUES
-    (1, '2026-10-15T09:01:00Z', 'message', 'chat_p0000000000', NULL, '1760518860.000100', NULL, NULL, NULL, '{"message": "cmsg_0000000001"}'),
-    (2, '2026-10-15T09:01:01Z', 'turn.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"origin": "wake"}'),
-    (3, '2026-10-15T09:01:30Z', 'step.tool', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"title": "Read the failing test", "kind": "read"}'),
-    (4, '2026-10-15T09:01:40Z', 'review.opened', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"item": "rv_000000000001"}'),
-    (5, '2026-10-15T09:02:00Z', 'hop', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 3, '{"hop": "hop_000000000001"}');
+    (1, '2026-10-15T08:00:00Z', 'session', NULL, 'cse_plain0000000', NULL, NULL, NULL, 0, '{"status": "cold", "reason": "created"}'),
+    (2, '2026-10-15T09:00:30Z', 'session', 'chat_p0000000000', 'cse_coord0000000', NULL, NULL, NULL, 0, '{"status": "cold", "reason": "created"}'),
+    (3, '2026-10-15T09:01:00Z', 'message', 'chat_p0000000000', NULL, '1760518860.000100', NULL, NULL, NULL, '{"message": "cmsg_0000000001"}'),
+    (4, '2026-10-15T09:01:00Z', 'session', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 0, '{"status": "cold", "reason": "created"}'),
+    (5, '2026-10-15T09:01:01Z', 'turn.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"origin": "wake"}'),
+    (6, '2026-10-15T09:01:30Z', 'step.tool', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"title": "Read the failing test", "kind": "read"}'),
+    (7, '2026-10-15T09:01:40Z', 'review.opened', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"item": "rv_000000000001"}'),
+    (8, '2026-10-15T09:02:00Z', 'hop', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 3, '{"hop": "hop_000000000001"}');
 
-INSERT INTO messages VALUES ('cmsg_0000000001', 1, 'chat_p0000000000', '1760518860.000100', 'owner', NULL, NULL,
+INSERT INTO messages VALUES ('cmsg_0000000001', 3, 'chat_p0000000000', '1760518860.000100', 'owner', NULL, NULL,
     'Make the tests pass.', NULL, 'client-0001', '{}', '2026-10-15T09:01:00Z');
 
 INSERT INTO threads (chat_id, ts, title, state, session_id, cwd, branch, worktree_path, base_commit, created_at, updated_at)
@@ -352,14 +358,14 @@ VALUES ('chat_p0000000000', '1760518860.000100', 'Make the tests pass', 'needs_a
     '/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100',
     '0123456789abcdef0123456789abcdef01234567', '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z');
 
-INSERT INTO sessions (id, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, token_sha256, created_at, updated_at) VALUES
-    ('cse_thread000000', 'chat_p0000000000', '1760518860.000100', 'thread', 'thread', 'sample_agent', 'sample_agent:default',
+INSERT INTO sessions (id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, token_sha256, created_at, updated_at) VALUES
+    ('cse_thread000000', 4, 'chat_p0000000000', '1760518860.000100', 'thread', 'thread', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100", "permissions": {"mode": "accept_edits"}}',
      'native-0000000001', 'waiting_on_person', 3, 'replace-with-sha256-of-the-comms-token-0001', '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z'),
-    ('cse_coord0000000', 'chat_p0000000000', NULL, 'project-coordinator', 'project_coordinator', 'sample_agent', 'sample_agent:default',
+    ('cse_coord0000000', 2, 'chat_p0000000000', NULL, 'project-coordinator', 'project_coordinator', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects/sample-project", "permissions": {"mode": "deny_unasked"}, "orchestration": "coordinator"}',
      'native-0000000002', 'warm', 1, 'replace-with-sha256-of-the-comms-token-0002', '2026-10-15T09:00:30Z', '2026-10-15T09:00:59Z'),
-    ('cse_plain0000000', NULL, NULL, 'plain', 'plain_chat', 'sample_agent', 'sample_agent:default',
+    ('cse_plain0000000', 1, NULL, NULL, 'plain', 'plain_chat', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects", "permissions": {"mode": "auto"}}',
      'native-0000000003', 'cold', 2, NULL, '2026-10-15T08:00:00Z', '2026-10-15T08:20:00Z');
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import sqlite3
 import stat
@@ -227,8 +228,8 @@ class TransactionTests(_Temp):
         store = await self.open()
 
         def enqueue(tx):
-            tx.execute("INSERT OR IGNORE INTO sessions (id, role, preset, agent, spec, status, created_at, "
-                       "updated_at) VALUES ('cse_1', 'plain', 'plain_chat', 'a', '{}', 'cold', 't', 't')")
+            tx.execute("INSERT OR IGNORE INTO sessions (id, seq, role, preset, agent, spec, status, created_at, "
+                       "updated_at) VALUES ('cse_1', 1, 'plain', 'plain_chat', 'a', '{}', 'cold', 't', 't')")
             return tx.execute("INSERT INTO wakes (id, session_id, priority, reason, state, created_at) "
                               "VALUES ('msg:cmsg_1', 'cse_1', 'now', 'message', 'queued', 't') "
                               "ON CONFLICT (id) DO NOTHING").rowcount
@@ -312,7 +313,7 @@ class RecoveryTests(_Temp):
         self.assertEqual(await self.rows("SELECT status, stop_reason FROM turns"), [("interrupted", "restart")])
         self.assertEqual(report.sessions_fenced, ("cse_coord0000000", "cse_thread000000"))
         self.assertEqual(await self.rows("SELECT id, status, epoch FROM sessions ORDER BY id"), [
-            ("cse_coord0000000", "cold", 2), ("cse_plain0000000", "cold", 2), ("cse_thread000000", "cold", 4)])
+            ("cse_coord0000000", "cold", 2), ("cse_plain0000000", "cold", 2), ("cse_thread000000", "parked", 4)])
 
         self.assertEqual(report.wakes_requeued, ("msg:cmsg_0000000001",))
         (state, turn, redelivery, envelope), = await self.rows(
@@ -329,7 +330,11 @@ class RecoveryTests(_Temp):
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
         self.assertEqual(report.folders_removed, 2)
         self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["codex", "engine.lock"])
-        self.assertEqual(self.heard, ["turn.finished", "session", "session", "wake.requeued", "review.parked"])
+        self.assertEqual(self.heard, ["turn.finished", "session", "session"])
+        (data,), = await self.rows("SELECT data FROM events WHERE type = 'session' AND session_id = 'cse_thread000000' "
+                                   "ORDER BY seq DESC LIMIT 1")
+        self.assertEqual(json.loads(data), {"status": "parked", "reason": "restart",
+                                            "wakes_requeued": ["msg:cmsg_0000000001"], "parked": ["rv_000000000001"]})
 
     async def test_a_turn_that_finished_keeps_its_consumed_wakes(self) -> None:
         await self.store.write(lambda tx: (
