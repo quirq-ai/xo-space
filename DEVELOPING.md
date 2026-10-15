@@ -348,7 +348,8 @@ What XO Space keeps on one machine, outside every project, lives in the state
 root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
 watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
-`usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
+`usage/`, `settings/`, `secrets/`, `engine/` (storm's store, `xo.db`), `run/` (the engine lock
+and live sessions' folders), plus `cache/` and `logs/` (safe to delete) and
 `.locks/` (internal). `services/storage/layout.py` names each folder once.
 `services/storage/migrations.py` is how files get there from where earlier
 releases kept them: its `MOVES` list holds one block per layout change, and

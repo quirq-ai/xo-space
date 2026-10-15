@@ -17,6 +17,8 @@ into them.
 ├── usage/         how far usage has been reported to XO
 ├── settings/      Space-wide choices
 ├── secrets/       credentials (owner-only)
+├── engine/        storm's store: sessions, turns, chats, review
+├── run/           what a running server needs: the engine lock, live sessions' folders
 ├── cache/         safe to delete: rebuilt automatically
 ├── logs/          safe to delete
 ├── quarantine/    moved aside by a person; delete by hand
@@ -36,6 +38,8 @@ into them.
 | `usage/` | `<agent>.json` | `services/usage_sync.py` | how far usage was reported, so it would be sent again |
 | `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
+| `engine/` | `xo.db` with its `-wal` and `-shm` (SQLite; the sample is `xo.db.sql`, its text form) | storm (`services/cowork_agent/storm/store/`) | every storm conversation, thread, review item and rule; agents' own transcripts stay in their homes |
+| `run/` | `engine.lock`; `cse_<id>/`, one folder (0700) per live session | storm | nothing: boot recovery clears it |
 | `cache/` | `graph.json`, `dashboard.json`, `sessions.json`, `stats.json`, `sessions/`, `heartbeat.json`, `activity/` | the watcher | nothing: rebuilt automatically |
 | `logs/` | `quirq.log`, `scheduler/<id>.log` | `install.sh`, `utils/commands/` | diagnostics only |
 | `quarantine/` | `runtime-leftovers/<key>-<UTC time>/`: a `projects/<key>/` folder a person moved aside from the Quirq view | xo-doctor, only when a person confirms | nothing the doctor could still find; move a folder back to `projects/<key>` to use it again |
@@ -85,6 +89,9 @@ same pid (`00000000-0000-4000-8000-000000000000`) as the `.xo/` sample in
 `/home/you`, credentials read `replace-with-...`, and the agent is
 `sample_agent`. Names the code derives (session-index shards, sharing bookmarks
 and removal markers, lock sentinels) are the names it would give.
+
+`engine/xo.db.sql` is a store caught mid-turn, the state boot recovery starts
+from: its schema is the code's schema v1, exactly.
 
 Three kinds of file have no example, on purpose:
 

@@ -32,6 +32,7 @@ from services.cowork_agent.visualizer import workitem_claims
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
 from services.cowork_agent.project_sharing import state as sharing_state
 from services.cowork_agent.visualizer import state as watcher_state
+from services.cowork_agent.storm import store as storm_store
 from services.inbox import store as inbox_store
 from services.storage import flock, layout, migrations
 from utils import commands
@@ -75,7 +76,7 @@ class SampleTests(_Sandbox):
             layout.usage_dir(), layout.settings_dir(), layout.secrets_dir(),
             layout.cache_dir(), layout.logs_dir(), layout.locks_dir(),
             layout.connections_dir(), layout.scheduler_dir(), layout.sessions_dir(),
-            layout.quarantine_dir(),
+            layout.quarantine_dir(), layout.engine_dir(), layout.run_dir(),
         }
         self.assertEqual(sorted(p.name for p in named), _sample_folders())
 
@@ -105,6 +106,8 @@ class StorePathTests(_Sandbox):
             "live presence": watcher_state.project_activity_path("demo"),
             "a lock": flock._lock_path_for(Path("/elsewhere/.xo/todos.json")),
             "moved-aside runtime data": layout.quarantine_dir() / "runtime-leftovers",
+            "storm's store": storm_store.store_path(),
+            "the engine lock": storm_store.lock_path(),
         }
         folders = set(_sample_folders())
         for what, path in paths.items():
