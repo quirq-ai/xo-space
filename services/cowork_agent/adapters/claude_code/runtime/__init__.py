@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
 import uuid
 from pathlib import Path
+from typing import Mapping, Sequence
 
 from services.cowork_agent.adapters.claude_code.runtime import probe, support, transcript
 from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard
@@ -57,7 +60,7 @@ class _Executor:
     """``contract.Launcher`` on the one executor, for the runtime's own
     model-free probes (sessions start through the Host's launcher)."""
 
-    async def spawn(self, argv, *, cwd, env, label):
+    async def spawn(self, argv: Sequence[str], *, cwd: str, env: Mapping[str, str], label: str):
         return await spawn_stream(argv, cwd=cwd, env=env, label=label)
 
 
@@ -79,8 +82,8 @@ class ClaudeRuntime:
     def binary(self) -> str:
         return resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
 
-    def _probe_env(self) -> dict[str, str]:
-        return session_env(switches={}, spec_env={}, label="claude probe")
+    async def _probe_env(self) -> dict[str, str]:
+        return await asyncio.to_thread(session_env, switches={}, spec_env={}, label="claude probe")
 
     # ── what it offers ───────────────────────────────────────────────────
 
@@ -91,7 +94,7 @@ class ClaudeRuntime:
         return support.features(self._cli_version)
 
     async def describe(self) -> RuntimeInfo:
-        binary, env, home = self.binary(), self._probe_env(), str(Path.home())
+        binary, env, home = self.binary(), await self._probe_env(), str(Path.home())
         code, out = await probe.run(self._launcher, [binary, "--version"], env=env, cwd=home)
         version = out[0].decode(errors="replace").split()[0] if code == 0 and out and out[0].strip() else None
         if version is None:
@@ -117,7 +120,7 @@ class ClaudeRuntime:
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary))
         if key not in self._models:
-            reply = await probe.initialize(self._launcher, binary, env=self._probe_env())
+            reply = await probe.initialize(self._launcher, binary, env=await self._probe_env())
             if isinstance(reply.get("claude_code_version"), str):
                 self._cli_version = reply["claude_code_version"]
             self._models = {key: _models(reply.get("models"))}
@@ -132,6 +135,8 @@ class ClaudeRuntime:
         if not _SESSION_ID.fullmatch(session_id):
             raise ValueError(f"not a session id: {session_id!r}")
         report = self.check(spec)
+        if not os.path.isdir(spec.cwd):
+            raise RuntimeFailure("spec_refused", f"the session's folder {spec.cwd} doesn't exist")
         native_id = spec.resume if spec.resume and not spec.fork else str(uuid.uuid4())
         home = Path.home()
         rules = credential_ask_rules(home, quirq_state_dir(), AGY_TOKEN_FILE.expanduser())
@@ -162,8 +167,6 @@ class ClaudeRuntime:
 
 
 def _mtime_ns(binary: str) -> int:
-    import shutil
-
     path = shutil.which(binary) or binary
     try:
         return Path(path).stat().st_mtime_ns

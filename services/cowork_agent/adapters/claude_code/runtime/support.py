@@ -42,7 +42,7 @@ def check(spec: SessionSpec) -> SupportReport:
               enforced_by="host" if spec.orchestration == "coordinator" else "cli",
               note="a coordinator's asks reach the stdio host (can_use_tool), which answers with core's policy"
               if spec.orchestration == "coordinator" else ""),
-        _item("tools.preset", "--tools"),
+        _tools_preset(spec),
     ]
     if spec.add_dirs:
         items.append(_item("add_dirs", "--add-dir"))
@@ -117,6 +117,15 @@ def check(spec: SessionSpec) -> SupportReport:
     if spec.strict and weak:
         raise SpecRefused("strict spec: " + "; ".join(f"{i.feature} is {i.support}" for i in weak), report)
     return report
+
+
+def _tools_preset(spec: SessionSpec) -> SupportItem:
+    if spec.tools.preset == "read_only" and spec.orchestration == "coordinator":
+        return _item("tools.preset", "coordinator mode; workers' other tools reach the stdio host",
+                     enforced_by="host")
+    if spec.tools.preset in ("none", "read_only"):
+        return _item("tools.preset", "--tools")
+    return _item("tools.preset", "claude's default tool set")
 
 
 def features(cli_version: str | None) -> FeatureList:

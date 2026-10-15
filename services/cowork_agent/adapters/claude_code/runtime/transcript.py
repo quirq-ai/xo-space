@@ -15,7 +15,9 @@ thread.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -36,8 +38,9 @@ def projects_root(claude_home: Path) -> Path:
 
 def list_sessions(claude_home: Path, *, cwd: str | None, limit: int) -> list[SessionInfo]:
     root = projects_root(claude_home)
-    folders = [root / encode_path(cwd)] if cwd else [p for p in _dirs(root)]
-    files = [(f.stat().st_mtime, f) for folder in folders for f in _files(folder, "*.jsonl")]
+    folders = [root / encode_path(cwd)] if cwd else _dirs(root)
+    files = [(mtime, f) for folder in folders for f in _files(folder, "*.jsonl")
+             if (mtime := _mtime(f)) is not None]
     files.sort(key=lambda pair: pair[0], reverse=True)
     return [_session_info(path, mtime) for mtime, path in files[:max(limit, 0)]]
 
@@ -75,6 +78,16 @@ def read_run(claude_home: Path, native_id: str, run_id: str, *, after: str | Non
     return _page(path, after=after, limit=limit, sidechains=True)
 
 
+def remove_empty_project_folder(claude_home: Path, cwd: str) -> None:
+    """``--no-session-persistence`` still creates claude's project folder for
+    the cwd, holding only empty folders (``memory/`` on 2.1.301). Remove the
+    empty folders, deepest first; a file anywhere keeps its folders. Blocking."""
+    folder = projects_root(claude_home) / encode_path(os.path.realpath(cwd))
+    for path, _dirs, _files in sorted(os.walk(folder), key=lambda entry: len(entry[0]), reverse=True):
+        with contextlib.suppress(OSError):
+            os.rmdir(path)
+
+
 def session_file(claude_home: Path, native_id: str) -> Path:
     """The transcript of ``native_id`` in whichever project folder holds it."""
     if not native_id or "/" in native_id or native_id.startswith("."):
@@ -87,6 +100,7 @@ def session_file(claude_home: Path, native_id: str) -> Path:
 
 
 def _page(path: Path, *, after: str | None, limit: int, sidechains: bool) -> TranscriptPage:
+    limit = max(limit, 1)
     try:
         start = int(after) if after else 0
     except ValueError as exc:
@@ -146,6 +160,13 @@ def _title(record: dict[str, Any]) -> str | None:
     if isinstance(content, list):
         content = next((b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"), None)
     return one_line(content, TITLE_MAX) if isinstance(content, str) and content.strip() else None
+
+
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None                         # removed while listing
 
 
 def _json_file(path: Path) -> dict[str, Any]:

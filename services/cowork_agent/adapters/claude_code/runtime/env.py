@@ -13,14 +13,13 @@ variables); the runtime sets its own after that step.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Mapping
 
+from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 from services.cowork_agent.adapters.env_whitelist import base_env, log_dropped, referenced_vars
 
-log = logging.getLogger(__name__)
 
 #: The variables today's auth function decides about.
 AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -57,8 +56,6 @@ def session_env(*, switches: Mapping[str, str], spec_env: Mapping[str, str], lab
                 home: Path | None = None) -> dict[str, str]:
     """The whole env for one ``claude`` process: whitelist, auth, the
     session's own switches, then ``spec.env``."""
-    from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
-
     environ = os.environ if environ is None else environ
     home = Path(environ.get("HOME") or Path.home()) if home is None else home
     names = {*OWN_VARS, *mcp_var_names(home / ".claude.json")}

@@ -31,11 +31,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
-from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.adapters.claude_code.runtime import command
 from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard, login_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.tools import describe_call
+from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import Out, Wire
 from services.cowork_agent.adapters.contract import (
     Effort,
@@ -152,10 +152,15 @@ class ClaudeSession:
     async def _attach(self, resume: str | None) -> list[Out]:
         """Spawn the process and complete ``initialize``; returns the notices
         its reply calls for."""
-        files = await asyncio.to_thread(command.write_run_files, self._folder, self._spec, self._credential_rules)
+        try:
+            files = await asyncio.to_thread(command.write_run_files, self._folder, self._spec,
+                                            self._credential_rules)
+        except OSError as exc:
+            raise RuntimeFailure("spec_refused", f"can't write the session's folder {self._folder}: "
+                                                 f"{exc.strerror or exc}") from exc
         argv = command.build_argv(self._binary, self._spec, files, native_id=self.native_id, resume=resume)
-        env = session_env(switches=command.session_switches(self._spec), spec_env=self._spec.env,
-                          label=f"claude session {self.id}")
+        env = await asyncio.to_thread(session_env, switches=command.session_switches(self._spec),
+                                      spec_env=self._spec.env, label=f"claude session {self.id}")
         self._fingerprint = await asyncio.to_thread(login_fingerprint, self._claude_home)
         try:
             handle = await self._host.launcher.spawn(argv, cwd=self._spec.cwd, env=env,
@@ -348,9 +353,7 @@ class ClaudeSession:
     def _remove_folders(self) -> None:
         shutil.rmtree(self._folder, ignore_errors=True)
         if not self._spec.persist:
-            # --no-session-persistence still creates claude's (empty) project folder.
-            with contextlib.suppress(OSError):
-                (self._claude_home / "projects" / encode_path(self._spec.cwd)).rmdir()
+            remove_empty_project_folder(self._claude_home, self._spec.cwd)
 
     # ── control requests we send ─────────────────────────────────────────
 
@@ -597,8 +600,7 @@ class ClaudeSession:
                                          mechanism="set_permission_mode", enforced_by="none",
                                          note="bypass only for a session whose spec asked for it"))
             else:
-                mode = command.live_permission_mode(permission_mode,
-                                                    coordinator=self._spec.orchestration == "coordinator")
+                mode = command.claude_mode(permission_mode, coordinator=self._spec.orchestration == "coordinator")
                 items.append(await self._live_change("update.permission_mode", "set_permission_mode",
                                                      {"mode": mode}))
         if effort is not None:

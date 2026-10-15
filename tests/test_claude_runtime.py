@@ -29,6 +29,8 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, command, support
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
+from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
+from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter
 from tests.fakes import claude, expect, install, scenario
 from tests.fakes.host import ScriptedHost
@@ -147,6 +149,25 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, path.name)
             self.assertEqual(json.loads(files.mcp.read_text())["mcpServers"]["s"],
                              {"type": "stdio", "command": "srv", "args": ["-v"], "env": {}})
+
+    def test_run_files_never_follow_a_planted_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "run" / "cse_1"
+            folder.mkdir(parents=True)
+            target = Path(tmp) / "elsewhere"
+            target.write_text("keep")
+            (folder / "settings.json").symlink_to(target)
+            with self.assertRaises(OSError):
+                files_for(c.SessionSpec(cwd="/w"), folder)
+            self.assertEqual(target.read_text(), "keep")
+
+    def test_a_read_only_coordinator_keeps_its_orchestration_tools(self) -> None:
+        spec = c.SessionSpec(cwd="/w", orchestration="coordinator", tools=c.ToolPolicy(preset="read_only"),
+                             permissions=c.PermissionPolicy(mode="deny_unasked"))
+        self.assertNotIn("--tools", argv_for(spec))
+        self.assertEqual(support.check(spec).weakest("tools.preset").enforced_by, "host")
+        plain = c.SessionSpec(cwd="/w", tools=c.ToolPolicy(preset="read_only"))
+        self.assertIn("--tools", argv_for(plain))
 
 
 class CheckAndFeaturesTests(unittest.TestCase):
@@ -321,6 +342,24 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.cli.session.close()
         self.assertFalse(folder.exists())
 
+    async def test_an_ephemeral_session_leaves_no_project_folder(self) -> None:
+        self.cli = FakeClaude(claude.initialize())
+        await self.cli.open(persist=False)
+        self.assertIn("--no-session-persistence", self.cli.fake.invocations()[0]["argv"])
+        project = self.cli.home / ".claude" / "projects" / encode_path(os.path.realpath(self.cli.work))
+        (project / "memory").mkdir(parents=True)        # what 2.1.301 leaves behind
+        await self.cli.session.close()
+        self.assertFalse(project.exists())
+
+    def test_cleanup_never_removes_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            project = home / "projects" / encode_path(os.path.realpath(tmp))
+            (project / "memory").mkdir(parents=True)
+            (project / "kept.jsonl").write_text("{}")
+            remove_empty_project_folder(home, tmp)
+            self.assertEqual(sorted(p.name for p in project.iterdir()), ["kept.jsonl"])
+
     async def test_the_prompt_and_context_go_over_stdin_never_argv(self) -> None:
         self.cli = FakeClaude(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
         await self.cli.open()
@@ -348,6 +387,39 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             await wait_for_event(self.cli.events, c.TurnFinished)
         resolved = self.cli.of(c.PermissionResolved)
         self.assertEqual([(e.decision.allow, e.decision.message) for e in resolved], [(False, "host error")])
+
+    async def test_a_malformed_host_answer_is_a_deny(self) -> None:
+        self.cli = FakeClaude(self.started(
+            claude.can_use_tool("p1", "Bash", {"command": "make"}),
+            expect({"type": "control_response", "response": {"request_id": "p1", "response": {
+                "behavior": "deny", "message": "host error"}}}),
+            *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await self.cli.open(ScriptedHost(decide=lambda req: {"allow": True}))
+        with self.assertLogs("services.cowork_agent.adapters.claude_code.runtime.session", "ERROR"):
+            await self.cli.session.send(c.UserInput(text="make"))
+            await wait_for_event(self.cli.events, c.TurnFinished)
+        self.assertEqual([e.decision.allow for e in self.cli.of(c.PermissionResolved)], [False])
+
+    async def test_open_refuses_a_missing_folder_and_leaves_nothing(self) -> None:
+        self.cli = FakeClaude(claude.initialize())
+        with self.assertRaises(c.RuntimeFailure) as caught:
+            await self.cli.runtime.open(c.SessionSpec(cwd=str(self.cli.root / "gone")), ScriptedHost(),
+                                        session_id="cse_x")
+        self.assertEqual(caught.exception.code, "spec_refused")
+        self.assertEqual(self.cli.fake.invocations(), [])
+        self.cli.reader = None
+        self.cli.session = await self.cli.open()
+
+    async def test_open_fails_cleanly_when_claude_dies_during_initialize(self) -> None:
+        self.cli = FakeClaude([{"stderr": "error: unknown option '--frobnicate'"}, {"exit": 1}])
+        with self.assertRaises(c.RuntimeFailure) as caught:
+            await self.cli.runtime.open(c.SessionSpec(cwd=str(self.cli.work)), ScriptedHost(), session_id="cse_x")
+        self.assertEqual(caught.exception.code, "process_died")
+        self.assertIn("unknown option", caught.exception.message)
+        self.assertFalse((self.cli.root / "state" / "run" / "cse_x").exists())
+        self.cli.env.stop()
+        self.cli.tmp.cleanup()
+        self.cli = None
 
     async def test_permission_request_is_neutral_and_names_the_sub_agent(self) -> None:
         self.cli = FakeClaude(self.started(
@@ -444,13 +516,15 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cli.of(c.TurnFinished)[0].status, "interrupted")
 
     async def test_crash_mid_turn_is_events_not_an_exception(self) -> None:
-        self.cli = FakeClaude(self.started(claude.tool_call(SID, "t1", "Bash", {"command": "make"}),
+        self.cli = FakeClaude(self.started(claude.task_started(SID, "task-9"),
+                                           claude.tool_call(SID, "t1", "Bash", {"command": "make"}),
                                            {"stderr": "boom: out of memory"}, {"exit": 3}))
         await self.cli.open()
         await self.cli.session.send(c.UserInput(text="build"))
         await asyncio.wait_for(self.cli.reader, 10)
         names = [type(e).__name__ for e in self.cli.events]
-        self.assertEqual(names[-4:], ["ToolFinished", "TurnFinished", "Error", "SessionClosed"])
+        self.assertEqual(names[-5:], ["ToolFinished", "TurnFinished", "RunFinished", "Error", "SessionClosed"])
+        self.assertEqual([(e.run, e.status) for e in self.cli.of(c.RunFinished)], [("task-9", "stopped")])
         error, closed = self.cli.events[-2], self.cli.events[-1]
         self.assertEqual((error.code, error.fatal), ("process_died", True))
         self.assertIn("boom: out of memory", error.message)

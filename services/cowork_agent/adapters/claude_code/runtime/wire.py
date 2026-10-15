@@ -15,7 +15,10 @@ Rules this follows:
 * a tool call still open when its turn ends is finished as ``cancelled``, so
   every ``ToolStarted`` is finished;
 * unknown wire data is reported as a ``Notice`` (once per kind per session),
-  never dropped silently and never a crash.
+  never dropped silently and never a crash;
+* every event carries the root turn in progress when its line arrived
+  (``turn_id``, None between turns) and, when a sub-agent produced it, that
+  run (``run`` = claude's ``agent_id``/``task_id``).
 """
 
 from __future__ import annotations
@@ -328,7 +331,7 @@ class Wire:
         ev = msg.get("event") if isinstance(msg.get("event"), dict) else {}
         kind = ev.get("type")
         outs = self._activity(run)
-        turn = self.current_turn if run is None else None
+        turn = self.current_turn
         if kind == "message_start":
             message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
             message_id = str(message.get("id") or uuid.uuid4().hex)
@@ -396,7 +399,7 @@ class Wire:
     def _assistant(self, msg: dict[str, Any]) -> list[Out]:
         run = self._run_of(msg)
         outs = self._activity(run)
-        turn = self.current_turn if run is None else None
+        turn = self.current_turn
         message = msg.get("message") if isinstance(msg.get("message"), dict) else {}
         message_id = str(message.get("id") or "")
         streamed = message_id in self._streamed

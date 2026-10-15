@@ -32,6 +32,10 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from services.cowork_agent.registry.agent_env import load_env_entries, parse_env_file
+from services.storage.layout import settings_dir
+from services.storage.paths import quirq_state_dir
+
 log = logging.getLogger(__name__)
 
 #: The OS baseline every CLI needs to run: its tools, locale, proxy and CA.
@@ -48,11 +52,9 @@ XO_ADDRESS = frozenset({"HOST", "PORT"})
 _VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
 
 
-def secrets_store() -> dict[str, str]:
+def stored_env() -> dict[str, str]:
     """The Space's secrets store as ``{key: value}``, plus the Setup tab's
     ``runtime.env``; empty when neither exists yet."""
-    from services.cowork_agent.registry.agent_env import load_env_entries, parse_env_file
-
     entries = list(load_env_entries())
     runtime_file = _runtime_settings_file()
     try:
@@ -66,9 +68,6 @@ def _runtime_settings_file() -> Path:
     """The Setup tab's ``runtime.env``, resolved as the server resolves it at
     boot (``QUIRQ_RUNTIME_FILE``, else its home under ``settings/``, else the
     older place at the state root)."""
-    from services.storage.layout import settings_dir
-    from services.storage.paths import quirq_state_dir
-
     configured = (os.environ.get("QUIRQ_RUNTIME_FILE") or "").strip()
     if configured:
         return Path(configured).expanduser()
@@ -83,9 +82,9 @@ def base_env(*, names: Iterable[str] = (), drop: Callable[[str], bool] = lambda 
     """The whitelisted part of a CLI's env. ``names`` are extra variables to
     pass when set; ``drop`` removes names whatever their source (a runtime
     sets its own values for them afterwards). ``environ`` and ``store`` are
-    the live ``os.environ`` and secrets store unless given."""
+    the live ``os.environ`` and ``stored_env()`` unless given."""
     environ = os.environ if environ is None else environ
-    store = secrets_store() if store is None else store
+    store = stored_env() if store is None else store
     wanted = set(names) | XO_ADDRESS
     env = {k: v for k, v in environ.items()
            if k in OS_NAMES or k in wanted or k.startswith(OS_PREFIXES)}

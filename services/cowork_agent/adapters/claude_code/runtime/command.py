@@ -44,18 +44,16 @@ COORDINATOR_ADDENDUM = ("You can't read files yourself. Read code through read-o
 READ_ONLY_TOOLS = (*REF_TOOLS["read"], *REF_TOOLS["search"])
 
 
-def permission_mode(spec: SessionSpec) -> str:
-    """claude's ``--permission-mode`` for this spec."""
-    if spec.orchestration == "coordinator" and spec.permissions.mode == "deny_unasked":
-        return MODES["ask"]
-    return MODES[spec.permissions.mode]
-
-
-def live_permission_mode(mode: PermissionMode, *, coordinator: bool) -> str:
-    """The same mapping for ``set_permission_mode`` mid-session."""
+def claude_mode(mode: PermissionMode, *, coordinator: bool) -> str:
+    """claude's name for a contract mode, at launch and for
+    ``set_permission_mode``."""
     if coordinator and mode == "deny_unasked":
         return MODES["ask"]
     return MODES[mode]
+
+
+def permission_mode(spec: SessionSpec) -> str:
+    return claude_mode(spec.permissions.mode, coordinator=spec.orchestration == "coordinator")
 
 
 def credential_ask_rules(home: Path, state_root: Path, agy_token: Path) -> tuple[str, ...]:
@@ -188,7 +186,7 @@ def write_run_files(folder: Path, spec: SessionSpec, credential_rules: tuple[str
 
 
 def _write(path: Path, text: str) -> Path:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
     os.chmod(path, 0o600)
@@ -245,7 +243,9 @@ def _tool_flags(spec: SessionSpec) -> list[str]:
     flags: list[str] = []
     if spec.tools.preset == "none":
         flags += ["--tools", ""]
-    elif spec.tools.preset == "read_only":
+    elif spec.tools.preset == "read_only" and spec.orchestration != "coordinator":
+        # A coordinator's tools are coordinator mode's; its workers' writes
+        # reach the stdio host, which keeps them read-only (§0.75).
         flags += ["--tools", *READ_ONLY_TOOLS]
     allowed = tool_rules(spec.tools.allow)
     allowed += [f"mcp__{s.name}__*" for s in spec.mcp_servers if s.auto_approve]

@@ -13,9 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from pathlib import Path
 
 from services.cowork_agent.adapters.claude_code.runtime import CLI_PATH_ENV, DEFAULT_BINARY
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
+from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import token_usage
 from services.cowork_agent.adapters.cli_status import resolve_binary
 from services.cowork_agent.adapters.contract import (
@@ -51,7 +53,7 @@ class ClaudeOneshot:
 
     async def complete(self, req: OneshotRequest, launcher: Launcher) -> OneshotResult:
         binary = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-        env = session_env(switches={}, spec_env={}, label="claude oneshot")
+        env = await asyncio.to_thread(session_env, switches={}, spec_env={}, label="claude oneshot")
         with tempfile.TemporaryDirectory(prefix="xo-oneshot-") as cwd:
             try:
                 handle = await launcher.spawn(build_argv(binary, req), cwd=cwd, env=env, label="claude oneshot")
@@ -66,6 +68,7 @@ class ClaudeOneshot:
                 raise RuntimeFailure("process_died", "claude exited before reading the prompt") from exc
             finally:
                 await handle.terminate(KILL_GRACE_S)
+                await asyncio.to_thread(remove_empty_project_folder, Path.home() / ".claude", cwd)
         return _result(code, out)
 
 
