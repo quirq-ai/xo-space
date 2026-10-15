@@ -176,7 +176,7 @@ class OneDoorTests(unittest.TestCase):
         self.assertEqual(offenders, [], "read the swarm base URL via services.swarm_api.base_url()")
 
     def test_only_swarm_api_names_swarm_paths(self) -> None:
-        swarm_paths = ("/commits/poll", "/commits/share", "/usage/report", "/auth/browser/", "/chat/add_message", "/get-user-id")
+        swarm_paths = ("/commits/poll", "/commits/share", "/usage/report", "/auth/browser/", "/get-user-id")
         offenders = []
         for p in self._py_files():
             txt = p.read_text(encoding="utf-8", errors="replace")

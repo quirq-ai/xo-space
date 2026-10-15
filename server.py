@@ -677,7 +677,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
-
     yield
 
     # Stop ingestion first: the daemon is an external process, so leaving it
