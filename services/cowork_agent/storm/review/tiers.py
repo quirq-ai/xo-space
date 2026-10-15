@@ -274,7 +274,14 @@ INSTALL_INTO = frozenset({"--prefix", "--target", "-t", "--root", "--path"})
 # ── git ──────────────────────────────────────────────────────────────────────
 
 #: git's options before the subcommand; the ones with a value take the next word.
-GIT_GLOBAL_VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"})
+GIT_GLOBAL_VALUED = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"})
+#: The ones that change where git reads and writes, or what it runs: XO can't
+#: follow them, so no grant or rule covers the command.
+GIT_GLOBAL_REDIRECTS = frozenset({"-c", "--config-env", "--exec-path", "--git-dir", "--work-tree", "--namespace"})
+#: The ones that change nothing about what git does to files. Any other global
+#: option is unknown: it may take a value and shift which word is the
+#: subcommand (git --attr-source X status …).
+GIT_GLOBAL_SAFE = frozenset({"--no-pager", "-P", "-p", "--paginate", "--no-optional-locks", "--no-advice"})
 GIT_READ_SUBCOMMANDS = frozenset({"status", "diff", "log", "show", "blame", "rev-parse", "ls-files", "ls-tree",
                                   "cat-file", "describe", "shortlog", "grep", "reflog", "rev-list", "whatchanged"})
 GIT_SPEC = _spec("nSGLebBcmoF", "--max-count", "--skip", "--since", "--until", "--after", "--before", "--author",
@@ -565,7 +572,9 @@ class _Judge:
             category = EDIT_INSIDE if routine_edit else OTHER
         if self.unknown_flags:
             category = OTHER
-        return Part(self.tier, category, tuple(self.reasons), self.read_only and not self.wrote, self.secret_read,
+        # Read-only only as far as XO can tell: an unknown flag may write.
+        read_only = self.read_only and not self.wrote and not self.unverifiable
+        return Part(self.tier, category, tuple(self.reasons), read_only, self.secret_read,
                     tuple(self.protected), self.runs_repo_code, self.unverifiable, self.words, path, self.host, mcp)
 
 
@@ -1011,15 +1020,16 @@ def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where
 def _git(judge: _Judge, args: list[str], places: Places, where: Path | None, branch: str | None) -> None:
     here = where
     while args and args[0].startswith("-"):
-        flag = args.pop(0)
-        if flag == "-c" or flag.startswith(("--config-env", "--exec-path", "--git-dir", "--work-tree", "--namespace")):
-            judge.at_least(Tier.DESTRUCTIVE, f"git {flag} changes what git runs or where it writes")
-            if flag == "-c" and args:
-                args.pop(0)
-        elif flag == "-C" and args:
-            target = args.pop(0)
-            forms = places.resolve(target, here)
+        name, eq, value = args.pop(0).partition("=")
+        if name in GIT_GLOBAL_VALUED and not eq:
+            value = args.pop(0) if args else ""
+        if name in GIT_GLOBAL_REDIRECTS:
+            _cannot_check(judge, f"git {name} changes what git runs or where it writes, which XO can't follow")
+        elif name == "-C":
+            forms = places.resolve(value, here)
             here = forms[1] if forms else None
+        elif name not in GIT_GLOBAL_SAFE:
+            judge.unknown("git", name)
     if not args:
         judge.read_only = True
         return

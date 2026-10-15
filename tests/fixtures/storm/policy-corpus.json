@@ -306,6 +306,22 @@
     {"group": "second independent review of #248 (2026-10-15)", "command": "nice --frobnicate 5 tee .mcp.json", "grant": true, "expect": "ask"},
     {"group": "second independent review of #248 (2026-10-15)", "command": "echo x > /home/you/xo-projects/app/.xo/worktrees/.mcp.json", "grant": true, "expect": "deny"},
     {"group": "second independent review of #248 (2026-10-15)", "command": "chmod -x run.sh", "expect": "ask", "tier": "routine"},
-    {"group": "second independent review of #248 (2026-10-15)", "command": "command -v rg", "expect": "allow"}
+    {"group": "second independent review of #248 (2026-10-15)", "command": "command -v rg", "expect": "allow"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --attr-source status config core.hooksPath hooks", "grant": true, "expect": "ask"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --attr-source status checkout HEAD -- .mcp.json", "expect": "ask", "grant": true},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --namespace foo checkout HEAD -- .mcp.json", "expect": "deny", "grant": true},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --work-tree=.claude checkout -- .", "expect": "ask", "grant": true, "tier": "destructive"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --git-dir ../other/.git log", "expect": "ask", "tier": "destructive"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --no-pager log --oneline", "expect": "allow"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git -C src status", "expect": "allow"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "sort -o .mcp.json a", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git diff --outp=.mcp.json", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "rg --pre ./evil foo", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "fd . -x rm", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "tree -o x", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git diff --ext-diff", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git --attr-source status log", "role": "coordinator", "expect": "deny"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "git log --oneline", "role": "coordinator", "expect": "allow"},
+    {"group": "third independent review: nobody asked (2026-10-15)", "command": "rg -n foo src", "role": "coordinator", "expect": "allow"}
   ]
 }
