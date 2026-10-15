@@ -17,8 +17,11 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from services.cowork_agent.storm.store import (
     SCHEMA_VERSION,
@@ -104,6 +107,16 @@ class SchemaTests(_Temp):
         with self.assertRaises(StoreRefused):
             await Store.open(self.db)
 
+    async def test_a_damaged_file_is_an_actionable_error_and_left_untouched(self) -> None:
+        self.db.parent.mkdir()
+        self.db.write_bytes(b"not a database " * 300)
+        before = digest(self.db)
+        with self.assertRaises(StoreFailed) as caught:
+            await Store.open(self.db)
+        self.assertIn("move the file aside", caught.exception.message)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("store_failed", 503))
+        self.assertEqual(digest(self.db), before)
+
     async def test_constraints_hold(self) -> None:
         store = await self.open()
 
@@ -162,12 +175,35 @@ class TransactionTests(_Temp):
     async def test_concurrent_changes_never_interleave(self) -> None:
         store = await self.open()
         heard = []
-        store.on_commit(lambda events: heard.append([e.data["n"] for e in events]))
+        store.on_commit(lambda events: heard.append([(e.seq, e.data["n"]) for e in events]))
         await asyncio.gather(*(store.write(lambda tx, n=n: [tx.append("x", {"n": n}) for _ in range(3)])
                                for n in range(50)))
-        self.assertEqual(sorted(heard), [[n] * 3 for n in range(50)])
+        # Each change is heard whole, and listeners hear the changes in seq order.
+        self.assertEqual(sorted(len({n for _, n in batch}) for batch in heard), [1] * 50)
+        self.assertEqual([seq for batch in heard for seq, _ in batch], list(range(1, 151)))
         seqs = [e.seq for e in await store.events_after(0, limit=500)]
         self.assertEqual(seqs, list(range(1, 151)))
+
+    async def test_a_cancelled_write_is_still_committed_and_announced(self) -> None:
+        # The caller went away while SQLite was working: the change must not
+        # be kept without the live stream hearing of it.
+        store = await self.open()
+        heard = []
+        store.on_commit(lambda events: heard.extend(e.seq for e in events))
+        working = threading.Event()
+
+        def slow(tx):
+            tx.append("a")
+            working.set()
+            time.sleep(0.2)
+
+        task = asyncio.create_task(store.write(slow))
+        self.assertTrue(await asyncio.to_thread(working.wait, 5))
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await store.write(lambda tx: tx.append("b"))
+        self.assertEqual(heard, [1, 2])
 
     async def test_a_wake_is_inserted_once(self) -> None:
         store = await self.open()
@@ -271,7 +307,8 @@ class RecoveryTests(_Temp):
         self.assertEqual(await self.rows("SELECT state, parked FROM review_items"), [("open", 1)])
         self.assertEqual(report.sessions_to_rekick, ("cse_thread000000", "cse_coord0000000"))
 
-        self.assertEqual((report.orphans_stopped, await self.rows("SELECT * FROM procs")), (0, []))
+        self.assertEqual((report.orphans_cleared, report.orphans_left), (1, 0))
+        self.assertEqual(await self.rows("SELECT * FROM procs"), [])
         self.assertEqual(report.folders_removed, 2)
         self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["codex", "engine.lock"])
         self.assertEqual(self.heard, ["turn.finished", "session", "session", "wake.requeued", "review.parked"])
@@ -307,11 +344,49 @@ class RecoveryTests(_Temp):
 
         report = await recover(self.store, self.lock, folders=self.run)
 
-        self.assertEqual(report.orphans_stopped, 1)
+        self.assertEqual(report.orphans_cleared, 2)     # the lost process, and the sample's long-gone row
         self.assertEqual(await asyncio.wait_for(lost.wait(), 10), -15)   # SIGTERM
         self.assertEqual(process_start_ticks(bystander.pid), bystander.start_ticks)
         self.assertIsNone(bystander.returncode)
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
+
+
+    async def bystander(self):
+        proc = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir,
+                                  env={"PATH": os.environ.get("PATH", "")}, label="bystander")
+        self.addAsyncCleanup(proc.terminate, 1.0)
+        return proc
+
+    async def test_a_row_from_before_this_boot_names_nothing_and_is_cleared(self) -> None:
+        # Start ticks count from the boot: after a reboot the same pid and
+        # ticks can name an unrelated process, which must be left alone.
+        proc = await self.bystander()
+        await self.store.write(lambda tx: tx.execute(
+            "INSERT INTO procs VALUES (?, ?, NULL, NULL, 'sample-agent', '2000-01-01T00:00:00Z')",
+            (proc.pid, proc.start_ticks)))
+        report = await recover(self.store, self.lock, folders=self.run)
+        self.assertEqual((report.orphans_cleared, report.orphans_left), (2, 0))
+        self.assertIsNone(proc.returncode)
+        self.assertEqual(process_start_ticks(proc.pid), proc.start_ticks)
+
+    async def test_a_row_whose_process_may_survive_is_kept_for_the_next_boot(self) -> None:
+        with patch("services.cowork_agent.storm.store.recovery.reap_orphan", AsyncMock(return_value=False)), \
+                self.assertLogs("services.cowork_agent.storm.store.recovery", level="WARNING"):
+            report = await recover(self.store, self.lock, folders=self.run)
+        self.assertEqual((report.orphans_cleared, report.orphans_left), (0, 1))
+        self.assertEqual(await self.rows("SELECT pid FROM procs"), [(4194300,)])
+
+    async def test_a_folder_that_cant_be_removed_never_stops_the_boot(self) -> None:
+        stuck = self.run / "cse_stuck" / "locked"
+        stuck.mkdir(parents=True)
+        (stuck / "file").write_text("x")
+        stuck.chmod(0o500)
+        self.addCleanup(stuck.chmod, 0o700)
+        (self.run / "cse_fine").mkdir()
+        with self.assertLogs("services.cowork_agent.storm.store.recovery", level="WARNING"):
+            report = await recover(self.store, self.lock, folders=self.run)
+        self.assertEqual(report.folders_removed, 1)
+        self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["cse_stuck", "engine.lock"])
 
 
 if __name__ == "__main__":

@@ -110,8 +110,10 @@ class Tx:
 class Store:
     """Open with ``await Store.open(path)``; close with ``await store.close()``."""
 
-    def __init__(self, path: Path, conn: sqlite3.Connection, thread: ThreadPoolExecutor) -> None:
+    def __init__(self, path: Path, conn: sqlite3.Connection, thread: ThreadPoolExecutor,
+                 loop: asyncio.AbstractEventLoop) -> None:
         self.path = path
+        self._loop = loop
         self._conn = conn
         self._thread = thread
         self._listeners: list[Callable[[list[StoredEvent]], None]] = []
@@ -126,10 +128,12 @@ class Store:
         thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="storm-store")
         try:
             conn = await asyncio.get_running_loop().run_in_executor(thread, _connect, path)
-        except BaseException:
+        except BaseException as exc:
             thread.shutdown(wait=False)
+            if isinstance(exc, sqlite3.Error) and (failure := _store_failure(exc, path)):
+                raise failure from exc
             raise
-        return cls(path, conn, thread)
+        return cls(path, conn, thread, asyncio.get_running_loop())
 
     def on_commit(self, listener: Callable[[list[StoredEvent]], None]) -> None:
         """Call ``listener`` with each committed transaction's events, in seq
@@ -138,14 +142,17 @@ class Store:
 
     async def write(self, fn: Callable[[Tx], T]) -> T:
         """Run ``fn`` as one transaction. If it raises, nothing is kept and
-        the exception travels on."""
-        result, events = await self._run(self._transaction, fn)
-        for listener in self._listeners:
-            try:
-                listener(events)
-            except Exception:  # noqa: BLE001 - a listener can't undo a commit
-                log.exception("storm store: a commit listener failed after seq %s",
-                              events[-1].seq if events else None)
+        the exception travels on.
+
+        The store's thread hands each commit's events to the listeners as it
+        commits, so the listeners hear every change exactly in seq order,
+        before the writer resumes, and even when the writer was cancelled
+        mid-write (a client went away): the store never keeps a change it
+        doesn't announce. A cancelled writer can't tell whether its change
+        was kept; it reads the store to find out."""
+        published = self._loop.create_future()
+        result = await self._run(self._transaction, fn, published)
+        await published
         return result
 
     async def read(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -171,13 +178,14 @@ class Store:
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(self._thread, fn, *args)
-        except sqlite3.OperationalError as exc:
-            raise StoreFailed(f"The store at {self.path} could not be used: {exc}. "
-                              "If the disk is full, free space and retry.") from exc
+        except sqlite3.Error as exc:
+            if failure := _store_failure(exc, self.path):
+                raise failure from exc
+            raise
 
     # The two below run on the store's thread only.
 
-    def _transaction(self, fn: Callable[[Tx], T]) -> tuple[T, list[StoredEvent]]:
+    def _transaction(self, fn: Callable[[Tx], T], published: asyncio.Future) -> T:
         tx = Tx(self._conn)
         self._conn.execute("BEGIN IMMEDIATE")
         try:
@@ -188,7 +196,18 @@ class Store:
             if self._conn.in_transaction:
                 self._conn.execute("ROLLBACK")
             raise
-        return result, tx.events
+        self._loop.call_soon_threadsafe(self._publish, tx.events, published)
+        return result
+
+    def _publish(self, events: list[StoredEvent], published: asyncio.Future) -> None:
+        """On the event loop, in commit order; then the writer resumes."""
+        for listener in self._listeners if events else ():
+            try:
+                listener(events)
+            except Exception:  # noqa: BLE001 - a listener can't undo a commit
+                log.exception("storm store: a commit listener failed after seq %s", events[-1].seq)
+        if not published.done():        # done: the writer was cancelled
+            published.set_result(None)
 
     def _snapshot(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         self._conn.execute("BEGIN")
@@ -198,16 +217,25 @@ class Store:
             self._conn.execute("COMMIT")
 
 
+def _store_failure(exc: sqlite3.Error, path: Path) -> StoreFailed | None:
+    """The store's own failures as `StoreFailed`; None for the rest
+    (a constraint a change broke, a bad statement), which are the caller's."""
+    if isinstance(exc, sqlite3.OperationalError):
+        return StoreFailed(f"The store at {path} could not be used: {exc}. If the disk is full, free space and retry.")
+    if type(exc) is sqlite3.DatabaseError:      # SQLite's own word for a damaged or foreign file
+        return StoreFailed(f"The store at {path} is damaged ({exc}). Stop XO Space and move the file aside to "
+                           "keep it for inspection; XO Space then starts a new, empty store.")
+    return None
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    existed = path.exists()
     conn = sqlite3.connect(path, isolation_level=None, check_same_thread=True)
     try:
-        if not existed:
-            os.chmod(path, 0o600)
         # Refuse before anything else: even switching the journal mode
         # rewrites the file's header, and a refused file stays as it is.
         _refuse_unknown(conn, path)
+        os.chmod(path, 0o600)
         if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
             raise StoreRefused(f"{path} can't use write-ahead logging (is it on a network disk?).")
         conn.execute("PRAGMA synchronous=NORMAL")

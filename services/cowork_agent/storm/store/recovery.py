@@ -3,9 +3,12 @@ without warning (ch 07 §9.3). Runs once, under the engine lock, before any
 route may write through the engine.
 
 1. The engine lock is held (the caller took it).
-2. Processes an earlier run started and lost are stopped: only rows of the
-   process registry, each by pid and start time, so a recycled pid or the
-   person's own CLI is never touched.
+2. Processes an earlier run started and lost are stopped, with whatever is
+   left in their sessions: only rows of the process registry, each by pid and
+   start time, so a recycled pid or the person's own CLI is never touched. A
+   row is cleared once its process is gone (rows from before this machine's
+   boot name nothing that runs); a row whose process survived stays, and the
+   next boot tries again.
 3. Turns still marked running become ``interrupted`` (reason ``restart``); every
    session that had a process goes ``cold`` and its epoch moves, so anything
    left of the old process is fenced off.
@@ -17,7 +20,8 @@ route may write through the engine.
 6. The sessions with queued wakes are returned, oldest first, for the engine
    to admit (four at a time).
 7. Per-session folders under ``~/.quirq/run/`` are removed: none has a live
-   owner now.
+   owner now. One that can't be removed is logged and left, so it never
+   stops the boot.
 
 Steps 3–5 are one transaction.
 """
@@ -30,13 +34,14 @@ import logging
 import shutil
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from services.cowork_agent.storm.store.db import Store, Tx
 from services.cowork_agent.storm.store.lock import EngineLock
 from services.storage.layout import run_dir
 from services.timestamps import now_iso
-from utils.commands import reap_orphan
+from utils.commands import boot_time, reap_orphan
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +53,8 @@ SESSION_FOLDER_PREFIX = "cse_"
 
 @dataclass(frozen=True)
 class RecoveryReport:
-    orphans_stopped: int
+    orphans_cleared: int
+    orphans_left: int
     turns_interrupted: tuple[str, ...]
     sessions_fenced: tuple[str, ...]
     wakes_requeued: tuple[str, ...]
@@ -60,25 +66,43 @@ class RecoveryReport:
 async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None) -> RecoveryReport:
     if not lock.held:
         raise RuntimeError("boot recovery runs only under the engine lock")
-    orphans_stopped = await _reap_orphans(store)
+    cleared, left = await _reap_orphans(store)
     settled = await store.write(_settle)
     removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir())
-    report = RecoveryReport(orphans_stopped=orphans_stopped, folders_removed=removed, **settled)
-    log.info("storm recovery: %d orphan(s) stopped, %d turn(s) interrupted, %d wake(s) requeued, "
+    report = RecoveryReport(orphans_cleared=cleared, orphans_left=left, folders_removed=removed, **settled)
+    log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d wake(s) requeued, "
              "%d call(s) parked, %d session(s) to re-kick, %d folder(s) removed",
-             report.orphans_stopped, len(report.turns_interrupted), len(report.wakes_requeued),
+             report.orphans_cleared, report.orphans_left, len(report.turns_interrupted), len(report.wakes_requeued),
              len(report.calls_parked), len(report.sessions_to_rekick), report.folders_removed)
     return report
 
 
-async def _reap_orphans(store: Store) -> int:
-    rows = await store.read(lambda conn: conn.execute("SELECT pid, start_ticks FROM procs").fetchall())
-    stopped = await asyncio.gather(*(reap_orphan(pid, ticks) for pid, ticks in rows))
+async def _reap_orphans(store: Store) -> tuple[int, int]:
+    """Stop each registered process that is still running; returns how many
+    rows were cleared and how many stay because their process survived."""
+    rows = await store.read(lambda conn: conn.execute("SELECT pid, start_ticks, started_at FROM procs").fetchall())
+    booted = boot_time()
+    gone = await asyncio.gather(*(_gone(pid, ticks, started_at, booted) for pid, ticks, started_at in rows))
+    cleared = [(pid, ticks) for (pid, ticks, _), done in zip(rows, gone) if done]
+    for (pid, ticks, _), done in zip(rows, gone):
+        if not done:
+            log.warning("storm recovery: process %d (registered %s) could not be confirmed gone; its row is kept", pid, ticks)
 
     def forget(tx: Tx) -> None:
-        tx.conn.executemany("DELETE FROM procs WHERE pid = ? AND start_ticks = ?", rows)
+        tx.conn.executemany("DELETE FROM procs WHERE pid = ? AND start_ticks = ?", cleared)
     await store.write(forget)
-    return sum(stopped)
+    return len(cleared), len(rows) - len(cleared)
+
+
+async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | None) -> bool:
+    """A row written before this boot names nothing that runs now (start
+    ticks count from the boot); any other is checked and stopped."""
+    try:
+        if booted is not None and datetime.fromisoformat(started_at).timestamp() < booted:
+            return True
+    except ValueError:
+        pass
+    return await reap_orphan(pid, start_ticks)
 
 
 def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
@@ -142,9 +166,13 @@ def _clear_session_folders(folder: Path) -> int:
     for child in folder.iterdir():
         if not child.name.startswith(SESSION_FOLDER_PREFIX):
             continue
-        if child.is_symlink() or not child.is_dir():
-            child.unlink()
-        else:
-            shutil.rmtree(child)
+        try:
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+            else:
+                shutil.rmtree(child)
+        except OSError as exc:
+            log.warning("storm recovery: could not remove %s (%s); it is left as it is", child, exc)
+            continue
         removed += 1
     return removed
