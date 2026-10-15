@@ -214,7 +214,8 @@ class FeatureSupport:
 
     support: Literal["native", "emulated", "unsupported"] | None = None
     note: str = ""
-    behaviour: str | None = None          # e.g. send_while_running: "steered" | "queued"
+    behaviour: str | None = None          # send_while_running: "steered" | "queued";
+                                          # interrupt: "stops_runs" when it also ends live sub-agents
     values: tuple[str, ...] = ()
 
 
