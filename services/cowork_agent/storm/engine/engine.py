@@ -635,7 +635,7 @@ class Engine:
 
     def _admit(self, session_id: str, *, starting: bool = False) -> None:
         self._admitting.add(session_id)
-        task = self._spawn(self._run_admission(session_id, starting), f"storm-admit:{session_id}")
+        task = self._spawn(self._run_admission(session_id), f"storm-admit:{session_id}")
         task.add_done_callback(lambda _t: self._admitted(session_id, starting))
 
     def _admitted(self, session_id: str, starting: bool) -> None:
@@ -644,7 +644,7 @@ class Engine:
             self._starting -= 1
         self.kick()
 
-    async def _run_admission(self, session_id: str, starting: bool) -> None:
+    async def _run_admission(self, session_id: str) -> None:
         live = self._live.get(session_id)
         if live is None:
             live = await self._attach(session_id)
@@ -666,6 +666,12 @@ class Engine:
                 await live.send(user_input, [w[0] for w in wakes])
             except c.RuntimeFailure as exc:
                 await self._send_failed(live, exc, [w[0] for w in wakes])
+                return
+            except records.StaleEpoch as exc:
+                log.warning("storm: session %s moved to a new epoch while sending (%s); closing the stale process",
+                            session_id, exc)
+                live.stale = True
+                self.fenced(live)
                 return
         now = self.clock.time()
         for _wid, _text, _meta, created in wakes:
@@ -695,7 +701,8 @@ class Engine:
             if live is None:
                 raise c.RuntimeFailure("unsupported", f"{meta.agent} has no storm runtime in this server")
             self._live[session_id] = live
-            await live.attach()
+            async with live.lock:           # an update or Stop meanwhile waits for the process
+                await live.attach()
         except asyncio.CancelledError:
             self._live.pop(session_id, None)        # the runtime discards what it started
             raise
@@ -773,8 +780,10 @@ class Engine:
 
     async def _memory_tick(self) -> None:
         reading = await self.memory.read()
-        for live in list(self._live.values()):
-            if live.pid and (peak := await asyncio.to_thread(peak_rss_bytes, live.pid)):
+        lives = [live for live in self._live.values() if live.pid]
+        peaks = await asyncio.to_thread(lambda: [peak_rss_bytes(live.pid) for live in lives])
+        for live, peak in zip(lives, peaks):
+            if peak:
                 self.memory.learn(live.meta.agent, peak)
         if reading is not None and MEMORY_WAIT in self._queued.values():
             self.kick()             # the pass reads again, admits or relieves

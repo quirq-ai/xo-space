@@ -36,6 +36,7 @@ from services.cowork_agent.storm.review import (
     Match,
     PolicyContext,
     Rule,
+    SessionRef,
     Tier,
     Verdict,
     decide,
@@ -145,6 +146,7 @@ class LiveSession:
         self.pending_effort: c.Effort | None = None
         self.interrupting = False
         self.interrupted_turn: str | None = None    # the turn "send now" interrupted
+        self.stale = False                          # fenced: a later epoch owns the session
         self.closed = asyncio.Event()
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
@@ -343,6 +345,7 @@ class LiveSession:
         def prepare() -> Callable[[], None]:
             self.facts.held[request_id] = held
             return lambda: self.facts.held.pop(request_id, None)
+
         def open_item(w: Writes) -> None:
             # Set before the commit is announced: a decision can come back
             # the moment the item is seen.
@@ -371,7 +374,7 @@ class LiveSession:
         if self.idle:
             self.engine.became_idle(self)
 
-    async def policy_context(self) -> tuple[PolicyContext, c.SessionSpec]:
+    async def policy_context(self) -> tuple[PolicyContext, SessionRef]:
         if self._policy is None:
             self._policy = await asyncio.to_thread(
                 policy_view, session_id=self.meta.id, role=self.meta.role, preset=self.meta.preset,
@@ -379,14 +382,16 @@ class LiveSession:
                 project_config_paths=self.engine.project_config_paths)
         places, ref = self._policy
         now = iso(self.engine.clock.time())
-        session_id = self.meta.id
+        session_id, project_pid = self.meta.id, self.meta.project_pid
 
         def read(conn) -> tuple[list, list]:
             grants = conn.execute("SELECT id, session_id, tool, input_sha256, expires_at FROM grants "
                                   "WHERE session_id = ? AND used_at IS NULL AND expires_at > ?",
                                   (session_id, now)).fetchall()
+            # Only rules that can apply here: the workspace's, and this project's.
             rules = conn.execute("SELECT id, scope, effect, tool, match, sentence, tier, project_pid, thread_ts, "
-                                 "from_item, expires_at FROM rules").fetchall()
+                                 "from_item, expires_at FROM rules WHERE scope = 'workspace' OR project_pid = ?",
+                                 (project_pid,)).fetchall()
             return grants, rules
         grants, rules = await self.engine.store.read(read)
         ctx = PolicyContext(places=places, now=now, rules=tuple(_rule(r) for r in rules),
@@ -403,10 +408,14 @@ class LiveSession:
         assert self.session is not None
         try:
             async for event in self.session.events():
+                if self.stale:
+                    continue                # drained, never recorded
                 try:
                     await self._handle(event)
                 except StaleEpoch as exc:
-                    log.warning("storm: dropped an event from a stale process (%s): %s", exc, type(event).__name__)
+                    log.warning("storm: dropped an event from a stale process (%s): %s; closing it",
+                                exc, type(event).__name__)
+                    self.stale = True
                     self.engine.fenced(self)
                 except Exception:  # noqa: BLE001 - one event's failure must not stop the session's record
                     log.exception("storm: recording %s for session %s failed", type(event).__name__, self.meta.id)
@@ -433,6 +442,7 @@ class LiveSession:
             await self._session_closed(ev)
         elif isinstance(ev, c.RunStarted):
             f.runs.add(ev.run)
+            self.engine.became_busy(self)
             await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch))
         elif isinstance(ev, c.RunFinished):
             f.runs.discard(ev.run)
@@ -469,7 +479,10 @@ class LiveSession:
                                        "utilization": ev.utilization, "overage": ev.overage}
                 await self.engine.rate_limit(self, ev)
             elif isinstance(ev, c.RunSnapshot):
-                f.runs |= {r.run_id for r in ev.live if r.state in ("running", "waiting")}
+                unknown = {r.run_id for r in ev.live if r.state in ("running", "waiting")} - f.runs
+                if unknown:         # live runs the engine missed: busy (they end with their RunFinished)
+                    f.runs |= unknown
+                    self.engine.became_busy(self)
             self.engine.ephemeral(ev)
 
     async def _turn_finished(self, ev: c.TurnFinished) -> None:
@@ -649,4 +662,3 @@ def _rule(row: tuple) -> Rule:
     return Rule(id=rid, scope=scope, effect=effect, kind=kind, match=Match(**m), sentence=sentence,
                 tier=Tier[tier.upper()], project_pid=project_pid, thread_ts=thread_ts, from_item=from_item,
                 expires_at=expires_at)
-

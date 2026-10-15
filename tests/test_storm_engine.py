@@ -53,6 +53,10 @@ class TurnTests(EngineTestCase):
         self.assertEqual(len(kit.rows("SELECT pid FROM procs WHERE session_id = ?", (sid,))), 1)
         view = await engine.get_session(sid)
         self.assertEqual((view["state"], view["native_id"] is not None, view["epoch"]), ("warm", True, 1))
+        # Everything under the state root override, nothing under ~/.quirq.
+        self.assertTrue((kit.state / "engine" / "xo.db").is_file())
+        self.assertTrue((kit.state / "run" / "engine.lock").is_file())
+        self.assertFalse((kit.home / ".quirq").exists())
         # The state log, in seq order, in one vocabulary.
         types = kit.recorder.types(sid)
         self.assertEqual(types[:3], ["session", "session", "session"])        # created, starting, attached
@@ -359,16 +363,19 @@ class EpochTests(EngineTestCase):
         kit.scenario(self.started({"sleep": 0.5}, *claude.text_turn(SID, "late"), claude.idle(SID)))
         engine = await kit.boot()
         sid = await kit.session()
-        await engine.deliver(sid, message(1))
-        started = await kit.recorder.seen("turn.started", session_id=sid)
-        # Another attach moves the epoch on (as a restart's recovery does).
-        await engine.store.write(lambda tx: tx.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ?", (sid,)))
-        with self.assertLogs("services.cowork_agent.storm.engine.session", "WARNING") as logs:
+        with self.assertLogs("services.cowork_agent.storm.engine", "WARNING") as logs:
+            await engine.deliver(sid, message(1))
+            started = await kit.recorder.seen("turn.started", session_id=sid)
+            # Another attach moves the epoch on (as a restart's recovery does).
+            await engine.store.write(lambda tx: tx.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ?",
+                                                           (sid,)))
             await kit.until(lambda: not kit.rows("SELECT pid FROM procs"))
-        self.assertIn("stale process", logs.output[0])
+        self.assertTrue(any("stale process" in line for line in logs.output))
         self.assertEqual(kit.rows("SELECT status FROM turns WHERE id = ?", (started.turn_id,)), [("running",)])
         self.assertEqual(kit.recorder.of("turn.finished"), [])
-        self.assertEqual(kit.rows("SELECT state FROM wakes"), [("taken",)])  # a later boot hands it back
+        # Taken by the turn, or still queued if the process went stale before
+        # the wake was handed over: either way a later boot redelivers it.
+        self.assertIn(kit.rows("SELECT state FROM wakes"), ([("taken",)], [("queued",)]))
 
 
 class RecoveryTests(EngineTestCase):
