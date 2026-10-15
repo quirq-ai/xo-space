@@ -28,6 +28,7 @@ from services.cowork_agent.storm.review import (
     scope_refusal,
 )
 from services.cowork_agent.storm.review import policy
+from services.cowork_agent.storm.review.options import Spec, read_options
 from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
 from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, parse
 
@@ -81,6 +82,23 @@ class ParserTests(unittest.TestCase):
         self.assertEqual([(r.op, r.target, r.is_file, r.writes) for r in cmd.redirects], [
             (">", "err.log", True, True), (">>", "out.txt", True, True), (">&", "1", False, True),
             ("<", "in.txt", True, False)])
+
+
+class OptionsTests(unittest.TestCase):
+    def test_every_spelling_a_program_accepts_reads_the_same(self) -> None:
+        spec = Spec(short_valued="o", long_valued=frozenset({"--output"}))
+        for args in (["-o", "f", "u"], ["-of", "u"], ["-sof", "u"], ["u", "-o", "f"], ["--output", "f", "u"],
+                     ["--output=f", "u"]):
+            with self.subTest(args=args):
+                options = read_options(args, spec)
+                self.assertEqual((options.value("-o", "--output"), options.operands), ("f", ("u",)))
+
+    def test_clusters_end_of_options_and_optional_values(self) -> None:
+        options = read_options(["-sO", "u", "--", "-x"], Spec())
+        self.assertEqual((sorted(options.names()), options.operands), (["-O", "-s"], ("u", "-x")))
+        sed = read_options(["-Ei.bak", "s/a/b/", "f"], Spec(short_optional="i"))
+        self.assertEqual((sed.value("-i"), sed.operands), (".bak", ("s/a/b/", "f")))
+        self.assertEqual(read_options(["a", "-r"], Spec(permute=False)).operands, ("a", "-r"))
 
 
 class PlacesTests(_Tree):

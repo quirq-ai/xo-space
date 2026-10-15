@@ -52,11 +52,16 @@ class Match:
     mcp: tuple[str, str] | None = None         # (server, tool); tool "*" is every tool of the server
 
     def matches(self, part: Part, *, at_least: bool = False) -> bool:
-        """``at_least`` (deny rules): a command carrying more flags than the
-        rule still matches. Otherwise (allow rules) flags must be exactly the
-        rule's, so "allow ``rm -f``" never covers ``rm -rf``."""
+        """A command is compared as its program, its positional words and its
+        flags, wherever the flags stand (``rm -f src -r`` has the flags
+        ``-f -r``). ``at_least`` (deny rules): a command carrying more flags
+        than the rule still matches. Otherwise (allow rules) its short flags
+        must be exactly the rule's, so "allow ``rm -f``" never covers a
+        recursive delete; long flags may be added (``npm test --watch``)."""
+        if not part.words:
+            return False
         if self.command is not None:
-            return part.words == canonical_words(self.command)
+            return _shape(part.words) == _shape(canonical_words(self.command))
         if self.prefix is not None:
             return _starts_with(part.words, canonical_words(self.prefix), at_least)
         if self.path_glob is not None:
@@ -149,15 +154,28 @@ def render_sentence(rule_effect: str, scope: Scope, kind: str, match: Match, pro
     return f"{where}, {what} without asking"
 
 
+def _shape(words: tuple[str, ...]) -> tuple[str, tuple[str, ...], frozenset[str], frozenset[str]]:
+    """(program, positional words, short-flag letters, long flags)."""
+    positional, letters, longs = [], set(), set()
+    for word in words[1:]:
+        if is_flag_run(word):
+            letters.update(word[1:])
+        elif word.startswith("--") and len(word) > 2:
+            longs.add(word)
+        else:
+            positional.append(word)
+    return words[0], tuple(positional), frozenset(letters), frozenset(longs)
+
+
 def _starts_with(words: tuple[str, ...], prefix: tuple[str, ...], at_least: bool) -> bool:
-    """Word by word; with ``at_least``, the command's flags (anywhere in it)
-    need only include each flag run of the prefix."""
-    if not at_least:
-        return words[:len(prefix)] == prefix
-    plain = [w for w in prefix if not is_flag_run(w)]
-    wanted = {c for w in prefix if is_flag_run(w) for c in w[1:]}
-    have = {c for w in words if is_flag_run(w) for c in w[1:]}
-    return [w for w in words if not is_flag_run(w)][:len(plain)] == plain and wanted <= have
+    program, positional, letters, longs = _shape(words)
+    want_program, want_positional, want_letters, want_longs = _shape(prefix)
+    if program != want_program or positional[:len(want_positional)] != want_positional:
+        return False
+    if at_least:
+        names = {flag.split("=", 1)[0] for flag in longs}
+        return want_letters <= letters and {flag.split("=", 1)[0] for flag in want_longs} <= names
+    return letters == want_letters and want_longs <= longs
 
 
 def _glob(path: str, pattern: str) -> bool:
