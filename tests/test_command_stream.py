@@ -41,6 +41,16 @@ WITH_GRANDCHILD = textwrap.dedent("""
 """)
 
 
+# A child that starts a helper in a session of its own (a daemon) which keeps
+# the child's stdout and stderr open, prints the helper's pid, then sleeps.
+WITH_ESCAPED_HELPER = textwrap.dedent("""
+    import subprocess, sys, time
+    h = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    print(f"{h.pid}", flush=True)
+    time.sleep(60)
+""")
+
+
 def alive(pid: int, ticks: int | None) -> bool:
     """The process (pid, ticks) still exists and is not a zombie."""
     if ticks is None or process_start_ticks(pid) != ticks:
@@ -70,6 +80,14 @@ class _Async(unittest.IsolatedAsyncioTestCase):
 
     async def first_line(self, proc: commands.StreamProcess) -> bytes:
         return await asyncio.wait_for(anext(proc.lines()), timeout=10)
+
+    def own(self, pid: int) -> None:
+        """Kill `pid` at cleanup if it is still the process it is now."""
+        ticks = process_start_ticks(pid)
+        def kill() -> None:
+            if alive(pid, ticks):
+                os.kill(pid, signal.SIGKILL)
+        self.addCleanup(kill)
 
 
 class RunCancelTests(_Async):
@@ -196,6 +214,27 @@ class SpawnStreamTests(_Async):
         self.assertFalse(alive(grandchild, g_ticks))
         self.assertEqual(await proc.terminate(grace_s=0.3), code, "terminate is idempotent")
 
+    async def test_terminate_returns_while_an_escaped_helper_holds_the_pipes(self) -> None:
+        proc = await self.spawn(WITH_ESCAPED_HELPER)
+        helper = int(await self.first_line(proc))
+        self.own(helper)
+        code = await asyncio.wait_for(proc.terminate(grace_s=0.3), 5)
+        self.assertEqual(code, -signal.SIGTERM)
+        self.assertNotIn(proc.pid, [p.pid for p in live_processes()])
+
+    async def test_wait_and_lines_end_after_the_exit_while_a_helper_holds_the_pipes(self) -> None:
+        proc = await self.spawn(textwrap.dedent("""
+            import subprocess, sys
+            h = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+            print(f"{h.pid}", flush=True)
+            print("bye", flush=True)
+        """))
+        lines = proc.lines()
+        helper = int(await asyncio.wait_for(anext(lines), 10))
+        self.own(helper)
+        self.assertEqual(await asyncio.wait_for(proc.wait(), 5), 0)
+        self.assertEqual([line async for line in lines], [b"bye"])
+
     async def test_signal_reaches_the_process(self) -> None:
         proc = await self.spawn(textwrap.dedent("""
             import signal, sys, time
@@ -248,16 +287,39 @@ class ReapOrphanTests(_Async):
         await asyncio.wait_for(proc.wait(), 10)
         self.assertFalse(alive(grandchild, g_ticks))
 
-    async def test_a_reused_pid_or_unknown_start_time_is_left_alone(self) -> None:
+    async def test_a_reused_pid_is_left_alone_and_the_recorded_process_counts_as_gone(self) -> None:
         proc = await self.spawn("import time; time.sleep(60)")
-        self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks + 1, grace_s=0.3))
+        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks - 1, grace_s=0.3))
+        self.assertTrue(alive(proc.pid, proc.start_ticks))
+
+    async def test_an_unknown_start_time_is_left_alone_and_not_reported_gone(self) -> None:
+        proc = await self.spawn("import time; time.sleep(60)")
         self.assertFalse(await reap_orphan(proc.pid, None, grace_s=0.3))
         self.assertTrue(alive(proc.pid, proc.start_ticks))
 
-    async def test_a_process_already_gone_is_reported_not_reaped(self) -> None:
+    async def test_a_process_already_gone_is_reported_gone(self) -> None:
         proc = await self.spawn("pass")
         await asyncio.wait_for(proc.wait(), 10)
-        self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.3))
+        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.3))
+
+    async def test_a_dead_leaders_workers_are_stopped(self) -> None:
+        # The server died, the CLI quit, and its worker (same session) lives
+        # on: it is still the recorded process's, and recovery must stop it.
+        leader = await asyncio.create_subprocess_exec(PY, "-c", textwrap.dedent("""
+            import subprocess, sys
+            code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+            w = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL)
+            print(w.pid, flush=True)
+        """), stdout=asyncio.subprocess.PIPE, start_new_session=True)
+        ticks = process_start_ticks(leader.pid)
+        worker = int(await asyncio.wait_for(leader.stdout.readline(), 10))
+        w_ticks = process_start_ticks(worker)
+        self.own(worker)
+        await asyncio.wait_for(leader.wait(), 10)
+        self.assertTrue(alive(worker, w_ticks))
+
+        self.assertTrue(await reap_orphan(leader.pid, ticks, grace_s=0.3))
+        self.assertFalse(alive(worker, w_ticks))
 
 
 if __name__ == "__main__":

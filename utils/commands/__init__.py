@@ -740,6 +740,10 @@ STDERR_TAIL_LINES = 200
 STDERR_QUEUE_LINES = 1000
 #: Bytes of one stderr line that are kept; the rest of a longer line is cut.
 STDERR_LINE_KEEP = 4096
+#: How long the pipes may stay open after the process exited. They close when
+#: their last holder exits; past this, a helper that left the process group
+#: (a daemon) is holding them, and this side closes them instead.
+PIPE_CLOSE_GRACE_S = 1.0
 _STREAM_END = object()
 
 
@@ -765,37 +769,88 @@ def live_processes() -> list[LiveProcess]:
     return [p.info for p in _LIVE.values()]
 
 
-def process_start_ticks(pid: int) -> int | None:
-    """The process's start time in clock ticks since boot (``/proc/<pid>/stat``
-    field 22), or None where it can't be read (gone, or no procfs). Together
-    with the pid it names one process for good: a recycled pid has a later
-    start time."""
+def _stat_fields(pid: int) -> list[str] | None:
+    """``/proc/<pid>/stat`` from field 3 (state) on, or None when it can't be
+    read. The command name (field 2) is in parentheses and may itself hold
+    spaces or ')', so fields are counted from the last ')'."""
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
         return None
-    # The command name (field 2) is in parentheses and may itself hold spaces
-    # or ')', so count fields from the last ')'.
-    fields = stat[stat.rfind(")") + 2:].split()
+    return stat[stat.rfind(")") + 2:].split()
+
+
+def _stat_int(fields: list[str] | None, field: int) -> int | None:
+    """Field number `field` (1-based, as in proc(5)) of `_stat_fields`."""
     try:
-        return int(fields[19])
+        return int(fields[field - 3]) if fields else None
     except (IndexError, ValueError):
         return None
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """The process's start time in clock ticks since boot (``/proc/<pid>/stat``
+    field 22), or None where it can't be read (gone, or no procfs). Together
+    with the pid it names one process for good within one boot: a recycled pid
+    has a later start time."""
+    return _stat_int(_stat_fields(pid), 22)
+
+
+def boot_time() -> float | None:
+    """When this machine booted (epoch seconds, ``btime`` in /proc/stat), or
+    None without procfs. Start ticks only name a process within one boot, so a
+    registry row from before this time names nothing that is still running."""
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+class _StreamProtocol(asyncio.subprocess.SubprocessStreamProtocol):
+    """asyncio's own protocol, plus two signals it doesn't give: the moment
+    the process exits, and the moment stdout and stderr have both closed.
+    `Process.wait()` can't be used for the first: a wait that is already
+    pending when the process exits is only woken once every pipe has closed,
+    which a helper holding the pipe can put off for ever."""
+
+    def __init__(self, *, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.exited: asyncio.Future = loop.create_future()
+        self.output_closed: asyncio.Future = loop.create_future()
+        self._open_outputs = {1, 2}
+
+    def process_exited(self) -> None:
+        super().process_exited()
+        if not self.exited.done():
+            self.exited.set_result(None)
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        super().pipe_connection_lost(fd, exc)
+        self._open_outputs.discard(fd)
+        if not self._open_outputs and not self.output_closed.done():
+            self.output_closed.set_result(None)
 
 
 class StreamProcess:
     """One long-lived child process. Build it with `spawn_stream`.
 
     Stdout and stderr each have one reader task of their own. `lines()` has
-    one consumer; until it reads, the child waits on a full pipe, so `wait()`
-    returns once the process has exited *and* its output has been read.
-    `terminate()` gives the output up and always returns. `write` raises
-    `BrokenPipeError` / `ConnectionResetError` once the child is gone.
+    one consumer. `wait()` returns once the process has exited and its pipes
+    have closed, or `PIPE_CLOSE_GRACE_S` after the exit if a helper that left
+    the group still holds them. `terminate()` gives the output up and always
+    returns. `write` raises `BrokenPipeError` / `ConnectionResetError` once the
+    child is gone.
     """
 
-    def __init__(self, proc: asyncio.subprocess.Process, *, label: str, argv: list[str],
+    def __init__(self, proc: asyncio.subprocess.Process, transport: asyncio.SubprocessTransport,
+                 protocol: _StreamProtocol, *, label: str, argv: list[str],
                  cwd: str, ts: str, started: float) -> None:
         self._proc = proc
+        self._transport = transport
+        self._protocol = protocol
         self._argv = argv
         self._cwd = cwd
         self._ts = ts
@@ -956,14 +1011,18 @@ class StreamProcess:
 
     async def _watch_exit(self) -> int:
         try:
-            code = await self._proc.wait()
-            # The pipe closes when the last holder exits; a grandchild that
-            # keeps it open must not hold this handle open forever.
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(self._drainer), timeout=1.0)
-            return code
+            await self._protocol.exited
+            try:
+                await asyncio.wait_for(asyncio.shield(self._protocol.output_closed), PIPE_CLOSE_GRACE_S)
+            except asyncio.TimeoutError:
+                # A helper outside the group holds the pipes. Closing this side
+                # ends both readers: what was already read still reaches them.
+                self._transport.close()
+            return self._proc.returncode
         finally:
-            _LIVE.pop(self.pid, None)
+            # The pid is free from the exit on; a new process may hold it now.
+            if _LIVE.get(self.pid) is self:
+                del _LIVE[self.pid]
             code = self._proc.returncode if self._proc.returncode is not None else -1
             loop = asyncio.get_running_loop()
             result = CommandResult(argv=self._argv, returncode=code, output="",
@@ -1001,7 +1060,9 @@ async def spawn_stream(
     ts = datetime.now(timezone.utc).isoformat()
     loop = asyncio.get_running_loop()
     started = loop.time()
-    proc = await asyncio.create_subprocess_exec(
+    # asyncio.create_subprocess_exec, with the protocol that reports the exit.
+    transport, protocol = await loop.subprocess_exec(
+        lambda: _StreamProtocol(limit=STREAM_LINE_LIMIT, loop=loop),
         *argv_list,
         cwd=str(cwd),
         env=dict(env),
@@ -1009,66 +1070,106 @@ async def spawn_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
-        limit=STREAM_LINE_LIMIT,
     )
+    proc = asyncio.subprocess.Process(transport, protocol, loop)
     try:
-        handle = StreamProcess(proc, label=label, argv=argv_list, cwd=str(cwd), ts=ts, started=started)
+        handle = StreamProcess(proc, transport, protocol, label=label, argv=argv_list, cwd=str(cwd),
+                               ts=ts, started=started)
     except BaseException:
         _kill_tree(proc)
-        await asyncio.shield(proc.wait())
+        await asyncio.shield(protocol.exited)
         raise
     _LIVE[handle.pid] = handle
     return handle
 
 
 async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0) -> bool:
-    """Stop a process an earlier run of this server started and lost track of.
+    """Stop a process an earlier run of this server started and lost track of,
+    and everything left in its session.
 
-    Only the process recorded as (`pid`, `start_ticks`) is touched: a pid that
-    now belongs to something else, or whose start time can't be read, is left
-    alone. Its group gets SIGTERM, then SIGKILL after `grace_s`. Returns True
-    when that process is gone afterwards.
+    `spawn_stream` starts each child as a session leader, so its session id is
+    its pid, and Linux doesn't hand that number out again while any process
+    still names it as its session. So the members of session `pid` are the
+    recorded process's own helpers, even after the process itself has gone (a
+    CLI that quit on stdin EOF while its MCP servers live on). Only processes
+    started no earlier than `start_ticks` are touched, each one checked again
+    once a pidfd names it. They get SIGTERM, then SIGKILL after `grace_s`.
+
+    `start_ticks` only names a process within one boot: the caller passes rows
+    from this boot only (`boot_time`). Returns True when the recorded process
+    and its session are gone afterwards, whether stopped here or gone already;
+    False when something survived, or when it can't be told (no start time
+    recorded, no procfs).
     """
-    if start_ticks is None or process_start_ticks(pid) != start_ticks:
+    if start_ticks is None:
         return False
-    try:
-        pidfd = os.pidfd_open(pid)
-    except ProcessLookupError:
-        return True
-    except OSError:
+    now = process_start_ticks(pid)
+    if now is not None and now != start_ticks:
+        return True     # the pid was freed and reused, so the session had emptied first
+    members = await asyncio.to_thread(_session_members, pid, start_ticks)
+    if members is None:
         return False
+    pidfds = _open_members(members, pid, start_ticks)
     try:
-        # The pid may have been reused between the check above and opening the
-        # fd, so check again now that the fd names one process. From here the
-        # leader is signalled through the fd, which can't reach another
-        # process. Its group is signalled by number; Linux never hands out a
-        # pid that is still a live group's id, so that reaches the group the
-        # verified process leads (its workers included).
-        if process_start_ticks(pid) != start_ticks:
-            return False
-        lead = _leads_own_group(pid)
-        with contextlib.suppress(ProcessLookupError):
-            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
-        if lead:
-            _signal_group(pid, signal.SIGTERM)
-        gone = await _pidfd_exited(pidfd, grace_s)
-        # Workers that ignored SIGTERM, or outlived their leader, go too.
-        if lead:
-            _signal_group(pid, signal.SIGKILL)
-        if not gone:
-            with contextlib.suppress(ProcessLookupError):
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-            gone = await _pidfd_exited(pidfd, grace_s)
-        return gone
+        alive = await _signal_and_wait(pidfds, signal.SIGTERM, grace_s)
+        alive = await _signal_and_wait(alive, signal.SIGKILL, grace_s)
     finally:
-        os.close(pidfd)
-
-
-def _leads_own_group(pid: int) -> bool:
-    try:
-        return os.getpgid(pid) == pid
-    except ProcessLookupError:
+        for fd in pidfds:
+            os.close(fd)
+    if alive:
         return False
+    # A member may have started another while it was being stopped.
+    return await asyncio.to_thread(_session_members, pid, start_ticks) == []
+
+
+def _session_members(sid: int, start_ticks: int) -> list[int] | None:
+    """The processes of session `sid` started no earlier than `start_ticks`,
+    or None when /proc can't be read. Empty when `sid` now leads a session
+    that isn't the recorded one: the number was reused, so ours had ended."""
+    try:
+        entries = [int(e.name) for e in os.scandir("/proc") if e.name.isdigit()]
+    except OSError:
+        return None
+    members = []
+    for pid in entries:
+        fields = _stat_fields(pid)
+        if _stat_int(fields, 6) != sid or fields[0] == "Z":   # a zombie has exited already
+            continue
+        ticks = _stat_int(fields, 22)
+        if pid == sid and ticks != start_ticks:
+            return []
+        if ticks is not None and ticks >= start_ticks:
+            members.append(pid)
+    return members
+
+
+def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
+    """A pidfd for each process that is still in session `sid` once the fd
+    names it. From then on a signal sent through the fd can't reach a process
+    that took over a freed pid."""
+    pidfds = []
+    for pid in pids:
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            continue        # gone already
+        fields = _stat_fields(pid)
+        ticks = _stat_int(fields, 22)
+        if _stat_int(fields, 6) == sid and ticks is not None and ticks >= start_ticks:
+            pidfds.append(fd)
+        else:
+            os.close(fd)
+    return pidfds
+
+
+async def _signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
+    """Send `sig` through each pidfd; return the ones still running after
+    `timeout`."""
+    for fd in pidfds:
+        with contextlib.suppress(ProcessLookupError):
+            signal.pidfd_send_signal(fd, sig)
+    exited = await asyncio.gather(*(_pidfd_exited(fd, timeout) for fd in pidfds))
+    return [fd for fd, done in zip(pidfds, exited) if not done]
 
 
 async def _pidfd_exited(pidfd: int, timeout: float) -> bool:
