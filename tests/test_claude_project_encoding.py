@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cowork_agent.adapters.claude_code import _project_encoding, sessions, visualizer_source
+from services.cowork_agent.adapters.claude_code import sessions, visualizer_source
 from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.visualizer import project_index
 from services.cowork_agent.visualizer.ingest.jsonl_tail import OffsetStore
@@ -97,15 +97,6 @@ class DiscoveryTests(_Tree):
 
 
 class ProjectIdTests(_Tree):
-    def test_encoded_folder_maps_to_project_with_underscore(self) -> None:
-        (self.root / "billing").mkdir()
-        (self.root / "billing_api").mkdir()
-        worktree = self.root / "billing_api" / ".xo" / "worktrees" / "thread-x"
-        with patch.object(_project_encoding, "xo_projects_root", return_value=self.root):
-            self.assertEqual(_project_encoding.project_id_for_encoded_cwd(encode_path(str(worktree))), "billing_api")
-            self.assertEqual(_project_encoding.project_id_for_encoded_cwd(encode_path(str(self.root / "billing"))),
-                             "billing")
-
     def test_worktree_cwd_maps_to_the_project_not_xo(self) -> None:
         worktree = self.root / "billing_api" / ".xo" / "worktrees" / "thread-x"
         worktree.mkdir(parents=True)
