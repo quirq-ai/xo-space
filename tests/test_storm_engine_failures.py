@@ -432,15 +432,16 @@ class RuleTests(Case):
 
         def rows(w: Writes) -> None:
             w.execute("INSERT INTO chats VALUES ('chat_p1', 'project', 'pid-1', 'demo', 't', '{}')")
-            for rid, match in (("r_ok", {"prefix": ["npm", "run", "lint"]}), ("r_bad", {"nonsense": 1})):
-                w.execute("INSERT INTO rules (id, scope, project_pid, tool, match, effect, sentence, tier, "
-                          "created_at) VALUES (?, 'project', 'pid-1', 'command', ?, 'allow', 'run npm run lint', "
-                          "'notable', 't')", (rid, json.dumps(match)))
+            for seq, (rid, match) in enumerate((("r_ok", {"prefix": ["npm", "run", "lint"]}),
+                                                ("r_bad", {"nonsense": 1})), start=1000):
+                w.execute("INSERT INTO rules (id, seq, scope, project_pid, tool, match, effect, sentence, tier, "
+                          "created_at) VALUES (?, ?, 'project', 'pid-1', 'command', ?, 'allow', 'run npm run lint', "
+                          "'notable', 't')", (rid, seq, json.dumps(match)))
         await engine.write(rows)
         sid = await engine.create_session(c.SessionSpec(cwd=str(kit.work), permissions=c.PermissionPolicy(mode="ask")),
                                           agent=AGENT, role="thread", preset="thread", chat_id="chat_p1",
                                           thread_ts="1.0")
-        with self.assertLogs("services.cowork_agent.storm.engine.session", "ERROR"):
+        with self.assertLogs("services.cowork_agent.storm.review.rule_store", "ERROR"):
             await engine.deliver(sid, message(1))
             await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(desk.opened, [])                           # the good rule allowed it, unasked

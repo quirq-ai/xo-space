@@ -49,15 +49,13 @@ from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
 from services.cowork_agent.storm.review import (
     Action,
     Grant,
-    Match,
     PolicyContext,
-    Rule,
     SessionRef,
-    Tier,
     Verdict,
     action_sha256,
     decide,
     request_sha256,
+    rule_store,
 )
 from services.cowork_agent.storm.store import RESUME_NOTE, StoreFailed, dropped_message
 from services.cowork_agent.storm.store.recovery import RESTARTED
@@ -504,17 +502,13 @@ class LiveSession:
         now = iso(self.engine.clock.time())
         session_id, project_pid = self.meta.id, self.meta.project_pid
 
-        def read(conn) -> tuple[list, list]:
+        def read(conn) -> tuple[list, tuple, frozenset[str]]:
             grants = conn.execute("SELECT id, session_id, tool, input_sha256, expires_at FROM grants "
                                   "WHERE session_id = ? AND used_at IS NULL AND expires_at > ?",
                                   (session_id, now)).fetchall()
-            # Only rules that can apply here: the workspace's, and this project's.
-            rules = conn.execute("SELECT id, scope, effect, tool, match, sentence, tier, project_pid, thread_ts, "
-                                 "from_item, expires_at FROM rules WHERE scope = 'workspace' OR project_pid = ?",
-                                 (project_pid,)).fetchall()
-            return grants, rules
-        grants, rules = await self.engine.store.read(read)
-        ctx = PolicyContext(places=places, now=now, rules=tuple(_rules(rules)),
+            return (grants, *rule_store.for_policy(conn, project_pid))
+        grants, rules, revoked = await self.engine.store.read(read)
+        ctx = PolicyContext(places=places, now=now, rules=rules, revoked_defaults=revoked,
                             grants=tuple(Grant(*g) for g in grants), xo_ports=self.engine.xo_ports)
         return ctx, ref
 
@@ -819,26 +813,3 @@ def _behaviour(features: Mapping[str, c.FeatureSupport], key: str) -> str | None
 def report_rows(report: c.SupportReport) -> list[dict[str, Any]]:
     return [{"feature": i.feature, "support": i.support, "mechanism": i.mechanism, "enforced_by": i.enforced_by,
              "note": i.note} for i in report.items]
-
-
-def _rules(rows: list[tuple]) -> list[Rule]:
-    """The stored rules. An allow rule that can't be read is skipped and
-    logged, so one bad row doesn't turn every check into a host error; a deny
-    rule that can't be read fails the check closed (it raises)."""
-    out = []
-    for row in rows:
-        try:
-            out.append(_rule(row))
-        except (ValueError, TypeError, KeyError) as exc:
-            if row[2] != "allow":
-                raise
-            log.error("storm: allow rule %s can't be read (%s); it is ignored", row[0], exc)
-    return out
-
-
-def _rule(row: tuple) -> Rule:
-    rid, scope, effect, kind, match, sentence, tier, project_pid, thread_ts, from_item, expires_at = row
-    m = {k: tuple(v) if isinstance(v, list) else v for k, v in json.loads(match).items()}
-    return Rule(id=rid, scope=scope, effect=effect, kind=kind, match=Match(**m), sentence=sentence,
-                tier=Tier[tier.upper()], project_pid=project_pid, thread_ts=thread_ts, from_item=from_item,
-                expires_at=expires_at)

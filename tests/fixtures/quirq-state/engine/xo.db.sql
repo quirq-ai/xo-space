@@ -267,6 +267,7 @@ CREATE TABLE runs (
 
 CREATE TABLE review_items (
     id           TEXT PRIMARY KEY,
+    seq          INTEGER NOT NULL UNIQUE,      -- the seq of its `review.opened` event: lists page by it
     chat_id      TEXT REFERENCES chats (id) ON DELETE CASCADE,
     thread_ts    TEXT,
     session_id   TEXT,
@@ -275,9 +276,13 @@ CREATE TABLE review_items (
     epoch        INTEGER,                       -- the epoch it was asked in
     origin       TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN ('permission', 'question', 'approval', 'action', 'create_project',
-                                               'create_job', 'usage', 'integrity')),
+                                               'create_job', 'usage', 'integrity', 'suggestion')),
     risk         TEXT CHECK (risk IN ('routine', 'notable', 'destructive')),   -- computed, never claimed
     risk_reasons TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(risk_reasons)),
+    blocking     INTEGER NOT NULL DEFAULT 0 CHECK (blocking IN (0, 1)),     -- an agent's step waits on it
+    -- The queue's order: destructive first, then blocking, then the rest (each by age).
+    urgency      INTEGER GENERATED ALWAYS AS (CASE WHEN risk = 'destructive' THEN 0 WHEN blocking = 1 THEN 1
+                                                   ELSE 2 END) VIRTUAL,
     title        TEXT NOT NULL,
     why          TEXT,
     detail       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail)),   -- exact command, diff, paths, URL
@@ -292,10 +297,13 @@ CREATE TABLE review_items (
     decided_at   TEXT,
     delivery     TEXT CHECK (delivery IN ('in_call', 'grant', 'wake'))
 );
-CREATE INDEX review_open ON review_items (state, created_at);
+CREATE INDEX review_open ON review_items (state, expires_at);
+CREATE INDEX review_queue ON review_items (urgency, seq);
+CREATE INDEX review_by_session ON review_items (session_id, seq);
 
 CREATE TABLE rules (
     id          TEXT PRIMARY KEY,
+    seq         INTEGER NOT NULL UNIQUE,        -- the seq of its `rule.created` event
     scope       TEXT NOT NULL CHECK (scope IN ('thread', 'project', 'workspace')),
     project_pid TEXT,
     thread_ts   TEXT,
@@ -305,9 +313,31 @@ CREATE TABLE rules (
     sentence    TEXT NOT NULL,                  -- exactly what the person saw
     tier        TEXT NOT NULL CHECK (tier IN ('routine', 'notable', 'destructive')),   -- it covers nothing riskier
     from_item   TEXT,
+    client_id   TEXT UNIQUE,                    -- a retried POST makes one rule
     created_at  TEXT NOT NULL,
     expires_at  TEXT,
-    uses        INTEGER NOT NULL DEFAULT 0
+    revoked_at  TEXT,                           -- kept, like every decision; a revoked rule answers nothing
+    uses        INTEGER NOT NULL DEFAULT 0,
+    -- A thread rule names its thread; a project rule its project; a workspace rule neither.
+    CHECK ((scope = 'thread') = (thread_ts IS NOT NULL)),
+    CHECK (scope <> 'project' OR project_pid IS NOT NULL),
+    CHECK (scope <> 'workspace' OR project_pid IS NULL)
+);
+
+-- XO's default rules ship on (ch 15 §3.1); the person may revoke each one.
+CREATE TABLE default_rule_revocations (
+    id         TEXT PRIMARY KEY,                -- the default rule's id, e.g. default:git-read
+    revoked_at TEXT NOT NULL
+);
+
+-- The loop breaker's counts (ch 15 §9), per thread (or per session outside a
+-- thread): the last denied action, how many times in a row, and every denial.
+CREATE TABLE loop_breaker (
+    scope       TEXT PRIMARY KEY,               -- thread:<chat>:<ts> or session:<id>
+    action      TEXT NOT NULL,                  -- the last denied action's key
+    streak      INTEGER NOT NULL,
+    denials     INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 
 CREATE TABLE grants (
@@ -349,7 +379,8 @@ INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_
     (5, '2026-10-15T09:01:01Z', 'turn.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"origin": "wake"}'),
     (6, '2026-10-15T09:01:30Z', 'step.tool', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"title": "Read the failing test", "kind": "read"}'),
     (7, '2026-10-15T09:01:40Z', 'review.opened', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"item": "rv_000000000001"}'),
-    (8, '2026-10-15T09:02:00Z', 'hop', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 3, '{"hop": "hop_000000000001"}');
+    (8, '2026-10-15T09:02:00Z', 'hop', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 3, '{"hop": "hop_000000000001"}'),
+    (9, '2026-10-15T09:03:00Z', 'rule.created', 'chat_p0000000000', NULL, NULL, NULL, NULL, NULL, '{"rule": "rule_000000000001"}');
 
 INSERT INTO messages VALUES ('cmsg_0000000001', 3, 'chat_p0000000000', '1760518860.000100', 'owner', NULL, NULL,
     'Make the tests pass.', NULL, 'client-0001', '{}', '2026-10-15T09:01:00Z');
@@ -390,14 +421,17 @@ INSERT INTO pools (id, state, updated_at) VALUES ('sample_agent:default', 'open'
 
 INSERT INTO procs VALUES (4194300, 1, 'cse_thread000000', 3, 'sample-agent', '2026-10-15T09:01:00Z');
 
-INSERT INTO review_items (id, chat_id, thread_ts, session_id, turn_id, epoch, origin, kind, risk, risk_reasons, title,
-    detail, options, state, native, created_at)
-VALUES ('rv_000000000001', 'chat_p0000000000', '1760518860.000100', 'cse_thread000000', 'turn_000000000001', 3, 'cli',
-    'permission', 'notable', '["runs code from this repo"]', 'Run `npm test`', '{"command": "npm test"}',
-    '["once", "thread", "rule", "deny"]', 'open', '{"request_id": "req-0001"}', '2026-10-15T09:01:40Z');
+INSERT INTO review_items (id, seq, chat_id, thread_ts, session_id, turn_id, epoch, origin, kind, risk, risk_reasons,
+    blocking, title, detail, options, state, native, created_at)
+VALUES ('rv_000000000001', 7, 'chat_p0000000000', '1760518860.000100', 'cse_thread000000', 'turn_000000000001', 3, 'cli',
+    'permission', 'notable', '["runs code from this repo"]', 1, 'Run `npm test`',
+    '{"tool": "Bash", "kind": "command", "command": "npm test"}',
+    '[{"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}, {"id": "deny", "decision": "deny", "label": "Deny"}]',
+    'open', '{"request_id": "req-0001", "scopes": ["once"], "call": {"session_id": "cse_thread000000", "epoch": 3, "kind": "permission", "tool": "Bash", "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "summary": "`npm test`"}}',
+    '2026-10-15T09:01:40Z');
 
-INSERT INTO rules (id, scope, project_pid, tool, match, effect, sentence, tier, created_at) VALUES
-    ('rule_000000000001', 'project', '00000000-0000-4000-8000-000000000000', 'command', '{"prefix": ["npm", "run", "lint"]}',
-     'allow', 'In sample-project, run `npm run lint` without asking', 'notable', '2026-10-14T12:00:00Z');
+INSERT INTO rules (id, seq, scope, project_pid, tool, match, effect, sentence, tier, created_at) VALUES
+    ('rule_000000000001', 9, 'project', '00000000-0000-4000-8000-000000000000', 'command', '{"prefix": ["npm", "run", "lint"]}',
+     'allow', 'In sample-project, run `npm run lint` without asking', 'notable', '2026-10-15T09:03:00Z');
 
 COMMIT;

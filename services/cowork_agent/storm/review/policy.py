@@ -119,6 +119,7 @@ class Verdict:
     message: str | None = None             # for the agent, when denied
     rules_used: tuple[str, ...] = ()       # the person's rules and default rules that answered
     grant_id: str | None = None            # the grant to spend
+    assessment: Assessment | None = None   # on an ask: what was judged, for the review item's options
 
 
 def action_sha256(*, kind: str, tool: str, command: str | None = None, paths: Iterable[str] = (),
@@ -193,7 +194,7 @@ def _decide(action: Action, ctx: PolicyContext) -> Verdict:
         return _coordinator(action, found)
     if found.unverifiable:
         # It may write a protected path XO can't see: no grant or rule covers it.
-        return Verdict("ask", found.tier, found.reasons)
+        return Verdict("ask", found.tier, found.reasons, assessment=found)
     grant = _grant(action, ctx)
     if grant:
         return Verdict("allow", found.tier, found.reasons, grant_id=grant.id)
@@ -201,7 +202,7 @@ def _decide(action: Action, ctx: PolicyContext) -> Verdict:
         used = _cover(found.parts, applying, ctx.revoked_defaults)
         if used is not None:
             return Verdict("allow", found.tier, found.reasons, rules_used=used)
-    return Verdict("ask", found.tier, found.reasons)
+    return Verdict("ask", found.tier, found.reasons, assessment=found)
 
 
 def _cover(parts: Iterable[Part], applying, revoked: frozenset[str]) -> tuple[str, ...] | None:
@@ -233,5 +234,5 @@ def _coordinator(action: Action, found: Assessment) -> Verdict:
                        message=f"A coordinator only reads and delegates; this was not allowed ({why}). "
                                "Ask one of your workers or a thread to do it.")
     if any(p.secret_read for p in found.parts):
-        return Verdict("ask", Tier.DESTRUCTIVE, found.reasons)
+        return Verdict("ask", Tier.DESTRUCTIVE, found.reasons, assessment=found)
     return Verdict("allow", found.tier, found.reasons)

@@ -127,11 +127,11 @@ class Desk:
             if (ask.request or ask.question) else None
         detail = json.dumps({"input_sha256": ask.call.input_sha256 if ask.call else None,
                              "call_kind": ask.call.kind if ask.call else None})
-        w.execute("INSERT INTO review_items (id, session_id, turn_id, epoch, origin, kind, title, state, native, "
-                  "detail, created_at, expires_at) VALUES (?, ?, ?, ?, 'cli', ?, ?, 'open', ?, ?, ?, ?)",
-                  (item, ask.session_id, ask.turn_id, ask.epoch, ask.kind, ask.title, native, detail, w.now,
+        seq = w.append("review.opened", {"item": item, "kind": ask.kind}, session_id=ask.session_id)
+        w.execute("INSERT INTO review_items (id, seq, session_id, turn_id, epoch, origin, kind, title, state, native, "
+                  "detail, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 'cli', ?, ?, 'open', ?, ?, ?, ?)",
+                  (item, seq, ask.session_id, ask.turn_id, ask.epoch, ask.kind, ask.title, native, detail, w.now,
                    self.expires_at))
-        w.append("review.opened", {"item": item, "kind": ask.kind}, session_id=ask.session_id)
         self.opened.append((item, ask))
         if self.on_open:            # open runs on the store's thread
             self.loop.call_soon_threadsafe(self.on_open, item, ask)
