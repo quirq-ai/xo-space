@@ -334,6 +334,16 @@
     {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git show HEAD:x /home/you/.ssh/id_rsa", "expect": "ask", "tier": "destructive"},
     {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git log origin/main", "expect": "allow"},
     {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "git add src/app.py", "expect": "allow"},
-    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "grep -f patterns.txt src", "expect": "allow"}
+    {"group": "Cursor security review of #247/#248 old heads, re-checked (2026-10-15)", "command": "grep -f patterns.txt src", "expect": "allow"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "./timeout 10 cat src/app.py", "expect": "ask"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "src/busybox cat src/app.py", "expect": "ask"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "bin/ls", "expect": "ask"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "./timeout 10 cat src/app.py", "role": "coordinator", "expect": "deny"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "GIT_PAGER=/bin/sh git log -1", "role": "coordinator", "expect": "deny"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "LD_PRELOAD=./evil.so git status", "role": "coordinator", "expect": "deny"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "env GIT_EXTERNAL_DIFF=/bin/sh git log -1", "role": "coordinator", "expect": "deny"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "PATH=.:/usr/bin git status", "grant": true, "expect": "ask"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "/usr/bin/git status", "expect": "allow"},
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "./run_tests.sh", "expect": "allow", "rule": {"effect": "allow", "command": ["./run_tests.sh"], "scope": "project", "tier": "notable"}}
   ]
 }

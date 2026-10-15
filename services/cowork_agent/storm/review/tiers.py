@@ -218,6 +218,9 @@ WRAPPERS: dict[str, tuple[Spec, int, frozenset[str]]] = {
     "busybox": (_wrapper(), 0, frozenset()),
 }
 ELEVATE = frozenset({"sudo", "su", "doas", "pkexec", "chroot", "runuser"})
+#: The system's own program folders. A program named by a path anywhere else
+#: (``./timeout``, ``bin/ls``) is whatever the repo or the session put there.
+SYSTEM_BIN = frozenset({"/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin", "/usr/local/sbin"})
 ALWAYS_DESTRUCTIVE = {
     "docker": "runs containers with access to the machine", "podman": "runs containers",
     "crontab": "schedules commands", "systemctl": "controls system services", "launchctl": "controls services",
@@ -725,7 +728,7 @@ def _command(command: SimpleCommand, places: Places, where: Path | None, branch:
     for text in (*command.argv, *command.assignments, *(r.target for r in command.redirects)):
         _anti_forgery(judge, text, places)
     if command.assignments:
-        judge.at_least(Tier.NOTABLE, "it changes the environment the command runs with")
+        _environment(judge)
     for redirect in command.redirects:
         _redirect(judge, redirect, places, where)
     argv = _unwrap(command.argv, judge, places, where)
@@ -753,13 +756,29 @@ def _redirect(judge: _Judge, redirect: Redirect, places: Places, where: Path | N
         _read(judge, redirect.target, places, where)
 
 
+def _environment(judge: _Judge) -> None:
+    """A changed environment can change what the command runs (PATH,
+    LD_PRELOAD, GIT_PAGER, GIT_EXTERNAL_DIFF …), so XO can't vouch for it."""
+    judge.unverifiable = True
+    judge.at_least(Tier.NOTABLE, "it changes the environment the command runs with, which can change what it runs")
+
+
+def _program_name(word: str) -> str | None:
+    """The program ``word`` runs, by name; None when it names a file outside
+    the system's own folders, which XO can't vouch for."""
+    if "/" not in word:
+        return word
+    folder, _, name = word.rpartition("/")
+    return name if folder in SYSTEM_BIN else None
+
+
 def _unwrap(argv: tuple[str, ...], judge: _Judge, places: Places, where: Path | None) -> tuple[str, ...]:
     """Strip words that only run the rest of the line (``env``, ``nohup``,
     ``timeout 10`` …), judging their own options; elevation is destructive
     outright. Empty when nothing runs (``command -v x``)."""
     argv = tuple(argv)
     while argv:
-        name = argv[0].rsplit("/", 1)[-1]
+        name = _program_name(argv[0])
         if name in ELEVATE:
             judge.at_least(Tier.DESTRUCTIVE, f"it runs as another user ({name})")
             argv = argv[1:]
@@ -776,7 +795,7 @@ def _unwrap(argv: tuple[str, ...], judge: _Judge, places: Places, where: Path | 
         rest = list(options.operands)
         if name == "env":
             while rest and "=" in rest[0]:
-                judge.at_least(Tier.NOTABLE, "it changes the environment the command runs with")
+                _environment(judge)
                 rest.pop(0)
             if options.has("-C", "--chdir", "-S", "--split-string"):
                 _cannot_check(judge, "env -C or -S changes where or what the command runs, which XO can't follow")
@@ -799,7 +818,11 @@ def _unwrap(argv: tuple[str, ...], judge: _Judge, places: Places, where: Path | 
 
 def _program(judge: _Judge, argv: tuple[str, ...], places: Places, where: Path | None, branch: str | None,
              ports: frozenset[int]) -> None:
-    name, args = argv[0].rsplit("/", 1)[-1], list(argv[1:])
+    name, args = _program_name(argv[0]), list(argv[1:])
+    if name is None:
+        judge.runs_repo_code = True
+        judge.at_least(Tier.NOTABLE, f"it runs {argv[0]}, a program from this folder XO can't check")
+        return
     if name in ENV_DUMPS and (ENV_DUMPS[name] is None or set(args) <= set(ENV_DUMPS[name])):
         judge.at_least(Tier.DESTRUCTIVE, "it prints the environment, which holds this session's tokens")
         return
@@ -827,7 +850,7 @@ def _program(judge: _Judge, argv: tuple[str, ...], places: Places, where: Path |
         else:
             judge.at_least(Tier.DESTRUCTIVE, f"{name} changes remote infrastructure")
         return
-    if name in RUNS_REPO_CODE or argv[0].startswith("./"):
+    if name in RUNS_REPO_CODE:
         judge.runs_repo_code = True
         judge.at_least(Tier.NOTABLE, "runs code from this repo")
         return
