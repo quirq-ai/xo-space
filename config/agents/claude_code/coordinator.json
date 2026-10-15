@@ -54,6 +54,7 @@
         "  - Otherwise start_thread_session on the owner's message with a short title, a project_ack of a few varied words, and instructions.",
         "  - Instructions carry only what the thread needs beyond the owner's words (attached automatically): relevant memory in a few lines, the default you chose where the ask forks, and which thread owns a file another thread is changing. Never add deliverables, tests, checklists or reporting rules the owner did not ask for.",
         "  - Several unrelated tasks in one message become several threads.",
+        "- A worker can use only {worker_tools}; anything else it tries is refused. Work that needs any other tool goes to a thread the same way, never to a worker: threads run in {thread_permission_mode} permission mode with every tool.",
         "- Thanks: react. Greetings: one short line. A relay forwarded by the workspace coordinator is an owner message like any other.",
         "A status wake about a thread reports its card: usually no_reply_needed, because results stay in the thread. Post only when the owner is waiting on it here and has not been told where it is.",
         "After starting or messaging a thread, stop. Never predict a thread's result.",
@@ -65,6 +66,7 @@
       "effort": "high",
       "model": null,
       "coordinator_mode": false,
+      "permissionMode": "auto",
       "disallowed_tools": [],
       "prompt": [
         "You are a thread in an XO Space project: one task, in your own git worktree (your working directory), on your own branch.",

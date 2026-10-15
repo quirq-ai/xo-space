@@ -228,6 +228,29 @@ class ClaudeSpawnTests(unittest.TestCase):
                                            types.SimpleNamespace(cli_env=lambda: {"CLAUDE_CODE_COORDINATOR_MODE": "1"}))
         self.assertNotIn("CLAUDE_CODE_COORDINATOR_MODE", env)
 
+    def test_a_thread_runs_in_its_permission_mode_and_a_coordinator_on_flags_only(self) -> None:
+        thread = claude_coordinator.role_config("thread")
+        argv = claude_coordinator.build_argv(self.spec("thread"), thread, Path("/s"), "claude")
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
+        without = {k: v for k, v in thread.items() if k != "permissionMode"}
+        self.assertIn("--dangerously-skip-permissions",
+                      claude_coordinator.build_argv(self.spec("thread"), without, Path("/s"), "claude"))
+        cfg = {**claude_coordinator.role_config("project-coordinator"), "permissionMode": "auto"}
+        argv = claude_coordinator.build_argv(self.spec("project-coordinator"), cfg, Path("/s"), "claude")
+        self.assertNotIn("--permission-mode", argv)
+
+    def test_a_coordinator_prompt_names_its_workers_tools_and_the_thread_mode(self) -> None:
+        cfg = claude_coordinator.role_config("project-coordinator")
+        prompt = claude_coordinator.render_prompt(cfg)
+        self.assertIn(f"A worker can use only {', '.join(cfg['read_tools'])};", prompt)
+        self.assertIn("threads run in auto permission mode", prompt)
+        self.assertNotIn("{worker_tools}", prompt)
+        self.assertNotIn("{thread_permission_mode}", prompt)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XO_MCP_TMP_ROOT": tmp}):
+            folder = claude_coordinator._spawn_dir(self.spec("project-coordinator"), cfg)
+            self.assertEqual((folder / "append-system-prompt.txt").read_text(), prompt + "\n")
+
     def test_the_comms_entry_is_marked_comms_only_for_coordinators(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"XO_MCP_TMP_ROOT": tmp}):
             folder = claude_coordinator._spawn_dir(self.spec("project-coordinator"),

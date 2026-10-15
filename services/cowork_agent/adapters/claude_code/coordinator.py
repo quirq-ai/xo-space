@@ -11,7 +11,9 @@ here and in ``config/agents/claude_code/coordinator.json``:
   orchestration and comms only, plus read-only readers (``--allowedTools``);
   there is no ``--dangerously-skip-permissions`` for them;
 - threads run like today's chat, in their worktree, with the comms server and
-  the role's ``--disallowedTools``;
+  the role's ``--disallowedTools``; the thread role's ``permissionMode`` (as in
+  Claude Code's agent definitions) goes to ``--permission-mode`` in place of
+  ``--dangerously-skip-permissions``; coordinators ignore it;
 - the comms tools a successful call to which ends a turn are declared with
   ``CLAUDE_CODE_TERMINAL_MCP_TOOLS``, and the comms server is waited for
   before the first prompt (``CLAUDE_CODE_MCP_PREWAIT_SERVERS``).
@@ -59,12 +61,28 @@ def role_config(role: str) -> dict:
     return roles[role]
 
 
+def render_prompt(cfg: dict) -> str:
+    """The role's prompt with its placeholders filled from the config:
+    ``{worker_tools}`` is the role's ``read_tools`` (all a coordinator's workers
+    may use) and ``{thread_permission_mode}`` the mode threads run in."""
+    values = {
+        "{worker_tools}": ", ".join(cfg.get("read_tools") or []) or "no tools",
+        "{thread_permission_mode}": role_config("thread").get("permissionMode") or "bypassPermissions",
+    }
+    prompt = "\n".join(cfg.get("prompt") or [])
+    for key, value in values.items():
+        prompt = prompt.replace(key, value)
+    return prompt
+
+
 def prompt_fingerprint(role: str) -> str:
-    """Changes when the role's prompt or settings change; a coordinator started
-    on an older one is replaced (a running session keeps its first prompt)."""
+    """Changes when the role's prompt or settings change, or what fills its
+    placeholders does; a coordinator started on an older one is replaced (a
+    running session keeps its first prompt)."""
     import hashlib
 
-    return hashlib.sha256(json.dumps(role_config(role), sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    cfg = role_config(role)
+    return hashlib.sha256((json.dumps(cfg, sort_keys=True) + render_prompt(cfg)).encode("utf-8")).hexdigest()[:16]
 
 
 def _tmp_root() -> Path:
@@ -74,8 +92,7 @@ def _tmp_root() -> Path:
 def _spawn_dir(spec: TurnSpec, cfg: dict) -> Path:
     folder = _tmp_root() / f"{spec.session_id}-{secrets.token_hex(4)}"
     folder.mkdir(parents=True, mode=0o700)
-    prompt = "\n".join(cfg.get("prompt") or [])
-    (folder / "append-system-prompt.txt").write_text(prompt + "\n", encoding="utf-8")
+    (folder / "append-system-prompt.txt").write_text(render_prompt(cfg) + "\n", encoding="utf-8")
     server = {"type": "http", "url": spec.comms_url, "alwaysLoad": True}
     if cfg.get("coordinator_mode"):
         server["role"] = "comms"
@@ -100,7 +117,10 @@ def build_argv(spec: TurnSpec, cfg: dict, spawn: Path, cli: str) -> list[str]:
     if cfg.get("coordinator_mode"):
         argv += ["--allowedTools", f"mcp__{spec.comms_server}__*", *cfg.get("read_tools", [])]
     else:
-        argv += ["--dangerously-skip-permissions", "--allowedTools", f"mcp__{spec.comms_server}__*"]
+        # A thread skips permissions unless its role names a mode.
+        mode = cfg.get("permissionMode")
+        argv += ["--permission-mode", str(mode)] if mode else ["--dangerously-skip-permissions"]
+        argv += ["--allowedTools", f"mcp__{spec.comms_server}__*"]
         if cfg.get("disallowed_tools"):
             argv += ["--disallowedTools", *cfg["disallowed_tools"]]
     argv += ["--resume", spec.agent_session_uuid] if spec.resume else ["--session-id", spec.agent_session_uuid]
