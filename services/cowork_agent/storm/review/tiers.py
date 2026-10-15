@@ -779,10 +779,14 @@ _PLACE_WORDS = {Place.STATE_ROOT: "XO's own state", Place.OTHER_WORKTREE: "anoth
 
 
 def _unverifiable(judge: _Judge, path: str) -> None:
+    _cannot_check(judge, f"XO can't tell where {path} is, so it can't check it isn't protected")
+
+
+def _cannot_check(judge: _Judge, reason: str) -> None:
     """A write XO can't place may hit a protected path, so no grant or rule
     may cover it: the person sees it every time."""
     judge.unverifiable = True
-    judge.at_least(Tier.DESTRUCTIVE, f"XO can't tell where {path} is, so it can't check it isn't protected")
+    judge.at_least(Tier.DESTRUCTIVE, reason)
 
 
 def _guard(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
@@ -833,7 +837,17 @@ def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where
     elif name in ("chmod", "chown", "chgrp") and not options.has("--reference"):
         targets, reads = operands[1:], []       # the first operand is the mode or the owner
     elif name == "patch":
-        targets, reads = [v for v in options.values("-o", "--output")], []
+        # patch rewrites the file named first (or writes -o's), reading the
+        # second as the patch. With no file named, or a -d folder, it writes
+        # whatever files the patch itself names, which XO can't see.
+        outputs, inputs = options.values("-o", "--output"), options.values("-i", "--input")
+        if not (operands or outputs) or options.has("-d", "--directory"):
+            _cannot_check(judge, "patch writes the files its patch names, which XO can't check aren't protected")
+            targets, reads = [], operands + inputs
+        elif outputs:
+            targets, reads = outputs, operands[:2] + inputs
+        else:
+            targets, reads = operands[:1], operands[1:2] + inputs
     else:
         targets, reads = operands, []
     if name == "chmod" and operands and re.search(r"[ug]?\+[a-z]*s", operands[0]):
@@ -1190,17 +1204,97 @@ def _hosts_file_loopback_names() -> frozenset[str]:
 # ── Interpreters and packages ────────────────────────────────────────────────
 
 
+#: What lets an awk program write a file or run a command: output redirection,
+#: pipes, system(). Matching them anywhere in the program is cruder than
+#: parsing it (``$3 > 100`` matches too), and errs towards asking.
+_AWK_WRITES = re.compile(r">|\||system")
+#: The sed commands that only print or stop, and the s/// flags that only
+#: choose what is replaced and printed. Every other command or flag (w, W, e,
+#: r, s///w, s///e, …) counts as one that may write or run something.
+_SED_PRINT_COMMANDS = frozenset("pPdDqQ=")
+_SED_SAFE_FLAGS = frozenset("gpiI0123456789")
+
+
+def _sed_only_prints(script: str) -> bool:
+    """True when every command of ``script`` is an allowlisted one, after
+    optional addresses (a line number, ``$``, or ``/regex/``) and ``!``."""
+    i, n = 0, len(script)
+
+    def past(delimiter: str, at: int) -> int:
+        """The index just past the next unescaped ``delimiter``, or -1."""
+        while at < n:
+            if script[at] == "\\":
+                at += 2
+            elif script[at] == delimiter:
+                return at + 1
+            else:
+                at += 1
+        return -1
+
+    while i < n:
+        if script[i] in " \t\n;":
+            i += 1
+            continue
+        for _ in range(2):                          # an address, or a range of two
+            if i >= n:
+                return False
+            if script[i].isdigit():
+                while i < n and script[i].isdigit():
+                    i += 1
+            elif script[i] == "$":
+                i += 1
+            elif script[i] == "/":
+                if (i := past("/", i + 1)) < 0:
+                    return False
+            if i < n and script[i] == ",":
+                i += 1
+                continue
+            break
+        while i < n and script[i] in " !":
+            i += 1
+        if i >= n:
+            return False
+        if script[i] in _SED_PRINT_COMMANDS:
+            i += 1
+        elif script[i] == "s" and i + 1 < n and script[i + 1] not in "\\\n":
+            delimiter = script[i + 1]
+            if (i := past(delimiter, i + 2)) < 0 or (i := past(delimiter, i)) < 0:
+                return False
+            while i < n and script[i] in _SED_SAFE_FLAGS:
+                i += 1
+        else:
+            return False
+    return True
+_SED_SPEC = _spec("efl", "--expression", "--file", "--line-length", optional="i")
+_AWK_SPEC = _spec("fvFeil", "--file", "--assign", "--field-separator", "--source", "--include", "--load")
+
+
+def _text_program(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
+    """sed and awk: a program that only reads and prints is notable; one that
+    may write or run something, or that XO can't read, is unverifiable."""
+    if name == "sed":
+        options, only_reads = read_options(args, _SED_SPEC), _sed_only_prints
+        given, hidden = options.values("-e", "--expression"), options.has("-f", "--file")
+    else:
+        options, only_reads = read_options(args, _AWK_SPEC), (lambda program: not _AWK_WRITES.search(program))
+        given = options.values("-e", "--source")
+        hidden = options.has("-f", "--file", "-i", "--include", "-l", "--load")
+    operands = list(options.operands)
+    programs = given if (given or hidden) else operands[:1]
+    files = operands if (given or hidden) else operands[1:]
+    if hidden or not programs or not all(only_reads(program) for program in programs):
+        judge.wrote = True
+        _cannot_check(judge, f"{name}'s program may write files or run commands where XO can't see")
+        return
+    in_place = name == "sed" and options.has("-i", "--in-place")
+    for path in files:
+        (_write if in_place else _read)(judge, path, places, where)
+    judge.at_least(Tier.NOTABLE, f"{name} runs a program")
+
+
 def _interpreter(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
     if name in ("awk", "gawk", "sed"):
-        if name == "sed":
-            options = read_options(args, _spec("efl", "--expression", "--file", "--line-length", optional="i"))
-            if options.has("-i", "--in-place"):
-                files = options.operands if options.has("-e", "-f", "--expression", "--file") else options.operands[1:]
-                for path in files:
-                    _write(judge, path, places, where)
-                return
-        judge.at_least(Tier.NOTABLE, f"{name} programs can write files and run commands")
-        return
+        return _text_program(judge, name, args, places, where)
     spec, inline = INTERPRETERS[name]
     options = read_options(args, spec)
     if options.names() & inline or (name == "deno" and options.operands[:1] == ("eval",)):

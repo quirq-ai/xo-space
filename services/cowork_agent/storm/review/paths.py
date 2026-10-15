@@ -119,6 +119,21 @@ class Places:
             return Place.HOME_CONFIG
         return Place.OUTSIDE
 
+    def _checkout_of(self, path: Path) -> Path | None:
+        """The checkout ``path`` is in, innermost first: this session's own
+        folder, another thread's worktree, or the project folder they all
+        belong to. Each loads its own agent config, so the protected paths
+        hold in every one of them."""
+        own = self.worktree or self.session_folder
+        if _within(path, own):
+            return own
+        if self.worktrees_root is None:
+            return None
+        if _within(path, self.worktrees_root) and path != self.worktrees_root:
+            return self.worktrees_root / path.relative_to(self.worktrees_root).parts[0]
+        project = self.worktrees_root.parent.parent      # <project>/.xo/worktrees
+        return project if _within(path, project) else None
+
     def _protected(self, path: Path) -> str | None:
         if _within(path, self.state_root):
             return "it is XO's own state"
@@ -128,8 +143,8 @@ class Places:
                                     or _within(path, self.git_common_dir / "hooks")
                                     or path.name == "config.worktree"):
             return "it is git's own config or hooks, which run code"
-        root = self.worktree or self.session_folder
-        if not _within(path, root):
+        root = self._checkout_of(path)
+        if root is None:
             return None
         rel = PurePosixPath(path.relative_to(root).as_posix())
         for pattern in (*CORE_PROTECTED, *self.project_config_paths):

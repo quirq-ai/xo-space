@@ -243,6 +243,27 @@
     {"group": "allowlists: an unknown flag asks", "command": "git log --frobnicate", "expect": "ask", "tier": "notable"},
     {"group": "allowlists: an unknown flag asks", "command": "git commit -F msg.txt", "expect": "ask"},
     {"group": "allowlists: an unknown flag asks", "command": "find . -newerXY x", "expect": "ask"},
-    {"group": "allowlists: an unknown flag asks", "command": "chmod 755 run.sh", "expect": "ask", "tier": "routine"}
+    {"group": "allowlists: an unknown flag asks", "command": "chmod 755 run.sh", "expect": "ask", "tier": "routine"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch .mcp.json -i evil.diff", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch .claude/settings.json evil.diff", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch .mcp.json", "rule": {"effect": "allow", "command": ["patch", ".mcp.json"], "scope": "thread", "tier": "destructive"}, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch -o .mcp.json src/app.py fix.diff", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch -p1 -i fix.diff", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "patch -d src -i fix.diff app.py", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "sed -n 's/.*/x/w .mcp.json' notes.txt", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "sed '1W .claude/settings.json' notes.txt", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "sed 's/x/date/e' notes.txt", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "sed -f edit.sed notes.txt", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "awk '{print > \".mcp.json\"}' notes.txt", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "awk 'BEGIN{system(\"rm -rf src\")}'", "grant": true, "expect": "ask", "tier": "destructive"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "sed -n 1,5p /home/you/.ssh/id_rsa", "role": "coordinator", "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "cp evil.json ../thread-2/.mcp.json", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "echo x > ../../worktrees/thread-2/.claude/settings.json", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "echo x > /home/you/xo-projects/app/.claude/settings.json", "grant": true, "expect": "deny"},
+    {"group": "independent review of #248 (2026-10-15)", "command": "cp evil.json /home/you/xo-projects/app/.mcp.json", "grant": true, "expect": "deny"},
+    {"group": "owner §0.89: credential and dotfile writes are asked and can be allowed once", "command": "echo key >> /home/you/.ssh/authorized_keys", "expect": "ask", "tier": "destructive"},
+    {"group": "owner §0.89: credential and dotfile writes are asked and can be allowed once", "command": "echo key >> /home/you/.ssh/authorized_keys", "grant": true, "expect": "allow"},
+    {"group": "owner §0.89: credential and dotfile writes are asked and can be allowed once", "command": "echo 'alias x=y' >> /home/you/.bashrc", "expect": "ask", "tier": "destructive"},
+    {"group": "owner §0.89: credential and dotfile writes are asked and can be allowed once", "command": "tee .env", "rule": {"effect": "allow", "command": ["tee", ".env"], "scope": "thread", "tier": "destructive"}, "expect": "allow"}
   ]
 }
