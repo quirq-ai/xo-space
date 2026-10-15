@@ -33,4 +33,3 @@ def encode_path(abs_path: str) -> str:
     matched here.
     """
     return _NON_ALNUM.sub("-", abs_path)
-
