@@ -11,9 +11,12 @@ The checks run in this order, first answer wins::
 
 Every simple command of a compound must be allowed on its own for the whole
 to be allowed. A command the parser can't see through is never allowed, only
-denied by a rule or asked. Coordinators never reach "ask": anything that isn't
-read-only is denied, except a read of credentials, which is asked (§0.75).
-The engine fails closed: if it breaks, the answer is deny.
+denied by a rule or asked. Coordinators pass the deny rules and protected
+paths like everyone, then never reach "ask": anything that isn't read-only is
+denied, except a read that may touch credentials, which is asked (§0.75).
+Grants and allow rules never widen a coordinator, nor cover a write XO can't
+place (it may hit a protected path). The engine fails closed: if it breaks,
+the answer is deny.
 """
 
 from __future__ import annotations
@@ -129,7 +132,7 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
     if action.kind in FILE_KINDS:
         return assess_paths(action.kind, action.paths, ctx.places, cwd)
     if action.kind in ("web_fetch", "web_search"):
-        return assess_url(action.kind, action.url, ctx.xo_ports)
+        return assess_url(action.kind, action.url, ctx.places, ctx.xo_ports)
     if action.kind == "mcp" and action.mcp:
         return assess_mcp(*action.mcp)
     return Assessment((Part(Tier.NOTABLE, OTHER, (f"XO doesn't know this kind of action ({action.kind})",)),))
@@ -137,8 +140,6 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
 
 def _decide(action: Action, ctx: PolicyContext) -> Verdict:
     found = assess(action, ctx)
-    if action.session.role == "coordinator":
-        return _coordinator(action, found)
     session = action.session
 
     def applying(effect: str, part: Part) -> Rule | None:
@@ -157,6 +158,11 @@ def _decide(action: Action, ctx: PolicyContext) -> Verdict:
     if found.protected:
         return Verdict("deny", Tier.DESTRUCTIVE, found.reasons, message=f"XO never allows writing "
                        f"{found.protected[0]}. Leave that file as it is.")
+    if session.role == "coordinator":
+        return _coordinator(action, found)
+    if found.unverifiable:
+        # It may write a protected path XO can't see: no grant or rule covers it.
+        return Verdict("ask", found.tier, found.reasons)
     grant = _grant(action, ctx)
     if grant:
         return Verdict("allow", found.tier, found.reasons, grant_id=grant.id)

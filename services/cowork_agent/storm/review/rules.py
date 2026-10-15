@@ -35,6 +35,7 @@ from services.cowork_agent.storm.review.tiers import (
     Part,
     Tier,
     canonical_words,
+    is_flag_run,
 )
 
 Scope = Literal["thread", "project", "workspace"]
@@ -50,12 +51,19 @@ class Match:
     host: str | None = None
     mcp: tuple[str, str] | None = None         # (server, tool); tool "*" is every tool of the server
 
-    def matches(self, part: Part) -> bool:
+    def matches(self, part: Part, *, at_least: bool = False) -> bool:
+        """A command is compared as its program, its positional words and its
+        flags, wherever the flags stand (``rm -f src -r`` has the flags
+        ``-f -r``). ``at_least`` (deny rules): a command carrying more flags
+        than the rule still matches. Otherwise (allow rules) its short flags
+        must be exactly the rule's, so "allow ``rm -f``" never covers a
+        recursive delete; long flags may be added (``npm test --watch``)."""
+        if not part.words:
+            return False
         if self.command is not None:
-            return part.words == canonical_words(self.command)
+            return _shape(part.words) == _shape(canonical_words(self.command))
         if self.prefix is not None:
-            prefix = canonical_words(self.prefix)
-            return part.words[:len(prefix)] == prefix
+            return _starts_with(part.words, canonical_words(self.prefix), at_least)
         if self.path_glob is not None:
             return part.path is not None and _glob(part.path, self.path_glob)
         if self.host is not None:
@@ -88,7 +96,7 @@ class Rule:
             return False
         if self.effect == "allow" and part.tier > self.tier:
             return False                       # "allow git log" never covers git log --output=/elsewhere
-        return self.kind == kind and self.match.matches(part)
+        return self.kind == kind and self.match.matches(part, at_least=self.effect == "deny")
 
 
 @dataclass(frozen=True)
@@ -144,6 +152,30 @@ def render_sentence(rule_effect: str, scope: Scope, kind: str, match: Match, pro
     if rule_effect == "deny":
         return f"{where}, never {what}"
     return f"{where}, {what} without asking"
+
+
+def _shape(words: tuple[str, ...]) -> tuple[str, tuple[str, ...], frozenset[str], frozenset[str]]:
+    """(program, positional words, short-flag letters, long flags)."""
+    positional, letters, longs = [], set(), set()
+    for word in words[1:]:
+        if is_flag_run(word):
+            letters.update(word[1:])
+        elif word.startswith("--") and len(word) > 2:
+            longs.add(word)
+        else:
+            positional.append(word)
+    return words[0], tuple(positional), frozenset(letters), frozenset(longs)
+
+
+def _starts_with(words: tuple[str, ...], prefix: tuple[str, ...], at_least: bool) -> bool:
+    program, positional, letters, longs = _shape(words)
+    want_program, want_positional, want_letters, want_longs = _shape(prefix)
+    if program != want_program or positional[:len(want_positional)] != want_positional:
+        return False
+    if at_least:
+        names = {flag.split("=", 1)[0] for flag in longs}
+        return want_letters <= letters and {flag.split("=", 1)[0] for flag in want_longs} <= names
+    return letters == want_letters and want_longs <= longs
 
 
 def _glob(path: str, pattern: str) -> bool:

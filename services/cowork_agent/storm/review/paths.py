@@ -13,6 +13,7 @@ at ``~/.ssh`` is a secret, not a routine read.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from fnmatch import fnmatchcase
@@ -26,10 +27,11 @@ class Place(Enum):
 
     INSIDE = 0          # the session's own folder (a thread's worktree, a plain session's cwd)
     OUTSIDE = 1         # anywhere else, /tmp included
-    OTHER_WORKTREE = 2  # another thread's checkout
-    CLI_HOME = 3        # an agent CLI's own folder (its config, logins, transcripts)
-    STATE_ROOT = 4      # XO's own state
-    SECRET = 5          # credentials by name or place
+    HOME_CONFIG = 2     # a dotfile or dot folder in the person's home: shells and tools run what it says
+    OTHER_WORKTREE = 3  # another thread's checkout
+    CLI_HOME = 4        # an agent CLI's own folder (its config, logins, transcripts)
+    STATE_ROOT = 5      # XO's own state
+    SECRET = 6          # credentials by name or place
 
     def worse(self, other: "Place") -> "Place":
         return self if self.value >= other.value else other
@@ -41,6 +43,8 @@ CORE_PROTECTED = (".xo/**", ".git", ".git/**")
 SECRET_NAMES = (".env", ".env.*", "*.pem", "id_*")
 #: Secrets by place, under the person's home.
 SECRET_HOME_DIRS = (".ssh", ".aws", ".config/gh")
+#: Shell brace expansion ({a,b} or {1..3}): one word becomes several paths.
+_BRACES = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,7 @@ class Places:
     home: Path
     state_root: Path
     worktree: Path | None = None         # a thread's checkout; None for plain and coordinator sessions
+    project_folder: Path | None = None   # the project's own checkout, holding .xo/ and its worktrees
     worktrees_root: Path | None = None   # <project>/.xo/worktrees
     git_common_dir: Path | None = None   # <project>/.git: its config and hooks are git's own
     cli_homes: tuple[Path, ...] = ()
@@ -58,10 +63,11 @@ class Places:
 
     def resolve(self, path: str, cwd: Path | None) -> tuple[Path, Path] | None:
         """``path``'s written and real forms, absolute; None when it can't be
-        known: a variable, a glob, ``~user``, or a relative path while the
-        working folder is unknown (``cwd`` None, after a ``cd`` XO can't
-        follow)."""
-        if not path or any(c in path for c in "$*?[") or (path.startswith("~") and not path.startswith("~/") and path != "~"):
+        known: a variable, a glob, brace expansion, ``~user``, or a relative
+        path while the working folder is unknown (``cwd`` None, after a
+        ``cd`` XO can't follow)."""
+        if not path or any(c in path for c in "$*?[") or _BRACES.search(path) or (
+                path.startswith("~") and not path.startswith("~/") and path != "~"):
             return None
         expanded = str(self.home) + path[1:] if path.startswith("~") else path
         if not os.path.isabs(expanded) and cwd is None:
@@ -108,9 +114,28 @@ class Places:
         if self.worktrees_root and _within(path, self.worktrees_root) and not (
                 self.worktree and _within(path, self.worktree)):
             return Place.OTHER_WORKTREE
-        if _within(path, self.session_folder) and path != self.session_folder:
+        if _within(path, self.session_folder):
             return Place.INSIDE
+        if _within(path, self.home) and path != self.home and path.relative_to(self.home).parts[0].startswith("."):
+            return Place.HOME_CONFIG
         return Place.OUTSIDE
+
+    def _checkout_of(self, path: Path) -> Path | None:
+        """The checkout ``path`` is in: this session's own folder first, then
+        another thread's worktree (only what is inside one: a worktree folder
+        itself, or a file beside them, is the project's ``.xo/``), then the
+        project folder. Each loads its own agent config, so the protected
+        paths hold in every one of them. All paths here are resolved."""
+        own = self.worktree or self.session_folder
+        if _within(path, own):
+            return own
+        if self.worktrees_root and _within(path, self.worktrees_root):
+            parts = path.relative_to(self.worktrees_root).parts
+            if len(parts) > 1:
+                return self.worktrees_root / parts[0]
+        if self.project_folder and _within(path, self.project_folder):
+            return self.project_folder
+        return None
 
     def _protected(self, path: Path) -> str | None:
         if _within(path, self.state_root):
@@ -121,8 +146,8 @@ class Places:
                                     or _within(path, self.git_common_dir / "hooks")
                                     or path.name == "config.worktree"):
             return "it is git's own config or hooks, which run code"
-        root = self.worktree or self.session_folder
-        if not _within(path, root):
+        root = self._checkout_of(path)
+        if root is None:
             return None
         rel = PurePosixPath(path.relative_to(root).as_posix())
         for pattern in (*CORE_PROTECTED, *self.project_config_paths):

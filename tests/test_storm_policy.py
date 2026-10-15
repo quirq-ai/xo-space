@@ -28,8 +28,10 @@ from services.cowork_agent.storm.review import (
     scope_refusal,
 )
 from services.cowork_agent.storm.review import policy
+from services.cowork_agent.storm.review.options import Spec, read_options
 from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
 from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, parse
+from services.cowork_agent.storm.review.tiers import _sed_only_prints
 
 NOW = "2026-10-15T12:00:00Z"
 
@@ -48,6 +50,7 @@ class _Tree(unittest.TestCase):
         (self.home / ".ssh" / "id_rsa").write_text("not a real key")
         self.places = Places(
             session_folder=self.worktree, home=self.home, state_root=self.home / ".quirq", worktree=self.worktree,
+            project_folder=self.project,
             worktrees_root=self.project / ".xo" / "worktrees", git_common_dir=self.project / ".git",
             cli_homes=(self.home / ".claude",), project_config_paths=(".claude/**", ".mcp.json"))
         self.thread = SessionRef(id="cse_t", role="thread", cwd=self.worktree, project_pid="pid", thread_ts="t1",
@@ -81,6 +84,37 @@ class ParserTests(unittest.TestCase):
         self.assertEqual([(r.op, r.target, r.is_file, r.writes) for r in cmd.redirects], [
             (">", "err.log", True, True), (">>", "out.txt", True, True), (">&", "1", False, True),
             ("<", "in.txt", True, False)])
+
+
+class SedScriptTests(unittest.TestCase):
+    def test_scripts_that_only_print_or_replace(self) -> None:
+        for script in ("p", "1,5p", "/error/p", "s/foo/bar/g", "s|a/b|c|", "$d", "1!d", "/a/,/b/p;s/x/y/2p",
+                       "s/\\/w/x/", "=", "10q"):
+            with self.subTest(script):
+                self.assertTrue(_sed_only_prints(script))
+
+    def test_anything_else_may_write_or_run(self) -> None:
+        for script in ("w out", "1w .mcp.json", "s/x/y/w .mcp.json", "s/x/date/e", "e ls", "W f", "r f",
+                       "s/a/b", "y/ab/cd/", "1,", "s/a/b/gw f", "{p}", "a text"):
+            with self.subTest(script):
+                self.assertFalse(_sed_only_prints(script))
+
+
+class OptionsTests(unittest.TestCase):
+    def test_every_spelling_a_program_accepts_reads_the_same(self) -> None:
+        spec = Spec(short_valued="o", long_valued=frozenset({"--output"}))
+        for args in (["-o", "f", "u"], ["-of", "u"], ["-sof", "u"], ["u", "-o", "f"], ["--output", "f", "u"],
+                     ["--output=f", "u"]):
+            with self.subTest(args=args):
+                options = read_options(args, spec)
+                self.assertEqual((options.value("-o", "--output"), options.operands), ("f", ("u",)))
+
+    def test_clusters_end_of_options_and_optional_values(self) -> None:
+        options = read_options(["-sO", "u", "--", "-x"], Spec())
+        self.assertEqual((sorted(options.names()), options.operands), (["-O", "-s"], ("u", "-x")))
+        sed = read_options(["-Ei.bak", "s/a/b/", "f"], Spec(short_optional="i"))
+        self.assertEqual((sed.value("-i"), sed.operands), (".bak", ("s/a/b/", "f")))
+        self.assertEqual(read_options(["a", "-r"], Spec(permute=False)).operands, ("a", "-r"))
 
 
 class PlacesTests(_Tree):
