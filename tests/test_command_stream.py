@@ -235,6 +235,19 @@ class SpawnStreamTests(_Async):
         self.assertEqual(await asyncio.wait_for(proc.wait(), 5), 0)
         self.assertEqual([line async for line in lines], [b"bye"])
 
+    async def test_terminate_stops_helpers_a_cli_left_behind_when_it_exited(self) -> None:
+        proc = await self.spawn("import subprocess, sys\n"
+                                "h = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+                                " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                                "print(h.pid, flush=True)")
+        helper = int(await self.first_line(proc))
+        h_ticks = process_start_ticks(helper)
+        self.own(helper)
+        self.assertEqual(await asyncio.wait_for(proc.wait(), 10), 0)
+        self.assertTrue(alive(helper, h_ticks))
+        self.assertEqual(await asyncio.wait_for(proc.terminate(grace_s=0.3), 10), 0)
+        self.assertFalse(alive(helper, h_ticks))
+
     async def test_signal_reaches_the_process(self) -> None:
         proc = await self.spawn(textwrap.dedent("""
             import signal, sys, time

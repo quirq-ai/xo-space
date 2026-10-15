@@ -934,15 +934,20 @@ class StreamProcess:
 
     async def terminate(self, grace_s: float) -> int:
         """SIGTERM to the whole process group, SIGKILL after `grace_s`, and
-        reap. Idempotent: an exited process just returns its code."""
+        reap; then stop whatever is still left in its session (helpers of a
+        CLI that had already exited, its MCP servers). Idempotent: an exited
+        process just returns its code."""
         self._give_up_output()
         if self._proc.returncode is None:
             _signal_group(self.pid, signal.SIGTERM)
             try:
-                return await asyncio.wait_for(asyncio.shield(self._exit), timeout=grace_s)
+                await asyncio.wait_for(asyncio.shield(self._exit), timeout=grace_s)
             except asyncio.TimeoutError:
                 _signal_group(self.pid, signal.SIGKILL)
-        return await asyncio.shield(self._exit)
+        code = await asyncio.shield(self._exit)
+        # Through pidfds, by session and start time: never a reused pid.
+        await reap_orphan(self.pid, self.start_ticks, grace_s=grace_s)
+        return code
 
     def _give_up_output(self) -> None:
         """Switch the pump to discarding and free it if it waits on the queue,
