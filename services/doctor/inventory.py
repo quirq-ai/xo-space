@@ -148,6 +148,9 @@ SPECS: tuple[Spec, ...] = (
        schema_file="sessions-augment.schema.json", **_IGN),
     _s("cache/activity/workspace.json", CHANGE_CACHE, schema_file="activity.schema.json", **_IGN),
     _s("cache/activity/projects/*.json", CHANGE_CACHE, schema_file="activity.schema.json", **_IGN),
+    # Storm's SQLite store and its -wal/-shm companions; SQLite owns their bytes.
+    _s("engine/xo.db*", OPAQUE),
+    _s("run/**", OPAQUE),  # the engine lock and live sessions' folders
     _s("logs/**", OPAQUE),
     _s(".locks/*", OPAQUE),
     _s("quarantine/**", OPAQUE),

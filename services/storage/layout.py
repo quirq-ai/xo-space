@@ -11,6 +11,8 @@
     ├── usage/         how far usage has been reported to XO
     ├── settings/      Space-wide choices
     ├── secrets/       credentials
+    ├── engine/        storm's store (xo.db): sessions, turns, chats, review
+    ├── run/           live processes' folders and the engine lock; nothing to keep
     ├── cache/         safe to delete: rebuilt automatically
     ├── logs/          safe to delete
     ├── quarantine/    moved aside by a person; delete by hand
@@ -68,6 +70,18 @@ def settings_dir() -> Path:
 
 def secrets_dir() -> Path:
     return quirq_state_dir() / "secrets"
+
+
+def engine_dir() -> Path:
+    """``~/.quirq/engine/``: storm's store, ``xo.db`` (with its ``-wal`` and
+    ``-shm``)."""
+    return quirq_state_dir() / "engine"
+
+
+def run_dir() -> Path:
+    """``~/.quirq/run/``: the engine lock and each live session's own folder
+    (0700). Only what a running server needs; boot recovery clears it."""
+    return quirq_state_dir() / "run"
 
 
 def cache_dir() -> Path:
